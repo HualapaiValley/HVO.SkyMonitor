@@ -166,7 +166,7 @@ runtime_probe_container=''
 sdk_probe_container=''
 hardware_output=''
 rerun_summary=''
-acquisition_started=false
+failure_stage=preacquisition
 
 sanitize_failed_test_artifacts() {
     local path raw
@@ -188,10 +188,11 @@ container_state_summary() {
         jq '{Status, Running, Paused, Restarting, OOMKilled, Dead, ExitCode, ErrorEmpty:(.Error == "")}'
 }
 
-retain_preacquisition_failure() {
-    local camera_state='null' collector_state='null' central_state='null' container output raw state_output
-    [[ "$acquisition_started" == false && -n "$evidence_root" && -d "$evidence_root" ]] || return 0
+retain_failure_diagnostics() {
+    local camera_state='null' collector_state='null' central_state='null' container output raw state_output stage
+    [[ -n "$evidence_root" && -d "$evidence_root" ]] || return 0
     [[ -n "$active_control_root" && -d "$active_control_root" ]] || return 1
+    stage="$failure_stage"
     for container in "$camera_container" "$collector_container" "$central_deny_container"; do
         [[ -n "$container" ]] || continue
         if docker container inspect "$container" >/dev/null 2>&1; then
@@ -200,18 +201,20 @@ retain_preacquisition_failure() {
                 "$collector_container") collector_state="$(container_state_summary "$container")" || return 1 ;;
                 "$central_deny_container") central_state="$(container_state_summary "$container")" || return 1 ;;
             esac
-            output="$evidence_root/${container##*-}-preacquisition.log"
-            raw="$active_control_root/${container##*-}-preacquisition.raw"
+            output="$evidence_root/${container##*-}-$stage.log"
+            raw="$active_control_root/${container##*-}-$stage.raw"
             docker logs --timestamps "$container" > "$raw" 2>&1 || true
             sanitize_text_file "$raw" || return 1
             mv "$raw" "$output" || return 1
         fi
     done
-    state_output="$active_control_root/preacquisition-failure.json"
-    jq -n --argjson camera "$camera_state" --argjson collector "$collector_state" --argjson centralDeny "$central_state" \
-        '{schemaVersion:"issue-268-preacquisition-failure-v1", camera:$camera, collector:$collector, centralDeny:$centralDeny}' \
+    state_output="$active_control_root/$stage-failure.json"
+    jq -n --arg stage "$stage" --argjson camera "$camera_state" --argjson collector "$collector_state" \
+        --argjson centralDeny "$central_state" \
+        '{schemaVersion:("issue-268-" + $stage + "-failure-v1"), stage:$stage,
+          camera:$camera, collector:$collector, centralDeny:$centralDeny}' \
         > "$state_output" || return 1
-    mv "$state_output" "$evidence_root/preacquisition-failure.json" || return 1
+    mv "$state_output" "$evidence_root/$stage-failure.json" || return 1
 }
 
 remove_trial_containers() {
@@ -292,7 +295,7 @@ cleanup() {
     if [[ -n "$deadline_pid" ]]; then kill "$deadline_pid" >/dev/null 2>&1 || true; wait "$deadline_pid" 2>/dev/null || true; fi
     if ((status != 0)); then
         sanitize_failed_test_artifacts || cleanup_failed=1
-        retain_preacquisition_failure || printf 'Pre-acquisition diagnostics could not be retained safely.\n' >&2
+        retain_failure_diagnostics || printf 'Failure diagnostics could not be retained safely.\n' >&2
     fi
     remove_trial_containers || cleanup_failed=1
     remove_owned_runtime || cleanup_failed=1
@@ -878,7 +881,7 @@ sanitize_text_file() {
 }
 
 for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
-    acquisition_started=false
+    failure_stage=preacquisition
     assert_source_unchanged
     assert_static_identities || { printf 'Static identity changed before trial %s.\n' "$trial_number" >&2; exit 1; }
     assert_host_runtime_identity || { printf 'Host identity changed before trial %s.\n' "$trial_number" >&2; exit 1; }
@@ -1214,7 +1217,7 @@ EOF
 
     acquisition_timeout_seconds="$(remaining_trial_seconds)"
     ((acquisition_timeout_seconds <= 3900)) || acquisition_timeout_seconds=3900
-    acquisition_started=true
+    failure_stage=acquisition
     HVO_ISSUE_268_PHYSICAL_EVIDENCE=1 HVO_ISSUE_268_PROFILE="$PROFILE" HVO_ISSUE_268_TRIAL="$trial" \
     HVO_ISSUE_268_EVIDENCE_ROOT="$evidence_root" HVO_ISSUE_268_CAMERA_CONTAINER="$camera_container" \
     HVO_ISSUE_268_BASE_URI="$camera_base_uri" HVO_ISSUE_268_OWNER_PASSWORD_FILE="$control_root/secrets/owner-password" \
@@ -1224,6 +1227,7 @@ EOF
         timeout --signal=TERM --kill-after=30s "${acquisition_timeout_seconds}s" dotnet test "$ACCEPTANCE_PROJECT" --no-build --configuration Release \
         --filter 'FullyQualifiedName~SustainedPhysicalEvidenceTests.AcquireSustainedPhysicalTrialAndStopAsync' \
         --results-directory "$evidence_root" --logger 'trx;LogFileName=acquisition.trx' --logger 'console;verbosity=normal'
+    failure_stage=postacquisition
 
     wait "$sampler_pid" 2>/dev/null || true
     sampler_pid=''
