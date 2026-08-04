@@ -199,7 +199,10 @@ internal sealed class CentralTransientPayloadReleaseService(
             if (releaseLock is not null)
             {
                 await ProcessReleaseAsync(
-                    release.ReleaseId, parentLockHeld: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    release.ReleaseId,
+                    normalizePendingItems: replayed,
+                    parentLockHeld: true,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
             }
         }
         dbContext.ChangeTracker.Clear();
@@ -623,6 +626,7 @@ internal sealed class CentralTransientPayloadReleaseService(
 
     private async Task ProcessReleaseAsync(
         Guid releaseId,
+        bool normalizePendingItems = true,
         bool parentLockHeld = false,
         CancellationToken cancellationToken = default)
     {
@@ -634,7 +638,10 @@ internal sealed class CentralTransientPayloadReleaseService(
                 dbContext, $"central-transient-payload-release:{releaseId:N}", cancellationToken).ConfigureAwait(false);
         try
         {
-            await NormalizePendingItemsAsync(releaseId, cancellationToken).ConfigureAwait(false);
+            if (normalizePendingItems)
+            {
+                await NormalizePendingItemsAsync(releaseId, cancellationToken).ConfigureAwait(false);
+            }
             while (await IsReleasePendingAsync(releaseId, cancellationToken).ConfigureAwait(false))
             {
                 var item = await LoadNextPendingItemAsync(releaseId, cancellationToken).ConfigureAwait(false);
