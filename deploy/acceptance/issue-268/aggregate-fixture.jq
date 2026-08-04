@@ -178,7 +178,7 @@ def logs:
   host: [{
     revision: {commit: "fixture"}, sourceIdentities: {renderedComposeSha256: "fixture",
       sdkLibrarySha256: "fixture-sdk", sourceCatalogTreeSha256: "fixture-tree", copiedCatalogTreeSha256: "fixture-tree"},
-    host: {logicalCpuCount: 8},
+    host: {logicalCpuCount: 8}, profile: {id: "asi178mc", model: "ASI178MC"},
     storage: {runtime: {logicalBlockSize: 512, path: "runtime", device: "/dev/sda1", volumeInspect: {}, freeBytes: 1,
         containerMount: {type: "volume", source: "runtime", name: "fixture", destination: "/var/lib/hvo/data/agent"}},
       evidence: {freeBytes: 1}, docker: {freeBytes: 1}},
@@ -207,8 +207,15 @@ def logs:
   ]}]}],
   traces: [{resourceSpans: [{scopeSpans: spans}]}],
   logs: [{resourceLogs: [{scopeLogs: [{scope: {name: "fixture"}, logRecords: logs}]}]}],
-  dmesg: [{passed: true, liveBeforeCameraAgent: true, followMode: "follow-new",
-    privacySanitized: true, oomEvidenceLineCount: 0}],
+  dmesg: [{schemaVersion: "issue-268-dmesg-monitor-v2", passed: true, liveBeforeCameraAgent: true,
+    followMode: "follow-new", retainedLineCount: 0,
+    privacySanitized: true, oomEvidenceLineCount: 0,
+    resetDisposition: {classification: "zero-reset-required",
+      authority: "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5181679194",
+      initiatorEvidenceSha256: null, expectedCaptureCount: 105, expectedResetCount: 0,
+      observedResetCount: 0, preMeasuredResetCount: 0, measuredResetCount: 0, postMeasuredResetCount: 0,
+      unexpectedSelectedUsbLineCount: 0, oomEvidenceLineCount: 0,
+      phaseCorrelationPassed: true, passed: true}}],
   exportIo: [{excludedFromTrialMeasurements: true}]
   ,execution: [{schemaVersion: "issue-268-trial-execution-v1", revision: "fixture", profile: "asi178mc",
     trial: "trial-1", wholeTrialElapsedSeconds: 120}]

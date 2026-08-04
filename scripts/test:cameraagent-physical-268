@@ -12,6 +12,7 @@ readonly REPO_ROOT
 readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-268/compose.yml"
 readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/issue-268/otel-collector.yml"
 readonly AGGREGATOR="$REPO_ROOT/scripts/issue-268-physical-aggregate.jq"
+readonly USB_RESET_CLASSIFIER="$REPO_ROOT/scripts/issue-268-usb-reset-classify.jq"
 readonly MANIFEST_VERIFIER="$REPO_ROOT/scripts/issue-268-verify-manifest"
 readonly ACCEPTANCE_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly HARDWARE_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
@@ -1049,7 +1050,7 @@ EOF
     sleep 1
     kill -0 "$kernel_pid" 2>/dev/null || { printf 'dmesg follow exited before CameraAgent startup.\n' >&2; exit 1; }
     jq -n --argjson pid "$kernel_pid" --arg startedUtc "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-        '{schemaVersion:"issue-268-dmesg-monitor-v1", pid:$pid, startedUtc:$startedUtc, liveBeforeCameraAgent:true}' \
+        '{schemaVersion:"issue-268-dmesg-monitor-v2", pid:$pid, startedUtc:$startedUtc, liveBeforeCameraAgent:true}' \
         > "$evidence_root/dmesg-status.json"
 
     prestart_config_sha256="$(sha256sum "$resolved_config" | { read -r hash _; printf '%s' "$hash"; })"
@@ -1378,18 +1379,21 @@ EOF
             printf '%s\n' "$line"
         fi
     done < "$control_root/kernel-live.raw" > "$evidence_root/kernel-selected.sanitized.log"
-    kernel_oom_lines="$(rg --count-matches --ignore-case 'oom|out of memory|killed process' \
-        "$evidence_root/kernel-selected.sanitized.log" || true)"
-    kernel_oom_lines="${kernel_oom_lines:-0}"
     sanitize_text_file "$evidence_root/kernel-selected.sanitized.log"
-    kernel_retained_lines="$(wc -l < "$evidence_root/kernel-selected.sanitized.log")"
-    jq --arg token "$selected_usb_kernel_token" --argjson retainedLines "$kernel_retained_lines" \
-        --argjson oomLines "$kernel_oom_lines" \
-        '. + {followMode:"follow-new", selectedUsbToken:$token, retainedLineCount:$retainedLines,
-          oomEvidenceLineCount:$oomLines, privacySanitized:true}' "$evidence_root/dmesg-status.json" \
+    reset_disposition="$(jq -R -s --arg profile "$PROFILE" --arg token "$selected_usb_kernel_token" \
+        --slurpfile capture "$evidence_root/capture-evidence.json" -f "$USB_RESET_CLASSIFIER" \
+        "$evidence_root/kernel-selected.sanitized.log")"
+    jq --arg token "$selected_usb_kernel_token" --argjson resetDisposition "$reset_disposition" \
+        '. + {followMode:"follow-new", selectedUsbToken:$token,
+          retainedLineCount:$resetDisposition.retainedLineCount,
+          oomEvidenceLineCount:$resetDisposition.oomEvidenceLineCount, privacySanitized:true,
+          resetDisposition:$resetDisposition}' "$evidence_root/dmesg-status.json" \
         > "$evidence_root/dmesg-status.json.tmp"
     mv "$evidence_root/dmesg-status.json.tmp" "$evidence_root/dmesg-status.json"
-    ((kernel_oom_lines == 0)) || { printf 'OOM evidence was observed in the selected kernel stream.\n' >&2; exit 1; }
+    jq --exit-status '.resetDisposition.passed == true' "$evidence_root/dmesg-status.json" >/dev/null || {
+        printf 'USB reset evidence did not match the approved profile disposition.\n' >&2
+        exit 1
+    }
     docker logs --timestamps "$collector_container" > "$evidence_root/collector.log" 2>&1
     sanitize_text_file "$evidence_root/collector.log"
     sanitize_text_file "$evidence_root/central-deny.log"
@@ -1424,9 +1428,14 @@ EOF
         printf 'Retained evidence contains a forbidden credential pattern.\n' >&2
         exit 1
     fi
-    if rg --text --ignore-case 'usb.*(reset|disconnect|error|timeout)|oom|out of memory|killed process' \
+    if rg --text --ignore-case \
+        'usb.*(disconnect|error|timeout)|(disconnect|error|timeout).*usb|oom|out of memory|killed process' \
         "$evidence_root/kernel-selected.sanitized.log" "$evidence_root/cameraagent.sanitized.log" >/dev/null; then
         printf 'USB, SDK, timeout, or OOM fault was observed.\n' >&2
+        exit 1
+    fi
+    if rg --text --ignore-case 'usb.*reset' "$evidence_root/cameraagent.sanitized.log" >/dev/null; then
+        printf 'An unclassified CameraAgent USB reset was observed.\n' >&2
         exit 1
     fi
     if rg --text --ignore-case 'exporter.*(error|failed)|connection refused|retrying' "$evidence_root/collector.log" >/dev/null; then

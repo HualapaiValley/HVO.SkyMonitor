@@ -742,6 +742,8 @@ def trial:
     },
     passed: (
       $capture.result.passed == true and
+      ($capture.profile | IN("asi178mc", "asi676mc")) and
+      $host_manifest.profile.id == $capture.profile and
       $trial_manifest.schemaVersion == "issue-268-trial-input-manifest-v1" and
       $trial_manifest.profile == $capture.profile and $trial_manifest.trial == $capture.trial and
       $trial_manifest.revision == $host_manifest.revision.commit and
@@ -785,8 +787,34 @@ def trial:
       $otlp_measured.laneWorkCreated == 100 and $otlp_measured.laneClaims == 100 and
       $otlp_measured.laneCompleted == 100 and $otlp_measured.processingGraphs == 100 and
       $total_deltas.ingressCommittedBytes == $capture.statistics.measuredPayloadBytes and
-      $capture.sqlite.userVersion == 10 and $dmesg[0].passed == true and $dmesg[0].liveBeforeCameraAgent == true and
+      $capture.sqlite.userVersion == 10 and $dmesg[0].schemaVersion == "issue-268-dmesg-monitor-v2" and
+      $dmesg[0].passed == true and $dmesg[0].liveBeforeCameraAgent == true and
       $dmesg[0].followMode == "follow-new" and $dmesg[0].privacySanitized == true and $dmesg[0].oomEvidenceLineCount == 0 and
+      $dmesg[0].retainedLineCount == ($dmesg[0].resetDisposition.observedResetCount +
+        $dmesg[0].resetDisposition.unexpectedSelectedUsbLineCount + $dmesg[0].oomEvidenceLineCount) and
+      $dmesg[0].resetDisposition.passed == true and
+      $dmesg[0].resetDisposition.authority == "https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5181679194" and
+      $dmesg[0].resetDisposition.expectedCaptureCount == 105 and
+      $dmesg[0].resetDisposition.unexpectedSelectedUsbLineCount == 0 and
+      $dmesg[0].resetDisposition.oomEvidenceLineCount == 0 and
+      $dmesg[0].resetDisposition.phaseCorrelationPassed == true and
+      (if $capture.profile == "asi676mc" then
+        $dmesg[0].resetDisposition.classification == "accepted-sdk-commanded-per-capture" and
+        $dmesg[0].resetDisposition.initiatorEvidenceSha256 == "67EE85B0F65C2A5660B3678292F8740FE41C628B73A2EED5E72CF83F5A376FC0" and
+        $dmesg[0].resetDisposition.expectedResetCount == 105 and
+        $dmesg[0].resetDisposition.observedResetCount == 105 and
+        $dmesg[0].resetDisposition.preMeasuredResetCount == 5 and
+        $dmesg[0].resetDisposition.measuredResetCount == 100 and
+        $dmesg[0].resetDisposition.postMeasuredResetCount == 0
+       else
+        $dmesg[0].resetDisposition.classification == "zero-reset-required" and
+        $dmesg[0].resetDisposition.initiatorEvidenceSha256 == null and
+        $dmesg[0].resetDisposition.expectedResetCount == 0 and
+        $dmesg[0].resetDisposition.observedResetCount == 0 and
+        $dmesg[0].resetDisposition.preMeasuredResetCount == 0 and
+        $dmesg[0].resetDisposition.measuredResetCount == 0 and
+        $dmesg[0].resetDisposition.postMeasuredResetCount == 0
+       end) and
       $host_manifest.mountAuthentication.prestart.passed == true and
       $host_manifest.mountAuthentication.startup.passed == true and
       $host_manifest.mountAuthentication.shutdown.passed == true and

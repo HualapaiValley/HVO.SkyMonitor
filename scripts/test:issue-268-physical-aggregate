@@ -10,6 +10,9 @@ readonly REPO_ROOT
 readonly AGGREGATOR="$REPO_ROOT/scripts/issue-268-physical-aggregate.jq"
 readonly FIXTURE="$REPO_ROOT/deploy/acceptance/issue-268/aggregate-fixture.jq"
 readonly MANIFEST_VERIFIER="$REPO_ROOT/scripts/issue-268-verify-manifest"
+readonly USB_RESET_CLASSIFIER="$REPO_ROOT/scripts/issue-268-usb-reset-classify.jq"
+readonly ARM_RESET_CAPTURE_FIXTURE="$REPO_ROOT/deploy/acceptance/issue-268/asi676mc-reset-capture-fixture.json"
+readonly ARM_RESET_KERNEL_FIXTURE="$REPO_ROOT/deploy/acceptance/issue-268/asi676mc-reset-kernel-fixture.txt"
 temporary="$(mktemp -d)"
 trap 'rm -rf -- "$temporary"' EXIT
 
@@ -31,6 +34,52 @@ aggregate_trial() {
 }
 
 jq -n -f "$FIXTURE" > "$temporary/fixture.json"
+jq -n '{profile:"asi676mc", result:{passed:true,warmupCount:5,measuredCount:100},
+  monotonicFrequency:1000, barriers:[
+    {phase:"measured-resume",startedMonotonicTimestamp:100000},
+    {phase:"measured-complete",startedMonotonicTimestamp:200000}]}' > "$temporary/reset-capture.json"
+jq -rn '([range(0;5) | "kern :info : [\(50 + .).000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd"] +
+  [range(0;100) | "kern :info : [\(101 + .).000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd"])[]' \
+  > "$temporary/arm-reset-lines.txt"
+jq -R -s --arg profile asi676mc --arg token 3-1 --slurpfile capture "$temporary/reset-capture.json" \
+  -f "$USB_RESET_CLASSIFIER" "$temporary/arm-reset-lines.txt" > "$temporary/reset-classification.json"
+jq --exit-status '.passed == true and .preMeasuredResetCount == 5 and .measuredResetCount == 100 and
+  .postMeasuredResetCount == 0 and .unexpectedSelectedUsbLineCount == 0' \
+  "$temporary/reset-classification.json" >/dev/null
+jq -R -s --arg profile asi676mc --arg token 3-1 --slurpfile capture "$ARM_RESET_CAPTURE_FIXTURE" \
+  -f "$USB_RESET_CLASSIFIER" "$ARM_RESET_KERNEL_FIXTURE" > "$temporary/retained-reset-classification.json"
+jq --exit-status '.passed == true and .observedResetCount == 105 and .preMeasuredResetCount == 5 and
+  .measuredResetCount == 100 and .postMeasuredResetCount == 0' \
+  "$temporary/retained-reset-classification.json" >/dev/null
+
+jq -rn '([range(0;6) | "kern :info : [\(50 + .).000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd"] +
+  [range(0;99) | "kern :info : [\(101 + .).000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd"])[]' \
+  > "$temporary/substituted-reset-lines.txt"
+jq -R -s --arg profile asi676mc --arg token 3-1 --slurpfile capture "$temporary/reset-capture.json" \
+  -f "$USB_RESET_CLASSIFIER" "$temporary/substituted-reset-lines.txt" > "$temporary/substituted-reset.json"
+jq --exit-status '.passed == false and .observedResetCount == 105 and .phaseCorrelationPassed == false' \
+  "$temporary/substituted-reset.json" >/dev/null
+
+cp "$temporary/arm-reset-lines.txt" "$temporary/noncanonical-reset-lines.txt"
+printf '%s\n' 'kern :info : [250.000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd unexpected' \
+  >> "$temporary/noncanonical-reset-lines.txt"
+jq -R -s --arg profile asi676mc --arg token 3-1 --slurpfile capture "$temporary/reset-capture.json" \
+  -f "$USB_RESET_CLASSIFIER" "$temporary/noncanonical-reset-lines.txt" > "$temporary/noncanonical-reset.json"
+jq --exit-status '.passed == false and .observedResetCount == 105 and .unexpectedSelectedUsbLineCount == 1' \
+  "$temporary/noncanonical-reset.json" >/dev/null
+
+if jq -R -s --arg profile forged --arg token 3-1 --slurpfile capture "$temporary/reset-capture.json" \
+    -f "$USB_RESET_CLASSIFIER" "$temporary/arm-reset-lines.txt" >/dev/null 2>&1; then
+    printf 'The USB reset classifier accepted an unknown profile.\n' >&2
+    exit 1
+fi
+jq '.profile = "asi178mc"' "$temporary/reset-capture.json" > "$temporary/x64-reset-capture.json"
+: > "$temporary/no-reset-lines.txt"
+jq -R -s --arg profile asi178mc --arg token 10-1 --slurpfile capture "$temporary/x64-reset-capture.json" \
+  -f "$USB_RESET_CLASSIFIER" "$temporary/no-reset-lines.txt" > "$temporary/x64-reset-classification.json"
+jq --exit-status '.passed == true and .expectedCaptureCount == 105 and .expectedResetCount == 0 and
+  .observedResetCount == 0' "$temporary/x64-reset-classification.json" >/dev/null
+
 mkdir "$temporary/manifest-root"
 printf 'summary\n' > "$temporary/manifest-root/trial-summary.json"
 summary_sha="$(sha256sum "$temporary/manifest-root/trial-summary.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
@@ -67,6 +116,48 @@ jq --exit-status '
       has("containerNetworkWriteBytes") and has("blockIoTimeMilliseconds") and
       has("sqliteWalGrowthBytes") and has("ingressCommitted") and has("laneClaims") and has("processingGraphs")))
 ' "$temporary/trial-summary.json" >/dev/null
+
+jq '
+  .acquisition[0].profile = "asi676mc" |
+  .host[0].profile = {id:"asi676mc", model:"ASI676MC"} |
+  .execution[0].profile = "asi676mc" |
+  .trialManifests[0].profile = "asi676mc" |
+  .dmesg[0].retainedLineCount = 105 |
+  .dmesg[0].resetDisposition = {
+    classification:"accepted-sdk-commanded-per-capture",
+    authority:"https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5181679194",
+    initiatorEvidenceSha256:"67EE85B0F65C2A5660B3678292F8740FE41C628B73A2EED5E72CF83F5A376FC0",
+    expectedCaptureCount:105, expectedResetCount:105, observedResetCount:105,
+    preMeasuredResetCount:5, measuredResetCount:100, postMeasuredResetCount:0,
+    unexpectedSelectedUsbLineCount:0, oomEvidenceLineCount:0,
+    phaseCorrelationPassed:true, passed:true
+  } |
+  .resources[].arm.throttled = "0x0"
+' "$temporary/fixture.json" > "$temporary/arm-reset-fixture.json"
+aggregate_trial "$temporary/arm-reset-fixture.json" "$temporary/arm-reset-summary.json"
+jq --exit-status '.passed == true and .dmesgMonitor.resetDisposition.observedResetCount == 105' \
+  "$temporary/arm-reset-summary.json" >/dev/null
+
+jq '.dmesg[0].resetDisposition.observedResetCount = 104 | .dmesg[0].retainedLineCount = 104' \
+  "$temporary/arm-reset-fixture.json" > "$temporary/missing-arm-reset.json"
+if aggregate_trial "$temporary/missing-arm-reset.json" "$temporary/invalid-arm-reset-summary.json" 2>/dev/null; then
+    printf 'An ARM trial with a missing SDK-commanded capture reset was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.dmesg[0].resetDisposition.unexpectedSelectedUsbLineCount = 1 | .dmesg[0].retainedLineCount = 106' \
+  "$temporary/arm-reset-fixture.json" > "$temporary/unexpected-arm-reset.json"
+if aggregate_trial "$temporary/unexpected-arm-reset.json" "$temporary/invalid-unexpected-reset-summary.json" 2>/dev/null; then
+    printf 'An ARM trial with an unexpected selected-device USB line was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.dmesg[0].retainedLineCount = 1 | .dmesg[0].resetDisposition.observedResetCount = 1' \
+  "$temporary/fixture.json" > "$temporary/x64-reset.json"
+if aggregate_trial "$temporary/x64-reset.json" "$temporary/invalid-x64-reset-summary.json" 2>/dev/null; then
+    printf 'An x64 trial with a USB reset was accepted.\n' >&2
+    exit 1
+fi
 
 jq '.logs[0].resourceLogs[0].scopeLogs[0].logRecords += [{
   timeUnixNano:"150000000000", severityNumber:13, severityText:"Warning",
