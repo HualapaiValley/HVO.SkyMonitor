@@ -774,7 +774,7 @@ for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
     trial_deadline_seconds=$((SECONDS + 4800))
     trial_deadline_unix_seconds=$(($(date +%s) + 4800))
     runner_pid=$$
-    (sleep 4800; kill -TERM "$runner_pid") &
+    (exec 8>&-; sleep 4800; kill -TERM "$runner_pid") &
     deadline_pid=$!
     trial_started_seconds="$(date +%s)"
     trial_root="$CAMPAIGN_ROOT/$trial"
@@ -921,7 +921,7 @@ EOF
         "$evidence_root/host-manifest.json" > "$evidence_root/host-manifest.json.tmp"
     mv "$evidence_root/host-manifest.json.tmp" "$evidence_root/host-manifest.json"
 
-    dmesg --follow-new --decode > "$control_root/kernel-live.raw" &
+    dmesg --follow-new --decode 8>&- > "$control_root/kernel-live.raw" &
     kernel_pid=$!
     sleep 1
     kill -0 "$kernel_pid" 2>/dev/null || { printf 'dmesg follow exited before CameraAgent startup.\n' >&2; exit 1; }
@@ -1005,7 +1005,7 @@ EOF
 
     resource_samples="$evidence_root/resource-samples.jsonl"
     : > "$resource_samples"
-    sample_resources "$camera_container" "$central_deny_container" "$resource_samples" &
+    sample_resources "$camera_container" "$central_deny_container" "$resource_samples" 8>&- &
     sampler_pid=$!
 
     acquisition_timeout_seconds="$(remaining_trial_seconds)"
