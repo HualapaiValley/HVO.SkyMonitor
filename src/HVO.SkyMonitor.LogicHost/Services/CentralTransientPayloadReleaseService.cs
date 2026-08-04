@@ -672,8 +672,7 @@ internal sealed class CentralTransientPayloadReleaseService(
                 {
                     return;
                 }
-                var storageReference = await ResolveStorageReferenceAsync(item, cancellationToken)
-                    .ConfigureAwait(false);
+                var storageReference = item.StorageReference;
                 if (!IsCanonicalStorageReference(storageReference))
                 {
                     if (await FailItemAsync(
@@ -1216,9 +1215,11 @@ internal sealed class CentralTransientPayloadReleaseService(
     {
         if (kind == CentralTransientPayloadReleaseItemKind.SourceArtifact)
         {
-            _ = await CentralArtifactRetentionLock.AcquireAsync(dbContext, recordId, cancellationToken)
-                .ConfigureAwait(false);
-            return await dbContext.CentralArtifacts.AsNoTracking().Where(value => value.Id == recordId)
+            return await dbContext.CentralArtifacts.FromSqlInterpolated($"""
+                    SELECT * FROM [CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)
+                    WHERE [Id] = {recordId}
+                    """)
+                .AsNoTracking()
                 .Select(value => new TargetSnapshot(
                     value.StorageReference,
                     value.RowVersion,
@@ -1255,19 +1256,6 @@ internal sealed class CentralTransientPayloadReleaseService(
                 !dbContext.PublicRecordPublicationDecisions.Any(successor =>
                     successor.SupersedesDecisionId == decision.Id)), cancellationToken).ConfigureAwait(false);
     }
-
-    private async Task<string?> ResolveStorageReferenceAsync(
-        PendingItem item,
-        CancellationToken cancellationToken)
-        => item.Kind == CentralTransientPayloadReleaseItemKind.SourceArtifact
-            ? await dbContext.CentralArtifacts.AsNoTracking()
-                .Where(value => value.Id == item.RecordId)
-                .Select(value => value.StorageReference)
-                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
-            : await dbContext.CentralTransientDerivativeOutputIntents.AsNoTracking()
-                .Where(value => value.Id == item.RecordId)
-                .Select(value => value.StorageReference)
-                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
     private async Task NormalizePendingItemsAsync(Guid releaseId, CancellationToken cancellationToken)
     {
@@ -1339,7 +1327,18 @@ internal sealed class CentralTransientPayloadReleaseService(
                 item.ReservationToken,
                 item.RequestedAtUtc,
                 item.RetryAtUtc,
-                item.RetryCount))
+                item.RetryCount,
+                item.Kind == CentralTransientPayloadReleaseItemKind.SourceArtifact
+                    ? dbContext.CentralArtifacts
+                        .Where(target => target.Id == item.RecordId)
+                        .Select(target => EF.Functions.Collate(
+                            target.StorageReference, "Latin1_General_100_BIN2"))
+                        .SingleOrDefault()
+                    : dbContext.CentralTransientDerivativeOutputIntents
+                        .Where(target => target.Id == item.RecordId)
+                        .Select(target => EF.Functions.Collate(
+                            target.StorageReference, "Latin1_General_100_BIN2"))
+                        .SingleOrDefault()))
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
     private Task<bool> IsReleasePendingAsync(Guid releaseId, CancellationToken cancellationToken)
@@ -1391,7 +1390,8 @@ internal sealed class CentralTransientPayloadReleaseService(
             item.ReservationToken,
             item.RequestedAtUtc,
             item.RetryAtUtc,
-            item.RetryCount), now);
+            item.RetryCount,
+            null), now);
 
     private bool IsDue(PendingItem item, DateTimeOffset now)
         => item.ReservationToken.HasValue
@@ -1534,7 +1534,8 @@ internal sealed class CentralTransientPayloadReleaseService(
         Guid? ReservationToken,
         DateTimeOffset? RequestedAtUtc,
         DateTimeOffset? RetryAtUtc,
-        int RetryCount);
+        int RetryCount,
+        string? StorageReference);
 
     private sealed record TargetSnapshot(string StorageReference, byte[] RowVersion, long Generation);
 
