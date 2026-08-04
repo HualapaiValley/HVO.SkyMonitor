@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
@@ -1101,12 +1102,12 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         meter.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
             measurements.Add(new(instrument.Name, value, tags.ToArray())));
         meter.Start();
-        Activity? stopped = null;
+        var stopped = new ConcurrentQueue<Activity>();
         using var activities = new ActivityListener
         {
             ShouldListenTo = source => source.Name == CentralTransientLifecycleTelemetry.ActivitySourceName,
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStopped = activity => stopped = activity
+            ActivityStopped = stopped.Enqueue
         };
         ActivitySource.AddActivityListener(activities);
         using var telemetry = new CentralTransientLifecycleTelemetry(logger);
@@ -1135,10 +1136,10 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         logs[0].Fields.Should().Contain(new KeyValuePair<string, object?>("Kind", "source"));
         logs[0].Fields.Should().Contain(new KeyValuePair<string, object?>("Outcome", "reserved"));
         logs[1].Fields.Should().Contain(new KeyValuePair<string, object?>("RetryCount", 2));
-        stopped.Should().NotBeNull();
-        stopped!.OperationName.Should().Be("central-transient.retention");
-        stopped.Kind.Should().Be(ActivityKind.Internal);
-        stopped.Tags.Should().BeEmpty();
+        stopped.Should().ContainSingle(activity => activity.OperationName == "central-transient.retention");
+        var retention = stopped.Single(activity => activity.OperationName == "central-transient.retention");
+        retention.Kind.Should().Be(ActivityKind.Internal);
+        retention.Tags.Should().BeEmpty();
     }
 
     private static CentralTransientPayloadReleaseService CreateIssue250Service(
