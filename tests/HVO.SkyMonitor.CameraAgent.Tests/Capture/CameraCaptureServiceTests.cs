@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
@@ -25,7 +26,6 @@ public sealed class CameraCaptureServiceTests
         try
         {
             var config = CreateConfig();
-            var module = new GatedCameraModule();
             var distributor = new RecordingDistributor();
             var ingress = new PassthroughRawIngress(root);
             using var telemetry = new CaptureControlTelemetry();
@@ -38,6 +38,33 @@ public sealed class CameraCaptureServiceTests
                 }),
                 TimeProvider.System,
                 telemetry);
+            var waitingModule = new GatedCameraModule();
+            using (var waitingLifetime = new TestHostApplicationLifetime())
+            {
+                var waitingService = new CameraCaptureService(
+                    new ConfigurationAccessor(config),
+                    new ModuleFactory(waitingModule),
+                    ingress,
+                    distributor,
+                    TimeProvider.System,
+                    new AstronomyEnginePlanetEphemeris(),
+                    telemetry,
+                    coordinator,
+                    new FleetRuntimeState(TimeProvider.System),
+                    waitingLifetime,
+                    NullLogger<CameraCaptureService>.Instance);
+
+                await waitingService.StartAsync(CancellationToken.None).ConfigureAwait(false);
+                await waitingLifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
+                await waitingService.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
+                Assert.IsFalse(waitingModule.InitializationStarted.Task.IsCompleted,
+                    "Stopping before host startup must not initialize the camera.");
+            }
+
+            var module = new GatedCameraModule();
+            using var applicationLifetime = new TestHostApplicationLifetime();
             var service = new CameraCaptureService(
                 new ConfigurationAccessor(config),
                 new ModuleFactory(module),
@@ -48,9 +75,15 @@ public sealed class CameraCaptureServiceTests
                 telemetry,
                 coordinator,
                 new FleetRuntimeState(TimeProvider.System),
+                applicationLifetime,
                 NullLogger<CameraCaptureService>.Instance);
 
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            await applicationLifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert.IsFalse(module.InitializationStarted.Task.IsCompleted,
+                "Camera initialization must wait until the host has fully started.");
+            applicationLifetime.NotifyStarted();
             await module.SecondCaptureStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
             await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -115,6 +148,8 @@ public sealed class CameraCaptureServiceTests
 
         public TaskCompletionSource CaptureCancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public TaskCompletionSource InitializationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public bool IsDisposed { get; private set; }
 
         public TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -127,7 +162,11 @@ public sealed class CameraCaptureServiceTests
 
         public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
 
-        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+        {
+            InitializationStarted.TrySetResult();
+            return Task.CompletedTask;
+        }
 
         public async Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
         {
@@ -160,6 +199,34 @@ public sealed class CameraCaptureServiceTests
             Disposed.TrySetResult();
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class TestHostApplicationLifetime : IHostApplicationLifetime, IDisposable
+    {
+        private readonly CancellationTokenSource _started = new();
+
+        public TaskCompletionSource ApplicationStartedObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public CancellationToken ApplicationStarted
+        {
+            get
+            {
+                ApplicationStartedObserved.TrySetResult();
+                return _started.Token;
+            }
+        }
+
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+
+        public void StopApplication()
+        {
+        }
+
+        public void NotifyStarted() => _started.Cancel();
+
+        public void Dispose() => _started.Dispose();
     }
 
     private sealed class RecordingDistributor : ICaptureDistributor

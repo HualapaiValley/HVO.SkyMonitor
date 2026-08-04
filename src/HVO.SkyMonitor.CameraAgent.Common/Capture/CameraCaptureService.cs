@@ -28,6 +28,7 @@ public sealed class CameraCaptureService(
     CaptureControlTelemetry captureControlTelemetry,
     CaptureAdmissionCoordinator captureAdmissionCoordinator,
     FleetRuntimeState fleetRuntimeState,
+    IHostApplicationLifetime applicationLifetime,
     ILogger<CameraCaptureService> logger,
     CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
     EnvironmentalCaptureTriggerBridge? environmentalTriggers = null) : BackgroundService
@@ -43,6 +44,7 @@ public sealed class CameraCaptureService(
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
     private readonly CaptureAdmissionCoordinator _captureAdmissionCoordinator = captureAdmissionCoordinator;
     private readonly FleetRuntimeState _fleetRuntimeState = fleetRuntimeState;
+    private readonly IHostApplicationLifetime _applicationLifetime = applicationLifetime;
     private readonly ILogger<CameraCaptureService> _logger = logger;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
     private readonly CaptureScheduleRuntimeCoordinator? _scheduleRuntimeCoordinator = scheduleRuntimeCoordinator;
@@ -52,6 +54,7 @@ public sealed class CameraCaptureService(
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await WaitForApplicationStartedAsync(stoppingToken).ConfigureAwait(false);
         var fileConfiguration = await _configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -148,5 +151,21 @@ public sealed class CameraCaptureService(
                 }
             }
         }
+    }
+
+    private async Task WaitForApplicationStartedAsync(CancellationToken stoppingToken)
+    {
+        stoppingToken.ThrowIfCancellationRequested();
+        if (_applicationLifetime.ApplicationStarted.IsCancellationRequested)
+        {
+            return;
+        }
+
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var stoppingRegistration = stoppingToken.Register(
+            () => started.TrySetCanceled(stoppingToken));
+        using var startedRegistration = _applicationLifetime.ApplicationStarted.Register(
+            () => started.TrySetResult());
+        await started.Task.ConfigureAwait(false);
     }
 }
