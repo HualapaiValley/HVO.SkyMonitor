@@ -1102,7 +1102,7 @@ EOF
         --arg catalogTreeSha256 "$startup_catalog_tree_sha256" --arg collectorConfigSha256 "$startup_collector_config_sha256" \
         --arg expectedConfigSource "$(realpath "$resolved_config")" --arg expectedCatalogSource "$(realpath "$control_root/catalog")" \
         --arg expectedCollectorSource "$(realpath "$control_root/config/otel-collector.yml")" \
-        --arg expectedSdkSource "$(realpath "$HVO_ZWO_SDK_LIBRARY")" \
+        --arg expectedSdkSource "$HVO_ZWO_SDK_LIBRARY" \
         --argjson runtimeMount "$startup_runtime_mount" --argjson runtimeWritable "$startup_runtime_writable" \
         --arg expectedRuntimeSource "$runtime_volume_source" --arg expectedRuntimeName "$runtime_volume" '
       .mountAuthentication.startup = {
@@ -1200,7 +1200,7 @@ EOF
         --arg catalogTreeSha256 "$shutdown_catalog_tree_sha256" --arg collectorConfigSha256 "$shutdown_collector_config_sha256" \
         --arg expectedConfigSource "$(realpath "$resolved_config")" --arg expectedCatalogSource "$(realpath "$control_root/catalog")" \
         --arg expectedCollectorSource "$(realpath "$control_root/config/otel-collector.yml")" \
-        --arg expectedSdkSource "$(realpath "$HVO_ZWO_SDK_LIBRARY")" \
+        --arg expectedSdkSource "$HVO_ZWO_SDK_LIBRARY" \
         --argjson runtimeMount "$shutdown_runtime_mount" --argjson runtimeWritable "$shutdown_runtime_writable" \
         --arg expectedRuntimeSource "$runtime_volume_source" --arg expectedRuntimeName "$runtime_volume" '
       .mountAuthentication.shutdown = {
