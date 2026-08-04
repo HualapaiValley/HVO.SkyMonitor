@@ -57,7 +57,7 @@ case "$PROFILE:$EXPECTED_HOST" in
     asi676mc:allsky01)
         readonly CAMERA_MODEL='ASI676MC'
         readonly PROFILE_FILE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.zwo-asi676mc.sample.json"
-        readonly EXPECTED_PROFILE_SHA256='0d6c8118081204163e4895b75d0ae17b9366af9db51139981ccf8339a37063b5'
+        readonly EXPECTED_PROFILE_SHA256='7d26cd36a197c36af92f13b423f36140907a080735340b04b8e54e58ad6cf15a'
         readonly EXPECTED_SDK_SHA256='3ecf511979ed571131e7d7f4a467112aba21940b4dc91d63bd109b9683bf67c4'
         readonly EXPECTED_ARCH='aarch64'
         readonly EXPECTED_KERNEL='6.18.34+rpt-rpi-2712'

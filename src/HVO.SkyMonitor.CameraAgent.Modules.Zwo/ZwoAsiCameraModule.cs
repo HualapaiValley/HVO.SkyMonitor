@@ -41,6 +41,7 @@ public sealed class ZwoAsiCameraModule :
     private bool _cameraOpen;
     private bool _exposureActive;
     private bool _disposed;
+    private int _successfulCapturesInSession;
     private TimeSpan _effectiveExposure;
     private double _effectiveGain;
     private double _effectiveOffset;
@@ -186,6 +187,12 @@ public sealed class ZwoAsiCameraModule :
             var native = _native!;
             var readout = _readout!;
             var options = _options!;
+            if (options.MaximumCapturesPerSession > 0 &&
+                _successfulCapturesInSession >= options.MaximumCapturesPerSession)
+            {
+                RestartCameraSession();
+                native = _native!;
+            }
             if (request.RequestedSetpoint is { } requestedSetpoint)
             {
                 ApplySetpointCore(requestedSetpoint);
@@ -241,6 +248,7 @@ public sealed class ZwoAsiCameraModule :
                     }
                 }
                 _exposureActive = false;
+                _successfulCapturesInSession++;
             }
             catch
             {
@@ -330,6 +338,7 @@ public sealed class ZwoAsiCameraModule :
             throw new ArgumentException("The ASI camera-serial environment-variable name is required.", nameof(configuration));
         }
         if (options.Offset < 0 || options.UsbBandwidth is < 0 or > 100 ||
+            options.MaximumCapturesPerSession is < 0 or > 1_000_000 ||
             options.PollInterval <= TimeSpan.Zero || options.PollInterval > TimeSpan.FromSeconds(1) ||
             options.CaptureTimeoutMargin < TimeSpan.Zero || options.CaptureTimeoutMargin > TimeSpan.FromMinutes(10))
         {
@@ -672,6 +681,46 @@ public sealed class ZwoAsiCameraModule :
         }
     }
 
+    private void RestartCameraSession()
+    {
+        var native = _native!;
+        var config = _configuration!;
+        var options = _options!;
+        var camera = _camera!;
+        var readout = _readout!;
+        var setpoint = new CaptureSetpoint(_effectiveExposure, _effectiveGain, null, null);
+        try
+        {
+            native.CloseCamera(_cameraId);
+            _cameraOpen = false;
+            native.OpenCamera(_cameraId);
+            _cameraOpen = true;
+            native.InitializeCamera(_cameraId);
+            var controls = native.GetControlCapabilities(_cameraId).ToDictionary(control => control.Type);
+            ValidateCameraAndControls(
+                config, options, SupportedProfiles[options.ExpectedModel], camera, readout, controls);
+            _controls = controls;
+            ApplySetpointCore(setpoint);
+            SetAndRequireReadback(AsiControlType.Offset, options.Offset);
+            SetAndRequireReadback(AsiControlType.BandwidthOverload, options.UsbBandwidth);
+            SetOptionalBooleanControl(AsiControlType.HighSpeedMode, false);
+            SetOptionalBooleanControl(AsiControlType.Flip, false);
+            SetOptionalBooleanControl(AsiControlType.MonoBin, options.MonoBin);
+            var profile = readout.Profile;
+            var layout = readout.Layout;
+            native.SetRoiFormat(_cameraId, layout.Width, layout.Height, profile.BinX, AsiImageType.Raw16);
+            native.SetStartPosition(_cameraId, profile.Roi.X / profile.BinX, profile.Roi.Y / profile.BinY);
+            SetOptionalBooleanControl(AsiControlType.HardwareBin, options.HardwareBin);
+            ValidateRoiReadback(readout);
+            _successfulCapturesInSession = 0;
+        }
+        catch (Exception exception)
+        {
+            CleanupNative(skipExposureStop: true);
+            throw new InvalidOperationException("The ASI camera session could not be recycled safely.", exception);
+        }
+    }
+
     private void CleanupNative(bool skipExposureStop = false, bool throwCloseFailure = false)
     {
         var native = _native;
@@ -734,6 +783,7 @@ public sealed class ZwoAsiCameraModule :
         _cameraId = -1;
         _cameraOpen = false;
         _exposureActive = false;
+        _successfulCapturesInSession = 0;
         _effectiveExposure = default;
         _effectiveGain = default;
         _effectiveOffset = default;

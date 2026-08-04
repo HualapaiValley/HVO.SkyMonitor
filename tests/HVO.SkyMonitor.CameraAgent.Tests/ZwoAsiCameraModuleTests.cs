@@ -94,6 +94,8 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual(0, factoryCalls);
         var invalid = CreateConfig(OptionsJson(extra: ",\"unknown\":true"));
         Assert.ThrowsExactly<JsonException>(() => preflight.ValidateConfiguration(invalid));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => preflight.ValidateConfiguration(
+            CreateConfig(OptionsJson(maximumCapturesPerSession: -1))));
         var monoOptions = JsonDocument.Parse(OptionsJson().GetRawText().Replace(
             "\"monoBin\":false",
             "\"monoBin\":true",
@@ -117,6 +119,7 @@ public sealed class ZwoAsiCameraModuleTests
             Assert.IsEmpty(sample.Pipeline.Steps);
             if (profile == Asi178Mc)
             {
+                Assert.IsFalse(sample.Module.Options.Value.TryGetProperty("maximumCapturesPerSession", out _));
                 Assert.IsTrue(sample.Rig.Optics.HorizontalFlip);
                 Assert.AreEqual(TimeSpan.FromTicks(320), sample.Rig.Pipeline.Envelope!.MinExposure);
                 Assert.AreEqual(TimeSpan.FromSeconds(1000), sample.Rig.Pipeline.Envelope.MaxExposure);
@@ -124,6 +127,10 @@ public sealed class ZwoAsiCameraModuleTests
                 Assert.AreEqual(510d, sample.Rig.Pipeline.Envelope.MaxGain);
                 Assert.AreEqual(CameraFeatureDirective.Disabled, sample.Rig.ControlPolicy!.AutoGain);
                 Assert.AreEqual(CameraFeatureDirective.Disabled, sample.Rig.ControlPolicy.AutoExposure);
+            }
+            else
+            {
+                Assert.AreEqual(50, sample.Module.Options.Value.GetProperty("maximumCapturesPerSession").GetInt32());
             }
         }
         Assert.AreEqual(0, factoryCalls);
@@ -400,6 +407,108 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual("ZWO ASI676MC", frame.Metadata.SourceId);
         AssertCaptureTiming(result);
         Assert.AreEqual(25_233_408, native.LastBufferSize);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task ConfiguredCaptureLimitRestartsSessionBeforeNextCapture()
+    {
+        var native = new FakeAsiNativeApi
+        {
+            ExposureStatuses = new Queue<AsiExposureStatus>(Enumerable.Repeat(AsiExposureStatus.Success, 3))
+        };
+        await using var module = Module(native);
+        await module.InitializeAsync(CreateConfig(OptionsJson(maximumCapturesPerSession: 2)), CancellationToken.None);
+        var request = new CaptureRequest(
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(1),
+            CaptureMode.Still,
+            new CaptureSetpoint(TimeSpan.FromMilliseconds(25), 82, null, null));
+
+        _ = await module.CaptureAsync(request, CancellationToken.None);
+        Assert.AreEqual(2, native.Calls.Count(call => call == "Open:7"));
+        Assert.AreEqual(1, native.Calls.Count(call => call == "Init:7"));
+        _ = await module.CaptureAsync(request, CancellationToken.None);
+        Assert.AreEqual(2, native.Calls.Count(call => call == "Open:7"));
+        Assert.AreEqual(1, native.Calls.Count(call => call == "Init:7"));
+        _ = await module.CaptureAsync(request, CancellationToken.None);
+
+        Assert.AreEqual(3, native.Calls.Count(call => call == "Open:7"));
+        Assert.AreEqual(2, native.Calls.Count(call => call == "Init:7"));
+        Assert.AreEqual(2, native.CloseCameraCalls);
+        Assert.AreEqual(2, native.Calls.Count(call => call == "Caps:7"));
+        Assert.AreEqual(2, native.Calls.Count(call => call.StartsWith("Roi:", StringComparison.Ordinal)));
+        Assert.AreEqual(3, native.DataCalls);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task FailedCaptureDoesNotAdvanceConfiguredCaptureLimit()
+    {
+        var native = new FakeAsiNativeApi
+        {
+            ExposureStatuses = new Queue<AsiExposureStatus>(
+                [AsiExposureStatus.Success, AsiExposureStatus.Failed, AsiExposureStatus.Success, AsiExposureStatus.Success])
+        };
+        await using var module = Module(native);
+        await module.InitializeAsync(CreateConfig(OptionsJson(maximumCapturesPerSession: 2)), CancellationToken.None);
+        var request = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still);
+
+        _ = await module.CaptureAsync(request, CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => module.CaptureAsync(request, CancellationToken.None));
+        _ = await module.CaptureAsync(request, CancellationToken.None);
+        Assert.AreEqual(2, native.Calls.Count(call => call == "Open:7"));
+
+        _ = await module.CaptureAsync(request, CancellationToken.None);
+
+        Assert.AreEqual(3, native.Calls.Count(call => call == "Open:7"));
+        Assert.AreEqual(2, native.Calls.Count(call => call == "Init:7"));
+        Assert.AreEqual(4, native.Calls.Count(call => call == "StartExposure"));
+    }
+
+    [TestMethod]
+    [DataRow("open", 2)]
+    [DataRow("capabilities", 3)]
+    [TestCategory("Unit")]
+    public async Task RecycleFailureInvalidatesSessionAndAllowsReinitialize(string failure, int expectedCloseCalls)
+    {
+        var first = new FakeAsiNativeApi
+        {
+            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success]),
+            FailCapabilitiesOnCall = failure == "capabilities" ? 2 : 0
+        };
+        if (failure == "open")
+        {
+            first.FailOpenOnCallByCameraId[7] = 3;
+        }
+        var second = new FakeAsiNativeApi
+        {
+            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success])
+        };
+        var natives = new Queue<IAsiNativeApi>([first, second]);
+        var module = new ZwoAsiCameraModule(TimeProvider.System, _ => natives.Dequeue(), ResolveEnvironmentVariable);
+        var config = CreateConfig(OptionsJson(maximumCapturesPerSession: 1));
+        var request = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still);
+        await module.InitializeAsync(config, CancellationToken.None);
+        _ = await module.CaptureAsync(request, CancellationToken.None);
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => module.CaptureAsync(request, CancellationToken.None));
+
+        Assert.IsInstanceOfType<AsiException>(exception.InnerException);
+        Assert.AreEqual(1, first.DisposeCalls);
+        Assert.AreEqual(3, first.Calls.Count(call => call == "Open:7"));
+        Assert.AreEqual(expectedCloseCalls, first.CloseCameraCalls);
+        Assert.AreEqual(1, first.Calls.Count(call => call == "StartExposure"));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => module.CaptureAsync(request, CancellationToken.None));
+
+        await module.InitializeAsync(config, CancellationToken.None);
+        Assert.IsNotNull((await module.CaptureAsync(request, CancellationToken.None)).Frame);
+        await module.DisposeAsync();
+        Assert.AreEqual(1, first.DisposeCalls);
+        Assert.AreEqual(1, second.DisposeCalls);
     }
 
     [TestMethod]
@@ -953,6 +1062,7 @@ public sealed class ZwoAsiCameraModuleTests
         string expectedModel = "ASI676MC",
         long offset = 1,
         string timeoutMargin = "00:00:01",
+        int maximumCapturesPerSession = 0,
         string extra = "")
         => JsonDocument.Parse(
             $$"""
@@ -964,6 +1074,7 @@ public sealed class ZwoAsiCameraModuleTests
                 "usbBandwidth":40,
                 "pollInterval":"00:00:00.001",
                 "captureTimeoutMargin":"{{timeoutMargin}}",
+                "maximumCapturesPerSession":{{maximumCapturesPerSession}},
                 "monoBin":false,
                 "hardwareBin":false{{extra}}
               }
@@ -1080,6 +1191,7 @@ public sealed class ZwoAsiCameraModuleTests
         internal Dictionary<int, int> FailOpenOnCallByCameraId { get; } = [];
         internal HashSet<int> FailSerialCameraIds { get; } = [];
         internal HashSet<int> FailCloseCameraIds { get; } = [];
+        internal int FailCapabilitiesOnCall { get; init; }
         internal bool RepeatWorkingStatus { get; init; }
         internal bool ThrowOnRead { get; init; }
         internal bool ThrowOnPoll { get; init; }
@@ -1126,6 +1238,10 @@ public sealed class ZwoAsiCameraModuleTests
         public IReadOnlyList<AsiControlCaps> GetControlCapabilities(int cameraId)
         {
             Calls.Add($"Caps:{cameraId}");
+            if (Calls.Count(call => call == $"Caps:{cameraId}") == FailCapabilitiesOnCall)
+            {
+                throw new AsiException("ASIGetNumOfControls", AsiErrorCode.CameraRemoved);
+            }
             return
             [
                 new(AsiControlType.Exposure, 32, 2_000_000_000, 100_000, false, true),
