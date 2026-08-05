@@ -14,7 +14,7 @@ var expected = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringCo
     ["tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"] = Counts(unit: 1023, integration: 145, manual: 25, soak: 1, hardware: 1),
     ["tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"] = Counts(unit: 2, integration: 4, manual: 9),
     ["tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj"] = Counts(unit: 230, integration: 6, manual: 1),
-    ["tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"] = Counts(integration: 343, manual: 26),
+    ["tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"] = Counts(integration: 343, manual: 27),
     ["tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj"] = Counts(integration: 18)
 };
 var totals = categories.ToDictionary(static category => category, static _ => 0, StringComparer.Ordinal);

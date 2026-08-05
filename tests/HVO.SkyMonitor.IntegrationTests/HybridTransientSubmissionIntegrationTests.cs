@@ -31,7 +31,7 @@ using Program = HVO.SkyMonitor.LogicHost.Program;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed partial class HybridTransientSubmissionIntegrationTests
 {
-    private const string DeviceKey = "cameraagent-integration-key";
+    internal const string DeviceKey = "cameraagent-integration-key";
     private static readonly TransientTemporalPosition[] Positions =
     [
         TransientTemporalPosition.NMinus2,
@@ -543,8 +543,13 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                     item.SubmissionIdentitySha256 == finalizationScenario.Envelope.SubmissionIdentitySha256)
                 .ConfigureAwait(false)).Should().BeFalse();
 
+            using var retryFactory = CreateHybridFactory();
+            using var retryClient = retryFactory.CreateClient(
+                new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+            retryClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetSystemTokenAsync(retryClient).ConfigureAwait(false));
             using var retryResponse = await SendAsync(
-                finalizationClient,
+                retryClient,
                 finalizationScenario.DeviceId,
                 DeviceKey,
                 finalizationScenario.Envelope).ConfigureAwait(false);
@@ -583,6 +588,24 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         (await finalFenceLossDb.CentralTransientValidationJobs.AnyAsync(item =>
                 item.SubmissionIdentitySha256 == finalFenceLossScenario.Envelope.SubmissionIdentitySha256)
             .ConfigureAwait(false)).Should().BeFalse();
+        using var finalFenceRetryFactory = CreateHybridFactory();
+        using var finalFenceRetryClient = finalFenceRetryFactory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        finalFenceRetryClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(finalFenceRetryClient).ConfigureAwait(false));
+        using var finalFenceRetryResponse = await SendAsync(
+            finalFenceRetryClient,
+            finalFenceLossScenario.DeviceId,
+            DeviceKey,
+            finalFenceLossScenario.Envelope).ConfigureAwait(false);
+        finalFenceRetryResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        finalFenceLossDb.ChangeTracker.Clear();
+        var finalFenceRetryJobId = await finalFenceLossDb.CentralTransientValidationJobs.AsNoTracking()
+            .Where(item => item.SubmissionIdentitySha256 == finalFenceLossScenario.Envelope.SubmissionIdentitySha256)
+            .Select(item => item.CentralDerivativeJobId)
+            .SingleAsync().ConfigureAwait(false);
+        (await finalFenceLossDb.CentralDerivativeJobInputs.CountAsync(item =>
+            item.CentralDerivativeJobId == finalFenceRetryJobId).ConfigureAwait(false)).Should().Be(5);
 
         var unmatchedScenario = await CreateScenarioAsync().ConfigureAwait(false);
         var unmatchedGeometry = unmatchedScenario.Envelope.Candidate.Geometry! with
@@ -637,7 +660,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         unmatchedValidation.OutcomeReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.HybridCandidateNotFound);
     }
 
-    private static WebApplicationFactory<Program> CreateHybridFactory(Action<IServiceCollection>? configureServices = null)
+    internal static WebApplicationFactory<Program> CreateHybridFactory(Action<IServiceCollection>? configureServices = null)
         => AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, configuration) =>
@@ -653,10 +676,15 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             }
         });
 
-    private static async Task<SubmissionScenario> CreateScenarioAsync(bool multipleCandidates = false)
+    internal static Task<SubmissionScenario> CreateScenarioAsync(bool multipleCandidates = false)
+        => CreateScenarioAsync(8, 6, CameraPixelFormat.Mono16, multipleCandidates);
+
+    internal static async Task<SubmissionScenario> CreateScenarioAsync(
+        int width,
+        int height,
+        CameraPixelFormat pixelFormat,
+        bool multipleCandidates = false)
     {
-        const int width = 8;
-        const int height = 6;
         var deviceId = $"hybrid-submission-{Guid.NewGuid():N}";
         await AssemblyHooks.Fixture.SeedActiveDeviceAsync(deviceId).ConfigureAwait(false);
         var activeDevice = await AssemblyHooks.Fixture.GetActiveDeviceAsync(deviceId).ConfigureAwait(false);
@@ -683,7 +711,8 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 index == 2 ? target : background,
                 $"{deviceId}-profile",
                 width: width,
-                height: height).ConfigureAwait(false));
+                height: height,
+                pixelFormat: pixelFormat).ConfigureAwait(false));
         }
 
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
@@ -741,14 +770,18 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             var input = TransientDetectorInputFactory.Create(
                 processingArtifact,
                 evidence,
-                new TransientLinearLevelsV1(0, ushort.MaxValue, ushort.MaxValue));
+                new TransientLinearLevelsV1(
+                    checked((ushort)descriptor.Layout.BlackLevel!.Value),
+                    checked((ushort)descriptor.Layout.WhiteLevel!.Value),
+                    checked((ushort)descriptor.Layout.WhiteLevel.Value)));
             input.Validation.IsValid.Should().BeTrue(input.Validation.ReasonCode);
+            var detectorInput = input.Input!;
             temporalSources.Add(Positions[index], new TransientTemporalSource(
                 Positions[index],
                 descriptor.Capture.CaptureSequence,
-                input.Input!,
+                detectorInput,
                 new TransientSensitivityV1("hybrid-integration-response-v1", 1, 1),
-                CreateMasks(width, height)));
+                CreateMasks(detectorInput.Descriptor.Layout.Width, detectorInput.Descriptor.Layout.Height)));
         }
         var center = temporalSources[TransientTemporalPosition.N];
         var context = new[]
@@ -787,7 +820,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         return new SubmissionScenario(deviceId, sourceIds, envelope, envelopes);
     }
 
-    private static TransientCandidateSubmissionEnvelopeV1 CreateEnvelope(TransientCandidateV1 candidate)
+    internal static TransientCandidateSubmissionEnvelopeV1 CreateEnvelope(TransientCandidateV1 candidate)
     {
         var envelope = new TransientCandidateSubmissionEnvelopeV1(
             TransientCandidateSubmissionEnvelopeV1.CurrentSchemaVersion,
@@ -803,7 +836,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         };
     }
 
-    private static TransientCandidateV1 Reidentify(TransientCandidateV1 candidate)
+    internal static TransientCandidateV1 Reidentify(TransientCandidateV1 candidate)
     {
         var candidateId = Guid.NewGuid();
         return candidate with
@@ -814,7 +847,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         };
     }
 
-    private static async Task<HttpResponseMessage> SendAsync(
+    internal static async Task<HttpResponseMessage> SendAsync(
         HttpClient client,
         string deviceId,
         string deviceKey,
@@ -834,7 +867,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         => TransientCandidateDeliveryJson.ParseAcknowledgement(payload).Value
            ?? throw new InvalidDataException("LogicHost returned an invalid acknowledgement.");
 
-    private static async Task<string> GetSystemTokenAsync(HttpClient client)
+    internal static async Task<string> GetSystemTokenAsync(HttpClient client)
     {
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
@@ -878,7 +911,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         return bytes;
     }
 
-    private sealed record SubmissionScenario(
+    internal sealed record SubmissionScenario(
         string DeviceId,
         IReadOnlyList<Guid> CentralArtifactIds,
         TransientCandidateSubmissionEnvelopeV1 Envelope,

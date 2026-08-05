@@ -151,6 +151,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         {
             await AssertConcurrentFenceSessionsAsync(concurrency).ConfigureAwait(false);
         }
+        await AssertOverlappingFenceSubmissionsAsync().ConfigureAwait(false);
     }
 
     public TestContext TestContext { get; set; } = null!;
@@ -346,6 +347,119 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         }
     }
 
+    private static async Task AssertOverlappingFenceSubmissionsAsync()
+    {
+        const int concurrency = 8;
+        var scenario = await CreateScenarioAsync().ConfigureAwait(false);
+        try
+        {
+            var applicationName = $"HVO.SkyMonitor.Issue251.Overlap.{Guid.NewGuid():N}";
+            var subjectConnection = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
+            {
+                ApplicationName = applicationName
+            }.ConnectionString;
+            var probe = new ConcurrentGenerationProbe(1);
+            using var factory = CreateHybridFactory(services =>
+            {
+                services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
+                services.RemoveAll<ApplicationDbContext>();
+                services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(subjectConnection));
+                services.Replace(ServiceDescriptor.Scoped<ICentralArtifactObjectReader>(provider =>
+                    new ConcurrentGenerationReader(
+                        ActivatorUtilities.CreateInstance<CentralArtifactObjectReader>(provider), probe)));
+            });
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            var envelopes = Enumerable.Range(0, concurrency)
+                .Select(_ => CreateEnvelope(Reidentify(scenario.Envelope.Candidate)))
+                .ToArray();
+            var responseTasks = envelopes.Select(async envelope =>
+            {
+                await release.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
+                return await SendAsync(
+                    client, scenario.DeviceId, DeviceKey, envelope, cancellation.Token).ConfigureAwait(false);
+            }).ToArray();
+            release.SetResult();
+            try
+            {
+                await probe.AllEntered.WaitAsync(TimeSpan.FromSeconds(15), cancellation.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                await cancellation.CancelAsync().ConfigureAwait(false);
+                probe.Release();
+                try
+                {
+                    await Task.WhenAll(responseTasks).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                foreach (var responseTask in responseTasks.Where(task => task.IsCompletedSuccessfully))
+                {
+                    var abandonedResponse = await responseTask.ConfigureAwait(false);
+                    abandonedResponse.Dispose();
+                }
+                throw;
+            }
+            SqlCriticalSectionSnapshot overlapSnapshot;
+            try
+            {
+                var observationDeadline = DateTimeOffset.UtcNow.AddSeconds(15);
+                do
+                {
+                    overlapSnapshot = await ReadIssue243HybridSnapshotAsync(
+                        AssemblyHooks.Fixture.SqlServerConnectionString, applicationName).ConfigureAwait(false);
+                    if (overlapSnapshot.WaitingApplicationLockSessions == concurrency - 1)
+                    {
+                        break;
+                    }
+                    await Task.Delay(TimeSpan.FromMilliseconds(50), cancellation.Token).ConfigureAwait(false);
+                }
+                while (DateTimeOffset.UtcNow < observationDeadline);
+            }
+            finally
+            {
+                probe.Release();
+            }
+            var responses = await Task.WhenAll(responseTasks).ConfigureAwait(false);
+            try
+            {
+                Assert.AreEqual(1, overlapSnapshot.SessionApplicationLockSessions);
+                Assert.AreEqual(5, overlapSnapshot.SessionApplicationLocks);
+                Assert.AreEqual(concurrency - 1, overlapSnapshot.WaitingApplicationLockSessions);
+                Assert.AreEqual(0, overlapSnapshot.OpenTransactionSessions);
+                Assert.IsTrue(responses.All(response => response.StatusCode == HttpStatusCode.Accepted),
+                    string.Join(", ", responses.Select(response => (int)response.StatusCode)));
+            }
+            finally
+            {
+                foreach (var response in responses)
+                {
+                    response.Dispose();
+                }
+            }
+
+            await using var scope = factory.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var submissionIdentities = envelopes.Select(envelope => envelope.SubmissionIdentitySha256).ToArray();
+            var jobIds = await db.CentralTransientValidationJobs.AsNoTracking()
+                .Where(validation => submissionIdentities.Contains(validation.SubmissionIdentitySha256))
+                .Select(validation => validation.CentralDerivativeJobId)
+                .ToArrayAsync().ConfigureAwait(false);
+            Assert.AreEqual(concurrency, jobIds.Length);
+            Assert.AreEqual(concurrency * 5, await db.CentralDerivativeJobInputs.AsNoTracking()
+                .CountAsync(input => jobIds.Contains(input.CentralDerivativeJobId)).ConfigureAwait(false));
+        }
+        finally
+        {
+            await QuiesceIssue243HybridJobsAsync(scenario.CentralArtifactIds).ConfigureAwait(false);
+        }
+    }
+
     private static string FindIssue243HybridRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -379,7 +493,9 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                     AND resource.[request_status] = N'GRANT' THEN 1 END),
                 COUNT(DISTINCT CASE WHEN resource.[resource_type] = N'APPLICATION'
                     AND resource.[request_owner_type] = N'TRANSACTION'
-                    AND resource.[request_status] = N'GRANT' THEN resource.[request_session_id] END)
+                    AND resource.[request_status] = N'GRANT' THEN resource.[request_session_id] END),
+                COUNT(DISTINCT CASE WHEN resource.[resource_type] = N'APPLICATION'
+                    AND resource.[request_status] = N'WAIT' THEN resource.[request_session_id] END)
             FROM [sys].[dm_exec_sessions] AS session
             LEFT JOIN [sys].[dm_tran_session_transactions] AS transaction_session
                 ON transaction_session.[session_id] = session.[session_id]
@@ -395,7 +511,8 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             result.GetInt32(1),
             result.GetInt32(2),
             result.GetInt32(3),
-            result.GetInt32(4));
+            result.GetInt32(4),
+            result.GetInt32(5));
     }
 
     private static async Task<BlockedUpdateEvidence> ObserveIssue243HybridBlockedUpdateAsync(
@@ -522,7 +639,8 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         int OpenTransactionSessions,
         int SessionApplicationLockSessions,
         int SessionApplicationLocks,
-        int TransactionApplicationLocks);
+        int TransactionApplicationLocks,
+        int WaitingApplicationLockSessions);
 
     private sealed record BlockedUpdateEvidence(bool TimedOut, double ElapsedMilliseconds, int RowsAffected);
 }
