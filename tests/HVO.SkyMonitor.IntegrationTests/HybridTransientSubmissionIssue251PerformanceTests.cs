@@ -67,7 +67,7 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
             repositoryRoot,
             typeof(HybridTransientSubmissionIssue251PerformanceTests),
             typeof(CentralTransientSubmissionService),
-            typeof(CentralObjectApplicationLockSet)).ConfigureAwait(false);
+            typeof(CentralObjectApplicationLock)).ConfigureAwait(false);
         var phase = Environment.GetEnvironmentVariable("HVO_EVIDENCE_PHASE") ?? "development";
         var productionRevision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_PRODUCTION_REVISION")
             ?? source.Head;
