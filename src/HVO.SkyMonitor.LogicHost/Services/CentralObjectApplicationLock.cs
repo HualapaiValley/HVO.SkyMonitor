@@ -208,7 +208,7 @@ internal sealed class CentralObjectApplicationLockSet : IAsyncDisposable
     {
         if (released || connection.State != ConnectionState.Open)
         {
-            throw new InvalidOperationException("The central object application lock set is no longer held.");
+            throw new CentralObjectApplicationLockLostException();
         }
         foreach (var resource in resources)
         {
@@ -218,10 +218,19 @@ internal sealed class CentralObjectApplicationLockSet : IAsyncDisposable
                 Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction() as SqlTransaction
             };
             _ = command.Parameters.AddWithValue("@resource", resource);
-            var mode = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+            string? mode;
+            try
+            {
+                mode = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+            }
+            catch (InvalidOperationException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new CentralObjectApplicationLockLostException(
+                    "The central object application lock session closed during ownership verification.", exception);
+            }
             if (!string.Equals(mode, "Exclusive", StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException("The central object application lock set is no longer held.");
+                throw new CentralObjectApplicationLockLostException();
             }
         }
     }
@@ -302,5 +311,23 @@ internal sealed class CentralObjectApplicationLockSet : IAsyncDisposable
                 return;
             }
         }
+    }
+}
+
+internal sealed class CentralObjectApplicationLockLostException : InvalidOperationException
+{
+    public CentralObjectApplicationLockLostException()
+        : base("The central object application lock set is no longer held.")
+    {
+    }
+
+    public CentralObjectApplicationLockLostException(string message)
+        : base(message)
+    {
+    }
+
+    public CentralObjectApplicationLockLostException(string message, Exception innerException)
+        : base(message, innerException)
+    {
     }
 }

@@ -517,6 +517,73 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 item.SubmissionIdentitySha256 == lockLossScenario.Envelope.SubmissionIdentitySha256)
             .ConfigureAwait(false)).Should().BeFalse();
 
+        foreach (var faultStage in Enum.GetValues<CentralTransientSubmissionFaultStage>())
+        {
+            var finalizationScenario = await CreateScenarioAsync().ConfigureAwait(false);
+            using var finalizationFactory = CreateHybridFactory(services =>
+                services.AddSingleton<ICentralTransientSubmissionFaultInjector>(
+                    new ThrowingSubmissionFaultInjector(faultStage)));
+            using var finalizationClient = finalizationFactory.CreateClient(
+                new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+            finalizationClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetSystemTokenAsync(finalizationClient).ConfigureAwait(false));
+            using var finalizationResponse = await SendAsync(
+                finalizationClient,
+                finalizationScenario.DeviceId,
+                DeviceKey,
+                finalizationScenario.Envelope).ConfigureAwait(false);
+            finalizationResponse.StatusCode.Should().Be((HttpStatusCode)425);
+            await using var finalizationScope = finalizationFactory.Services.CreateAsyncScope();
+            var finalizationDb = finalizationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            (await finalizationDb.CentralTransientSubmissionAudits.AnyAsync(item =>
+                    item.CandidateId == finalizationScenario.Envelope.CandidateId &&
+                    item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceUnavailable)
+                .ConfigureAwait(false)).Should().BeTrue();
+            (await finalizationDb.CentralTransientValidationJobs.AnyAsync(item =>
+                    item.SubmissionIdentitySha256 == finalizationScenario.Envelope.SubmissionIdentitySha256)
+                .ConfigureAwait(false)).Should().BeFalse();
+
+            using var retryResponse = await SendAsync(
+                finalizationClient,
+                finalizationScenario.DeviceId,
+                DeviceKey,
+                finalizationScenario.Envelope).ConfigureAwait(false);
+            retryResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            finalizationDb.ChangeTracker.Clear();
+            var retryJobId = await finalizationDb.CentralTransientValidationJobs.AsNoTracking()
+                .Where(item => item.SubmissionIdentitySha256 == finalizationScenario.Envelope.SubmissionIdentitySha256)
+                .Select(item => item.CentralDerivativeJobId)
+                .SingleAsync().ConfigureAwait(false);
+            (await finalizationDb.CentralDerivativeJobInputs.CountAsync(item =>
+                item.CentralDerivativeJobId == retryJobId).ConfigureAwait(false)).Should().Be(5);
+        }
+
+
+        var finalFenceLossScenario = await CreateScenarioAsync().ConfigureAwait(false);
+        using var finalFenceLossFactory = CreateHybridFactory(services =>
+            services.AddScoped<ICentralTransientSubmissionFaultInjector>(provider =>
+                new ClosingSubmissionConnectionFaultInjector(
+                    provider.GetRequiredService<ApplicationDbContext>())));
+        using var finalFenceLossClient = finalFenceLossFactory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        finalFenceLossClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(finalFenceLossClient).ConfigureAwait(false));
+        using var finalFenceLossResponse = await SendAsync(
+            finalFenceLossClient,
+            finalFenceLossScenario.DeviceId,
+            DeviceKey,
+            finalFenceLossScenario.Envelope).ConfigureAwait(false);
+        finalFenceLossResponse.StatusCode.Should().Be((HttpStatusCode)425);
+        await using var finalFenceLossScope = finalFenceLossFactory.Services.CreateAsyncScope();
+        var finalFenceLossDb = finalFenceLossScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await finalFenceLossDb.CentralTransientSubmissionAudits.AnyAsync(item =>
+                item.CandidateId == finalFenceLossScenario.Envelope.CandidateId &&
+                item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceUnavailable).ConfigureAwait(false))
+            .Should().BeTrue();
+        (await finalFenceLossDb.CentralTransientValidationJobs.AnyAsync(item =>
+                item.SubmissionIdentitySha256 == finalFenceLossScenario.Envelope.SubmissionIdentitySha256)
+            .ConfigureAwait(false)).Should().BeFalse();
+
         var unmatchedScenario = await CreateScenarioAsync().ConfigureAwait(false);
         var unmatchedGeometry = unmatchedScenario.Envelope.Candidate.Geometry! with
         {
@@ -913,5 +980,31 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             CentralArtifactByteRange? range,
             CancellationToken cancellationToken)
             => inner.CopyToAsync(snapshot, destination, range, cancellationToken);
+    }
+
+    private sealed class ThrowingSubmissionFaultInjector(CentralTransientSubmissionFaultStage requestedStage)
+        : ICentralTransientSubmissionFaultInjector
+    {
+        private int injected;
+
+        public void ThrowIfRequested(CentralTransientSubmissionFaultStage stage)
+        {
+            if (stage == requestedStage && Interlocked.Exchange(ref injected, 1) == 0)
+            {
+                throw new CentralTransientSubmissionFaultException(stage);
+            }
+        }
+    }
+
+    private sealed class ClosingSubmissionConnectionFaultInjector(ApplicationDbContext dbContext)
+        : ICentralTransientSubmissionFaultInjector
+    {
+        public void ThrowIfRequested(CentralTransientSubmissionFaultStage stage)
+        {
+            if (stage == CentralTransientSubmissionFaultStage.BeforeFinalFenceCheck)
+            {
+                dbContext.Database.GetDbConnection().Close();
+            }
+        }
     }
 }

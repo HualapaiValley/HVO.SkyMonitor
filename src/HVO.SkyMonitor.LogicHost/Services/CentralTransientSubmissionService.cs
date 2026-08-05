@@ -5,6 +5,7 @@ using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
@@ -30,6 +31,41 @@ internal interface ICentralTransientSubmissionService
 internal sealed record CentralTransientSubmissionResult(
     Guid CentralDerivativeJobId,
     TransientCandidateSubmissionAcknowledgementV1 Acknowledgement);
+
+internal enum CentralTransientSubmissionFaultStage
+{
+    AfterSubmissionLocks,
+    BeforeFinalFenceCheck,
+    BeforeCommit
+}
+
+internal interface ICentralTransientSubmissionFaultInjector
+{
+    void ThrowIfRequested(CentralTransientSubmissionFaultStage stage);
+}
+
+internal sealed class CentralTransientSubmissionFaultException : InvalidOperationException
+{
+    public CentralTransientSubmissionFaultException()
+        : base("Injected Hybrid transient submission fault.")
+    {
+    }
+
+    public CentralTransientSubmissionFaultException(string message)
+        : base(message)
+    {
+    }
+
+    public CentralTransientSubmissionFaultException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+
+    internal CentralTransientSubmissionFaultException(CentralTransientSubmissionFaultStage stage)
+        : base($"Injected Hybrid transient submission fault at {stage}.")
+    {
+    }
+}
 
 internal sealed class CentralTransientSubmissionRejectedException : Exception
 {
@@ -84,7 +120,8 @@ internal sealed class CentralTransientSubmissionService(
     IOptions<CentralTransientOptions> options,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider,
-    ICentralProcessingPolicyService? processingPolicy = null) : ICentralTransientSubmissionService
+    ICentralProcessingPolicyService? processingPolicy = null,
+    ICentralTransientSubmissionFaultInjector? faultInjector = null) : ICentralTransientSubmissionService
 {
     private const int SubmittedSourceCount = 3;
     private const int CenteredSourceCount = 5;
@@ -247,7 +284,17 @@ internal sealed class CentralTransientSubmissionService(
         }
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-        await AcquireSubmissionLocksAsync(envelope, registration.DeviceId, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await AcquireSubmissionLocksAsync(envelope, registration.DeviceId, cancellationToken).ConfigureAwait(false);
+            faultInjector?.ThrowIfRequested(CentralTransientSubmissionFaultStage.AfterSubmissionLocks);
+        }
+        catch (Exception exception) when (IsUnambiguousFinalizationFailure(exception, cancellationToken))
+        {
+            await RejectFinalizationFailureAsync(
+                transaction, registration, envelope, payloadSha256, cancellationToken).ConfigureAwait(false);
+            throw;
+        }
         existing = await FindExistingAsync(
                 envelope.SubmissionIdentitySha256, devicePublicId, cancellationToken)
             .ConfigureAwait(false);
@@ -312,7 +359,18 @@ internal sealed class CentralTransientSubmissionService(
         var job = jobScheduler.CreateHybridTransientJob(
             recipe!, verified.Select(item => item.Artifact).ToArray(), envelope, registration.DeviceId, now);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await objectFence.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            faultInjector?.ThrowIfRequested(CentralTransientSubmissionFaultStage.BeforeFinalFenceCheck);
+            await objectFence.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+            faultInjector?.ThrowIfRequested(CentralTransientSubmissionFaultStage.BeforeCommit);
+        }
+        catch (Exception exception) when (IsUnambiguousFinalizationFailure(exception, cancellationToken))
+        {
+            await RejectFinalizationFailureAsync(
+                transaction, registration, envelope, payloadSha256, cancellationToken).ConfigureAwait(false);
+            throw;
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         telemetry.RecordOperation("transient-submit", "accepted");
         return new CentralTransientSubmissionResult(job.Id, CreateAcknowledgement(
@@ -567,6 +625,55 @@ internal sealed class CentralTransientSubmissionService(
                 envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
+    }
+
+    private async Task RejectFinalizationFailureAsync(
+        IDbContextTransaction transaction,
+        DeviceRegistration registration,
+        TransientCandidateSubmissionEnvelopeV1 envelope,
+        string payloadSha256,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (SqlException)
+        {
+            // SQL Server may already have rolled back a failed transaction.
+        }
+        catch (InvalidOperationException)
+        {
+            // A broken connection has already ended the transaction.
+        }
+        await transaction.DisposeAsync().ConfigureAwait(false);
+        dbContext.ChangeTracker.Clear();
+        telemetry.RecordDependencyFailure("sql", timeProvider.GetUtcNow());
+        await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
+            envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private static bool IsUnambiguousFinalizationFailure(
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+        if (exception is CentralTransientSubmissionFaultException or CentralObjectApplicationLockLostException)
+        {
+            return true;
+        }
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is SqlException)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private async Task AddAuditAsync(
