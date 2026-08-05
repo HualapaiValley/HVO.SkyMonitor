@@ -469,6 +469,54 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceTimeout).ConfigureAwait(false))
             .Should().BeTrue();
 
+        var staleGenerationScenario = await CreateScenarioAsync().ConfigureAwait(false);
+        using var staleGenerationFactory = CreateHybridFactory(services =>
+            services.Replace(ServiceDescriptor.Scoped<ICentralArtifactObjectReader>(provider =>
+                new StaleGenerationObjectReader(
+                    ActivatorUtilities.CreateInstance<CentralArtifactObjectReader>(provider)))));
+        using var staleGenerationClient = staleGenerationFactory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        staleGenerationClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(staleGenerationClient).ConfigureAwait(false));
+        using var staleGenerationResponse = await SendAsync(
+            staleGenerationClient,
+            staleGenerationScenario.DeviceId,
+            DeviceKey,
+            staleGenerationScenario.Envelope).ConfigureAwait(false);
+        staleGenerationResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        await using var staleGenerationScope = staleGenerationFactory.Services.CreateAsyncScope();
+        var staleGenerationDb = staleGenerationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await staleGenerationDb.CentralTransientSubmissionAudits.AnyAsync(item =>
+                item.CandidateId == staleGenerationScenario.Envelope.CandidateId &&
+                item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceConflict).ConfigureAwait(false))
+            .Should().BeTrue();
+        (await staleGenerationDb.CentralTransientValidationJobs.AnyAsync(item =>
+                item.SubmissionIdentitySha256 == staleGenerationScenario.Envelope.SubmissionIdentitySha256)
+            .ConfigureAwait(false)).Should().BeFalse();
+
+        var lockLossScenario = await CreateScenarioAsync().ConfigureAwait(false);
+        using var lockLossFactory = CreateHybridFactory(services =>
+            services.Replace(ServiceDescriptor.Scoped<ICentralArtifactObjectReader>(provider =>
+                new LockLossObjectReader(
+                    ActivatorUtilities.CreateInstance<CentralArtifactObjectReader>(provider),
+                    provider.GetRequiredService<ApplicationDbContext>()))));
+        using var lockLossClient = lockLossFactory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        lockLossClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(lockLossClient).ConfigureAwait(false));
+        using var lockLossResponse = await SendAsync(
+            lockLossClient, lockLossScenario.DeviceId, DeviceKey, lockLossScenario.Envelope).ConfigureAwait(false);
+        lockLossResponse.StatusCode.Should().Be((HttpStatusCode)425);
+        await using var lockLossScope = lockLossFactory.Services.CreateAsyncScope();
+        var lockLossDb = lockLossScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await lockLossDb.CentralTransientSubmissionAudits.AnyAsync(item =>
+                item.CandidateId == lockLossScenario.Envelope.CandidateId &&
+                item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceUnavailable).ConfigureAwait(false))
+            .Should().BeTrue();
+        (await lockLossDb.CentralTransientValidationJobs.AnyAsync(item =>
+                item.SubmissionIdentitySha256 == lockLossScenario.Envelope.SubmissionIdentitySha256)
+            .ConfigureAwait(false)).Should().BeFalse();
+
         var unmatchedScenario = await CreateScenarioAsync().ConfigureAwait(false);
         var unmatchedGeometry = unmatchedScenario.Envelope.Candidate.Geometry! with
         {
@@ -803,6 +851,61 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             string storageETag,
             CancellationToken cancellationToken)
             => Task.FromException<bool>(new CentralArtifactStorageException());
+
+        public Task CopyToAsync(
+            CentralArtifactObjectSnapshot snapshot,
+            Stream destination,
+            CentralArtifactByteRange? range,
+            CancellationToken cancellationToken)
+            => inner.CopyToAsync(snapshot, destination, range, cancellationToken);
+    }
+
+    private sealed class StaleGenerationObjectReader(ICentralArtifactObjectReader inner)
+        : ICentralArtifactObjectReader
+    {
+        public Task<CentralArtifactObjectSnapshot> VerifyAsync(
+            CentralArtifact artifact,
+            CancellationToken cancellationToken)
+            => inner.VerifyAsync(artifact, cancellationToken);
+
+        public Task<bool> IsCurrentGenerationAsync(
+            CentralArtifact artifact,
+            string storageETag,
+            CancellationToken cancellationToken)
+            => Task.FromResult(false);
+
+        public Task CopyToAsync(
+            CentralArtifactObjectSnapshot snapshot,
+            Stream destination,
+            CentralArtifactByteRange? range,
+            CancellationToken cancellationToken)
+            => inner.CopyToAsync(snapshot, destination, range, cancellationToken);
+    }
+
+    private sealed class LockLossObjectReader(
+        ICentralArtifactObjectReader inner,
+        ApplicationDbContext dbContext) : ICentralArtifactObjectReader
+    {
+        private int generationCalls;
+
+        public Task<CentralArtifactObjectSnapshot> VerifyAsync(
+            CentralArtifact artifact,
+            CancellationToken cancellationToken)
+            => inner.VerifyAsync(artifact, cancellationToken);
+
+        public async Task<bool> IsCurrentGenerationAsync(
+            CentralArtifact artifact,
+            string storageETag,
+            CancellationToken cancellationToken)
+        {
+            var isCurrent = await inner.IsCurrentGenerationAsync(artifact, storageETag, cancellationToken)
+                .ConfigureAwait(false);
+            if (Interlocked.Increment(ref generationCalls) == 5)
+            {
+                await dbContext.Database.CloseConnectionAsync().ConfigureAwait(false);
+            }
+            return isCurrent;
+        }
 
         public Task CopyToAsync(
             CentralArtifactObjectSnapshot snapshot,

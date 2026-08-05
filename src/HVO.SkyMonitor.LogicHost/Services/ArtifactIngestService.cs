@@ -348,7 +348,7 @@ internal sealed partial class ArtifactIngestService(
         {
             if (exception.RemovePublishedObject)
             {
-                await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
+                await RemoveUncommittedObjectWithLockAsync(storageReference, objectKey).ConfigureAwait(false);
             }
             var result = await ReconcileExistingAsync(
                 manifest,
@@ -373,12 +373,35 @@ internal sealed partial class ArtifactIngestService(
             {
                 throw;
             }
-            if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                    dbContext, storageReference, CancellationToken.None).ConfigureAwait(false))
+            try
             {
-                await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
+                if (await CentralObjectOwnershipFence.IsRetiredAsync(
+                        dbContext, storageReference, CancellationToken.None).ConfigureAwait(false))
+                {
+                    await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
+                }
             }
-            await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
+            catch (DbException)
+            {
+                // Cleanup is compensating; preserve the original ingest failure.
+            }
+            catch (DbUpdateException)
+            {
+                // Cleanup is compensating; preserve the original ingest failure.
+            }
+            catch (InvalidOperationException)
+            {
+                // Cleanup is compensating; preserve the original ingest failure.
+            }
+            catch (TimeoutException)
+            {
+                // Cleanup is compensating; preserve the original ingest failure.
+            }
+            catch (OperationCanceledException)
+            {
+                // Cleanup is compensating; preserve the original ingest failure.
+            }
+            await RemoveUncommittedObjectWithLockAsync(storageReference, objectKey).ConfigureAwait(false);
             throw;
         }
 
@@ -428,7 +451,7 @@ internal sealed partial class ArtifactIngestService(
                 registration, manifest, storageReference, objectLock, now, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(result.Upload.StorageReference, storageReference, StringComparison.Ordinal))
             {
-                await RemoveUncommittedObjectAsync(storageReference, objectKey).ConfigureAwait(false);
+                await RemoveUncommittedObjectUnderLockAsync(storageReference, objectKey).ConfigureAwait(false);
             }
             return result;
         }
@@ -2140,7 +2163,25 @@ internal sealed partial class ArtifactIngestService(
         return Task.Delay(TimeSpan.FromMilliseconds(delayMilliseconds), cancellationToken);
     }
 
-    private async Task RemoveUncommittedObjectAsync(string storageReference, string objectKey)
+    private async Task RemoveUncommittedObjectWithLockAsync(string storageReference, string objectKey)
+    {
+        try
+        {
+            await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
+                dbContext, storageReference, CancellationToken.None).ConfigureAwait(false);
+            await RemoveUncommittedObjectUnderLockAsync(storageReference, objectKey).ConfigureAwait(false);
+        }
+        catch (DbException)
+        {
+            // Cleanup is compensating; preserve the original ingest failure.
+        }
+        catch (InvalidOperationException)
+        {
+            // Cleanup is compensating; preserve the original ingest failure.
+        }
+    }
+
+    private async Task RemoveUncommittedObjectUnderLockAsync(string storageReference, string objectKey)
     {
         bool committedObject;
         try
@@ -2175,6 +2216,14 @@ internal sealed partial class ArtifactIngestService(
             // Cleanup is compensating; preserve the original ingest failure.
         }
         catch (IOException)
+        {
+            // Cleanup is compensating; preserve the original ingest failure.
+        }
+        catch (TimeoutException)
+        {
+            // Cleanup is compensating; preserve the original ingest failure.
+        }
+        catch (OperationCanceledException)
         {
             // Cleanup is compensating; preserve the original ingest failure.
         }

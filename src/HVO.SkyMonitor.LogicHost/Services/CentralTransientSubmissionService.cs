@@ -180,7 +180,8 @@ internal sealed class CentralTransientSubmissionService(
             {
                 var snapshot = await objectReader.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
                 verified.Add(new VerifiedSource(artifact, snapshot,
-                    CentralDerivativeWindowCompatibility.CreateSnapshot(descriptor)));
+                    CentralDerivativeWindowCompatibility.CreateSnapshot(descriptor),
+                    CentralTransientPayloadHoldFence.CreateArtifactTarget(artifact)));
             }
             catch (CentralArtifactMissingException)
             {
@@ -210,16 +211,40 @@ internal sealed class CentralTransientSubmissionService(
         await ValidateWindowAsync(registration, envelope, verified, payloadSha256, cancellationToken)
             .ConfigureAwait(false);
 
-        var holdTargets = await CentralTransientPayloadHoldFence.ReadArtifactsAsync(
-            dbContext, verified.Select(item => item.Artifact.Id), cancellationToken).ConfigureAwait(false);
-        if (holdTargets.Count != verified.Count)
+        var holdTargets = verified.Select(item => item.HoldTarget).ToArray();
+        await using var objectFence = await AcquireObjectFenceAsync(
+            registration, envelope, payloadSha256, holdTargets, cancellationToken).ConfigureAwait(false);
+        foreach (var source in verified)
         {
-            throw new CentralTransientSubmissionRejectedException(
-                CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
-                CentralTransientSubmissionRejectionKind.Unavailable);
+            bool isCurrent;
+            try
+            {
+                isCurrent = await objectReader.IsCurrentGenerationAsync(
+                    source.Artifact, source.Snapshot.StorageETag, cancellationToken).ConfigureAwait(false);
+            }
+            catch (CentralArtifactStorageException)
+            {
+                telemetry.RecordDependencyFailure("storage", timeProvider.GetUtcNow());
+                await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceTimeout,
+                    envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
+                throw;
+            }
+            if (!isCurrent)
+            {
+                await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceConflict,
+                    envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
+            }
         }
-        await using var holdScope = await CentralTransientPayloadHoldFence.AcquireAsync(
-            dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await objectFence.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            telemetry.RecordDependencyFailure("sql", timeProvider.GetUtcNow());
+            await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
+                envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
+        }
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         await AcquireSubmissionLocksAsync(envelope, registration.DeviceId, cancellationToken).ConfigureAwait(false);
@@ -252,7 +277,7 @@ internal sealed class CentralTransientSubmissionService(
         try
         {
             await CentralTransientPayloadHoldFence.ValidateAsync(
-                dbContext, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+                dbContext, holdTargets, cancellationToken).ConfigureAwait(false);
         }
         catch (CentralTransientPayloadHoldRejectedException)
         {
@@ -283,45 +308,11 @@ internal sealed class CentralTransientSubmissionService(
                 CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
                 CentralTransientSubmissionRejectionKind.Unavailable);
         }
-        foreach (var source in verified)
-        {
-            bool isCurrent;
-            try
-            {
-                isCurrent = await objectReader.IsCurrentGenerationAsync(
-                    source.Artifact, source.Snapshot.StorageETag, cancellationToken).ConfigureAwait(false);
-            }
-            catch (CentralArtifactStorageException)
-            {
-                telemetry.RecordDependencyFailure("storage", timeProvider.GetUtcNow());
-                await AddAuditAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceTimeout,
-                    envelope.CandidateId, envelope.EventId, envelope.SubmissionIdentitySha256,
-                    existingJobId: null, cancellationToken).ConfigureAwait(false);
-                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                telemetry.RecordOperation("transient-submit", "rejected");
-                throw new CentralTransientSubmissionRejectedException(
-                    CentralTransientSubmissionReasonCodes.EvidenceTimeout,
-                    CentralTransientSubmissionRejectionKind.Timeout);
-            }
-            if (!isCurrent)
-            {
-                await AddAuditAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceConflict,
-                    envelope.CandidateId, envelope.EventId, envelope.SubmissionIdentitySha256,
-                    existingJobId: null, cancellationToken).ConfigureAwait(false);
-                await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                telemetry.RecordOperation("transient-submit", "rejected");
-                throw new CentralTransientSubmissionRejectedException(
-                    CentralTransientSubmissionReasonCodes.EvidenceConflict,
-                    CentralTransientSubmissionRejectionKind.Conflict);
-            }
-        }
-
         var now = timeProvider.GetUtcNow();
         var job = jobScheduler.CreateHybridTransientJob(
             recipe!, verified.Select(item => item.Artifact).ToArray(), envelope, registration.DeviceId, now);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await objectFence.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         telemetry.RecordOperation("transient-submit", "accepted");
         return new CentralTransientSubmissionResult(job.Id, CreateAcknowledgement(
@@ -465,7 +456,11 @@ internal sealed class CentralTransientSubmissionService(
             try
             {
                 var snapshot = await objectReader.VerifyAsync(selected.Artifact, cancellationToken).ConfigureAwait(false);
-                verified.Add(new VerifiedSource(selected.Artifact, snapshot, selected.Compatibility));
+                verified.Add(new VerifiedSource(
+                    selected.Artifact,
+                    snapshot,
+                    selected.Compatibility,
+                    CentralTransientPayloadHoldFence.CreateArtifactTarget(selected.Artifact)));
             }
             catch (CentralArtifactMissingException)
             {
@@ -530,12 +525,14 @@ internal sealed class CentralTransientSubmissionService(
         {
             return;
         }
-        foreach (var resource in new[]
-                 {
-                     $"hybrid-submission:{envelope.SubmissionIdentitySha256}",
-                     $"hybrid-candidate:{envelope.CandidateId:N}",
-                     $"hybrid-event:{authenticatedAgentId}:{envelope.EventId:N}"
-                 }.Order(StringComparer.Ordinal))
+        var identityResources = new[]
+        {
+            $"hybrid-submission:{envelope.SubmissionIdentitySha256}",
+            $"hybrid-candidate:{envelope.CandidateId:N}",
+            $"hybrid-event:{authenticatedAgentId}:{envelope.EventId:N}"
+        };
+        foreach (var resource in new[] { "hybrid-finalization" }
+                     .Concat(identityResources.Order(StringComparer.Ordinal)))
         {
             await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
                 DECLARE @result int;
@@ -547,6 +544,28 @@ internal sealed class CentralTransientSubmissionService(
                 IF @result < 0
                     THROW 51011, 'Could not acquire the Hybrid transient submission lock.', 1;
                 """, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<CentralObjectApplicationLockSet> AcquireObjectFenceAsync(
+        DeviceRegistration registration,
+        TransientCandidateSubmissionEnvelopeV1 envelope,
+        string payloadSha256,
+        IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await CentralObjectApplicationLockSet.AcquireAsync(
+                dbContext, holdTargets.Select(item => item.StorageReference), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
+            exception is InvalidOperationException or SqlException)
+        {
+            telemetry.RecordDependencyFailure("sql", timeProvider.GetUtcNow());
+            await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
+                envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
+            throw;
         }
     }
 
@@ -636,7 +655,8 @@ internal sealed class CentralTransientSubmissionService(
     private sealed record VerifiedSource(
         CentralArtifact Artifact,
         CentralArtifactObjectSnapshot Snapshot,
-        CentralDerivativeCompatibilitySnapshot Compatibility);
+        CentralDerivativeCompatibilitySnapshot Compatibility,
+        CentralTransientPayloadHoldTarget HoldTarget);
 }
 
 internal static class CentralTransientSubmissionReasonCodes
