@@ -804,6 +804,9 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
             }
+            catch (SqlException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
             catch (Exception exception)
             {
                 ready.TrySetException(exception);
