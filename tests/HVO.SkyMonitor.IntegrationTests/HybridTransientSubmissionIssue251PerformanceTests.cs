@@ -32,8 +32,7 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         "docs/runbooks/ci-pipeline.md",
         "scripts/test-categories/Program.cs",
         "tests/HVO.SkyMonitor.IntegrationTests/HybridTransientSubmissionIntegrationTests.cs",
-        "tests/HVO.SkyMonitor.IntegrationTests/HybridTransientSubmissionIssue251PerformanceTests.cs",
-        "tests/HVO.SkyMonitor.IntegrationTests/HybridTransientSubmissionIssue251Tests.cs"
+        "tests/HVO.SkyMonitor.IntegrationTests/HybridTransientSubmissionIssue251PerformanceTests.cs"
     ];
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
