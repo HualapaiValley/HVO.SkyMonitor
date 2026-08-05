@@ -276,7 +276,7 @@ internal sealed class CentralTransientSubmissionService(
         {
             await objectFence.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (IsUnambiguousFinalizationFailure(exception, cancellationToken))
         {
             telemetry.RecordDependencyFailure("sql", timeProvider.GetUtcNow());
             await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
