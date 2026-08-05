@@ -1,0 +1,19 @@
+{
+  "profile": "asi676mc",
+  "result": {
+    "passed": true,
+    "warmupCount": 5,
+    "measuredCount": 100
+  },
+  "monotonicFrequency": 1000000000,
+  "barriers": [
+    {
+      "phase": "measured-resume",
+      "startedMonotonicTimestamp": 154728233849999
+    },
+    {
+      "phase": "measured-complete",
+      "startedMonotonicTimestamp": 157229495128307
+    }
+  ]
+}

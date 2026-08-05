@@ -169,6 +169,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             command.Contains("[ActiveOwners]", StringComparison.Ordinal));
         ownerSql.Should().Contain("UNION ALL")
             .And.Contain("[IX_CentralArtifacts_StorageReference]")
+            .And.Contain("INDEX([IX_CentralTransientDerivativeOutputIntents_StorageReferenceSha256])")
             .And.Contain("[StorageReferenceSha256]");
         started.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
 

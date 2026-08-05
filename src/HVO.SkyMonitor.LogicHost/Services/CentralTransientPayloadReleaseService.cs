@@ -642,11 +642,15 @@ internal sealed class CentralTransientPayloadReleaseService(
             {
                 await NormalizePendingItemsAsync(releaseId, cancellationToken).ConfigureAwait(false);
             }
-            while (await IsReleasePendingAsync(releaseId, cancellationToken).ConfigureAwait(false))
+            while (true)
             {
                 var item = await LoadNextPendingItemAsync(releaseId, cancellationToken).ConfigureAwait(false);
                 if (item is null)
                 {
+                    if (!await IsReleasePendingAsync(releaseId, cancellationToken).ConfigureAwait(false))
+                    {
+                        return;
+                    }
                     await InvokeFaultAsync(
                         CentralTransientPayloadReleaseFaultStage.FinalItemBeforeParentCompletion,
                         releaseId,
@@ -672,8 +676,7 @@ internal sealed class CentralTransientPayloadReleaseService(
                 {
                     return;
                 }
-                var storageReference = await ResolveStorageReferenceAsync(item, cancellationToken)
-                    .ConfigureAwait(false);
+                var storageReference = item.StorageReference;
                 if (!IsCanonicalStorageReference(storageReference))
                 {
                     if (await FailItemAsync(
@@ -888,7 +891,7 @@ internal sealed class CentralTransientPayloadReleaseService(
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return new(ReservationOutcome.Preserved, null, item.RetryCount);
         }
-        var held = await IsHeldAsync(item, cancellationToken).ConfigureAwait(false);
+        var held = await IsHeldAsync(item, itemKey.CentralTransientEventId, cancellationToken).ConfigureAwait(false);
         var hadPriorAttempt = item.RequestedAtUtc.HasValue;
         if (held)
         {
@@ -923,6 +926,7 @@ internal sealed class CentralTransientPayloadReleaseService(
                 item.Ordinal,
                 item.Kind,
                 item.RecordId,
+                itemKey.CentralTransientEventId,
                 item.ReservationToken!.Value,
                 item.RequestedAtUtc!.Value,
                 expectedStorageReference,
@@ -961,7 +965,7 @@ internal sealed class CentralTransientPayloadReleaseService(
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return PreDeleteOutcome.Preserved;
         }
-        if (await IsHeldAsync(item!, cancellationToken).ConfigureAwait(false))
+        if (await IsHeldAsync(item!, snapshot.CentralTransientEventId, cancellationToken).ConfigureAwait(false))
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             var failed = await FailReservedItemAsync(
@@ -991,7 +995,7 @@ internal sealed class CentralTransientPayloadReleaseService(
                 ? FinalizationOutcome.Failed
                 : FinalizationOutcome.Unavailable;
         }
-        if (await IsHeldAsync(item!, cancellationToken).ConfigureAwait(false))
+        if (await IsHeldAsync(item!, snapshot.CentralTransientEventId, cancellationToken).ConfigureAwait(false))
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             return await FailReservedItemAsync(
@@ -1216,9 +1220,11 @@ internal sealed class CentralTransientPayloadReleaseService(
     {
         if (kind == CentralTransientPayloadReleaseItemKind.SourceArtifact)
         {
-            _ = await CentralArtifactRetentionLock.AcquireAsync(dbContext, recordId, cancellationToken)
-                .ConfigureAwait(false);
-            return await dbContext.CentralArtifacts.AsNoTracking().Where(value => value.Id == recordId)
+            return await dbContext.CentralArtifacts.FromSqlInterpolated($"""
+                    SELECT * FROM [CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)
+                    WHERE [Id] = {recordId}
+                    """)
+                .AsNoTracking()
                 .Select(value => new TargetSnapshot(
                     value.StorageReference,
                     value.RowVersion,
@@ -1236,16 +1242,13 @@ internal sealed class CentralTransientPayloadReleaseService(
 
     private async Task<bool> IsHeldAsync(
         CentralTransientPayloadReleaseItem item,
+        Guid centralTransientEventId,
         CancellationToken cancellationToken)
     {
         if (item.Kind == CentralTransientPayloadReleaseItemKind.SourceArtifact)
         {
-            var eventId = await dbContext.CentralTransientPayloadReleases.AsNoTracking()
-                .Where(value => value.ReleaseId == item.ReleaseId)
-                .Select(value => value.CentralTransientEventId)
-                .SingleAsync(cancellationToken).ConfigureAwait(false);
             return await retentionReferences.IsHeldOutsideTransientEventAsync(
-                item.RecordId, eventId, cancellationToken).ConfigureAwait(false);
+                item.RecordId, centralTransientEventId, cancellationToken).ConfigureAwait(false);
         }
         return await dbContext.CentralTransientDerivatives.AsNoTracking()
             .Where(value => value.OutputIntentId == item.RecordId)
@@ -1255,19 +1258,6 @@ internal sealed class CentralTransientPayloadReleaseService(
                 !dbContext.PublicRecordPublicationDecisions.Any(successor =>
                     successor.SupersedesDecisionId == decision.Id)), cancellationToken).ConfigureAwait(false);
     }
-
-    private async Task<string?> ResolveStorageReferenceAsync(
-        PendingItem item,
-        CancellationToken cancellationToken)
-        => item.Kind == CentralTransientPayloadReleaseItemKind.SourceArtifact
-            ? await dbContext.CentralArtifacts.AsNoTracking()
-                .Where(value => value.Id == item.RecordId)
-                .Select(value => value.StorageReference)
-                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
-            : await dbContext.CentralTransientDerivativeOutputIntents.AsNoTracking()
-                .Where(value => value.Id == item.RecordId)
-                .Select(value => value.StorageReference)
-                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
     private async Task NormalizePendingItemsAsync(Guid releaseId, CancellationToken cancellationToken)
     {
@@ -1329,17 +1319,35 @@ internal sealed class CentralTransientPayloadReleaseService(
     private async Task<PendingItem?> LoadNextPendingItemAsync(Guid releaseId, CancellationToken cancellationToken)
         => await dbContext.CentralTransientPayloadReleaseItems.AsNoTracking()
             .Where(item => item.ReleaseId == releaseId &&
-                item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending)
+                item.Outcome == CentralTransientPayloadReleaseItemOutcome.Pending &&
+                dbContext.CentralTransientPayloadReleases.Any(release =>
+                    release.ReleaseId == item.ReleaseId &&
+                    release.State == CentralTransientPayloadReleaseState.Pending))
             .OrderBy(item => item.Ordinal)
             .Select(item => new PendingItem(
                 item.ReleaseId,
                 item.Ordinal,
                 item.Kind,
                 item.RecordId,
+                dbContext.CentralTransientPayloadReleases
+                    .Where(release => release.ReleaseId == item.ReleaseId)
+                    .Select(release => release.CentralTransientEventId)
+                    .Single(),
                 item.ReservationToken,
                 item.RequestedAtUtc,
                 item.RetryAtUtc,
-                item.RetryCount))
+                item.RetryCount,
+                item.Kind == CentralTransientPayloadReleaseItemKind.SourceArtifact
+                    ? dbContext.CentralArtifacts
+                        .Where(target => target.Id == item.RecordId)
+                        .Select(target => EF.Functions.Collate(
+                            target.StorageReference, "Latin1_General_100_BIN2"))
+                        .SingleOrDefault()
+                    : dbContext.CentralTransientDerivativeOutputIntents
+                        .Where(target => target.Id == item.RecordId)
+                        .Select(target => EF.Functions.Collate(
+                            target.StorageReference, "Latin1_General_100_BIN2"))
+                        .SingleOrDefault()))
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
     private Task<bool> IsReleasePendingAsync(Guid releaseId, CancellationToken cancellationToken)
@@ -1388,10 +1396,12 @@ internal sealed class CentralTransientPayloadReleaseService(
             item.Ordinal,
             item.Kind,
             item.RecordId,
+            Guid.Empty,
             item.ReservationToken,
             item.RequestedAtUtc,
             item.RetryAtUtc,
-            item.RetryCount), now);
+            item.RetryCount,
+            null), now);
 
     private bool IsDue(PendingItem item, DateTimeOffset now)
         => item.ReservationToken.HasValue
@@ -1531,10 +1541,12 @@ internal sealed class CentralTransientPayloadReleaseService(
         int Ordinal,
         CentralTransientPayloadReleaseItemKind Kind,
         Guid RecordId,
+        Guid CentralTransientEventId,
         Guid? ReservationToken,
         DateTimeOffset? RequestedAtUtc,
         DateTimeOffset? RetryAtUtc,
-        int RetryCount);
+        int RetryCount,
+        string? StorageReference);
 
     private sealed record TargetSnapshot(string StorageReference, byte[] RowVersion, long Generation);
 
@@ -1543,6 +1555,7 @@ internal sealed class CentralTransientPayloadReleaseService(
         int Ordinal,
         CentralTransientPayloadReleaseItemKind Kind,
         Guid RecordId,
+        Guid CentralTransientEventId,
         Guid ReservationToken,
         DateTimeOffset RequestedAtUtc,
         string StorageReference,

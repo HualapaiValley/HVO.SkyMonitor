@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+[[ $# -eq 2 ]] || { printf 'Usage: %s MANIFEST ROOT\n' "${0##*/}" >&2; exit 2; }
+manifest="$1"
+root="$2"
+resolved_root="$(realpath -e -- "$root")"
+[[ -d "$resolved_root" ]] || { printf 'Manifest root is not a directory.\n' >&2; exit 1; }
+expected="$(jq --exit-status --raw-output '.evidenceIdentitySha256 | select(test("^[0-9A-F]{64}$"))' "$manifest")"
+actual="$(jq -cS 'del(.evidenceIdentitySha256)' "$manifest" | sha256sum | { read -r hash _; printf '%s' "${hash^^}"; })"
+[[ "$actual" == "$expected" ]] || { printf 'Manifest identity mismatch.\n' >&2; exit 1; }
+entries="$(jq --exit-status --raw-output '
+  ((.fileCount == (.files | length)) and
+   (.totalBytes == ([.files[].bytes] | add // 0)) and
+   (([.files[].path] | unique | length) == .fileCount)) as $valid |
+  if $valid then .files[] | [.path, (.bytes | tostring), .sha256] | @tsv else error("invalid manifest shape") end' \
+  "$manifest")"
+while IFS=$'\t' read -r relative bytes sha; do
+    case "$relative" in ''|/*|..|../*|*/..|*/../*) printf 'Unsafe manifest path.\n' >&2; exit 1 ;; esac
+    file="$root/$relative"
+    resolved_file="$(realpath -e -- "$file")"
+    [[ "$resolved_file" == "$resolved_root/"* && -f "$resolved_file" &&
+        "$(stat --format='%s' "$resolved_file")" == "$bytes" ]] || {
+        printf 'Manifest member size mismatch: %s\n' "$relative" >&2
+        exit 1
+    }
+    read -r actual_sha _ < <(sha256sum "$resolved_file")
+    [[ "${actual_sha^^}" == "$sha" ]] || { printf 'Manifest member hash mismatch: %s\n' "$relative" >&2; exit 1; }
+done <<< "$entries"

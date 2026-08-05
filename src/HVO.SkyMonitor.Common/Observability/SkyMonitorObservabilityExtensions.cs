@@ -269,6 +269,13 @@ public static class SkyMonitorObservabilityExtensions
             .Enrich.WithTelemetry()
             .WriteTo.Console(formatProvider: CultureInfo.InvariantCulture);
 
+        const string cameraAgentCategory = "HVO.SkyMonitor.CameraAgent.Common";
+        var configuredCategoryLevel = builder.Configuration[$"Logging:LogLevel:{cameraAgentCategory}"];
+        if (Enum.TryParse<LogLevel>(configuredCategoryLevel, ignoreCase: true, out var categoryLevel))
+        {
+            ApplyCategoryLogLevel(loggerConfiguration, cameraAgentCategory, categoryLevel);
+        }
+
         var endpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
         if (!string.IsNullOrWhiteSpace(endpoint))
         {
@@ -294,6 +301,33 @@ public static class SkyMonitorObservabilityExtensions
         Log.Logger = loggerConfiguration.CreateLogger();
         builder.Logging.ClearProviders();
         builder.Logging.AddSerilog(Log.Logger, dispose: true);
+    }
+
+    internal static void ApplyCategoryLogLevel(
+        LoggerConfiguration loggerConfiguration,
+        string category,
+        LogLevel level)
+    {
+        if (level == LogLevel.None)
+        {
+            loggerConfiguration.Filter.ByExcluding(logEvent =>
+                logEvent.Properties.TryGetValue("SourceContext", out var source) &&
+                source is ScalarValue { Value: string value } &&
+                (string.Equals(value, category, StringComparison.Ordinal) ||
+                 value.StartsWith(category + ".", StringComparison.Ordinal)));
+            return;
+        }
+
+        loggerConfiguration.MinimumLevel.Override(category, level switch
+        {
+            LogLevel.Trace => LogEventLevel.Verbose,
+            LogLevel.Debug => LogEventLevel.Debug,
+            LogLevel.Information => LogEventLevel.Information,
+            LogLevel.Warning => LogEventLevel.Warning,
+            LogLevel.Error => LogEventLevel.Error,
+            LogLevel.Critical => LogEventLevel.Fatal,
+            _ => LogEventLevel.Information
+        });
     }
 
     private static bool IsHealthRequest(PathString path)

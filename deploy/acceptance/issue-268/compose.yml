@@ -1,0 +1,120 @@
+services:
+  cameraagent:
+    image: ${CAMERA_AGENT_IMAGE:?CAMERA_AGENT_IMAGE must be a content-addressed image ID}
+    pull_policy: never
+    container_name: ${CAMERA_AGENT_CONTAINER:?CAMERA_AGENT_CONTAINER must be set}
+    hostname: cameraagent-physical-268
+    user: "${LOCAL_UID:?LOCAL_UID must be set}:${LOCAL_GID:?LOCAL_GID must be set}"
+    group_add:
+      - "${USB_DEVICE_GID:?USB_DEVICE_GID must be set}"
+    read_only: true
+    environment:
+      ASPNETCORE_ENVIRONMENT: StandaloneProductionSmoke
+      ASPNETCORE_URLS: http://+:8080
+      HOME: /var/lib/hvo/data/agent/home
+      TMPDIR: /tmp
+      CameraAgent__AgentId: cameraagent-physical-268
+      CameraAgent__ConfigFilePath: /run/hvo/cameraagent.json
+      CameraAgent__RawIngressRoot: /var/lib/hvo/data/agent
+      CameraAgent__CentralIntegration__Mode: Disabled
+      CameraAgent__CaptureDistribution__UploadEnabled: "false"
+      CameraAgent__EnvironmentalDelivery__Enabled: "false"
+      CameraAgent__TransientDetection__Mode: "Off"
+      CameraAgent__TransientDetection__Required: "false"
+      Catalog__Root: /var/lib/hvo/data/catalog
+      Catalog__RequiredPackageKind: Production
+      LocalIdentity__AdminEmail: physical-268@cameraagent.test
+      LocalIdentity__CookieName: CameraAgent.Physical268.Auth
+      LocalIdentity__DatabasePath: /var/lib/hvo/data/agent/identity/cameraagent_identity.db
+      LocalIdentity__AdminPasswordFile: /run/secrets/owner_password
+      DeviceProvisioning__StateDirectory: /var/lib/hvo/data/agent/provisioning
+      CentralIdentity__ServiceUrl: http://central-deny:8080/
+      SkyMonitor__BaseUrl: http://central-deny:8080
+      HVO_ZWO_SDK_LIBRARY: ${HVO_ZWO_SDK_LIBRARY:?HVO_ZWO_SDK_LIBRARY must be set}
+      HVO_ZWO_CAMERA_SERIAL: ${HVO_ZWO_CAMERA_SERIAL:?HVO_ZWO_CAMERA_SERIAL must be set privately}
+      OTEL_SERVICE_NAME: hvo-camera-physical-268
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=${SERVICE_INSTANCE_ID:?SERVICE_INSTANCE_ID must be bounded}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_METRIC_EXPORT_INTERVAL: "2000"
+      Logging__LogLevel__HVO.SkyMonitor.CameraAgent.Common: Debug
+    volumes:
+      - type: bind
+        source: ${CAMERA_AGENT_CONFIG_SOURCE:?CAMERA_AGENT_CONFIG_SOURCE must be set}
+        target: /run/hvo/cameraagent.json
+        read_only: true
+      - type: volume
+        source: camera-runtime
+        target: /var/lib/hvo/data/agent
+      - type: bind
+        source: ${CAMERA_AGENT_DATA_PROTECTION_SOURCE:?CAMERA_AGENT_DATA_PROTECTION_SOURCE must be set}
+        target: /app/DataProtection-Keys
+      - type: bind
+        source: ${CAMERA_AGENT_CATALOG_SOURCE:?CAMERA_AGENT_CATALOG_SOURCE must be set}
+        target: /var/lib/hvo/data/catalog
+        read_only: true
+      - type: bind
+        source: ${CAMERA_AGENT_OWNER_PASSWORD_FILE:?CAMERA_AGENT_OWNER_PASSWORD_FILE must be set}
+        target: /run/secrets/owner_password
+        read_only: true
+      - type: bind
+        source: ${HVO_ZWO_SDK_LIBRARY:?HVO_ZWO_SDK_LIBRARY must be set}
+        target: ${HVO_ZWO_SDK_LIBRARY}
+        read_only: true
+    devices:
+      - "${USB_DEVICE_NODE:?USB_DEVICE_NODE must select exactly one camera}:${USB_DEVICE_NODE}:rwm"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    depends_on:
+      collector:
+        condition: service_started
+      central-deny:
+        condition: service_started
+    stop_grace_period: 45s
+    networks:
+      - isolated
+
+  collector:
+    image: ${OTEL_COLLECTOR_IMAGE:?OTEL_COLLECTOR_IMAGE must be pinned by digest}
+    pull_policy: missing
+    container_name: ${OTEL_COLLECTOR_CONTAINER:?OTEL_COLLECTOR_CONTAINER must be set}
+    hostname: collector
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    read_only: true
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - type: bind
+        source: ${OTEL_COLLECTOR_CONFIG_SOURCE:?OTEL_COLLECTOR_CONFIG_SOURCE must be set}
+        target: /etc/otelcol/config.yml
+        read_only: true
+      - type: bind
+        source: ${OTEL_EVIDENCE_SOURCE:?OTEL_EVIDENCE_SOURCE must be set}
+        target: /evidence
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    networks:
+      - isolated
+
+  central-deny:
+    image: ${CENTRAL_DENY_IMAGE:?CENTRAL_DENY_IMAGE must be pinned by digest}
+    pull_policy: never
+    container_name: ${CENTRAL_DENY_CONTAINER:?CENTRAL_DENY_CONTAINER must be set}
+    hostname: central-deny
+    read_only: true
+    command:
+      - TCP-LISTEN:8080,fork,reuseaddr
+      - SYSTEM:echo HVO268_CENTRAL_DENY_HIT >&2; exit 1
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777
+    networks:
+      - isolated
+
+networks:
+  isolated:
+    driver: bridge
+    internal: true
+
+volumes:
+  camera-runtime:
+    external: true
+    name: ${CAMERA_RUNTIME_VOLUME:?CAMERA_RUNTIME_VOLUME must be create-new}

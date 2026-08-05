@@ -9,18 +9,18 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
-| **Unit Tests** | 1706 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
-| **Integration Tests** | 501 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases; the remaining six Integration-category cases run in Architecture & Publish. Skipped only in classified reduced mode. |
+| **Unit Tests** | 1711 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
+| **Integration Tests** | 510 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, and host integration cases; the remaining six Integration-category cases run in Architecture & Publish. Skipped only in classified reduced mode. |
 | **Architecture & Publish** | Six Integration-category repository graph/MSBuild/publish cases plus retained host publish manifests. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
-| **Coverage** | Exact source-path and branch merge of eleven expected reports, checked-in aggregate non-regression, and risk-file floors. |
+| **Coverage** | Exact source-path and branch merge of twelve expected reports, checked-in aggregate non-regression, and risk-file floors. |
 | **Required CI** | Current-head aggregate that fails when any expected check fails, times out, is canceled, is missing, or is unexpectedly skipped or run for the selected mode. |
 
-Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected eleven, preventing missing or overwritten evidence.
+Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected twelve, preventing missing or overwritten evidence.
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1706`, `Integration=507`, `Manual=69`, `Soak=1`, `External=0`, and `Hardware=1`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1711`, `Integration=516`, `Manual=72`, `Soak=1`, `External=0`, and `Hardware=1`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
@@ -46,7 +46,7 @@ Run the path-classification and aggregate-protection contract tests when changin
 bash ./scripts/test:ci-classification
 ```
 
-Use a fresh result root for every collection. Before merging, require exactly one report from each of the eleven category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those eleven explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
+Use a fresh result root for every collection. Before merging, require exactly one report from each of the twelve category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those twelve explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
 patterns=(
@@ -55,6 +55,7 @@ patterns=(
   'TestResults/unit/processing/*/coverage.cobertura.xml'
   'TestResults/unit/catalog-sqlite/*/coverage.cobertura.xml'
   'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
+  'TestResults/unit/cameraagent-acceptance/*/coverage.cobertura.xml'
   'TestResults/unit/logichost/*/coverage.cobertura.xml'
   'TestResults/integration/cameraagent-storage/*/coverage.cobertura.xml'
   'TestResults/integration/cameraagent-standalone/*/coverage.cobertura.xml'

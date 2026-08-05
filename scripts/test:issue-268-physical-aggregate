@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+readonly AGGREGATOR="$REPO_ROOT/scripts/issue-268-physical-aggregate.jq"
+readonly FIXTURE="$REPO_ROOT/deploy/acceptance/issue-268/aggregate-fixture.jq"
+readonly MANIFEST_VERIFIER="$REPO_ROOT/scripts/issue-268-verify-manifest"
+readonly USB_RESET_CLASSIFIER="$REPO_ROOT/scripts/issue-268-usb-reset-classify.jq"
+readonly ARM_RESET_CAPTURE_FIXTURE="$REPO_ROOT/deploy/acceptance/issue-268/asi676mc-reset-capture-fixture.json"
+readonly ARM_RESET_KERNEL_FIXTURE="$REPO_ROOT/deploy/acceptance/issue-268/asi676mc-reset-kernel-fixture.txt"
+temporary="$(mktemp -d)"
+trap 'rm -rf -- "$temporary"' EXIT
+
+aggregate_trial() {
+    local fixture="$1" output="$2"
+    jq -n --arg mode trial \
+        --slurpfile acquisition <(jq -c '.acquisition[]' "$fixture") \
+        --slurpfile host <(jq -c '.host[]' "$fixture") \
+        --slurpfile resources <(jq -c '.resources[]' "$fixture") \
+        --slurpfile metrics <(jq -c '.metrics[]' "$fixture") \
+        --slurpfile traces <(jq -c '.traces[]' "$fixture") \
+        --slurpfile logs <(jq -c '.logs[]' "$fixture") \
+        --slurpfile dmesg <(jq -c '.dmesg[]' "$fixture") \
+        --slurpfile exportIo <(jq -c '.exportIo[]' "$fixture") \
+        --slurpfile execution <(jq -c '.execution[]' "$fixture") \
+        --slurpfile trialManifests <(jq -c '.trialManifests[]' "$fixture") \
+        --argjson trials '[]' --argjson campaignManifests '[]' \
+        -f "$AGGREGATOR" > "$output"
+}
+
+jq -n -f "$FIXTURE" > "$temporary/fixture.json"
+jq -n '{profile:"asi676mc", result:{passed:true,warmupCount:5,measuredCount:100},
+  monotonicFrequency:1000, barriers:[
+    {phase:"measured-resume",startedMonotonicTimestamp:100000},
+    {phase:"measured-complete",startedMonotonicTimestamp:200000}]}' > "$temporary/reset-capture.json"
+jq -rn '([range(0;5) | "kern :info : [\(50 + .).000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd"] +
+  [range(0;100) | "kern :info : [\(101 + .).000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd"])[]' \
+  > "$temporary/arm-reset-lines.txt"
+jq -R -s --arg profile asi676mc --arg token 3-1 --slurpfile capture "$temporary/reset-capture.json" \
+  -f "$USB_RESET_CLASSIFIER" "$temporary/arm-reset-lines.txt" > "$temporary/reset-classification.json"
+jq --exit-status '.passed == true and .preMeasuredResetCount == 5 and .measuredResetCount == 100 and
+  .postMeasuredResetCount == 0 and .unexpectedSelectedUsbLineCount == 0' \
+  "$temporary/reset-classification.json" >/dev/null
+jq -R -s --arg profile asi676mc --arg token 3-1 --slurpfile capture "$ARM_RESET_CAPTURE_FIXTURE" \
+  -f "$USB_RESET_CLASSIFIER" "$ARM_RESET_KERNEL_FIXTURE" > "$temporary/retained-reset-classification.json"
+jq --exit-status '.passed == true and .observedResetCount == 105 and .preMeasuredResetCount == 5 and
+  .measuredResetCount == 100 and .postMeasuredResetCount == 0' \
+  "$temporary/retained-reset-classification.json" >/dev/null
+
+jq -rn '([range(0;6) | "kern :info : [\(50 + .).000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd"] +
+  [range(0;99) | "kern :info : [\(101 + .).000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd"])[]' \
+  > "$temporary/substituted-reset-lines.txt"
+jq -R -s --arg profile asi676mc --arg token 3-1 --slurpfile capture "$temporary/reset-capture.json" \
+  -f "$USB_RESET_CLASSIFIER" "$temporary/substituted-reset-lines.txt" > "$temporary/substituted-reset.json"
+jq --exit-status '.passed == false and .observedResetCount == 105 and .phaseCorrelationPassed == false' \
+  "$temporary/substituted-reset.json" >/dev/null
+
+cp "$temporary/arm-reset-lines.txt" "$temporary/noncanonical-reset-lines.txt"
+printf '%s\n' 'kern :info : [250.000000] usb 3-1: reset SuperSpeed USB device number 2 using xhci-hcd unexpected' \
+  >> "$temporary/noncanonical-reset-lines.txt"
+jq -R -s --arg profile asi676mc --arg token 3-1 --slurpfile capture "$temporary/reset-capture.json" \
+  -f "$USB_RESET_CLASSIFIER" "$temporary/noncanonical-reset-lines.txt" > "$temporary/noncanonical-reset.json"
+jq --exit-status '.passed == false and .observedResetCount == 105 and .unexpectedSelectedUsbLineCount == 1' \
+  "$temporary/noncanonical-reset.json" >/dev/null
+
+if jq -R -s --arg profile forged --arg token 3-1 --slurpfile capture "$temporary/reset-capture.json" \
+    -f "$USB_RESET_CLASSIFIER" "$temporary/arm-reset-lines.txt" >/dev/null 2>&1; then
+    printf 'The USB reset classifier accepted an unknown profile.\n' >&2
+    exit 1
+fi
+jq '.profile = "asi178mc"' "$temporary/reset-capture.json" > "$temporary/x64-reset-capture.json"
+: > "$temporary/no-reset-lines.txt"
+jq -R -s --arg profile asi178mc --arg token 10-1 --slurpfile capture "$temporary/x64-reset-capture.json" \
+  -f "$USB_RESET_CLASSIFIER" "$temporary/no-reset-lines.txt" > "$temporary/x64-reset-classification.json"
+jq --exit-status '.passed == true and .expectedCaptureCount == 105 and .expectedResetCount == 0 and
+  .observedResetCount == 0' "$temporary/x64-reset-classification.json" >/dev/null
+
+mkdir "$temporary/manifest-root"
+printf 'summary\n' > "$temporary/manifest-root/trial-summary.json"
+summary_sha="$(sha256sum "$temporary/manifest-root/trial-summary.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
+summary_bytes="$(stat --format='%s' "$temporary/manifest-root/trial-summary.json")"
+jq -cS -n --arg sha "$summary_sha" --argjson bytes "$summary_bytes" '
+  {schemaVersion:"issue-268-post-summary-trial-manifest-v1",revision:"fixture",profile:"asi178mc",trial:"trial-1",
+   files:[{path:"trial-summary.json",bytes:$bytes,sha256:$sha}],fileCount:1,totalBytes:$bytes}' \
+  > "$temporary/manifest-input.json"
+manifest_identity="$(sha256sum "$temporary/manifest-input.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
+jq --arg identity "$manifest_identity" '. + {evidenceIdentitySha256:$identity}' \
+  "$temporary/manifest-input.json" > "$temporary/authenticated-manifest.json"
+"$MANIFEST_VERIFIER" "$temporary/authenticated-manifest.json" "$temporary/manifest-root"
+jq '.trial = "forged-trial"' "$temporary/authenticated-manifest.json" > "$temporary/forged-authenticated-manifest.json"
+if "$MANIFEST_VERIFIER" "$temporary/forged-authenticated-manifest.json" "$temporary/manifest-root" 2>/dev/null; then
+    printf 'The runner manifest verifier accepted relabeled authenticated evidence.\n' >&2
+    exit 1
+fi
+printf 'outside\n' > "$temporary/outside-summary.json"
+ln -s ../outside-summary.json "$temporary/manifest-root/linked-summary.json"
+outside_sha="$(sha256sum "$temporary/outside-summary.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
+outside_bytes="$(stat --format='%s' "$temporary/outside-summary.json")"
+jq -cS -n --arg sha "$outside_sha" --argjson bytes "$outside_bytes" '
+  {schemaVersion:"issue-268-post-summary-trial-manifest-v1",revision:"fixture",profile:"asi178mc",trial:"trial-1",
+   files:[{path:"linked-summary.json",bytes:$bytes,sha256:$sha}],fileCount:1,totalBytes:$bytes}' \
+  > "$temporary/symlink-manifest-input.json"
+symlink_identity="$(sha256sum "$temporary/symlink-manifest-input.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
+jq --arg identity "$symlink_identity" '. + {evidenceIdentitySha256:$identity}' \
+  "$temporary/symlink-manifest-input.json" > "$temporary/symlink-authenticated-manifest.json"
+if "$MANIFEST_VERIFIER" "$temporary/symlink-authenticated-manifest.json" "$temporary/manifest-root" 2>/dev/null; then
+    printf 'The runner manifest verifier accepted a member outside the evidence root.\n' >&2
+    exit 1
+fi
+aggregate_trial "$temporary/fixture.json" "$temporary/trial-summary.json"
+jq --exit-status '
+  .passed == true and
+  .telemetry.measuredWindowReconciliation.spans.laneClaim == 100 and
+  .telemetry.measuredWindowReconciliation.otlpCounters.laneClaims == 100 and
+  .resources.process.source == "bracketed OTLP process.cpu.time cpu.mode=user|system" and
+  .startupReadiness == {endpoint:"/alive", anonymous:true, ready:true, attempts:1,
+    elapsedSeconds:1, terminalResult:"ready"} and
+  .networkIsolation == {mode:"host-to-internal-container-ip", internal:true, networkCount:1,
+    publishedHostPorts:false, containerIpRetained:false} and
+  .resources.phaseDeltas.reconciliation.passed == true and
+  (.telemetry.requiredSeriesExportCoverage | length) >= 28 and
+  all(.telemetry.requiredSeriesExportCoverage[]; .passed == true) and
+  ([.telemetry.authenticatedExpectedStartupWarnings[].eventId] | sort) == [15, 35] and
+  ([.resources.phaseDeltas.acquisition.raw, .resources.phaseDeltas.drain.raw,
+    .resources.phaseDeltas.total.raw] | all(has("processCpuSeconds") and has("processReadSyscalls") and
+      has("containerNetworkWriteBytes") and has("blockIoTimeMilliseconds") and
+      has("sqliteWalGrowthBytes") and has("ingressCommitted") and has("laneClaims") and has("processingGraphs")))
+' "$temporary/trial-summary.json" >/dev/null
+
+jq '
+  .acquisition[0].profile = "asi676mc" |
+  .host[0].profile = {id:"asi676mc", model:"ASI676MC"} |
+  .execution[0].profile = "asi676mc" |
+  .trialManifests[0].profile = "asi676mc" |
+  .dmesg[0].retainedLineCount = 105 |
+  .dmesg[0].resetDisposition = {
+    classification:"accepted-sdk-commanded-per-capture",
+    authority:"https://github.com/RoySalisbury/HVO.SkyMonitor/issues/268#issuecomment-5181679194",
+    initiatorEvidenceSha256:"67EE85B0F65C2A5660B3678292F8740FE41C628B73A2EED5E72CF83F5A376FC0",
+    expectedCaptureCount:105, expectedResetCount:105, observedResetCount:105,
+    preMeasuredResetCount:5, measuredResetCount:100, postMeasuredResetCount:0,
+    unexpectedSelectedUsbLineCount:0, oomEvidenceLineCount:0,
+    phaseCorrelationPassed:true, passed:true
+  } |
+  .resources[].arm.throttled = "0x0"
+' "$temporary/fixture.json" > "$temporary/arm-reset-fixture.json"
+aggregate_trial "$temporary/arm-reset-fixture.json" "$temporary/arm-reset-summary.json"
+jq --exit-status '.passed == true and .dmesgMonitor.resetDisposition.observedResetCount == 105' \
+  "$temporary/arm-reset-summary.json" >/dev/null
+
+jq '.dmesg[0].resetDisposition.observedResetCount = 104 | .dmesg[0].retainedLineCount = 104' \
+  "$temporary/arm-reset-fixture.json" > "$temporary/missing-arm-reset.json"
+if aggregate_trial "$temporary/missing-arm-reset.json" "$temporary/invalid-arm-reset-summary.json" 2>/dev/null; then
+    printf 'An ARM trial with a missing SDK-commanded capture reset was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.dmesg[0].resetDisposition.unexpectedSelectedUsbLineCount = 1 | .dmesg[0].retainedLineCount = 106' \
+  "$temporary/arm-reset-fixture.json" > "$temporary/unexpected-arm-reset.json"
+if aggregate_trial "$temporary/unexpected-arm-reset.json" "$temporary/invalid-unexpected-reset-summary.json" 2>/dev/null; then
+    printf 'An ARM trial with an unexpected selected-device USB line was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.dmesg[0].retainedLineCount = 1 | .dmesg[0].resetDisposition.observedResetCount = 1' \
+  "$temporary/fixture.json" > "$temporary/x64-reset.json"
+if aggregate_trial "$temporary/x64-reset.json" "$temporary/invalid-x64-reset-summary.json" 2>/dev/null; then
+    printf 'An x64 trial with a USB reset was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.logs[0].resourceLogs[0].scopeLogs[0].logRecords += [{
+  timeUnixNano:"150000000000", severityNumber:13, severityText:"Warning",
+  body:{stringValue:"late startup warning"}, attributes:[{key:"EventId", value:{stringValue:"103"}}]
+}]' "$temporary/fixture.json" > "$temporary/late-startup.json"
+if aggregate_trial "$temporary/late-startup.json" "$temporary/invalid-startup-summary.json" 2>/dev/null; then
+    printf 'A measured-window event 103 warning was accepted.\n' >&2
+    exit 1
+fi
+
+jq '(.metrics[0].resourceMetrics[0].scopeMetrics[].metrics[] |
+  select(.name == "process.memory.working_set")).gauge.dataPoints |= .[0:2]' \
+  "$temporary/fixture.json" > "$temporary/missing-series-exports.json"
+if aggregate_trial "$temporary/missing-series-exports.json" "$temporary/invalid-series-coverage-summary.json" 2>/dev/null; then
+    printf 'A required OTLP series with insufficient export coverage was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.acquisition[0].boundarySnapshots.acquisitionEnd.completedUnixMilliseconds += 1000' \
+  "$temporary/fixture.json" > "$temporary/boundary-clock-step.json"
+if aggregate_trial "$temporary/boundary-clock-step.json" "$temporary/invalid-boundary-clock-summary.json" 2>/dev/null; then
+    printf 'A boundary wall/monotonic mismatch was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.host[0].mountAuthentication.shutdown.runtime.mount.Source = "forged-runtime"' \
+  "$temporary/fixture.json" > "$temporary/forged-runtime-mount.json"
+if aggregate_trial "$temporary/forged-runtime-mount.json" "$temporary/invalid-runtime-mount-summary.json" 2>/dev/null; then
+    printf 'A forged post-run runtime mount identity was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.acquisition[0].boundarySnapshots.acquisitionEnd.hostBlockDevice.name = "wrong-device"' \
+  "$temporary/fixture.json" > "$temporary/forged-boundary-device.json"
+if aggregate_trial "$temporary/forged-boundary-device.json" "$temporary/invalid-boundary-device-summary.json" 2>/dev/null; then
+    printf 'A boundary snapshot from the wrong block device was accepted.\n' >&2
+    exit 1
+fi
+
+jq '(.logs[0].resourceLogs[0].scopeLogs[0].logRecords[] |
+  select(any(.attributes[]?; .key == "EventId" and .value.stringValue == "35"))).body.stringValue = "unexpected"' \
+  "$temporary/fixture.json" > "$temporary/invalid-warning-body.json"
+if aggregate_trial "$temporary/invalid-warning-body.json" "$temporary/invalid-warning-body-summary.json" 2>/dev/null; then
+    printf 'An event 35 warning with an unexpected retained body was accepted.\n' >&2
+    exit 1
+fi
+
+jq '(.logs[0].resourceLogs[0].scopeLogs[0].logRecords[] |
+  select(any(.attributes[]?; .key == "EventId" and .value.stringValue == "15"))) |=
+  (.attributes |= map(if .key == "SourceContext" then .value.stringValue = "Untrusted.Source" else . end))' \
+  "$temporary/fixture.json" > "$temporary/invalid-warning-source.json"
+if aggregate_trial "$temporary/invalid-warning-source.json" "$temporary/invalid-warning-summary.json" 2>/dev/null; then
+    printf 'An event 15 warning from an untrusted source was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.resources[20].timestampUnixMilliseconds += 1000' "$temporary/fixture.json" > "$temporary/clock-step.json"
+if aggregate_trial "$temporary/clock-step.json" "$temporary/invalid-clock-summary.json" 2>/dev/null; then
+    printf 'A resource-sampling wall-clock step was accepted.\n' >&2
+    exit 1
+fi
+
+jq '(.logs[0].resourceLogs[0].scopeLogs[0].logRecords[] |
+  select(any(.attributes[]?; .key == "EventId" and .value.stringValue == "2048"))) |=
+  (.attributes |= map(if .key == "Result" then .value.stringValue = "failure" else . end) |
+   .body.stringValue = "Raw ingress SQLite operation commit completed with result failure")' \
+  "$temporary/fixture.json" > "$temporary/failed-sqlite-warning.json"
+if aggregate_trial "$temporary/failed-sqlite-warning.json" "$temporary/invalid-sqlite-summary.json" 2>/dev/null; then
+    printf 'A failure event 2048 warning was accepted.\n' >&2
+    exit 1
+fi
+
+jq -n --slurpfile trial "$temporary/trial-summary.json" \
+    '[range(0; 5) as $index | $trial[0] + {
+      trial: ("trial-" + (($index + 1) | tostring)),
+      trialInputIdentity: ("fixture-input-" + (($index + 1) | tostring)),
+      boundaries: ($trial[0].boundaries | with_entries(.value += ($index * 200000))),
+      resources: ($trial[0].resources | del(.samples))
+    }]' \
+    > "$temporary/trials.json"
+jq -n '[range(0; 5) as $index | {
+      schemaVersion:"issue-268-post-summary-trial-manifest-v1",
+      revision:"fixture", profile:"asi178mc", trial:("trial-" + (($index + 1) | tostring)),
+      evidenceIdentitySha256:(((["A", "B", "C", "D", "E"][$index])) * 64),
+      fileCount:1, totalBytes:1, files:[{path:"evidence/trial-summary.json",bytes:1,sha256:("A" * 64)}]
+    }]' > "$temporary/trial-manifests.json"
+jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/trials.json" \
+    --slurpfile campaignManifests "$temporary/trial-manifests.json" \
+    -f "$AGGREGATOR" > "$temporary/campaign-summary.json"
+jq --exit-status '.allPassed == true and .citable == true and .trialCount == 5 and
+  all(.trials[].startupReadiness; .endpoint == "/alive" and .ready == true and .terminalResult == "ready") and
+  all(.trials[].networkIsolation; .internal == true and .publishedHostPorts == false and .containerIpRetained == false) and
+  ([.trialStorageTopologies[].storage.runtime.path] | all(. == "runtime"))' \
+    "$temporary/campaign-summary.json" >/dev/null
+
+jq '.[1].trial = .[0].trial' "$temporary/trials.json" > "$temporary/duplicate-trial.json"
+if jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/duplicate-trial.json" \
+    --slurpfile campaignManifests "$temporary/trial-manifests.json" \
+    -f "$AGGREGATOR" > "$temporary/invalid-campaign-summary.json" 2>/dev/null; then
+    printf 'Duplicate trial identifiers were accepted.\n' >&2
+    exit 1
+fi
+
+jq '.[1].trial = "forged-trial"' "$temporary/trials.json" > "$temporary/duplicate-evidence.json"
+if jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/duplicate-evidence.json" \
+    --slurpfile campaignManifests "$temporary/trial-manifests.json" \
+    -f "$AGGREGATOR" > "$temporary/invalid-evidence-summary.json" 2>/dev/null; then
+    printf 'A relabeled trial summary was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.[1] = .[0]' "$temporary/trial-manifests.json" > "$temporary/duplicate-manifest.json"
+if jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/trials.json" \
+    --slurpfile campaignManifests "$temporary/duplicate-manifest.json" \
+    -f "$AGGREGATOR" > "$temporary/invalid-duplicate-manifest-summary.json" 2>/dev/null; then
+    printf 'A duplicate post-summary trial manifest was accepted.\n' >&2
+    exit 1
+fi
+
+jq '.[1].trial = "relabeled-trial"' "$temporary/trial-manifests.json" > "$temporary/relabeled-manifest.json"
+if jq -n --arg mode campaign \
+    --argjson acquisition '[]' --argjson host '[]' --argjson resources '[]' --argjson metrics '[]' \
+    --argjson traces '[]' --argjson logs '[]' --argjson dmesg '[]' --argjson exportIo '[]' \
+    --argjson execution '[]' --argjson trialManifests '[]' \
+    --slurpfile trials "$temporary/trials.json" \
+    --slurpfile campaignManifests "$temporary/relabeled-manifest.json" \
+    -f "$AGGREGATOR" > "$temporary/invalid-relabel-summary.json" 2>/dev/null; then
+    printf 'A relabeled post-summary trial manifest was accepted.\n' >&2
+    exit 1
+fi
+
+printf 'Issue #268 physical aggregate trial, campaign, and duplicate-rejection fixtures passed.\n'

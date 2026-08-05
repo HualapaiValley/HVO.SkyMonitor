@@ -50,7 +50,15 @@ if [[ -e "$OUTPUT_ROOT" ]]; then
 fi
 
 mkdir -p "$OUTPUT_PARENT"
-exec 8> "$OUTPUT_PARENT/.performance.lock"
+readonly PERFORMANCE_LOCK="$OUTPUT_PARENT/.performance.lock"
+[[ ! -L "$PERFORMANCE_LOCK" ]] || { printf 'The shared performance lock must not be a symbolic link.\n' >&2; exit 2; }
+exec 8>> "$PERFORMANCE_LOCK"
+if [[ "$(realpath -e -- "$PERFORMANCE_LOCK")" != "$PERFORMANCE_LOCK" ||
+    "$(realpath -e -- "/proc/$$/fd/8")" != "$PERFORMANCE_LOCK" ||
+    "$(stat -c %F -- "$PERFORMANCE_LOCK")" != regular*file ]]; then
+    printf 'The shared performance lock is not a trusted regular file.\n' >&2
+    exit 2
+fi
 flock -n 8 || {
     printf 'Another issue #257 performance campaign owns the evidence lock.\n' >&2
     exit 2
