@@ -482,11 +482,6 @@ public sealed class ZwoAsiCameraModule :
                 }
             }
 
-            if (opened && !closed)
-            {
-                throw new InvalidOperationException("The configured ASI camera is not connected.");
-            }
-
             if (identityRead && closed && serialMatches)
             {
                 matches.Add(camera);

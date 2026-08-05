@@ -255,14 +255,16 @@ public sealed class ZwoAsiCameraModuleTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public async Task SelectionDoesNotOpenUnrelatedInventoryEntries()
+    public async Task SelectionSkipsUnrelatedAndUnsafeInventoryEntries()
     {
         var native = new FakeAsiNativeApi();
         native.Cameras.Insert(0, Camera(1, "ZWO ASI120MM Mini", Convert.FromHexString("1011223344556677"), color: false));
         native.Cameras.Insert(1, Camera(2, "ZWO ASI676MM", Convert.FromHexString("2011223344556677"), color: false));
         native.Cameras.Insert(2, Camera(3, "ZWO ASI676MC", Convert.FromHexString("3011223344556677")));
+        native.Cameras.Insert(3, Camera(4, "ZWO ASI676MC", Convert.FromHexString("4011223344556677")));
         native.FailOpenCameraIds.Add(1);
         native.FailSerialCameraIds.Add(2);
+        native.FailCloseCameraIds.Add(4);
         await using var module = Module(native);
 
         await module.InitializeAsync(CreateConfig(), CancellationToken.None);
@@ -271,8 +273,9 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.DoesNotContain("Open:2", native.Calls);
         Assert.DoesNotContain("Serial:1", native.Calls);
         Assert.DoesNotContain("Serial:2", native.Calls);
+        Assert.Contains("Close:4", native.Calls);
         Assert.Contains("Init:7", native.Calls);
-        Assert.AreEqual(2, native.CloseCameraCalls);
+        Assert.AreEqual(3, native.CloseCameraCalls);
     }
 
     [TestMethod]
