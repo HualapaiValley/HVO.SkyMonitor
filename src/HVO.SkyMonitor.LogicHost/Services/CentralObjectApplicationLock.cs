@@ -210,28 +210,32 @@ internal sealed class CentralObjectApplicationLockSet : IAsyncDisposable
         {
             throw new CentralObjectApplicationLockLostException();
         }
-        foreach (var resource in resources)
+        // The generated SQL contains parameter placeholders only; every resource remains a SQL parameter.
+#pragma warning disable CA2100
+        await using var command = new SqlCommand(
+            $"SELECT COUNT(*) FROM (VALUES {string.Join(", ", resources.Select((_, index) => $"(@resource{index})"))}) AS expected([resource]) WHERE APPLOCK_MODE(N'public', expected.[resource], N'Session') = N'Exclusive';",
+            connection)
+#pragma warning restore CA2100
         {
-            await using var command = new SqlCommand(
-                "SELECT APPLOCK_MODE(N'public', @resource, N'Session');", connection)
-            {
-                Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction() as SqlTransaction
-            };
-            _ = command.Parameters.AddWithValue("@resource", resource);
-            string? mode;
-            try
-            {
-                mode = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
-            }
-            catch (InvalidOperationException exception) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new CentralObjectApplicationLockLostException(
-                    "The central object application lock session closed during ownership verification.", exception);
-            }
-            if (!string.Equals(mode, "Exclusive", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new CentralObjectApplicationLockLostException();
-            }
+            Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction() as SqlTransaction
+        };
+        for (var index = 0; index < resources.Count; index++)
+        {
+            _ = command.Parameters.AddWithValue($"@resource{index}", resources[index]);
+        }
+        int held;
+        try
+        {
+            held = (int)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+        }
+        catch (InvalidOperationException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new CentralObjectApplicationLockLostException(
+                "The central object application lock session closed during ownership verification.", exception);
+        }
+        if (held != resources.Count)
+        {
+            throw new CentralObjectApplicationLockLostException();
         }
     }
 
