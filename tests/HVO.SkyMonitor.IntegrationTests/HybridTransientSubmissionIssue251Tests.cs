@@ -17,7 +17,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 
 public sealed partial class HybridTransientSubmissionIntegrationTests
 {
-    private static readonly JsonSerializerOptions Issue243HybridJsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions Issue251HybridJsonOptions = new() { WriteIndented = true };
 
     [TestMethod]
     public async Task GenerationCheck_HoldsObjectFencesWithoutSqlTransactionAndRejectsChangedSource()
@@ -25,7 +25,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         var scenario = await CreateScenarioAsync().ConfigureAwait(false);
         try
         {
-            var applicationName = $"HVO.SkyMonitor.Issue243.Hybrid.{Guid.NewGuid():N}";
+            var applicationName = $"HVO.SkyMonitor.Issue251.Hybrid.{Guid.NewGuid():N}";
             var subjectConnection = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
             {
                 ApplicationName = applicationName
@@ -55,13 +55,13 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             try
             {
                 await reader.Entered.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
-                snapshot = await ReadIssue243HybridSnapshotAsync(
+                snapshot = await ReadIssue251HybridSnapshotAsync(
                     AssemblyHooks.Fixture.SqlServerConnectionString, applicationName).ConfigureAwait(false);
                 Assert.IsGreaterThanOrEqualTo(1, snapshot.Sessions);
                 Assert.AreEqual(0, snapshot.OpenTransactionSessions);
                 Assert.IsGreaterThanOrEqualTo(5, snapshot.SessionApplicationLocks);
                 Assert.AreEqual(0, snapshot.TransactionApplicationLocks);
-                blocker = await ObserveIssue243HybridBlockedUpdateAsync(
+                blocker = await ObserveIssue251HybridBlockedUpdateAsync(
                     AssemblyHooks.Fixture.SqlServerConnectionString, scenario.CentralArtifactIds[0]).ConfigureAwait(false);
                 Assert.IsFalse(blocker.TimedOut);
             }
@@ -91,7 +91,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                     .ConfigureAwait(false);
                 Assert.AreEqual(0, acceptedJobCount);
                 Assert.IsTrue(rejectionAuditRecorded);
-                var repositoryRoot = FindIssue243HybridRepositoryRoot();
+                var repositoryRoot = FindIssue251HybridRepositoryRoot();
                 var source = await EvidenceSourceIdentity.CaptureAsync(
                     repositoryRoot,
                     typeof(HybridTransientSubmissionIntegrationTests),
@@ -131,7 +131,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 await EvidenceSourceIdentity.WriteJsonAsync(
                     Path.Combine(output, "hybrid-generation-fence.json"),
                     evidence,
-                    Issue243HybridJsonOptions).ConfigureAwait(false);
+                    Issue251HybridJsonOptions).ConfigureAwait(false);
                 TestContext.WriteLine(
                     "issue251 hybrid generation: elapsed_ms={0:F3}, sessions={1}, open_transactions={2}, session_application_locks={3}, blocker_ms={4:F3}",
                     elapsed.TotalMilliseconds,
@@ -143,7 +143,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         }
         finally
         {
-            await QuiesceIssue243HybridJobsAsync(scenario.CentralArtifactIds).ConfigureAwait(false);
+            await QuiesceIssue251HybridJobsAsync(scenario.CentralArtifactIds).ConfigureAwait(false);
         }
 
         await AssertRealGenerationReplacementRejectedAsync().ConfigureAwait(false);
@@ -156,7 +156,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
 
     public TestContext TestContext { get; set; } = null!;
 
-    private static async Task QuiesceIssue243HybridJobsAsync(IReadOnlyList<Guid> sourceArtifactIds)
+    private static async Task QuiesceIssue251HybridJobsAsync(IReadOnlyList<Guid> sourceArtifactIds)
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -173,7 +173,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
                 .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null)
-                .SetProperty(job => job.StateReasonCode, "issue-243.probe-complete"))
+                .SetProperty(job => job.StateReasonCode, "issue-251.probe-complete"))
             .ConfigureAwait(false);
     }
 
@@ -247,7 +247,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         }
         finally
         {
-            await QuiesceIssue243HybridJobsAsync(scenario.CentralArtifactIds).ConfigureAwait(false);
+            await QuiesceIssue251HybridJobsAsync(scenario.CentralArtifactIds).ConfigureAwait(false);
         }
     }
 
@@ -286,7 +286,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             try
             {
                 await probe.AllEntered.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
-                var snapshot = await ReadIssue243HybridSnapshotAsync(
+                var snapshot = await ReadIssue251HybridSnapshotAsync(
                     AssemblyHooks.Fixture.SqlServerConnectionString, applicationName).ConfigureAwait(false);
                 Assert.IsGreaterThanOrEqualTo(concurrency, snapshot.Sessions);
                 Assert.AreEqual(0, snapshot.OpenTransactionSessions);
@@ -342,7 +342,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         {
             foreach (var scenario in scenarios)
             {
-                await QuiesceIssue243HybridJobsAsync(scenario.CentralArtifactIds).ConfigureAwait(false);
+                await QuiesceIssue251HybridJobsAsync(scenario.CentralArtifactIds).ConfigureAwait(false);
             }
         }
     }
@@ -411,7 +411,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 var observationDeadline = DateTimeOffset.UtcNow.AddSeconds(15);
                 do
                 {
-                    overlapSnapshot = await ReadIssue243HybridSnapshotAsync(
+                    overlapSnapshot = await ReadIssue251HybridSnapshotAsync(
                         AssemblyHooks.Fixture.SqlServerConnectionString, applicationName).ConfigureAwait(false);
                     if (overlapSnapshot.WaitingApplicationLockSessions == concurrency - 1)
                     {
@@ -456,11 +456,11 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         }
         finally
         {
-            await QuiesceIssue243HybridJobsAsync(scenario.CentralArtifactIds).ConfigureAwait(false);
+            await QuiesceIssue251HybridJobsAsync(scenario.CentralArtifactIds).ConfigureAwait(false);
         }
     }
 
-    private static string FindIssue243HybridRepositoryRoot()
+    private static string FindIssue251HybridRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
              directory is not null;
@@ -474,7 +474,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         throw new InvalidOperationException("Repository root not found.");
     }
 
-    private static async Task<SqlCriticalSectionSnapshot> ReadIssue243HybridSnapshotAsync(
+    private static async Task<SqlCriticalSectionSnapshot> ReadIssue251HybridSnapshotAsync(
         string connectionString,
         string applicationName)
     {
@@ -515,7 +515,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             result.GetInt32(5));
     }
 
-    private static async Task<BlockedUpdateEvidence> ObserveIssue243HybridBlockedUpdateAsync(
+    private static async Task<BlockedUpdateEvidence> ObserveIssue251HybridBlockedUpdateAsync(
         string connectionString,
         Guid artifactId)
     {

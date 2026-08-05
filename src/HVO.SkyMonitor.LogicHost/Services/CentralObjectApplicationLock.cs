@@ -254,7 +254,7 @@ internal sealed class CentralObjectApplicationLockSet : IAsyncDisposable
         {
             if (closeConnection)
             {
-                await connection.CloseAsync().ConfigureAwait(false);
+                await dbContext.Database.CloseConnectionAsync().ConfigureAwait(false);
             }
         }
     }
