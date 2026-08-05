@@ -97,6 +97,21 @@ if "$MANIFEST_VERIFIER" "$temporary/forged-authenticated-manifest.json" "$tempor
     printf 'The runner manifest verifier accepted relabeled authenticated evidence.\n' >&2
     exit 1
 fi
+printf 'outside\n' > "$temporary/outside-summary.json"
+ln -s ../outside-summary.json "$temporary/manifest-root/linked-summary.json"
+outside_sha="$(sha256sum "$temporary/outside-summary.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
+outside_bytes="$(stat --format='%s' "$temporary/outside-summary.json")"
+jq -cS -n --arg sha "$outside_sha" --argjson bytes "$outside_bytes" '
+  {schemaVersion:"issue-268-post-summary-trial-manifest-v1",revision:"fixture",profile:"asi178mc",trial:"trial-1",
+   files:[{path:"linked-summary.json",bytes:$bytes,sha256:$sha}],fileCount:1,totalBytes:$bytes}' \
+  > "$temporary/symlink-manifest-input.json"
+symlink_identity="$(sha256sum "$temporary/symlink-manifest-input.json" | { read -r hash _; printf '%s' "${hash^^}"; })"
+jq --arg identity "$symlink_identity" '. + {evidenceIdentitySha256:$identity}' \
+  "$temporary/symlink-manifest-input.json" > "$temporary/symlink-authenticated-manifest.json"
+if "$MANIFEST_VERIFIER" "$temporary/symlink-authenticated-manifest.json" "$temporary/manifest-root" 2>/dev/null; then
+    printf 'The runner manifest verifier accepted a member outside the evidence root.\n' >&2
+    exit 1
+fi
 aggregate_trial "$temporary/fixture.json" "$temporary/trial-summary.json"
 jq --exit-status '
   .passed == true and

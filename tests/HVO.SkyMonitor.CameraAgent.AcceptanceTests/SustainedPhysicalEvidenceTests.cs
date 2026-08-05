@@ -518,7 +518,7 @@ public sealed class SustainedPhysicalEvidenceTests
             dockerStatsElement,
             processBoundary,
             processSnapshotSha256,
-            new HostBlockDeviceBoundary(blockDevice, blockDeviceStat.Trim()),
+            new HostBlockDeviceBoundary("runtime", blockDeviceStat.Trim()),
             new SqliteFileBoundary(sqliteSizes[0], sqliteSizes[1], sqliteSizes[2]),
             prometheusCounters);
         await File.WriteAllTextAsync(Path.Combine(evidenceRoot, $"metrics-{name}.txt"), metrics).ConfigureAwait(false);
@@ -556,6 +556,7 @@ public sealed class SustainedPhysicalEvidenceTests
             "camera_agent_capture_control_cycles",
             "camera_agent_capture_control_decisions",
             "camera_agent_ingress_committed",
+            "camera_agent_ingress_committed_bytes",
             "camera_agent_ingress_sqlite_transactions",
             "camera_agent_ingress_sqlite_checkpoints",
             "camera_agent_ingress_sqlite_lock_wait_duration_seconds_count",

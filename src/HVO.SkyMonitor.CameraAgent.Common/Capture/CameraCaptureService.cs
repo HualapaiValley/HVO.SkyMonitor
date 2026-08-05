@@ -147,7 +147,26 @@ public sealed class CameraCaptureService(
             {
                 if (module is not null)
                 {
-                    await module.DisposeAsync().ConfigureAwait(false);
+                    try
+                    {
+                        await module.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _fleetRuntimeState.CaptureFailed(ex.GetType().Name);
+                        _logger.CaptureLoopFailed(ex);
+                        if (!stoppingToken.IsCancellationRequested)
+                        {
+                            try
+                            {
+                                await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                            {
+                                // A failed native close cannot be retried safely in the same host process.
+                            }
+                        }
+                    }
                 }
             }
         }

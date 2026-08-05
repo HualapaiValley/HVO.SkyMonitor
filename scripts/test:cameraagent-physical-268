@@ -109,7 +109,15 @@ readonly STATE_ROOT
     exit 2
 }
 mkdir -p "$STATE_ROOT"
-exec 8> "$STATE_ROOT/.performance.lock"
+readonly PERFORMANCE_LOCK="$STATE_ROOT/.performance.lock"
+[[ ! -L "$PERFORMANCE_LOCK" ]] || { printf 'The shared performance lock must not be a symbolic link.\n' >&2; exit 2; }
+exec 8>> "$PERFORMANCE_LOCK"
+if [[ "$(realpath -e -- "$PERFORMANCE_LOCK")" != "$PERFORMANCE_LOCK" ||
+    "$(realpath -e -- "/proc/$$/fd/8")" != "$PERFORMANCE_LOCK" ||
+    "$(stat -c %F -- "$PERFORMANCE_LOCK")" != "regular file" ]]; then
+    printf 'The shared performance lock is not a trusted regular file.\n' >&2
+    exit 2
+fi
 flock -n 8 || { printf 'Another performance campaign owns %s/.performance.lock.\n' "$STATE_ROOT" >&2; exit 2; }
 
 compute_dirty_sha256() {
@@ -614,7 +622,7 @@ write_host_manifest() {
     local output="$1"
     jq -n \
         --arg commit "$REVISION" --arg branch "$BRANCH" --arg profile "$PROFILE" --arg model "$CAMERA_MODEL" \
-        --arg host "$HOSTNAME_ACTUAL" --arg kernel "$(uname -r)" --arg architecture "$EXPECTED_ARCH" \
+        --arg kernel "$(uname -r)" --arg architecture "$EXPECTED_ARCH" \
         --argjson memoryBytes "$EXPECTED_MEMORY_BYTES" \
         --arg imageArchitecture "$EXPECTED_IMAGE_ARCH" --arg dotnetSdk "$DOTNET_SDK_VERSION" --arg dockerVersion "$DOCKER_VERSION" \
         --arg cameraImage "$CAMERA_AGENT_IMAGE" --arg cameraAssemblySha256 "$CAMERA_ASSEMBLY_SHA256" \
@@ -626,22 +634,16 @@ write_host_manifest() {
         --arg collectorImage "$HVO_OTEL_COLLECTOR_IMAGE" --arg collectorImageId "$COLLECTOR_IMAGE_ID" \
         --arg collectorConfigSha256 "$effective_collector_config_sha256" \
         --arg centralDenyImage "$CENTRAL_DENY_IMAGE" --arg centralDenyImageId "$CENTRAL_DENY_IMAGE_ID" \
-        --arg usbSysfsPath "$HVO_ISSUE_268_USB_SYSFS_PATH" --arg usbIdentity "03c3:$EXPECTED_USB_PRODUCT" \
-        --arg runtimeKind "$runtime_kind" --arg runtimePath "$runtime_path" --arg runtimeDevice "$runtime_mount_source" \
-        --arg runtimeFs "$runtime_mount_fs" --arg runtimeMount "$runtime_mount_target" --arg runtimeOptions "$runtime_mount_options" \
-        --arg runtimeVolumeName "$runtime_volume" --arg runtimeVolumeSource "$runtime_volume_source" \
-        --arg dockerRoot "$DOCKER_ROOT" --arg dockerDevice "$docker_mount_source" --arg dockerFs "$docker_mount_fs" \
-        --arg dockerMount "$docker_mount_target" --arg dockerOptions "$docker_mount_options" \
-        --arg evidencePath "$CAMPAIGN_ROOT" --arg evidenceDevice "$evidence_mount_source" --arg evidenceFs "$evidence_mount_fs" \
-        --arg evidenceMount "$evidence_mount_target" --arg evidenceOptions "$evidence_mount_options" \
-        --argjson volumeInspect "$(docker volume inspect "$runtime_volume")" \
+        --arg usbIdentity "03c3:$EXPECTED_USB_PRODUCT" \
+        --arg runtimeKind "$runtime_kind" --arg runtimeFs "$runtime_mount_fs" \
+        --arg dockerFs "$docker_mount_fs" --arg evidenceFs "$evidence_mount_fs" \
         --argjson runtimeFreeBytes "$runtime_free_bytes" --argjson dockerFreeBytes "$docker_free_bytes" \
         --argjson evidenceFreeBytes "$evidence_free_bytes" \
         --argjson logicalBlockSize "$BLOCK_LOGICAL_SIZE" '
       {
         schemaVersion: "issue-268-physical-host-manifest-v1",
         revision: {commit: $commit, branch: $branch, clean: true},
-        host: {name: $host, kernel: $kernel, architecture: $architecture, imageArchitecture: $imageArchitecture,
+        host: {nameRetained: false, kernel: $kernel, architecture: $architecture, imageArchitecture: $imageArchitecture,
           logicalCpuCount: null, memoryBytes: $memoryBytes, dotnetSdk: $dotnetSdk,
           dockerVersion: $dockerVersion, ntpSynchronized: true},
         profile: {id: $profile, model: $model},
@@ -654,17 +656,15 @@ write_host_manifest() {
           collectorImage: $collectorImage, collectorImageId: $collectorImageId,
           collectorConfigurationSha256: $collectorConfigSha256,
           centralDenyImage: $centralDenyImage, centralDenyImageId: $centralDenyImageId},
-        usb: {sysfsPath: $usbSysfsPath, identity: $usbIdentity, speedMegabits: 5000, usbfsMemoryMegabytes: 200,
+        usb: {sysfsPathRetained: false, identity: $usbIdentity, speedMegabits: 5000, usbfsMemoryMegabytes: 200,
           privateSerialRetained: false},
-        storage: {runtime: {kind: $runtimeKind, path: $runtimePath, device: $runtimeDevice, filesystem: $runtimeFs,
-            mount: $runtimeMount, mountOptions: $runtimeOptions, freeBytes: $runtimeFreeBytes,
-            logicalBlockSize: $logicalBlockSize, volumeInspect: $volumeInspect,
-            containerMount: {type:"volume", source:$runtimeVolumeSource, name:$runtimeVolumeName,
+        storage: {runtime: {kind: $runtimeKind, path: "runtime", filesystem: $runtimeFs,
+            freeBytes: $runtimeFreeBytes, logicalBlockSize: $logicalBlockSize,
+            volumeInspectRetained: false,
+            containerMount: {type:"volume", sourceRetained:false, nameRetained:false,
               destination:"/var/lib/hvo/data/agent"}},
-          evidence: {path: $evidencePath, device: $evidenceDevice, filesystem: $evidenceFs,
-            mount: $evidenceMount, mountOptions: $evidenceOptions, freeBytes: $evidenceFreeBytes},
-          docker: {path: $dockerRoot, device: $dockerDevice, filesystem: $dockerFs,
-            mount: $dockerMount, mountOptions: $dockerOptions, freeBytes: $dockerFreeBytes}}
+          evidence: {path:"evidence", filesystem:$evidenceFs, freeBytes:$evidenceFreeBytes},
+          docker: {path:"docker", filesystem:$dockerFs, freeBytes:$dockerFreeBytes}}
       }' > "$output"
     jq --argjson cpus "$(nproc)" '.host.logicalCpuCount = $cpus' "$output" > "$output.tmp"
     mv "$output.tmp" "$output"
@@ -962,15 +962,15 @@ for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
     fi
     runtime_volume_source="$(docker volume inspect "$runtime_volume" --format '{{.Mountpoint}}')"
     if [[ "$runtime_kind" == docker-named-volume ]]; then
-        read -r runtime_mount_source runtime_mount_target runtime_mount_fs runtime_mount_options < <(
+        read -r runtime_mount_source _runtime_mount_target runtime_mount_fs _runtime_mount_options < <(
             sudo -n findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$runtime_storage_path")
     else
-        read -r runtime_mount_source runtime_mount_target runtime_mount_fs runtime_mount_options < <(
+        read -r runtime_mount_source _runtime_mount_target runtime_mount_fs _runtime_mount_options < <(
             findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$runtime_storage_path")
     fi
-    read -r docker_mount_source docker_mount_target docker_mount_fs docker_mount_options < <(
+    read -r _docker_mount_source _docker_mount_target docker_mount_fs _docker_mount_options < <(
         findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$DOCKER_ROOT")
-    read -r evidence_mount_source evidence_mount_target evidence_mount_fs evidence_mount_options < <(
+    read -r evidence_mount_source _evidence_mount_target evidence_mount_fs _evidence_mount_options < <(
         findmnt -n -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$evidence_root")
     [[ "$runtime_mount_source" == "$EXPECTED_RUNTIME_DEVICE" && "$runtime_mount_fs" == "$EXPECTED_RUNTIME_FS" ]] || {
         printf 'Per-trial runtime mount identity changed: %s %s.\n' "$runtime_mount_source" "$runtime_mount_fs" >&2
@@ -1148,10 +1148,11 @@ EOF
         --argjson runtimeMount "$startup_runtime_mount" --argjson runtimeWritable "$startup_runtime_writable" \
         --arg expectedRuntimeSource "$runtime_volume_source" --arg expectedRuntimeName "$runtime_volume" '
       .mountAuthentication.startup = {
-        configSource:$configSource, catalogSource:$catalogSource, collectorSource:$collectorSource, sdkSource:$sdkSource,
+        sourcePathsRetained:false,
         configSha256:$configSha256, catalogTreeSha256:$catalogTreeSha256, sdkSha256:$sdkSha256,
         collectorConfigurationSha256:$collectorConfigSha256,
-        runtime:{mount:$runtimeMount, writable:$runtimeWritable},
+        runtime:{mount:{Type:$runtimeMount.Type, Destination:$runtimeMount.Destination, RW:$runtimeMount.RW,
+          sourceRetained:false, nameRetained:false}, writable:$runtimeWritable},
         passed: ($configSource == $expectedConfigSource and $catalogSource == $expectedCatalogSource and
           $collectorSource == $expectedCollectorSource and $sdkSource == $expectedSdkSource and
           $configSha256 == .sourceIdentities.resolvedConfigurationSha256 and $sdkSha256 == .sourceIdentities.sdkLibrarySha256 and
@@ -1294,10 +1295,11 @@ EOF
         --argjson runtimeMount "$shutdown_runtime_mount" --argjson runtimeWritable "$shutdown_runtime_writable" \
         --arg expectedRuntimeSource "$runtime_volume_source" --arg expectedRuntimeName "$runtime_volume" '
       .mountAuthentication.shutdown = {
-        configSource:$configSource, catalogSource:$catalogSource, collectorSource:$collectorSource, sdkSource:$sdkSource,
+        sourcePathsRetained:false,
         configSha256:$configSha256, catalogTreeSha256:$catalogTreeSha256, sdkSha256:$sdkSha256,
         collectorConfigurationSha256:$collectorConfigSha256,
-        runtime:{mount:$runtimeMount, writable:$runtimeWritable},
+        runtime:{mount:{Type:$runtimeMount.Type, Destination:$runtimeMount.Destination, RW:$runtimeMount.RW,
+          sourceRetained:false, nameRetained:false}, writable:$runtimeWritable},
         passed: ($configSource == $expectedConfigSource and $catalogSource == $expectedCatalogSource and
           $collectorSource == $expectedCollectorSource and $sdkSource == $expectedSdkSource and
           $configSha256 == .sourceIdentities.resolvedConfigurationSha256 and $sdkSha256 == .sourceIdentities.sdkLibrarySha256 and
@@ -1346,15 +1348,15 @@ EOF
     runtime_block_after="$(<"/sys/class/block/$BLOCK_DEVICE/stat")"
     evidence_block_after="$(<"/sys/class/block/$EVIDENCE_BLOCK_DEVICE/stat")"
     exported_bytes="$(du -sb "$exported_runtime" | cut -f1)"
-    jq -n --arg profile "$PROFILE" --arg runtimeDevice "$runtime_mount_source" --arg evidenceDevice "$evidence_mount_source" \
+    jq -n --arg profile "$PROFILE" \
         --arg runtimeBefore "$runtime_block_before" --arg runtimeAfter "$runtime_block_after" \
         --arg evidenceBefore "$evidence_block_before" --arg evidenceAfter "$evidence_block_after" \
         --argjson startedNanoseconds "$export_started_nanoseconds" --argjson completedNanoseconds "$export_completed_nanoseconds" \
         --argjson exportedBytes "$exported_bytes" '
       {schemaVersion:"issue-268-export-io-v1", profile:$profile, startedUnixNanoseconds:$startedNanoseconds,
        completedUnixNanoseconds:$completedNanoseconds, durationNanoseconds:($completedNanoseconds-$startedNanoseconds),
-       exportedBytes:$exportedBytes, runtime:{device:$runtimeDevice, blockStatBefore:$runtimeBefore, blockStatAfter:$runtimeAfter},
-       evidence:{device:$evidenceDevice, blockStatBefore:$evidenceBefore, blockStatAfter:$evidenceAfter},
+       exportedBytes:$exportedBytes, runtime:{device:"runtime", blockStatBefore:$runtimeBefore, blockStatAfter:$runtimeAfter},
+       evidence:{device:"evidence", blockStatBefore:$evidenceBefore, blockStatAfter:$evidenceAfter},
        excludedFromTrialMeasurements:true,
        armExportReportedSeparately:($profile=="asi676mc")}' > "$evidence_root/export-io.json"
     while IFS= read -r -d '' exported_path; do
@@ -1378,13 +1380,16 @@ EOF
               "${line,,}" =~ oom|out[[:space:]]+of[[:space:]]+memory|killed[[:space:]]+process ]]; then
             printf '%s\n' "$line"
         fi
-    done < "$control_root/kernel-live.raw" > "$evidence_root/kernel-selected.sanitized.log"
-    sanitize_text_file "$evidence_root/kernel-selected.sanitized.log"
+    done < "$control_root/kernel-live.raw" > "$control_root/kernel-selected.raw"
     reset_disposition="$(jq -R -s --arg profile "$PROFILE" --arg token "$selected_usb_kernel_token" \
         --slurpfile capture "$evidence_root/capture-evidence.json" -f "$USB_RESET_CLASSIFIER" \
-        "$evidence_root/kernel-selected.sanitized.log")"
-    jq --arg token "$selected_usb_kernel_token" --argjson resetDisposition "$reset_disposition" \
-        '. + {followMode:"follow-new", selectedUsbToken:$token,
+        "$control_root/kernel-selected.raw")"
+    while IFS= read -r line; do
+        printf '%s\n' "${line//"$selected_usb_kernel_token"/<selected-usb>}"
+    done < "$control_root/kernel-selected.raw" > "$evidence_root/kernel-selected.sanitized.log"
+    sanitize_text_file "$evidence_root/kernel-selected.sanitized.log"
+    jq --argjson resetDisposition "$reset_disposition" \
+        '. + {followMode:"follow-new", selectedUsbTokenRetained:false,
           retainedLineCount:$resetDisposition.retainedLineCount,
           oomEvidenceLineCount:$resetDisposition.oomEvidenceLineCount, privacySanitized:true,
           resetDisposition:$resetDisposition}' "$evidence_root/dmesg-status.json" \
@@ -1444,6 +1449,26 @@ EOF
     fi
     if [[ "$PROFILE" == asi676mc && "$(vcgencmd get_throttled | cut -d= -f2)" != 0x0 ]]; then
         printf 'ARM throttle state changed.\n' >&2
+        exit 1
+    fi
+    jq --exit-status '
+      def lacks($keys): . as $object | all($keys[]; . as $key | ($object | has($key) | not));
+      (.host | has("name") | not) and (.usb | has("sysfsPath") | not) and
+      (.storage.runtime | lacks(["device", "mount", "mountOptions", "volumeInspect"])) and
+      (.storage.evidence | lacks(["device", "mount", "mountOptions"])) and
+      (.storage.docker | lacks(["device", "mount", "mountOptions"])) and
+      all([.mountAuthentication.startup, .mountAuthentication.shutdown][];
+        .sourcePathsRetained == false and
+        lacks(["configSource", "catalogSource", "collectorSource", "sdkSource"]) and
+        (.runtime.mount | lacks(["Source", "Name"])))
+    ' "$evidence_root/host-manifest.json" >/dev/null || {
+        printf 'Retained host evidence contains private host or filesystem topology.\n' >&2
+        exit 1
+    }
+    if rg --text --fixed-strings "$selected_usb_kernel_token" \
+        "$evidence_root/host-manifest.json" "$evidence_root/dmesg-status.json" \
+        "$evidence_root/kernel-selected.sanitized.log" >/dev/null; then
+        printf 'Retained evidence contains the selected USB bus/port token.\n' >&2
         exit 1
     fi
     privacy_scan_files=(

@@ -295,7 +295,15 @@ if [[ "$ISSUE_268_ROOT" != "$STATE_ROOT/issues/268" ]]; then
     printf 'Issue #268 state path must not traverse symbolic links.\n' >&2
     exit 2
 fi
-exec 8> "$STATE_ROOT/.performance.lock"
+readonly PERFORMANCE_LOCK="$STATE_ROOT/.performance.lock"
+[[ ! -L "$PERFORMANCE_LOCK" ]] || { printf 'The shared performance lock must not be a symbolic link.\n' >&2; exit 2; }
+exec 8>> "$PERFORMANCE_LOCK"
+if [[ "$(realpath -e -- "$PERFORMANCE_LOCK")" != "$PERFORMANCE_LOCK" ||
+    "$(realpath -e -- "/proc/$$/fd/8")" != "$PERFORMANCE_LOCK" ||
+    "$(stat -c %F -- "$PERFORMANCE_LOCK")" != "regular file" ]]; then
+    printf 'The shared performance lock is not a trusted regular file.\n' >&2
+    exit 2
+fi
 flock -n 8 || {
     printf 'Another host performance campaign owns the shared evidence lock.\n' >&2
     exit 2
@@ -500,9 +508,36 @@ printf '%s\n' "${artifact_entries[@]}" | jq -s --arg revision "$REVISION" '
     {schema: "hvo-issue-268-synthetic-manifest-v1", issue: 268, revision: $revision, artifacts: sort_by(.path)}
 ' > "$SYNTHETIC_ROOT/manifest.json"
 jq --exit-status '
-    (.artifacts | length) == 42 and
+    .schema == "hvo-issue-268-synthetic-manifest-v1" and .issue == 268 and
+    .revision == $revision and (.artifacts | length) == 42 and
+    all(.artifacts[];
+      (.path | type == "string" and length > 0 and (startswith("/") | not)) and
+      (.path | test("(^|/)\\.\\.(/|$)") | not) and
+      (.bytes | type == "number" and . >= 0 and . == floor) and
+      (.sha256 | type == "string" and test("^[0-9A-F]{64}$"))) and
     ([.artifacts[].path] | length) == ([.artifacts[].path] | unique | length)
-' "$SYNTHETIC_ROOT/manifest.json" >/dev/null
+' --arg revision "$REVISION" "$SYNTHETIC_ROOT/manifest.json" >/dev/null
+
+resolved_synthetic_root="$(realpath -e -- "$SYNTHETIC_ROOT")"
+while IFS=$'\t' read -r relative expected_bytes expected_sha256; do
+    artifact="$SYNTHETIC_ROOT/$relative"
+    resolved_artifact="$(realpath -e -- "$artifact")"
+    if [[ "$resolved_artifact" != "$resolved_synthetic_root/"* ||
+        "$(stat -c %s -- "$resolved_artifact")" != "$expected_bytes" ||
+        "$(file_sha_upper "$resolved_artifact")" != "$expected_sha256" ]]; then
+        printf 'Completed synthetic manifest verification failed: %s\n' "$relative" >&2
+        exit 1
+    fi
+done < <(jq -er '.artifacts[] | [.path, (.bytes | tostring), .sha256] | @tsv' "$SYNTHETIC_ROOT/manifest.json")
+FINAL_MANIFEST_SHA256="$(file_sha_upper "$SYNTHETIC_ROOT/manifest.json")"
+readonly FINAL_MANIFEST_SHA256
+printf '%s  manifest.json\n' "$FINAL_MANIFEST_SHA256" > "$SYNTHETIC_ROOT/manifest.sha256"
+chmod -R a-w -- "$SYNTHETIC_ROOT"
+[[ "$(file_sha_upper "$SYNTHETIC_ROOT/manifest.json")" == "$FINAL_MANIFEST_SHA256" ]] || {
+    printf 'Synthetic manifest changed while sealing final evidence.\n' >&2
+    exit 1
+}
 
 assert_source_unchanged
-printf 'Issue #268 synthetic evidence completed: %s\n' "$SYNTHETIC_ROOT"
+printf 'Issue #268 synthetic evidence completed: %s (manifest SHA-256 %s)\n' \
+    "$SYNTHETIC_ROOT" "$FINAL_MANIFEST_SHA256"

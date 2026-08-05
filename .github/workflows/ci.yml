@@ -332,6 +332,7 @@ jobs:
             'TestResults/unit/processing/*/coverage.cobertura.xml'
             'TestResults/unit/catalog-sqlite/*/coverage.cobertura.xml'
             'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
+            'TestResults/unit/cameraagent-acceptance/*/coverage.cobertura.xml'
             'TestResults/unit/logichost/*/coverage.cobertura.xml'
             'TestResults/integration/cameraagent-storage/*/coverage.cobertura.xml'
             'TestResults/integration/cameraagent-standalone/*/coverage.cobertura.xml'

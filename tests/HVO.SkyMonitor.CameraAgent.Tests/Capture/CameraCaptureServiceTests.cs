@@ -19,6 +19,58 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 public sealed class CameraCaptureServiceTests
 {
     [TestMethod]
+    public async Task DisposalFailure_FailsClosedWithoutOpeningReplacement()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-capture-service-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var config = CreateConfig();
+            var ingress = new PassthroughRawIngress(root);
+            using var telemetry = new CaptureControlTelemetry();
+            using var coordinator = new CaptureAdmissionCoordinator(
+                ingress,
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = root,
+                    RawIngressSqliteBusyTimeoutSeconds = 1
+                }),
+                TimeProvider.System,
+                telemetry);
+            var failing = new FailingModule();
+            var factory = new SequenceModuleFactory(failing, new GatedCameraModule());
+            using var applicationLifetime = new TestHostApplicationLifetime();
+            var service = new CameraCaptureService(
+                new ConfigurationAccessor(config),
+                factory,
+                ingress,
+                new RecordingDistributor(),
+                TimeProvider.System,
+                new AstronomyEnginePlanetEphemeris(),
+                telemetry,
+                coordinator,
+                new FleetRuntimeState(TimeProvider.System),
+                applicationLifetime,
+                NullLogger<CameraCaptureService>.Instance);
+
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            await applicationLifetime.ApplicationStartedObserved.Task.WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            applicationLifetime.NotifyStarted();
+
+            await failing.DisposalAttempted.Task.WaitAsync(TimeSpan.FromSeconds(8)).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            Assert.AreEqual(1, factory.CreateCalls);
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, true);
+        }
+    }
+
+    [TestMethod]
     public async Task StopAsync_CancelsCaptureAndDisposesModule()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-capture-service-{Guid.NewGuid():N}");
@@ -124,6 +176,41 @@ public sealed class CameraCaptureServiceTests
     private sealed class ModuleFactory(ICameraModule module) : ICameraModuleFactory
     {
         public ICameraModule Create(string moduleType) => module;
+    }
+
+    private sealed class SequenceModuleFactory(params ICameraModule[] modules) : ICameraModuleFactory
+    {
+        private readonly Queue<ICameraModule> _modules = new(modules);
+
+        public int CreateCalls { get; private set; }
+
+        public ICameraModule Create(string moduleType)
+        {
+            CreateCalls++;
+            return _modules.Dequeue();
+        }
+    }
+
+    private sealed class FailingModule : ICameraModule
+    {
+        public TaskCompletionSource DisposalAttempted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string Id => "failing";
+        public string DisplayName => "Failing";
+        public string ModuleType => "Test";
+        public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
+
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("Injected initialization failure.");
+
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask DisposeAsync()
+        {
+            DisposalAttempted.TrySetResult();
+            return ValueTask.FromException(new InvalidOperationException("Injected disposal failure."));
+        }
     }
 
     private sealed class PassthroughRawIngress(string root) : IRawCaptureIngress

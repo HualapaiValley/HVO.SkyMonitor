@@ -82,10 +82,7 @@ def partition_series($series; $start; $split; $end):
   if $before == null or $after == null or $splitBefore == null or $splitAfter == null then
     fail("metric series does not bracket all phase boundaries")
   else
-    (if $splitBefore.timestampUnixNano == $splitAfter.timestampUnixNano then $splitBefore.value
-     else ($splitBefore.value + ($splitAfter.value - $splitBefore.value) *
-       (($split * 1000000 - $splitBefore.timestampUnixNano) /
-        ($splitAfter.timestampUnixNano - $splitBefore.timestampUnixNano))) end) as $splitValue |
+    ($splitBefore.value) as $splitValue |
     {acquisition: ($splitValue - $before.value), drain: ($after.value - $splitValue),
      total: ($after.value - $before.value)}
   end;
@@ -163,32 +160,28 @@ def process_cpu_intervals($series):
     {gapMilliseconds: (($series[.].timestampUnixNano - $series[. - 1].timestampUnixNano) / 1000000),
      utilizationPercent: (100 * ($series[.].value - $series[. - 1].value) /
        (($series[.].timestampUnixNano - $series[. - 1].timestampUnixNano) / 1000000000))}];
-def application_counter_partitions($points; $start; $split; $end):
-  (counter_partition($points; "camera_agent.ingress.committed"; $start; $split; $end)) as $ingressCommitted |
-  (counter_partition($points; "camera_agent.ingress.committed.bytes"; $start; $split; $end)) as $ingressCommittedBytes |
-  (counter_partition($points; "camera_agent.ingress.sqlite.transactions"; $start; $split; $end)) as $ingressTransactions |
-  (counter_partition($points; "camera_agent.ingress.sqlite.checkpoints"; $start; $split; $end)) as $ingressCheckpoints |
-  (counter_partition($points; "camera_agent.lanes.work.created"; $start; $split; $end)) as $laneWorkCreated |
-  (counter_partition_attribute($points; "camera_agent.lanes.claims"; "result"; "claimed"; $start; $split; $end)) as $laneClaims |
-  (counter_partition($points; "camera_agent.lanes.completed"; $start; $split; $end)) as $laneCompleted |
-  (counter_partition($points; "camera_agent.processing.graphs"; $start; $split; $end)) as $processingGraphs | {
-    acquisition: {ingressCommitted: $ingressCommitted.acquisition, ingressCommittedBytes: $ingressCommittedBytes.acquisition,
-      ingressTransactions: $ingressTransactions.acquisition, ingressCheckpoints: $ingressCheckpoints.acquisition,
-      laneWorkCreated: $laneWorkCreated.acquisition, laneClaims: $laneClaims.acquisition,
-      laneCompleted: $laneCompleted.acquisition, processingGraphs: $processingGraphs.acquisition},
-    drain: {ingressCommitted: $ingressCommitted.drain, ingressCommittedBytes: $ingressCommittedBytes.drain,
-      ingressTransactions: $ingressTransactions.drain, ingressCheckpoints: $ingressCheckpoints.drain,
-      laneWorkCreated: $laneWorkCreated.drain, laneClaims: $laneClaims.drain,
-      laneCompleted: $laneCompleted.drain, processingGraphs: $processingGraphs.drain},
-    total: {ingressCommitted: $ingressCommitted.total, ingressCommittedBytes: $ingressCommittedBytes.total,
-      ingressTransactions: $ingressTransactions.total, ingressCheckpoints: $ingressCheckpoints.total,
-      laneWorkCreated: $laneWorkCreated.total, laneClaims: $laneClaims.total,
-      laneCompleted: $laneCompleted.total, processingGraphs: $processingGraphs.total}
+def application_counter_delta($capture; $from; $to):
+  ($capture.boundarySnapshots[$from].prometheusCounters) as $before |
+  ($capture.boundarySnapshots[$to].prometheusCounters) as $after | {
+    ingressCommitted: ($after.camera_agent_ingress_committed - $before.camera_agent_ingress_committed),
+    ingressCommittedBytes: ($after.camera_agent_ingress_committed_bytes - $before.camera_agent_ingress_committed_bytes),
+    ingressTransactions: ($after.camera_agent_ingress_sqlite_transactions - $before.camera_agent_ingress_sqlite_transactions),
+    ingressCheckpoints: ($after.camera_agent_ingress_sqlite_checkpoints - $before.camera_agent_ingress_sqlite_checkpoints),
+    laneWorkCreated: ($after.camera_agent_lanes_work_created - $before.camera_agent_lanes_work_created),
+    laneClaims: ($after.camera_agent_lanes_claims - $before.camera_agent_lanes_claims),
+    laneCompleted: ($after.camera_agent_lanes_completed - $before.camera_agent_lanes_completed),
+    processingGraphs: ($after.camera_agent_processing_graphs - $before.camera_agent_processing_graphs)
   };
+def application_counter_partitions($capture): {
+  acquisition: application_counter_delta($capture; "acquisitionStart"; "acquisitionEnd"),
+  drain: application_counter_delta($capture; "acquisitionEnd"; "totalEnd"),
+  total: application_counter_delta($capture; "acquisitionStart"; "totalEnd")
+};
 def prometheus_counter_deltas($capture; $from; $to):
   ($capture.boundarySnapshots[$from].prometheusCounters) as $before |
   ($capture.boundarySnapshots[$to].prometheusCounters) as $after | {
     prometheusIngressCommitted: ($after.camera_agent_ingress_committed - $before.camera_agent_ingress_committed),
+    prometheusIngressCommittedBytes: ($after.camera_agent_ingress_committed_bytes - $before.camera_agent_ingress_committed_bytes),
     prometheusIngressTransactions: ($after.camera_agent_ingress_sqlite_transactions - $before.camera_agent_ingress_sqlite_transactions),
     prometheusIngressCheckpoints: ($after.camera_agent_ingress_sqlite_checkpoints - $before.camera_agent_ingress_sqlite_checkpoints),
     prometheusIngressLockWaitCount: ($after.camera_agent_ingress_sqlite_lock_wait_duration_seconds_count - $before.camera_agent_ingress_sqlite_lock_wait_duration_seconds_count),
@@ -461,7 +454,7 @@ def trial:
   ((($last_host_cpu[3] + $last_host_cpu[4]) - ($first_host_cpu[3] + $first_host_cpu[4]))) as $host_idle_ticks |
   ($host_manifest.storage.runtime.logicalBlockSize | tonumber) as $logical_block_size |
   (runtime_partitions($points; $start; $acquisition_end; $end)) as $runtime_partitions |
-  (application_counter_partitions($points; $start; $acquisition_end; $end)) as $application_partitions |
+  (application_counter_partitions($capture)) as $application_partitions |
   ($capture.boundarySnapshots.acquisitionStart) as $boundary_start |
   ($capture.boundarySnapshots.acquisitionEnd) as $boundary_acquisition_end |
   ($capture.boundarySnapshots.totalEnd) as $boundary_total_end |
@@ -651,6 +644,9 @@ def trial:
         source: "exact C# acquisition-start/acquisition-end/total-end host block-device snapshots"
       },
       phaseDeltas: {
+        attribution: {applicationCounters:"exact authenticated Prometheus boundary snapshots",
+          runtimeCounters:"conservative last-export-at-or-before-boundary OTLP samples",
+          runtimeBoundaryUncertainty:"runtime activity after the last pre-boundary export can be attributed to the following phase"},
         acquisition: normalize_delta($acquisition_deltas; $capture.result.measuredCount; $acquisition_seconds),
         drain: normalize_delta($drain_deltas; $capture.result.measuredCount; $drain_seconds),
         total: normalize_delta($total_deltas; $capture.result.measuredCount; $total_seconds),
@@ -828,14 +824,15 @@ def trial:
       $host_manifest.networkIsolation == {mode:"host-to-internal-container-ip", internal:true,
         networkCount:1, publishedHostPorts:false, containerIpRetained:false} and
       $host_manifest.mountAuthentication.startup.runtime.mount.Type == $host_manifest.storage.runtime.containerMount.type and
-      $host_manifest.mountAuthentication.startup.runtime.mount.Source == $host_manifest.storage.runtime.containerMount.source and
-      $host_manifest.mountAuthentication.startup.runtime.mount.Name == $host_manifest.storage.runtime.containerMount.name and
       $host_manifest.mountAuthentication.startup.runtime.mount.Destination == $host_manifest.storage.runtime.containerMount.destination and
       $host_manifest.mountAuthentication.startup.runtime.mount.RW == true and
+      $host_manifest.mountAuthentication.startup.runtime.mount.sourceRetained == false and
+      $host_manifest.mountAuthentication.startup.runtime.mount.nameRetained == false and
       $host_manifest.mountAuthentication.shutdown.runtime.mount == $host_manifest.mountAuthentication.startup.runtime.mount and
       $host_manifest.mountAuthentication.startup.sdkSha256 == $host_manifest.sourceIdentities.sdkLibrarySha256 and
       $host_manifest.mountAuthentication.shutdown.sdkSha256 == $host_manifest.sourceIdentities.sdkLibrarySha256 and
-      $host_manifest.mountAuthentication.startup.sdkSource == $host_manifest.mountAuthentication.shutdown.sdkSource and
+      $host_manifest.mountAuthentication.startup.sourcePathsRetained == false and
+      $host_manifest.mountAuthentication.shutdown.sourcePathsRetained == false and
       $host_manifest.sourceIdentities.sourceCatalogTreeSha256 == $host_manifest.sourceIdentities.copiedCatalogTreeSha256 and
       $host_manifest.centralTraffic.passed == true and $host_manifest.centralTraffic.attemptCount == 0 and
       $host_manifest.centralTraffic.startup.Running == true and $host_manifest.centralTraffic.preStop.Running == true and
@@ -877,7 +874,7 @@ def trial:
       all(($total_deltas | reset_sensitive_deltas)[]; . >= 0) and
       ($phase_reconciliation_failures | length) == 0 and
       all([$boundary_start, $boundary_acquisition_end, $boundary_total_end][];
-        .hostBlockDevice.name == ($host_manifest.storage.runtime.device | split("/")[-1]) and
+        .hostBlockDevice.name == "runtime" and
         .process.rssBytes >= 0 and .sqliteFiles.databaseBytes >= 0 and
         .sqliteFiles.walBytes >= 0 and .sqliteFiles.shmBytes >= 0) and
       all($window_samples[]; .sqliteFiles.databaseBytes >= 0 and .sqliteFiles.walBytes >= 0 and .sqliteFiles.shmBytes >= 0) and
