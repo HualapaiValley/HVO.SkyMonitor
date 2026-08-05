@@ -283,7 +283,7 @@ internal sealed class CentralTransientSubmissionService(
                 envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
         }
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
         try
         {
             await AcquireSubmissionLocksAsync(envelope, registration.DeviceId, cancellationToken).ConfigureAwait(false);
@@ -589,8 +589,7 @@ internal sealed class CentralTransientSubmissionService(
             $"hybrid-candidate:{envelope.CandidateId:N}",
             $"hybrid-event:{authenticatedAgentId}:{envelope.EventId:N}"
         };
-        foreach (var resource in new[] { "hybrid-finalization" }
-                     .Concat(identityResources.Order(StringComparer.Ordinal)))
+        foreach (var resource in identityResources.Order(StringComparer.Ordinal))
         {
             await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
                 DECLARE @result int;
