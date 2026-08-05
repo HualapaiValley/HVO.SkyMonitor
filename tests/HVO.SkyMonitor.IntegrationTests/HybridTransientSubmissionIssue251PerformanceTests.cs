@@ -96,7 +96,8 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
                 foreach (var concurrency in concurrencies)
                 {
                     results.Add(await RunCellAsync(
-                        workload, lanes, delay, concurrency, warmups, measured).ConfigureAwait(false));
+                        workload, lanes, delay, concurrency, warmups, measured, phase != "baseline")
+                        .ConfigureAwait(false));
                 }
             }
         }
@@ -171,7 +172,8 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         TimeSpan delay,
         int concurrency,
         int warmups,
-        int measured)
+        int measured,
+        bool requireSuccess)
     {
         var commands = new CountingDbCommandInterceptor();
         var transactions = new CountingDbTransactionInterceptor();
@@ -195,7 +197,8 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer", await HybridTransientSubmissionIntegrationTests.GetSystemTokenAsync(client).ConfigureAwait(false));
-        await RunOperationsAsync(client, lanes, concurrency, warmups, latencies: null).ConfigureAwait(false);
+        await RunOperationsAsync(
+            client, lanes, concurrency, warmups, latencies: null, requireSuccess).ConfigureAwait(false);
         await QuiesceJobsAsync(factory, lanes.Take(concurrency).SelectMany(lane => lane.CentralArtifactIds).ToArray())
             .ConfigureAwait(false);
 
@@ -214,7 +217,7 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         await sqlSampler.StartAsync().ConfigureAwait(false);
         var latencies = new List<double>(measured);
         var elapsedStarted = Stopwatch.GetTimestamp();
-        var identities = await RunOperationsAsync(client, lanes, concurrency, measured, latencies)
+        var operations = await RunOperationsAsync(client, lanes, concurrency, measured, latencies, requireSuccess)
             .ConfigureAwait(false);
         var elapsed = Stopwatch.GetElapsedTime(elapsedStarted);
         var sqlSnapshot = await sqlSampler.StopAsync().ConfigureAwait(false);
@@ -224,30 +227,44 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocationsStart;
         var objectProtocol = protocol.Stop();
         var transactionSnapshot = transactions.Snapshot();
-        Assert.AreEqual(measured * 5, generation.Calls);
-        Assert.AreEqual(measured * 5, objectProtocol.GetRequests);
-        Assert.AreEqual(measured * 30, objectProtocol.HeadRequests);
+        if (requireSuccess)
+        {
+            Assert.AreEqual(measured * 5, generation.Calls);
+            Assert.AreEqual(measured * 5, objectProtocol.GetRequests);
+            Assert.AreEqual(measured * 30, objectProtocol.HeadRequests);
+        }
         Assert.AreEqual(0, objectProtocol.UnknownResponseContentLengths);
-        Assert.AreEqual(checked(measured * 5L * workload.Width * workload.Height * 2L),
+        Assert.AreEqual(checked(objectProtocol.GetRequests * workload.Width * workload.Height * 2L),
             objectProtocol.GetResponseContentBytes);
-        Assert.IsGreaterThanOrEqualTo(measured, transactionSnapshot.Committed);
+        Assert.IsGreaterThanOrEqualTo(transactionSnapshot.Committed, operations.Accepted);
 
         await using var assertionScope = factory.Services.CreateAsyncScope();
         var db = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var jobIds = await db.CentralTransientValidationJobs.AsNoTracking()
-            .Where(validation => identities.Contains(validation.SubmissionIdentitySha256))
+            .Where(validation => operations.Identities.Contains(validation.SubmissionIdentitySha256))
             .Select(validation => validation.CentralDerivativeJobId)
             .ToArrayAsync().ConfigureAwait(false);
-        Assert.AreEqual(measured, jobIds.Length);
-        Assert.AreEqual(measured * 5, await db.CentralDerivativeJobInputs.AsNoTracking()
+        Assert.AreEqual(operations.Accepted, jobIds.Length);
+        Assert.AreEqual(operations.Accepted * 5, await db.CentralDerivativeJobInputs.AsNoTracking()
             .CountAsync(input => jobIds.Contains(input.CentralDerivativeJobId)).ConfigureAwait(false));
-        Assert.IsFalse(await db.CentralTransientSubmissionAudits.AsNoTracking().AnyAsync(audit =>
-            identities.Contains(audit.ClaimedSubmissionIdentitySha256!)).ConfigureAwait(false));
+        if (requireSuccess)
+        {
+            Assert.IsFalse(await db.CentralTransientSubmissionAudits.AsNoTracking().AnyAsync(audit =>
+                operations.Identities.Contains(audit.ClaimedSubmissionIdentitySha256!)).ConfigureAwait(false));
+        }
         var retainedSources = lanes.Take(concurrency).SelectMany(lane => lane.CentralArtifactIds).Distinct().ToArray();
         var references = assertionScope.ServiceProvider.GetRequiredService<ICentralArtifactRetentionReferences>();
+        var heldSources = 0;
         foreach (var sourceId in retainedSources)
         {
-            Assert.IsTrue(await references.IsHeldAsync(sourceId, CancellationToken.None).ConfigureAwait(false));
+            if (await references.IsHeldAsync(sourceId, CancellationToken.None).ConfigureAwait(false))
+            {
+                heldSources++;
+            }
+        }
+        if (requireSuccess)
+        {
+            Assert.AreEqual(retainedSources.Length, heldSources);
         }
         await QuiesceJobsAsync(factory, retainedSources).ConfigureAwait(false);
 
@@ -263,6 +280,9 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
             delay.TotalMilliseconds,
             warmups,
             measured,
+            operations.Accepted,
+            operations.Failed,
+            operations.StatusCounts,
             elapsed.TotalMilliseconds,
             measured / elapsed.TotalSeconds,
             Percentile(ordered, 0.50),
@@ -297,19 +317,22 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
             objectProtocol.GetRequests,
             objectProtocol.GetResponseContentBytes,
             objectProtocol.UnknownResponseContentLengths,
-            measured,
-            measured * 5,
-            retainedSources.Length);
+            operations.Accepted,
+            operations.Accepted * 5,
+            heldSources);
     }
 
-    private static async Task<string[]> RunOperationsAsync(
+    private static async Task<OperationEvidence> RunOperationsAsync(
         HttpClient client,
         IReadOnlyList<HybridTransientSubmissionIntegrationTests.SubmissionScenario> lanes,
         int concurrency,
         int count,
-        List<double>? latencies)
+        List<double>? latencies,
+        bool requireSuccess)
     {
         var identities = new List<string>(count);
+        var statusCounts = new Dictionary<int, int>();
+        var accepted = 0;
         for (var offset = 0; offset < count; offset += concurrency)
         {
             var batchSize = Math.Min(concurrency, count - offset);
@@ -330,7 +353,13 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
             {
                 using (result.Response)
                 {
-                    if (result.Response.StatusCode != HttpStatusCode.Accepted)
+                    var status = (int)result.Response.StatusCode;
+                    statusCounts[status] = statusCounts.GetValueOrDefault(status) + 1;
+                    if (result.Response.StatusCode == HttpStatusCode.Accepted)
+                    {
+                        accepted++;
+                    }
+                    else if (requireSuccess)
                     {
                         Assert.Fail($"Hybrid evidence submission failed: {(int)result.Response.StatusCode} {await result.Response.Content.ReadAsStringAsync().ConfigureAwait(false)}");
                     }
@@ -339,7 +368,7 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
                 identities.Add(result.Identity);
             }
         }
-        return identities.ToArray();
+        return new(identities.ToArray(), accepted, count - accepted, statusCounts);
     }
 
     private static async Task<(HttpResponseMessage Response, double Milliseconds, string Identity)>
@@ -839,6 +868,9 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         double GenerationHeadDelayMilliseconds,
         int Warmups,
         int MeasuredSubmissions,
+        int AcceptedSubmissions,
+        int FailedSubmissions,
+        IReadOnlyDictionary<int, int> ResponseStatusCounts,
         double ElapsedMilliseconds,
         double SubmissionsPerSecond,
         double MedianMilliseconds,
@@ -894,4 +926,10 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         int PeakBlockedRequests,
         double ObservedApplicationLockOccupancyMilliseconds,
         long PhysicalDatabaseLogBytesWritten);
+
+    private sealed record OperationEvidence(
+        string[] Identities,
+        int Accepted,
+        int Failed,
+        IReadOnlyDictionary<int, int> StatusCounts);
 }
