@@ -300,7 +300,7 @@ readonly PERFORMANCE_LOCK="$STATE_ROOT/.performance.lock"
 exec 8>> "$PERFORMANCE_LOCK"
 if [[ "$(realpath -e -- "$PERFORMANCE_LOCK")" != "$PERFORMANCE_LOCK" ||
     "$(realpath -e -- "/proc/$$/fd/8")" != "$PERFORMANCE_LOCK" ||
-    "$(stat -c %F -- "$PERFORMANCE_LOCK")" != "regular file" ]]; then
+    "$(stat -c %F -- "$PERFORMANCE_LOCK")" != regular*file ]]; then
     printf 'The shared performance lock is not a trusted regular file.\n' >&2
     exit 2
 fi
