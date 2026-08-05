@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Reflection;
@@ -129,12 +130,14 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
                 PayloadReuse = $"{concurrencies.Max()} isolated five-object windows per workload; every submission has unique candidate, event, submission and idempotency identities.",
                 MeasurementBoundary = "Per-request latency covers the authenticated HTTP POST including five full object verifications, five fenced generation checks and SQL finalization. Aggregate elapsed, CPU and allocation measurements additionally include bounded client batching, envelope reidentification and response handling.",
                 SqlCounterAttribution = "Factory-wide conservative observation; background hosted-service commands and transactions may be included. Exact measured submission/job/input counts are asserted separately.",
+                SqlSampling = "A readiness-synchronized 10 ms DMV sampler attributes sessions, transactions, granted/waiting application locks and blocked attributed requests by the per-cell SQL Application Name. Physical database log-file bytes are a container-database-wide delta and may include fixture background work.",
                 ObjectProtocol = "Per source: explicit verification stat, MinIO GetObject metadata lookup and fenced generation stat are three logical metadata operations; fixture HTTP diagnostics observe two wire HEAD attempts per logical metadata operation, plus one conditional GET. Byte accounting includes GET response bodies only because HEAD Content-Length describes the object rather than transferred content."
             },
             Results = results,
             Limitations = new[]
             {
                 "Process CPU, allocations and RSS cover the test process and in-process TestServer; SQL Server and MinIO container resources are excluded.",
+                "The SQL DMV sampler runs in the test process during each measured cell, so its bounded CPU and allocation overhead is included consistently in baseline and after evidence.",
                 "Development mode is a harness smoke and is never claimable comparative evidence.",
                 "Out-of-band MinIO administration bypassing the canonical SQL object fence is outside the application-writer guarantee."
             },
@@ -206,11 +209,15 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         var rssStart = process.WorkingSet64;
         var allocationsStart = GC.GetTotalAllocatedBytes(precise: true);
         protocol.Start();
+        await using var sqlSampler = new Issue251SqlSampler(
+            AssemblyHooks.Fixture.SqlServerConnectionString, applicationName);
+        await sqlSampler.StartAsync().ConfigureAwait(false);
         var latencies = new List<double>(measured);
         var elapsedStarted = Stopwatch.GetTimestamp();
         var identities = await RunOperationsAsync(client, lanes, concurrency, measured, latencies)
             .ConfigureAwait(false);
         var elapsed = Stopwatch.GetElapsedTime(elapsedStarted);
+        var sqlSnapshot = await sqlSampler.StopAsync().ConfigureAwait(false);
         process.Refresh();
         var cpuMilliseconds = (process.TotalProcessorTime - cpuStart).TotalMilliseconds;
         var rssEnd = process.WorkingSet64;
@@ -274,6 +281,16 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
             Percentile(orderedTransactions, 0.50),
             Percentile(orderedTransactions, 0.95),
             orderedTransactions[^1],
+            sqlSnapshot.Samples,
+            sqlSnapshot.PeakSessions,
+            sqlSnapshot.PeakOpenTransactionSessions,
+            sqlSnapshot.PeakSessionApplicationLockSessions,
+            sqlSnapshot.PeakSessionApplicationLocks,
+            sqlSnapshot.PeakTransactionApplicationLockSessions,
+            sqlSnapshot.PeakWaitingApplicationLockSessions,
+            sqlSnapshot.PeakBlockedRequests,
+            sqlSnapshot.ObservedApplicationLockOccupancyMilliseconds,
+            sqlSnapshot.PhysicalDatabaseLogBytesWritten,
             generation.Calls,
             generation.TotalConfiguredDelayMilliseconds,
             objectProtocol.HeadRequests,
@@ -628,6 +645,188 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         }
     }
 
+    private sealed class Issue251SqlSampler(string connectionString, string applicationName) : IAsyncDisposable
+    {
+        private static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(10);
+        private readonly CancellationTokenSource cancellation = new();
+        private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Task? loop;
+        private long initialLogBytes;
+        private long samples;
+        private long observedLockTicks;
+        private int peakSessions;
+        private int peakOpenTransactions;
+        private int peakSessionLockSessions;
+        private int peakSessionLocks;
+        private int peakTransactionLockSessions;
+        private int peakWaitingLockSessions;
+        private int peakBlockedRequests;
+
+        internal async Task StartAsync()
+        {
+            initialLogBytes = await ReadLogBytesAsync(CancellationToken.None).ConfigureAwait(false);
+            loop = SampleAsync(cancellation.Token);
+            await ready.Task.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+        }
+
+        internal async Task<SqlSamplerEvidence> StopAsync()
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            if (loop is not null)
+            {
+                await loop.ConfigureAwait(false);
+                loop = null;
+            }
+            var finalLogBytes = await ReadLogBytesAsync(CancellationToken.None).ConfigureAwait(false);
+            return new(
+                Interlocked.Read(ref samples),
+                Volatile.Read(ref peakSessions),
+                Volatile.Read(ref peakOpenTransactions),
+                Volatile.Read(ref peakSessionLockSessions),
+                Volatile.Read(ref peakSessionLocks),
+                Volatile.Read(ref peakTransactionLockSessions),
+                Volatile.Read(ref peakWaitingLockSessions),
+                Volatile.Read(ref peakBlockedRequests),
+                TimeSpan.FromTicks(Interlocked.Read(ref observedLockTicks)).TotalMilliseconds,
+                Math.Max(0, finalLogBytes - initialLogBytes));
+        }
+
+        private async Task SampleAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await using var connection = new SqlConnection(connectionString);
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    WITH [attributed_sessions] AS
+                    (
+                        SELECT [session_id]
+                        FROM [sys].[dm_exec_sessions]
+                        WHERE [program_name] = @application_name
+                    )
+                    SELECT
+                        (SELECT COUNT(*) FROM [attributed_sessions]),
+                        (SELECT COUNT(DISTINCT transaction_session.[session_id])
+                            FROM [sys].[dm_tran_session_transactions] AS transaction_session
+                            INNER JOIN [attributed_sessions] AS attributed
+                                ON attributed.[session_id] = transaction_session.[session_id]),
+                        (SELECT COUNT(DISTINCT resource.[request_session_id])
+                            FROM [sys].[dm_tran_locks] AS resource
+                            INNER JOIN [attributed_sessions] AS attributed
+                                ON attributed.[session_id] = resource.[request_session_id]
+                            WHERE resource.[resource_type] = N'APPLICATION'
+                                AND resource.[request_owner_type] = N'SESSION'
+                                AND resource.[request_status] = N'GRANT'),
+                        (SELECT COUNT(*)
+                            FROM [sys].[dm_tran_locks] AS resource
+                            INNER JOIN [attributed_sessions] AS attributed
+                                ON attributed.[session_id] = resource.[request_session_id]
+                            WHERE resource.[resource_type] = N'APPLICATION'
+                                AND resource.[request_owner_type] = N'SESSION'
+                                AND resource.[request_status] = N'GRANT'),
+                        (SELECT COUNT(DISTINCT resource.[request_session_id])
+                            FROM [sys].[dm_tran_locks] AS resource
+                            INNER JOIN [attributed_sessions] AS attributed
+                                ON attributed.[session_id] = resource.[request_session_id]
+                            WHERE resource.[resource_type] = N'APPLICATION'
+                                AND resource.[request_owner_type] = N'TRANSACTION'
+                                AND resource.[request_status] = N'GRANT'),
+                        (SELECT COUNT(DISTINCT resource.[request_session_id])
+                            FROM [sys].[dm_tran_locks] AS resource
+                            INNER JOIN [attributed_sessions] AS attributed
+                                ON attributed.[session_id] = resource.[request_session_id]
+                            WHERE resource.[resource_type] = N'APPLICATION'
+                                AND resource.[request_status] = N'WAIT'),
+                        (SELECT COUNT(*)
+                            FROM [sys].[dm_exec_requests] AS request
+                            INNER JOIN [attributed_sessions] AS attributed
+                                ON attributed.[session_id] = request.[session_id]
+                            WHERE request.[blocking_session_id] <> 0);
+                    """;
+                command.Parameters.AddWithValue("@application_name", applicationName);
+                var lastSample = Stopwatch.GetTimestamp();
+                var locksActive = false;
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    await using var result = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    if (await result.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        var sampled = Stopwatch.GetTimestamp();
+                        if (locksActive)
+                        {
+                            Interlocked.Add(ref observedLockTicks, Stopwatch.GetElapsedTime(lastSample, sampled).Ticks);
+                        }
+                        lastSample = sampled;
+                        Interlocked.Increment(ref samples);
+                        UpdateMaximum(ref peakSessions, result.GetInt32(0));
+                        UpdateMaximum(ref peakOpenTransactions, result.GetInt32(1));
+                        UpdateMaximum(ref peakSessionLockSessions, result.GetInt32(2));
+                        UpdateMaximum(ref peakSessionLocks, result.GetInt32(3));
+                        UpdateMaximum(ref peakTransactionLockSessions, result.GetInt32(4));
+                        UpdateMaximum(ref peakWaitingLockSessions, result.GetInt32(5));
+                        UpdateMaximum(ref peakBlockedRequests, result.GetInt32(6));
+                        locksActive = result.GetInt32(3) > 0 || result.GetInt32(4) > 0;
+                        ready.TrySetResult();
+                    }
+                    await Task.Delay(Interval, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                ready.TrySetException(exception);
+                throw;
+            }
+            finally
+            {
+                ready.TrySetCanceled(cancellationToken);
+            }
+        }
+
+        private async Task<long> ReadLogBytesAsync(CancellationToken cancellationToken)
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT COALESCE(SUM(stats.[num_of_bytes_written]), 0)
+                FROM [sys].[dm_io_virtual_file_stats](DB_ID(), NULL) AS stats
+                INNER JOIN [sys].[database_files] AS files ON files.[file_id] = stats.[file_id]
+                WHERE files.[type] = 1;
+                """;
+            return Convert.ToInt64(
+                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                CultureInfo.InvariantCulture);
+        }
+
+        private static void UpdateMaximum(ref int destination, int value)
+        {
+            var current = Volatile.Read(ref destination);
+            while (value > current)
+            {
+                var observed = Interlocked.CompareExchange(ref destination, value, current);
+                if (observed == current)
+                {
+                    return;
+                }
+                current = observed;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            if (loop is not null)
+            {
+                await loop.ConfigureAwait(false);
+            }
+            cancellation.Dispose();
+        }
+    }
+
     private sealed record Workload(string Id, int Width, int Height, CameraPixelFormat PixelFormat);
 
     private sealed record CellEvidence(
@@ -658,6 +857,16 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         double TransactionMedianMilliseconds,
         double TransactionP95Milliseconds,
         double TransactionMaximumMilliseconds,
+        long SqlDmvSamples,
+        int PeakSqlSessions,
+        int PeakOpenTransactionSessions,
+        int PeakSessionApplicationLockSessions,
+        int PeakSessionApplicationLocks,
+        int PeakTransactionApplicationLockSessions,
+        int PeakWaitingApplicationLockSessions,
+        int PeakBlockedSqlRequests,
+        double ObservedApplicationLockOccupancyMilliseconds,
+        long PhysicalDatabaseLogBytesWritten,
         long GenerationChecks,
         double TotalConfiguredGenerationDelayMilliseconds,
         long MinioHeadRequests,
@@ -673,4 +882,16 @@ public sealed class HybridTransientSubmissionIssue251PerformanceTests
         long GetRequests,
         long GetResponseContentBytes,
         long UnknownResponseContentLengths);
+
+    private sealed record SqlSamplerEvidence(
+        long Samples,
+        int PeakSessions,
+        int PeakOpenTransactionSessions,
+        int PeakSessionApplicationLockSessions,
+        int PeakSessionApplicationLocks,
+        int PeakTransactionApplicationLockSessions,
+        int PeakWaitingApplicationLockSessions,
+        int PeakBlockedRequests,
+        double ObservedApplicationLockOccupancyMilliseconds,
+        long PhysicalDatabaseLogBytesWritten);
 }
