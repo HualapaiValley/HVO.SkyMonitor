@@ -10,7 +10,6 @@
       "usbBandwidth": 40,
       "pollInterval": "00:00:00.005",
       "captureTimeoutMargin": "00:00:10",
-      "maximumCapturesPerSession": 50,
       "monoBin": false,
       "hardwareBin": false
     }

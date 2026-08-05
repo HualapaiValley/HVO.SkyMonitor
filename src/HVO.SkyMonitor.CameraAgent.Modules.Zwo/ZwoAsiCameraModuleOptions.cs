@@ -21,8 +21,6 @@ public sealed class ZwoAsiCameraModuleOptions
 
     public TimeSpan CaptureTimeoutMargin { get; init; } = TimeSpan.FromSeconds(10);
 
-    public int MaximumCapturesPerSession { get; init; }
-
     public bool MonoBin { get; init; }
 
     public bool HardwareBin { get; init; }

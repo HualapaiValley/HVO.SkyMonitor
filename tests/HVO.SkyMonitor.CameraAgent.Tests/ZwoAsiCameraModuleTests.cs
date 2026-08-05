@@ -94,8 +94,6 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual(0, factoryCalls);
         var invalid = CreateConfig(OptionsJson(extra: ",\"unknown\":true"));
         Assert.ThrowsExactly<JsonException>(() => preflight.ValidateConfiguration(invalid));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => preflight.ValidateConfiguration(
-            CreateConfig(OptionsJson(maximumCapturesPerSession: -1))));
         var monoOptions = JsonDocument.Parse(OptionsJson().GetRawText().Replace(
             "\"monoBin\":false",
             "\"monoBin\":true",
@@ -119,7 +117,6 @@ public sealed class ZwoAsiCameraModuleTests
             Assert.IsEmpty(sample.Pipeline.Steps);
             if (profile == Asi178Mc)
             {
-                Assert.IsFalse(sample.Module.Options.Value.TryGetProperty("maximumCapturesPerSession", out _));
                 Assert.IsTrue(sample.Rig.Optics.HorizontalFlip);
                 Assert.AreEqual(TimeSpan.FromTicks(320), sample.Rig.Pipeline.Envelope!.MinExposure);
                 Assert.AreEqual(TimeSpan.FromSeconds(1000), sample.Rig.Pipeline.Envelope.MaxExposure);
@@ -127,10 +124,6 @@ public sealed class ZwoAsiCameraModuleTests
                 Assert.AreEqual(510d, sample.Rig.Pipeline.Envelope.MaxGain);
                 Assert.AreEqual(CameraFeatureDirective.Disabled, sample.Rig.ControlPolicy!.AutoGain);
                 Assert.AreEqual(CameraFeatureDirective.Disabled, sample.Rig.ControlPolicy.AutoExposure);
-            }
-            else
-            {
-                Assert.AreEqual(50, sample.Module.Options.Value.GetProperty("maximumCapturesPerSession").GetInt32());
             }
         }
         Assert.AreEqual(0, factoryCalls);
@@ -411,269 +404,6 @@ public sealed class ZwoAsiCameraModuleTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public async Task ConfiguredCaptureLimitReloadsSdkBeforeNextCapture()
-    {
-        var first = new FakeAsiNativeApi
-        {
-            ExposureStatuses = new Queue<AsiExposureStatus>(Enumerable.Repeat(AsiExposureStatus.Success, 2))
-        };
-        var second = new FakeAsiNativeApi
-        {
-            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success])
-        };
-        var natives = new Queue<IAsiNativeApi>([first, second]);
-        var resolverCalls = 0;
-        await using var module = new ZwoAsiCameraModule(
-            TimeProvider.System,
-            _ => natives.Dequeue(),
-            name =>
-            {
-                resolverCalls++;
-                return ResolveEnvironmentVariable(name);
-            });
-        await module.InitializeAsync(CreateConfig(OptionsJson(maximumCapturesPerSession: 2)), CancellationToken.None);
-        var request = new CaptureRequest(
-            DateTimeOffset.UtcNow,
-            TimeSpan.FromSeconds(1),
-            CaptureMode.Still,
-            new CaptureSetpoint(TimeSpan.FromMilliseconds(25), 82, null, null));
-
-        _ = await module.CaptureAsync(request, CancellationToken.None);
-        Assert.AreEqual(2, first.Calls.Count(call => call == "Open:7"));
-        Assert.AreEqual(1, first.Calls.Count(call => call == "Init:7"));
-        _ = await module.CaptureAsync(request, CancellationToken.None);
-        Assert.AreEqual(2, first.Calls.Count(call => call == "Open:7"));
-        Assert.AreEqual(1, first.Calls.Count(call => call == "Init:7"));
-        _ = await module.CaptureAsync(request with { RequestedSetpoint = null }, CancellationToken.None);
-
-        Assert.AreEqual(2, resolverCalls);
-        Assert.AreEqual(1, first.DisposeCalls);
-        Assert.AreEqual(2, first.CloseCameraCalls);
-        Assert.AreEqual(2, second.Calls.Count(call => call == "Open:7"));
-        Assert.AreEqual(1, second.Calls.Count(call => call == "Init:7"));
-        Assert.AreEqual(1, second.Calls.Count(call => call == "Caps:7"));
-        Assert.AreEqual(1, second.Calls.Count(call => call.StartsWith("Roi:", StringComparison.Ordinal)));
-        Assert.AreEqual(25_000L, second.GetControlValue(7, AsiControlType.Exposure).Value);
-        Assert.AreEqual(82L, second.GetControlValue(7, AsiControlType.Gain).Value);
-        Assert.AreEqual(1L, second.GetControlValue(7, AsiControlType.Offset).Value);
-        Assert.AreEqual(40L, second.GetControlValue(7, AsiControlType.BandwidthOverload).Value);
-        CollectionAssert.Contains(second.Calls, "Position:0:0");
-        Assert.AreEqual(2, first.DataCalls);
-        Assert.AreEqual(1, second.DataCalls);
-    }
-
-    [TestMethod]
-    [TestCategory("Unit")]
-    public async Task FailedCaptureDoesNotAdvanceConfiguredCaptureLimit()
-    {
-        var first = new FakeAsiNativeApi
-        {
-            ExposureStatuses = new Queue<AsiExposureStatus>(
-                [AsiExposureStatus.Success, AsiExposureStatus.Failed, AsiExposureStatus.Success])
-        };
-        var second = new FakeAsiNativeApi
-        {
-            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success])
-        };
-        var natives = new Queue<IAsiNativeApi>([first, second]);
-        await using var module = new ZwoAsiCameraModule(
-            TimeProvider.System, _ => natives.Dequeue(), ResolveEnvironmentVariable);
-        await module.InitializeAsync(CreateConfig(OptionsJson(maximumCapturesPerSession: 2)), CancellationToken.None);
-        var request = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still);
-
-        _ = await module.CaptureAsync(request, CancellationToken.None);
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => module.CaptureAsync(request, CancellationToken.None));
-        _ = await module.CaptureAsync(request, CancellationToken.None);
-        Assert.AreEqual(2, first.Calls.Count(call => call == "Open:7"));
-
-        _ = await module.CaptureAsync(request, CancellationToken.None);
-
-        Assert.AreEqual(1, first.DisposeCalls);
-        Assert.AreEqual(2, second.Calls.Count(call => call == "Open:7"));
-        Assert.AreEqual(1, second.Calls.Count(call => call == "Init:7"));
-        Assert.AreEqual(3, first.Calls.Count(call => call == "StartExposure"));
-        Assert.AreEqual(1, second.Calls.Count(call => call == "StartExposure"));
-    }
-
-    [TestMethod]
-    [DataRow("open", 1)]
-    [DataRow("capabilities", 2)]
-    [TestCategory("Unit")]
-    public async Task RecycleFailureInvalidatesSessionAndAllowsReinitialize(string failure, int expectedCloseCalls)
-    {
-        var first = new FakeAsiNativeApi
-        {
-            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success])
-        };
-        var second = new FakeAsiNativeApi { FailCapabilitiesOnCall = failure == "capabilities" ? 1 : 0 };
-        if (failure == "open")
-        {
-            second.FailOpenOnCallByCameraId[7] = 2;
-        }
-        var third = new FakeAsiNativeApi
-        {
-            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success])
-        };
-        var natives = new Queue<IAsiNativeApi>([first, second, third]);
-        var module = new ZwoAsiCameraModule(TimeProvider.System, _ => natives.Dequeue(), ResolveEnvironmentVariable);
-        var config = CreateConfig(OptionsJson(maximumCapturesPerSession: 1));
-        var request = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still);
-        await module.InitializeAsync(config, CancellationToken.None);
-        _ = await module.CaptureAsync(request, CancellationToken.None);
-
-        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => module.CaptureAsync(request, CancellationToken.None));
-
-        Assert.IsNotNull(exception.InnerException);
-        Assert.AreEqual(1, first.DisposeCalls);
-        Assert.AreEqual(1, second.DisposeCalls);
-        Assert.AreEqual(2, second.Calls.Count(call => call == "Open:7"));
-        Assert.AreEqual(expectedCloseCalls, second.CloseCameraCalls);
-        Assert.AreEqual(1, first.Calls.Count(call => call == "StartExposure"));
-        Assert.AreEqual(0, second.Calls.Count(call => call == "StartExposure"));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => module.CaptureAsync(request, CancellationToken.None));
-
-        await module.InitializeAsync(config, CancellationToken.None);
-        Assert.IsNotNull((await module.CaptureAsync(request, CancellationToken.None)).Frame);
-        await module.DisposeAsync();
-        Assert.AreEqual(1, first.DisposeCalls);
-        Assert.AreEqual(1, second.DisposeCalls);
-        Assert.AreEqual(1, third.DisposeCalls);
-    }
-
-    [TestMethod]
-    [DataRow("close")]
-    [DataRow("dispose")]
-    [TestCategory("Unit")]
-    public async Task RecycleTeardownFailureDoesNotLoadAnotherSdk(string failure)
-    {
-        var native = new FakeAsiNativeApi
-        {
-            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success]),
-            ThrowOnDispose = failure == "dispose"
-        };
-        var factoryCalls = 0;
-        var module = new ZwoAsiCameraModule(
-            TimeProvider.System,
-            _ =>
-            {
-                factoryCalls++;
-                return native;
-            },
-            ResolveEnvironmentVariable);
-        var config = CreateConfig(OptionsJson(maximumCapturesPerSession: 1));
-        var request = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still);
-        await module.InitializeAsync(config, CancellationToken.None);
-        _ = await module.CaptureAsync(request, CancellationToken.None);
-        if (failure == "close")
-        {
-            native.FailCloseCameraIds.Add(7);
-        }
-
-        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => module.CaptureAsync(request, CancellationToken.None));
-
-        Assert.IsNotNull(exception.InnerException);
-        Assert.AreEqual(1, factoryCalls);
-        Assert.AreEqual(1, native.DisposeCalls);
-        if (failure == "dispose")
-        {
-            await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-                () => module.InitializeAsync(config, CancellationToken.None));
-            Assert.AreEqual(1, factoryCalls);
-        }
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => module.CaptureAsync(request, CancellationToken.None));
-        await module.DisposeAsync();
-    }
-
-    [TestMethod]
-    [TestCategory("Unit")]
-    public async Task CancellationDuringSdkReloadPropagatesAndInvalidatesSession()
-    {
-        var first = new FakeAsiNativeApi
-        {
-            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success])
-        };
-        var second = new FakeAsiNativeApi();
-        var natives = new Queue<IAsiNativeApi>([first, second]);
-        using var cancellation = new CancellationTokenSource();
-        var factoryCalls = 0;
-        var module = new ZwoAsiCameraModule(
-            TimeProvider.System,
-            _ =>
-            {
-                factoryCalls++;
-                var native = natives.Dequeue();
-                if (factoryCalls == 2)
-                {
-                    cancellation.Cancel();
-                }
-                return native;
-            },
-            ResolveEnvironmentVariable);
-        var config = CreateConfig(OptionsJson(maximumCapturesPerSession: 1));
-        var request = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still);
-        await module.InitializeAsync(config, CancellationToken.None);
-        _ = await module.CaptureAsync(request, CancellationToken.None);
-
-        await Assert.ThrowsExactlyAsync<OperationCanceledException>(
-            () => module.CaptureAsync(request, cancellation.Token));
-
-        Assert.AreEqual(2, factoryCalls);
-        Assert.AreEqual(1, first.DisposeCalls);
-        Assert.AreEqual(1, second.DisposeCalls);
-        Assert.AreEqual(0, second.Calls.Count(call => call == "Open:7"));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => module.CaptureAsync(request, CancellationToken.None));
-        await module.DisposeAsync();
-    }
-
-    [TestMethod]
-    [TestCategory("Unit")]
-    public async Task FailedSdkUnloadPreventsReloadFromAnotherModuleInstance()
-    {
-        var unloadState = new AsiSdkUnloadState();
-        var firstNative = new FakeAsiNativeApi
-        {
-            ExposureStatuses = new Queue<AsiExposureStatus>([AsiExposureStatus.Success]),
-            ThrowOnDispose = true
-        };
-        var first = new ZwoAsiCameraModule(
-            TimeProvider.System,
-            _ => firstNative,
-            ResolveEnvironmentVariable,
-            unloadState);
-        var config = CreateConfig(OptionsJson(maximumCapturesPerSession: 1));
-        var request = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still);
-        await first.InitializeAsync(config, CancellationToken.None);
-        _ = await first.CaptureAsync(request, CancellationToken.None);
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => first.CaptureAsync(request, CancellationToken.None));
-
-        var secondFactoryCalls = 0;
-        var second = new ZwoAsiCameraModule(
-            TimeProvider.System,
-            _ =>
-            {
-                secondFactoryCalls++;
-                return new FakeAsiNativeApi();
-            },
-            ResolveEnvironmentVariable,
-            unloadState);
-
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-            () => second.InitializeAsync(config, CancellationToken.None));
-
-        Assert.AreEqual(0, secondFactoryCalls);
-        await first.DisposeAsync();
-        await second.DisposeAsync();
-    }
-
-    [TestMethod]
-    [TestCategory("Unit")]
     public async Task Asi178CapturePreservesExactFullFrameBytesLayoutAndMetadata()
     {
         var native = new FakeAsiNativeApi(Asi178Mc)
@@ -890,56 +620,6 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual(2, second.CloseCameraCalls);
         await Assert.ThrowsExactlyAsync<ObjectDisposedException>(
             () => module.InitializeAsync(CreateConfig(), CancellationToken.None));
-    }
-
-    [TestMethod]
-    [DataRow("close")]
-    [DataRow("dispose")]
-    [TestCategory("Unit")]
-    public async Task ReinitializeTeardownFailureDoesNotLoadAnotherSdk(string failure)
-    {
-        var first = new FakeAsiNativeApi { ThrowOnDispose = failure == "dispose" };
-        var second = new FakeAsiNativeApi();
-        var natives = new Queue<IAsiNativeApi>([first, second]);
-        var factoryCalls = 0;
-        var module = new ZwoAsiCameraModule(
-            TimeProvider.System,
-            _ =>
-            {
-                factoryCalls++;
-                return natives.Dequeue();
-            },
-            ResolveEnvironmentVariable);
-        var config = CreateConfig();
-        await module.InitializeAsync(config, CancellationToken.None);
-        if (failure == "close")
-        {
-            first.FailCloseCameraIds.Add(7);
-        }
-
-        if (failure == "close")
-        {
-            await Assert.ThrowsExactlyAsync<AsiException>(
-                () => module.InitializeAsync(config, CancellationToken.None));
-        }
-        else
-        {
-            await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-                () => module.InitializeAsync(config, CancellationToken.None));
-        }
-
-        Assert.AreEqual(1, factoryCalls);
-        Assert.AreEqual(1, first.DisposeCalls);
-        if (failure == "dispose")
-        {
-            await Assert.ThrowsExactlyAsync<InvalidOperationException>(
-                () => module.InitializeAsync(config, CancellationToken.None));
-            Assert.AreEqual(1, factoryCalls);
-        }
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => module.CaptureAsync(
-            new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still),
-            CancellationToken.None));
-        await module.DisposeAsync();
     }
 
     [TestMethod]
@@ -1273,7 +953,6 @@ public sealed class ZwoAsiCameraModuleTests
         string expectedModel = "ASI676MC",
         long offset = 1,
         string timeoutMargin = "00:00:01",
-        int maximumCapturesPerSession = 0,
         string extra = "")
         => JsonDocument.Parse(
             $$"""
@@ -1285,7 +964,6 @@ public sealed class ZwoAsiCameraModuleTests
                 "usbBandwidth":40,
                 "pollInterval":"00:00:00.001",
                 "captureTimeoutMargin":"{{timeoutMargin}}",
-                "maximumCapturesPerSession":{{maximumCapturesPerSession}},
                 "monoBin":false,
                 "hardwareBin":false{{extra}}
               }
@@ -1402,12 +1080,10 @@ public sealed class ZwoAsiCameraModuleTests
         internal Dictionary<int, int> FailOpenOnCallByCameraId { get; } = [];
         internal HashSet<int> FailSerialCameraIds { get; } = [];
         internal HashSet<int> FailCloseCameraIds { get; } = [];
-        internal int FailCapabilitiesOnCall { get; init; }
         internal bool RepeatWorkingStatus { get; init; }
         internal bool ThrowOnRead { get; init; }
         internal bool ThrowOnPoll { get; init; }
         internal bool ThrowOnStop { get; init; }
-        internal bool ThrowOnDispose { get; init; }
         internal Action? ExposureStatusObserved { get; init; }
         internal int StopExposureCalls { get; private set; }
         internal int DataCalls { get; private set; }
@@ -1450,10 +1126,6 @@ public sealed class ZwoAsiCameraModuleTests
         public IReadOnlyList<AsiControlCaps> GetControlCapabilities(int cameraId)
         {
             Calls.Add($"Caps:{cameraId}");
-            if (Calls.Count(call => call == $"Caps:{cameraId}") == FailCapabilitiesOnCall)
-            {
-                throw new AsiException("ASIGetNumOfControls", AsiErrorCode.CameraRemoved);
-            }
             return
             [
                 new(AsiControlType.Exposure, 32, 2_000_000_000, 100_000, false, true),
@@ -1541,13 +1213,6 @@ public sealed class ZwoAsiCameraModuleTests
                 Marshal.Copy(bytes, 0, IntPtr.Add(buffer, offset), length);
             }
         }
-        public void Dispose()
-        {
-            DisposeCalls++;
-            if (ThrowOnDispose)
-            {
-                throw new InvalidOperationException("Injected ASI dispose error.");
-            }
-        }
+        public void Dispose() => DisposeCalls++;
     }
 }

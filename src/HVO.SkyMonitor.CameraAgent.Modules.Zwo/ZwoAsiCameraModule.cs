@@ -25,18 +25,15 @@ public sealed class ZwoAsiCameraModule :
     {
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
-    private static readonly AsiSdkUnloadState ProductionSdkUnloadState = new();
 
     private readonly TimeProvider _timeProvider;
     private readonly Func<string, IAsiNativeApi> _nativeApiFactory;
     private readonly Func<string, string?> _environmentVariableResolver;
-    private readonly AsiSdkUnloadState _sdkUnloadState;
     private readonly SemaphoreSlim _nativeGate = new(1, 1);
     private readonly CancellationTokenSource _disposeCancellation = new();
     private IAsiNativeApi? _native;
     private CameraModuleConfig? _configuration;
     private ZwoAsiCameraModuleOptions? _options;
-    private ResolvedRuntimeConfiguration? _runtime;
     private AsiCameraInfo? _camera;
     private Dictionary<AsiControlType, AsiControlCaps>? _controls;
     private ResolvedSensorReadout? _readout;
@@ -44,18 +41,13 @@ public sealed class ZwoAsiCameraModule :
     private bool _cameraOpen;
     private bool _exposureActive;
     private bool _disposed;
-    private int _successfulCapturesInSession;
     private TimeSpan _effectiveExposure;
     private double _effectiveGain;
     private double _effectiveOffset;
     private DateTimeOffset? _setpointAppliedUtc;
 
     public ZwoAsiCameraModule(TimeProvider timeProvider)
-        : this(
-            timeProvider,
-            path => AsiNativeApi.Load(path),
-            Environment.GetEnvironmentVariable,
-            ProductionSdkUnloadState)
+        : this(timeProvider, path => AsiNativeApi.Load(path), Environment.GetEnvironmentVariable)
     {
     }
 
@@ -63,20 +55,10 @@ public sealed class ZwoAsiCameraModule :
         TimeProvider timeProvider,
         Func<string, IAsiNativeApi> nativeApiFactory,
         Func<string, string?> environmentVariableResolver)
-        : this(timeProvider, nativeApiFactory, environmentVariableResolver, new AsiSdkUnloadState())
-    {
-    }
-
-    internal ZwoAsiCameraModule(
-        TimeProvider timeProvider,
-        Func<string, IAsiNativeApi> nativeApiFactory,
-        Func<string, string?> environmentVariableResolver,
-        AsiSdkUnloadState sdkUnloadState)
     {
         _timeProvider = timeProvider;
         _nativeApiFactory = nativeApiFactory;
         _environmentVariableResolver = environmentVariableResolver;
-        _sdkUnloadState = sdkUnloadState;
     }
 
     public string Id { get; } = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
@@ -100,17 +82,61 @@ public sealed class ZwoAsiCameraModule :
         try
         {
             ThrowIfDisposed();
-            ThrowIfNativeUnloadFailed();
-            CleanupNative(throwCloseFailure: true, throwDisposeFailure: true);
+            CleanupNative();
             cancellationToken.ThrowIfCancellationRequested();
 
             var runtime = ResolveRuntimeConfiguration(validated.Options);
             try
             {
+                try
+                {
+                    _native = _nativeApiFactory(runtime.LibraryPath);
+                }
+                catch
+                {
+                    throw new InvalidOperationException("The configured ASI SDK library could not be loaded or bound.");
+                }
+                ValidateSdkVersion(_native.GetSdkVersion());
+                var selected = SelectCamera(_native, runtime.Serial, validated.Profile.Model, cancellationToken);
+                _cameraId = selected.CameraId;
+                try
+                {
+                    _native.OpenCamera(_cameraId);
+                    _cameraOpen = true;
+                    _native.InitializeCamera(_cameraId);
+                }
+                catch (AsiException)
+                {
+                    throw new InvalidOperationException("The configured ASI camera is not connected or accessible.");
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var controls = _native.GetControlCapabilities(_cameraId)
+                    .ToDictionary(control => control.Type);
+                ValidateCameraAndControls(config, validated.Options, validated.Profile, selected, validated.Readout, controls);
+
+                _configuration = config;
+                _options = validated.Options;
+                _camera = selected;
+                _readout = validated.Readout;
+                _controls = controls;
+
                 var initial = config.Rig.Pipeline.Envelope?.DayDefaults is { } defaults
                     ? new CaptureSetpoint(defaults.Exposure, defaults.Gain, null, null)
                     : new CaptureSetpoint(config.Rig.Pipeline.DayExposure, config.Rig.Pipeline.DayGain, null, null);
-                OpenAndConfigureNative(config, validated, runtime, initial, cancellationToken);
+                ApplySetpointCore(initial);
+                SetAndRequireReadback(AsiControlType.Offset, validated.Options.Offset);
+                SetAndRequireReadback(AsiControlType.BandwidthOverload, validated.Options.UsbBandwidth);
+                SetOptionalBooleanControl(AsiControlType.HighSpeedMode, false);
+                SetOptionalBooleanControl(AsiControlType.Flip, false);
+                SetOptionalBooleanControl(AsiControlType.MonoBin, validated.Options.MonoBin);
+
+                var profile = validated.Readout.Profile;
+                var layout = validated.Readout.Layout;
+                _native.SetRoiFormat(_cameraId, layout.Width, layout.Height, profile.BinX, AsiImageType.Raw16);
+                _native.SetStartPosition(_cameraId, profile.Roi.X / profile.BinX, profile.Roi.Y / profile.BinY);
+                SetOptionalBooleanControl(AsiControlType.HardwareBin, validated.Options.HardwareBin);
+                ValidateRoiReadback(validated.Readout);
             }
             catch
             {
@@ -160,12 +186,6 @@ public sealed class ZwoAsiCameraModule :
             var native = _native!;
             var readout = _readout!;
             var options = _options!;
-            if (options.MaximumCapturesPerSession > 0 &&
-                _successfulCapturesInSession >= options.MaximumCapturesPerSession)
-            {
-                RestartSdkSession(captureToken);
-                native = _native!;
-            }
             if (request.RequestedSetpoint is { } requestedSetpoint)
             {
                 ApplySetpointCore(requestedSetpoint);
@@ -221,7 +241,6 @@ public sealed class ZwoAsiCameraModule :
                     }
                 }
                 _exposureActive = false;
-                _successfulCapturesInSession++;
             }
             catch
             {
@@ -311,7 +330,6 @@ public sealed class ZwoAsiCameraModule :
             throw new ArgumentException("The ASI camera-serial environment-variable name is required.", nameof(configuration));
         }
         if (options.Offset < 0 || options.UsbBandwidth is < 0 or > 100 ||
-            options.MaximumCapturesPerSession is < 0 or > 1_000_000 ||
             options.PollInterval <= TimeSpan.Zero || options.PollInterval > TimeSpan.FromSeconds(1) ||
             options.CaptureTimeoutMargin < TimeSpan.Zero || options.CaptureTimeoutMargin > TimeSpan.FromMinutes(10))
         {
@@ -654,89 +672,7 @@ public sealed class ZwoAsiCameraModule :
         }
     }
 
-    private void RestartSdkSession(CancellationToken cancellationToken)
-    {
-        var config = _configuration!;
-        var options = _options!;
-        var runtime = _runtime!;
-        var readout = _readout!;
-        var setpoint = new CaptureSetpoint(_effectiveExposure, _effectiveGain, null, null);
-        var validated = new ValidatedConfiguration(options, readout, SupportedProfiles[options.ExpectedModel]);
-        try
-        {
-            CleanupNative(skipExposureStop: true, throwCloseFailure: true, throwDisposeFailure: true);
-            OpenAndConfigureNative(config, validated, runtime, setpoint, cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            CleanupNative(skipExposureStop: true);
-            throw;
-        }
-        catch (Exception exception)
-        {
-            CleanupNative(skipExposureStop: true);
-            throw new InvalidOperationException("The ASI camera session could not be recycled safely.", exception);
-        }
-    }
-
-    private void OpenAndConfigureNative(
-        CameraModuleConfig config,
-        ValidatedConfiguration validated,
-        ResolvedRuntimeConfiguration runtime,
-        CaptureSetpoint setpoint,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            _native = _nativeApiFactory(runtime.LibraryPath);
-        }
-        catch
-        {
-            throw new InvalidOperationException("The configured ASI SDK library could not be loaded or bound.");
-        }
-        ValidateSdkVersion(_native.GetSdkVersion());
-        var selected = SelectCamera(_native, runtime.Serial, validated.Profile.Model, cancellationToken);
-        _cameraId = selected.CameraId;
-        try
-        {
-            _native.OpenCamera(_cameraId);
-            _cameraOpen = true;
-            _native.InitializeCamera(_cameraId);
-        }
-        catch (AsiException)
-        {
-            throw new InvalidOperationException("The configured ASI camera is not connected or accessible.");
-        }
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var controls = _native.GetControlCapabilities(_cameraId).ToDictionary(control => control.Type);
-        ValidateCameraAndControls(config, validated.Options, validated.Profile, selected, validated.Readout, controls);
-        _configuration = config;
-        _options = validated.Options;
-        _runtime = runtime;
-        _camera = selected;
-        _readout = validated.Readout;
-        _controls = controls;
-
-        ApplySetpointCore(setpoint);
-        SetAndRequireReadback(AsiControlType.Offset, validated.Options.Offset);
-        SetAndRequireReadback(AsiControlType.BandwidthOverload, validated.Options.UsbBandwidth);
-        SetOptionalBooleanControl(AsiControlType.HighSpeedMode, false);
-        SetOptionalBooleanControl(AsiControlType.Flip, false);
-        SetOptionalBooleanControl(AsiControlType.MonoBin, validated.Options.MonoBin);
-        var profile = validated.Readout.Profile;
-        var layout = validated.Readout.Layout;
-        _native.SetRoiFormat(_cameraId, layout.Width, layout.Height, profile.BinX, AsiImageType.Raw16);
-        _native.SetStartPosition(_cameraId, profile.Roi.X / profile.BinX, profile.Roi.Y / profile.BinY);
-        SetOptionalBooleanControl(AsiControlType.HardwareBin, validated.Options.HardwareBin);
-        ValidateRoiReadback(validated.Readout);
-        _successfulCapturesInSession = 0;
-    }
-
-    private void CleanupNative(
-        bool skipExposureStop = false,
-        bool throwCloseFailure = false,
-        bool throwDisposeFailure = false)
+    private void CleanupNative(bool skipExposureStop = false, bool throwCloseFailure = false)
     {
         var native = _native;
         if (native is null)
@@ -756,7 +692,6 @@ public sealed class ZwoAsiCameraModule :
             }
         }
         Exception? closeException = null;
-        Exception? disposeException = null;
         try
         {
             if (_cameraOpen)
@@ -774,11 +709,9 @@ public sealed class ZwoAsiCameraModule :
         {
             native.Dispose();
         }
-        catch (Exception exception)
+        catch
         {
             // The managed session must still be invalidated if unloading fails.
-            _sdkUnloadState.MarkFailed();
-            disposeException = exception;
         }
         finally
         {
@@ -788,10 +721,6 @@ public sealed class ZwoAsiCameraModule :
         {
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(closeException).Throw();
         }
-        if (throwDisposeFailure && disposeException is not null)
-        {
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(disposeException).Throw();
-        }
     }
 
     private void ResetState()
@@ -799,14 +728,12 @@ public sealed class ZwoAsiCameraModule :
         _native = null;
         _configuration = null;
         _options = null;
-        _runtime = null;
         _camera = null;
         _controls = null;
         _readout = null;
         _cameraId = -1;
         _cameraOpen = false;
         _exposureActive = false;
-        _successfulCapturesInSession = 0;
         _effectiveExposure = default;
         _effectiveGain = default;
         _effectiveOffset = default;
@@ -825,14 +752,6 @@ public sealed class ZwoAsiCameraModule :
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-    }
-
-    private void ThrowIfNativeUnloadFailed()
-    {
-        if (_sdkUnloadState.Failed)
-        {
-            throw new InvalidOperationException("The ASI SDK could not be unloaded; this module instance cannot be reinitialized safely.");
-        }
     }
 
     private static TimeSpan AddChecked(TimeSpan left, TimeSpan right)
@@ -955,13 +874,4 @@ public sealed class ZwoAsiCameraModule :
         int StrideBytes);
 
     private sealed record ResolvedRuntimeConfiguration(string LibraryPath, byte[] Serial);
-}
-
-internal sealed class AsiSdkUnloadState
-{
-    private int _failed;
-
-    internal bool Failed => Volatile.Read(ref _failed) != 0;
-
-    internal void MarkFailed() => Interlocked.Exchange(ref _failed, 1);
 }
