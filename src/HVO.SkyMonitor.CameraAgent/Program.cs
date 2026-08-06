@@ -146,6 +146,7 @@ public class Program
 
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, LoggingEmailSender>();
         builder.Services.AddSingleton<CameraAgentIdentitySeeder>();
+        builder.Services.AddSingleton<CameraAgentIdentityInitialization>();
 
         builder.Services.AddApiVersioning(options =>
             {
@@ -322,12 +323,16 @@ public class Program
 
         app.MapSkyMonitorHealthEndpoints();
 
-        using (var scope = app.Services.CreateScope())
+        var identityInitialization = app.Services.GetRequiredService<CameraAgentIdentityInitialization>();
+        await identityInitialization.RunAsync(async cancellationToken =>
         {
-            var seeder = scope.ServiceProvider.GetRequiredService<CameraAgentIdentitySeeder>();
-            await seeder.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            DeviceStateFilePermissions.RestrictFile(identityDbPath);
-        }
+            using (var scope = app.Services.CreateScope())
+            {
+                var seeder = scope.ServiceProvider.GetRequiredService<CameraAgentIdentitySeeder>();
+                await seeder.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                DeviceStateFilePermissions.RestrictFile(identityDbPath);
+            }
+        }, CancellationToken.None).ConfigureAwait(false);
 
         await app.RunAsync().ConfigureAwait(false);
     }

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
@@ -363,6 +364,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             var address = server.Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault()
                 ?? throw new InvalidOperationException("Kestrel did not publish its loopback address.");
             client.BaseAddress = new Uri(address, UriKind.Absolute);
+            await factory.Services.GetRequiredService<CameraAgentIdentityInitialization>()
+                .WaitAsync(CancellationToken.None).ConfigureAwait(false);
             _host = new HostInstance(factory, client);
         }
         catch
