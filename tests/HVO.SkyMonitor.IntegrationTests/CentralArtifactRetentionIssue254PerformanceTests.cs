@@ -22,6 +22,14 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
     private const int Issue254PayloadBytes = 1936 * 1216 * 2;
     private const int Issue254Warmups = 20;
     private const int Issue254Measurements = 200;
+    private static readonly string[] Issue254ZeroDelayDiagnosticMetrics =
+    [
+        "PeakAttributedSqlSessions", "PeakSleepingSessions", "PeakActiveRequests",
+        "PeakOpenTransactionSessions", "PeakSessionApplicationLocks",
+        "StableWindowApplicationLockSessionsWithOpenTransactions",
+        "PeakActiveTransactionLogBytes", "ObservedBatchApplicationLockOccupancyMilliseconds",
+        "EffectiveSamplingIntervalMilliseconds"
+    ];
 
     [TestMethod]
     public async Task RuntimeSqlPolicy_W4AndDelayedObjectIo_RecordsEvidence()
@@ -729,7 +737,10 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
             {
                 var baselineCell = FindIssue254Delay(baselineRoot.GetProperty("DelayedObjectIo"), concurrency, delay);
                 var afterCell = FindIssue254Delay(afterRoot.GetProperty("DelayedObjectIo"), concurrency, delay);
-                comparisons.AddRange(delayMetrics.Select(metric => CreateComparison(
+                var comparedMetrics = delay == 0
+                    ? delayMetrics.Except(Issue254ZeroDelayDiagnosticMetrics, StringComparer.Ordinal)
+                    : delayMetrics;
+                comparisons.AddRange(comparedMetrics.Select(metric => CreateComparison(
                     $"C{concurrency}.Delay{delay}.{metric}",
                     baselineCell.GetProperty(metric),
                     afterCell.GetProperty(metric),
@@ -751,8 +762,8 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
                 {
                     new
                     {
-                        Name = "DelayedObjectIo.PeakActiveSessions",
-                        Disposition = "Recorded in every raw and five-trial summary but not assigned a regression direction because the session-status and request DMV subqueries are non-atomic transition samples."
+                        Name = "DelayedObjectIo.PeakActiveSessions and Delay0 SQL DMV state/occupancy",
+                        Disposition = "Recorded in every raw and five-trial summary but not assigned a regression direction. Session-status and request DMV subqueries are non-atomic transition samples, and the zero-delay control has no stable observation window. Blocked requests remain a compared wait signal; 250/2,000 ms cells retain stable-window SQL comparisons."
                     }
                 },
                 MaterialRegressions = materialRegressions,
