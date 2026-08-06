@@ -223,14 +223,8 @@ public sealed class DatabaseInitializationAcceptanceTests
     public async Task ProductionInitializationHostMode_UsesDedicatedConnectionAndExits()
     {
         await using var database = await InitializedDatabase.CreateAsync("HostMode").ConfigureAwait(false);
-        var repositoryRoot = InitializedDatabase.FindRepositoryRoot();
-        var outputDirectory = Path.Combine(
-            repositoryRoot,
-            "src",
-            "HVO.SkyMonitor.LogicHost",
-            "bin",
-            "Release",
-            "net10.0");
+        var logicHostAssembly = typeof(HVO.SkyMonitor.LogicHost.Program).Assembly.Location;
+        var outputDirectory = Path.GetDirectoryName(logicHostAssembly)!;
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo("dotnet")
@@ -241,7 +235,7 @@ public sealed class DatabaseInitializationAcceptanceTests
                 UseShellExecute = false
             }
         };
-        process.StartInfo.ArgumentList.Add(Path.Combine(outputDirectory, "HVO.SkyMonitor.LogicHost.dll"));
+        process.StartInfo.ArgumentList.Add(logicHostAssembly);
         process.StartInfo.ArgumentList.Add("--host-mode=database-initialize");
         process.StartInfo.Environment["ASPNETCORE_ENVIRONMENT"] = Environments.Production;
         process.StartInfo.Environment["ConnectionStrings__skymonitordb-migrations"] = database.ConnectionString;
