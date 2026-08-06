@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class SqlOperationsIssue255Tests
 {
-    private const string Password = "Issue255_isolated_SQL_2022!";
+    private static readonly string Password = $"Issue255_{Guid.NewGuid():N}_aA1!";
     private const string ApprovedDirectory = "/var/opt/mssql/data";
     private const string EventRootDirectory = "/var/opt/mssql/data/issue255-xe-root";
     private const string BackupFilePrefix = "hvo255_backup_";
@@ -189,26 +189,7 @@ public sealed class SqlOperationsIssue255Tests
             RequireText(baseline, "actual_state").Should().BeOneOf("OFF", "READ_ONLY", "READ_WRITE");
             AddOutput(allSanitizedOutput, baselineResult);
 
-            var queryStoreVariables = new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                ["DatabaseName"] = databaseName,
-                ["QueryStoreToken"] = queryStoreToken,
-                ["OriginalDesiredState"] = RequireText(baseline, "desired_state"),
-                ["OriginalActualState"] = RequireText(baseline, "actual_state"),
-                ["OriginalReadonlyReason"] = RequireInt64(baseline, "readonly_reason").ToString(CultureInfo.InvariantCulture),
-                ["OriginalMaxStorageMb"] = RequireInt64(baseline, "maximum_storage_mb").ToString(CultureInfo.InvariantCulture),
-                ["OriginalRetentionDays"] = RequireInt64(baseline, "retention_days").ToString(CultureInfo.InvariantCulture),
-                ["OriginalIntervalMinutes"] = RequireInt64(baseline, "interval_minutes").ToString(CultureInfo.InvariantCulture),
-                ["OriginalMaxPlansPerQuery"] = RequireInt64(baseline, "maximum_plans_per_query").ToString(CultureInfo.InvariantCulture),
-                ["OriginalFlushSeconds"] = RequireInt64(baseline, "flush_seconds").ToString(CultureInfo.InvariantCulture),
-                ["OriginalCaptureMode"] = RequireText(baseline, "capture_mode"),
-                ["OriginalCleanupMode"] = RequireText(baseline, "cleanup_mode"),
-                ["OriginalWaitStatsMode"] = RequireText(baseline, "wait_stats_mode"),
-                ["MaxStorageMb"] = "100",
-                ["RetentionDays"] = "1",
-                ["IntervalMinutes"] = "1",
-                ["MaxPlansPerQuery"] = "10"
-            };
+            var queryStoreVariables = QueryStoreConfigureVariables(databaseName, queryStoreToken, baseline);
             var noElevationFailure = await CaptureSanitizedScriptFailureAsync(
                 () => ExecuteScriptAsync(databaseOperator, "query-store-configure.sql", queryStoreVariables)).ConfigureAwait(false);
             noElevationFailure.SqlErrorNumber.Should().Be(51301);

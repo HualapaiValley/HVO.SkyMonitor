@@ -159,6 +159,14 @@ BEGIN TRY
     DECLARE @logRoot nvarchar(4000) = CONVERT(nvarchar(4000), SERVERPROPERTY(N'InstanceDefaultLogPath'));
     IF @dataRoot IS NULL OR @logRoot IS NULL
         THROW 51255, 'SQL Server default data and log locations are unavailable.', 1;
+    DECLARE @dataSeparator nchar(1) = CASE WHEN CHARINDEX(N'\', @dataRoot) > 0 THEN N'\' ELSE N'/' END;
+    DECLARE @logSeparator nchar(1) = CASE WHEN CHARINDEX(N'\', @logRoot) > 0 THEN N'\' ELSE N'/' END;
+    WHILE RIGHT(@dataRoot, 1) IN (N'/', N'\') SET @dataRoot = LEFT(@dataRoot, LEN(@dataRoot) - 1);
+    WHILE RIGHT(@logRoot, 1) IN (N'/', N'\') SET @logRoot = LEFT(@logRoot, LEN(@logRoot) - 1);
+    IF @dataRoot = N'' OR @logRoot = N''
+        THROW 51255, 'SQL Server default data and log locations are invalid.', 1;
+    SET @dataRoot += @dataSeparator;
+    SET @logRoot += @logSeparator;
 
     CREATE TABLE #restoreFiles (
         [LogicalName] nvarchar(128), [PhysicalName] nvarchar(260), [Type] char(1), [FileGroupName] nvarchar(128) NULL,
