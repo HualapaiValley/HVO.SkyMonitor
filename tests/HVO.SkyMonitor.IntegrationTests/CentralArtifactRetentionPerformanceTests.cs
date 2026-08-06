@@ -30,7 +30,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestCategory("Manual")]
 [DoNotParallelize]
 [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Evidence cleanup attempts every object and SQL cleanup before reporting aggregate failures.")]
-public sealed class CentralArtifactRetentionPerformanceTests
+public sealed partial class CentralArtifactRetentionPerformanceTests
 {
     private const string BaselineRevision = "f72da9adcace56f207f69a6aa370cecdc7dc13ad";
     private const string Bucket = "skymonitor-artifacts";
@@ -452,7 +452,7 @@ public sealed class CentralArtifactRetentionPerformanceTests
         {
             var stat = await minio.StatObjectAsync(new StatObjectArgs()
                 .WithBucket(Bucket).WithObject(artifact.ObjectKey)).ConfigureAwait(false);
-            checked((long)stat.Size).Should().Be(PayloadBytes);
+            checked((long)stat.Size).Should().Be(payload.LongLength);
             string? observedChecksum = null;
             await minio.GetObjectAsync(new GetObjectArgs()
                 .WithBucket(Bucket)
@@ -539,7 +539,8 @@ public sealed class CentralArtifactRetentionPerformanceTests
         IReadOnlyList<SeededRetentionArtifact> artifacts,
         int concurrency,
         string samplerConnectionString,
-        string applicationName)
+        string applicationName,
+        double maximumMedianSamplingIntervalMilliseconds = 25)
     {
         using var process = Process.GetCurrentProcess();
         process.Refresh();
@@ -572,7 +573,8 @@ public sealed class CentralArtifactRetentionPerformanceTests
             samples,
             elapsed,
             resources,
-            CreateSqlSamplingEvidence(await sqlSamplesTask.ConfigureAwait(false)));
+            CreateSqlSamplingEvidence(
+                await sqlSamplesTask.ConfigureAwait(false), maximumMedianSamplingIntervalMilliseconds));
     }
 
     private static async Task<long> SampleWorkingSetAsync(long initialWorkingSet, CancellationToken cancellationToken)
@@ -801,6 +803,14 @@ public sealed class CentralArtifactRetentionPerformanceTests
             SELECT
                 (SELECT COUNT(*) FROM @attributed),
                 (SELECT COUNT(*)
+                    FROM [sys].[dm_exec_sessions]
+                    WHERE [session_id] IN (SELECT [session_id] FROM @attributed)
+                        AND [status] = N'sleeping'),
+                (SELECT COUNT(*)
+                    FROM [sys].[dm_exec_sessions]
+                    WHERE [session_id] IN (SELECT [session_id] FROM @attributed)
+                        AND [status] <> N'sleeping'),
+                (SELECT COUNT(*)
                     FROM [sys].[dm_exec_requests]
                     WHERE [session_id] IN (SELECT [session_id] FROM @attributed)),
                 (SELECT COUNT(*) FROM [open_transactions]),
@@ -810,6 +820,19 @@ public sealed class CentralArtifactRetentionPerformanceTests
                         AND [resource_type] = N'APPLICATION'
                         AND [request_owner_type] = N'SESSION'
                         AND [request_status] = N'GRANT'),
+                (SELECT COUNT(*)
+                    FROM
+                    (
+                        SELECT DISTINCT [application_lock].[request_session_id]
+                        FROM [sys].[dm_tran_locks] AS [application_lock]
+                        INNER JOIN [sys].[dm_tran_session_transactions] AS [session_transaction]
+                            ON [session_transaction].[session_id] = [application_lock].[request_session_id]
+                        WHERE [application_lock].[request_session_id] IN
+                            (SELECT [session_id] FROM @attributed)
+                            AND [application_lock].[resource_type] = N'APPLICATION'
+                            AND [application_lock].[request_owner_type] = N'SESSION'
+                            AND [application_lock].[request_status] = N'GRANT'
+                    ) AS [application_lock_transaction]),
                 (SELECT COUNT(*)
                     FROM [sys].[dm_exec_requests] AS request
                     INNER JOIN [sys].[dm_exec_sessions] AS session ON session.[session_id] = request.[session_id]
@@ -828,23 +851,31 @@ public sealed class CentralArtifactRetentionPerformanceTests
             reader.GetInt32(2),
             reader.GetInt32(3),
             reader.GetInt32(4),
-            reader.GetInt64(5));
+            reader.GetInt32(5),
+            reader.GetInt32(6),
+            reader.GetInt32(7),
+            reader.GetInt64(8));
     }
 
-    private static SqlSamplingEvidence CreateSqlSamplingEvidence(IReadOnlyList<SqlCriticalSectionSample> samples)
+    private static SqlSamplingEvidence CreateSqlSamplingEvidence(
+        IReadOnlyList<SqlCriticalSectionSample> samples,
+        double maximumMedianSamplingIntervalMilliseconds = 25)
     {
         var effectiveInterval = CalculateMedianSamplingInterval(samples);
         if (samples.Count >= 2)
         {
-            effectiveInterval.Should().BeLessThanOrEqualTo(25);
+            effectiveInterval.Should().BeLessThanOrEqualTo(maximumMedianSamplingIntervalMilliseconds);
         }
         return new SqlSamplingEvidence(
             samples.Count,
             effectiveInterval,
             samples.Count == 0 ? 0 : samples.Max(sample => sample.AttributedSqlSessions),
+            samples.Count == 0 ? 0 : samples.Max(sample => sample.SleepingSessions),
+            samples.Count == 0 ? 0 : samples.Max(sample => sample.ActiveSessions),
             samples.Count == 0 ? 0 : samples.Max(sample => sample.ActiveRequests),
             samples.Count == 0 ? 0 : samples.Max(sample => sample.OpenTransactionSessions),
             samples.Count == 0 ? 0 : samples.Max(sample => sample.SessionApplicationLocks),
+            samples.Count == 0 ? 0 : samples.Max(sample => sample.ApplicationLockSessionsWithOpenTransactions),
             samples.Count == 0 ? 0 : samples.Max(sample => sample.BlockedRequests),
             samples.Count == 0 ? 0 : samples.Max(sample => sample.ActiveTransactionLogBytes),
             CalculateApplicationLockWindow(samples),
@@ -1647,9 +1678,12 @@ public sealed class CentralArtifactRetentionPerformanceTests
     private sealed record SqlCriticalSectionSample(
         double ElapsedMilliseconds,
         int AttributedSqlSessions,
+        int SleepingSessions,
+        int ActiveSessions,
         int ActiveRequests,
         int OpenTransactionSessions,
         int SessionApplicationLocks,
+        int ApplicationLockSessionsWithOpenTransactions,
         int BlockedRequests,
         long ActiveTransactionLogBytes);
 
@@ -1657,9 +1691,12 @@ public sealed class CentralArtifactRetentionPerformanceTests
         int SampleCount,
         double EffectiveMedianIntervalMilliseconds,
         int PeakAttributedSqlSessions,
+        int PeakSleepingSessions,
+        int PeakActiveSessions,
         int PeakActiveRequests,
         int PeakOpenTransactionSessions,
         int PeakSessionApplicationLocks,
+        int PeakApplicationLockSessionsWithOpenTransactions,
         int PeakBlockedRequests,
         long PeakActiveTransactionLogBytes,
         double ObservedBatchApplicationLockOccupancyMilliseconds,
