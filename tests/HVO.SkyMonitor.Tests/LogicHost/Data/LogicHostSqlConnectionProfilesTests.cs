@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.LogicHost.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
@@ -28,6 +29,60 @@ public sealed class LogicHostSqlConnectionProfilesTests
     }
 
     [TestMethod]
+    [DataRow("")]
+    [DataRow("conflicting-client")]
+    [DataRow("   ")]
+    public void Runtime_NormalizesAbsentConflictingAndBlankApplicationNames(string configuredApplicationName)
+    {
+        var configured = new SqlConnectionStringBuilder(Runtime)
+        {
+            ApplicationName = configuredApplicationName,
+            MaxPoolSize = 23,
+            ConnectTimeout = 7,
+            LoadBalanceTimeout = 41
+        };
+
+        var profile = LogicHostSqlConnectionProfiles.Resolve(
+            Configuration(("ConnectionStrings:skymonitordb", configured.ConnectionString)),
+            Environment("Production"),
+            LogicHostSqlConnectionPurpose.Runtime);
+        var normalized = new SqlConnectionStringBuilder(profile.ConnectionString);
+
+        Assert.AreEqual(LogicHostSqlConnectionProfiles.RuntimeApplicationName, normalized.ApplicationName);
+        Assert.AreEqual(23, normalized.MaxPoolSize);
+        Assert.AreEqual(7, normalized.ConnectTimeout);
+        Assert.AreEqual(41, normalized.LoadBalanceTimeout);
+    }
+
+    [TestMethod]
+    [DataRow(false, "runtime")]
+    [DataRow(true, "migration")]
+    public void MalformedConnectionString_FailsWithoutDisclosingConfiguredSecret(
+        bool migration,
+        string expectedPurpose)
+    {
+        const string secret = "Issue254_Do_Not_Disclose!42";
+        var malformed = $"Server=sql;Password={secret};Application Name=\"unterminated";
+        var purpose = migration
+            ? LogicHostSqlConnectionPurpose.DatabaseInitialization
+            : LogicHostSqlConnectionPurpose.Runtime;
+        var key = migration
+            ? "ConnectionStrings:skymonitordb-migrations"
+            : "ConnectionStrings:skymonitordb";
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            LogicHostSqlConnectionProfiles.Resolve(
+                Configuration((key, malformed)),
+                Environment("Production"),
+                purpose));
+
+        StringAssert.Contains(exception.Message, expectedPurpose, StringComparison.Ordinal);
+        Assert.IsNull(exception.InnerException);
+        Assert.IsFalse(exception.ToString().Contains(secret, StringComparison.Ordinal));
+        Assert.IsFalse(exception.ToString().Contains("unterminated", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void ProductionInitialization_RequiresAndUsesDedicatedConnection()
     {
         var configuration = Configuration(
@@ -39,6 +94,24 @@ public sealed class LogicHostSqlConnectionProfilesTests
 
         Assert.AreEqual(LogicHostSqlConnectionProfiles.InitializationApplicationName, profile.ApplicationName);
         StringAssert.Contains(profile.ConnectionString, "Data Source=migration", StringComparison.OrdinalIgnoreCase);
+    }
+
+    [TestMethod]
+    public void ProductionInitialization_ReplacesConflictingApplicationName()
+    {
+        var configured = new SqlConnectionStringBuilder(Migration)
+        {
+            ApplicationName = "conflicting-migration-client"
+        };
+
+        var profile = LogicHostSqlConnectionProfiles.Resolve(
+            Configuration(("ConnectionStrings:skymonitordb-migrations", configured.ConnectionString)),
+            Environment("Production"),
+            LogicHostSqlConnectionPurpose.DatabaseInitialization);
+
+        Assert.AreEqual(
+            LogicHostSqlConnectionProfiles.InitializationApplicationName,
+            new SqlConnectionStringBuilder(profile.ConnectionString).ApplicationName);
     }
 
     [TestMethod]

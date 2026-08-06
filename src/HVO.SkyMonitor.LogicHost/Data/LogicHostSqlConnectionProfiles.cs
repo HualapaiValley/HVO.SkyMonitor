@@ -58,7 +58,17 @@ internal static class LogicHostSqlConnectionProfiles
                 ? "A dedicated SkyMonitor SQL Server migration connection string must be configured."
                 : "A SkyMonitor SQL Server runtime connection string must be configured.");
         }
-        var normalized = new SqlConnectionStringBuilder(selected) { ApplicationName = applicationName };
-        return new(normalized.ConnectionString, applicationName);
+        try
+        {
+            var normalized = new SqlConnectionStringBuilder(selected) { ApplicationName = applicationName };
+            return new(normalized.ConnectionString, applicationName);
+        }
+        catch (Exception exception) when (exception is ArgumentException or FormatException)
+        {
+            // Do not retain the parser exception: it can include fragments of the configured secret.
+            throw new InvalidOperationException(purpose == LogicHostSqlConnectionPurpose.DatabaseInitialization
+                ? "The configured SkyMonitor SQL Server migration connection string is malformed."
+                : "The configured SkyMonitor SQL Server runtime connection string is malformed.");
+        }
     }
 }
