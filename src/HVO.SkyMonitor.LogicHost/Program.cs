@@ -18,6 +18,7 @@ using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
+using HVO.SkyMonitor.LogicHost.Hosting;
 using HVO.SkyMonitor.LogicHost.Middleware;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -46,7 +47,8 @@ public sealed partial class Program
 {
     public static async Task Main(string[] args)
     {
-        var builder = WebApplication.CreateBuilder(args);
+        var command = LogicHostCommandParser.Parse(args);
+        var builder = WebApplication.CreateBuilder(command.ForwardedArguments.ToArray());
 
         // Configure shared HVO telemetry, logging, and health defaults.
         builder.AddSkyMonitorObservability();
@@ -422,18 +424,18 @@ public sealed partial class Program
 
         // This host owns only the SkyMonitor database; do not point this context at shared identity databases.
         // Database - require an explicit SQL Server connection string.
-        var connectionString = builder.Configuration.GetConnectionString("skymonitordb")
-            ?? builder.Configuration.GetConnectionString("DefaultConnection")
-            ?? builder.Configuration["ConnectionStrings:skymonitordb"]
-            ?? builder.Configuration["ConnectionStrings:DefaultConnection"];
-
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            throw new InvalidOperationException("A SkyMonitor SQL Server connection string must be configured.");
-        }
+        var connectionPurpose = command.Mode == LogicHostHostMode.DatabaseInitialize
+            ? LogicHostSqlConnectionPurpose.DatabaseInitialization
+            : LogicHostSqlConnectionPurpose.Runtime;
+        var sqlProfile = LogicHostSqlConnectionProfiles.Resolve(
+            builder.Configuration,
+            builder.Environment,
+            connectionPurpose);
 
         builder.Services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseSqlServer(connectionString));
+            options.UseSqlServer(sqlProfile.ConnectionString));
+        builder.Services.AddScoped<DatabaseInitializer>();
+        builder.Services.AddScoped<DatabaseRuntimeValidator>();
 
         builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
@@ -822,6 +824,45 @@ public sealed partial class Program
         builder.Services.AddInstalledCelestialCatalog();
 
         var app = builder.Build();
+
+        using (var scope = app.Services.CreateScope())
+        {
+            var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+            try
+            {
+                if (command.Mode == LogicHostHostMode.DatabaseInitialize ||
+                    app.Environment.IsDevelopment() ||
+                    app.Environment.IsEnvironment("Testing"))
+                {
+                    var result = await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>()
+                        .RunAsync(CancellationToken.None).ConfigureAwait(false);
+                    scope.ServiceProvider.GetRequiredService<DeploymentLocationTelemetry>()
+                        .RecordBackfill(result.BackfilledObservatories);
+                    Log.DatabaseInitializationCompleted(
+                        logger,
+                        result.AttemptId,
+                        result.TargetMigrationId,
+                        result.Elapsed.TotalMilliseconds);
+                }
+                else
+                {
+                    await scope.ServiceProvider.GetRequiredService<DatabaseRuntimeValidator>()
+                        .ValidateAsync(CancellationToken.None).ConfigureAwait(false);
+                    Log.DatabaseRuntimeValidated(logger);
+                }
+            }
+            catch (Exception exception)
+            {
+                Log.DatabasePreparationFailed(logger, exception);
+                throw;
+            }
+        }
+
+        if (command.Mode == LogicHostHostMode.DatabaseInitialize)
+        {
+            await app.DisposeAsync().ConfigureAwait(false);
+            return;
+        }
         _ = app.Services.GetRequiredService<CatalogSnapshotResult>();
 
         // Configure the HTTP request pipeline
@@ -894,35 +935,6 @@ public sealed partial class Program
             app.UseMigrationsEndPoint();
         }
 
-        // Apply database migrations automatically on startup
-        using (var scope = app.Services.CreateScope())
-        {
-            var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-            try
-            {
-                Log.ApplyingMigrations(logger);
-                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                await db.Database.MigrateAsync().ConfigureAwait(false);
-                Log.MigrationsApplied(logger);
-
-                // Seed initial data
-                Log.SeedingDatabase(logger);
-                await DatabaseSeeder.SeedAsync(scope.ServiceProvider, logger).ConfigureAwait(false);
-                Log.SeedingCompleted(logger);
-                var backfilledObservatories = await ObservatoryLocationBackfill.RunAsync(
-                    db,
-                    scope.ServiceProvider.GetRequiredService<TimeProvider>(),
-                    logger).ConfigureAwait(false);
-                scope.ServiceProvider.GetRequiredService<DeploymentLocationTelemetry>()
-                    .RecordBackfill(backfilledObservatories);
-            }
-            catch (Exception ex)
-            {
-                Log.MigrationError(logger, ex);
-                throw;
-            }
-        }
-
         app.MapStaticAssets();
         app.UseRouting();
 
@@ -984,52 +996,38 @@ public sealed partial class Program
                 new EventId(1000, nameof(RateLimitExceeded)),
                 "Rate limit exceeded: IP={IpAddress}, Path={Path}, RetryAfter={RetryAfter}");
 
-        private static readonly Action<ILogger, Exception?> ApplyingMigrationsLog =
+        private static readonly Action<ILogger, Guid, string, double, Exception?> DatabaseInitializationCompletedLog =
+            LoggerMessage.Define<Guid, string, double>(
+                LogLevel.Information,
+                new EventId(1001, nameof(DatabaseInitializationCompleted)),
+                "Database initialization completed: AttemptId={AttemptId}, TargetMigrationId={TargetMigrationId}, ElapsedMilliseconds={ElapsedMilliseconds}");
+
+        private static readonly Action<ILogger, Exception?> DatabaseRuntimeValidatedLog =
             LoggerMessage.Define(
                 LogLevel.Information,
-                new EventId(1001, nameof(ApplyingMigrations)),
-                "Applying database migrations...");
+                new EventId(1002, nameof(DatabaseRuntimeValidated)),
+                "Database runtime state validated successfully");
 
-        private static readonly Action<ILogger, Exception?> MigrationsAppliedLog =
+        private static readonly Action<ILogger, Exception?> DatabasePreparationFailedLog =
             LoggerMessage.Define(
-                LogLevel.Information,
-                new EventId(1002, nameof(MigrationsApplied)),
-                "Database migrations applied successfully");
-
-        private static readonly Action<ILogger, Exception?> SeedingDatabaseLog =
-            LoggerMessage.Define(
-                LogLevel.Information,
-                new EventId(1003, nameof(SeedingDatabase)),
-                "Seeding database...");
-
-        private static readonly Action<ILogger, Exception?> SeedingCompletedLog =
-            LoggerMessage.Define(
-                LogLevel.Information,
-                new EventId(1004, nameof(SeedingCompleted)),
-                "Database seeding completed");
-
-        private static readonly Action<ILogger, Exception?> MigrationErrorLog =
-            LoggerMessage.Define(
-                LogLevel.Error,
-                new EventId(1005, nameof(MigrationError)),
-                "An error occurred while applying database migrations or seeding");
+                LogLevel.Critical,
+                new EventId(1003, nameof(DatabasePreparationFailed)),
+                "Database initialization or runtime validation failed");
 
         public static void RateLimitExceeded(ILogger logger, string ipAddress, string path, double? retryAfterSeconds) =>
             RateLimitExceededLog(logger, ipAddress, path, retryAfterSeconds, null);
 
-        public static void ApplyingMigrations(ILogger logger) =>
-            ApplyingMigrationsLog(logger, null);
+        public static void DatabaseInitializationCompleted(
+            ILogger logger,
+            Guid attemptId,
+            string targetMigrationId,
+            double elapsedMilliseconds) =>
+            DatabaseInitializationCompletedLog(logger, attemptId, targetMigrationId, elapsedMilliseconds, null);
 
-        public static void MigrationsApplied(ILogger logger) =>
-            MigrationsAppliedLog(logger, null);
+        public static void DatabaseRuntimeValidated(ILogger logger) =>
+            DatabaseRuntimeValidatedLog(logger, null);
 
-        public static void SeedingDatabase(ILogger logger) =>
-            SeedingDatabaseLog(logger, null);
-
-        public static void SeedingCompleted(ILogger logger) =>
-            SeedingCompletedLog(logger, null);
-
-        public static void MigrationError(ILogger logger, Exception exception) =>
-            MigrationErrorLog(logger, exception);
+        public static void DatabasePreparationFailed(ILogger logger, Exception exception) =>
+            DatabasePreparationFailedLog(logger, exception);
     }
 }

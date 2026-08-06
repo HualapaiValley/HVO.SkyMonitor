@@ -116,7 +116,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 table: "CentralTransientPayloadReleaseItems",
                 sql: "[RetryCount] >= 0");
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 ALTER TRIGGER [TR_CentralTransientPayloadReleases_Transition]
                 ON [CentralTransientPayloadReleases]
                 AFTER UPDATE, DELETE
@@ -149,7 +149,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 ALTER TRIGGER [TR_CentralTransientPayloadReleaseItems_Transition]
                 ON [CentralTransientPayloadReleaseItems]
                 AFTER UPDATE, DELETE

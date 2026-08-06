@@ -95,6 +95,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<DeploymentLocationReconciliationWork> DeploymentLocationReconciliationWork => Set<DeploymentLocationReconciliationWork>();
     internal DbSet<DeploymentLocationReconciliationCapture> DeploymentLocationReconciliationCaptures => Set<DeploymentLocationReconciliationCapture>();
     internal DbSet<CentralCaptureLocation> CentralCaptureLocations => Set<CentralCaptureLocation>();
+    internal DbSet<DatabaseInitializationState> DatabaseInitializationState => Set<DatabaseInitializationState>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -141,6 +142,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         NetworkAuthorityConfiguration.Configure(builder);
         RegisteredUserNetworkConfiguration.Configure(builder);
         DeploymentLocationAuthorityConfiguration.Configure(builder);
+        builder.ApplyConfiguration(new DatabaseInitializationStateConfiguration());
 
         // Configure OpenIddict entities to use the default Entity Framework Core conventions
         builder.UseOpenIddict();

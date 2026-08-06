@@ -94,7 +94,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 maxLength: 512,
                 nullable: true);
 
-            migrationBuilder.Sql(
+            var derivativeBackfillSql =
                 """
                 UPDATE jobs
                 SET
@@ -187,7 +187,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     AND NOT EXISTS (
                         SELECT 1 FROM [CentralDerivativeJobs] AS existing
                         WHERE existing.[RequestIdentitySha256] = identityValue.[RequestIdentitySha256]);
-                """);
+                """;
+            migrationBuilder.Sql($"EXEC(N'{derivativeBackfillSql.Replace("'", "''", StringComparison.Ordinal)}');");
 
             migrationBuilder.AlterColumn<string>(
                 name: "TargetVariant",

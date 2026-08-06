@@ -515,7 +515,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 unique: true,
                 filter: "[SupersedesDecisionId] IS NOT NULL");
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 INSERT INTO [ObservatoryMemberships] ([ObservatoryId], [UserId], [Role], [AddedAtUtc])
                 SELECT observatory.[Id], observatory.[OwnerUserId], N'Owner', observatory.[CreatedAtUtc]
                 FROM [Observatories] AS observatory
@@ -633,7 +633,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
             CreateImmutableTrigger(migrationBuilder, "ObservatoryInvitations", "Observatory invitation history");
             CreateImmutableTrigger(migrationBuilder, "ObservatoryInvitationDispositions", "Observatory invitation disposition history");
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_ObservatoryPublicationProfileVersions_Transitions]
                 ON [ObservatoryPublicationProfileVersions]
                 AFTER UPDATE, DELETE
@@ -657,7 +657,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_ObservatoryLocationDisclosureVersions_Transitions]
                 ON [ObservatoryLocationDisclosureVersions]
                 AFTER UPDATE, DELETE
@@ -681,7 +681,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_LogicalCameraInstallations_Transitions]
                 ON [LogicalCameraInstallations]
                 AFTER UPDATE, DELETE
@@ -755,7 +755,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
             string tableName,
             string evidenceName)
         {
-            migrationBuilder.Sql($$"""
+            MigrationSql.ExecuteBatch(migrationBuilder, $$"""
                 CREATE TRIGGER [TR_{{tableName}}_Immutable]
                 ON [{{tableName}}]
                 AFTER UPDATE, DELETE

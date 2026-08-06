@@ -53,7 +53,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 columns: new[] { "ObservatoryId", "Version" },
                 unique: true);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralProcessingOverrideVersions_Transitions]
                 ON [CentralProcessingOverrideVersions]
                 AFTER UPDATE, DELETE

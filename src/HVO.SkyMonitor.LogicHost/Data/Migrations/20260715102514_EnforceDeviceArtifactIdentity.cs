@@ -23,26 +23,29 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 nullable: true);
 
             migrationBuilder.Sql("""
-                UPDATE artifact
-                SET artifact.DevicePublicId = frame.DevicePublicId
-                FROM CentralArtifacts AS artifact
-                INNER JOIN CentralFrames AS frame ON frame.Id = artifact.CentralFrameId
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM CentralArtifacts AS duplicateArtifact
-                    INNER JOIN CentralFrames AS duplicateFrame
-                        ON duplicateFrame.Id = duplicateArtifact.CentralFrameId
-                    WHERE duplicateArtifact.Id <> artifact.Id
-                        AND duplicateArtifact.ArtifactId = artifact.ArtifactId
-                        AND duplicateFrame.DevicePublicId = frame.DevicePublicId);
+                EXEC(N'
+                    UPDATE artifact
+                    SET artifact.DevicePublicId = frame.DevicePublicId
+                    FROM CentralArtifacts AS artifact
+                    INNER JOIN CentralFrames AS frame ON frame.Id = artifact.CentralFrameId
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM CentralArtifacts AS duplicateArtifact
+                        INNER JOIN CentralFrames AS duplicateFrame
+                            ON duplicateFrame.Id = duplicateArtifact.CentralFrameId
+                        WHERE duplicateArtifact.Id <> artifact.Id
+                            AND duplicateArtifact.ArtifactId = artifact.ArtifactId
+                            AND duplicateFrame.DevicePublicId = frame.DevicePublicId);
+                ');
                 """);
 
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralArtifacts_DevicePublicId_ArtifactId",
-                table: "CentralArtifacts",
-                columns: new[] { "DevicePublicId", "ArtifactId" },
-                unique: true,
-                filter: "[DevicePublicId] IS NOT NULL");
+            migrationBuilder.Sql("""
+                EXEC(N'
+                    CREATE UNIQUE INDEX [IX_CentralArtifacts_DevicePublicId_ArtifactId]
+                    ON [CentralArtifacts] ([DevicePublicId], [ArtifactId])
+                    WHERE [DevicePublicId] IS NOT NULL;
+                ');
+                """);
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralArtifacts_ObjectState_ReconstructionState_ReceivedAtUtc",

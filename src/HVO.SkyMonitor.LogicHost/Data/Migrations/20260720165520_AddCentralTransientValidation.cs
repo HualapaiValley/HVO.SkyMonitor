@@ -649,7 +649,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 "CentralTransientExtractionSources"
             })
             {
-                migrationBuilder.Sql($"""
+                MigrationSql.ExecuteBatch(migrationBuilder, $"""
                     CREATE TRIGGER [TR_{table}_Immutable]
                     ON [{table}]
                     AFTER UPDATE, DELETE
@@ -661,7 +661,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     """);
             }
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientValidationJobs_CommittedImmutable]
                 ON [CentralTransientValidationJobs]
                 AFTER UPDATE, DELETE
@@ -685,7 +685,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientValidationIdentitySlots_TerminalImmutable]
                 ON [CentralTransientValidationIdentitySlots]
                 AFTER UPDATE, DELETE

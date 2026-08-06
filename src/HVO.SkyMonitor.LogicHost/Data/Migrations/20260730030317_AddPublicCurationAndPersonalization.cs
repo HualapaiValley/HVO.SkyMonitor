@@ -238,7 +238,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 table: "RegisteredUserTransientEventBookmarks",
                 columns: new[] { "UserId", "CreatedUtc", "CentralTransientEventId" });
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CuratedPublicPlacementDecisions_Immutable]
                 ON [CuratedPublicPlacementDecisions]
                 AFTER UPDATE, DELETE

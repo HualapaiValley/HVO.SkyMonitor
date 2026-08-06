@@ -93,7 +93,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 maxLength: 64,
                 nullable: true);
 
-            migrationBuilder.Sql("""
+            var storedCodeBackfillSql = """
                 DECLARE @AffectedArtifacts TABLE (
                     [Id] uniqueidentifier NOT NULL PRIMARY KEY,
                     [IsRoot] bit NOT NULL
@@ -192,7 +192,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         INNER JOIN @AffectedArtifacts AS affected
                             ON affected.[Id] = inputs.[CentralArtifactId]
                         WHERE inputs.[CentralDerivativeJobId] = jobs.[Id]));
-                """);
+                """;
+            migrationBuilder.Sql($"EXEC(N'{storedCodeBackfillSql.Replace("'", "''", StringComparison.Ordinal)}');");
         }
 
         /// <inheritdoc />
