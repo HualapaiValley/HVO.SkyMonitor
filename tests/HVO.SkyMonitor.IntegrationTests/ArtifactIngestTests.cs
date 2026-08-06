@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -15,6 +17,7 @@ using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -1607,6 +1610,104 @@ public sealed class ArtifactIngestTests
         attempts.Select(item => item.Outcome).Should().Equal(
             CentralDerivativeAttemptOutcome.LeaseExpired,
             CentralDerivativeAttemptOutcome.Completed);
+    }
+
+    [TestMethod]
+    public async Task ConcurrentDerivativeCompletions_ConvergeWithoutSqlDeadlocks()
+    {
+        const int jobCount = 8;
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("concurrent-derivative-completion-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        var artifactIds = new Guid[jobCount];
+        for (var index = 0; index < jobCount; index++)
+        {
+            var payload = new byte[] { 2, 4, 6, (byte)(8 + index) };
+            var manifest = CreateManifestV2(deviceId, rig, payload, captureSequence: 200 + index);
+            artifactIds[index] = manifest.Descriptor.Artifact.ArtifactId;
+            using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+            response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        }
+
+        Guid[] jobIds;
+        await using (var setupScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var sourceIds = await db.CentralArtifacts
+                .Where(artifact => artifactIds.Contains(artifact.ArtifactId))
+                .Select(artifact => artifact.Id)
+                .ToArrayAsync().ConfigureAwait(false);
+            sourceIds.Should().HaveCount(jobCount);
+            await db.CentralDerivativeJobs.Where(job => !sourceIds.Contains(job.SourceCentralArtifactId)
+                    || job.RecipeName != BuiltInProcessingRecipes.ImageQuality)
+                .Where(job => job.Status == CentralDerivativeJobStatus.Pending
+                    || job.Status == CentralDerivativeJobStatus.RetryableFailure)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(job => job.Status, CentralDerivativeJobStatus.TerminalFailure)
+                    .SetProperty(job => job.AvailableAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+            jobIds = await db.CentralDerivativeJobs
+                .Where(job => sourceIds.Contains(job.SourceCentralArtifactId)
+                    && job.RecipeName == BuiltInProcessingRecipes.ImageQuality)
+                .Select(job => job.Id)
+                .ToArrayAsync().ConfigureAwait(false);
+            jobIds.Should().HaveCount(jobCount);
+        }
+
+        var leases = new List<CentralDerivativeJobLease>();
+        for (var index = 0; index < jobCount; index++)
+        {
+            await using var claimScope = fixture.Factory.Services.CreateAsyncScope();
+            var lease = await claimScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobService>()
+                .ClaimNextAsync("concurrent-completion-worker", TimeSpan.FromMinutes(2), CancellationToken.None)
+                .ConfigureAwait(false);
+            lease.Should().NotBeNull();
+            jobIds.Should().Contain(lease!.JobId);
+            leases.Add(lease);
+        }
+        leases.Select(lease => lease.JobId).Should().BeEquivalentTo(jobIds);
+
+        var completionBarrier = new CompletionUpdateBarrier(jobCount);
+        using var completionFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
+            services.RemoveAll<ApplicationDbContext>();
+            services.AddDbContext<ApplicationDbContext>(options =>
+            {
+                options.UseSqlServer(fixture.SqlServerConnectionString);
+                options.AddInterceptors(new CompletionUpdateBarrierInterceptor(completionBarrier));
+                options.EnableSensitiveDataLogging();
+                options.EnableDetailedErrors();
+            });
+        }));
+        _ = completionFactory.Services;
+        var completedJobIds = new ConcurrentBag<Guid>();
+        await Parallel.ForEachAsync(
+            leases,
+            new ParallelOptions { MaxDegreeOfParallelism = jobCount },
+            async (lease, cancellationToken) =>
+            {
+                await using var scope = completionFactory.Services.CreateAsyncScope();
+                var result = await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                    .ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
+                result.Status.Should().Be(ProcessingOutcomeStatus.Produced);
+                completedJobIds.Add(lease.JobId);
+            }).ConfigureAwait(false);
+
+        completedJobIds.Should().BeEquivalentTo(jobIds);
+        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await assertionDb.CentralDerivativeJobs.CountAsync(job =>
+            jobIds.Contains(job.Id) && job.Status == CentralDerivativeJobStatus.Completed).ConfigureAwait(false))
+            .Should().Be(jobCount);
+        (await assertionDb.CentralDerivativeJobAttempts.CountAsync(attempt =>
+            jobIds.Contains(attempt.CentralDerivativeJobId)
+            && attempt.Outcome == CentralDerivativeAttemptOutcome.Completed).ConfigureAwait(false))
+            .Should().Be(jobCount);
     }
 
     [TestMethod]
@@ -3477,14 +3578,18 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
-    public async Task Reconciliation_RemovesOnlyStagingObjectsPastGracePeriod()
+    [DataRow("staging/", 10)]
+    [DataRow("staging/derivatives/", 41)]
+    public async Task Reconciliation_RemovesOnlyStagingObjectsPastGracePeriod(
+        string stagingPrefix,
+        int stagingPartition)
     {
         var fixture = AssemblyHooks.Fixture;
         var services = fixture.Factory.Services;
         var minio = services.GetRequiredService<IMinioClient>();
         const string bucket = "skymonitor-artifacts";
-        const int stagingPartition = 10;
-        var objectKey = $"staging/a{Guid.NewGuid():N}";
+        var objectId = Guid.NewGuid().ToString("N");
+        var objectKey = $"{stagingPrefix}a{objectId[1..]}";
         if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket)).ConfigureAwait(false))
         {
             await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket)).ConfigureAwait(false);
@@ -4611,6 +4716,39 @@ public sealed class ArtifactIngestTests
         public int CompletedCount => Volatile.Read(ref completedCount);
 
         public void Dispose() => listener.Dispose();
+    }
+
+    private sealed class CompletionUpdateBarrier(int participants)
+    {
+        private readonly TaskCompletionSource released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int arrivals;
+
+        internal async Task SignalAndWaitAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref arrivals) == participants)
+            {
+                released.TrySetResult();
+            }
+            await released.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class CompletionUpdateBarrierInterceptor(CompletionUpdateBarrier barrier) : DbCommandInterceptor
+    {
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("UPDATE [c]", StringComparison.Ordinal)
+                && command.CommandText.Contains("[CompletedAtUtc]", StringComparison.Ordinal)
+                && command.CommandText.Contains("[ResultCentralArtifactId]", StringComparison.Ordinal))
+            {
+                await barrier.SignalAndWaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            return result;
+        }
     }
 
     private sealed class RecordingLogger<T> : ILogger<T>

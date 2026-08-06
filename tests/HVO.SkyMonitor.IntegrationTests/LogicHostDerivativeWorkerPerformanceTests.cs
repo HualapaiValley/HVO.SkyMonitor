@@ -50,6 +50,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
     private const int CanonicalBacklogEnabledArrivals = 6;
     private const long RssSamplingToleranceBytes = 1024 * 1024;
     private const string SmokeVariable = "HVO_DERIVATIVE_PERF_SMOKE";
+    private const string P5DiagnosticTrialVariable = "HVO_DERIVATIVE_P5_DIAGNOSTIC_TRIAL";
     private const string ArtifactBucket = "skymonitor-artifacts";
     private const string MeterName = "HVO.SkyMonitor.LogicHost.DerivativeWorker";
     private const string ActivitySourceName = "HVO.SkyMonitor.LogicHost.DerivativeWorker";
@@ -281,6 +282,68 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         await File.WriteAllTextAsync(
             Path.Combine(outputDirectory, "logichost-derivative-worker-performance.json"),
             JsonSerializer.Serialize(evidence, EvidenceJsonOptions)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task CentralDerivativeWorker_P5C1FreshProcess_RecordsDiagnosticEvidence()
+    {
+        var trialValue = Environment.GetEnvironmentVariable(P5DiagnosticTrialVariable);
+        Assert.IsTrue(int.TryParse(trialValue, out var trial) && trial is >= 1 and <= CanonicalRecoveryTrials,
+            $"{P5DiagnosticTrialVariable} must select one trial from 1 through {CanonicalRecoveryTrials}.");
+        Assert.Contains(
+            $"{Path.DirectorySeparatorChar}Release{Path.DirectorySeparatorChar}",
+            AppContext.BaseDirectory,
+            StringComparison.Ordinal);
+        Assert.IsTrue(GCSettings.IsServerGC, "Canonical P5 diagnostics require server GC.");
+
+        var fixture = AssemblyHooks.Fixture;
+        var repositoryRoot = GetRepositoryRoot();
+        var revision = GetEvidenceRevision(repositoryRoot);
+        var runId = $"issue-253-P5-C1-T{trial}-{Guid.NewGuid():N}";
+        await DisableClaimableJobsAsync().ConfigureAwait(false);
+        var workload = CreateWorkload("W2", 3096, 2080, CameraPixelFormat.BayerRggb16, seed: 2025);
+        await PublishSourceAsync(fixture, workload, runId).ConfigureAwait(false);
+
+        using var telemetry = new TelemetryCollector();
+        var scale = HarnessScale.Create() with { RecoveryTrials = 1 };
+        Assert.IsFalse(scale.Smoke, $"{SmokeVariable} is not valid for canonical P5 diagnostics.");
+        var measurement = await MeasureBacklogRecoveryAsync(
+            fixture,
+            telemetry,
+            workload,
+            runId,
+            concurrency: 1,
+            scale,
+            assertRssPlateau: false,
+            retainRssDiagnostics: true).ConfigureAwait(false);
+        var trialEvidence = measurement.TrialEvidence.Single();
+
+        var outputDirectory = Path.Combine(
+            repositoryRoot,
+            "tests",
+            "HVO.SkyMonitor.IntegrationTests",
+            "TestResults",
+            "central-derivative-worker",
+            revision);
+        Directory.CreateDirectory(outputDirectory);
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDirectory, $"p5-c1-fresh-process-trial-{trial:D2}.json"),
+            JsonSerializer.Serialize(new
+            {
+                Schema = "hvo-logichost-central-derivative-worker-p5-diagnostic-v1",
+                Issue = 253,
+                Revision = new { EvidenceDirectoryRevision = revision, Git = ReadGitEvidence(repositoryRoot) },
+                Trial = trial,
+                Command = $"DOTNET_gcServer=1 {P5DiagnosticTrialVariable}={trial} HVO_EVIDENCE_REVISION={revision} dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~LogicHostDerivativeWorkerPerformanceTests.CentralDerivativeWorker_P5C1FreshProcess_RecordsDiagnosticEvidence",
+                ProcessId = Environment.ProcessId,
+                ServerGarbageCollection = GCSettings.IsServerGC,
+                Workload = new { workload.Id, workload.Width, workload.Height, PixelFormat = workload.PixelFormat.ToString(), workload.ByteLength },
+                Measurement = measurement,
+                RecordedAtUtc = DateTimeOffset.UtcNow
+            }, EvidenceJsonOptions)).ConfigureAwait(false);
+
+        Assert.IsTrue(trialEvidence.RssPlateau.Passed,
+            $"P5 RSS median growth {trialEvidence.RssPlateau.ObservedGrowthBytes} exceeded the {trialEvidence.RssPlateau.AllowedGrowthBytes}-byte full-frame envelope.");
     }
 
     private static async Task<DerivativeMeasurement> MeasureDerivativesAsync(
@@ -579,10 +642,15 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 fixture, ids, allowRecoveryAttempts: true).ConfigureAwait(false);
             if (boundaryEvidence.StagingCleanupSuppressed)
             {
-                await ReconcileExpiredStagingAsync(fixture).ConfigureAwait(false);
+                var reconciliationCycles = await ReconcileExpiredStagingAsync(
+                    fixture, boundaryEvidence.StagingObjectKey!).ConfigureAwait(false);
                 Assert.IsFalse(await ObjectExistsAsync(
                     fixture, boundaryEvidence.StagingObjectKey!).ConfigureAwait(false));
-                boundaryEvidence = boundaryEvidence with { StagingObjectReconciled = true };
+                boundaryEvidence = boundaryEvidence with
+                {
+                    StagingObjectReconciled = true,
+                    StagingReconciliationCycles = reconciliationCycles
+                };
             }
             trials.Add(new RecoveryTrialMeasurement(
                 trial,
@@ -691,11 +759,29 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             publicationFault?.StagingCleanupSuppressed == true,
             publicationFault?.StagingObjectKey,
             stagingObjectExists,
-            StagingObjectReconciled: false);
+            StagingObjectReconciled: false,
+            StagingReconciliationCycles: null);
     }
 
-    private static async Task ReconcileExpiredStagingAsync(IntegrationTestFixture fixture)
+    private static async Task<int> ReconcileExpiredStagingAsync(
+        IntegrationTestFixture fixture,
+        string stagingObjectKey)
     {
+        const string derivativePrefix = "staging/derivatives/";
+        Assert.IsTrue(stagingObjectKey.StartsWith(derivativePrefix, StringComparison.Ordinal));
+        var partition = 31 + Convert.ToInt32(stagingObjectKey[derivativePrefix.Length].ToString(), 16);
+        await using (var checkpointScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            await checkpointScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralRecoveryCheckpoints.ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.Phase, CentralRecoveryPhases.Idle)
+                    .SetProperty(item => item.StagingPartition, partition)
+                    .SetProperty(item => item.StagingCursor, (string?)null)
+                    .SetProperty(item => item.NextInventoryAtUtc, DateTimeOffset.UtcNow.AddDays(1))
+                    .SetProperty(item => item.LeaseToken, (Guid?)null)
+                    .SetProperty(item => item.LeaseExpiresAtUtc, (DateTimeOffset?)null))
+                .ConfigureAwait(false);
+        }
         using var telemetry = new CentralIngestTelemetry();
         var reconciliation = new CentralArtifactReconciliationService(
             fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
@@ -703,6 +789,11 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             telemetry,
             NullLogger<CentralArtifactReconciliationService>.Instance);
         await reconciliation.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        if (await ObjectExistsAsync(fixture, stagingObjectKey).ConfigureAwait(false))
+        {
+            Assert.Fail("The targeted derivative staging partition did not remove the captured expired object.");
+        }
+        return 1;
     }
 
     private static async Task<bool> ObjectExistsAsync(IntegrationTestFixture fixture, string objectKey)
@@ -726,7 +817,9 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         Workload workload,
         string scenario,
         int concurrency,
-        HarnessScale scale)
+        HarnessScale scale,
+        bool assertRssPlateau = true,
+        bool retainRssDiagnostics = false)
     {
         var trials = new List<BacklogRecoveryTrialMeasurement>();
         for (var trial = 1; trial <= scale.RecoveryTrials; trial++)
@@ -759,7 +852,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
 
             telemetry.Clear();
             StabilizeGc();
-            using var resources = new ResourceSampler();
+            using var resources = new ResourceSampler(retainRssDiagnostics);
             var recoveryStarted = Stopwatch.GetTimestamp();
             var initialDrain = new TaskCompletionSource<double>(TaskCreationOptions.RunContinuationsAsynchronously);
             using var monitoringCancellation = new CancellationTokenSource();
@@ -807,7 +900,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             var allowedRssGrowth = checked((concurrency + 1L) * workload.ByteLength
                 + RssSamplingToleranceBytes);
             var rssPlateauPassed = rssGrowth <= allowedRssGrowth;
-            if (!scale.Smoke)
+            if (!scale.Smoke && assertRssPlateau)
             {
                 Assert.IsTrue(rssPlateauPassed,
                     $"P5 RSS median growth {rssGrowth} exceeded the {allowedRssGrowth}-byte full-frame envelope.");
@@ -877,7 +970,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                if ((await ReadBacklogAsync(initialJobIds).ConfigureAwait(false)).Count == 0)
+                if (!await HasBacklogAsync(initialJobIds, cancellationToken).ConfigureAwait(false))
                 {
                     drained.TrySetResult(Stopwatch.GetElapsedTime(recoveryStarted).TotalMilliseconds);
                     return;
@@ -888,6 +981,16 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+    }
+
+    private static async Task<bool> HasBacklogAsync(Guid[] jobIds, CancellationToken cancellationToken)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        return await db.CentralDerivativeJobs.AsNoTracking().AnyAsync(job =>
+            jobIds.Contains(job.Id) && (job.Status == CentralDerivativeJobStatus.Pending
+                || job.Status == CentralDerivativeJobStatus.RetryableFailure
+                || job.Status == CentralDerivativeJobStatus.Leased), cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task WaitForCompletionAsync(Guid[] jobIds, TimeSpan timeout)
@@ -1053,7 +1156,26 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         var recipe = new CentralDerivativeRecipeCatalog().GetRequiredRecipes(FrameArtifactRole.Raw)
             .Single(item => item.RecipeName == BuiltInProcessingRecipes.ImageQuality);
         var now = DateTimeOffset.UtcNow;
+        var queuePayload = new byte[8];
+        var queueChecksum = Convert.ToHexString(SHA256.HashData(queuePayload));
+        var queueObjectKey = $"performance/{scenario}/queue-source.raw";
+        var rawOptions = CaptureContractJson.SerializeToElement(new { });
+        var rawOptionsJson = CaptureContractJson.Canonicalize(rawOptions).GetRawText();
+        var rawOptionsSha = CaptureContractJson.ComputeCanonicalJsonSha256(rawOptions);
+        var profileSha = HashText($"{scenario}-queue-profiles");
         var sourceIds = new List<Guid>();
+        await using (var objectScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            await using var stream = new MemoryStream(queuePayload, writable: false);
+            await objectScope.ServiceProvider.GetRequiredService<IMinioClient>()
+                .PutObjectAsync(new PutObjectArgs()
+                    .WithBucket(ArtifactBucket)
+                    .WithObject(queueObjectKey)
+                    .WithStreamData(stream)
+                    .WithObjectSize(queuePayload.LongLength)
+                    .WithContentType("application/octet-stream"))
+                .ConfigureAwait(false);
+        }
         await using (var sourceScope = fixture.Factory.Services.CreateAsyncScope())
         {
             var db = sourceScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -1061,6 +1183,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             var sourceCount = Math.Max(1, (int)Math.Ceiling(jobCount / 10d));
             for (var index = 0; index < sourceCount; index++)
             {
+                var captured = now.AddTicks(index);
                 var frame = new CentralFrame
                 {
                     RegistrationId = Guid.NewGuid(),
@@ -1068,10 +1191,38 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                     ObservatoryId = Guid.NewGuid(),
                     AgentId = "issue-100-queue",
                     FrameId = Guid.NewGuid(),
+                    RigProfileVersion = 1,
+                    RigId = "issue-100-queue",
                     CaptureSequence = index + 1,
-                    CapturedAtUtc = now.AddTicks(index),
-                    FirstReceivedAtUtc = now.AddTicks(index)
+                    CapturedAtUtc = captured,
+                    FirstReceivedAtUtc = captured
                 };
+                frame.Timing = new CentralCaptureTiming
+                {
+                    RequestedStartUtc = captured.AddSeconds(-2),
+                    ExposureStartedUtc = captured.AddSeconds(-1),
+                    ExposureEndedUtc = captured.AddMilliseconds(-100),
+                    ReadoutCompletedUtc = captured.AddMilliseconds(-50),
+                    DurableIngressUtc = captured
+                };
+                frame.Control = new CentralCaptureControl
+                {
+                    RequestedExposureTicks = TimeSpan.FromMilliseconds(900).Ticks,
+                    EffectiveExposureTicks = TimeSpan.FromMilliseconds(900).Ticks,
+                    RequestedGain = 100,
+                    EffectiveGain = 100,
+                    EffectiveTemperatureC = -5
+                };
+                foreach (var kind in Enum.GetValues<CentralProfileKind>())
+                {
+                    frame.Profiles.Add(new CentralCaptureProfile
+                    {
+                        Kind = kind,
+                        Name = $"issue-100-queue-{kind}",
+                        Version = "1",
+                        Sha256 = profileSha
+                    });
+                }
                 var source = new CentralArtifact
                 {
                     Frame = frame,
@@ -1082,13 +1233,40 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                     RecipeVersion = "issue-100-queue-source-v1",
                     ManifestSchemaVersion = "v2",
                     MediaType = "application/octet-stream",
-                    ByteLength = 0,
-                    ChecksumSha256 = Convert.ToHexString(SHA256.HashData([])),
-                    StorageReference = $"minio://{ArtifactBucket}/performance/{scenario}/unused-{index:D4}",
-                    ReceivedAtUtc = now,
+                    ByteLength = queuePayload.LongLength,
+                    ChecksumSha256 = queueChecksum,
+                    StorageReference = $"minio://{ArtifactBucket}/{queueObjectKey}",
+                    ReceivedAtUtc = captured,
                     IdempotencyKey = HashText($"{scenario}-queue-source-{index}"),
+                    SourceId = "issue-100-queue",
+                    Variant = "native",
+                    CreatedUtc = captured,
                     ObjectState = CentralArtifactObjectState.Available,
-                    ReconstructionState = CentralReconstructionState.Complete
+                    ReconstructionState = CentralReconstructionState.Complete,
+                    ReconciledAtUtc = captured,
+                    Layout = new CentralArtifactLayout
+                    {
+                        Width = 2,
+                        Height = 2,
+                        StrideBytes = 4,
+                        PixelFormat = CameraPixelFormat.Mono16.ToString(),
+                        ByteOrder = FrameByteOrder.LittleEndian.ToString(),
+                        SampleDepthBits = 16,
+                        ContainerDepthBits = 16,
+                        Packing = FrameSamplePacking.ByteAligned.ToString(),
+                        CfaPattern = ColorFilterArrayPattern.None.ToString(),
+                        BlackLevel = 0,
+                        WhiteLevel = ushort.MaxValue,
+                        ByteLength = queuePayload.LongLength
+                    },
+                    Recipe = new CentralArtifactRecipe
+                    {
+                        Name = "raw-capture",
+                        SemanticVersion = "1.0.0",
+                        ImplementationVersion = "issue-100-v1",
+                        OptionsJson = rawOptionsJson,
+                        OptionsSha256 = rawOptionsSha
+                    }
                 };
                 sourceIds.Add(source.Id);
                 db.CentralFrames.Add(frame);
@@ -1178,8 +1356,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         var canonicalJobs = await assertionDb.CentralDerivativeJobs.Where(job =>
                 job.SourceCentralArtifactId == sourceId && !job.TargetVariant.StartsWith(scenario))
             .ToListAsync().ConfigureAwait(false);
-        Assert.AreEqual(3, canonicalJobs.Count);
-        Assert.AreEqual(3, canonicalJobs.Select(job => job.RequestIdentitySha256).Distinct().Count());
+        Assert.AreEqual(4, canonicalJobs.Count);
+        Assert.AreEqual(4, canonicalJobs.Select(job => job.RequestIdentitySha256).Distinct().Count());
         foreach (var job in canonicalJobs)
         {
             job.Status = CentralDerivativeJobStatus.TerminalFailure;
@@ -1976,9 +2154,10 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
 
     private static void StabilizeGc()
     {
-        GC.Collect();
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
         GC.WaitForPendingFinalizers();
-        GC.Collect();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
     }
 
     private static string GetEvidenceRevision(string repositoryRoot)
@@ -2164,14 +2343,20 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         private readonly Process _process = Process.GetCurrentProcess();
         private readonly TimeSpan _cpuStart;
         private readonly long _allocatedStart;
+        private readonly long _managedHeapStart;
+        private readonly long _gcCommittedStart;
+        private readonly bool _retainRssDiagnostics;
         private readonly RssSampler _rss;
         private bool _stopped;
 
-        public ResourceSampler()
+        public ResourceSampler(bool retainRssDiagnostics = false)
         {
             _process.Refresh();
             _cpuStart = _process.TotalProcessorTime;
             _allocatedStart = GC.GetTotalAllocatedBytes(precise: false);
+            _managedHeapStart = GC.GetTotalMemory(forceFullCollection: false);
+            _gcCommittedStart = GC.GetGCMemoryInfo().TotalCommittedBytes;
+            _retainRssDiagnostics = retainRssDiagnostics;
             _rss = new RssSampler(_process.WorkingSet64);
         }
 
@@ -2179,7 +2364,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         {
             _stopped = true;
             var peak = await _rss.StopAsync().ConfigureAwait(false);
-            var rssSamples = _rss.Snapshot();
+            var timedRssSamples = _rss.Snapshot();
+            var rssSamples = timedRssSamples.Select(sample => sample.Bytes).ToArray();
             var third = Math.Max(1, rssSamples.Length / 3);
             var middleStart = Math.Min(third, rssSamples.Length - 1);
             var finalStart = Math.Min(third * 2, rssSamples.Length);
@@ -2194,6 +2380,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 finalThird = middleThird;
             }
             _process.Refresh();
+            var gcInfo = GC.GetGCMemoryInfo();
             return new ResourceEvidence(
                 (_process.TotalProcessorTime - _cpuStart).TotalMilliseconds,
                 Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - _allocatedStart),
@@ -2202,7 +2389,15 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 _process.WorkingSet64,
                 rssSamples.Length,
                 Median(middleThird),
-                Median(finalThird));
+                Median(finalThird),
+                _retainRssDiagnostics
+                    ? new ResourceDiagnosticEvidence(
+                        _managedHeapStart,
+                        GC.GetTotalMemory(forceFullCollection: false),
+                        _gcCommittedStart,
+                        gcInfo.TotalCommittedBytes,
+                        timedRssSamples)
+                    : null);
         }
 
         public void Dispose()
@@ -2220,7 +2415,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
     {
         private readonly CancellationTokenSource _stopping = new();
         private readonly Task _sampling;
-        private readonly ConcurrentQueue<long> _samples = new();
+        private readonly ConcurrentQueue<RssSample> _samples = new();
+        private readonly long _started = Stopwatch.GetTimestamp();
         private long _peak;
         private bool _stopped;
 
@@ -2228,13 +2424,13 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         {
             Initial = initial;
             _peak = initial;
-            _samples.Enqueue(initial);
+            _samples.Enqueue(new RssSample(0, initial));
             _sampling = Task.Run(SampleAsync);
         }
 
         public long Initial { get; }
 
-        public long[] Snapshot() => _samples.ToArray();
+        public RssSample[] Snapshot() => _samples.ToArray();
 
         public async Task<long> StopAsync()
         {
@@ -2273,7 +2469,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         {
             using var process = Process.GetCurrentProcess();
             var observed = process.WorkingSet64;
-            _samples.Enqueue(observed);
+            _samples.Enqueue(new RssSample(Stopwatch.GetElapsedTime(_started).TotalMilliseconds, observed));
             long current;
             do
             {
@@ -2363,7 +2559,17 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         long RssEndBytes,
         int RssSamples,
         long RssMiddleThirdMedianBytes,
-        long RssFinalThirdMedianBytes);
+        long RssFinalThirdMedianBytes,
+        ResourceDiagnosticEvidence? Diagnostic);
+
+    private sealed record ResourceDiagnosticEvidence(
+        long ManagedHeapStartBytes,
+        long ManagedHeapEndBytes,
+        long GcCommittedStartBytes,
+        long GcCommittedEndBytes,
+        IReadOnlyList<RssSample> RssSamples);
+
+    private sealed record RssSample(double ElapsedMilliseconds, long Bytes);
 
     private sealed record DerivativeCorrectness(
         bool Passed,
@@ -2495,7 +2701,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         bool StagingCleanupSuppressed,
         string? StagingObjectKey,
         bool StagingObjectExistedBeforeRestart,
-        bool StagingObjectReconciled);
+        bool StagingObjectReconciled,
+        int? StagingReconciliationCycles);
 
     private sealed record BacklogRecoveryTrialMeasurement(
         int Trial,
