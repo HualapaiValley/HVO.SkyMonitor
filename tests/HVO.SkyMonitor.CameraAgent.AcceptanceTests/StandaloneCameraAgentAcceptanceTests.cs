@@ -177,6 +177,12 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         var afterRestart = await fixture.Services.GetRequiredService<ILocalEnvironmentalObservationStore>()
             .GetLocalSnapshotAsync(fixture.Root, CancellationToken.None).ConfigureAwait(false);
         Assert.IsGreaterThanOrEqualTo(beforeRestart.StoredCount, afterRestart.StoredCount);
+        using (var recoveredOwnerClient = await fixture.CreateOwnerClientAsync().ConfigureAwait(false))
+        using (var recoveredSources = await recoveredOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/environmental/sources", UriKind.Relative)).ConfigureAwait(false))
+        {
+            recoveredSources.EnsureSuccessStatusCode();
+        }
         AssertNoProvisioningIdentity(fixture.Root);
         AssertNoOutboundAttempts(fixture);
     }
