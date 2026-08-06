@@ -1221,7 +1221,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 "CentralTransientReprocessingRequests"
             })
             {
-                migrationBuilder.Sql($"""
+                MigrationSql.ExecuteBatch(migrationBuilder, $"""
                     CREATE TRIGGER [TR_{table}_Immutable]
                     ON [{table}]
                     AFTER UPDATE, DELETE
@@ -1233,7 +1233,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     """);
             }
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientDerivativeOutputIntents_TerminalImmutable]
                 ON [CentralTransientDerivativeOutputIntents]
                 AFTER INSERT, UPDATE, DELETE
@@ -1289,7 +1289,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientDerivativeJobs_CommittedImmutable]
                 ON [CentralTransientDerivativeJobs]
                 AFTER INSERT, UPDATE, DELETE
@@ -1334,7 +1334,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
         private static void CreateDerivativeClosureTriggers(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientDerivativeOutputIntents_Closed]
                 ON [CentralTransientDerivativeOutputIntents]
                 AFTER INSERT
@@ -1351,7 +1351,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientDerivatives_Closed]
                 ON [CentralTransientDerivatives]
                 AFTER INSERT
@@ -1375,7 +1375,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 "CentralTransientDerivativeBackgrounds"
             })
             {
-                migrationBuilder.Sql($"""
+                MigrationSql.ExecuteBatch(migrationBuilder, $"""
                     CREATE TRIGGER [TR_{table}_Closed]
                     ON [{table}]
                     AFTER INSERT
@@ -1397,7 +1397,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
         private static void CreateNotificationTriggers(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientNotificationDispatches_Insert]
                 ON [CentralTransientNotificationDispatches]
                 AFTER INSERT
@@ -1423,7 +1423,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientNotificationDispatches_Transition]
                 ON [CentralTransientNotificationDispatches]
                 AFTER UPDATE, DELETE
@@ -1473,7 +1473,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
         private static void CreateReprocessingTrigger(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientReprocessingJobs_Immutable]
                 ON [CentralTransientReprocessingJobs]
                 AFTER UPDATE, DELETE
@@ -1507,7 +1507,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
         private static void CreatePayloadReleaseTriggers(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientPayloadReleases_Insert]
                 ON [CentralTransientPayloadReleases]
                 AFTER INSERT
@@ -1519,7 +1519,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientPayloadReleases_Transition]
                 ON [CentralTransientPayloadReleases]
                 AFTER UPDATE, DELETE
@@ -1546,7 +1546,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientPayloadReleaseItems_Transition]
                 ON [CentralTransientPayloadReleaseItems]
                 AFTER UPDATE, DELETE
@@ -1566,7 +1566,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientPayloadReleaseItems_Closed]
                 ON [CentralTransientPayloadReleaseItems]
                 AFTER INSERT

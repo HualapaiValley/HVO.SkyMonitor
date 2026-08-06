@@ -27,6 +27,10 @@ Application Compose uses the `skymonitor-network` bridge and connects to shared
 services through the endpoints configured in `.env`. It is a Development,
 HTTP-only topology, not a production TLS deployment.
 
+Production SQL migration and runtime credentials are separate. Follow
+[`logichost-database-initialization.md`](logichost-database-initialization.md)
+for principal grants, reviewed SQL evidence, controlled execution, and recovery.
+
 ## Persistent Application State
 
 Default bind mounts are rooted at `./data`. `HVO_RUNTIME_DATA_ROOT` can override

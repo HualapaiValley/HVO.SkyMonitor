@@ -20,21 +20,25 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 nullable: true);
 
             migrationBuilder.Sql("""
-                UPDATE frame
-                SET [LogicalCameraInstallationId] = installation.[Id]
-                FROM [CentralFrames] AS frame
-                INNER JOIN [LogicalCameraInstallations] AS installation
-                    ON installation.[RegistrationId] = frame.[RegistrationId]
-                   AND installation.[AssignedAtUtc] <= frame.[CapturedAtUtc]
-                    AND (installation.[RetiredAtUtc] IS NULL
-                         OR frame.[CapturedAtUtc] < installation.[RetiredAtUtc])
-                WHERE frame.[LogicalCameraInstallationId] IS NULL;
+                EXEC(N'
+                    UPDATE frame
+                    SET [LogicalCameraInstallationId] = installation.[Id]
+                    FROM [CentralFrames] AS frame
+                    INNER JOIN [LogicalCameraInstallations] AS installation
+                        ON installation.[RegistrationId] = frame.[RegistrationId]
+                       AND installation.[AssignedAtUtc] <= frame.[CapturedAtUtc]
+                        AND (installation.[RetiredAtUtc] IS NULL
+                             OR frame.[CapturedAtUtc] < installation.[RetiredAtUtc])
+                    WHERE frame.[LogicalCameraInstallationId] IS NULL;
+                ');
                 """);
 
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralFrames_LogicalCameraInstallationId",
-                table: "CentralFrames",
-                column: "LogicalCameraInstallationId");
+            migrationBuilder.Sql("""
+                EXEC(N'
+                    CREATE INDEX [IX_CentralFrames_LogicalCameraInstallationId]
+                    ON [CentralFrames] ([LogicalCameraInstallationId]);
+                ');
+                """);
 
             migrationBuilder.AddForeignKey(
                 name: "FK_CentralFrames_LogicalCameraInstallations_LogicalCameraInstallationId",
@@ -44,7 +48,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 principalColumn: "Id",
                 onDelete: ReferentialAction.Restrict);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralFrames_InstallationImmutable]
                 ON [CentralFrames]
                 AFTER UPDATE

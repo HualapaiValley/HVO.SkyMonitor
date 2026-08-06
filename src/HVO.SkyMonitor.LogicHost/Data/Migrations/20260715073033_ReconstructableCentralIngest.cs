@@ -361,14 +361,16 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 column: "DeviceRigProfileId");
 
             migrationBuilder.Sql("""
-                INSERT INTO [CentralArtifactIngestIdentities]
-                    ([Id], [CentralArtifactId], [ManifestSchemaVersion], [IdempotencyKey])
-                SELECT NEWID(), [Id], [ManifestSchemaVersion], [IdempotencyKey]
-                FROM [CentralArtifacts];
+                EXEC(N'
+                    INSERT INTO [CentralArtifactIngestIdentities]
+                        ([Id], [CentralArtifactId], [ManifestSchemaVersion], [IdempotencyKey])
+                    SELECT NEWID(), [Id], [ManifestSchemaVersion], [IdempotencyKey]
+                    FROM [CentralArtifacts];
 
-                UPDATE [CentralArtifacts]
-                SET [StateReasonCode] = 'manifest.legacy-incomplete'
-                WHERE [ReconstructionState] = 'LegacyIncomplete';
+                    UPDATE [CentralArtifacts]
+                    SET [StateReasonCode] = ''manifest.legacy-incomplete''
+                    WHERE [ReconstructionState] = ''LegacyIncomplete'';
+                ');
                 """);
 
             migrationBuilder.AddForeignKey(

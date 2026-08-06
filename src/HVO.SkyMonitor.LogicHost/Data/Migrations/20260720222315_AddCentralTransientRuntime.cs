@@ -110,7 +110,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 type: "uniqueidentifier",
                 nullable: true);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 UPDATE [CentralTransientValidationIdentitySlots]
                 SET [PersistedEventId] = [SubmittedEventId]
                 WHERE [State] = N'Committed' AND [PersistedEventId] IS NULL;
@@ -184,7 +184,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         onDelete: ReferentialAction.Restrict);
                 });
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 INSERT INTO [CentralTransientValidationOutcomeVersions]
                     ([Id], [CentralDerivativeJobId], [Version], [State], [ReasonCode], [EvidenceJson],
                      [EvidenceIdentitySha256], [RecordedAtUtc])
@@ -274,7 +274,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 principalTable: "CentralTransientValidationJobs",
                 principalColumn: "CentralDerivativeJobId");
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientValidationJobs_CommittedImmutable]
                 ON [CentralTransientValidationJobs]
                 AFTER UPDATE, DELETE
@@ -303,7 +303,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientValidationIdentitySlots_TerminalImmutable]
                 ON [CentralTransientValidationIdentitySlots]
                 AFTER UPDATE, DELETE
@@ -333,7 +333,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientValidationOutcomeVersions_Immutable]
                 ON [CentralTransientValidationOutcomeVersions]
                 AFTER UPDATE, DELETE

@@ -53,13 +53,24 @@ dotnet user-secrets set "MinIO:Password" "your-password"
 
 ## Bootstrap Identities
 
-Startup always creates the non-interactive system account, standard OAuth scopes, and the confidential client described by the effective device-bootstrap identity configuration. Additional interactive users, API keys, and OAuth/OIDC clients are seeded only when supplied through the `DatabaseSeed` configuration section. Keep passwords, raw API keys, and client secrets in user secrets or environment variables, not checked-in settings. Integration tests inject their fixture credentials from `HVO.SkyMonitor.TestSupport`; production does not reference that assembly.
+Development and Testing startup create the non-interactive system account,
+standard OAuth scopes, and the confidential client described by the effective
+device-bootstrap identity configuration. Production performs this work only
+through `--host-mode=database-initialize`; ordinary runtime validates the
+completed initialization state without mutating it. Additional interactive
+users, API keys, and OAuth/OIDC clients are seeded only when supplied through
+the `DatabaseSeed` configuration section. Keep passwords, raw API keys, and
+client secrets in user secrets or environment variables, not checked-in
+settings. Integration tests inject their fixture credentials from
+`HVO.SkyMonitor.TestSupport`; production does not reference that assembly.
 
 Shared database resets are an operational action on `hvo-docker`, not a repository script. Reapply migrations and reseed as appropriate after an approved reset.
 
 ## Database Migrations
 
-Apply migrations:
+Production migrations, role grants, reviewed SQL evidence, and recovery follow
+[`docs/runbooks/logichost-database-initialization.md`](../../docs/runbooks/logichost-database-initialization.md).
+For local development, apply migrations directly when needed:
 
 ```bash
 dotnet ef database update

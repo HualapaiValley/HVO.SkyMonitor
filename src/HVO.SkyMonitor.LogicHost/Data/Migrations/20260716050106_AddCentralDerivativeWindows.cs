@@ -136,7 +136,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         onDelete: ReferentialAction.Cascade);
                 });
 
-            migrationBuilder.Sql("""
+            var derivativeWindowBackfillSql = """
                 DECLARE @BackfilledRequirements TABLE
                 (
                     CentralDerivativeJobId uniqueidentifier NOT NULL,
@@ -176,7 +176,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     [ResolutionCompletedAtUtc] = COALESCE([CompletedAtUtc], [CreatedAtUtc]),
                     [InputSetIdentitySha256] = CONVERT(varchar(64), HASHBYTES('SHA2_256',
                         CONCAT('hvo-central-derivative-legacy-input-set-v1:', [Id], ':', [SourceCentralArtifactId])), 2);
-                """);
+                """;
+            migrationBuilder.Sql(
+                $"EXEC(N'{derivativeWindowBackfillSql.Replace("'", "''", StringComparison.Ordinal)}');");
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralFrames_AgentId_CaptureSequence",

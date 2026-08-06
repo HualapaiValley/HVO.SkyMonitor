@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+output_path="${1:?Usage: ./scripts/logichost:generate-migration-sql <output.sql>}"
+output_dir="$(dirname "$output_path")"
+mkdir -p "$output_dir"
+temporary_path="$output_path.tmp"
+trap 'rm -f "$temporary_path" "$temporary_path.generated"' EXIT
+
+dotnet build "$repo_root/src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj" \
+  --configuration Release --no-restore -warnaserror
+
+ConnectionStrings__skymonitordb="Server=localhost;Database=SkyMonitor;User Id=design-time;Password=Design_time_only1!;TrustServerCertificate=True" \
+  dotnet ef migrations script --idempotent \
+  --project "$repo_root/src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj" \
+  --startup-project "$repo_root/src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj" \
+  --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext \
+  --configuration Release --no-build --output "$temporary_path.generated"
+
+{
+  printf '%s\n' \
+    'SET ANSI_NULLS ON;' \
+    'SET ANSI_PADDING ON;' \
+    'SET ANSI_WARNINGS ON;' \
+    'SET ARITHABORT ON;' \
+    'SET CONCAT_NULL_YIELDS_NULL ON;' \
+    'SET QUOTED_IDENTIFIER ON;' \
+    'SET NUMERIC_ROUNDABORT OFF;' \
+    'GO'
+  perl -CSD -pe 's/^\x{FEFF}// if $. == 1' "$temporary_path.generated"
+} > "$temporary_path"
+rm -f "$temporary_path.generated"
+mv "$temporary_path" "$output_path"
+sha256sum "$output_path" > "$output_path.sha256"

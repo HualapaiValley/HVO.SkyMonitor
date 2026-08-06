@@ -30,7 +30,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 nullable: true,
                 collation: "Latin1_General_100_BIN2");
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 UPDATE slot
                 SET slot.[AgentId] = validation.[AgentId]
                 FROM [CentralTransientValidationIdentitySlots] AS slot
@@ -103,7 +103,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 table: "CentralTransientSubmissionAudits",
                 column: "ExistingCentralDerivativeJobId");
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientValidationJobs_CommittedImmutable]
                 ON [CentralTransientValidationJobs]
                 AFTER UPDATE, DELETE
@@ -135,7 +135,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientValidationIdentitySlots_TerminalImmutable]
                 ON [CentralTransientValidationIdentitySlots]
                 AFTER UPDATE, DELETE
@@ -166,7 +166,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 END
                 """);
 
-            migrationBuilder.Sql("""
+            MigrationSql.ExecuteBatch(migrationBuilder, """
                 CREATE TRIGGER [TR_CentralTransientSubmissionAudits_Immutable]
                 ON [CentralTransientSubmissionAudits]
                 AFTER UPDATE, DELETE

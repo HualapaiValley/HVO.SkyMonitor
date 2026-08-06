@@ -22,8 +22,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 nullable: true);
 
             migrationBuilder.Sql("""
-                UPDATE [CentralDerivativeJobs]
-                SET [ExpectedRecipeIdentitySha256] = [RequestedRecipeIdentitySha256];
+                EXEC(N'
+                    UPDATE [CentralDerivativeJobs]
+                    SET [ExpectedRecipeIdentitySha256] = [RequestedRecipeIdentitySha256];
+                ');
                 """);
 
             migrationBuilder.AlterColumn<string>(

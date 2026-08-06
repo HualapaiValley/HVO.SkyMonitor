@@ -13,6 +13,21 @@ internal static partial class ObservatoryLocationBackfill
         TimeProvider timeProvider,
         ILogger? logger = null,
         CancellationToken cancellationToken = default)
+        => await RunCoreAsync(dbContext, timeProvider, logger, false, cancellationToken).ConfigureAwait(false);
+
+    internal static async Task<int> RunStrictAsync(
+        ApplicationDbContext dbContext,
+        TimeProvider timeProvider,
+        ILogger? logger = null,
+        CancellationToken cancellationToken = default)
+        => await RunCoreAsync(dbContext, timeProvider, logger, true, cancellationToken).ConfigureAwait(false);
+
+    private static async Task<int> RunCoreAsync(
+        ApplicationDbContext dbContext,
+        TimeProvider timeProvider,
+        ILogger? logger,
+        bool failOnInvalidLocation,
+        CancellationToken cancellationToken)
     {
         dbContext.ChangeTracker.Clear();
         var isRelational = dbContext.Database.IsRelational();
@@ -32,6 +47,7 @@ internal static partial class ObservatoryLocationBackfill
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var now = timeProvider.GetUtcNow();
         var backfilled = 0;
+        var invalid = 0;
         foreach (var observatory in observatories)
         {
             if (!TryNormalizeLegacyLocation(observatory, now))
@@ -40,6 +56,7 @@ internal static partial class ObservatoryLocationBackfill
                 {
                     Log.InvalidLegacyLocation(logger);
                 }
+                invalid++;
                 continue;
             }
             _ = await ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
@@ -57,6 +74,11 @@ internal static partial class ObservatoryLocationBackfill
             {
                 Log.Completed(logger, backfilled);
             }
+        }
+        if (invalid > 0 && failOnInvalidLocation)
+        {
+            throw new InvalidOperationException(
+                $"Observatory location backfill found {invalid} invalid legacy location(s); owner correction is required.");
         }
         if (transaction is not null)
         {

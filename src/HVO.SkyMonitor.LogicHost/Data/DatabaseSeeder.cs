@@ -78,8 +78,9 @@ internal static class DatabaseSeeder
                 }
                 else
                 {
-                    logger.LogError("Failed to create user {Email}: {Errors}", descriptor.Email, string.Join(", ", result.Errors.Select(e => e.Description)));
-                    continue;
+                    throw new InvalidOperationException(
+                        $"Failed to create user {descriptor.Email}: " +
+                        string.Join(", ", result.Errors.Select(error => error.Description)));
                 }
             }
 
@@ -105,13 +106,21 @@ internal static class DatabaseSeeder
             {
                 if (await userManager.HasPasswordAsync(user))
                 {
-                    await userManager.RemovePasswordAsync(user);
+                    var removePasswordResult = await userManager.RemovePasswordAsync(user);
+                    if (!removePasswordResult.Succeeded)
+                    {
+                        throw new InvalidOperationException(
+                            $"Failed to remove the previous password for {descriptor.Email}: " +
+                            string.Join(", ", removePasswordResult.Errors.Select(error => error.Description)));
+                    }
                 }
 
                 var passwordResult = await userManager.AddPasswordAsync(user, descriptor.Password);
                 if (!passwordResult.Succeeded)
                 {
-                    logger.LogError("Failed to update password for {Email}: {Errors}", descriptor.Email, string.Join(", ", passwordResult.Errors.Select(e => e.Description)));
+                    throw new InvalidOperationException(
+                        $"Failed to update the password for {descriptor.Email}: " +
+                        string.Join(", ", passwordResult.Errors.Select(error => error.Description)));
                 }
             }
 
@@ -152,7 +161,7 @@ internal static class DatabaseSeeder
         }
     }
 
-    private static async Task<ApplicationUser?> SeedSystemAccountAsync(UserManager<ApplicationUser> userManager, ILogger logger)
+    private static async Task<ApplicationUser> SeedSystemAccountAsync(UserManager<ApplicationUser> userManager, ILogger logger)
     {
         const string systemEmail = "system@skymonitor.local";
         const string systemUsername = "system-service";
@@ -160,6 +169,42 @@ internal static class DatabaseSeeder
         var existingAccount = await userManager.FindByEmailAsync(systemEmail);
         if (existingAccount != null)
         {
+            if (await userManager.HasPasswordAsync(existingAccount))
+            {
+                var passwordResult = await userManager.RemovePasswordAsync(existingAccount);
+                if (!passwordResult.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        "Failed to remove password authentication from the system account: " +
+                        string.Join(", ", passwordResult.Errors.Select(error => error.Description)));
+                }
+            }
+            var needsUpdate = false;
+            if (!string.Equals(existingAccount.UserName, systemUsername, StringComparison.Ordinal))
+            {
+                existingAccount.UserName = systemUsername;
+                needsUpdate = true;
+            }
+            if (!existingAccount.EmailConfirmed)
+            {
+                existingAccount.EmailConfirmed = true;
+                needsUpdate = true;
+            }
+            if (existingAccount.AccountType != AccountType.System)
+            {
+                existingAccount.AccountType = AccountType.System;
+                needsUpdate = true;
+            }
+            if (needsUpdate)
+            {
+                var updateResult = await userManager.UpdateAsync(existingAccount);
+                if (!updateResult.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        "Failed to reconcile the system account: " +
+                        string.Join(", ", updateResult.Errors.Select(error => error.Description)));
+                }
+            }
             if (logger.IsEnabled(LogLevel.Information))
             {
                 logger.LogInformation("System service account already exists: {Email}", systemEmail);
@@ -190,8 +235,9 @@ internal static class DatabaseSeeder
             return systemAccount;
         }
 
-        logger.LogError("Failed to create system account: {Errors}", string.Join(", ", result.Errors.Select(e => e.Description)));
-        return null;
+        throw new InvalidOperationException(
+            "Failed to create the system account: " +
+            string.Join(", ", result.Errors.Select(error => error.Description)));
     }
 
     private static async Task SeedOpenIddictDataAsync(
@@ -438,22 +484,23 @@ internal static class DatabaseSeeder
     private static async Task SeedApiKeysAsync(
         ApplicationDbContext dbContext,
         IApiKeyHasher hasher,
-        ApplicationUser? systemAccount,
+        ApplicationUser systemAccount,
         IEnumerable<SeedApiKeyOptions> apiKeys,
         ILogger logger)
     {
-        if (systemAccount is null)
-        {
-            logger.LogWarning("System account missing. API key seeding skipped.");
-            return;
-        }
-
         foreach (var descriptor in apiKeys)
         {
             var hashed = hasher.Hash(descriptor.RawKey);
-            var exists = await dbContext.ApiKeys.AnyAsync(key => key.HashedKey == hashed);
-            if (exists)
+            var existing = await dbContext.ApiKeys.SingleOrDefaultAsync(key => key.HashedKey == hashed);
+            if (existing is not null)
             {
+                existing.UserId = systemAccount.Id;
+                existing.DisplayName = descriptor.DisplayName;
+                existing.AccessLevel = descriptor.AccessLevel;
+                existing.ObservatoryId = null;
+                existing.IsActive = true;
+                existing.ExpiresUtc = null;
+                existing.CreatedBy = "DatabaseSeeder";
                 continue;
             }
 

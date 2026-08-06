@@ -72,7 +72,8 @@ project for LogicHost keys.
 
 | Secret | Consumer and purpose | Supported local source |
 | --- | --- | --- |
-| `SQLSERVER_PASSWORD` / `ConnectionStrings:skymonitordb` | LogicHost SQL Server `SkyMonitor` database | Ignored `.env`; direct nested environment override |
+| `SQLSERVER_PASSWORD` / `ConnectionStrings:skymonitordb` | LogicHost SQL Server `SkyMonitor` runtime principal | Ignored `.env`; direct nested environment override |
+| `ConnectionStrings:skymonitordb-migrations` | LogicHost controlled database-initialization principal | Deployment secret store; expose only to the one-shot initialization command |
 | `REDIS_PASSWORD` / `Redis:Configuration` | LogicHost prefixed distributed cache | Ignored `.env`; direct nested environment override |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | MinIO administration and service-account provisioning only | Ignored `.env` available only to operator scripts |
 | `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` / `Minio:AccessKey`, `Minio:SecretKey` | LogicHost access to the two approved buckets | Ignored `.env`; direct nested environment override |
