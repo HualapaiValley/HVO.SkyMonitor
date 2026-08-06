@@ -12,6 +12,7 @@ speculative indexes remain rejected or deferred.
 ## Environment And Method
 
 - Base revision: merged #254 at `49a6cd8f6522c4a4f5696174e624d488a5c37350`.
+- Reviewed implementation revision: `00d876f`.
 - SQL image: `mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04@sha256:c1aa8afe9b06eab64c9774a4802dcd032205d1be785b1fd51e1c0151e7586b74`.
 - Topology: one digest-pinned, test-owned SQL Server container, separate from
   `AssemblyHooks` and destroyed after the non-parallel test.
@@ -111,17 +112,22 @@ speculative indexes remain rejected or deferred.
 - Package audit: passed.
 - Category audit: passed exactly with Unit 1,731, Integration 528, Manual 75,
   Soak 1, External 0, and Hardware 1. The central Integration project is 355.
-- The pre-review candidate had green replacement Unit and Integration shards,
-  but those runs predate the independent-review harness/script corrections and
-  are not claimed as corrected-head evidence. Replacement full category and
-  protected CI runs remain required before merge.
+- The corrected implementation revision passed the complete Tier C local gate:
+  tool restore, solution restore, warning-clean Debug and Release builds,
+  formatting, package audit, category audit, all 1,731 Unit cases, and all 528
+  Integration cases. The first Unit run had one unrelated operations-page
+  timeout; its focused rerun and replacement full Unit gate passed. The first
+  Integration run had one unrelated standalone acceptance `403`; its focused
+  rerun and replacement four-case acceptance project gate passed. The other 524
+  executed Integration cases were green in that run, including all 355 central
+  cases and the issue #255 drill. Protected current-head CI remains required
+  before merge.
 
 ## Candidate Gate
 
-The requested local candidate gates are complete. Architecture/publish,
-migrations, canonical merged coverage enforcement, independent
-operational/security review, and protected current-head CI remain PR merge gates
-and are not claimed by this uncommitted worktree record.
+The requested local candidate gates and independent operational/security review
+are complete. Architecture/publish, migrations, canonical merged coverage
+enforcement, and protected current-head CI remain PR merge gates.
 
 ## Performance And Runtime Disposition
 
