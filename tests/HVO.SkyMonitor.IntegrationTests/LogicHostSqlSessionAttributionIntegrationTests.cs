@@ -30,7 +30,8 @@ public sealed class LogicHostSqlSessionAttributionIntegrationTests
         using var factory = new WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program>()
             .WithWebHostBuilder(builder =>
             {
-                builder.UseEnvironment("Testing");
+                // Staging exercises the runtime profile and read-only startup validation without rerunning migrations.
+                builder.UseEnvironment(Environments.Staging);
                 builder.ConfigureAppConfiguration((_, configuration) =>
                 {
                     configuration.AddInMemoryCollection(fixtureConfiguration.AsEnumerable());
