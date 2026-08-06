@@ -19,6 +19,8 @@ internal sealed partial class CentralArtifactReconciliationService(
     CentralIngestTelemetry telemetry,
     ILogger<CentralArtifactReconciliationService> logger) : BackgroundService
 {
+    internal const int MaximumSchedulingAttempts = 3;
+
     private const string VerificationRetryFenceMarker = "HVO.SkyMonitor.VerificationRetryFence";
     private const string Bucket = "skymonitor-artifacts";
     private const string BucketPrefix = "minio://skymonitor-artifacts/";
@@ -1313,27 +1315,28 @@ internal sealed partial class CentralArtifactReconciliationService(
         CancellationToken cancellationToken)
     {
         var retryFence = new VerificationRetryFence();
-        try
+        for (var attempt = 1; ; attempt++)
         {
-            return await ReconcileOneAsync(
-                artifactId, recoveryGeneration, token, retryFence, cancellationToken).ConfigureAwait(false);
-        }
-        catch (DbUpdateConcurrencyException firstException) when (IsSchedulingConcurrency(firstException))
-        {
-            telemetry.RecordReconciliationConcurrency("retry");
-            LogConcurrencyRetry();
             try
             {
                 var result = await ReconcileOneAsync(
                     artifactId, recoveryGeneration, token, retryFence, cancellationToken).ConfigureAwait(false);
-                telemetry.RecordReconciliationConcurrency("converged");
-                LogConcurrencyConverged();
+                if (attempt > 1)
+                {
+                    telemetry.RecordReconciliationConcurrency("converged");
+                    LogConcurrencyConverged();
+                }
                 return result;
             }
             catch (DbUpdateConcurrencyException exception) when (IsSchedulingConcurrency(exception))
             {
-                telemetry.RecordReconciliationConcurrency("exhausted");
-                throw;
+                if (attempt >= MaximumSchedulingAttempts)
+                {
+                    telemetry.RecordReconciliationConcurrency("exhausted");
+                    throw;
+                }
+                telemetry.RecordReconciliationConcurrency("retry");
+                LogConcurrencyRetry();
             }
         }
     }
@@ -1405,6 +1408,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
 
         var scheduleDerivatives = false;
+        var recordCompleted = false;
         await using var objectLock = await AcquireCurrentObjectLockAsync(
             db, artifact, cancellationToken).ConfigureAwait(false);
         canonical = artifact.StorageReference.StartsWith(BucketPrefix + "artifacts/", StringComparison.Ordinal)
@@ -1542,7 +1546,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                 await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
                 scheduleDerivatives = true;
             }
-            telemetry.RecordReconciled("completed");
+            recordCompleted = true;
         }
         if (artifact.ObjectState == CentralArtifactObjectState.Available
             && await CentralObjectOwnershipFence.IsRetiredAsync(
@@ -1573,6 +1577,10 @@ internal sealed partial class CentralArtifactReconciliationService(
                 throw;
             }
             await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
+        }
+        if (recordCompleted)
+        {
+            telemetry.RecordReconciled("completed");
         }
         return completed;
     }
@@ -2230,7 +2238,7 @@ internal sealed partial class CentralArtifactReconciliationService(
     private partial void LogStagingDeleteFailed(string failureCategory);
 
     [LoggerMessage(2126, LogLevel.Information,
-        "Central artifact reconciliation observed a concurrent durable update and will retry once")]
+        "Central artifact reconciliation observed a concurrent durable update and will retry with fresh state")]
     private partial void LogConcurrencyRetry();
 
     [LoggerMessage(2127, LogLevel.Information,

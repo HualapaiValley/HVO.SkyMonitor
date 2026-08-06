@@ -2911,7 +2911,7 @@ public sealed class ArtifactIngestTests
         metrics.Outcomes.Should().BeEquivalentTo(["retry", "converged"]);
         logger.Entries.Should().NotContain(entry => entry.Level >= LogLevel.Error);
         logger.Entries.Should().Contain(entry => entry.Level == LogLevel.Information
-            && entry.Message.Contains("will retry once", StringComparison.Ordinal));
+            && entry.Message.Contains("will retry with fresh state", StringComparison.Ordinal));
         logger.Entries.Should().Contain(entry => entry.Level == LogLevel.Information
             && entry.Message.Contains("converged", StringComparison.Ordinal));
         await using var assertionScope = concurrencyFactory.Services.CreateAsyncScope();
@@ -3016,20 +3016,23 @@ public sealed class ArtifactIngestTests
 
     [TestMethod]
     [DoNotParallelize]
-    public async Task Reconciliation_RepeatedConcurrency_RemainsAnActionableFailure()
+    public async Task Reconciliation_TwoConsecutiveSchedulingConflicts_ConvergesWithFreshState()
     {
         var fixture = AssemblyHooks.Fixture;
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
-        var rig = CreateRig("reconciliation-concurrency-exhausted-rig");
+        var rig = CreateRig("reconciliation-repeated-concurrency-rig");
         var payload = new byte[] { 1, 2, 3, 4 };
-        var manifest = CreateManifestV2(deviceId, rig, payload, 44);
+        var manifest = CreateManifestV2(deviceId, rig, payload, 48);
         using var client = fixture.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
         using var pending = await PostAsync(client, manifest, payload).ConfigureAwait(false);
         ((int)pending.StatusCode).Should().Be(425);
         await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
-        var injection = new SchedulerConcurrencyInjection(manifest.Descriptor.Artifact.ArtifactId, 2);
+        var injection = new SchedulerConcurrencyInjection(
+            manifest.Descriptor.Artifact.ArtifactId,
+            2,
+            commitRequiredJobsOnFinalInjection: true);
         using var concurrencyFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<ICentralDerivativeJobScheduler>();
@@ -3052,8 +3055,79 @@ public sealed class ArtifactIngestTests
         await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
 
         injection.InjectionCount.Should().Be(2);
-        injection.ScopeContextIds.Should().HaveCount(2);
-        metrics.Outcomes.Should().BeEquivalentTo(["retry", "exhausted"]);
+        injection.ScopeContextIds.Should().HaveCount(CentralArtifactReconciliationService.MaximumSchedulingAttempts);
+        metrics.Outcomes.Count(outcome => outcome == "retry").Should().Be(2);
+        metrics.Outcomes.Count(outcome => outcome == "converged").Should().Be(1);
+        metrics.Outcomes.Should().NotContain("exhausted");
+        metrics.CompletedCount.Should().Be(1);
+        logger.Entries.Should().NotContain(entry => entry.Level >= LogLevel.Error);
+        await using var assertionScope = concurrencyFactory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var artifact = await assertionDb.CentralArtifacts.SingleAsync(item =>
+            item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId
+            && item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+        artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+        artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        artifact.ObjectVerificationToken.Should().BeNull();
+        artifact.ObjectVerificationRetryAtUtc.Should().BeNull();
+        var jobs = await assertionDb.CentralDerivativeJobs
+            .Where(job => job.SourceCentralArtifactId == artifact.Id)
+            .ToListAsync().ConfigureAwait(false);
+        var expectedRecipes = assertionScope.ServiceProvider.GetRequiredService<ICentralDerivativeRecipeCatalog>()
+            .GetRequiredRecipes(FrameArtifactRole.Raw)
+            .Where(recipe => recipe.RecipeName != BuiltInProcessingRecipes.CloudAssessment)
+            .ToArray();
+        jobs.Should().HaveCount(expectedRecipes.Length);
+        jobs.Select(job => job.RequestIdentitySha256).Should().BeEquivalentTo(expectedRecipes.Select(recipe =>
+            CentralDerivativeJobIdentity.CreateRequestIdentity(artifact.DevicePublicId!.Value, artifact.ArtifactId, recipe)));
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task Reconciliation_RepeatedConcurrency_RemainsAnActionableFailure()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("reconciliation-concurrency-exhausted-rig");
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, 44);
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var pending = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+        ((int)pending.StatusCode).Should().Be(425);
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var injection = new SchedulerConcurrencyInjection(
+            manifest.Descriptor.Artifact.ArtifactId,
+            CentralArtifactReconciliationService.MaximumSchedulingAttempts);
+        using var concurrencyFactory = fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<ICentralDerivativeJobScheduler>();
+            services.AddScoped<CentralDerivativeJobScheduler>();
+            services.AddScoped<ICentralDerivativeJobScheduler>(provider => new ConcurrencyInjectingScheduler(
+                provider.GetRequiredService<CentralDerivativeJobScheduler>(),
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<ApplicationDbContext>(),
+                injection));
+        }));
+        using var metrics = new ReconciliationConcurrencyMetricCollector();
+        using var telemetry = new CentralIngestTelemetry();
+        var logger = new RecordingLogger<CentralArtifactReconciliationService>();
+        var reconciler = new CentralArtifactReconciliationService(
+            concurrencyFactory.Services.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System,
+            telemetry,
+            logger);
+
+        await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+
+        injection.InjectionCount.Should().Be(CentralArtifactReconciliationService.MaximumSchedulingAttempts);
+        injection.ScopeContextIds.Should().HaveCount(CentralArtifactReconciliationService.MaximumSchedulingAttempts);
+        metrics.Outcomes.Count(outcome => outcome == "retry").Should().Be(
+            CentralArtifactReconciliationService.MaximumSchedulingAttempts - 1);
+        metrics.Outcomes.Count(outcome => outcome == "exhausted").Should().Be(1);
+        metrics.Outcomes.Should().NotContain("converged");
+        metrics.CompletedCount.Should().Be(0);
         logger.Entries.Should().ContainSingle(entry => entry.Level == LogLevel.Error
             && entry.Message == "Central artifact reconciliation failed for one durable record"
             && entry.Exception != null
@@ -4356,7 +4430,10 @@ public sealed class ArtifactIngestTests
             => inner.CopyToAsync(snapshot, destination, range, cancellationToken);
     }
 
-    private sealed class SchedulerConcurrencyInjection(Guid targetArtifactId, int remainingInjections)
+    private sealed class SchedulerConcurrencyInjection(
+        Guid targetArtifactId,
+        int remainingInjections,
+        bool commitRequiredJobsOnFinalInjection = false)
     {
         private int remaining = remainingInjections;
         private int injectionCount;
@@ -4375,8 +4452,9 @@ public sealed class ArtifactIngestTests
             }
         }
 
-        public bool TryInject(Guid artifactId, Guid scopeContextId)
+        public bool TryInject(Guid artifactId, Guid scopeContextId, out bool commitRequiredJobs)
         {
+            commitRequiredJobs = false;
             if (artifactId != targetArtifactId)
             {
                 return false;
@@ -4385,10 +4463,12 @@ public sealed class ArtifactIngestTests
             {
                 scopeContextIds.Add(scopeContextId);
             }
-            if (Interlocked.Decrement(ref remaining) < 0)
+            var remainingAfterInjection = Interlocked.Decrement(ref remaining);
+            if (remainingAfterInjection < 0)
             {
                 return false;
             }
+            commitRequiredJobs = commitRequiredJobsOnFinalInjection && remainingAfterInjection == 0;
             Interlocked.Increment(ref injectionCount);
             return true;
         }
@@ -4424,16 +4504,32 @@ public sealed class ArtifactIngestTests
             DateTimeOffset now,
             CancellationToken cancellationToken)
         {
-            if (injection.TryInject(artifact.ArtifactId, currentDbContext.ContextId.InstanceId))
+            if (injection.TryInject(
+                    artifact.ArtifactId,
+                    currentDbContext.ContextId.InstanceId,
+                    out var commitRequiredJobs))
             {
                 currentDbContext.Entry(artifact).Property(candidate => candidate.ReconciledAtUtc).IsModified = true;
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                var concurrentArtifact = await db.CentralArtifacts.SingleAsync(
-                    candidate => candidate.Id == artifact.Id,
-                    cancellationToken).ConfigureAwait(false);
+                var concurrentArtifact = await db.CentralArtifacts
+                    .Include(candidate => candidate.Frame)!.ThenInclude(frame => frame!.Artifacts)
+                    .Include(candidate => candidate.Frame)!.ThenInclude(frame => frame!.Location)
+                    .SingleAsync(candidate => candidate.Id == artifact.Id, cancellationToken).ConfigureAwait(false);
+                if (commitRequiredJobs)
+                {
+                    await scope.ServiceProvider.GetRequiredService<CentralDerivativeJobScheduler>()
+                        .EnsureRequiredJobsAsync(concurrentArtifact, now, cancellationToken).ConfigureAwait(false);
+                }
                 concurrentArtifact.ReconciledAtUtc = (concurrentArtifact.ReconciledAtUtc ?? DateTimeOffset.UnixEpoch).AddTicks(1);
                 await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                if (commitRequiredJobs)
+                {
+                    var exception = new DbUpdateConcurrencyException(
+                        "Injected scheduling conflict after the competing scheduler committed required jobs.");
+                    exception.Data[CentralDerivativeJobScheduler.SchedulingConcurrencyMarker] = true;
+                    throw exception;
+                }
             }
             await inner.EnsureRequiredJobsAsync(artifact, now, cancellationToken).ConfigureAwait(false);
         }
@@ -4477,24 +4573,33 @@ public sealed class ArtifactIngestTests
     {
         private readonly MeterListener listener = new();
         private readonly List<string> outcomes = [];
+        private int completedCount;
 
         public ReconciliationConcurrencyMetricCollector()
         {
             listener.InstrumentPublished = (instrument, currentListener) =>
             {
                 if (instrument.Meter.Name == CentralIngestTelemetry.MeterName
-                    && instrument.Name == "skymonitor.central.ingest.reconciliation_concurrency")
+                    && instrument.Name is "skymonitor.central.ingest.reconciliation_concurrency"
+                        or "skymonitor.central.ingest.reconciled")
                 {
                     currentListener.EnableMeasurementEvents(instrument);
                 }
             };
-            listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+            listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) =>
             {
                 foreach (var tag in tags)
                 {
                     if (tag.Key == "outcome" && tag.Value is string outcome)
                     {
-                        outcomes.Add(outcome);
+                        if (instrument.Name == "skymonitor.central.ingest.reconciled" && outcome == "completed")
+                        {
+                            Interlocked.Increment(ref completedCount);
+                        }
+                        else if (instrument.Name == "skymonitor.central.ingest.reconciliation_concurrency")
+                        {
+                            outcomes.Add(outcome);
+                        }
                     }
                 }
             });
@@ -4502,6 +4607,8 @@ public sealed class ArtifactIngestTests
         }
 
         public IReadOnlyList<string> Outcomes => outcomes;
+
+        public int CompletedCount => Volatile.Read(ref completedCount);
 
         public void Dispose() => listener.Dispose();
     }
