@@ -1,0 +1,445 @@
+#!/usr/bin/env bash
+# Exercise split-host preflight with fake hosts and Docker contexts; no target is mutated.
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+TEMP_DIR="$(mktemp -d -t hvo-deploy-test.XXXXXX)"
+readonly TEMP_DIR
+readonly BIN="$TEMP_DIR/bin"
+readonly REMOTE_BIN="$TEMP_DIR/remote-bin"
+readonly REMOTE_BIN_NO_SS="$TEMP_DIR/remote-bin-no-ss"
+readonly REMOTE_BIN_NO_CURL="$TEMP_DIR/remote-bin-no-curl"
+readonly REMOTE_BIN_NO_TIMEOUT="$TEMP_DIR/remote-bin-no-timeout"
+readonly INVENTORY="$TEMP_DIR/inventory.yml"
+readonly BASE_INVENTORY="$TEMP_DIR/inventory.base"
+readonly SECRET_FILE="$TEMP_DIR/deploy.env"
+readonly LOG="$TEMP_DIR/commands.log"
+readonly REMOTE_LOG="$TEMP_DIR/remote-scripts.log"
+REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+readonly REVISION
+REAL_STAT="$(command -v stat)"
+readonly REAL_STAT
+REAL_GREP="$(command -v grep)"
+readonly REAL_GREP
+SERVER_PID=""
+
+cleanup() {
+    [[ -z "$SERVER_PID" ]] || kill "$SERVER_PID" 2>/dev/null || true
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+trap 'printf "Deploy environment contract test failed near line %s.\n" "$LINENO" >&2' ERR
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+mkdir -m 700 "$BIN" "$REMOTE_BIN" "$REMOTE_BIN_NO_SS" "$REMOTE_BIN_NO_CURL" "$REMOTE_BIN_NO_TIMEOUT" "$TEMP_DIR/output" "$TEMP_DIR/remote"
+mkdir -p "$TEMP_DIR/remote/logic/runtime" "$TEMP_DIR/remote/east" "$TEMP_DIR/remote/west/runtime"
+cat > "$TEMP_DIR/Listener.cs" <<'EOF'
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+
+var listener = new TcpListener(IPAddress.Loopback, 0);
+listener.Start();
+using var blocked = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+blocked.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+File.WriteAllText(args[0], $"{((IPEndPoint)listener.LocalEndpoint).Port} {((IPEndPoint)blocked.LocalEndPoint!).Port}\n");
+var response = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+while (true)
+{
+    using var client = await listener.AcceptTcpClientAsync();
+    try { await client.GetStream().WriteAsync(response); } catch (IOException) { }
+}
+EOF
+dotnet run "$TEMP_DIR/Listener.cs" -- "$TEMP_DIR/listener.ports" >"$TEMP_DIR/server.log" 2>&1 &
+SERVER_PID=$!
+listener_ready=false
+for _ in {1..100}; do
+    kill -0 "$SERVER_PID" 2>/dev/null || break
+    if [[ -s "$TEMP_DIR/listener.ports" ]]; then
+        read -r HTTP_PORT UNREACHABLE_PORT < "$TEMP_DIR/listener.ports"
+        if curl --silent --max-time 1 --output /dev/null "http://127.0.0.1:$HTTP_PORT"; then listener_ready=true; break; fi
+    fi
+    sleep 0.1
+done
+[[ "$listener_ready" == true ]] || fail 'Local connectivity fixture did not start with the pinned .NET SDK.'
+readonly HTTP_PORT UNREACHABLE_PORT
+readonly EAST_PORT=5130
+readonly WEST_PORT=5131
+
+cat > "$BIN/ssh" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+printf 'ssh' >> "${FAKE_LOG:?}"; printf '\t%s' "$@" >> "$FAKE_LOG"; printf '\n' >> "$FAKE_LOG"
+while [[ "$1" != -- ]]; do shift; done
+shift
+ssh_host=$1
+shift
+case "$ssh_host" in logic@*) host=logic ;; east@*) host=east ;; west@*) host=west ;; shared@*) host=shared ;; *) exit 1 ;; esac
+[[ "${FAKE_SSH_UNREACHABLE:-}" != "$host" ]] || exit 255
+if [[ "${FAKE_MISSING_BASH_HOST:-}" == "$host" ]]; then /usr/bin/cat >/dev/null; exit 127; fi
+[[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
+shift 3
+script="${FAKE_SCRIPT_ROOT:?}/remote-$host-$BASHPID.sh"
+umask 077
+/usr/bin/cat > "$script"
+printf 'remote-script-begin %s\n' "$host" >> "${FAKE_REMOTE_LOG:?}"
+/usr/bin/cat "$script" >> "$FAKE_REMOTE_LOG"
+printf 'remote-script-end %s\n' "$host" >> "$FAKE_REMOTE_LOG"
+remote_path="${FAKE_REMOTE_BIN:?}"
+[[ "${FAKE_MISSING_SS_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_SS:?}"
+[[ "${FAKE_MISSING_CURL_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_CURL:?}"
+[[ "${FAKE_MISSING_TIMEOUT_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_TIMEOUT:?}"
+FAKE_REMOTE_HOST="$host" PATH="$remote_path" /usr/bin/bash "$script" "$@"
+EOF
+cat > "$BIN/docker" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+printf 'docker' >> "${FAKE_LOG:?}"; printf '\t%s' "$@" >> "$FAKE_LOG"; printf '\n' >> "$FAKE_LOG"
+if [[ "$1" == context && "$2" == inspect ]]; then printf '%s\n' "${*: -1}"; exit 0; fi
+context=$2
+case "$context" in
+  logic-context) id=logic-daemon; name=logic-node; architecture=amd64 ;;
+  east-context) id=east-daemon; name=east-node; architecture=arm64 ;;
+  west-context) id=west-daemon; name=west-node; architecture=arm64 ;;
+  shared-context) id=shared-daemon; name=shared-node; architecture=amd64 ;;
+  *) exit 1 ;;
+esac
+[[ "${FAKE_DOCKER_MISMATCH:-}" != "$context" ]] || id=changed-daemon
+[[ "${FAKE_DOCKER_WRONG_HOST_CONTEXT:-}" != "$context" ]] || name=wrong-node
+if [[ "$3" == info ]]; then
+  case "${FAKE_DOCKER_INFO_MALFORMED:-}" in
+    architecture) printf '{"ID":"%s","Name":"%s","OSType":"linux","ServerVersion":"28.1.0"}\n' "$id" "$name" ;;
+    os) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":{"secret":"raw-docker-secret"},"ServerVersion":"28.1.0"}\n' "$id" "$name" "$architecture" ;;
+    version) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":"linux","ServerVersion":null}\n' "$id" "$name" "$architecture" ;;
+    *) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":"linux","ServerVersion":"28.1.0"}\n' "$id" "$name" "$architecture" ;;
+  esac
+elif [[ "$3" == compose ]]; then
+  [[ "${FAKE_COMPOSE_MISSING:-}" != "$context" ]] || exit 1
+  printf 'v2.39.1\n'
+elif [[ "$3" == ps && -n "${FAKE_DOCKER_PORT_CONFLICT:-}" && "${*: -1}" == "publish=$FAKE_DOCKER_PORT_CONFLICT" ]]; then
+  printf 'container-id\n'
+fi
+EOF
+cat > "$BIN/stat" <<'EOF'
+#!/usr/bin/bash
+if [[ -n "${FAKE_NONOWNER_PATH:-}" && "${*: -1}" == "$FAKE_NONOWNER_PATH" && "$*" == *"-c %u"* ]]; then printf '99999\n'; exit 0; fi
+if [[ -n "${FAKE_STAT_ERROR_PATH:-}" && "${*: -1}" == "$FAKE_STAT_ERROR_PATH" ]]; then printf 'fixture-secret-never-print raw stat error\n' >&2; exit 1; fi
+exec "${REAL_STAT:?}" "$@"
+EOF
+cat > "$BIN/grep" <<'EOF'
+#!/usr/bin/bash
+if [[ "${FAKE_GREP_ERROR:-}" == true ]]; then printf 'fixture-secret-never-print raw grep error\n' >&2; exit 2; fi
+exec "${REAL_GREP:?}" "$@"
+EOF
+chmod +x "$BIN/ssh" "$BIN/docker" "$BIN/stat" "$BIN/grep"
+
+cat > "$REMOTE_BIN/cat" <<'EOF'
+#!/usr/bin/bash
+if [[ "$1" == /etc/machine-id ]]; then printf '%s-machine\n' "${FAKE_REMOTE_HOST:?}"; else exec /usr/bin/cat "$@"; fi
+EOF
+cat > "$REMOTE_BIN/hostname" <<'EOF'
+#!/usr/bin/bash
+printf '%s-node\n' "${FAKE_REMOTE_HOST:?}"
+EOF
+cat > "$REMOTE_BIN/uname" <<'EOF'
+#!/usr/bin/bash
+case "${FAKE_REMOTE_HOST:?}" in logic|shared) printf 'x86_64\n' ;; *) printf 'aarch64\n' ;; esac
+EOF
+cat > "$REMOTE_BIN/getconf" <<'EOF'
+#!/usr/bin/bash
+printf '4\n'
+EOF
+cat > "$REMOTE_BIN/awk" <<'EOF'
+#!/usr/bin/bash
+if [[ "${*: -1}" == /proc/meminfo ]]; then printf '8192000\n'; else exec /usr/bin/awk "$@"; fi
+EOF
+cat > "$REMOTE_BIN/stat" <<'EOF'
+#!/usr/bin/bash
+path="${*: -1}"
+if [[ "$*" == *'%u'* && "${FAKE_RUNTIME_OTHER_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/$FAKE_REMOTE_HOST" ]]; then printf '4242\n'; exit 0; fi
+if [[ "$*" == *'%u'* && "${FAKE_RUNTIME_ROOT_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/$FAKE_REMOTE_HOST" ]]; then printf '0\n'; exit 0; fi
+exec /usr/bin/stat "$@"
+EOF
+cat > "$REMOTE_BIN/ss" <<'EOF'
+#!/usr/bin/bash
+if [[ "${FAKE_PORT_CONFLICT_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then printf 'LISTEN 0 1 127.0.0.1:1\n'; fi
+EOF
+chmod +x "$REMOTE_BIN/"*
+for tool in bash curl date df grep id timeout; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
+for entry in "$REMOTE_BIN/"*; do
+    [[ "$(basename "$entry")" == ss ]] || ln -s "$entry" "$REMOTE_BIN_NO_SS/$(basename "$entry")"
+    [[ "$(basename "$entry")" == curl ]] || ln -s "$entry" "$REMOTE_BIN_NO_CURL/$(basename "$entry")"
+    [[ "$(basename "$entry")" == timeout ]] || ln -s "$entry" "$REMOTE_BIN_NO_TIMEOUT/$(basename "$entry")"
+done
+
+export FAKE_LOG="$LOG" FAKE_REMOTE_LOG="$REMOTE_LOG" FAKE_SCRIPT_ROOT="$TEMP_DIR"
+export FAKE_REMOTE_BIN="$REMOTE_BIN" FAKE_REMOTE_BIN_NO_SS="$REMOTE_BIN_NO_SS" REAL_STAT REAL_GREP
+export FAKE_REMOTE_BIN_NO_CURL="$REMOTE_BIN_NO_CURL"
+export FAKE_REMOTE_BIN_NO_TIMEOUT="$REMOTE_BIN_NO_TIMEOUT"
+
+# shellcheck disable=SC2016 # The literal shell syntax verifies secrets are never evaluated.
+printf 'SQL_PASSWORD=fixture-secret-never-print\nOAUTH_SECRET=malicious-$(touch /tmp/must-not-run)-never-print\n' > "$SECRET_FILE"
+chmod 600 "$SECRET_FILE"
+
+write_inventory() {
+    jq -n --arg revision "$REVISION" --arg secret "$SECRET_FILE" --arg root "$TEMP_DIR/remote" \
+      --argjson logicPort "$HTTP_PORT" --argjson eastPort "$EAST_PORT" --argjson westPort "$WEST_PORT" '{
+      schemaVersion:1, environment:"test-observatory",
+      source:{revision:$revision,dirtyDisposition:"allow-dirty"},
+      secretSource:{path:$secret,requiredReferences:["SQL_PASSWORD","OAUTH_SECRET"]},
+      logicHost:{name:"logic",sshHost:"logic@example",dockerContext:"logic-context",expectedArchitecture:"amd64",expectedHostName:"logic-node",
+        expectedHostIdentity:"logic-machine",expectedDockerDaemonIdentity:"logic-daemon",runtimeRoot:($root+"/logic/runtime"),
+        publicEndpoint:("http://127.0.0.1:"+($logicPort|tostring)),ports:[$logicPort]},
+      cameraAgents:[
+        {name:"east",sshHost:"east@example",dockerContext:"east-context",expectedArchitecture:"arm64",expectedHostName:"east-node",
+          expectedHostIdentity:"east-machine",expectedDockerDaemonIdentity:"east-daemon",runtimeRoot:($root+"/east/runtime"),
+          publicEndpoint:("http://127.0.0.1:"+($eastPort|tostring)),ports:[$eastPort]},
+        {name:"west",sshHost:"west@example",dockerContext:"west-context",expectedArchitecture:"arm64",expectedHostName:"west-node",
+          expectedHostIdentity:"west-machine",expectedDockerDaemonIdentity:"west-daemon",runtimeRoot:($root+"/west/runtime"),
+          publicEndpoint:("http://127.0.0.1:"+($westPort|tostring)),ports:[$westPort]}],
+      sharedServices:null,
+      serviceEndpoints:[{name:"test-service",host:"127.0.0.1",port:$logicPort,fromTargets:["logic","east","west"]}],
+      catalog:{kind:"production",version:"catalog-v1",sha256:("0"*64)},
+      images:{logicHost:{repository:"registry.example/logichost",digest:("sha256:"+("1"*64))},
+        cameraAgent:{repository:"registry.example/cameraagent",digest:("sha256:"+("2"*64))}}
+    }' > "$INVENTORY"
+    cp "$INVENTORY" "$BASE_INVENTORY"
+}
+
+run_deploy() {
+    local run_id="$1"; shift
+    PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$INVENTORY" --mode isolated \
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"
+}
+
+expect_failure() {
+    local expected="$1" run_id="$2"
+    if run_deploy "$run_id" > "$TEMP_DIR/failure.log" 2>&1; then fail "Invalid preflight passed: $expected"; fi
+    grep -Fq "$expected" "$TEMP_DIR/failure.log" || fail "Missing bounded failure: $expected"
+    if grep -Fq 'fixture-secret-never-print' "$TEMP_DIR/failure.log" || grep -Fq 'malicious-' "$TEMP_DIR/failure.log"; then
+        fail 'Failure output exposed a fixture secret or raw diagnostic.'
+    fi
+    ! grep -Fq 'raw-docker-secret' "$TEMP_DIR/failure.log" || fail 'Failure output exposed malformed Docker response content.'
+}
+
+expect_persistent_invalid() {
+    local run_id="$1"
+    if PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$INVENTORY" --mode persistent \
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" \
+      > "$TEMP_DIR/failure.log" 2>&1; then fail "Invalid persistent inventory passed: $run_id"; fi
+    grep -Fq 'persistent-mode-requires-production-https' "$TEMP_DIR/failure.log" || fail "Persistent rejection was not bounded: $run_id"
+}
+
+bash -n "$REPO_ROOT/scripts/deploy:environment" "$REPO_ROOT/scripts/deploy/"*.sh "$REPO_ROOT/scripts/test:deploy-environment"
+write_inventory
+
+# The checked-in shape reference, example, and executable jq contract stay aligned.
+jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","publicEndpoint","ports"] and
+  (.properties.sharedServices.oneOf[1]."$ref" | endswith("/applicationTarget")) and
+  (."$defs".applicationTarget.properties.publicEndpoint.pattern | contains(":"))' "$REPO_ROOT/deploy/split-host/inventory.schema.json" >/dev/null
+(
+  # shellcheck source=scripts/deploy/common.sh
+  . "$REPO_ROOT/scripts/deploy/common.sh"
+  # shellcheck source=scripts/deploy/inventory.sh
+  . "$REPO_ROOT/scripts/deploy/inventory.sh"
+  deploy_validate_inventory "$REPO_ROOT/deploy/split-host/inventory.example.yml" isolated
+  jq '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
+    expectedHostName:"shared-node",expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:"/srv/hvo/shared",
+    publicEndpoint:"https://shared.example:9443",ports:[9443]}' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
+  deploy_validate_inventory "$TEMP_DIR/shared-valid.json" isolated
+  jq 'del(.sharedServices.publicEndpoint)' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-invalid.json" isolated >/dev/null 2>&1; then exit 91; fi
+  for accepted_root in /srv/hvo '/opt/hvo data/runtime'; do
+    jq --arg root "$accepted_root" '.logicHost.runtimeRoot=$root' "$BASE_INVENTORY" > "$TEMP_DIR/root.json"
+    deploy_validate_inventory "$TEMP_DIR/root.json" isolated
+  done
+  for rejected_root in /./srv /../srv /srv/./hvo /srv/../hvo /srv//hvo $'/srv/hvo\tdata' $'/srv/hvo\ndata'; do
+    jq --arg root "$rejected_root" '.logicHost.runtimeRoot=$root' "$BASE_INVENTORY" > "$TEMP_DIR/root.json"
+    if deploy_validate_inventory "$TEMP_DIR/root.json" isolated >/dev/null 2>&1; then exit 92; fi
+  done
+  for accepted_catalog in 4.2 hyg-v4.2-p3-s2-r1 hyg-v42-fixture-1; do
+    jq --arg version "$accepted_catalog" '.catalog.version=$version' "$BASE_INVENTORY" > "$TEMP_DIR/catalog.json"
+    deploy_validate_inventory "$TEMP_DIR/catalog.json" isolated
+  done
+  jq '.catalog.version="catalog:v1"' "$BASE_INVENTORY" > "$TEMP_DIR/catalog.json"
+  if deploy_validate_inventory "$TEMP_DIR/catalog.json" isolated >/dev/null 2>&1; then exit 93; fi
+)
+runtime_pattern="$(jq -r '."$defs".applicationTarget.properties.runtimeRoot.pattern' "$REPO_ROOT/deploy/split-host/inventory.schema.json")"
+for accepted_root in /srv/hvo '/opt/hvo data/runtime'; do
+    jq -en --arg value "$accepted_root" --arg pattern "$runtime_pattern" '$value | test($pattern)' >/dev/null || fail "Schema pattern rejected $accepted_root"
+done
+for rejected_root in /./srv /../srv /srv/./hvo /srv/../hvo /srv//hvo $'/srv/hvo\tdata' $'/srv/hvo\ndata'; do
+    if jq -en --arg value "$rejected_root" --arg pattern "$runtime_pattern" '$value | test($pattern)' >/dev/null; then fail "Schema pattern accepted $rejected_root"; fi
+done
+catalog_pattern="$(jq -r '.properties.catalog.properties.version.pattern' "$REPO_ROOT/deploy/split-host/inventory.schema.json")"
+for accepted_catalog in 4.2 hyg-v4.2-p3-s2-r1 hyg-v42-fixture-1; do
+    jq -en --arg value "$accepted_catalog" --arg pattern "$catalog_pattern" '$value | test($pattern)' >/dev/null || fail "Schema pattern rejected catalog $accepted_catalog"
+done
+if jq -en --arg value 'catalog:v1' --arg pattern "$catalog_pattern" '$value | test($pattern)' >/dev/null; then fail 'Schema pattern accepted colon catalog version.'; fi
+
+: > "$LOG"; : > "$REMOTE_LOG"
+output="$(run_deploy valid)"
+[[ "$output" == *'stage=preflight check=complete status=passed reason=read-only'* ]] || fail 'Valid preflight did not pass.'
+manifest="$TEMP_DIR/output/valid-state/manifest.json"
+evidence="$TEMP_DIR/output/valid-evidence/preflight.json"
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and
+  ([.targets[].dockerComposeVersion] | all(. == "v2.39.1")) and
+  (.targets[] | select(.name == "east") | .deploymentState == "needs_prepare")' "$manifest" >/dev/null
+test "$(stat -c %a "$TEMP_DIR/output/valid-state")" = 700
+test "$(stat -c %a "$manifest")" = 600
+test "$(stat -c %a "$evidence")" = 600
+grep -Fq $'docker\t--context\teast-context\tinfo' "$LOG"
+grep -Fq $'docker\t--context\teast-context\tcompose\tversion\t--short' "$LOG"
+grep -Fq $'east@example\tbash\t-s\t--\t127.0.0.1' "$LOG"
+grep -Fq $'east@example\tbash\t-s\t--\thttp://127.0.0.1:' "$LOG"
+grep -Fq 'timeout 8 bash -c' "$REMOTE_LOG"
+grep -Fq 'curl --silent --show-error' "$REMOTE_LOG"
+if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|rm|create|mkdir|install|touch)([[:space:]]|$)' "$REMOTE_LOG"; then fail 'Remote preflight script contains mutation commands.'; fi
+if grep -Fq 'fixture-secret-never-print' "$LOG" || grep -Fq 'fixture-secret-never-print' "$REMOTE_LOG" ||
+   grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output"; then fail 'Logs or evidence exposed a secret.'; fi
+
+mkdir -p "$TEMP_DIR/remote/east space"
+jq --arg root "$TEMP_DIR/remote/east space/runtime" '.cameraAgents[0].runtimeRoot=$root' "$BASE_INVENTORY" > "$INVENTORY"
+run_deploy spaced-runtime >/dev/null
+jq -e --arg root "$TEMP_DIR/remote/east space/runtime" '.targets[] | select(.name == "east") | .runtimeRoot == $root' \
+  "$TEMP_DIR/output/spaced-runtime-state/manifest.json" >/dev/null
+cp "$BASE_INVENTORY" "$INVENTORY"
+
+# Context selection must correlate the Docker daemon host name with the SSH hostname.
+FAKE_DOCKER_WRONG_HOST_CONTEXT=east-context expect_failure 'ssh-docker-correlation status=failed reason=mismatch' wrong-context-host
+FAKE_DOCKER_MISMATCH=east-context expect_failure 'ssh-docker-correlation status=failed reason=mismatch' daemon-mismatch
+FAKE_DOCKER_INFO_MALFORMED=architecture expect_failure 'docker-daemon status=failed reason=invalid-response' docker-architecture-malformed
+FAKE_DOCKER_INFO_MALFORMED=os expect_failure 'docker-daemon status=failed reason=invalid-response' docker-os-malformed
+FAKE_DOCKER_INFO_MALFORMED=version expect_failure 'docker-daemon status=failed reason=invalid-response' docker-version-malformed
+FAKE_COMPOSE_MISSING=east-context expect_failure 'docker-compose status=failed reason=unavailable' compose-missing
+FAKE_SSH_UNREACHABLE=east expect_failure 'ssh status=failed reason=unreachable-or-invalid-response' ssh-unreachable
+FAKE_MISSING_BASH_HOST=east expect_failure 'ssh status=failed reason=tool-unavailable' missing-bash
+
+# The actual remote Bash scripts exercise reachable and unreachable TCP/HTTP paths.
+jq --argjson port "$UNREACHABLE_PORT" '.serviceEndpoints[0].port=$port' "$BASE_INVENTORY" > "$INVENTORY"
+expect_failure 'test-service status=failed reason=unreachable' tcp-unreachable
+jq --argjson port "$UNREACHABLE_PORT" '.logicHost.publicEndpoint=("http://127.0.0.1:"+($port|tostring)) | .logicHost.ports=[$port]' "$BASE_INVENTORY" > "$INVENTORY"
+expect_failure 'logic-public-authority status=failed reason=unreachable' http-unreachable
+cp "$BASE_INVENTORY" "$INVENTORY"
+
+# Missing socket inspection and both host/Docker port conflicts fail closed.
+FAKE_MISSING_SS_HOST=east expect_failure 'ports status=failed reason=inspector-unavailable' missing-ss
+FAKE_MISSING_TIMEOUT_HOST=east expect_failure 'test-service status=failed reason=tool-unavailable' missing-timeout
+FAKE_MISSING_CURL_HOST=east expect_failure 'logic-public-authority status=failed reason=tool-unavailable' missing-curl
+FAKE_PORT_CONFLICT_HOST=east expect_failure 'ports status=failed reason=conflict' host-port-conflict
+FAKE_DOCKER_PORT_CONFLICT="$EAST_PORT" expect_failure 'containers status=failed reason=port-conflict' docker-port-conflict
+
+# Every existing runtime component is lstat-checked; trusted root ownership may require preparation.
+mv "$TEMP_DIR/remote/east" "$TEMP_DIR/remote/east-real"
+ln -s "$TEMP_DIR/remote/east-real" "$TEMP_DIR/remote/east"
+expect_failure 'runtime-root status=failed reason=unsafe' runtime-symlink
+rm "$TEMP_DIR/remote/east"; mv "$TEMP_DIR/remote/east-real" "$TEMP_DIR/remote/east"
+chmod 777 "$TEMP_DIR/remote/east"; expect_failure 'runtime-root status=failed reason=unsafe' runtime-mode; chmod 700 "$TEMP_DIR/remote/east"
+FAKE_RUNTIME_OTHER_OWNER_HOST=east expect_failure 'runtime-root status=failed reason=unsafe' runtime-owner
+FAKE_RUNTIME_ROOT_OWNER_HOST=east run_deploy root-owned >/dev/null
+jq -e '.targets[] | select(.name == "east") | .deploymentState == "needs_prepare"' "$TEMP_DIR/output/root-owned-state/manifest.json" >/dev/null
+
+# Secret diagnostics are bounded, and unsafe local lock entries are never followed or truncated.
+chmod 644 "$SECRET_FILE"; : > "$LOG"; expect_failure 'secret-source-must-be-owner-only' secret-mode; test ! -s "$LOG"; chmod 600 "$SECRET_FILE"
+FAKE_STAT_ERROR_PATH="$SECRET_FILE" expect_failure 'secret-source-stat-failed' secret-stat-error
+FAKE_GREP_ERROR=true expect_failure 'required-reference-missing' secret-grep-error
+mkdir -m 700 "$TEMP_DIR/output/lock-symlink-state" "$TEMP_DIR/output/lock-symlink-evidence"
+printf 'preserve-lock-target\n' > "$TEMP_DIR/lock-target"; ln -s "$TEMP_DIR/lock-target" "$TEMP_DIR/output/lock-symlink-state/run.lock"
+expect_failure 'unsafe-lock-entry' lock-symlink; test "$(<"$TEMP_DIR/lock-target")" = preserve-lock-target
+mkdir -m 700 "$TEMP_DIR/output/lock-hardlink-state" "$TEMP_DIR/output/lock-hardlink-evidence"
+printf 'preserve-hardlink-target\n' > "$TEMP_DIR/hardlink-target"; ln "$TEMP_DIR/hardlink-target" "$TEMP_DIR/output/lock-hardlink-state/run.lock"
+expect_failure 'unsafe-lock-entry' lock-hardlink; test "$(<"$TEMP_DIR/hardlink-target")" = preserve-hardlink-target
+
+# Static strictness includes explicit endpoint ports and shared target shape.
+jq '.logicHost.publicEndpoint="http://127.0.0.1"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' missing-public-port
+jq '.logicHost.ports=[12345]' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' public-port-mismatch
+jq '.logicHost.runtimeRoot="/srv/../private"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' traversal
+jq '.logicHost.extra="rejected"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' unknown
+
+# Persistent mode requires a production catalog and HTTPS on LogicHost, every CameraAgent, and shared services.
+jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:")' "$BASE_INVENTORY" > "$TEMP_DIR/persistent-base.json"
+jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-logic-http
+jq '.cameraAgents[0].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-east-http
+jq '.cameraAgents[1].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-west-http
+jq '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
+  expectedHostName:"shared-node",expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:"/srv/hvo/shared",
+  publicEndpoint:"http://shared.example:9443",ports:[9443]}' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-shared-http
+jq '.catalog.kind="fixture"' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-fixture-catalog
+
+# A successful run followed by a transport failure publishes failed, not stale passed, evidence.
+cp "$BASE_INVENTORY" "$INVENTORY"; run_deploy stale-evidence >/dev/null
+FAKE_SSH_UNREACHABLE=east expect_failure 'ssh status=failed reason=unreachable-or-invalid-response' stale-evidence
+jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/stale-evidence-state/manifest.json" >/dev/null
+jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/stale-evidence-evidence/preflight.json" >/dev/null
+if grep -Fq '"phaseStatus":"passed"' "$TEMP_DIR/output/stale-evidence-evidence/preflight.json"; then fail 'Failed rerun retained passed evidence.'; fi
+
+run_deploy evidence-symlink >/dev/null
+printf 'preserve-evidence-target\n' > "$TEMP_DIR/evidence-target"
+rm "$TEMP_DIR/output/evidence-symlink-evidence/preflight.json"
+ln -s "$TEMP_DIR/evidence-target" "$TEMP_DIR/output/evidence-symlink-evidence/preflight.json"
+FAKE_SSH_UNREACHABLE=east expect_failure 'completed-check-or-target-mismatch' evidence-symlink
+test "$(<"$TEMP_DIR/evidence-target")" = preserve-evidence-target
+test -L "$TEMP_DIR/output/evidence-symlink-evidence/preflight.json"
+
+# Rejected inventory, resume, and corrupt-manifest invocations preserve prior valid evidence.
+cp "$BASE_INVENTORY" "$INVENTORY"
+run_deploy completed-check >/dev/null
+cp "$TEMP_DIR/output/completed-check-evidence/preflight.json" "$TEMP_DIR/completed-check.evidence"
+jq '.checks[0].status="failed"' "$TEMP_DIR/output/completed-check-state/manifest.json" > "$TEMP_DIR/completed-check.manifest"
+mv "$TEMP_DIR/completed-check.manifest" "$TEMP_DIR/output/completed-check-state/manifest.json"; chmod 600 "$TEMP_DIR/output/completed-check-state/manifest.json"
+cp "$TEMP_DIR/output/completed-check-state/manifest.json" "$TEMP_DIR/completed-check.tampered"
+expect_failure 'completed-check-or-target-mismatch' completed-check
+cmp -s "$TEMP_DIR/completed-check.tampered" "$TEMP_DIR/output/completed-check-state/manifest.json" || fail 'Rejected completed-check resume rewrote manifest.'
+cmp -s "$TEMP_DIR/completed-check.evidence" "$TEMP_DIR/output/completed-check-evidence/preflight.json" || fail 'Rejected completed-check resume rewrote evidence.'
+run_deploy completed-target >/dev/null
+cp "$TEMP_DIR/output/completed-target-evidence/preflight.json" "$TEMP_DIR/completed-target.evidence"
+jq '.targets[0].hostIdentity="tampered-machine"' "$TEMP_DIR/output/completed-target-state/manifest.json" > "$TEMP_DIR/completed-target.manifest"
+mv "$TEMP_DIR/completed-target.manifest" "$TEMP_DIR/output/completed-target-state/manifest.json"; chmod 600 "$TEMP_DIR/output/completed-target-state/manifest.json"
+cp "$TEMP_DIR/output/completed-target-state/manifest.json" "$TEMP_DIR/completed-target.tampered"
+expect_failure 'completed-check-or-target-mismatch' completed-target
+cmp -s "$TEMP_DIR/completed-target.tampered" "$TEMP_DIR/output/completed-target-state/manifest.json" || fail 'Rejected completed-target resume rewrote manifest.'
+cmp -s "$TEMP_DIR/completed-target.evidence" "$TEMP_DIR/output/completed-target-evidence/preflight.json" || fail 'Rejected completed-target resume rewrote evidence.'
+run_deploy resume-hash >/dev/null
+cp "$TEMP_DIR/output/resume-hash-evidence/preflight.json" "$TEMP_DIR/resume-hash.evidence"
+jq '.catalog.version="catalog-v2"' "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+expect_failure 'resume-contract-mismatch' resume-hash
+cmp -s "$TEMP_DIR/resume-hash.evidence" "$TEMP_DIR/output/resume-hash-evidence/preflight.json" || fail 'Rejected resume changed prior evidence.'
+cp "$BASE_INVENTORY" "$INVENTORY"; run_deploy invalid-inventory >/dev/null
+cp "$TEMP_DIR/output/invalid-inventory-evidence/preflight.json" "$TEMP_DIR/invalid-inventory.evidence"
+jq '.unexpected="invalid"' "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+expect_failure 'schema-or-value-invalid' invalid-inventory
+cmp -s "$TEMP_DIR/invalid-inventory.evidence" "$TEMP_DIR/output/invalid-inventory-evidence/preflight.json" || fail 'Rejected inventory changed prior evidence.'
+cp "$BASE_INVENTORY" "$INVENTORY"; run_deploy corrupt-manifest >/dev/null
+cp "$TEMP_DIR/output/corrupt-manifest-evidence/preflight.json" "$TEMP_DIR/corrupt-manifest.evidence"
+printf 'not-json\n' > "$TEMP_DIR/output/corrupt-manifest-state/manifest.json"
+expect_failure 'invalid-existing-manifest' corrupt-manifest
+cmp -s "$TEMP_DIR/corrupt-manifest.evidence" "$TEMP_DIR/output/corrupt-manifest-evidence/preflight.json" || fail 'Corrupt manifest invocation changed prior evidence.'
+cp "$BASE_INVENTORY" "$INVENTORY"
+if DEPLOY_TEST_FAILPOINT=after-evidence-before-passed-manifest run_deploy evidence-first-crash > "$TEMP_DIR/failure.log" 2>&1; then
+    fail 'Evidence-first publication failpoint passed.'
+fi
+crash_manifest="$TEMP_DIR/output/evidence-first-crash-state/manifest.json"
+crash_evidence="$TEMP_DIR/output/evidence-first-crash-evidence/preflight.json"
+jq -e --slurp '.[0].phaseStatus == "running" and .[1].phaseStatus == "passed" and
+  .[0].runId == .[1].runId and .[0].inventorySha256 == .[1].inventorySha256' "$crash_manifest" "$crash_evidence" >/dev/null
+remote_count_before_recovery="$(grep -c '^ssh' "$LOG")"
+run_deploy evidence-first-crash >/dev/null
+remote_count_after_recovery="$(grep -c '^ssh' "$LOG")"
+(( remote_count_after_recovery > remote_count_before_recovery )) || fail 'Interrupted publication recovery did not rerun remote checks.'
+jq -e --slurp '.[0].phaseStatus == "passed" and .[1].phaseStatus == "passed" and
+  .[0].runId == .[1].runId and .[0].inventorySha256 == .[1].inventorySha256 and
+  .[0].source == .[1].source and .[0].targets == .[1].targets and .[0].checks == .[1].checks' \
+  "$crash_manifest" "$crash_evidence" >/dev/null
+
+if DEPLOY_TEST_FAILPOINT=before-manifest-rename run_deploy interrupted > "$TEMP_DIR/failure.log" 2>&1; then fail 'Manifest failpoint passed.'; fi
+test ! -e "$TEMP_DIR/output/interrupted-state/manifest.json"
+test ! -e "$TEMP_DIR/output/interrupted-evidence/preflight.json"
+run_deploy interrupted >/dev/null
+
+if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|compose[[:space:]]+up|compose[[:space:]]+down)([[:space:]]|$)' "$LOG"; then fail 'Preflight invoked deployment mutation.'; fi
+printf 'Split-host deploy preflight contract passed.\n'

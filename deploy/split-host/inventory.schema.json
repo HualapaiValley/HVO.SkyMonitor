@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hvoskymonitor.local/deploy/split-host/inventory.schema.json",
+  "$comment": "Published shape reference kept aligned with the executable jq contract in scripts/deploy/inventory.sh.",
+  "title": "HVO.SkyMonitor split-host preflight inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "environment", "source", "secretSource", "logicHost", "cameraAgents", "sharedServices", "serviceEndpoints", "catalog", "images"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "environment": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "dirtyDisposition"],
+      "properties": {
+        "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "dirtyDisposition": { "enum": ["require-clean", "allow-dirty"] }
+      }
+    },
+    "secretSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "requiredReferences"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "requiredReferences": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }
+        }
+      }
+    },
+    "logicHost": { "$ref": "#/$defs/applicationTarget" },
+    "cameraAgents": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/applicationTarget" }
+    },
+    "sharedServices": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/applicationTarget" }]
+    },
+    "serviceEndpoints": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/serviceEndpoint" }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version", "sha256"],
+      "properties": {
+        "kind": { "enum": ["production", "fixture"] },
+        "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+      }
+    },
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logicHost", "cameraAgent"],
+      "properties": {
+        "logicHost": { "$ref": "#/$defs/image" },
+        "cameraAgent": { "$ref": "#/$defs/image" }
+      }
+    }
+  },
+  "$defs": {
+    "applicationTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "publicEndpoint", "ports"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+        "sshHost": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,254}$" },
+        "dockerContext": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "expectedArchitecture": { "enum": ["amd64", "arm64"] },
+        "expectedHostName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$" },
+        "expectedHostIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "expectedDockerDaemonIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "runtimeRoot": { "type": "string", "pattern": "^/(?![.]{1,2}(?:/|$))(?!.*(?:/)[.]{1,2}(?:/|$))(?!.*//)(?!.*[\\x00-\\x1F\\x7F]).+$" },
+        "publicEndpoint": { "type": "string", "format": "uri", "pattern": "^https?://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}(?:/[^\\s]*)?$" },
+        "ports": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+      }
+    },
+    "serviceEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "host", "port", "fromTargets"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+        "host": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "fromTargets": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "digest"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9./_-]{0,255}$" },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

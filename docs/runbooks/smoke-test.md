@@ -1,9 +1,10 @@
 # Smoke-Test Environment Runbook
 
 This runbook defines the configuration boundary for reproducible platform smoke
-tests. The complete split-host deployment and bootstrap automation remains owned
-by issue #151; these commands only generate and verify inputs and do not start,
-stop, reset, or mutate application or shared-service resources.
+tests. Issue #151 now provides a separate
+[read-only split-host preflight](split-host-preflight.md); deployment mutation and
+bootstrap automation remain later slices. These smoke commands only generate and
+verify inputs and do not start, stop, reset, or mutate resources.
 
 ## Environment Contract
 

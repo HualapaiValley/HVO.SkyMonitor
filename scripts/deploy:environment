@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Split-host deployment entry point. The frozen first slice implements read-only preflight only.
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+# shellcheck source=scripts/deploy/common.sh
+. "$SCRIPT_DIR/deploy/common.sh"
+# shellcheck source=scripts/deploy/inventory.sh
+. "$SCRIPT_DIR/deploy/inventory.sh"
+# shellcheck source=scripts/deploy/transport.sh
+. "$SCRIPT_DIR/deploy/transport.sh"
+# shellcheck source=scripts/deploy/run-state.sh
+. "$SCRIPT_DIR/deploy/run-state.sh"
+# shellcheck source=scripts/deploy/preflight.sh
+. "$SCRIPT_DIR/deploy/preflight.sh"
+
+usage() {
+    printf 'Usage: %s preflight --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>]\n' "${0##*/}" >&2
+    exit 2
+}
+
+phase="${1:-}"
+[[ "$phase" == preflight ]] || usage
+shift
+inventory="" mode="" run_id="" state_root="" evidence_root=""
+while (( $# > 0 )); do
+    case "$1" in
+        --inventory) (( $# >= 2 )) || usage; inventory="$2"; shift 2 ;;
+        --mode) (( $# >= 2 )) || usage; mode="$2"; shift 2 ;;
+        --run-id) (( $# >= 2 )) || usage; run_id="$2"; shift 2 ;;
+        --state-root) (( $# >= 2 )) || usage; state_root="$2"; shift 2 ;;
+        --evidence-root) (( $# >= 2 )) || usage; evidence_root="$2"; shift 2 ;;
+        *) usage ;;
+    esac
+done
+[[ -n "$inventory" && ( "$mode" == isolated || "$mode" == persistent ) ]] || usage
+
+# Target selection and credentials must come only from the validated inventory contract.
+for ambient_name in ${!DEPLOY_@} ${!SMOKETEST_@}; do
+    [[ "$ambient_name" == DEPLOY_TEST_FAILPOINT ]] || unset "$ambient_name"
+done
+unset DOCKER_HOST DOCKER_CONTEXT SSH_HOST SSH_CONFIG 2>/dev/null || true
+unset ambient_name
+
+deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh docker date grep || exit 1
+inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
+deploy_validate_inventory "$inventory" "$mode"
+deploy_validate_secret_references "$inventory"
+expected_revision="$(jq -r '.source.revision' "$inventory")"
+actual_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+[[ "$actual_revision" == "$expected_revision" ]] || deploy_fail validate source "source-revision-mismatch"
+dirty_disposition="$(jq -r '.source.dirtyDisposition' "$inventory")"
+worktree_state=clean
+[[ -z "$(git -C "$REPO_ROOT" status --porcelain)" ]] || worktree_state=dirty
+[[ "$dirty_disposition" == allow-dirty || "$worktree_state" == clean ]] || deploy_fail validate source "dirty-worktree-rejected"
+inventory_hash="$(jq -S -c . "$inventory" | sha256sum)"; inventory_hash="${inventory_hash%% *}"
+if [[ -z "$run_id" ]]; then run_id="preflight-$(date -u +%Y%m%dt%H%M%Sz)"; fi
+deploy_is_safe_name "$run_id" || deploy_fail validate run-id "unsafe-run-id"
+state_root="${state_root:-$REPO_ROOT/TestResults/deploy/$run_id/state}"
+evidence_root="${evidence_root:-$REPO_ROOT/TestResults/deploy/$run_id/evidence}"
+deploy_prepare_run_state "$state_root" "$evidence_root"
+
+started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+old_manifest=""
+if [[ -e "$DEPLOY_MANIFEST" || -L "$DEPLOY_MANIFEST" ]]; then
+    [[ -f "$DEPLOY_MANIFEST" && ! -L "$DEPLOY_MANIFEST" && "$(stat -c '%u' "$DEPLOY_MANIFEST" 2>/dev/null)" == "$(id -u)" && "$(stat -c '%h' "$DEPLOY_MANIFEST" 2>/dev/null)" == 1 &&
+       "$(stat -c '%a' "$DEPLOY_MANIFEST" 2>/dev/null)" == 600 ]] ||
+        deploy_fail state manifest "unsafe-existing-manifest"
+    previous_manifest="$(jq -c . "$DEPLOY_MANIFEST" 2>/dev/null)" || deploy_fail state manifest "invalid-existing-manifest"
+    deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state"
+    deploy_require_completed_evidence_match "$previous_manifest" "$DEPLOY_EVIDENCE"
+    if [[ "$(jq -r '.phaseStatus' <<< "$previous_manifest")" == passed ]]; then old_manifest="$previous_manifest"; fi
+    DEPLOY_MANIFEST_JSON="$(jq -c '.phaseStatus="running" | .checks=[] | .targets=[] | del(.completedAt)' <<< "$previous_manifest")"
+else
+    DEPLOY_MANIFEST_JSON="$(deploy_initial_manifest "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$dirty_disposition" "$started")"
+    DEPLOY_MANIFEST_JSON="$(jq -c --arg state "$worktree_state" '.source.worktreeState=$state' <<< "$DEPLOY_MANIFEST_JSON")"
+fi
+deploy_publish_json "$DEPLOY_MANIFEST" "$DEPLOY_MANIFEST_JSON" || deploy_fail state manifest "atomic-publication-failed"
+deploy_clear_evidence
+deploy_mark_failed() {
+    local status=$?
+    trap - ERR
+    DEPLOY_MANIFEST_JSON="$(jq -c --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.phaseStatus="failed" | .updatedAt=$now' <<< "$DEPLOY_MANIFEST_JSON")"
+    deploy_publish_json "$DEPLOY_EVIDENCE" "$(deploy_evidence_json "$DEPLOY_MANIFEST_JSON")" >/dev/null 2>&1 || true
+    deploy_publish_json "$DEPLOY_MANIFEST" "$DEPLOY_MANIFEST_JSON" >/dev/null 2>&1 || true
+    exit "$status"
+}
+trap deploy_mark_failed ERR
+deploy_run_preflight "$inventory" "$old_manifest"
+trap - ERR
+deploy_status preflight complete passed read-only

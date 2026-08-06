@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "environment": "observatory-production",
+  "source": {
+    "revision": "0000000000000000000000000000000000000000",
+    "dirtyDisposition": "require-clean"
+  },
+  "secretSource": {
+    "path": "/home/operator/.config/hvo-skymonitor/deploy.env",
+    "requiredReferences": ["SQLSERVER_PASSWORD", "MINIO_SECRET_KEY", "CAMERA_AGENT_OAUTH_CLIENT_SECRET"]
+  },
+  "logicHost": {
+    "name": "logic-01",
+    "sshHost": "operator@logic-01.example.net",
+    "dockerContext": "logic-01",
+    "expectedArchitecture": "amd64",
+    "expectedHostName": "logic-01",
+    "expectedHostIdentity": "11111111111111111111111111111111",
+    "expectedDockerDaemonIdentity": "LOGICDAEMON0001",
+    "runtimeRoot": "/srv/hvo-skymonitor",
+    "publicEndpoint": "https://sky.example.net:5174",
+    "ports": [5174]
+  },
+  "cameraAgents": [{
+    "name": "camera-east",
+    "sshHost": "operator@camera-east.example.net",
+    "dockerContext": "camera-east",
+    "expectedArchitecture": "arm64",
+    "expectedHostName": "camera-east",
+    "expectedHostIdentity": "22222222222222222222222222222222",
+    "expectedDockerDaemonIdentity": "CAMERADAEMON0001",
+    "runtimeRoot": "/srv/hvo-skymonitor",
+    "publicEndpoint": "https://camera-east.example.net:5130",
+    "ports": [5130]
+  }],
+  "sharedServices": null,
+  "serviceEndpoints": [{
+    "name": "sqlserver",
+    "host": "services.example.net",
+    "port": 1433,
+    "fromTargets": ["logic-01"]
+  }],
+  "catalog": {
+    "kind": "production",
+    "version": "hyg-v4.2-p3-s2-r1",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "images": {
+    "logicHost": { "repository": "registry.example.net/hvo/logichost", "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "cameraAgent": { "repository": "registry.example.net/hvo/cameraagent", "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+  }
+}
