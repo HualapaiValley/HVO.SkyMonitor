@@ -3578,8 +3578,8 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
-    [DataRow("staging/a", 10)]
-    [DataRow("staging/derivatives/a", 41)]
+    [DataRow("staging/", 10)]
+    [DataRow("staging/derivatives/", 41)]
     public async Task Reconciliation_RemovesOnlyStagingObjectsPastGracePeriod(
         string stagingPrefix,
         int stagingPartition)
@@ -3588,7 +3588,8 @@ public sealed class ArtifactIngestTests
         var services = fixture.Factory.Services;
         var minio = services.GetRequiredService<IMinioClient>();
         const string bucket = "skymonitor-artifacts";
-        var objectKey = $"{stagingPrefix}{Guid.NewGuid():N}";
+        var objectId = Guid.NewGuid().ToString("N");
+        var objectKey = $"{stagingPrefix}a{objectId[1..]}";
         if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket)).ConfigureAwait(false))
         {
             await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket)).ConfigureAwait(false);
