@@ -38,6 +38,24 @@ the generated SQL. Do not expose the migration connection to runtime containers.
 Development and Testing retain automatic initialization and may use one local
 credential.
 
+LogicHost parses each selected connection string before constructing EF or
+dedicated object-lock connections. It replaces an absent, blank, or conflicting
+`Application Name` with the purpose-owned value above while preserving valid
+operator-supplied pool, connect-timeout, and connection-lifetime keywords. A
+malformed string fails startup with a purpose-specific sanitized message; the
+configured value and parser exception are not logged.
+
+Issue #254 measured the default runtime policy at W4 concurrency 1/4/8 and
+0/250/2,000 ms object-store delays. Peak attributable sessions were 3/9/17,
+blocked requests remained zero, and no delayed stable lock window held an open
+transaction. No tighter bound was justified, so the retained policy is SqlClient
+defaults: pooling enabled, minimum/maximum pool size 0/100, connect timeout 15
+seconds, EF command timeout 30 seconds, and connection lifetime 0. Dedicated
+object-lock commands remain explicitly bounded at 5 seconds for a zero-timeout
+attempt and 15 seconds for acquisition or release. Override connection policy
+only with workload-equivalent evidence; `Application Name` is never
+operator-overridable.
+
 Apply the migration role before the first initialization, substituting reviewed
 database-user names through SQLCMD variables:
 
