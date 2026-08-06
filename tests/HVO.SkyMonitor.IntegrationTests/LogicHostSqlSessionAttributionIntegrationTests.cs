@@ -55,10 +55,9 @@ public sealed class LogicHostSqlSessionAttributionIntegrationTests
                     .Be(LogicHostSqlConnectionProfiles.RuntimeApplicationName);
             }
 
+            var canonicalStorageReference = $"issue-254-attribution/{Guid.NewGuid():N}";
             await using var applicationLock = await CentralObjectApplicationLock.AcquireAsync(
-                db,
-                $"issue-254-attribution/{Guid.NewGuid():N}",
-                CancellationToken.None).ConfigureAwait(false);
+                db, canonicalStorageReference, CancellationToken.None).ConfigureAwait(false);
             await using var sampler = new SqlConnection(fixture.SqlServerConnectionString);
             await sampler.OpenAsync().ConfigureAwait(false);
             await using var sample = new SqlCommand("""
@@ -69,8 +68,12 @@ public sealed class LogicHostSqlSessionAttributionIntegrationTests
                 WHERE [application_lock].[resource_type] = N'APPLICATION'
                     AND [application_lock].[request_owner_type] = N'SESSION'
                     AND [application_lock].[request_status] = N'GRANT'
-                    AND [application_lock].[resource_database_id] = DB_ID();
+                    AND [application_lock].[resource_database_id] = DB_ID()
+                    AND CHARINDEX(@resourcePrefix, [application_lock].[resource_description]) > 0;
                 """, sampler);
+            _ = sample.Parameters.AddWithValue(
+                "@resourcePrefix",
+                CentralObjectApplicationLock.CreateResource(canonicalStorageReference)[..32]);
             var applicationNames = new List<string>();
             await using var reader = await sample.ExecuteReaderAsync().ConfigureAwait(false);
             while (await reader.ReadAsync().ConfigureAwait(false))
