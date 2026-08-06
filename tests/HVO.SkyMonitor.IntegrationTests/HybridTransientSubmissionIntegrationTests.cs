@@ -31,7 +31,7 @@ using Program = HVO.SkyMonitor.LogicHost.Program;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed partial class HybridTransientSubmissionIntegrationTests
 {
-    private const string DeviceKey = "cameraagent-integration-key";
+    internal const string DeviceKey = "cameraagent-integration-key";
     private static readonly TransientTemporalPosition[] Positions =
     [
         TransientTemporalPosition.NMinus2,
@@ -469,6 +469,144 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceTimeout).ConfigureAwait(false))
             .Should().BeTrue();
 
+        var staleGenerationScenario = await CreateScenarioAsync().ConfigureAwait(false);
+        using var staleGenerationFactory = CreateHybridFactory(services =>
+            services.Replace(ServiceDescriptor.Scoped<ICentralArtifactObjectReader>(provider =>
+                new StaleGenerationObjectReader(
+                    ActivatorUtilities.CreateInstance<CentralArtifactObjectReader>(provider)))));
+        using var staleGenerationClient = staleGenerationFactory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        staleGenerationClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(staleGenerationClient).ConfigureAwait(false));
+        using var staleGenerationResponse = await SendAsync(
+            staleGenerationClient,
+            staleGenerationScenario.DeviceId,
+            DeviceKey,
+            staleGenerationScenario.Envelope).ConfigureAwait(false);
+        staleGenerationResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        await using var staleGenerationScope = staleGenerationFactory.Services.CreateAsyncScope();
+        var staleGenerationDb = staleGenerationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await staleGenerationDb.CentralTransientSubmissionAudits.AnyAsync(item =>
+                item.CandidateId == staleGenerationScenario.Envelope.CandidateId &&
+                item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceConflict).ConfigureAwait(false))
+            .Should().BeTrue();
+        (await staleGenerationDb.CentralTransientValidationJobs.AnyAsync(item =>
+                item.SubmissionIdentitySha256 == staleGenerationScenario.Envelope.SubmissionIdentitySha256)
+            .ConfigureAwait(false)).Should().BeFalse();
+
+        var lockLossScenario = await CreateScenarioAsync().ConfigureAwait(false);
+        using var lockLossFactory = CreateHybridFactory(services =>
+            services.Replace(ServiceDescriptor.Scoped<ICentralArtifactObjectReader>(provider =>
+                new LockLossObjectReader(
+                    ActivatorUtilities.CreateInstance<CentralArtifactObjectReader>(provider),
+                    provider.GetRequiredService<ApplicationDbContext>()))));
+        using var lockLossClient = lockLossFactory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        lockLossClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(lockLossClient).ConfigureAwait(false));
+        using var lockLossResponse = await SendAsync(
+            lockLossClient, lockLossScenario.DeviceId, DeviceKey, lockLossScenario.Envelope).ConfigureAwait(false);
+        lockLossResponse.StatusCode.Should().Be((HttpStatusCode)425);
+        await using var lockLossScope = lockLossFactory.Services.CreateAsyncScope();
+        var lockLossDb = lockLossScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await lockLossDb.CentralTransientSubmissionAudits.AnyAsync(item =>
+                item.CandidateId == lockLossScenario.Envelope.CandidateId &&
+                item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceUnavailable).ConfigureAwait(false))
+            .Should().BeTrue();
+        (await lockLossDb.CentralTransientValidationJobs.AnyAsync(item =>
+                item.SubmissionIdentitySha256 == lockLossScenario.Envelope.SubmissionIdentitySha256)
+            .ConfigureAwait(false)).Should().BeFalse();
+
+        foreach (var faultStage in Enum.GetValues<CentralTransientSubmissionFaultStage>())
+        {
+            var finalizationScenario = await CreateScenarioAsync().ConfigureAwait(false);
+            using var finalizationFactory = CreateHybridFactory(services =>
+                services.AddSingleton<ICentralTransientSubmissionFaultInjector>(
+                    new ThrowingSubmissionFaultInjector(faultStage)));
+            using var finalizationClient = finalizationFactory.CreateClient(
+                new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+            finalizationClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetSystemTokenAsync(finalizationClient).ConfigureAwait(false));
+            using var finalizationResponse = await SendAsync(
+                finalizationClient,
+                finalizationScenario.DeviceId,
+                DeviceKey,
+                finalizationScenario.Envelope).ConfigureAwait(false);
+            finalizationResponse.StatusCode.Should().Be((HttpStatusCode)425);
+            await using var finalizationScope = finalizationFactory.Services.CreateAsyncScope();
+            var finalizationDb = finalizationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            (await finalizationDb.CentralTransientSubmissionAudits.AnyAsync(item =>
+                    item.CandidateId == finalizationScenario.Envelope.CandidateId &&
+                    item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceUnavailable)
+                .ConfigureAwait(false)).Should().BeTrue();
+            (await finalizationDb.CentralTransientValidationJobs.AnyAsync(item =>
+                    item.SubmissionIdentitySha256 == finalizationScenario.Envelope.SubmissionIdentitySha256)
+                .ConfigureAwait(false)).Should().BeFalse();
+
+            using var retryFactory = CreateHybridFactory();
+            using var retryClient = retryFactory.CreateClient(
+                new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+            retryClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer", await GetSystemTokenAsync(retryClient).ConfigureAwait(false));
+            using var retryResponse = await SendAsync(
+                retryClient,
+                finalizationScenario.DeviceId,
+                DeviceKey,
+                finalizationScenario.Envelope).ConfigureAwait(false);
+            retryResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            finalizationDb.ChangeTracker.Clear();
+            var retryJobId = await finalizationDb.CentralTransientValidationJobs.AsNoTracking()
+                .Where(item => item.SubmissionIdentitySha256 == finalizationScenario.Envelope.SubmissionIdentitySha256)
+                .Select(item => item.CentralDerivativeJobId)
+                .SingleAsync().ConfigureAwait(false);
+            (await finalizationDb.CentralDerivativeJobInputs.CountAsync(item =>
+                item.CentralDerivativeJobId == retryJobId).ConfigureAwait(false)).Should().Be(5);
+        }
+
+
+        var finalFenceLossScenario = await CreateScenarioAsync().ConfigureAwait(false);
+        using var finalFenceLossFactory = CreateHybridFactory(services =>
+            services.AddScoped<ICentralTransientSubmissionFaultInjector>(provider =>
+                new ClosingSubmissionConnectionFaultInjector(
+                    provider.GetRequiredService<ApplicationDbContext>())));
+        using var finalFenceLossClient = finalFenceLossFactory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        finalFenceLossClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(finalFenceLossClient).ConfigureAwait(false));
+        using var finalFenceLossResponse = await SendAsync(
+            finalFenceLossClient,
+            finalFenceLossScenario.DeviceId,
+            DeviceKey,
+            finalFenceLossScenario.Envelope).ConfigureAwait(false);
+        finalFenceLossResponse.StatusCode.Should().Be((HttpStatusCode)425);
+        await using var finalFenceLossScope = finalFenceLossFactory.Services.CreateAsyncScope();
+        var finalFenceLossDb = finalFenceLossScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await finalFenceLossDb.CentralTransientSubmissionAudits.AnyAsync(item =>
+                item.CandidateId == finalFenceLossScenario.Envelope.CandidateId &&
+                item.ReasonCode == CentralTransientSubmissionReasonCodes.EvidenceUnavailable).ConfigureAwait(false))
+            .Should().BeTrue();
+        (await finalFenceLossDb.CentralTransientValidationJobs.AnyAsync(item =>
+                item.SubmissionIdentitySha256 == finalFenceLossScenario.Envelope.SubmissionIdentitySha256)
+            .ConfigureAwait(false)).Should().BeFalse();
+        using var finalFenceRetryFactory = CreateHybridFactory();
+        using var finalFenceRetryClient = finalFenceRetryFactory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        finalFenceRetryClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(finalFenceRetryClient).ConfigureAwait(false));
+        using var finalFenceRetryResponse = await SendAsync(
+            finalFenceRetryClient,
+            finalFenceLossScenario.DeviceId,
+            DeviceKey,
+            finalFenceLossScenario.Envelope).ConfigureAwait(false);
+        finalFenceRetryResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        finalFenceLossDb.ChangeTracker.Clear();
+        var finalFenceRetryJobId = await finalFenceLossDb.CentralTransientValidationJobs.AsNoTracking()
+            .Where(item => item.SubmissionIdentitySha256 == finalFenceLossScenario.Envelope.SubmissionIdentitySha256)
+            .Select(item => item.CentralDerivativeJobId)
+            .SingleAsync().ConfigureAwait(false);
+        (await finalFenceLossDb.CentralDerivativeJobInputs.CountAsync(item =>
+            item.CentralDerivativeJobId == finalFenceRetryJobId).ConfigureAwait(false)).Should().Be(5);
+
         var unmatchedScenario = await CreateScenarioAsync().ConfigureAwait(false);
         var unmatchedGeometry = unmatchedScenario.Envelope.Candidate.Geometry! with
         {
@@ -522,7 +660,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         unmatchedValidation.OutcomeReasonCode.Should().Be(CentralTransientRuntimeReasonCodes.HybridCandidateNotFound);
     }
 
-    private static WebApplicationFactory<Program> CreateHybridFactory(Action<IServiceCollection>? configureServices = null)
+    internal static WebApplicationFactory<Program> CreateHybridFactory(Action<IServiceCollection>? configureServices = null)
         => AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, configuration) =>
@@ -538,10 +676,15 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             }
         });
 
-    private static async Task<SubmissionScenario> CreateScenarioAsync(bool multipleCandidates = false)
+    internal static Task<SubmissionScenario> CreateScenarioAsync(bool multipleCandidates = false)
+        => CreateScenarioAsync(8, 6, CameraPixelFormat.Mono16, multipleCandidates);
+
+    internal static async Task<SubmissionScenario> CreateScenarioAsync(
+        int width,
+        int height,
+        CameraPixelFormat pixelFormat,
+        bool multipleCandidates = false)
     {
-        const int width = 8;
-        const int height = 6;
         var deviceId = $"hybrid-submission-{Guid.NewGuid():N}";
         await AssemblyHooks.Fixture.SeedActiveDeviceAsync(deviceId).ConfigureAwait(false);
         var activeDevice = await AssemblyHooks.Fixture.GetActiveDeviceAsync(deviceId).ConfigureAwait(false);
@@ -568,7 +711,8 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
                 index == 2 ? target : background,
                 $"{deviceId}-profile",
                 width: width,
-                height: height).ConfigureAwait(false));
+                height: height,
+                pixelFormat: pixelFormat).ConfigureAwait(false));
         }
 
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
@@ -626,14 +770,18 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             var input = TransientDetectorInputFactory.Create(
                 processingArtifact,
                 evidence,
-                new TransientLinearLevelsV1(0, ushort.MaxValue, ushort.MaxValue));
+                new TransientLinearLevelsV1(
+                    checked((ushort)descriptor.Layout.BlackLevel!.Value),
+                    checked((ushort)descriptor.Layout.WhiteLevel!.Value),
+                    checked((ushort)descriptor.Layout.WhiteLevel.Value)));
             input.Validation.IsValid.Should().BeTrue(input.Validation.ReasonCode);
+            var detectorInput = input.Input!;
             temporalSources.Add(Positions[index], new TransientTemporalSource(
                 Positions[index],
                 descriptor.Capture.CaptureSequence,
-                input.Input!,
+                detectorInput,
                 new TransientSensitivityV1("hybrid-integration-response-v1", 1, 1),
-                CreateMasks(width, height)));
+                CreateMasks(detectorInput.Descriptor.Layout.Width, detectorInput.Descriptor.Layout.Height)));
         }
         var center = temporalSources[TransientTemporalPosition.N];
         var context = new[]
@@ -672,7 +820,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         return new SubmissionScenario(deviceId, sourceIds, envelope, envelopes);
     }
 
-    private static TransientCandidateSubmissionEnvelopeV1 CreateEnvelope(TransientCandidateV1 candidate)
+    internal static TransientCandidateSubmissionEnvelopeV1 CreateEnvelope(TransientCandidateV1 candidate)
     {
         var envelope = new TransientCandidateSubmissionEnvelopeV1(
             TransientCandidateSubmissionEnvelopeV1.CurrentSchemaVersion,
@@ -688,7 +836,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         };
     }
 
-    private static TransientCandidateV1 Reidentify(TransientCandidateV1 candidate)
+    internal static TransientCandidateV1 Reidentify(TransientCandidateV1 candidate)
     {
         var candidateId = Guid.NewGuid();
         return candidate with
@@ -699,7 +847,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         };
     }
 
-    private static async Task<HttpResponseMessage> SendAsync(
+    internal static async Task<HttpResponseMessage> SendAsync(
         HttpClient client,
         string deviceId,
         string deviceKey,
@@ -719,7 +867,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         => TransientCandidateDeliveryJson.ParseAcknowledgement(payload).Value
            ?? throw new InvalidDataException("LogicHost returned an invalid acknowledgement.");
 
-    private static async Task<string> GetSystemTokenAsync(HttpClient client)
+    internal static async Task<string> GetSystemTokenAsync(HttpClient client)
     {
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
@@ -763,7 +911,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         return bytes;
     }
 
-    private sealed record SubmissionScenario(
+    internal sealed record SubmissionScenario(
         string DeviceId,
         IReadOnlyList<Guid> CentralArtifactIds,
         TransientCandidateSubmissionEnvelopeV1 Envelope,
@@ -810,5 +958,86 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             CentralArtifactByteRange? range,
             CancellationToken cancellationToken)
             => inner.CopyToAsync(snapshot, destination, range, cancellationToken);
+    }
+
+    private sealed class StaleGenerationObjectReader(ICentralArtifactObjectReader inner)
+        : ICentralArtifactObjectReader
+    {
+        public Task<CentralArtifactObjectSnapshot> VerifyAsync(
+            CentralArtifact artifact,
+            CancellationToken cancellationToken)
+            => inner.VerifyAsync(artifact, cancellationToken);
+
+        public Task<bool> IsCurrentGenerationAsync(
+            CentralArtifact artifact,
+            string storageETag,
+            CancellationToken cancellationToken)
+            => Task.FromResult(false);
+
+        public Task CopyToAsync(
+            CentralArtifactObjectSnapshot snapshot,
+            Stream destination,
+            CentralArtifactByteRange? range,
+            CancellationToken cancellationToken)
+            => inner.CopyToAsync(snapshot, destination, range, cancellationToken);
+    }
+
+    private sealed class LockLossObjectReader(
+        ICentralArtifactObjectReader inner,
+        ApplicationDbContext dbContext) : ICentralArtifactObjectReader
+    {
+        private int generationCalls;
+
+        public Task<CentralArtifactObjectSnapshot> VerifyAsync(
+            CentralArtifact artifact,
+            CancellationToken cancellationToken)
+            => inner.VerifyAsync(artifact, cancellationToken);
+
+        public async Task<bool> IsCurrentGenerationAsync(
+            CentralArtifact artifact,
+            string storageETag,
+            CancellationToken cancellationToken)
+        {
+            var isCurrent = await inner.IsCurrentGenerationAsync(artifact, storageETag, cancellationToken)
+                .ConfigureAwait(false);
+            if (Interlocked.Increment(ref generationCalls) == 5)
+            {
+                await dbContext.Database.CloseConnectionAsync().ConfigureAwait(false);
+            }
+            return isCurrent;
+        }
+
+        public Task CopyToAsync(
+            CentralArtifactObjectSnapshot snapshot,
+            Stream destination,
+            CentralArtifactByteRange? range,
+            CancellationToken cancellationToken)
+            => inner.CopyToAsync(snapshot, destination, range, cancellationToken);
+    }
+
+    private sealed class ThrowingSubmissionFaultInjector(CentralTransientSubmissionFaultStage requestedStage)
+        : ICentralTransientSubmissionFaultInjector
+    {
+        private int injected;
+
+        public void ThrowIfRequested(CentralTransientSubmissionFaultStage stage)
+        {
+            if (stage == requestedStage && Interlocked.Exchange(ref injected, 1) == 0)
+            {
+                throw new CentralTransientSubmissionFaultException(stage);
+            }
+        }
+    }
+
+    private sealed class ClosingSubmissionConnectionFaultInjector(ApplicationDbContext dbContext)
+        : ICentralTransientSubmissionFaultInjector
+    {
+        public void ThrowIfRequested(CentralTransientSubmissionFaultStage stage)
+        {
+            if (stage == CentralTransientSubmissionFaultStage.BeforeFinalFenceCheck)
+            {
+                dbContext.Database.GetDbConnection().Close();
+            }
+        }
     }
 }

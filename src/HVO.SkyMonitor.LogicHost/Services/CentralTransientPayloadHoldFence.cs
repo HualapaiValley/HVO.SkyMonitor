@@ -34,6 +34,14 @@ internal sealed class CentralTransientPayloadHoldScope(
 
 internal static class CentralTransientPayloadHoldFence
 {
+    internal static CentralTransientPayloadHoldTarget CreateArtifactTarget(CentralArtifact artifact)
+        => new(
+            CentralTransientPayloadReleaseItemKind.SourceArtifact,
+            artifact.Id,
+            artifact.StorageReference,
+            artifact.RowVersion.ToArray(),
+            artifact.ObjectState);
+
     internal static async Task<IReadOnlyList<CentralTransientPayloadHoldTarget>> ReadArtifactsAsync(
         ApplicationDbContext dbContext,
         IEnumerable<Guid> recordIds,
