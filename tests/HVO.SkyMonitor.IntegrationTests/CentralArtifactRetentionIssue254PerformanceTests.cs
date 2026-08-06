@@ -716,7 +716,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
         var delayMetrics = new[]
         {
             "P50Milliseconds", "MaximumMilliseconds", "WallMilliseconds", "PeakAttributedSqlSessions",
-            "PeakSleepingSessions", "PeakActiveSessions", "PeakActiveRequests", "PeakOpenTransactionSessions",
+            "PeakSleepingSessions", "PeakActiveRequests", "PeakOpenTransactionSessions",
             "PeakSessionApplicationLocks", "StableWindowApplicationLockSessionsWithOpenTransactions",
             "PeakBlockedRequests", "PeakActiveTransactionLogBytes", "ObservedBatchApplicationLockOccupancyMilliseconds",
             "EffectiveSamplingIntervalMilliseconds", "AllocatedBytes", "ProcessCpuMilliseconds",
@@ -747,11 +747,19 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
                 BaselineSummarySha256 = Convert.ToHexString(SHA256.HashData(baselineBytes)),
                 AfterSummarySha256 = Convert.ToHexString(SHA256.HashData(afterBytes)),
                 Metrics = comparisons,
+                DiagnosticMetrics = new[]
+                {
+                    new
+                    {
+                        Name = "DelayedObjectIo.PeakActiveSessions",
+                        Disposition = "Recorded in every raw and five-trial summary but not assigned a regression direction because the session-status and request DMV subqueries are non-atomic transition samples."
+                    }
+                },
                 MaterialRegressions = materialRegressions,
                 Result = materialRegressions.Length == 0
                     ? "passed-no-material-regression"
                     : "review-required-material-regression",
-                Rule = "Material when regression exceeds max(20%, 2 * baseline five-trial (max-min)/median range). Throughput regresses downward; other measured metrics regress upward.",
+                Rule = "Material when regression exceeds max(20%, 2 * baseline five-trial (max-min)/median range). Throughput regresses downward; other compared metrics regress upward.",
                 RecordedAtUtc = DateTimeOffset.UtcNow
             }, EvidenceJsonOptions).ConfigureAwait(false);
         materialRegressions.Should().BeEmpty("unexplained material regression blocks issue #254 evidence");
