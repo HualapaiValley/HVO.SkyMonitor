@@ -316,7 +316,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         var started = timeProvider.GetTimestamp();
         dbContext.ChangeTracker.Clear();
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+            IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
         var now = timeProvider.GetUtcNow();
         var pinStartedAtUtc = await dbContext.CentralDerivativeJobInputs.AsNoTracking()
             .Where(input => input.CentralDerivativeJobId == lease.JobId)
