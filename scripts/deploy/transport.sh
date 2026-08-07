@@ -119,6 +119,20 @@ deploy_transport_docker_conflicts() {
     printf 'none\n'
 }
 
+deploy_transport_registry_pull() {
+    docker --context "$1" image pull "$2" >/dev/null 2>&1
+}
+
+deploy_transport_archive_load() {
+    docker --context "$1" image load --input "$2" >/dev/null 2>&1
+}
+
+deploy_transport_image_inspect() {
+    docker --context "$1" image inspect --format \
+      '{"id":{{json .Id}},"architecture":{{json .Architecture}},"os":{{json .Os}},"repoDigests":{{json .RepoDigests}},"labels":{{json .Config.Labels}}}' \
+      "$2" 2>/dev/null
+}
+
 deploy_transport_prepare_target() {
     local ssh_host="$1"
     shift

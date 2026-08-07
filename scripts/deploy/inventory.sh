@@ -25,7 +25,7 @@ deploy_validate_inventory() {
         (. as $target | (.publicEndpoint | capture("^https?://[^/:]+:(?<port>[0-9]+)").port | tonumber) as $publicPort |
           $publicPort <= 65535 and ($target.ports | index($publicPort) != null));
       exact(["schemaVersion","environment","installationId","source","secretSource","logicHost","cameraAgents","sharedServices","serviceEndpoints","catalog","images"]) and
-      .schemaVersion == 1 and (.environment | name) and (.installationId | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) and
+       .schemaVersion == 3 and (.environment | name) and (.installationId | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) and
       (.source | exact(["revision","dirtyDisposition"]) and (.revision | type == "string" and test("^[0-9a-f]{40}$")) and
         (.dirtyDisposition == "require-clean" or .dirtyDisposition == "allow-dirty")) and
       (.secretSource | exact(["path","requiredReferences"]) and (.path | text) and
@@ -38,9 +38,27 @@ deploy_validate_inventory() {
         (.fromTargets | type == "array" and length > 0 and length == (unique | length) and all(type == "string")))) and
       (.catalog | exact(["kind","version","sha256"]) and (.kind == "production" or .kind == "fixture") and
         (.version | text and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and (.sha256 | type == "string" and test("^[0-9a-fA-F]{64}$"))) and
-      (.images | exact(["logicHost","cameraAgent"]) and all(.[]; exact(["repository","digest"]) and
-        (.repository | text and test("^[A-Za-z0-9][A-Za-z0-9./_-]{0,255}$")) and
-        (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))))
+      (.images | exact(["distributionMode","artifactRoot","tag","builder","registryImmutableTags","logicHost","cameraAgent"]) and
+        (.distributionMode == "registry" or .distributionMode == "archive") and
+        (.artifactRoot == null or (.artifactRoot | root)) and
+        (.tag | type == "string" and test("^rev-[0-9a-f]{40}$") and . != "latest") and
+        (.builder | exact(["name","driver","endpoint","expectedDaemonIdentity","expectedDaemonName","expectedArchitecture"]) and
+          (.name | text and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
+          (.driver == "docker" or .driver == "docker-container") and
+          .endpoint == "default" and
+          (.expectedDaemonIdentity | token) and (.expectedDaemonName | text and test("^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$")) and
+          (.expectedArchitecture == "amd64" or .expectedArchitecture == "arm64")) and
+        (.registryImmutableTags | type == "boolean") and
+        (.logicHost | exact(["repository"]) and (.repository | text and
+          test("^[a-z0-9]([a-z0-9._-]*[a-z0-9])?/[a-z0-9]([a-z0-9._/-]*[a-z0-9])?$") and
+          (split("/") | all(length > 0 and . != "." and . != "..")) and ((contains("//") or contains("@") or contains(":")) | not))) and
+        (.cameraAgent | exact(["repository"]) and (.repository | text and
+          test("^[a-z0-9]([a-z0-9._-]*[a-z0-9])?/[a-z0-9]([a-z0-9._/-]*[a-z0-9])?$") and
+          (split("/") | all(length > 0 and . != "." and . != "..")) and ((contains("//") or contains("@") or contains(":")) | not)))) and
+      .images.logicHost.repository != .images.cameraAgent.repository and
+      .images.tag == ("rev-" + .source.revision) and
+      ((.images.distributionMode == "archive" and .images.artifactRoot != null and .images.registryImmutableTags == false) or
+       (.images.distributionMode == "registry" and .images.artifactRoot == null and .images.registryImmutableTags == true))
     ' "$inventory" >/dev/null 2>&1 || deploy_fail validate inventory "schema-or-value-invalid" || return 1
 
     local target_count unique_count collision_count unknown_route

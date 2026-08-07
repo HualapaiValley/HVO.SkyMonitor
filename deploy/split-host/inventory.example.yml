@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "environment": "observatory-production",
   "installationId": "observatory-main",
   "source": {
@@ -49,7 +49,19 @@
     "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "images": {
-    "logicHost": { "repository": "registry.example.net/hvo/logichost", "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
-    "cameraAgent": { "repository": "registry.example.net/hvo/cameraagent", "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+    "distributionMode": "registry",
+    "artifactRoot": null,
+    "tag": "rev-0000000000000000000000000000000000000000",
+    "builder": {
+      "name": "hvo-control",
+      "driver": "docker-container",
+      "endpoint": "default",
+      "expectedDaemonIdentity": "CONTROLDAEMON0001",
+      "expectedDaemonName": "hvo-control",
+      "expectedArchitecture": "amd64"
+    },
+    "registryImmutableTags": true,
+    "logicHost": { "repository": "registry.example.net/hvo/logichost" },
+    "cameraAgent": { "repository": "registry.example.net/hvo/cameraagent" }
   }
 }

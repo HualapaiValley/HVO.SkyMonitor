@@ -1,11 +1,13 @@
-# Split-Host Preflight And Prepare Runbook
+# Split-Host Preflight, Prepare, And Images Runbook
 
-This runbook covers the frozen preflight and runtime-root preparation slices from
-issue #151. Preflight validates a versioned multi-host inventory without remote
-mutation. The separately authorized prepare phase creates only declared runtime
-roots and exact ownership/lock metadata. Neither phase builds or loads images,
-starts Compose, deploys catalogs, bootstraps applications, mutates shared
-services, stops applications, deletes state, or tears anything down.
+This runbook covers the preflight, runtime-root preparation, and immutable image
+distribution slices from issue #151. Preflight validates a versioned multi-host
+inventory without remote mutation. Prepare creates only declared runtime roots
+and exact ownership/lock metadata. Images then builds on the control host and
+either pushes and pulls registry manifests or transfers local archives through
+declared Docker contexts. None of these phases starts Compose, deploys catalogs,
+bootstraps applications, mutates shared services, stops applications, deletes
+runtime state, or tears anything down.
 
 ## Inventory And Secrets
 
@@ -21,15 +23,21 @@ Each target declares its SSH destination, Docker context, expected hostname,
 machine identity, daemon identity, architecture, absolute runtime root, endpoint,
 and ports. Preflight requires the hostname observed through SSH to equal both the
 declared hostname and Docker daemon `Name`; this correlates the two routes rather
-than trusting unrelated inventory assertions.
+than trusting unrelated inventory assertions. Docker daemon architecture values
+`x86_64` and `amd64` normalize to `amd64`; `aarch64` and `arm64` normalize to
+`arm64`. Other daemon values fail with a bounded `unsupported-architecture`
+reason and are not copied into output or evidence.
 
 Runtime roots may contain ordinary spaces and are passed only through quoted
 arguments. Control characters, repeated separators, and `.` or `..` components
 are rejected. Catalog versions follow the repository's existing `4.2`,
 `hyg-v4.2-p3-s2-r1`, and fixture-style identifiers; colon is not a supported
 catalog-version separator.
-The inventory also pins the Git revision, catalog, image digests, and non-secret
-service routes. There are no ambient target defaults.
+Inventory schema v3 pins the Git revision, catalog, source-revision image tag,
+distribution mode, named control-host buildx builder, repositories, registry tag
+policy, and non-secret service routes. Image platforms are derived from target
+architectures rather than separately asserted. There are no ambient target or
+builder defaults.
 
 `secretSource.path` names an ignored dotenv-style file. It must be a regular,
 nonsymlink, single-link file owned by the invoking user with mode `0400` or
@@ -220,3 +228,91 @@ commits its running manifest before safely clearing stale prepare evidence;
 rejected validation leaves prior evidence untouched. Interruptions after root,
 marker, ledger, running-manifest, or evidence publication resume idempotently.
 Prepare failure never changes the valid preflight manifest or evidence.
+
+## Build And Distribute Images
+
+After the exact run has matching passed preflight and prepare state, run:
+
+```bash
+./scripts/deploy:environment images \
+  --inventory /absolute/path/inventory.yml \
+  --mode persistent \
+  --run-id observatory-preflight-01
+```
+
+The image phase requires the same run ID, mode, canonical inventory SHA-256,
+source revision, clean worktree, target set, passed preflight, and passed prepare
+evidence. `images` rejects dirty source even when preflight declared
+`allow-dirty`. It records the committed Git tree ID and checks clean HEAD and
+that tree before and after every component build and again throughout resume and
+distribution. Builds label the revision, tree ID, commit timestamp, source
+repository/tag, component, and pinned .NET SDK version. The source tag must be
+exactly `rev-<source.revision>`; `latest`, embedded tags or digests, URL schemes,
+credentials, and ports in repository values are rejected.
+
+`images.builder` explicitly declares the buildx builder name, driver, sole
+`default` local endpoint, and expected local Docker daemon ID, name, OS, and architecture. The
+phase checks the builder is running, local to that endpoint, and supports every
+required platform, then passes `--builder` to every build and registry inspect.
+Ambient `DOCKER_CONTEXT` is cleared and the selected/default builder is never
+trusted. The phase does not create, alter, stop, or remove builders. LogicHost is
+built for `linux/amd64`; CameraAgent platforms are the unique `amd64` and/or
+`arm64` architectures declared by its targets.
+
+In `registry` mode, `artifactRoot` is `null` and
+`registryImmutableTags` must be `true`. This is an operator assertion that the
+external registry rejects tag replacement. It is a required registry-side
+policy prerequisite: client precheck and postvalidation cannot make a tag push
+atomic or prevent a registry that permits overwrites from racing the client.
+Docker must already be authenticated; the command has no credential flags and
+does not read secret values.
+
+Before a push, the phase durably records `push-intended` with the exact component,
+tag, platform set, revision/tree-bound labels, timestamp, and SDK. If the tag is
+already present, including after an abrupt post-push exit, it is adopted only
+after the canonical parent digest, exact non-attestation platform descriptors and
+child digests, optional well-formed attestation descriptors, and every child
+image config label all match the intent. A mismatched existing tag is never
+overwritten. A missing tag is pushed once and subjected to the same checks before
+the intent becomes `built`. Targets pull only the resulting
+`repository@sha256:<parent-manifest>` reference.
+
+In `archive` mode, `artifactRoot` is an explicit canonical absolute directory
+outside the repository, state root, and evidence root. It and each archive are
+owner-only. One single-platform Docker archive is built for each required
+component/architecture. Before publication, the phase validates the archive
+config name and digest, Linux architecture, provenance labels, and then names the
+file `<component>-<architecture>-sha256-<archive-sha256>.tar`. Existing unsafe,
+linked, mismatched, or duplicate outputs are rejected. Archives are transferred
+by `docker --context ... image load --input`, which uses the inventory-selected
+SSH-backed Docker context without creating a target-side staging path.
+
+Immediately before and after every target pull, load, or image validation, the
+phase re-inspects the declared Docker context and daemon. ID, name, Linux OS, and
+architecture must still match both inventory and passed preflight, including on
+completed-target resume. Image inspection must match component, revision, tree,
+commit timestamp, SDK, source reference, immutable parent manifest digest or
+image ID, and target architecture. Distribution is deliberately sequential, so
+concurrency is bounded at one target. No image is built on a deployment target
+and no container is created or started.
+
+Private `images-ledger.json` records staged build and target progress;
+`images-manifest.json` is the commit authority. Sanitized `images.json` omits
+local archive paths. A passed ledger with a running manifest is staged, not
+completed, whether an abrupt exit occurs before evidence publication or between
+evidence and manifest publication. Its evidence may therefore be absent, stale
+running progress, or matching passed evidence. Resume strictly validates the
+ledger and any existing evidence entry, republishes running state, safely clears
+stale evidence, reuses or reruns staged work, re-correlates every completed
+target, and only then publishes matching passed ledger/evidence and commits a
+passed manifest. Registry pull and archive load are idempotent if interrupted
+before progress publication. All artifacts are owner-only and atomic; bounded
+errors and evidence contain no raw Docker/registry output, secret-source path,
+credentials, or secret values.
+
+The Dockerfiles pin the build SDK to `10.0.100`, but their Microsoft SDK/runtime
+and Debian package inputs are still referenced by upstream tags and package
+indexes. Those upstream inputs can change until reviewed base-image digests and
+package snapshots are adopted. The produced application manifests, archives,
+config IDs, and deployed references are nevertheless recorded and verified by
+digest; this runbook does not claim the current builds are bit-reproducible.

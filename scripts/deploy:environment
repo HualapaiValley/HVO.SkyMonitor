@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Split-host deployment entry point. The frozen first slice implements read-only preflight only.
+# Split-host deployment entry point.
 
 set -euo pipefail
 export LC_ALL=C
@@ -20,14 +20,16 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/preflight.sh"
 # shellcheck source=scripts/deploy/prepare.sh
 . "$SCRIPT_DIR/deploy/prepare.sh"
+# shellcheck source=scripts/deploy/images.sh
+. "$SCRIPT_DIR/deploy/images.sh"
 
 usage() {
-    printf 'Usage: %s <preflight|prepare> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare|images> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>]\n' "${0##*/}" >&2
     exit 2
 }
 
 phase="${1:-}"
-[[ "$phase" == preflight || "$phase" == prepare ]] || usage
+[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images ]] || usage
 shift
 inventory="" mode="" run_id="" state_root="" evidence_root=""
 while (( $# > 0 )); do
@@ -50,7 +52,8 @@ unset DOCKER_HOST DOCKER_CONTEXT SSH_HOST SSH_CONFIG 2>/dev/null || true
 unset ambient_name
 
 deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh date grep cut || exit 1
-[[ "$phase" != preflight ]] || deploy_require_commands docker || exit 1
+[[ "$phase" == prepare ]] || deploy_require_commands docker || exit 1
+[[ "$phase" != images ]] || deploy_require_commands tar mv rm || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
 deploy_validate_inventory "$inventory" "$mode"
 deploy_validate_secret_references "$inventory"
@@ -61,9 +64,12 @@ dirty_disposition="$(jq -r '.source.dirtyDisposition' "$inventory")"
 worktree_state=clean
 [[ -z "$(git -C "$REPO_ROOT" status --porcelain)" ]] || worktree_state=dirty
 [[ "$dirty_disposition" == allow-dirty || "$worktree_state" == clean ]] || deploy_fail validate source "dirty-worktree-rejected"
+source_tree="$(git -C "$REPO_ROOT" rev-parse "${actual_revision}^{tree}")"
+[[ "$source_tree" =~ ^[0-9a-f]{40,64}$ ]] || deploy_fail validate source "source-tree-invalid"
+[[ "$phase" != images || "$worktree_state" == clean ]] || deploy_fail validate source "images-require-clean-source"
 inventory_hash="$(jq -S -c . "$inventory" | sha256sum)"; inventory_hash="${inventory_hash%% *}"
 if [[ -z "$run_id" ]]; then
-    [[ "$phase" != prepare ]] || deploy_fail validate run-id "prepare-requires-run-id"
+    [[ "$phase" == preflight ]] || deploy_fail validate run-id "phase-requires-run-id"
     run_id="preflight-$(date -u +%Y%m%dt%H%M%Sz)"
 fi
 deploy_is_safe_name "$run_id" || deploy_fail validate run-id "unsafe-run-id"
@@ -94,6 +100,31 @@ if [[ "$phase" == prepare ]]; then
     fi
     trap - ERR
     deploy_status prepare complete passed prepared
+    exit 0
+fi
+
+if [[ "$phase" == images ]]; then
+    # shellcheck disable=SC2317 # Invoked indirectly by the ERR trap.
+    deploy_images_mark_failed() {
+        local status="${1:-$?}" now
+        trap - ERR
+        now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        if [[ "${DEPLOY_IMAGES_STATE_ACCEPTED:-false}" == true && -n "${DEPLOY_IMAGES_LEDGER_JSON:-}" && -n "${DEPLOY_IMAGES_LEDGER:-}" ]]; then
+            DEPLOY_IMAGES_LEDGER_JSON="$(jq -c --arg now "$now" '.phaseStatus="failed" | .updatedAt=$now | del(.completedAt)' <<< "$DEPLOY_IMAGES_LEDGER_JSON")"
+            [[ -z "${DEPLOY_IMAGES_EVIDENCE:-}" ]] || deploy_publish_json "$DEPLOY_IMAGES_EVIDENCE" \
+              "$(jq -c '{schemaVersion,runId,mode,inventorySha256,sourceRevision,sourceTree,builder,distributionMode,phaseStatus,startedAt,updatedAt,
+                images:[.images[] | del(.archivePath)],targets}' <<< "$DEPLOY_IMAGES_LEDGER_JSON")" >/dev/null 2>&1 || true
+            deploy_publish_json "$DEPLOY_IMAGES_LEDGER" "$DEPLOY_IMAGES_LEDGER_JSON" >/dev/null 2>&1 || true
+            [[ -z "${DEPLOY_IMAGES_MANIFEST:-}" ]] || deploy_publish_json "$DEPLOY_IMAGES_MANIFEST" "$DEPLOY_IMAGES_LEDGER_JSON" >/dev/null 2>&1 || true
+        fi
+        exit "$status"
+    }
+    trap deploy_images_mark_failed ERR
+    if ! deploy_run_images "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$source_tree"; then
+        deploy_images_mark_failed 1
+    fi
+    trap - ERR
+    deploy_status images complete passed distributed
     exit 0
 fi
 

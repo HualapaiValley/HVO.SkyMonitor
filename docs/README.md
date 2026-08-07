@@ -29,7 +29,7 @@ documents link back without maintaining a competing roadmap.
 | Shared SQL Server operations | `docs/runbooks/sql-server-operations.md` | SQL Server 2022 Query Store, blocking/deadlock, capacity, backup/restore, maintenance observation, permission, and cleanup procedures. |
 | Runbooks (daily ops) | `docs/runbooks/*.md` | `local-dev.md`, `infra-operations.md`, and `ci-pipeline.md` remain the authoritative workflow docs. |
 | Smoke-test environment | `docs/runbooks/smoke-test.md` | Owner-only smoke inputs, initialization, fail-closed preflight, generated-state boundary, and data-policy guard. |
-| Split-host preflight and preparation | `docs/runbooks/split-host-preflight.md` | Versioned inventory, read-only multi-host checks, explicit runtime-root preparation, resumable ledgers, and sanitized evidence. |
+| Split-host preflight, preparation, and images | `docs/runbooks/split-host-preflight.md` | Versioned inventory, read-only checks, explicit runtime-root preparation, immutable registry/archive image distribution, resumable ledgers, and sanitized evidence. |
 | CameraAgent retention recovery | `docs/runbooks/cameraagent-retention.md` | Pending-upload retention invariant and outage recovery procedure. |
 
 ## Documentation Rules

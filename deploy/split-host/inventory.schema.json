@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "environment", "installationId", "source", "secretSource", "logicHost", "cameraAgents", "sharedServices", "serviceEndpoints", "catalog", "images"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 3 },
     "environment": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
     "installationId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
     "source": {
@@ -59,14 +59,44 @@
     "images": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["logicHost", "cameraAgent"],
+      "required": ["distributionMode", "artifactRoot", "tag", "builder", "registryImmutableTags", "logicHost", "cameraAgent"],
       "properties": {
+        "distributionMode": { "enum": ["registry", "archive"] },
+        "artifactRoot": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^/(?![.]{1,2}(?:/|$))(?!.*(?:/)[.]{1,2}(?:/|$))(?!.*//)(?!.*[\\x00-\\x1F\\x7F]).+$" }
+          ]
+        },
+        "tag": { "type": "string", "pattern": "^rev-[0-9a-f]{40}$" },
+        "builder": { "$ref": "#/$defs/builder" },
+        "registryImmutableTags": { "type": "boolean" },
         "logicHost": { "$ref": "#/$defs/image" },
         "cameraAgent": { "$ref": "#/$defs/image" }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "distributionMode": { "const": "archive" } } },
+          "then": { "properties": { "artifactRoot": { "type": "string" }, "registryImmutableTags": { "const": false } } },
+          "else": { "properties": { "artifactRoot": { "type": "null" }, "registryImmutableTags": { "const": true } } }
+        }
+      ]
     }
   },
   "$defs": {
+    "builder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "driver", "endpoint", "expectedDaemonIdentity", "expectedDaemonName", "expectedArchitecture"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "driver": { "enum": ["docker", "docker-container"] },
+        "endpoint": { "const": "default" },
+        "expectedDaemonIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "expectedDaemonName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$" },
+        "expectedArchitecture": { "enum": ["amd64", "arm64"] }
+      }
+    },
     "applicationTarget": {
       "type": "object",
       "additionalProperties": false,
@@ -99,10 +129,9 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "digest"],
+      "required": ["repository"],
       "properties": {
-        "repository": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9./_-]{0,255}$" },
-        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        "repository": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?/[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?$" }
       }
     }
   }

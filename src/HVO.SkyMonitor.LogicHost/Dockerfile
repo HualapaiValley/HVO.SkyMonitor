@@ -1,15 +1,16 @@
 # Dockerfile for HVO.SkyMonitor.LogicHost
-# Multi-arch support: linux/amd64, linux/arm64, linux/arm/v7
-# Build from repo root: docker build -t hvo-logichost:latest -f src/HVO.SkyMonitor.LogicHost/Dockerfile .
+# Deployment platform: linux/amd64
+# Build from repo root with a source-revision tag; deployment rejects mutable tags.
 
 # Stage 1: Build
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.100 AS build
 WORKDIR /src
 
 # Copy solution and project files
 COPY Directory.Build.props ./
 COPY Directory.Packages.props ./
 COPY .editorconfig ./
+COPY global.json ./
 COPY HVO.SkyMonitor.v9.slnx ./
 COPY THIRD-PARTY-NOTICES.md ./
 COPY src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj src/HVO.SkyMonitor.AgentCore/

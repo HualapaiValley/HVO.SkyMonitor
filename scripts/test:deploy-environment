@@ -27,6 +27,8 @@ REAL_STAT="$(command -v stat)"
 readonly REAL_STAT
 REAL_GREP="$(command -v grep)"
 readonly REAL_GREP
+REAL_GIT="$(command -v git)"
+readonly REAL_GIT
 SERVER_PID=""
 
 cleanup() {
@@ -103,23 +105,139 @@ cat > "$BIN/docker" <<'EOF'
 #!/usr/bin/bash
 set -euo pipefail
 printf 'docker' >> "${FAKE_LOG:?}"; printf '\t%s' "$@" >> "$FAKE_LOG"; printf '\n' >> "$FAKE_LOG"
+digest_for() {
+  case "$1-$2" in logicHost-amd64) printf 'a%.0s' {1..64} ;; cameraAgent-arm64) printf 'b%.0s' {1..64} ;; cameraAgent-amd64) printf 'c%.0s' {1..64} ;; *) exit 1 ;; esac
+}
+registry_manifest() {
+  local component=$1 platform_file="${FAKE_IMAGE_STATE:?}/$1.platforms" first=true architecture digest descriptors=''
+  while IFS= read -r architecture; do
+    digest="$(digest_for "$component" "$architecture")"
+    [[ "$first" == true ]] || descriptors+=','; first=false
+    descriptors+="{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:$digest\",\"size\":1,\"platform\":{\"architecture\":\"$architecture\",\"os\":\"linux\"}}"
+    if [[ "${FAKE_REGISTRY_ATTESTATION:-true}" == true ]]; then
+      attest="$(printf 'd%.0s' {1..64})"
+      descriptors+=",{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:$attest\",\"size\":1,\"annotations\":{\"vnd.docker.reference.digest\":\"sha256:$digest\",\"vnd.docker.reference.type\":\"attestation-manifest\"},\"platform\":{\"architecture\":\"unknown\",\"os\":\"unknown\"}}"
+    fi
+  done < "$platform_file"
+  printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[%s]}\n' "$descriptors"
+}
+if [[ "$1" == buildx && "$2" == ls ]]; then
+  endpoint=default; [[ "${FAKE_BUILDER_REMOTE:-false}" != true ]] || endpoint=remote-context
+  printf '{"Current":false,"Driver":"docker","Dynamic":false,"Name":"control-builder","Nodes":[{"Endpoint":"%s","Name":"control-builder0","Platforms":["linux/amd64","linux/arm64"],"Status":"running","Version":"v0.31.0"}]}\n' "$endpoint"
+  exit 0
+fi
+if [[ "$1" == info ]]; then
+  printf '{"ID":"control-daemon","Name":"control-node","Architecture":"x86_64","OSType":"linux"}\n'
+  exit 0
+fi
+if [[ "$1" == buildx && "$2" == build ]]; then
+  destination= component= repository= platforms= created= sdk= source_reference= tree= builder=
+  while (( $# > 0 )); do
+    case "$1" in
+      --builder) builder=$2; shift 2 ;;
+      --output) destination="${2#type=docker,dest=}"; shift 2 ;;
+      --platform) platforms="$2"; shift 2 ;;
+      --tag) repository="$2"; shift 2 ;;
+      --label)
+        [[ "$2" != io.hvoskymonitor.component=* ]] || component="${2#*=}"
+        [[ "$2" != org.opencontainers.image.created=* ]] || created="${2#*=}"
+        [[ "$2" != org.opencontainers.image.ref.name=* ]] || source_reference="${2#*=}"
+        [[ "$2" != io.hvoskymonitor.dotnet-sdk=* ]] || sdk="${2#*=}"
+        [[ "$2" != io.hvoskymonitor.source-tree=* ]] || tree="${2#*=}"
+        shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ "$builder" == control-builder ]] || exit 1
+  architecture="${platforms#linux/}"
+  [[ "${FAKE_IMAGE_BUILD_FAIL:-}" != "$component-$architecture" ]] || exit 1
+  jq -cn --arg created "$created" --arg sdk "$sdk" --arg source "$source_reference" --arg tree "$tree" \
+    '{created:$created,sdk:$sdk,source:$source,tree:$tree}' > "${FAKE_IMAGE_STATE:?}/$component.labels"
+  if [[ -z "$destination" ]]; then
+    : > "${FAKE_IMAGE_STATE:?}/$component.platforms"
+    IFS=, read -r -a selected <<< "$platforms"
+    for platform in "${selected[@]}"; do printf '%s\n' "${platform#linux/}" >> "${FAKE_IMAGE_STATE:?}/$component.platforms"; done
+    : > "${FAKE_IMAGE_STATE:?}/$component.pushed"
+  fi
+  if [[ -n "$destination" ]]; then
+    fixture="${FAKE_IMAGE_STATE:?}/archive-$BASHPID"; mkdir -m 700 "$fixture"
+    printf '{"architecture":"%s","os":"linux","config":{"Labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}}' \
+      "$architecture" "${FAKE_REVISION:?}" "$created" "$source_reference" "$component" "$sdk" "$tree" > "$fixture/config"
+    config_digest="$(sha256sum "$fixture/config" | cut -d' ' -f1)"
+    mv "$fixture/config" "$fixture/$config_digest.json"
+    printf '[{"Config":"%s.json","RepoTags":["%s"],"Layers":[]}]\n' "$config_digest" "$repository" > "$fixture/manifest.json"
+    tar -cf "$destination" -C "$fixture" manifest.json "$config_digest.json"
+    rm -rf "$fixture"
+  fi
+  exit 0
+fi
+if [[ "$1" == buildx && "$2" == imagetools && "$3" == inspect ]]; then
+  builder= format= raw=false; shift 3
+  while (( $# > 0 )); do
+    case "$1" in --builder) builder=$2; shift 2 ;; --raw) raw=true; shift ;; --format) format=$2; shift 2 ;; *) reference=$1; shift ;; esac
+  done
+  [[ "$builder" == control-builder ]] || exit 1
+  component=cameraAgent; [[ "$reference" == *logichost* ]] && component=logicHost
+  [[ -f "${FAKE_IMAGE_STATE:?}/$component.pushed" ]] || exit 1
+  if [[ "$raw" == true ]]; then registry_manifest "$component"; exit 0; fi
+  if [[ "$format" == '{{json .Manifest}}' ]]; then
+    raw_manifest="$(registry_manifest "$component")"; parent="$(registry_manifest "$component" | sha256sum | cut -d' ' -f1)"
+    jq -c --arg digest "sha256:$parent" '. + {digest:$digest}' <<< "$raw_manifest"
+    exit 0
+  fi
+  [[ "$format" == '{{json .Image}}' ]] || exit 1
+  digest="${reference##*@sha256:}"; architecture=arm64
+  [[ "$digest" == "$(digest_for "$component" amd64)" ]] && architecture=amd64
+  labels="$(<"${FAKE_IMAGE_STATE:?}/$component.labels")"
+  tree="$(jq -r .tree <<< "$labels")"; [[ "${FAKE_REGISTRY_MISMATCH_COMPONENT:-}" != "$component" ]] || tree="$(printf 'f%.0s' {1..40})"
+  printf '{"architecture":"%s","os":"linux","config":{"Labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}}\n' \
+    "$architecture" "${FAKE_REVISION:?}" "$(jq -r .created <<< "$labels")" "$(jq -r .source <<< "$labels")" "$component" "$(jq -r .sdk <<< "$labels")" "$tree"
+  exit 0
+fi
 if [[ "$1" == context && "$2" == inspect ]]; then printf '%s\n' "${*: -1}"; exit 0; fi
 context=$2
 case "$context" in
-  logic-context) id=logic-daemon; name=logic-node; architecture=amd64 ;;
-  east-context) id=east-daemon; name=east-node; architecture=arm64 ;;
-  west-context) id=west-daemon; name=west-node; architecture=arm64 ;;
-  shared-context) id=shared-daemon; name=shared-node; architecture=amd64 ;;
+  logic-context) id=logic-daemon; name=logic-node; daemon_architecture=x86_64; image_architecture=amd64 ;;
+  east-context) id=east-daemon; name=east-node; daemon_architecture=aarch64; image_architecture=arm64 ;;
+  west-context) id=west-daemon; name=west-node; daemon_architecture=x86_64; image_architecture=amd64 ;;
+  shared-context) id=shared-daemon; name=shared-node; daemon_architecture=x86_64; image_architecture=amd64 ;;
   *) exit 1 ;;
 esac
 [[ "${FAKE_DOCKER_MISMATCH:-}" != "$context" ]] || id=changed-daemon
 [[ "${FAKE_DOCKER_WRONG_HOST_CONTEXT:-}" != "$context" ]] || name=wrong-node
-if [[ "$3" == info ]]; then
+[[ "${FAKE_DOCKER_UNSUPPORTED_ARCH:-}" != "$context" ]] || daemon_architecture=ppc64le
+if [[ "$3" == image && "$4" == pull ]]; then
+  reference=$5
+  [[ "${FAKE_IMAGE_TRANSFER_FAIL:-}" != "$context" ]] || exit 1
+  printf '%s\n' "$reference" > "${FAKE_IMAGE_STATE:?}/$context.reference"
+elif [[ "$3" == image && "$4" == load ]]; then
+  archive=$6
+  [[ "${FAKE_IMAGE_TRANSFER_FAIL:-}" != "$context" ]] || exit 1
+  config_name="$(tar -xOf "$archive" manifest.json | jq -r '.[0].Config')"
+  tar -xOf "$archive" "$config_name" > "${FAKE_IMAGE_STATE:?}/$context.config"
+  printf 'sha256:%s\n' "${config_name%.json}" > "${FAKE_IMAGE_STATE:?}/$context.reference"
+elif [[ "$3" == image && "$4" == inspect ]]; then
+  reference="${*: -1}"
+  [[ "${FAKE_IMAGE_INSPECT_DRIFT:-}" != "$context" ]] || image_architecture=amd64
+  if [[ -f "${FAKE_IMAGE_STATE:?}/$context.config" ]]; then
+    config="$(<"$FAKE_IMAGE_STATE/$context.config")"
+    image_id="$(<"$FAKE_IMAGE_STATE/$context.reference")"
+    labels="$(jq -c '.config.Labels' <<< "$config")"
+    printf '{"id":"%s","architecture":"%s","os":"linux","repoDigests":[],"labels":%s}\n' "$image_id" "$image_architecture" "$labels"
+  else
+    component=cameraAgent; [[ "$reference" == *logichost* ]] && component=logicHost
+    labels="$(<"${FAKE_IMAGE_STATE:?}/$component.labels")"
+    manifest_digest="$(registry_manifest "$component" | sha256sum | cut -d' ' -f1)"
+    printf '{"id":"sha256:%064d","architecture":"%s","os":"linux","repoDigests":["%s@sha256:%s"],"labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}\n' \
+      0 "$image_architecture" "${reference%@*}" "$manifest_digest" "${FAKE_REVISION:?}" "$(jq -r .created <<< "$labels")" \
+      "$(jq -r .source <<< "$labels")" "$component" "$(jq -r .sdk <<< "$labels")" "$(jq -r .tree <<< "$labels")"
+  fi
+elif [[ "$3" == info ]]; then
   case "${FAKE_DOCKER_INFO_MALFORMED:-}" in
     architecture) printf '{"ID":"%s","Name":"%s","OSType":"linux","ServerVersion":"28.1.0"}\n' "$id" "$name" ;;
-    os) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":{"secret":"raw-docker-secret"},"ServerVersion":"28.1.0"}\n' "$id" "$name" "$architecture" ;;
-    version) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":"linux","ServerVersion":null}\n' "$id" "$name" "$architecture" ;;
-    *) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":"linux","ServerVersion":"28.1.0"}\n' "$id" "$name" "$architecture" ;;
+    os) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":{"secret":"raw-docker-secret"},"ServerVersion":"28.1.0"}\n' "$id" "$name" "$daemon_architecture" ;;
+    version) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":"linux","ServerVersion":null}\n' "$id" "$name" "$daemon_architecture" ;;
+    *) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":"linux","ServerVersion":"28.1.0"}\n' "$id" "$name" "$daemon_architecture" ;;
   esac
 elif [[ "$3" == compose ]]; then
   [[ "${FAKE_COMPOSE_MISSING:-}" != "$context" ]] || exit 1
@@ -139,7 +257,19 @@ cat > "$BIN/grep" <<'EOF'
 if [[ "${FAKE_GREP_ERROR:-}" == true ]]; then printf 'fixture-secret-never-print raw grep error\n' >&2; exit 2; fi
 exec "${REAL_GREP:?}" "$@"
 EOF
-chmod +x "$BIN/ssh" "$BIN/docker" "$BIN/stat" "$BIN/grep"
+cat > "$BIN/git" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+if [[ "$*" == *" status --porcelain"* ]]; then
+  count_file="${FAKE_IMAGE_STATE:?}/git-status-count"
+  count=0; [[ ! -f "$count_file" ]] || count="$(<"$count_file")"
+  count=$((count + 1)); printf '%s\n' "$count" > "$count_file"
+  if [[ -n "${FAKE_SOURCE_DIRTY_AT_STATUS:-}" && "$count" -ge "$FAKE_SOURCE_DIRTY_AT_STATUS" ]]; then printf ' M tracked-file\n'; fi
+  exit 0
+fi
+exec "${REAL_GIT:?}" "$@"
+EOF
+chmod +x "$BIN/ssh" "$BIN/docker" "$BIN/stat" "$BIN/grep" "$BIN/git"
 
 cat > "$REMOTE_BIN/cat" <<'EOF'
 #!/usr/bin/bash
@@ -154,7 +284,7 @@ printf '%s-node\n' "${FAKE_REMOTE_HOST:?}"
 EOF
 cat > "$REMOTE_BIN/uname" <<'EOF'
 #!/usr/bin/bash
-case "${FAKE_REMOTE_HOST:?}" in logic|shared) printf 'x86_64\n' ;; *) printf 'aarch64\n' ;; esac
+case "${FAKE_REMOTE_HOST:?}" in logic|shared|west) printf 'x86_64\n' ;; *) printf 'aarch64\n' ;; esac
 EOF
 cat > "$REMOTE_BIN/getconf" <<'EOF'
 #!/usr/bin/bash
@@ -197,10 +327,12 @@ for entry in "$REMOTE_BIN/"*; do
 done
 
 export FAKE_LOG="$LOG" FAKE_REMOTE_LOG="$REMOTE_LOG" FAKE_SCRIPT_ROOT="$TEMP_DIR"
+export FAKE_IMAGE_STATE="$TEMP_DIR/image-state" FAKE_REVISION="$REVISION" FAKE_IMAGE_TAG="rev-$REVISION"
 export FAKE_PREPARE_REMOTE_LOG="$PREPARE_REMOTE_LOG"
-export FAKE_REMOTE_BIN="$REMOTE_BIN" FAKE_REMOTE_BIN_NO_SS="$REMOTE_BIN_NO_SS" REAL_STAT REAL_GREP
+export FAKE_REMOTE_BIN="$REMOTE_BIN" FAKE_REMOTE_BIN_NO_SS="$REMOTE_BIN_NO_SS" REAL_STAT REAL_GREP REAL_GIT
 export FAKE_REMOTE_BIN_NO_CURL="$REMOTE_BIN_NO_CURL"
 export FAKE_REMOTE_BIN_NO_TIMEOUT="$REMOTE_BIN_NO_TIMEOUT"
+mkdir -m 700 "$FAKE_IMAGE_STATE"
 
 # shellcheck disable=SC2016 # The literal shell syntax verifies secrets are never evaluated.
 printf 'SQL_PASSWORD=fixture-secret-never-print\nOAUTH_SECRET=malicious-$(touch /tmp/must-not-run)-never-print\n' > "$SECRET_FILE"
@@ -209,7 +341,7 @@ chmod 600 "$SECRET_FILE"
 write_inventory() {
     jq -n --arg revision "$REVISION" --arg secret "$SECRET_FILE" --arg root "$TEMP_DIR/remote" --arg owner "$(id -un)" \
       --argjson logicPort "$HTTP_PORT" --argjson eastPort "$EAST_PORT" --argjson westPort "$WEST_PORT" '{
-      schemaVersion:1, environment:"test-observatory", installationId:"test-installation",
+      schemaVersion:3, environment:"test-observatory", installationId:"test-installation",
       source:{revision:$revision,dirtyDisposition:"allow-dirty"},
       secretSource:{path:$secret,requiredReferences:["SQL_PASSWORD","OAUTH_SECRET"]},
       logicHost:{name:"logic",sshHost:"logic@example",dockerContext:"logic-context",expectedArchitecture:"amd64",expectedHostName:"logic-node",
@@ -219,14 +351,15 @@ write_inventory() {
         {name:"east",sshHost:"east@example",dockerContext:"east-context",expectedArchitecture:"arm64",expectedHostName:"east-node",
           expectedHostIdentity:"east-machine",expectedDockerDaemonIdentity:"east-daemon",runtimeRoot:($root+"/east/runtime"),runtimeOwner:$owner,
           publicEndpoint:("http://127.0.0.1:"+($eastPort|tostring)),ports:[$eastPort]},
-        {name:"west",sshHost:"west@example",dockerContext:"west-context",expectedArchitecture:"arm64",expectedHostName:"west-node",
+        {name:"west",sshHost:"west@example",dockerContext:"west-context",expectedArchitecture:"amd64",expectedHostName:"west-node",
           expectedHostIdentity:"west-machine",expectedDockerDaemonIdentity:"west-daemon",runtimeRoot:($root+"/west/runtime"),runtimeOwner:$owner,
           publicEndpoint:("http://127.0.0.1:"+($westPort|tostring)),ports:[$westPort]}],
       sharedServices:null,
       serviceEndpoints:[{name:"test-service",host:"127.0.0.1",port:$logicPort,fromTargets:["logic","east","west"]}],
       catalog:{kind:"production",version:"catalog-v1",sha256:("0"*64)},
-      images:{logicHost:{repository:"registry.example/logichost",digest:("sha256:"+("1"*64))},
-        cameraAgent:{repository:"registry.example/cameraagent",digest:("sha256:"+("2"*64))}}
+      images:{distributionMode:"registry",artifactRoot:null,tag:("rev-"+$revision),registryImmutableTags:true,
+        builder:{name:"control-builder",driver:"docker",endpoint:"default",expectedDaemonIdentity:"control-daemon",expectedDaemonName:"control-node",expectedArchitecture:"amd64"},
+        logicHost:{repository:"registry.example/logichost"},cameraAgent:{repository:"registry.example/cameraagent"}}
     }' > "$INVENTORY"
     cp "$INVENTORY" "$BASE_INVENTORY"
 }
@@ -299,6 +432,8 @@ write_inventory
 
 # The checked-in shape reference, example, and executable jq contract stay aligned.
 jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","publicEndpoint","ports"] and
+  .properties.schemaVersion.const == 3 and
+  .properties.images.required == ["distributionMode","artifactRoot","tag","builder","registryImmutableTags","logicHost","cameraAgent"] and
   (.properties.sharedServices.oneOf[1]."$ref" | endswith("/applicationTarget")) and
   (."$defs".applicationTarget.properties.publicEndpoint.pattern | contains(":"))' "$REPO_ROOT/deploy/split-host/inventory.schema.json" >/dev/null
 (
@@ -348,6 +483,8 @@ manifest="$TEMP_DIR/output/valid-state/manifest.json"
 evidence="$TEMP_DIR/output/valid-evidence/preflight.json"
 jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and
   ([.targets[].dockerComposeVersion] | all(. == "v2.39.1")) and
+  (.targets[] | select(.name == "logic") | .architecture == "amd64") and
+  (.targets[] | select(.name == "east") | .architecture == "arm64") and
   (.targets[] | select(.name == "east") | .deploymentState == "needs_prepare")' "$manifest" >/dev/null
 test "$(stat -c %a "$TEMP_DIR/output/valid-state")" = 700
 test "$(stat -c %a "$manifest")" = 600
@@ -375,6 +512,8 @@ FAKE_DOCKER_MISMATCH=east-context expect_failure 'ssh-docker-correlation status=
 FAKE_DOCKER_INFO_MALFORMED=architecture expect_failure 'docker-daemon status=failed reason=invalid-response' docker-architecture-malformed
 FAKE_DOCKER_INFO_MALFORMED=os expect_failure 'docker-daemon status=failed reason=invalid-response' docker-os-malformed
 FAKE_DOCKER_INFO_MALFORMED=version expect_failure 'docker-daemon status=failed reason=invalid-response' docker-version-malformed
+FAKE_DOCKER_UNSUPPORTED_ARCH=east-context expect_failure 'docker-daemon status=failed reason=unsupported-architecture' docker-architecture-unsupported
+! grep -Fq 'ppc64le' "$TEMP_DIR/failure.log" || fail 'Unsupported Docker architecture leaked raw output.'
 FAKE_COMPOSE_MISSING=east-context expect_failure 'docker-compose status=failed reason=unavailable' compose-missing
 FAKE_SSH_UNREACHABLE=east expect_failure 'ssh status=failed reason=unreachable-or-invalid-response' ssh-unreachable
 FAKE_MISSING_BASH_HOST=east expect_failure 'ssh status=failed reason=tool-unavailable' missing-bash
@@ -419,6 +558,11 @@ jq '.logicHost.publicEndpoint="http://127.0.0.1"' "$BASE_INVENTORY" > "$INVENTOR
 jq '.logicHost.ports=[12345]' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' public-port-mismatch
 jq '.logicHost.runtimeRoot="/srv/../private"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' traversal
 jq '.logicHost.extra="rejected"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' unknown
+jq '.images.tag="latest"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' mutable-image-tag
+jq '.images.logicHost.repository="https://user:password@registry.example/logichost"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' credential-image-url
+jq '.images.distributionMode="archive" | .images.registryImmutableTags=false | .images.artifactRoot="relative/artifacts"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' relative-artifact-root
+jq '.images.registryImmutableTags=false' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' mutable-registry-policy
+jq '.images.builder.endpoint="remote-context"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' declared-remote-builder
 
 # Persistent mode requires a production catalog and HTTPS on LogicHost, every CameraAgent, and shared services.
 jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:")' "$BASE_INVENTORY" > "$TEMP_DIR/persistent-base.json"
@@ -517,6 +661,136 @@ jq -e --slurp '.[0].phaseStatus == "passed" and .[1].phaseStatus == "passed" and
   ([.[0].targets[].target] | sort) == ([.[1].targets[].target] | sort)' "$prepare_manifest" "$prepare_evidence" >/dev/null
 run_deploy_mode prepare prepare-happy isolated >/dev/null
 jq -e 'all(.targets[]; .disposition == "newly-created" and .newlyCreated.root == true)' "$prepare_ledger" >/dev/null
+
+# Images requires exact prepare state, builds only on the control host, and verifies every target through its declared context.
+: > "$LOG"
+if DEPLOY_TEST_FAILPOINT=abrupt-after-registry-push run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Abrupt post-push failpoint passed.'; fi
+jq -e '.phaseStatus == "running" and [.images[].status] == ["push-intended"]' "$TEMP_DIR/output/prepare-happy-state/images-ledger.json" >/dev/null
+run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-registry.out"
+images_ledger="$TEMP_DIR/output/prepare-happy-state/images-ledger.json"
+images_evidence="$TEMP_DIR/output/prepare-happy-evidence/images.json"
+jq -e '.phaseStatus == "passed" and .distributionMode == "registry" and (.images | length) == 2 and (.targets | length) == 3 and
+  all(.images[]; (.reference | test("@sha256:[0-9a-f]{64}$"))) and all(.targets[]; .status == "verified")' "$images_ledger" >/dev/null
+jq -e '.sourceTree | test("^[0-9a-f]{40,64}$")' "$images_ledger" >/dev/null
+jq -e '(.targets[] | select(.target == "east") | .architecture) == "arm64" and
+  (.targets[] | select(.target == "west") | .architecture) == "amd64"' "$images_ledger" >/dev/null
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3' "$images_evidence" >/dev/null
+grep -Fq $'docker\tbuildx\tbuild\t--builder\tcontrol-builder\t--platform\tlinux/amd64' "$LOG"
+grep -Fq $'docker\tbuildx\tbuild\t--builder\tcontrol-builder\t--platform\tlinux/amd64,linux/arm64' "$LOG"
+grep -Fq $'docker\t--context\teast-context\timage\tpull\tregistry.example/cameraagent@sha256:' "$LOG"
+grep -Fq $'docker\tbuildx\timagetools\tinspect\t--builder\tcontrol-builder' "$LOG"
+jq -e '.images[] | select(.component == "cameraAgent") | [.platforms[].architecture] == ["amd64","arm64"]' "$images_ledger" >/dev/null
+jq -e --arg a "sha256:$(printf 'a%.0s' {1..64})" --arg b "sha256:$(printf 'b%.0s' {1..64})" --arg c "sha256:$(printf 'c%.0s' {1..64})" '
+  (.images[] | select(.component == "logicHost") | .platforms) == [{architecture:"amd64",digest:$a}] and
+  (.images[] | select(.component == "cameraAgent") | .platforms) == [{architecture:"amd64",digest:$c},{architecture:"arm64",digest:$b}]' "$images_ledger" >/dev/null
+while IFS= read -r target_reference; do grep -Fq $'\timage\tpull\t'"$target_reference" "$LOG"; done < <(jq -r '.targets[].reference' "$images_ledger" | sort -u)
+(( $(grep -c $'^docker\t--context\tlogic-context\tinfo' "$LOG") >= 3 )) || fail 'Logic target was not re-correlated around pull and validation.'
+build_count_before_resume="$(grep -c $'^docker\tbuildx\tbuild' "$LOG")"
+if FAKE_IMAGE_INSPECT_DRIFT=east-context run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Completed image architecture drift passed.'; fi
+grep -Fq 'completed-image-drift' "$TEMP_DIR/images-failure.log"
+if FAKE_DOCKER_MISMATCH=west-context run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Same-architecture wrong daemon passed.'; fi
+grep -Fq 'docker-daemon-correlation-mismatch' "$TEMP_DIR/images-failure.log"
+if FAKE_DOCKER_UNSUPPORTED_ARCH=west-context run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Unsupported target daemon architecture passed.'; fi
+grep -Fq 'docker-daemon-unsupported-architecture' "$TEMP_DIR/images-failure.log"
+! grep -Fq 'ppc64le' "$TEMP_DIR/images-failure.log" || fail 'Image correlation leaked raw unsupported architecture.'
+run_deploy_mode images prepare-happy isolated >/dev/null
+build_count_after_resume="$(grep -c $'^docker\tbuildx\tbuild' "$LOG")"
+[[ "$build_count_before_resume" == "$build_count_after_resume" ]] || fail 'Images resume rebuilt completed registry images.'
+if grep -Eq $'docker\t.*\t(compose|container|run|start|up|down)(\t|$)' "$LOG"; then fail 'Images phase started or managed applications.'; fi
+if grep -Eq $'docker\tbuildx\t(rm|stop)' "$LOG"; then fail 'Images phase destructively managed the buildx builder.'; fi
+
+: > "$FAKE_IMAGE_STATE/git-status-count"
+if FAKE_SOURCE_DIRTY_AT_STATUS=1 run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Dirty image source passed.'; fi
+grep -Fq 'images-require-clean-source' "$TEMP_DIR/images-failure.log"
+
+write_prepare_case images-registry-duplicate isolated
+run_prepare_preflight images-registry-duplicate isolated
+run_deploy_mode prepare images-registry-duplicate isolated >/dev/null
+registry_builds_before_adopt="$(grep -c $'^docker\tbuildx\tbuild' "$LOG")"
+run_deploy_mode images images-registry-duplicate isolated >/dev/null
+registry_builds_after_adopt="$(grep -c $'^docker\tbuildx\tbuild' "$LOG")"
+[[ "$registry_builds_before_adopt" == "$registry_builds_after_adopt" ]] || fail 'Exact registry adoption rebuilt or overwrote the tag.'
+
+write_prepare_case images-registry-mismatch isolated
+run_prepare_preflight images-registry-mismatch isolated
+run_deploy_mode prepare images-registry-mismatch isolated >/dev/null
+if FAKE_REGISTRY_MISMATCH_COMPONENT=logicHost run_deploy_mode images images-registry-mismatch isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Mismatched registry tag was adopted or overwritten.'; fi
+grep -Fq 'registry-config-mismatch' "$TEMP_DIR/images-failure.log"
+
+write_prepare_case images-wrong-builder isolated
+run_prepare_preflight images-wrong-builder isolated
+run_deploy_mode prepare images-wrong-builder isolated >/dev/null
+if FAKE_BUILDER_REMOTE=true run_deploy_mode images images-wrong-builder isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Remote buildx builder passed.'; fi
+grep -Fq 'mismatch-or-remote' "$TEMP_DIR/images-failure.log"
+
+write_prepare_case images-target-wrong-daemon isolated
+run_prepare_preflight images-target-wrong-daemon isolated
+run_deploy_mode prepare images-target-wrong-daemon isolated >/dev/null
+if FAKE_DOCKER_MISMATCH=logic-context run_deploy_mode images images-target-wrong-daemon isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Wrong same-architecture daemon passed before pull.'; fi
+grep -Fq 'docker-daemon-correlation-mismatch' "$TEMP_DIR/images-failure.log"
+jq -e '(.targets | length) == 0' "$TEMP_DIR/output/images-target-wrong-daemon-state/images-ledger.json" >/dev/null
+
+write_prepare_case images-without-prepare isolated
+if run_deploy_mode images images-without-prepare isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Images passed without prepare.'; fi
+grep -Fq 'prepare-required' "$TEMP_DIR/images-failure.log"
+
+write_prepare_case images-archive isolated
+archive_root="$TEMP_DIR/artifacts/images-archive"
+mkdir -m 700 "$TEMP_DIR/artifacts"
+jq --arg root "$archive_root" '.images.distributionMode="archive" | .images.registryImmutableTags=false | .images.artifactRoot=$root' "$INVENTORY" > "$INVENTORY.changed"
+mv "$INVENTORY.changed" "$INVENTORY"
+run_prepare_preflight images-archive isolated
+run_deploy_mode prepare images-archive isolated >/dev/null
+: > "$LOG"
+if DEPLOY_TEST_FAILPOINT=after-image-build run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Image build failpoint passed.'; fi
+jq -e '.phaseStatus == "failed" and (.images | length) == 1 and (.targets | length) == 0' "$TEMP_DIR/output/images-archive-state/images-ledger.json" >/dev/null
+if DEPLOY_TEST_FAILPOINT=after-image-transfer run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Image transfer failpoint passed.'; fi
+jq -e '.phaseStatus == "failed" and (.images | length) == 3 and (.targets | length) == 0' "$TEMP_DIR/output/images-archive-state/images-ledger.json" >/dev/null
+if DEPLOY_TEST_FAILPOINT=abrupt-after-images-ledger run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Image ledger publication failpoint passed.'; fi
+jq -e '.phaseStatus == "passed" and (.images | length) == 3 and (.targets | length) == 3' "$TEMP_DIR/output/images-archive-state/images-ledger.json" >/dev/null
+jq -e '.phaseStatus == "running"' "$TEMP_DIR/output/images-archive-state/images-manifest.json" >/dev/null
+jq -e '.phaseStatus == "running"' "$TEMP_DIR/output/images-archive-evidence/images.json" >/dev/null
+run_deploy_mode images images-archive isolated >/dev/null
+jq -e --slurp '.[0] == .[1] and .[0].phaseStatus == "passed"' \
+  "$TEMP_DIR/output/images-archive-state/images-ledger.json" "$TEMP_DIR/output/images-archive-state/images-manifest.json" >/dev/null
+if DEPLOY_TEST_FAILPOINT=abrupt-after-images-ledger run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Second image ledger publication failpoint passed.'; fi
+rm -f "$TEMP_DIR/output/images-archive-evidence/images.json"
+if DEPLOY_TEST_FAILPOINT=abrupt-after-images-evidence run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Image final commit failpoint passed.'; fi
+jq -e '.phaseStatus == "passed" and (.images | length) == 3 and (.targets | length) == 3' "$TEMP_DIR/output/images-archive-state/images-ledger.json" >/dev/null
+jq -e '.phaseStatus == "running"' "$TEMP_DIR/output/images-archive-state/images-manifest.json" >/dev/null
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/images-archive-evidence/images.json" >/dev/null
+run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-archive.out"
+archive_ledger="$TEMP_DIR/output/images-archive-state/images-ledger.json"
+jq -e '.phaseStatus == "passed" and .distributionMode == "archive" and (.images | length) == 3 and (.targets | length) == 3 and
+  all(.images[]; .archivePath != null and (.archiveSha256 | test("^[0-9a-f]{64}$")) and (.configDigest | test("^sha256:[0-9a-f]{64}$")))' "$archive_ledger" >/dev/null
+jq -e --slurp '.[0] == .[1] and
+  (.[0] | {schemaVersion,runId,mode,inventorySha256,sourceRevision,sourceTree,builder,distributionMode,phaseStatus,startedAt,updatedAt,completedAt,
+    images:[.images[] | del(.archivePath)],targets}) == .[2]' \
+  "$archive_ledger" "$TEMP_DIR/output/images-archive-state/images-manifest.json" "$TEMP_DIR/output/images-archive-evidence/images.json" >/dev/null
+while IFS= read -r archive_entry; do
+    archive_path="$(jq -r '.archivePath' <<< "$archive_entry")"
+    test -f "$archive_path"; test "$(stat -c %a "$archive_path")" = 600
+    test "$(sha256sum "$archive_path" | cut -d' ' -f1)" = "$(jq -r '.archiveSha256' <<< "$archive_entry")"
+done < <(jq -c '.images[]' "$archive_ledger")
+grep -Fq $'docker\t--context\teast-context\timage\tload\t--input' "$LOG"
+if grep -Eq $'docker\tbuildx\tbuild.*--push' "$LOG"; then fail 'Archive mode pushed to a registry.'; fi
+
+write_prepare_case images-source-drift isolated
+source_drift_root="$TEMP_DIR/artifacts/images-source-drift"
+jq --arg root "$source_drift_root" '.images.distributionMode="archive" | .images.registryImmutableTags=false | .images.artifactRoot=$root' "$INVENTORY" > "$INVENTORY.changed"
+mv "$INVENTORY.changed" "$INVENTORY"
+run_prepare_preflight images-source-drift isolated
+run_deploy_mode prepare images-source-drift isolated >/dev/null
+: > "$FAKE_IMAGE_STATE/git-status-count"
+if FAKE_SOURCE_DIRTY_AT_STATUS=4 run_deploy_mode images images-source-drift isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Source change between component builds passed.'; fi
+grep -Fq 'source-changed-or-dirty' "$TEMP_DIR/images-failure.log"
+jq -e '.phaseStatus == "failed" and (.images | length) == 1' "$TEMP_DIR/output/images-source-drift-state/images-ledger.json" >/dev/null
+run_deploy_mode images images-source-drift isolated >/dev/null
+if grep -Fq 'fixture-secret-never-print' "$TEMP_DIR/images-failure.log" ||
+   grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output"/*-evidence/images.json 2>/dev/null; then
+    fail 'Image failure or evidence exposed a secret.'
+fi
+cp "$BASE_INVENTORY" "$INVENTORY"
 
 write_prepare_case no-preflight isolated
 expect_prepare_failure 'preflight-required' prepare-without-preflight isolated
@@ -744,6 +1018,7 @@ if grep -R -Eq 'logic-machine|east-machine|west-machine' "$TEMP_DIR/output"/*-ev
     fail 'Sanitized prepare evidence exposed machine identity.'
 fi
 
+: > "$LOG"
 cp "$BASE_INVENTORY" "$INVENTORY"
 if DEPLOY_TEST_FAILPOINT=after-evidence-before-passed-manifest run_deploy evidence-first-crash > "$TEMP_DIR/failure.log" 2>&1; then
     fail 'Evidence-first publication failpoint passed.'

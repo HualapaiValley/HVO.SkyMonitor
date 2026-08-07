@@ -57,13 +57,14 @@ deploy_preflight_target() {
     [[ "$socket_status" != present ]] || { deploy_record preflight "$name" ports failed conflict; return 1; }
     deploy_record preflight "$name" ports passed no-conflict || return 1
 
-    local inspected docker_info daemon_id daemon_name daemon_arch daemon_os daemon_version compose_version conflicts port
+    local inspected docker_info daemon_id daemon_name daemon_arch daemon_arch_raw daemon_os daemon_version compose_version conflicts port
     inspected="$(deploy_transport_docker_context "$context")" || { deploy_record preflight "$name" docker-context failed unavailable; return 1; }
     [[ "$inspected" == "$context" ]] || { deploy_record preflight "$name" docker-context failed mismatch; return 1; }
     docker_info="$(deploy_transport_docker_info "$context")" || { deploy_record preflight "$name" docker-daemon failed unreachable; return 1; }
     daemon_id="$(jq -er '.ID' <<< "$docker_info" 2>/dev/null)" || { deploy_record preflight "$name" docker-daemon failed invalid-response; return 1; }
     daemon_name="$(jq -er '.Name' <<< "$docker_info" 2>/dev/null)" || { deploy_record preflight "$name" docker-daemon failed invalid-response; return 1; }
-    daemon_arch="$(jq -er '.Architecture | strings | select(length > 0)' <<< "$docker_info" 2>/dev/null)" || { deploy_record preflight "$name" docker-daemon failed invalid-response; return 1; }
+    daemon_arch_raw="$(jq -er '.Architecture | strings | select(length > 0)' <<< "$docker_info" 2>/dev/null)" || { deploy_record preflight "$name" docker-daemon failed invalid-response; return 1; }
+    daemon_arch="$(deploy_normalize_docker_architecture "$daemon_arch_raw")" || { deploy_record preflight "$name" docker-daemon failed unsupported-architecture; return 1; }
     daemon_os="$(jq -er '.OSType | strings | select(length > 0)' <<< "$docker_info" 2>/dev/null)" || { deploy_record preflight "$name" docker-daemon failed invalid-response; return 1; }
     daemon_version="$(jq -er '.ServerVersion | strings | select(length > 0)' <<< "$docker_info" 2>/dev/null)" || { deploy_record preflight "$name" docker-daemon failed invalid-response; return 1; }
     [[ "$daemon_version" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]] || { deploy_record preflight "$name" docker-daemon failed invalid-response; return 1; }

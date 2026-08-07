@@ -21,6 +21,14 @@ deploy_is_safe_name() {
     [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]
 }
 
+deploy_normalize_docker_architecture() {
+    case "$1" in
+        amd64|x86_64) printf 'amd64\n' ;;
+        arm64|aarch64) printf 'arm64\n' ;;
+        *) return 1 ;;
+    esac
+}
+
 deploy_is_safe_absolute_path() {
     local path="$1"
     [[ "$path" == /* && "$path" != / && "$path" != *//* && "$path" != */./* &&

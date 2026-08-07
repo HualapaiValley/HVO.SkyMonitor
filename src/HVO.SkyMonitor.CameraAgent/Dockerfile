@@ -1,6 +1,6 @@
 # Dockerfile for HVO.SkyMonitor.CameraAgent
-# Multi-arch support: linux/amd64, linux/arm64, linux/arm/v7
-# Build from repo root: docker build -t hvo-cameraagent:latest -f src/HVO.SkyMonitor.CameraAgent/Dockerfile .
+# Deployment platforms: linux/amd64 and linux/arm64
+# Build from repo root with a source-revision tag; deployment rejects mutable tags.
 
 # Stage 1: Build
 FROM mcr.microsoft.com/dotnet/sdk:10.0.100 AS build
