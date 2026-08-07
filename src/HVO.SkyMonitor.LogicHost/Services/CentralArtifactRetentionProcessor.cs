@@ -30,8 +30,10 @@ internal sealed partial class CentralArtifactRetentionProcessor(
     IMinioClient minio,
     TimeProvider timeProvider,
     CentralArtifactRetentionTelemetry telemetry,
-    ILogger<CentralArtifactRetentionProcessor> logger) : ICentralArtifactRetentionProcessor
+    ILogger<CentralArtifactRetentionProcessor> logger,
+    CentralObjectStorageNames? storageNames = null) : ICentralArtifactRetentionProcessor
 {
+    private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(5);
     private const int MaximumSqlDeadlockRetries = 3;
 
@@ -46,7 +48,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
         activity?.SetTag("retention.origin", origin);
         var storageReference = await dbContext.CentralObjectRecoveryDispositions.AsNoTracking()
             .Where(item => item.Id == dispositionId && item.OperationToken != null)
-            .Select(item => CentralObjectOwnershipFence.BucketPrefix + item.SourceObjectKey)
+            .Select(item => _storageNames.ArtifactPrefix + item.SourceObjectKey)
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (storageReference is null)
         {
@@ -144,7 +146,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
         try
         {
             await minio.RemoveObjectAsync(new RemoveObjectArgs()
-                .WithBucket(CentralObjectOwnershipFence.Bucket)
+                .WithBucket(_storageNames.ArtifactBucket)
                 .WithObject(snapshot.ObjectKey), cancellationToken).ConfigureAwait(false);
         }
         catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
@@ -293,7 +295,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
                     && artifact.RetentionDeletionCompletedAtUtc == null
                     && artifact.RowVersion == valid.ArtifactRowVersion
                     && EF.Functions.Collate(artifact.StorageReference, CentralObjectOwnershipFence.BinaryCollation)
-                        == CentralObjectOwnershipFence.BucketPrefix + valid.ObjectKey))
+                        == _storageNames.ArtifactPrefix + valid.ObjectKey))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(item => item.AttemptCount, item => item.AttemptCount + 1)
                 .SetProperty(item => item.LastAttemptAtUtc, now)
@@ -328,7 +330,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
 
             var valid = await LoadFinalizationSnapshotQuery(snapshot)
                 .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            var storageReference = CentralObjectOwnershipFence.BucketPrefix + snapshot.ObjectKey;
+            var storageReference = _storageNames.ArtifactPrefix + snapshot.ObjectKey;
             if (valid is null
                 || await references.IsHeldAsync(snapshot.CentralArtifactId, cancellationToken).ConfigureAwait(false)
                 || await CentralObjectOwnershipFence.HasActiveOwnerAsync(
@@ -488,7 +490,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
                && disposition.CentralArtifactId != null
                && artifact.RetentionDeletionToken == disposition.OperationToken
                && EF.Functions.Collate(artifact.StorageReference, CentralObjectOwnershipFence.BinaryCollation)
-                   == CentralObjectOwnershipFence.BucketPrefix + disposition.SourceObjectKey
+                   == _storageNames.ArtifactPrefix + disposition.SourceObjectKey
            select new RetentionSnapshot(
                disposition.Id,
                disposition.CentralArtifactId!.Value,
@@ -527,7 +529,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
                && artifact.RetentionDeletionCompletedAtUtc == null
                && artifact.RowVersion == expected.ArtifactRowVersion
                && EF.Functions.Collate(artifact.StorageReference, CentralObjectOwnershipFence.BinaryCollation)
-                   == CentralObjectOwnershipFence.BucketPrefix + expected.ObjectKey
+                   == _storageNames.ArtifactPrefix + expected.ObjectKey
            select new RetentionSnapshot(
                disposition.Id,
                disposition.CentralArtifactId!.Value,
@@ -565,7 +567,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
                                  && EF.Functions.Collate(
                                      artifact.StorageReference,
                                      CentralObjectOwnershipFence.BinaryCollation)
-                                     == CentralObjectOwnershipFence.BucketPrefix + expected.ObjectKey
+                                     == _storageNames.ArtifactPrefix + expected.ObjectKey
                              select new
                              {
                                  artifact.RetentionDeletionRequestedAtUtc,

@@ -335,13 +335,18 @@ public sealed class DatabaseInitializationAcceptanceTests
             var validator = new DatabaseRuntimeValidator(runtimeDb, new ProductionEnvironment());
             await validator.ValidateAsync(CancellationToken.None).ConfigureAwait(false);
 
+            using var certificates = new TestOpenIddictCertificates();
             await using (var runtimeFactory = database.Factory.WithWebHostBuilder(webHost =>
             {
                 webHost.UseEnvironment(Environments.Production);
+                webHost.UseSetting("OpenIddictCertificates:SigningPath", certificates.SigningPath);
+                webHost.UseSetting("OpenIddictCertificates:EncryptionPath", certificates.EncryptionPath);
                 webHost.ConfigureAppConfiguration((_, configuration) =>
                     configuration.AddInMemoryCollection(new Dictionary<string, string?>
                     {
-                        ["ConnectionStrings:skymonitordb"] = runtimeBuilder.ConnectionString
+                        ["ConnectionStrings:skymonitordb"] = runtimeBuilder.ConnectionString,
+                        ["OpenIddictCertificates:SigningPath"] = certificates.SigningPath,
+                        ["OpenIddictCertificates:EncryptionPath"] = certificates.EncryptionPath
                     }));
                 webHost.ConfigureServices(services =>
                 {

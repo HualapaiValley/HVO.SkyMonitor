@@ -27,18 +27,23 @@ public sealed class LogicHostSqlSessionAttributionIntegrationTests
         {
             ApplicationName = "conflicting-client"
         };
+        using var certificates = new TestOpenIddictCertificates();
         using var factory = new WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program>()
             .WithWebHostBuilder(builder =>
             {
                 // Staging exercises the runtime profile and read-only startup validation without rerunning migrations.
                 builder.UseEnvironment(Environments.Staging);
+                builder.UseSetting("OpenIddictCertificates:SigningPath", certificates.SigningPath);
+                builder.UseSetting("OpenIddictCertificates:EncryptionPath", certificates.EncryptionPath);
                 builder.ConfigureAppConfiguration((_, configuration) =>
                 {
                     configuration.AddInMemoryCollection(fixtureConfiguration.AsEnumerable());
                     configuration.AddInMemoryCollection(new Dictionary<string, string?>
                     {
                         ["ConnectionStrings:skymonitordb"] = configured.ConnectionString,
-                        ["ConnectionStrings:DefaultConnection"] = configured.ConnectionString
+                        ["ConnectionStrings:DefaultConnection"] = configured.ConnectionString,
+                        ["OpenIddictCertificates:SigningPath"] = certificates.SigningPath,
+                        ["OpenIddictCertificates:EncryptionPath"] = certificates.EncryptionPath
                     });
                 });
                 builder.ConfigureTestServices(services => services.RemoveAll<IHostedService>());

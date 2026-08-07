@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 5,
   "environment": "observatory-production",
   "installationId": "observatory-main",
   "source": {
@@ -8,7 +8,7 @@
   },
   "secretSource": {
     "path": "/home/operator/.config/hvo-skymonitor/deploy.env",
-    "requiredReferences": ["SQLSERVER_PASSWORD", "MINIO_SECRET_KEY", "CAMERA_AGENT_OAUTH_CLIENT_SECRET"]
+    "requiredReferences": ["SQLSERVER_PASSWORD", "SQL_INIT_PASSWORD", "SQL_RUNTIME_PASSWORD", "SQL_INIT_CONNECTION", "SQL_RUNTIME_CONNECTION", "REDIS_ADMIN_PASSWORD", "REDIS_PASSWORD", "MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "SMTP_USERNAME", "SMTP_PASSWORD", "OIDC_SIGNING_PASSWORD", "OIDC_ENCRYPTION_PASSWORD", "CAMERA_AGENT_OAUTH_CLIENT_SECRET", "CAMERA_EAST_OWNER_PASSWORD"]
   },
   "logicHost": {
     "name": "logic-01",
@@ -20,7 +20,9 @@
     "expectedDockerDaemonIdentity": "LOGICDAEMON0001",
     "runtimeRoot": "/srv/hvo/skymonitor/logic-01",
     "runtimeOwner": "hvo",
+    "internalEndpoint": "http://127.0.0.1:5174",
     "publicEndpoint": "https://sky.example.net:5174",
+    "trustedProxyAddresses": ["192.0.2.10"],
     "ports": [5174]
   },
   "cameraAgents": [{
@@ -33,8 +35,12 @@
     "expectedDockerDaemonIdentity": "CAMERADAEMON0001",
     "runtimeRoot": "/srv/hvo/skymonitor/camera-east",
     "runtimeOwner": "hvo",
+    "internalEndpoint": "http://127.0.0.1:5130",
     "publicEndpoint": "https://camera-east.example.net:5130",
-    "ports": [5130]
+    "trustedProxyAddresses": ["192.0.2.10"],
+    "ports": [5130],
+    "moduleConfigPath": "/home/operator/camera-modules/camera-east.json",
+    "ownerPasswordSecretReference": "CAMERA_EAST_OWNER_PASSWORD"
   }],
   "sharedServices": null,
   "serviceEndpoints": [{
@@ -46,7 +52,9 @@
   "catalog": {
     "kind": "production",
     "version": "hyg-v4.2-p3-s2-r1",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "sha256": "b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2",
+    "length": 9302016,
+    "rowCount": 119625
   },
   "images": {
     "distributionMode": "registry",
@@ -63,5 +71,34 @@
     "registryImmutableTags": true,
     "logicHost": { "repository": "registry.example.net/hvo/logichost" },
     "cameraAgent": { "repository": "registry.example.net/hvo/cameraagent" }
+  },
+  "deployment": {
+    "catalog": {
+      "bundlePath": "/home/operator/catalogs/hyg-v4.2-p3-s2-r1",
+      "installRoot": "/srv/hvo/catalogs",
+      "allowFixture": false
+    },
+    "services": {
+      "mode": "existing",
+      "sql": { "host": "sql.example.net", "port": 1433, "database": "hvo-main", "adminUser": "sa", "adminSecretReference": "SQLSERVER_PASSWORD", "initializerUser": "HVO.LogicHost.Migrator", "initializerSecretReference": "SQL_INIT_PASSWORD", "initializerConnectionReference": "SQL_INIT_CONNECTION", "runtimeUser": "HVO.LogicHost.Runtime", "runtimeSecretReference": "SQL_RUNTIME_PASSWORD", "runtimeConnectionReference": "SQL_RUNTIME_CONNECTION" },
+      "redis": { "host": "redis.example.net", "port": 6379, "prefix": "hvo-main:", "adminSecretReference": "REDIS_ADMIN_PASSWORD", "user": "hvo-main", "secretReference": "REDIS_PASSWORD" },
+      "minio": { "host": "minio.example.net", "port": 9000, "useSsl": true, "artifactBucket": "hvo-main-artifacts", "diagnosticsBucket": "hvo-main-diagnostics", "rootAccessKeyReference": "MINIO_ROOT_USER", "rootSecretKeyReference": "MINIO_ROOT_PASSWORD", "accessKeyReference": "MINIO_ACCESS_KEY", "secretKeyReference": "MINIO_SECRET_KEY" },
+      "smtp": { "kind": "production", "host": "smtp.example.net", "port": 587, "usernameReference": "SMTP_USERNAME", "passwordReference": "SMTP_PASSWORD" },
+      "images": { "sqlServer": null, "redis": null, "minio": null, "minioClient": null, "mailpit": null }
+    },
+    "resources": { "project": "hvo-main", "sqlDatabase": "hvo-main", "redisPrefix": "hvo-main:", "artifactBucket": "hvo-main-artifacts", "diagnosticsBucket": "hvo-main-diagnostics" },
+    "certificates": { "signingPath": "/home/operator/certs/signing.pfx", "encryptionPath": "/home/operator/certs/encryption.pfx", "signingPasswordReference": "OIDC_SIGNING_PASSWORD", "encryptionPasswordReference": "OIDC_ENCRYPTION_PASSWORD" },
+    "deviceBootstrap": { "clientId": "system-camera-agent", "clientSecretReference": "CAMERA_AGENT_OAUTH_CLIENT_SECRET", "scopes": ["api.camera", "api.frames", "api.images"] },
+    "secretMappings": [
+      { "reference": "SQL_RUNTIME_CONNECTION", "key": "ConnectionStrings__skymonitordb" },
+      { "reference": "SQL_INIT_CONNECTION", "key": "ConnectionStrings__skymonitordb-migrations" },
+      { "reference": "MINIO_ACCESS_KEY", "key": "Minio__AccessKey" },
+      { "reference": "MINIO_SECRET_KEY", "key": "Minio__SecretKey" },
+      { "reference": "SMTP_USERNAME", "key": "Smtp__Username" },
+      { "reference": "SMTP_PASSWORD", "key": "Smtp__Password" },
+      { "reference": "OIDC_SIGNING_PASSWORD", "key": "OpenIddictCertificates__SigningPassword" },
+      { "reference": "OIDC_ENCRYPTION_PASSWORD", "key": "OpenIddictCertificates__EncryptionPassword" }
+    ],
+    "limits": { "cpus": "2", "memory": "2G" }
   }
 }

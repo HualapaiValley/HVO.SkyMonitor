@@ -32,6 +32,8 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class CentralArtifactRetentionIntegrationTests
 {
+    private const string ArtifactBucketPrefix =
+        "minio://" + HVO.SkyMonitor.LogicHost.Configuration.CentralObjectStorageOptions.DefaultArtifactBucket + "/";
     private const string Bucket = "skymonitor-artifacts";
 
     [TestMethod]
@@ -68,7 +70,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             database.Context, seeded.StorageReference, CancellationToken.None).ConfigureAwait(false)).Should().BeTrue();
         (await CentralObjectOwnershipFence.IsRetiredAsync(
             database.Context,
-            CentralObjectOwnershipFence.BucketPrefix + seeded.ObjectKey.ToUpperInvariant(),
+            ArtifactBucketPrefix + seeded.ObjectKey.ToUpperInvariant(),
             CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
         signals.Instruments.Should().BeEquivalentTo([
             "skymonitor.central.retention.operations",
@@ -618,7 +620,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             database.Context,
             "case-distinct",
             [18],
-            CentralObjectOwnershipFence.BucketPrefix + shared.ObjectKey.ToUpperInvariant()).ConfigureAwait(false);
+            ArtifactBucketPrefix + shared.ObjectKey.ToUpperInvariant()).ConfigureAwait(false);
         await PutAsync(shared.ObjectKey, shared.Payload).ConfigureAwait(false);
         await PutAsync(caseDistinct.ObjectKey, caseDistinct.Payload).ConfigureAwait(false);
         database.Context.ChangeTracker.Clear();
@@ -1088,7 +1090,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
                     RetentionDeletionToken = operationToken,
                     RetentionDeletionRequestedAtUtc = now
                 };
-                var objectKey = storageReference[CentralObjectOwnershipFence.BucketPrefix.Length..];
+                var objectKey = storageReference[ArtifactBucketPrefix.Length..];
                 var disposition = new CentralObjectRecoveryDisposition
                 {
                     SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
@@ -1213,7 +1215,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
     {
         await using var database = await CreateDatabaseAsync("ReferenceLock").ConfigureAwait(false);
         var seeded = await SeedAsync(database.Context, "reference-lock", [35]).ConfigureAwait(false);
-        var replacementReference = $"{CentralObjectOwnershipFence.BucketPrefix}artifacts/retention-tests/{Guid.NewGuid():N}/replacement.bin";
+        var replacementReference = $"{ArtifactBucketPrefix}artifacts/retention-tests/{Guid.NewGuid():N}/replacement.bin";
         await using var blockerContext = CreateContext(database.ConnectionString);
         var blocker = await CentralObjectApplicationLock.AcquireAsync(
             blockerContext, seeded.StorageReference, CancellationToken.None).ConfigureAwait(false);
@@ -1480,7 +1482,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         };
         var objectKey = storageReference is null
             ? $"artifacts/retention-tests/{Guid.NewGuid():N}/{scenario}.bin"
-            : storageReference[CentralObjectOwnershipFence.BucketPrefix.Length..];
+            : storageReference[ArtifactBucketPrefix.Length..];
         var artifact = new CentralArtifact
         {
             CentralFrameId = frame.Id,
@@ -1493,7 +1495,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             MediaType = "application/octet-stream",
             ByteLength = payload.LongLength,
             ChecksumSha256 = Convert.ToHexString(SHA256.HashData(payload)),
-            StorageReference = storageReference ?? $"{CentralObjectOwnershipFence.BucketPrefix}{objectKey}",
+            StorageReference = storageReference ?? $"{ArtifactBucketPrefix}{objectKey}",
             ReceivedAtUtc = DateTimeOffset.UtcNow,
             IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
             ObjectState = CentralArtifactObjectState.Available,

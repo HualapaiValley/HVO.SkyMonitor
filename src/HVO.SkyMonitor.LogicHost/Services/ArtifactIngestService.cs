@@ -86,9 +86,11 @@ internal sealed partial class ArtifactIngestService(
     ICentralDerivativeJobScheduler derivativeJobScheduler,
     CentralIngestTelemetry telemetry,
     DeploymentLocationTelemetry deploymentLocationTelemetry,
-    ILogger<ArtifactIngestService> logger) : IArtifactIngestService
+    ILogger<ArtifactIngestService> logger,
+    CentralObjectStorageNames? storageNames = null) : IArtifactIngestService
 {
-    private const string Bucket = "skymonitor-artifacts";
+    private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
+    private string Bucket => _storageNames.ArtifactBucket;
     private const string CaptureSequenceIdentityIndex = "IX_CentralFrames_DevicePublicId_CaptureSequence";
     private static readonly SemaphoreSlim BucketInitialization = new(1, 1);
     private static readonly ConcurrentDictionary<(string AgentId, Guid ArtifactId), ArtifactGate> ArtifactGates = new();
@@ -323,7 +325,7 @@ internal sealed partial class ArtifactIngestService(
             dbContext.ChangeTracker.Clear();
         }
 
-        var storageReference = CreateCanonicalStorageReference(devicePublicId, manifest);
+        var storageReference = CreateCanonicalStorageReference(devicePublicId, manifest, Bucket);
         var objectKey = storageReference[$"minio://{Bucket}/".Length..];
         var now = timeProvider.GetUtcNow();
         var persisted = false;
@@ -376,7 +378,7 @@ internal sealed partial class ArtifactIngestService(
             try
             {
                 if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                        dbContext, storageReference, CancellationToken.None).ConfigureAwait(false))
+                        dbContext, storageReference, CancellationToken.None, $"minio://{Bucket}/").ConfigureAwait(false))
                 {
                     await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
                 }
@@ -475,10 +477,11 @@ internal sealed partial class ArtifactIngestService(
 
     internal static string CreateCanonicalStorageReference(
         Guid devicePublicId,
-        ArtifactIngestManifest manifest)
+        ArtifactIngestManifest manifest,
+        string bucket = Configuration.CentralObjectStorageOptions.DefaultArtifactBucket)
     {
         var mediaTypeKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(manifest.MediaType)));
-        return $"minio://{Bucket}/artifacts/{devicePublicId:N}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}-{mediaTypeKey}.bin";
+        return $"minio://{bucket}/artifacts/{devicePublicId:N}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}-{mediaTypeKey}.bin";
     }
 
     private async Task EnsureV2IntentAsync(
@@ -994,7 +997,7 @@ internal sealed partial class ArtifactIngestService(
             }
             if (existing.ObjectState == CentralArtifactObjectState.Expired
                 || await CentralObjectOwnershipFence.IsRetiredAsync(
-                    dbContext, reservation.StorageReference, cancellationToken).ConfigureAwait(false))
+                    dbContext, reservation.StorageReference, cancellationToken, $"minio://{Bucket}/").ConfigureAwait(false))
             {
                 throw new ExistingArtifactVerificationStaleException("retired");
             }
@@ -1321,7 +1324,7 @@ internal sealed partial class ArtifactIngestService(
         CancellationToken cancellationToken)
     {
         if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                dbContext, storageReference, cancellationToken).ConfigureAwait(false))
+                dbContext, storageReference, cancellationToken, $"minio://{Bucket}/").ConfigureAwait(false))
         {
             throw new ArtifactIngestConflictException(
                 "The immutable artifact object key has been permanently retired.");

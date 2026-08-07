@@ -22,14 +22,18 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/prepare.sh"
 # shellcheck source=scripts/deploy/images.sh
 . "$SCRIPT_DIR/deploy/images.sh"
+# shellcheck source=scripts/deploy/catalog.sh
+. "$SCRIPT_DIR/deploy/catalog.sh"
+# shellcheck source=scripts/deploy/up.sh
+. "$SCRIPT_DIR/deploy/up.sh"
 
 usage() {
-    printf 'Usage: %s <preflight|prepare|images> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare|images|catalog|up> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>]\n' "${0##*/}" >&2
     exit 2
 }
 
 phase="${1:-}"
-[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images ]] || usage
+[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up ]] || usage
 shift
 inventory="" mode="" run_id="" state_root="" evidence_root=""
 while (( $# > 0 )); do
@@ -52,8 +56,9 @@ unset DOCKER_HOST DOCKER_CONTEXT SSH_HOST SSH_CONFIG 2>/dev/null || true
 unset ambient_name
 
 deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh date grep cut || exit 1
-[[ "$phase" == prepare ]] || deploy_require_commands docker || exit 1
+[[ "$phase" == prepare || "$phase" == catalog ]] || deploy_require_commands docker || exit 1
 [[ "$phase" != images ]] || deploy_require_commands tar mv rm || exit 1
+[[ "$phase" != catalog && "$phase" != up ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
 deploy_validate_inventory "$inventory" "$mode"
 deploy_validate_secret_references "$inventory"
@@ -125,6 +130,28 @@ if [[ "$phase" == images ]]; then
     fi
     trap - ERR
     deploy_status images complete passed distributed
+    exit 0
+fi
+
+if [[ "$phase" == catalog ]]; then
+    trap 'deploy_catalog_mark_failed $?' ERR
+    if ! deploy_run_catalog "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state"; then
+        deploy_catalog_mark_failed 1
+        exit 1
+    fi
+    trap - ERR
+    deploy_status catalog complete passed installed
+    exit 0
+fi
+
+if [[ "$phase" == up ]]; then
+    trap 'deploy_up_mark_failed $?' ERR
+    if ! deploy_run_up "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state"; then
+        deploy_up_mark_failed 1
+        exit 1
+    fi
+    trap - ERR
+    deploy_status up complete passed ready
     exit 0
 fi
 

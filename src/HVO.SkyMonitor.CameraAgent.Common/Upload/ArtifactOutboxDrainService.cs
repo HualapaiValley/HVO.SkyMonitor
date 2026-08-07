@@ -315,7 +315,7 @@ public sealed class ArtifactOutboxDrainService(
             return [];
         }
         var roots = new List<string>();
-        if (options.CaptureDistribution.UploadEnabled)
+        if (!options.ProvisioningStartupGate.Enabled && options.CaptureDistribution.UploadEnabled)
         {
             roots.Add(Path.GetFullPath(options.RawIngressRoot));
         }

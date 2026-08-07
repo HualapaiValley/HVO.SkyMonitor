@@ -86,7 +86,7 @@ project for LogicHost keys.
 | `CentralIdentity:ApiKey:Key` | CameraAgent outbound API-key mode | Imported encrypted device state, User Secrets, or environment variables |
 | `CAMERA_AGENT_ADMIN_PASSWORD` / `LocalIdentity:AdminPassword` | Configuration-seeded local site owner | Ignored `.env` or CameraAgent User Secrets |
 | `CentralIdentity:LocalFallback:AccessCodeHash` | Reserved option; no runtime fallback handler is implemented | Do not configure as an active control |
-| OpenIddict signing/encryption private keys | Token, code, and refresh-token cryptography | Development certificate store only; production loader not implemented |
+| OpenIddict signing/encryption PFX files and passwords | Token, code, and refresh-token cryptography | Development certificate store locally; split-host production mounts owner-supplied files and reads passwords through KeyPerFile |
 | Kestrel/TLS private key and password | HTTPS when Kestrel owns TLS | Framework configuration is available, but repository Compose has no HTTPS profile or secure mount |
 | LogicHost and CameraAgent Data Protection key rings | Cookies, bootstrap envelopes, and CameraAgent encrypted secrets | Bind-mounted `DataProtection-Keys` directories; never configuration values |
 | CameraAgent device key, registration token, and OAuth secret | Device authentication and outbound central access | Data Protection-encrypted `device-secrets.dat` |
@@ -112,6 +112,7 @@ ignored, access-controlled, and out of support bundles:
 - `src/HVO.SkyMonitor.CameraAgent/App_Data/`
 - any host `DataProtection-Keys/` directory
 - `.env` and `.devcontainer/devcontainer.local.env`
+- the ignored schema-v5 split-host `secretSource` file and remote `.hvo-deploy/up-<run-id>/{secrets,initializer-secrets,runtime-secrets,private}/`
 
 `device-secrets.dat` is encrypted with CameraAgent Data Protection. Encryption
 does not make it safe to publish, and it cannot be recovered without the
@@ -131,6 +132,17 @@ also sensitive operational state.
 - LogicHost uses only `skymonitor-diagnostics` and
   `skymonitor-artifacts` through the scoped MinIO application account.
 - MinIO root credentials never belong in LogicHost configuration.
+- Split-host MinIO provisioning stores root credentials only in an owner-only,
+  correctly JSON-escaped `mc` configuration. It does not place credential URLs
+  in arguments or environment variables, and generated credentials are
+  atomically published by the declared SSH UID/GID.
+- Split-host secret sources reject every control character, including carriage
+  return, before any KeyPerFile, Redis, SQL, MinIO, client, or certificate
+  configuration is rendered.
+- Every secret-source reference must occur exactly once. Duplicate required or
+  unrequired names and missing required names are rejected before host contact;
+  extraction independently enforces the same exact-count and control-character
+  rules before rendering.
 - OAuth scopes are dot-separated: `api.admin`, `api.camera`, `api.frames`,
   `api.images`, `api.viewer`, and `api.webhooks`.
 - API keys use `Read` or `ReadWrite`; choose `Read` unless mutation is required.
@@ -146,7 +158,7 @@ also sensitive operational state.
 | Fleet bootstrap OAuth client | Change affects newly issued envelopes; existing agents require reprovisioning. |
 | MinIO application account | Operator-owned; current provisioning script does not update an existing secret. |
 | SQL Server or Redis password | Rotate server side using the service owner's procedure, update the secret source, then restart and validate applications. Repository code does not orchestrate overlap. |
-| OpenIddict signing/encryption certificate | Production loading and overlap are not implemented. |
+| OpenIddict signing/encryption certificate | Split-host production loading is implemented; coordinated overlap/automatic rotation is not. |
 | TLS certificate | Owned by the actual TLS terminator, which repository Compose does not define. |
 | Data Protection keys | Automatic key generation in the persisted ring; deletion is not rotation and invalidates protected data. |
 

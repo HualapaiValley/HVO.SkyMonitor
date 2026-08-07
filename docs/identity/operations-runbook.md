@@ -318,12 +318,16 @@ for another database engine. Likewise, MinIO backup must use the approved
 site-specific replication or snapshot procedure; copying SQL metadata without
 the corresponding objects is not a complete backup.
 
-The application connection must use a login scoped to `SkyMonitor`, such as the
-template `skymonitor-app` identity, never `sa` or another instance
-administrator. Because LogicHost applies EF migrations at startup, the current
-combined migration/runtime identity needs database-local schema rights; the SQL
-operator must not grant it instance-wide roles. Redis similarly uses the
-`skymonitor-app` ACL identity restricted to `skymonitor:*` keys.
+The application connection must use a login scoped to `SkyMonitor`, never `sa`
+or another instance administrator. Production separates the one-shot
+`ConnectionStrings:skymonitordb-migrations` principal from runtime
+`ConnectionStrings:skymonitordb`; runtime receives no migration secret and
+startup rejects effective DDL authority. The schema-v5 split-host workflow
+applies the migration role before controlled initialization and the runtime role
+afterward. Redis similarly uses a runtime ACL identity restricted to the
+declared prefix. See
+[`logichost-database-initialization.md`](../runbooks/logichost-database-initialization.md)
+and [`split-host-preflight.md`](../runbooks/split-host-preflight.md).
 
 Back up bind-mounted application state to an encrypted, access-controlled
 destination outside the runtime data root:

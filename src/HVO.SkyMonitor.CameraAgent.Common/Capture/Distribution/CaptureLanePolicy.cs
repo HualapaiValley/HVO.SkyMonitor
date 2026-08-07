@@ -16,6 +16,7 @@ internal sealed class CaptureLanePolicy
         };
         definitions.Add(Create(
             "upload",
+            !options.Value.ProvisioningStartupGate.Enabled &&
             options.Value.CentralIntegration.Mode == CentralIntegrationMode.Enabled && configured.UploadEnabled,
             required: true,
             ordered: false));

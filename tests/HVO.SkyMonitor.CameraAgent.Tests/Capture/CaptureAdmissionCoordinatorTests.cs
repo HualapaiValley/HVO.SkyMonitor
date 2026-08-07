@@ -19,6 +19,26 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 public sealed class CaptureAdmissionCoordinatorTests
 {
     [TestMethod]
+    public async Task ProvisioningGatePausesOnlyFreshStateDurablyAsync()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using (var gated = await CoordinatorFixture.CreateAsync(root, provisioningGate: true).ConfigureAwait(false))
+            {
+                Assert.AreEqual(CaptureAdmissionState.Paused, gated.Coordinator.Snapshot.State);
+                Assert.AreEqual(1L, gated.Coordinator.Snapshot.Version);
+            }
+            using var restarted = await CoordinatorFixture.CreateAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(CaptureAdmissionState.Paused, restarted.Coordinator.Snapshot.State);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task SchemaV6MigrationAddsFreshRunningControlStateAndAuditAsync()
     {
         var root = CreateRoot();
@@ -493,7 +513,7 @@ public sealed class CaptureAdmissionCoordinatorTests
 
         internal FleetRuntimeState RuntimeState { get; }
 
-        internal static async Task<CoordinatorFixture> CreateAsync(string root)
+        internal static async Task<CoordinatorFixture> CreateAsync(string root, bool provisioningGate = false)
         {
             var telemetry = new CaptureControlTelemetry();
             var runtimeState = new FleetRuntimeState(TimeProvider.System);
@@ -502,7 +522,8 @@ public sealed class CaptureAdmissionCoordinatorTests
                 Options.Create(new CameraAgentHostOptions
                 {
                     RawIngressRoot = root,
-                    RawIngressSqliteBusyTimeoutSeconds = 1
+                    RawIngressSqliteBusyTimeoutSeconds = 1,
+                    ProvisioningStartupGate = new ProvisioningStartupGateOptions { Enabled = provisioningGate }
                 }),
                 TimeProvider.System,
                 telemetry,

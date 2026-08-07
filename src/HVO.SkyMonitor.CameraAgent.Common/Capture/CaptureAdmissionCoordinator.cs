@@ -88,6 +88,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private readonly SqliteCaptureControlStore _store;
     private readonly CaptureControlTelemetry _telemetry;
     private readonly FleetRuntimeState? _fleetRuntimeState;
+    private readonly bool _pauseFreshOnStartup;
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
     private readonly SemaphoreSlim _commandGate = new(1, 1);
     private readonly object _drainGate = new();
@@ -114,6 +115,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         _telemetry = telemetry;
         _fleetRuntimeState = fleetRuntimeState;
         var configured = options.Value;
+        _pauseFreshOnStartup = configured.ProvisioningStartupGate.Enabled;
         _store = new SqliteCaptureControlStore(
             Path.Combine(Path.GetFullPath(configured.RawIngressRoot), "journal", "raw-ingress.db"),
             configured.RawIngressSqliteBusyTimeoutSeconds,
@@ -143,7 +145,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             }
 
             await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            var recovered = await _store.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            var recovered = await _store.InitializeAsync(_pauseFreshOnStartup, cancellationToken).ConfigureAwait(false);
             SetSnapshot(recovered);
             if (recovered.State == CaptureAdmissionState.Running)
             {
@@ -523,7 +525,9 @@ internal sealed class SqliteCaptureControlStore(
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
     private readonly TimeProvider _timeProvider = timeProvider;
 
-    internal async Task<CaptureAdmissionSnapshot> InitializeAsync(CancellationToken cancellationToken)
+    internal async Task<CaptureAdmissionSnapshot> InitializeAsync(
+        bool pauseFreshOnStartup,
+        CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
@@ -533,6 +537,12 @@ internal sealed class SqliteCaptureControlStore(
         {
             snapshot = await UpdateStateAsync(
                 connection, transaction, CaptureAdmissionState.Paused, snapshot.Version + 1, now, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else if (pauseFreshOnStartup && snapshot.State == CaptureAdmissionState.Running && snapshot.Version == 0)
+        {
+            snapshot = await UpdateStateAsync(
+                connection, transaction, CaptureAdmissionState.Paused, 1, now, cancellationToken)
                 .ConfigureAwait(false);
         }
         using (var recover = connection.CreateCommand())

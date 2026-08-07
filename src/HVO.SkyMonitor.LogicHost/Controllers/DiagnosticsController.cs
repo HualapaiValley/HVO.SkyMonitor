@@ -28,21 +28,25 @@ public sealed class DiagnosticsController : ControllerBase
     private readonly IDistributedCache _cache;
     private readonly ILogger<DiagnosticsController> _logger;
     private readonly MinioOptions _minioOptions;
+    private readonly CentralObjectStorageOptions _storageOptions;
     private readonly SmtpOptions _smtpOptions;
     private readonly IServiceProvider _serviceProvider;
 
     public DiagnosticsController(
         IDistributedCache cache,
         IOptions<MinioOptions> minioOptions,
+        IOptions<CentralObjectStorageOptions> storageOptions,
         IOptions<SmtpOptions> smtpOptions,
         IServiceProvider serviceProvider,
         ILogger<DiagnosticsController> logger)
     {
         ArgumentNullException.ThrowIfNull(minioOptions);
+        ArgumentNullException.ThrowIfNull(storageOptions);
         ArgumentNullException.ThrowIfNull(smtpOptions);
         _cache = cache;
         _logger = logger;
         _minioOptions = minioOptions.Value;
+        _storageOptions = storageOptions.Value;
         _smtpOptions = smtpOptions.Value;
         _serviceProvider = serviceProvider;
     }
@@ -86,7 +90,7 @@ public sealed class DiagnosticsController : ControllerBase
             return StatusCode(StatusCodes.Status503ServiceUnavailable, Problem("MinIO is not configured."));
         }
 
-        var bucket = _minioOptions.DefaultBucket;
+        var bucket = _storageOptions.DiagnosticsBucket;
         if (!string.IsNullOrWhiteSpace(request.Bucket) && !string.Equals(request.Bucket, bucket, StringComparison.Ordinal))
         {
             return Problem(

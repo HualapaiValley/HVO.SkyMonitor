@@ -26,6 +26,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public CaptureDistributionOptions CaptureDistribution { get; init; } = new();
 
     [Required]
+    public ProvisioningStartupGateOptions ProvisioningStartupGate { get; init; } = new();
+
+    [Required]
     public CentralIntegrationOptions CentralIntegration { get; init; } = new();
 
     [Required]
@@ -184,6 +187,11 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return result;
         }
     }
+}
+
+public sealed class ProvisioningStartupGateOptions
+{
+    public bool Enabled { get; init; }
 }
 
 public sealed class DeploymentLocationOptions : IValidatableObject

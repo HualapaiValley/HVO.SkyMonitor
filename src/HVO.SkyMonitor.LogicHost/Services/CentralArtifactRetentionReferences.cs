@@ -157,8 +157,10 @@ internal sealed partial class CentralArtifactRetentionService(
     CentralArtifactRetentionProcessor processor,
     TimeProvider timeProvider,
     CentralArtifactRetentionTelemetry telemetry,
-    ILogger<CentralArtifactRetentionService> logger) : ICentralArtifactRetentionService
+    ILogger<CentralArtifactRetentionService> logger,
+    CentralObjectStorageNames? storageNames = null) : ICentralArtifactRetentionService
 {
+    private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
     internal const int MaximumReservationConflictRetries = 3;
 
     internal Func<int, Guid, Exception?>? ReservationFaultInjector { get; set; }
@@ -190,8 +192,8 @@ internal sealed partial class CentralArtifactRetentionService(
                 telemetry.RecordOperation("not-found", "request", 0, timeProvider.GetElapsedTime(started));
                 return CentralArtifactRetentionResult.NotFound;
             }
-            if (!storageReference.StartsWith(CentralObjectOwnershipFence.BucketPrefix, StringComparison.Ordinal)
-                || storageReference.Length == CentralObjectOwnershipFence.BucketPrefix.Length)
+            if (!storageReference.StartsWith(_storageNames.ArtifactPrefix, StringComparison.Ordinal)
+                || storageReference.Length == _storageNames.ArtifactPrefix.Length)
             {
                 telemetry.RecordOperation("failed", "request", 0, timeProvider.GetElapsedTime(started));
                 return CentralArtifactRetentionResult.InvalidReference;
@@ -315,7 +317,7 @@ internal sealed partial class CentralArtifactRetentionService(
         int attempt,
         CancellationToken cancellationToken)
     {
-        var objectKey = storageReference[CentralObjectOwnershipFence.BucketPrefix.Length..];
+        var objectKey = storageReference[_storageNames.ArtifactPrefix.Length..];
         var identity = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey);
         dbContext.ChangeTracker.Clear();
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
@@ -471,7 +473,7 @@ internal sealed partial class CentralArtifactRetentionService(
         Guid operationToken)
     {
         await using var probe = CreateProbeContext();
-        var objectKey = storageReference[CentralObjectOwnershipFence.BucketPrefix.Length..];
+        var objectKey = storageReference[_storageNames.ArtifactPrefix.Length..];
         return await probe.CentralArtifacts.AsNoTracking().AnyAsync(artifact =>
                 artifact.Id == centralArtifactId
                 && artifact.RetentionDeletionToken == operationToken

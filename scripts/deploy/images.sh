@@ -332,6 +332,32 @@ deploy_validate_images_ledger() {
     done < <(jq -c '.targets[]' <<< "$json")
 }
 
+deploy_require_committed_images() {
+    local inventory="$1" run="$2" mode="$3" hash="$4" revision="$5"
+    local state_dir evidence_dir ledger_path manifest_path evidence_path ledger manifest evidence expected tree distribution path
+    state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"
+    ledger_path="$state_dir/images-ledger.json"; manifest_path="$state_dir/images-manifest.json"; evidence_path="$evidence_dir/images.json"
+    for path in "$ledger_path" "$manifest_path" "$evidence_path"; do
+        [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%h:%a' "$path" 2>/dev/null)" == "$(id -u):1:600" ]] ||
+          { deploy_fail up images-authority missing-or-unsafe; return 1; }
+    done
+    if ! ledger="$(jq -c . "$ledger_path" 2>/dev/null)" || ! manifest="$(jq -c . "$manifest_path" 2>/dev/null)" ||
+      ! evidence="$(jq -c . "$evidence_path" 2>/dev/null)"; then
+        deploy_fail up images-authority invalid-json
+        return 1
+    fi
+    tree="$(git -C "$REPO_ROOT" rev-parse "${revision}^{tree}")"; distribution="$(jq -r '.images.distributionMode' "$inventory")"
+    deploy_validate_images_ledger "$inventory" "$ledger" "$run" "$mode" "$hash" "$revision" "$tree" "$distribution" || return 1
+    deploy_validate_images_ledger "$inventory" "$manifest" "$run" "$mode" "$hash" "$revision" "$tree" "$distribution" || return 1
+    [[ "$(jq -r '.phaseStatus' <<< "$ledger")" == passed && "$ledger" == "$manifest" ]] ||
+      { deploy_fail up images-authority committed-state-mismatch; return 1; }
+    expected="$(jq -c '{schemaVersion,runId,mode,inventorySha256,sourceRevision,sourceTree,builder,distributionMode,phaseStatus,startedAt,updatedAt,completedAt,
+      images:[.images[] | del(.archivePath)],targets}' <<< "$ledger")"
+    [[ "$evidence" == "$expected" ]] || { deploy_fail up images-authority committed-evidence-mismatch; return 1; }
+    # shellcheck disable=SC2034 # Consumed by the sourced up phase.
+    declare -g DEPLOY_COMMITTED_IMAGES_JSON="$ledger"
+}
+
 deploy_run_images() {
     local inventory="$1" run_id="$2" mode="$3" inventory_hash="$4" revision="$5" worktree_state="$6" tree="$7"
     local distribution artifact_root tag sdk now build_created component_contract component dockerfile platforms repository architecture image image_id archive_path

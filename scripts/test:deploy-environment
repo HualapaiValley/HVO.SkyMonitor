@@ -241,6 +241,18 @@ elif [[ "$3" == info ]]; then
   esac
 elif [[ "$3" == compose ]]; then
   [[ "${FAKE_COMPOSE_MISSING:-}" != "$context" ]] || exit 1
+  [[ -z "${FAKE_COMPOSE_FAIL_MATCH:-}" || "$*" != *"$FAKE_COMPOSE_FAIL_MATCH"* ]] || exit 1
+  env_file=; args=("$@"); for ((i=0; i<${#args[@]}; i++)); do [[ "${args[$i]}" != --env-file ]] || env_file="${args[$((i+1))]}"; done
+  [[ "${4:-}" == version || ( -n "$env_file" && -f "$env_file" ) ]] || exit 78
+  if [[ "$*" == *"minio-provision"* ]]; then
+    config_root="$(/usr/bin/grep '^HVO_CONFIG_ROOT=' "$env_file" | /usr/bin/cut -d= -f2-)"
+    /usr/bin/jq -e '.version == "10" and .aliases.local.url == "http://minio:9000" and
+      .aliases.local.accessKey == "fixture-minio-root" and .aliases.local.secretKey == "fixture:/@\"minio-root-never-print"' \
+      "$config_root/private/mc/config.json" >/dev/null
+    /usr/bin/jq -cn --arg secret 'generated:/@"minio-secret-never-print' \
+      '{accessKey:"generated-minio-access",secretKey:$secret}' > "$config_root/minio-output/minio-runtime.json"
+    chmod 600 "$config_root/minio-output/minio-runtime.json"
+  fi
   printf 'v2.39.1\n'
 elif [[ "$3" == ps && -n "${FAKE_DOCKER_PORT_CONFLICT:-}" && "${*: -1}" == "publish=$FAKE_DOCKER_PORT_CONFLICT" ]]; then
   printf 'container-id\n'
@@ -269,7 +281,26 @@ if [[ "$*" == *" status --porcelain"* ]]; then
 fi
 exec "${REAL_GIT:?}" "$@"
 EOF
-chmod +x "$BIN/ssh" "$BIN/docker" "$BIN/stat" "$BIN/grep" "$BIN/git"
+cat > "$BIN/scp" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+printf 'scp' >> "${FAKE_LOG:?}"; printf '\t%s' "$@" >> "$FAKE_LOG"; printf '\n' >> "$FAKE_LOG"
+while (( $# > 2 )); do shift; done
+source=$1; destination=$2
+if [[ "$source" != /* && "$source" == *:* ]]; then source=${source#*:}; else destination=${destination#*:}; fi
+[[ -z "${FAKE_SCP_FAIL_DEST:-}" || "$destination" != *"$FAKE_SCP_FAIL_DEST"* ]] || exit 73
+if [[ "$source" == */. ]]; then
+  [[ -d "$destination" ]] || exit 74
+  /usr/bin/cp -a -- "$source" "$destination"
+elif [[ -d "$source" ]]; then
+  [[ -d "${destination%/*}" ]] || exit 74
+  /usr/bin/cp -a -- "$source" "$destination"
+else
+  [[ -d "${destination%/*}" ]] || exit 74
+  /usr/bin/cp -- "$source" "$destination"
+fi
+EOF
+chmod +x "$BIN/ssh" "$BIN/docker" "$BIN/stat" "$BIN/grep" "$BIN/git" "$BIN/scp"
 
 cat > "$REMOTE_BIN/cat" <<'EOF'
 #!/usr/bin/bash
@@ -297,6 +328,11 @@ EOF
 cat > "$REMOTE_BIN/stat" <<'EOF'
 #!/usr/bin/bash
 path="${*: -1}"
+if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" &&
+      ( "$path" == */minio-output/minio-runtime.json || "$path" == */private/mc/config.json ) && "$*" == *"%u:%g:%h:%a"* ]]; then
+  printf '%s:%s:1:600\n' "${FAKE_RUNTIME_UID:?}" "${FAKE_RUNTIME_GID:?}"
+  exit 0
+fi
 if [[ "${FAKE_REMOTE_PREPARE:-false}" == true ]]; then
   if [[ "${2:-}" == %a && "${FAKE_PREPARE_UNSAFE_MODE_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/"*"$FAKE_REMOTE_HOST"* ]]; then printf '777\n'; exit 0; fi
   if [[ "${2:-}" == %u && "${FAKE_PREPARE_FOREIGN_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/"*"$FAKE_REMOTE_HOST"* ]]; then printf '4242\n'; exit 0; fi
@@ -308,6 +344,14 @@ if [[ "$*" == *'%u'* && "${FAKE_RUNTIME_OTHER_OWNER_HOST:-}" == "${FAKE_REMOTE_H
 if [[ "$*" == *'%u'* && "${FAKE_RUNTIME_ROOT_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/$FAKE_REMOTE_HOST" ]]; then printf '0\n'; exit 0; fi
 exec /usr/bin/stat "$@"
 EOF
+cat > "$REMOTE_BIN/id" <<'EOF'
+#!/usr/bin/bash
+if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then
+  case "$1" in -u) printf '%s\n' "${FAKE_RUNTIME_UID:?}" ;; -g) printf '%s\n' "${FAKE_RUNTIME_GID:?}" ;; *) exec /usr/bin/id "$@" ;; esac
+else
+  exec /usr/bin/id "$@"
+fi
+EOF
 cat > "$REMOTE_BIN/ss" <<'EOF'
 #!/usr/bin/bash
 if [[ "${FAKE_PORT_CONFLICT_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then printf 'LISTEN 0 1 127.0.0.1:1\n'; fi
@@ -315,11 +359,11 @@ EOF
 chmod +x "$REMOTE_BIN/"*
 cat > "$REMOTE_BIN/curl" <<'EOF'
 #!/usr/bin/bash
-[[ "${FAKE_CURL_ALWAYS_SUCCESS:-false}" == true ]] && exit 0
+[[ "${FAKE_CURL_ALWAYS_SUCCESS:-false}" == true || "${*: -1}" == https://public.example.test:* ]] && exit 0
 exec /usr/bin/curl "$@"
 EOF
 chmod +x "$REMOTE_BIN/curl"
-for tool in bash date df grep id timeout chmod find flock mkdir mv; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
+for tool in bash date df grep timeout chmod find flock mkdir mv rm cp ln readlink sha256sum sqlite3 wc cut seq sleep; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
 for entry in "$REMOTE_BIN/"*; do
     [[ "$(basename "$entry")" == ss ]] || ln -s "$entry" "$REMOTE_BIN_NO_SS/$(basename "$entry")"
     [[ "$(basename "$entry")" == curl ]] || ln -s "$entry" "$REMOTE_BIN_NO_CURL/$(basename "$entry")"
@@ -335,31 +379,45 @@ export FAKE_REMOTE_BIN_NO_TIMEOUT="$REMOTE_BIN_NO_TIMEOUT"
 mkdir -m 700 "$FAKE_IMAGE_STATE"
 
 # shellcheck disable=SC2016 # The literal shell syntax verifies secrets are never evaluated.
-printf 'SQL_PASSWORD=fixture-secret-never-print\nOAUTH_SECRET=malicious-$(touch /tmp/must-not-run)-never-print\n' > "$SECRET_FILE"
+printf 'SQL_PASSWORD=fixture-secret-never-print\nMINIO_ROOT_ACCESS=fixture-minio-root\nMINIO_ROOT_SECRET=fixture:/@"minio-root-never-print\nEAST_PASSWORD=east-owner-never-print\nWEST_PASSWORD=west-owner-never-print\nOAUTH_SECRET=malicious-$(touch /tmp/must-not-run)-never-print\n' > "$SECRET_FILE"
 chmod 600 "$SECRET_FILE"
 
 write_inventory() {
     jq -n --arg revision "$REVISION" --arg secret "$SECRET_FILE" --arg root "$TEMP_DIR/remote" --arg owner "$(id -un)" \
+      --arg module "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json" \
       --argjson logicPort "$HTTP_PORT" --argjson eastPort "$EAST_PORT" --argjson westPort "$WEST_PORT" '{
-      schemaVersion:3, environment:"test-observatory", installationId:"test-installation",
+      schemaVersion:5, environment:"test-observatory", installationId:"test-installation",
       source:{revision:$revision,dirtyDisposition:"allow-dirty"},
-      secretSource:{path:$secret,requiredReferences:["SQL_PASSWORD","OAUTH_SECRET"]},
+      secretSource:{path:$secret,requiredReferences:["SQL_PASSWORD","MINIO_ROOT_ACCESS","MINIO_ROOT_SECRET","EAST_PASSWORD","WEST_PASSWORD","OAUTH_SECRET"]},
       logicHost:{name:"logic",sshHost:"logic@example",dockerContext:"logic-context",expectedArchitecture:"amd64",expectedHostName:"logic-node",
         expectedHostIdentity:"logic-machine",expectedDockerDaemonIdentity:"logic-daemon",runtimeRoot:($root+"/logic/runtime"),runtimeOwner:$owner,
-        publicEndpoint:("http://127.0.0.1:"+($logicPort|tostring)),ports:[$logicPort]},
+        internalEndpoint:("http://127.0.0.1:"+($logicPort|tostring)),publicEndpoint:("https://public.example.test:"+($logicPort|tostring)),trustedProxyAddresses:[],ports:[$logicPort]},
       cameraAgents:[
         {name:"east",sshHost:"east@example",dockerContext:"east-context",expectedArchitecture:"arm64",expectedHostName:"east-node",
           expectedHostIdentity:"east-machine",expectedDockerDaemonIdentity:"east-daemon",runtimeRoot:($root+"/east/runtime"),runtimeOwner:$owner,
-          publicEndpoint:("http://127.0.0.1:"+($eastPort|tostring)),ports:[$eastPort]},
+          internalEndpoint:("http://127.0.0.1:"+($eastPort|tostring)),publicEndpoint:("http://127.0.0.1:"+($eastPort|tostring)),trustedProxyAddresses:[],ports:[$eastPort],moduleConfigPath:$module,ownerPasswordSecretReference:"EAST_PASSWORD"},
         {name:"west",sshHost:"west@example",dockerContext:"west-context",expectedArchitecture:"amd64",expectedHostName:"west-node",
           expectedHostIdentity:"west-machine",expectedDockerDaemonIdentity:"west-daemon",runtimeRoot:($root+"/west/runtime"),runtimeOwner:$owner,
-          publicEndpoint:("http://127.0.0.1:"+($westPort|tostring)),ports:[$westPort]}],
+          internalEndpoint:("http://127.0.0.1:"+($westPort|tostring)),publicEndpoint:("http://127.0.0.1:"+($westPort|tostring)),trustedProxyAddresses:[],ports:[$westPort],moduleConfigPath:$module,ownerPasswordSecretReference:"WEST_PASSWORD"}],
       sharedServices:null,
       serviceEndpoints:[{name:"test-service",host:"127.0.0.1",port:$logicPort,fromTargets:["logic","east","west"]}],
-      catalog:{kind:"production",version:"catalog-v1",sha256:("0"*64)},
+      catalog:{kind:"production",version:"catalog-v1",sha256:("0"*64),length:1,rowCount:1},
       images:{distributionMode:"registry",artifactRoot:null,tag:("rev-"+$revision),registryImmutableTags:true,
         builder:{name:"control-builder",driver:"docker",endpoint:"default",expectedDaemonIdentity:"control-daemon",expectedDaemonName:"control-node",expectedArchitecture:"amd64"},
-        logicHost:{repository:"registry.example/logichost"},cameraAgent:{repository:"registry.example/cameraagent"}}
+        logicHost:{repository:"registry.example/logichost"},cameraAgent:{repository:"registry.example/cameraagent"}},
+      deployment:{
+        catalog:{bundlePath:($root+"/catalog-bundle"),installRoot:($root+"/catalog-install"),allowFixture:false},
+        services:{mode:"existing",
+          sql:{host:"127.0.0.1",port:1433,database:"hvo-test",adminUser:"sa",adminSecretReference:"SQL_PASSWORD",initializerUser:"hvo-init",initializerSecretReference:"SQL_PASSWORD",initializerConnectionReference:"SQL_PASSWORD",runtimeUser:"hvo-runtime",runtimeSecretReference:"SQL_PASSWORD",runtimeConnectionReference:"SQL_PASSWORD"},
+          redis:{host:"127.0.0.1",port:6379,prefix:"hvo-test:",adminSecretReference:"SQL_PASSWORD",user:"hvo-runtime",secretReference:"SQL_PASSWORD"},
+          minio:{host:"127.0.0.1",port:9000,useSsl:false,artifactBucket:"hvo-test-artifacts",diagnosticsBucket:"hvo-test-diagnostics",rootAccessKeyReference:"MINIO_ROOT_ACCESS",rootSecretKeyReference:"MINIO_ROOT_SECRET",accessKeyReference:"SQL_PASSWORD",secretKeyReference:"SQL_PASSWORD"},
+          smtp:{kind:"production",host:"127.0.0.1",port:2525,usernameReference:null,passwordReference:null},
+          images:{sqlServer:null,redis:null,minio:null,minioClient:null,mailpit:null}},
+        resources:{project:"hvo-test",sqlDatabase:"hvo-test",redisPrefix:"hvo-test:",artifactBucket:"hvo-test-artifacts",diagnosticsBucket:"hvo-test-diagnostics"},
+        certificates:{signingPath:($root+"/signing.pfx"),encryptionPath:($root+"/encryption.pfx"),signingPasswordReference:null,encryptionPasswordReference:null},
+        deviceBootstrap:{clientId:"system-camera-agent",clientSecretReference:"SQL_PASSWORD",scopes:["api.camera"]},
+        secretMappings:[{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb"},{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb-migrations"},
+          {reference:"SQL_PASSWORD",key:"Minio__AccessKey"},{reference:"SQL_PASSWORD",key:"Minio__SecretKey"}],limits:{cpus:null,memory:null}}
     }' > "$INVENTORY"
     cp "$INVENTORY" "$BASE_INVENTORY"
 }
@@ -384,7 +442,8 @@ write_prepare_case() {
       .cameraAgents[0].runtimeRoot=($base+"/"+$prefix+"-east/runtime") |
       .cameraAgents[1].runtimeRoot=($base+"/"+$prefix+"-west/runtime")' "$BASE_INVENTORY" > "$INVENTORY"
     if [[ "$mode" == persistent ]]; then
-        jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:")' "$INVENTORY" > "$INVENTORY.changed"
+        jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:") |
+          .logicHost.trustedProxyAddresses=["127.0.0.1"] | (.cameraAgents[].trustedProxyAddresses)=["127.0.0.1"]' "$INVENTORY" > "$INVENTORY.changed"
         mv "$INVENTORY.changed" "$INVENTORY"
     fi
 }
@@ -420,21 +479,23 @@ expect_failure() {
 }
 
 expect_persistent_invalid() {
-    local run_id="$1"
+    local run_id="$1" expected="${2:-persistent-mode-requires-production-https}"
     if PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$INVENTORY" --mode persistent \
       --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" \
       > "$TEMP_DIR/failure.log" 2>&1; then fail "Invalid persistent inventory passed: $run_id"; fi
-    grep -Fq 'persistent-mode-requires-production-https' "$TEMP_DIR/failure.log" || fail "Persistent rejection was not bounded: $run_id"
+    grep -Fq "$expected" "$TEMP_DIR/failure.log" || fail "Persistent rejection was not bounded: $run_id"
 }
 
-bash -n "$REPO_ROOT/scripts/deploy:environment" "$REPO_ROOT/scripts/deploy/"*.sh "$REPO_ROOT/scripts/test:deploy-environment"
+bash -n "$REPO_ROOT/scripts/deploy:environment" "$REPO_ROOT/scripts/deploy/"*.sh "$REPO_ROOT/scripts/test:deploy-environment" \
+  "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$REPO_ROOT/deploy/split-host/provision-minio.sh"
 write_inventory
 
 # The checked-in shape reference, example, and executable jq contract stay aligned.
-jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","publicEndpoint","ports"] and
-  .properties.schemaVersion.const == 3 and
+jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","internalEndpoint","publicEndpoint","trustedProxyAddresses","ports"] and
+  .properties.schemaVersion.const == 5 and
   .properties.images.required == ["distributionMode","artifactRoot","tag","builder","registryImmutableTags","logicHost","cameraAgent"] and
-  (.properties.sharedServices.oneOf[1]."$ref" | endswith("/applicationTarget")) and
+  (.properties.sharedServices.oneOf[1]."$ref" | endswith("/infrastructureTarget")) and
+  (.properties.logicHost.allOf[1].properties.publicEndpoint.pattern | startswith("^https://")) and
   (."$defs".applicationTarget.properties.publicEndpoint.pattern | contains(":"))' "$REPO_ROOT/deploy/split-host/inventory.schema.json" >/dev/null
 (
   # shellcheck source=scripts/deploy/common.sh
@@ -444,10 +505,17 @@ jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext",
   deploy_validate_inventory "$REPO_ROOT/deploy/split-host/inventory.example.yml" isolated
   jq --arg owner "$(id -un)" '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
     expectedHostName:"shared-node",expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:"/srv/hvo/shared",
-    runtimeOwner:$owner,publicEndpoint:"https://shared.example:9443",ports:[9443]}' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
+    runtimeOwner:$owner,ports:[1433,6379,9000,2525]} |
+    .deployment.services.mode="deploy" | .deployment.services.smtp.kind="mailpit" |
+    .deployment.services.images={sqlServer:("registry.example/sql@sha256:"+("a"*64)),redis:("registry.example/redis@sha256:"+("b"*64)),
+      minio:("registry.example/minio@sha256:"+("c"*64)),minioClient:("registry.example/mc@sha256:"+("d"*64)),mailpit:("registry.example/mailpit@sha256:"+("e"*64))}' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
   deploy_validate_inventory "$TEMP_DIR/shared-valid.json" isolated
-  jq 'del(.sharedServices.publicEndpoint)' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
+  jq 'del(.sharedServices.sshHost)' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
   if deploy_validate_inventory "$TEMP_DIR/shared-invalid.json" isolated >/dev/null 2>&1; then exit 91; fi
+  jq '.sharedServices.ports=[1433,6379,9000]' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-invalid.json" isolated >/dev/null 2>&1; then exit 94; fi
+  jq '.deployment.services.redis.port=.deployment.services.sql.port | .sharedServices.ports=[1433,9000,2525]' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-invalid.json" isolated >/dev/null 2>&1; then exit 95; fi
   for accepted_root in /srv/hvo '/opt/hvo data/runtime'; do
     jq --arg root "$accepted_root" '.logicHost.runtimeRoot=$root' "$BASE_INVENTORY" > "$TEMP_DIR/root.json"
     deploy_validate_inventory "$TEMP_DIR/root.json" isolated
@@ -462,6 +530,8 @@ jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext",
   done
   jq '.catalog.version="catalog:v1"' "$BASE_INVENTORY" > "$TEMP_DIR/catalog.json"
   if deploy_validate_inventory "$TEMP_DIR/catalog.json" isolated >/dev/null 2>&1; then exit 93; fi
+  jq '.deployment.secretMappings |= map(select(.key != "Minio__AccessKey"))' "$BASE_INVENTORY" > "$TEMP_DIR/mapping-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/mapping-invalid.json" isolated >/dev/null 2>&1; then exit 96; fi
 )
 runtime_pattern="$(jq -r '."$defs".applicationTarget.properties.runtimeRoot.pattern' "$REPO_ROOT/deploy/split-host/inventory.schema.json")"
 for accepted_root in /srv/hvo '/opt/hvo data/runtime'; do
@@ -492,7 +562,7 @@ test "$(stat -c %a "$evidence")" = 600
 grep -Fq $'docker\t--context\teast-context\tinfo' "$LOG"
 grep -Fq $'docker\t--context\teast-context\tcompose\tversion\t--short' "$LOG"
 grep -Fq $'east@example\tbash\t-s\t--\t127.0.0.1' "$LOG"
-grep -Fq $'east@example\tbash\t-s\t--\thttp://127.0.0.1:' "$LOG"
+grep -Fq $'east@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
 grep -Fq 'timeout 8 bash -c' "$REMOTE_LOG"
 grep -Fq 'curl --silent --show-error' "$REMOTE_LOG"
 if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|rm|create|mkdir|install|touch)([[:space:]]|$)' "$REMOTE_LOG"; then fail 'Remote preflight script contains mutation commands.'; fi
@@ -521,7 +591,7 @@ FAKE_MISSING_BASH_HOST=east expect_failure 'ssh status=failed reason=tool-unavai
 # The actual remote Bash scripts exercise reachable and unreachable TCP/HTTP paths.
 jq --argjson port "$UNREACHABLE_PORT" '.serviceEndpoints[0].port=$port' "$BASE_INVENTORY" > "$INVENTORY"
 expect_failure 'test-service status=failed reason=unreachable' tcp-unreachable
-jq --argjson port "$UNREACHABLE_PORT" '.logicHost.publicEndpoint=("http://127.0.0.1:"+($port|tostring)) | .logicHost.ports=[$port]' "$BASE_INVENTORY" > "$INVENTORY"
+jq --argjson port "$UNREACHABLE_PORT" '.logicHost.publicEndpoint=("https://127.0.0.1:"+($port|tostring))' "$BASE_INVENTORY" > "$INVENTORY"
 expect_failure 'logic-public-authority status=failed reason=unreachable' http-unreachable
 cp "$BASE_INVENTORY" "$INVENTORY"
 
@@ -545,7 +615,7 @@ jq -e '.targets[] | select(.name == "east") | .deploymentState == "needs_prepare
 # Secret diagnostics are bounded, and unsafe local lock entries are never followed or truncated.
 chmod 644 "$SECRET_FILE"; : > "$LOG"; expect_failure 'secret-source-must-be-owner-only' secret-mode; test ! -s "$LOG"; chmod 600 "$SECRET_FILE"
 FAKE_STAT_ERROR_PATH="$SECRET_FILE" expect_failure 'secret-source-stat-failed' secret-stat-error
-FAKE_GREP_ERROR=true expect_failure 'required-reference-missing' secret-grep-error
+FAKE_GREP_ERROR=true expect_failure 'required-reference-scan-failed' secret-grep-error
 mkdir -m 700 "$TEMP_DIR/output/lock-symlink-state" "$TEMP_DIR/output/lock-symlink-evidence"
 printf 'preserve-lock-target\n' > "$TEMP_DIR/lock-target"; ln -s "$TEMP_DIR/lock-target" "$TEMP_DIR/output/lock-symlink-state/run.lock"
 expect_failure 'unsafe-lock-entry' lock-symlink; test "$(<"$TEMP_DIR/lock-target")" = preserve-lock-target
@@ -555,7 +625,11 @@ expect_failure 'unsafe-lock-entry' lock-hardlink; test "$(<"$TEMP_DIR/hardlink-t
 
 # Static strictness includes explicit endpoint ports and shared target shape.
 jq '.logicHost.publicEndpoint="http://127.0.0.1"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' missing-public-port
-jq '.logicHost.ports=[12345]' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' public-port-mismatch
+: > "$LOG"
+jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$BASE_INVENTORY" > "$INVENTORY"
+expect_failure 'schema-or-value-invalid' isolated-logic-http
+test ! -s "$LOG" || fail 'Isolated LogicHost HTTP rejection contacted transport.'
+jq '.logicHost.internalEndpoint="http://127.0.0.1:12345"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' internal-port-mismatch
 jq '.logicHost.runtimeRoot="/srv/../private"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' traversal
 jq '.logicHost.extra="rejected"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' unknown
 jq '.images.tag="latest"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' mutable-image-tag
@@ -564,14 +638,70 @@ jq '.images.distributionMode="archive" | .images.registryImmutableTags=false | .
 jq '.images.registryImmutableTags=false' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' mutable-registry-policy
 jq '.images.builder.endpoint="remote-context"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' declared-remote-builder
 
+# Duplicate secret entries are rejected globally before transport for every controlled secret class.
+for secret_case in sql redis minio certificate owner bootstrap; do
+    duplicate_reference="DUPLICATE_${secret_case^^}"
+    cp "$SECRET_FILE" "$TEMP_DIR/duplicate-secret.base"
+    printf '%s=first\n%s=second\n' "$duplicate_reference" "$duplicate_reference" >> "$SECRET_FILE"
+    case "$secret_case" in
+      sql) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.sql.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      redis) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.redis.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      minio) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.minio.rootSecretKeyReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      certificate) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] |
+        .deployment.certificates.signingPasswordReference=$reference |
+        .deployment.secretMappings += [{reference:$reference,key:"OpenIddictCertificates__SigningPassword"}]' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      owner) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .cameraAgents[0].ownerPasswordSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      bootstrap) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.deviceBootstrap.clientSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+    esac
+    : > "$LOG"
+    expect_failure 'duplicate-secret-reference' "duplicate-$secret_case"
+    test ! -s "$LOG" || fail "Duplicate $secret_case secret reached transport."
+    mv "$TEMP_DIR/duplicate-secret.base" "$SECRET_FILE"
+done
+cp "$BASE_INVENTORY" "$INVENTORY"
+cp "$SECRET_FILE" "$TEMP_DIR/duplicate-secret.base"
+printf 'UNUSED_DUPLICATE=first\nUNUSED_DUPLICATE=second\n' >> "$SECRET_FILE"
+: > "$LOG"
+expect_failure 'duplicate-secret-reference' duplicate-unrequired
+test ! -s "$LOG" || fail 'Unrequired duplicate secret reached transport.'
+mv "$TEMP_DIR/duplicate-secret.base" "$SECRET_FILE"
+(
+  # shellcheck source=scripts/deploy/up.sh
+  source "$REPO_ROOT/scripts/deploy/up.sh"
+  printf 'EXACT=one\nEXACT=two\n' > "$TEMP_DIR/extraction-duplicate.env"
+  printf 'CONTROL=before\rafter\n' > "$TEMP_DIR/extraction-control.env"
+  chmod 600 "$TEMP_DIR/extraction-duplicate.env" "$TEMP_DIR/extraction-control.env"
+  if deploy_secret_value "$TEMP_DIR/extraction-duplicate.env" EXACT >/dev/null 2>&1; then exit 91; fi
+  if deploy_secret_value "$TEMP_DIR/extraction-duplicate.env" MISSING >/dev/null 2>&1; then exit 92; fi
+  if deploy_secret_value "$TEMP_DIR/extraction-control.env" CONTROL >/dev/null 2>&1; then exit 93; fi
+)
+
+# Every secret class rejects carriage returns and other control bytes before rendering.
+for secret_case in sql redis minio client certificate; do
+    control_reference="CONTROL_${secret_case^^}"
+    cp "$SECRET_FILE" "$TEMP_DIR/control-secret.base"
+    printf '%s=before\rafter\n' "$control_reference" >> "$SECRET_FILE"
+    case "$secret_case" in
+      sql) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.sql.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      redis) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.redis.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      minio) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.minio.rootSecretKeyReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      client) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.deviceBootstrap.clientSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      certificate) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] |
+        .deployment.certificates.signingPasswordReference=$reference |
+        .deployment.secretMappings += [{reference:$reference,key:"OpenIddictCertificates__SigningPassword"}]' "$BASE_INVENTORY" > "$INVENTORY" ;;
+    esac
+    expect_failure 'control-character-rejected' "control-$secret_case"
+    mv "$TEMP_DIR/control-secret.base" "$SECRET_FILE"
+done
+cp "$BASE_INVENTORY" "$INVENTORY"
+
 # Persistent mode requires a production catalog and HTTPS on LogicHost, every CameraAgent, and shared services.
-jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:")' "$BASE_INVENTORY" > "$TEMP_DIR/persistent-base.json"
-jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-logic-http
+jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:") |
+  .logicHost.trustedProxyAddresses=["127.0.0.1"] | (.cameraAgents[].trustedProxyAddresses)=["127.0.0.1"]' "$BASE_INVENTORY" > "$TEMP_DIR/persistent-base.json"
+jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-logic-http schema-or-value-invalid
 jq '.cameraAgents[0].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-east-http
 jq '.cameraAgents[1].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-west-http
-jq --arg owner "$(id -un)" '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
-  expectedHostName:"shared-node",expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:"/srv/hvo/shared",
-  runtimeOwner:$owner,publicEndpoint:"http://shared.example:9443",ports:[9443]}' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-shared-http
+jq '.logicHost.trustedProxyAddresses=[]' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-proxy-missing
 jq '.catalog.kind="fixture"' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-fixture-catalog
 
 # A successful run followed by a transport failure publishes failed, not stale passed, evidence.
@@ -1018,6 +1148,181 @@ if grep -R -Eq 'logic-machine|east-machine|west-machine' "$TEMP_DIR/output"/*-ev
     fail 'Sanitized prepare evidence exposed machine identity.'
 fi
 
+# Catalog and up execute against fake remote hosts without trusting prior phase state.
+deploy_case=deploy-up
+bundle="$TEMP_DIR/catalog-bundle"
+install_root="$TEMP_DIR/catalog-install"
+mkdir -m 700 "$bundle"
+cp "$REPO_ROOT/tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" "$bundle/hyg_v42.sqlite"
+catalog_sha="$(sha256sum "$bundle/hyg_v42.sqlite" | cut -d' ' -f1)"
+catalog_length="$(wc -c < "$bundle/hyg_v42.sqlite")"
+jq -n --arg sha "$catalog_sha" --argjson length "$catalog_length" '{manifestVersion:1,
+  package:{kind:"fixture",version:"fixture-v1"},catalog:{name:"HYG bright-star test fixture",version:"4.2-fixture.1"},
+  schemaVersion:"2",preprocessingVersion:"3",database:{relativePath:"hyg_v42.sqlite",sha256:$sha,length:$length,rowCount:9}}' > "$bundle/manifest.json"
+printf 'certificate-fixture\n' > "$TEMP_DIR/signing.pfx"
+printf 'certificate-fixture\n' > "$TEMP_DIR/encryption.pfx"
+chmod 600 "$TEMP_DIR/signing.pfx" "$TEMP_DIR/encryption.pfx"
+jq --arg root "$TEMP_DIR/remote/$deploy_case" --arg bundle "$bundle" --arg install "$install_root" --arg endpoint "http://127.0.0.1:$HTTP_PORT" \
+  --arg public "https://public.example.test:$HTTP_PORT" \
+  --arg signing "$TEMP_DIR/signing.pfx" --arg encryption "$TEMP_DIR/encryption.pfx" --arg sha "$catalog_sha" \
+  --argjson port "$HTTP_PORT" --argjson length "$catalog_length" '
+  .catalog={kind:"fixture",version:"fixture-v1",sha256:$sha,length:$length,rowCount:9} |
+  .deployment.catalog={bundlePath:$bundle,installRoot:$install,allowFixture:true} |
+  .deployment.services.sql.database="hvo-deploy-up" | .deployment.resources.sqlDatabase="hvo-deploy-up" |
+  .deployment.services.redis.prefix="hvo-deploy-up:" | .deployment.resources.redisPrefix="hvo-deploy-up:" |
+  .deployment.services.minio.artifactBucket="hvo-deploy-up-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-up-artifacts" |
+  .deployment.services.minio.diagnosticsBucket="hvo-deploy-up-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-up-diagnostics" |
+  .deployment.resources.project="hvo-deploy-up" |
+  .deployment.certificates.signingPath=$signing | .deployment.certificates.encryptionPath=$encryption |
+  .logicHost.runtimeRoot=($root+"-logic/runtime") | .logicHost.internalEndpoint=$endpoint | .logicHost.publicEndpoint=$public | .logicHost.trustedProxyAddresses=["127.0.0.1"] | .logicHost.ports=[$port] |
+  (.cameraAgents[0].runtimeRoot)=($root+"-east/runtime") | (.cameraAgents[0].internalEndpoint)=$endpoint | (.cameraAgents[0].publicEndpoint)=$public | (.cameraAgents[0].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[0].ports)=[$port] |
+  (.cameraAgents[1].runtimeRoot)=($root+"-west/runtime") | (.cameraAgents[1].internalEndpoint)=$endpoint | (.cameraAgents[1].publicEndpoint)=$public | (.cameraAgents[1].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[1].ports)=[$port] |
+  (.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.minio.port,.deployment.services.smtp.port)=$port |
+  .serviceEndpoints=[{name:"test-service",host:"127.0.0.1",port:$port,fromTargets:["logic","east","west"]}]' \
+  "$BASE_INVENTORY" > "$INVENTORY"
+mkdir -m 700 "$TEMP_DIR/remote/$deploy_case-logic" "$TEMP_DIR/remote/$deploy_case-east" "$TEMP_DIR/remote/$deploy_case-west"
+run_deploy_mode preflight "$deploy_case" isolated >/dev/null
+run_deploy_mode prepare "$deploy_case" isolated >/dev/null
+rm -f "$FAKE_IMAGE_STATE"/*.pushed "$FAKE_IMAGE_STATE"/*.platforms "$FAKE_IMAGE_STATE"/*.labels "$FAKE_IMAGE_STATE"/*.reference "$FAKE_IMAGE_STATE"/*.config
+run_deploy_mode images "$deploy_case" isolated >/dev/null
+
+# Fixture manifest identity and shape mismatches fail before SSH, SCP, or installation.
+cp "$bundle/manifest.json" "$TEMP_DIR/fixture-manifest.valid"
+for fixture_mismatch in kind version sha length rows shape; do
+    case "$fixture_mismatch" in
+      kind) jq '.package.kind="production"' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      version) jq '.package.version="other-fixture"' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      sha) jq '.database.sha256=("0"*64)' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      length) jq '.database.length += 1' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      rows) jq '.database.rowCount += 1' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      shape) cp "$TEMP_DIR/fixture-manifest.valid" "$bundle/manifest.json"; printf 'unexpected\n' > "$bundle/unexpected.txt" ;;
+    esac
+    : > "$LOG"
+    if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-mismatch.log" 2>&1; then fail "Fixture catalog $fixture_mismatch mismatch passed."; fi
+    test ! -s "$LOG" || fail "Fixture catalog $fixture_mismatch mismatch reached transport."
+    rm -f "$bundle/unexpected.txt"
+done
+cp "$TEMP_DIR/fixture-manifest.valid" "$bundle/manifest.json"
+
+# A production-shaped bundle with inventory-mismatched identity is rejected before transport or the production installer.
+production_mismatch_bundle="$TEMP_DIR/production-mismatch-bundle"
+mkdir -m 700 "$production_mismatch_bundle"
+cp "$bundle/hyg_v42.sqlite" "$production_mismatch_bundle/hyg_v42.sqlite"
+printf 'license\n' > "$production_mismatch_bundle/LICENSE-HYG.md"
+printf 'attribution\n' > "$production_mismatch_bundle/ATTRIBUTION-HYG.md"
+jq '.package.kind="production" | .package.version="wrong-production"' "$TEMP_DIR/fixture-manifest.valid" > "$production_mismatch_bundle/manifest.json"
+jq --arg bundle "$production_mismatch_bundle" '.catalog.kind="production" | .catalog.version="expected-production" |
+  .deployment.catalog.bundlePath=$bundle' "$INVENTORY" > "$TEMP_DIR/production-mismatch-inventory.json"
+: > "$LOG"
+(
+  # shellcheck source=scripts/deploy/common.sh
+  source "$REPO_ROOT/scripts/deploy/common.sh"
+  # shellcheck source=scripts/deploy/catalog.sh
+  source "$REPO_ROOT/scripts/deploy/catalog.sh"
+  if deploy_validate_local_catalog "$TEMP_DIR/production-mismatch-inventory.json" > "$TEMP_DIR/production-catalog-mismatch.log" 2>&1; then
+      exit 91
+  fi
+)
+test ! -s "$LOG" || fail 'Production catalog mismatch reached transport.'
+run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+run_deploy_mode up "$deploy_case" isolated >/dev/null
+run_deploy_mode up "$deploy_case" isolated >/dev/null
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and ([.targets[].target] | unique | length) == 3 and
+  ([.resources[].kind] | sort) == ["existing-services","logic-initializer"]' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and all(.targets[]; .status == "installed")' \
+  "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" >/dev/null
+logic_config="$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/up-$deploy_case"
+test -f "$logic_config/initializer-secrets/ConnectionStrings__skymonitordb-migrations"
+test ! -e "$logic_config/runtime-secrets/ConnectionStrings__skymonitordb-migrations"
+test -f "$logic_config/runtime-secrets/ConnectionStrings__skymonitordb"
+test ! -e "$logic_config/initializer-secrets/ConnectionStrings__skymonitordb"
+test "$(<"$logic_config/initializer-secrets/Catalog__Root")" = /app/catalog
+test "$(<"$logic_config/runtime-secrets/Catalog__Root")" = /app/catalog
+test "$(<"$logic_config/initializer-secrets/Catalog__RequiredPackageKind")" = Fixture
+grep -Fq "HVO_CATALOG_ROOT=$TEMP_DIR/catalog-install" "$TEMP_DIR/output/$deploy_case-state/up-rendered/logic.env"
+test ! -e "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case/secrets/ConnectionStrings__skymonitordb"
+east_config="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case"
+test "$(<"$east_config/secrets/LocalIdentity__AdminPasswordFile")" = /run/hvo-private/owner-password
+test "$(<"$east_config/secrets/CameraAgent__ConfigFilePath")" = /app/cameraagent.deploy.json
+test "$(<"$east_config/secrets/SkyMonitor__BaseUrl")" = "https://public.example.test:$HTTP_PORT"
+test "$(<"$east_config/secrets/Catalog__Root")" = /app/catalog
+test "$(<"$east_config/secrets/Catalog__RequiredPackageKind")" = Fixture
+cmp -s "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json" "$east_config/camera-module.json"
+test -s "$east_config/private/owner-password"
+test ! -e "$east_config/cameraagent.json"
+if grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output/$deploy_case-evidence"; then fail 'Deployment evidence exposed a secret.'; fi
+grep -Fq $'compose\t--project-name\thvo-deploy-up-logic' "$LOG"
+
+# Production startup selects the production resolver contract; fixture staging above covers both hosts and the complete root mount.
+production_inventory="$TEMP_DIR/production-startup-inventory.json"
+jq '.catalog.kind="production"' "$INVENTORY" > "$production_inventory"
+(
+  # shellcheck source=scripts/deploy/up.sh
+  source "$REPO_ROOT/scripts/deploy/up.sh"
+  test "$(deploy_up_catalog_required_kind "$production_inventory")" = Production
+)
+
+# Corrupt image evidence and mutable references are rejected before startup state changes.
+cp "$TEMP_DIR/output/$deploy_case-evidence/images.json" "$TEMP_DIR/images.valid.json"
+jq '.images[0].reference="registry.example/logichost:latest"' "$TEMP_DIR/images.valid.json" > "$TEMP_DIR/output/$deploy_case-evidence/images.json"
+if run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/up-failure.log" 2>&1; then fail 'Corrupt image evidence passed up.'; fi
+grep -Fq 'images-authority' "$TEMP_DIR/up-failure.log"
+cp "$TEMP_DIR/images.valid.json" "$TEMP_DIR/output/$deploy_case-evidence/images.json"
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null
+
+# Deploy-mode services use the declared shared SSH/Docker target and preserve partial progress on failure.
+deploy_services=deploy-services
+jq --arg root "$TEMP_DIR/remote/$deploy_services" --arg endpoint "http://127.0.0.1:$HTTP_PORT" --arg owner "$(id -un)" --argjson port "$HTTP_PORT" '
+  .deployment.services.mode="deploy" | .deployment.services.smtp.kind="mailpit" |
+  .deployment.services.sql.port=1433 | .deployment.services.redis.port=6379 | .deployment.services.minio.port=9000 | .deployment.services.smtp.port=2525 |
+  .deployment.services.images={sqlServer:("registry.example/sql@sha256:"+("1"*64)),redis:("registry.example/redis@sha256:"+("2"*64)),
+    minio:("registry.example/minio@sha256:"+("3"*64)),minioClient:("registry.example/mc@sha256:"+("4"*64)),mailpit:("registry.example/mailpit@sha256:"+("5"*64))} |
+  .deployment.services.sql.database="hvo-deploy-services" | .deployment.resources.sqlDatabase="hvo-deploy-services" |
+  .deployment.services.redis.prefix="hvo-deploy-services:" | .deployment.resources.redisPrefix="hvo-deploy-services:" |
+  .deployment.services.minio.artifactBucket="hvo-deploy-services-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-services-artifacts" |
+  .deployment.services.minio.diagnosticsBucket="hvo-deploy-services-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-services-diagnostics" |
+  .deployment.resources.project="hvo-deploy-services" |
+  .sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",expectedHostName:"shared-node",
+    expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:($root+"-shared/runtime"),runtimeOwner:$owner,ports:[1433,6379,9000,2525]} |
+  .logicHost.runtimeRoot=($root+"-logic/runtime") | .logicHost.internalEndpoint=$endpoint | .logicHost.ports=[$port] |
+  (.cameraAgents[0].runtimeRoot)=($root+"-east/runtime") | (.cameraAgents[0].internalEndpoint)=$endpoint | (.cameraAgents[0].ports)=[$port] |
+  (.cameraAgents[1].runtimeRoot)=($root+"-west/runtime") | (.cameraAgents[1].internalEndpoint)=$endpoint | (.cameraAgents[1].ports)=[$port]' \
+  "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+mkdir -m 700 "$TEMP_DIR/remote/$deploy_services-logic" "$TEMP_DIR/remote/$deploy_services-east" "$TEMP_DIR/remote/$deploy_services-west" "$TEMP_DIR/remote/$deploy_services-shared"
+run_deploy_mode preflight "$deploy_services" isolated >/dev/null
+run_deploy_mode prepare "$deploy_services" isolated >/dev/null
+rm -f "$FAKE_IMAGE_STATE"/*.pushed "$FAKE_IMAGE_STATE"/*.platforms "$FAKE_IMAGE_STATE"/*.labels "$FAKE_IMAGE_STATE"/*.reference "$FAKE_IMAGE_STATE"/*.config
+run_deploy_mode images "$deploy_services" isolated >/dev/null
+if FAKE_SCP_FAIL_DEST="$deploy_services-west" run_deploy_mode catalog "$deploy_services" isolated > "$TEMP_DIR/catalog-failure.log" 2>&1; then fail 'Catalog partial failure passed.'; fi
+jq -e '.phaseStatus == "failed" and ([.targets[].target] | sort) == ["east","logic"]' "$TEMP_DIR/output/$deploy_services-state/catalog-ledger.json" >/dev/null
+jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_services-evidence/catalog.json" >/dev/null
+run_deploy_mode catalog "$deploy_services" isolated >/dev/null
+export FAKE_RUNTIME_UID_HOST=shared FAKE_RUNTIME_UID=4242 FAKE_RUNTIME_GID=4343
+if FAKE_COMPOSE_FAIL_MATCH="hvo-deploy-services-east" run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-failure.log" 2>&1; then fail 'Up partial failure passed.'; fi
+jq -e '.phaseStatus == "failed" and ([.targets[].target] | sort) == ["logic"] and
+  ([.resources[].kind] | sort) == ["logic-initializer","runtime-role","shared-services"]' "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null
+jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_services-evidence/up.json" >/dev/null
+run_deploy_mode up "$deploy_services" isolated >/dev/null
+jq -e '.phaseStatus == "passed" and ([.resources[].kind] | sort) == ["logic-initializer","runtime-role","shared-services"] and (.targets | length) == 3' \
+  "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null
+test "$(<"$TEMP_DIR/remote/$deploy_services-logic/runtime/.hvo-deploy/up-$deploy_services/runtime-secrets/Minio__AccessKey")" = generated-minio-access
+test "$(<"$TEMP_DIR/remote/$deploy_services-logic/runtime/.hvo-deploy/up-$deploy_services/runtime-secrets/Minio__SecretKey")" = 'generated:/@"minio-secret-never-print'
+shared_render_env="$TEMP_DIR/output/$deploy_services-state/up-rendered/shared.env"
+grep -Fxq 'HVO_RUNTIME_UID=4242' "$shared_render_env"
+grep -Fxq 'HVO_RUNTIME_GID=4343' "$shared_render_env"
+grep -Fq $'SQL_PROVISION_PHASE=after\tsql-provision' "$LOG"
+grep -Fq $'ssh\t-o\tBatchMode=yes\t-o\tConnectTimeout=8\t--\tshared@example' "$LOG"
+grep -Fq $'docker\t--context\tshared-context\tcompose' "$LOG"
+if grep -Fq '+@all' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"; then fail 'Redis deploy ACL grants all commands.'; fi
+if grep -Eq 'sqlcmd[^\n]*[[:space:]]-P|redis-cli[^\n]*[[:space:]]-a|mc alias set|MC_HOST_' \
+  "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then
+  fail 'Provisioning places a credential in process arguments.'
+fi
+if grep -Eq 'fixture-secret-never-print|minio-root-never-print|minio-secret-never-print|east-owner-never-print|west-owner-never-print' "$LOG" ||
+  grep -R -Eq 'fixture-secret-never-print|minio-root-never-print|minio-secret-never-print|east-owner-never-print|west-owner-never-print' \
+    "$TEMP_DIR/output/$deploy_services-evidence" "$TEMP_DIR/output/$deploy_services-state/up-rendered"; then fail 'Deploy-mode command/evidence/rendering exposed a secret.'; fi
+test ! -e "$TEMP_DIR/output/$deploy_services-state/up-rendered/minio-runtime.json"
+
 : > "$LOG"
 cp "$BASE_INVENTORY" "$INVENTORY"
 if DEPLOY_TEST_FAILPOINT=after-evidence-before-passed-manifest run_deploy evidence-first-crash > "$TEMP_DIR/failure.log" 2>&1; then
@@ -1042,4 +1347,4 @@ test ! -e "$TEMP_DIR/output/interrupted-evidence/preflight.json"
 run_deploy interrupted >/dev/null
 
 if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|compose[[:space:]]+up|compose[[:space:]]+down)([[:space:]]|$)' "$LOG"; then fail 'Preflight invoked deployment mutation.'; fi
-printf 'Split-host deploy preflight contract passed.\n'
+printf 'Split-host deployment contract passed.\n'

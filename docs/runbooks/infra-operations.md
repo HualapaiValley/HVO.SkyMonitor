@@ -169,6 +169,14 @@ the secret of an existing account. Follow the MinIO operator's approved
 rotation procedure, reapply and inspect the scoped policy, then validate both
 approved buckets before restarting applications.
 
+The schema-v5 split-host workflow is separate from local `infra:*` ownership.
+In isolated `services.mode: deploy`, it creates a run database with distinct
+initializer/runtime SQL users, a prefix-scoped Redis ACL user, and a MinIO user
+limited to the two run buckets. In `existing` mode it does not create or alter
+service identities. See
+[`split-host-preflight.md`](split-host-preflight.md) for the exact inventory and
+controlled-start sequence.
+
 ## Backup and Restore Boundary
 
 A complete recovery set contains:

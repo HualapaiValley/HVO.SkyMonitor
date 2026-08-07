@@ -133,6 +133,152 @@ deploy_transport_image_inspect() {
       "$2" 2>/dev/null
 }
 
+deploy_transport_copy() {
+    local source="$1" ssh_host="$2" destination="$3"
+    scp -q -o BatchMode=yes -o ConnectTimeout=8 -r -- "$source" "$ssh_host:$destination" >/dev/null 2>&1
+}
+
+deploy_transport_copy_private_file() {
+    local source="$1" ssh_host="$2" destination="$3" temporary="$3.hvo-upload.$$"
+    [[ -f "$source" && ! -L "$source" ]] || return 1
+    scp -q -o BatchMode=yes -o ConnectTimeout=8 -- "$source" "$ssh_host:$temporary" >/dev/null 2>&1 || return 1
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$temporary" "$destination" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+temporary=$1; destination=$2; parent=${destination%/*}
+trap 'rm -f -- "$temporary"' EXIT
+[[ "$temporary" == /* && "$destination" == /* && "$parent" != "$destination" && -d "$parent" && ! -L "$parent" ]] || exit 90
+[[ -f "$temporary" && ! -L "$temporary" && "$(stat -c %h "$temporary")" == 1 ]] || exit 91
+chmod 600 "$temporary"
+mv -Tf -- "$temporary" "$destination"
+trap - EXIT
+REMOTE
+}
+
+deploy_transport_fetch_private_file() {
+    local ssh_host="$1" source="$2" destination="$3" expected_uid="${4:-}" expected_gid="${5:-}"
+    rm -f -- "$destination"
+    if [[ -n "$expected_uid" || -n "$expected_gid" ]]; then
+        [[ -n "$expected_uid" && -n "$expected_gid" ]] || return 1
+        ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$source" "$expected_uid" "$expected_gid" 2>/dev/null <<'REMOTE' || return 1
+set -euo pipefail
+source=$1; expected_uid=$2; expected_gid=$3
+[[ "$source" == /* && -f "$source" && ! -L "$source" && "$(stat -c '%u:%g:%h:%a' "$source")" == "$expected_uid:$expected_gid:1:600" ]] || exit 90
+REMOTE
+    fi
+    scp -q -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host:$source" "$destination" >/dev/null 2>&1 || { rm -f -- "$destination"; return 1; }
+    [[ -f "$destination" && ! -L "$destination" && "$(stat -c %h "$destination" 2>/dev/null)" == 1 ]] || { rm -f -- "$destination"; return 1; }
+    chmod 600 "$destination" || { rm -f -- "$destination"; return 1; }
+}
+
+deploy_transport_owner_identity() {
+    local ssh_host="$1" runtime_owner="$2"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$runtime_owner" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+runtime_owner=$1
+runtime_uid=$(id -u "$runtime_owner"); runtime_gid=$(id -g "$runtime_owner")
+[[ "$(id -u)" == "$runtime_uid" && "$(id -g)" == "$runtime_gid" ]] || exit 90
+printf '%s\t%s\n' "$runtime_uid" "$runtime_gid"
+REMOTE
+}
+
+deploy_transport_validate_private_file_identity() {
+    local ssh_host="$1" source="$2" expected_uid="$3" expected_gid="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$source" "$expected_uid" "$expected_gid" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+source=$1; expected_uid=$2; expected_gid=$3
+[[ "$source" == /* && -f "$source" && ! -L "$source" && "$(stat -c '%u:%g:%h:%a' "$source")" == "$expected_uid:$expected_gid:1:600" ]] || exit 90
+REMOTE
+}
+
+deploy_transport_remote_directories() {
+    local ssh_host="$1"
+    shift
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+for path in "$@"; do
+  [[ "$path" == /* && "$path" != / && "$path" != *//* && "$path" != */../* && "$path" != */./* ]] || exit 90
+  if [[ -e "$path" || -L "$path" ]]; then [[ -d "$path" && ! -L "$path" ]] || exit 91
+  else mkdir -m 700 -- "$path"; fi
+  chmod 700 -- "$path"
+done
+REMOTE
+}
+
+deploy_transport_catalog_install() {
+    local ssh_host="$1"
+    shift
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+stage=$1; install_root=$2; kind=$3; version=$4; expected_sha=$5; expected_length=$6; expected_rows=$7
+bundle="$stage/bundle"; database="$bundle/hyg_v42.sqlite"
+[[ -d "$bundle" && ! -L "$bundle" && -f "$database" && ! -L "$database" ]] || exit 92
+[[ "$(sha256sum "$database" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$database")" == "$expected_length" ]] || exit 93
+[[ "$(sqlite3 -batch -noheader -readonly "$database" 'PRAGMA integrity_check;')" == ok ]] || exit 94
+[[ "$(sqlite3 -batch -noheader -readonly "$database" 'SELECT count(*) FROM celestial_objects;')" == "$expected_rows" ]] || exit 95
+if [[ "$kind" == production ]]; then
+  "$stage/scripts/catalog/install-hyg-v42.sh" install "$bundle" "$install_root" >/dev/null
+else
+  destination="$install_root/versions/$version"
+  mkdir -p -- "$install_root/versions"
+  if [[ ! -e "$destination" ]]; then mkdir -m 755 -- "$destination"; cp -a -- "$bundle/." "$destination/"; fi
+  temporary="$install_root/.current.tmp.$$"
+  ln -s "versions/$version" "$temporary"; mv -Tf -- "$temporary" "$install_root/current"
+fi
+current="$(readlink "$install_root/current")"; installed="$install_root/$current/hyg_v42.sqlite"
+[[ -f "$installed" && "$(sha256sum "$installed" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$installed")" == "$expected_length" ]] || exit 96
+[[ "$(sqlite3 -batch -noheader -readonly "$installed" 'PRAGMA integrity_check; SELECT count(*) FROM celestial_objects;')" == $'ok\n'"$expected_rows" ]] || exit 97
+printf 'installed\t%s\t%s\n' "$current" "$expected_sha"
+REMOTE
+}
+
+deploy_transport_catalog_prepare_scripts() {
+    local ssh_host="$1" stage="$2"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$stage" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+stage=$1
+[[ "$stage" == /* && -d "$stage/scripts/catalog" && ! -L "$stage/scripts" && ! -L "$stage/scripts/catalog" ]] || exit 90
+for path in "$stage/scripts/catalog/catalog-common.sh" "$stage/scripts/catalog/install-hyg-v42.sh" "$stage/scripts/infra:operation-lock"; do
+  [[ -f "$path" && ! -L "$path" && "$(stat -c %h "$path")" == 1 ]] || exit 91
+  chmod 700 "$path"
+done
+REMOTE
+}
+
+deploy_transport_catalog_verify() {
+    local ssh_host="$1"
+    shift
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+install_root=$1; expected_version=$2; expected_sha=$3; expected_length=$4; expected_rows=$5
+[[ -L "$install_root/current" ]] || exit 90
+current=$(readlink "$install_root/current")
+[[ "$current" == "versions/$expected_version" ]] || exit 91
+database="$install_root/$current/hyg_v42.sqlite"
+[[ -f "$database" && ! -L "$database" && "$(sha256sum "$database" | cut -d' ' -f1)" == "$expected_sha" &&
+   "$(wc -c < "$database")" == "$expected_length" ]] || exit 92
+[[ "$(sqlite3 -batch -noheader -readonly "$database" 'PRAGMA integrity_check; SELECT count(*) FROM celestial_objects;')" == $'ok\n'"$expected_rows" ]] || exit 93
+printf 'verified\t%s\t%s\n' "$current" "$expected_sha"
+REMOTE
+}
+
+deploy_transport_compose() {
+    local context="$1" project="$2" env_file="$3" compose_file="$4"
+    shift 4
+    docker --context "$context" compose --project-name "$project" --env-file "$env_file" --file "$compose_file" "$@" >/dev/null 2>&1
+}
+
+deploy_transport_http_ready() {
+    local ssh_host="$1" url="$2"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$url" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+for _ in $(seq 1 60); do
+  if curl --fail --silent --show-error --max-time 5 "$1" >/dev/null; then exit 0; fi
+  sleep 2
+done
+exit 1
+REMOTE
+}
+
 deploy_transport_prepare_target() {
     local ssh_host="$1"
     shift
