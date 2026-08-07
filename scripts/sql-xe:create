@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf '%s\n' 'Usage: sql-xe:create --root PATH --root-owner USER --service-user USER --run-id HEX32 [--preflight-only | --server SERVER --database DATABASE --credential-file PATH --include-instance-deadlocks [--trust-server-certificate]]' >&2
+    exit 2
+}
+
+root=''
+root_owner=''
+service_user=''
+run_id=''
+server=''
+database=''
+credential_file=''
+preflight_only=false
+include_instance_deadlocks=0
+trust_server_certificate=false
+test_fault=''
+
+while (( $# > 0 )); do
+    case "$1" in
+        --root|--root-owner|--service-user|--run-id|--server|--database|--credential-file|--test-fault)
+            (( $# >= 2 )) || usage
+            case "$1" in
+                --root) root="$2" ;;
+                --root-owner) root_owner="$2" ;;
+                --service-user) service_user="$2" ;;
+                --run-id) run_id="$2" ;;
+                --server) server="$2" ;;
+                --database) database="$2" ;;
+                --credential-file) credential_file="$2" ;;
+                --test-fault) test_fault="$2" ;;
+            esac
+            shift 2
+            ;;
+        --include-instance-deadlocks)
+            include_instance_deadlocks=1
+            shift
+            ;;
+        --preflight-only)
+            preflight_only=true
+            shift
+            ;;
+        --trust-server-certificate)
+            trust_server_certificate=true
+            shift
+            ;;
+        *) usage ;;
+    esac
+done
+
+[[ "$root" =~ ^/[0-9A-Za-z_./-]+$ && "$root" != / && "$root" != *'..'* && "$root" != *'//'* ]] || usage
+[[ "$root_owner" =~ ^[0-9A-Za-z_][0-9A-Za-z_-]*$ && "$service_user" =~ ^[0-9A-Za-z_][0-9A-Za-z_-]*$ ]] || usage
+[[ "$run_id" =~ ^[0-9a-f]{32}$ ]] || usage
+if [[ "$preflight_only" == true ]]; then
+    [[ -z "$server" && -z "$database" && -z "$credential_file" && "$include_instance_deadlocks" == 0 &&
+       "$trust_server_certificate" == false && -z "$test_fault" ]] || usage
+else
+    [[ "$server" =~ ^[0-9A-Za-z][0-9A-Za-z_.:,/-]*$ && "$database" =~ ^[0-9A-Za-z_][0-9A-Za-z_-]*$ &&
+       "$credential_file" =~ ^/[0-9A-Za-z_./-]+$ && "$credential_file" != *'..'* && "$credential_file" != *'//'* ]] || usage
+    if [[ -n "$test_fault" ]]; then
+        [[ "${HVO_SQL_XE_ENABLE_TEST_FAULTS:-}" == 1 && "$test_fault" =~ ^post-sql-parse$|^postcheck-ownership$ ]] || usage
+    fi
+fi
+
+if [[ "$preflight_only" == false ]]; then
+    [[ -f "$credential_file" && ! -L "$credential_file" &&
+       "$(realpath -e -- "$credential_file")" == "$credential_file" &&
+       "$(stat -c '%u:%h:%a' -- "$credential_file")" == "$(id -u):1:600" ]] || {
+        printf '%s\n' 'SQLCMD credential file is not a safe owned mode-0600 regular file.' >&2
+        exit 1
+    }
+    mapfile -t credential_lines < "$credential_file"
+    [[ "${#credential_lines[@]}" == 2 && "${credential_lines[0]}" =~ ^[0-9A-Za-z_-]+$ &&
+       -n "${credential_lines[1]}" ]] || {
+        printf '%s\n' 'SQLCMD credential file content is invalid.' >&2
+        exit 1
+    }
+    sqlcmd_user="${credential_lines[0]}"
+    sqlcmd_password="${credential_lines[1]}"
+    unset credential_lines
+fi
+
+[[ -d "$root" && ! -L "$root" && "$(realpath -e -- "$root")" == "$root" ]] || {
+    printf '%s\n' 'XE root is not an existing canonical nonsymlink directory.' >&2
+    exit 1
+}
+[[ "$(stat -c '%U' -- "$root")" == "$root_owner" ]] || {
+    printf '%s\n' 'XE root owner does not match platform configuration.' >&2
+    exit 1
+}
+root_mode="$(stat -c '%a' -- "$root")"
+(( (8#$root_mode & 0022) == 0 )) || {
+    printf '%s\n' 'XE root must not be group- or world-writable.' >&2
+    exit 1
+}
+
+service_uid="$(id -u "$service_user")"
+service_gid="$(id -g "$service_user")"
+root_uid="$(stat -c '%u' -- "$root")"
+root_gid="$(stat -c '%g' -- "$root")"
+owner_bits=$(( (8#$root_mode >> 6) & 7 ))
+group_bits=$(( (8#$root_mode >> 3) & 7 ))
+other_bits=$(( 8#$root_mode & 7 ))
+service_can_traverse=false
+if [[ "$service_uid" == "$root_uid" ]] && (( (owner_bits & 5) == 5 )); then
+    service_can_traverse=true
+elif { [[ "$service_gid" == "$root_gid" ]] || id -G "$service_user" | tr ' ' '\n' | grep -Fxq "$root_gid"; } && (( (group_bits & 5) == 5 )); then
+    service_can_traverse=true
+elif (( (other_bits & 5) == 5 )); then
+    service_can_traverse=true
+fi
+[[ "$service_can_traverse" == true ]] || {
+    printf '%s\n' 'SQL Server service identity cannot read and traverse the XE root.' >&2
+    exit 1
+}
+
+lock_path="$root/.hvo-xe-create.lock"
+[[ ! -L "$lock_path" ]] || {
+    printf '%s\n' 'XE creation lock must not be a symbolic link.' >&2
+    exit 1
+}
+if [[ ! -e "$lock_path" ]]; then
+    (set -o noclobber; umask 077; : > "$lock_path") 2>/dev/null || true
+fi
+current_uid="$(id -u)"
+[[ -f "$lock_path" && ! -L "$lock_path" &&
+   "$(stat -c '%u:%h:%a' -- "$lock_path")" == "$current_uid:1:600" ]] || {
+    printf '%s\n' 'XE creation lock is not a safe regular file.' >&2
+    exit 1
+}
+exec 200<>"$lock_path"
+flock -x 200
+
+run_directory="$root/hvo-xe-$run_id"
+event_file_path="$run_directory/events"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+sqlcmd_bin="/opt/mssql-tools18/bin/sqlcmd"
+xe_script="$repo_root/deploy/sql/xe-create.sql"
+xe_drop_script="$repo_root/deploy/sql/xe-drop.sql"
+if [[ "$preflight_only" == false ]]; then
+    [[ -x "$sqlcmd_bin" && -f "$xe_script" && ! -L "$xe_script" &&
+       -f "$xe_drop_script" && ! -L "$xe_drop_script" ]] || {
+        printf '%s\n' 'Required sqlcmd executable or XE SQL script is unavailable.' >&2
+        exit 1
+    }
+fi
+run_directory_created=false
+run_directory_identity=''
+directory_phase_succeeded=false
+
+cleanup_directory_phase() {
+    local status="$?"
+    local removed=false
+    if [[ "$directory_phase_succeeded" == true || "$run_directory_created" == false ]]; then
+        return
+    fi
+    trap - EXIT INT TERM HUP
+    set +e
+    if [[ -d "$run_directory" && ! -L "$run_directory" &&
+       "$(realpath -e -- "$run_directory" 2>/dev/null)" == "$run_directory" &&
+       -n "$run_directory_identity" &&
+       "$(stat -c '%d:%i' -- "$run_directory" 2>/dev/null)" == "$run_directory_identity" ]]; then
+        rm -rf -- "$run_directory"
+        [[ ! -e "$run_directory" && ! -L "$run_directory" ]] && removed=true
+    fi
+    if [[ "$removed" == false ]]; then
+        printf '%s\n' 'XE pre-SQL failure cleanup is incomplete.' >&2
+        exit 3
+    fi
+    exit "$status"
+}
+
+trap cleanup_directory_phase EXIT
+trap 'exit 1' INT TERM HUP
+[[ ! -e "$run_directory" && ! -L "$run_directory" ]] || {
+    printf '%s\n' 'XE run directory already exists.' >&2
+    exit 1
+}
+if [[ "$(id -u)" == 0 ]]; then
+    install -d -m 0700 -o "$service_uid" -g "$service_gid" -- "$run_directory"
+else
+    [[ "$(id -u)" == "$service_uid" ]] || {
+        printf '%s\n' 'Wrapper must run as root or the SQL Server service identity.' >&2
+        exit 1
+    }
+    mkdir -m 0700 -- "$run_directory"
+fi
+run_directory_created=true
+run_directory_identity="$(stat -c '%d:%i' -- "$run_directory")"
+[[ ! -L "$run_directory" && "$(realpath -e -- "$run_directory")" == "$run_directory" &&
+   "$(stat -c '%u:%a' -- "$run_directory")" == "$service_uid:700" ]] || {
+    printf '%s\n' 'XE run directory failed post-creation validation.' >&2
+    exit 1
+}
+if compgen -G "$event_file_path*.xel" >/dev/null; then
+    printf '%s\n' 'XE run prefix is not empty.' >&2
+    exit 1
+fi
+
+if [[ "$preflight_only" == true ]]; then
+    directory_phase_succeeded=true
+    printf '%s\n' 'xe-preflight-created'
+    exit 0
+fi
+
+output_file="$(mktemp)"
+operation_succeeded=false
+sql_execution_started=false
+sqlcmd_tls=()
+if [[ "$trust_server_certificate" == true ]]; then
+    sqlcmd_tls=(-C)
+fi
+
+run_sqlcmd() {
+    /usr/bin/env -i \
+        PATH=/usr/bin:/bin \
+        LC_ALL=C \
+        SQLCMDUSER="$sqlcmd_user" \
+        SQLCMDPASSWORD="$sqlcmd_password" \
+        "$sqlcmd_bin" -X 1 -b -V 16 -l 15 "${sqlcmd_tls[@]}" "$@"
+}
+
+cleanup_failed_run() {
+    local original_status="$1"
+    local cleanup_output=''
+    local verify_output=''
+    local session_absent=false
+    local directory_removed=false
+
+    trap - EXIT INT TERM HUP
+    set +e
+    cleanup_output="$(mktemp)"
+    verify_output="$(mktemp)"
+    if [[ "$sql_execution_started" == true ]]; then
+        run_sqlcmd -t 60 -S "$server" -d master -i "$xe_drop_script" -v "RunId=$run_id" \
+            >"$cleanup_output" 2>&1
+        run_sqlcmd -t 30 -S "$server" -d master -h -1 -W -Q \
+            "SET NOCOUNT ON; IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE [name]=N'HvoSqlOps_$run_id') SELECT N'present'; ELSE SELECT N'absent';" \
+            >"$verify_output" 2>&1
+        if [[ "$?" == 0 && "$(tr -d '\r\n ' < "$verify_output")" == absent ]]; then
+            session_absent=true
+        fi
+    else
+        session_absent=true
+    fi
+    rm -f -- "$cleanup_output" "$verify_output" "$output_file"
+
+    if [[ "$session_absent" == true && -d "$run_directory" && ! -L "$run_directory" &&
+       "$(realpath -e -- "$run_directory" 2>/dev/null)" == "$run_directory" &&
+       "$(stat -c '%d:%i' -- "$run_directory" 2>/dev/null)" == "$run_directory_identity" ]]; then
+        rm -rf -- "$run_directory"
+        [[ ! -e "$run_directory" && ! -L "$run_directory" ]] && directory_removed=true
+    fi
+    if [[ "$session_absent" == true && "$directory_removed" == true ]]; then
+        printf '%s\n' 'XE creation failed; exact session and run-directory cleanup completed.' >&2
+        exit "$original_status"
+    fi
+    printf '%s\n' 'XE creation failed; exact cleanup is incomplete.' >&2
+    exit 3
+}
+
+handle_exit() {
+    local status="$?"
+    if [[ "$operation_succeeded" == true ]]; then
+        rm -f -- "$output_file"
+        return
+    fi
+    (( status != 0 )) || status=1
+    cleanup_failed_run "$status"
+}
+
+trap handle_exit EXIT
+trap 'exit 1' INT TERM HUP
+directory_phase_succeeded=true
+sql_execution_started=true
+if ! run_sqlcmd -t 180 -S "$server" -d master -i "$xe_script" \
+    -v "DatabaseName=$database" "RunId=$run_id" \
+       "IncludeInstanceWideDeadlocks=$include_instance_deadlocks" \
+       "RunEventDirectory=$run_directory" "EventFilePath=$event_file_path" \
+    >"$output_file" 2>&1; then
+    printf '%s\n' 'XE SQL creation failed; restricted sqlcmd output was discarded.' >&2
+    exit 1
+fi
+if [[ "$test_fault" == post-sql-parse ]]; then
+    printf '%s\n' 'XE SQL creation result failed sanitized parsing.' >&2
+    exit 1
+fi
+grep -Fq 'extended-events' "$output_file" && grep -Fq 'running' "$output_file" || {
+    printf '%s\n' 'XE SQL creation did not return the expected sanitized result.' >&2
+    exit 1
+}
+event_file=''
+for candidate in "$event_file_path"*.xel; do
+    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
+    event_file="$candidate"
+    break
+done
+if [[ "$test_fault" == postcheck-ownership ]]; then
+    event_file=''
+fi
+[[ -n "$event_file" && "$(stat -c '%u' -- "$event_file")" == "$service_uid" ]] || {
+    printf '%s\n' 'XE event file was not created with the expected ownership.' >&2
+    exit 1
+}
+operation_succeeded=true
+printf '%s\n' 'xe-session-created'
