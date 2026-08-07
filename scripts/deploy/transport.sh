@@ -118,3 +118,178 @@ deploy_transport_docker_conflicts() {
     done
     printf 'none\n'
 }
+
+deploy_transport_prepare_target() {
+    local ssh_host="$1"
+    shift
+    local remote_script output status reason prepared_root prepared_control prepared_marker prepared_digest prepared_run expected_digest="${8}"
+    remote_script="$(cat <<'REMOTE'
+set -euo pipefail
+root=$1; mode=$2; runtime_owner=$3; run_id=$4; inventory_hash=$5; target=$6
+installation_id=$7; marker_digest=$8; lock_name=$9; expected_machine=${10}; expected_host=${11}; failpoint=${12}; operation=${13}
+fail() { printf 'failed\t%s\n' "$1"; exit 1; }
+[[ "$(cat /etc/machine-id 2>/dev/null || hostname)" == "$expected_machine" && "$(hostname)" == "$expected_host" ]] || fail identity-mismatch
+runtime_uid=$(id -u "$runtime_owner" 2>/dev/null) || fail owner-unavailable
+[[ "$(id -u)" == "$runtime_uid" ]] || fail owner-unavailable
+[[ "$root" == /* && "$root" != / && "$root" != *//* ]] || fail unsafe-path
+IFS=/ read -r -a lexical <<< "${root#/}"
+for component in "${lexical[@]}"; do [[ "$component" != . && "$component" != .. && -n "$component" ]] || fail unsafe-path; done
+parent=${root%/*}; [[ -n "$parent" ]] || parent=/
+validate_components() {
+  local limit=$1 current=/ component owner mode_value
+  IFS=/ read -r -a parts <<< "${limit#/}"
+  for component in "${parts[@]}"; do
+    [[ -n "$component" ]] || continue
+    [[ "$current" == / ]] && current="/$component" || current="$current/$component"
+    [[ ! -L "$current" ]] || fail unsafe-path
+    if [[ -e "$current" ]]; then
+      [[ -d "$current" ]] || fail unsafe-path
+      owner=$(stat -c %u "$current" 2>/dev/null) || fail unsafe-path
+      mode_value=$(stat -c %a "$current" 2>/dev/null) || fail unsafe-path
+      (( (8#$mode_value & 0022) == 0 )) || fail unsafe-path
+      [[ "$owner" == 0 || "$owner" == "$runtime_uid" ]] || fail unsafe-owner
+    else
+      return 2
+    fi
+  done
+}
+validate_components "$parent" || fail parent-missing
+parent_owner=$(stat -c %u "$parent" 2>/dev/null) || fail unsafe-path
+parent_mode=$(stat -c %a "$parent" 2>/dev/null) || fail unsafe-path
+[[ "$parent_owner" == "$runtime_uid" ]] || fail owner-controlled-parent-required
+(( (8#$parent_mode & 0200) != 0 && (8#$parent_mode & 0022) == 0 )) || fail owner-controlled-parent-required
+lock_path="$parent/$lock_name"
+if [[ -L "$lock_path" ]]; then fail unsafe-lock; fi
+if [[ ! -e "$lock_path" ]]; then
+  [[ "$operation" != validate ]] || fail completed-drift
+  (set -o noclobber; umask 077; : > "$lock_path") 2>/dev/null || true
+fi
+[[ -f "$lock_path" && ! -L "$lock_path" && "$(stat -c %h "$lock_path" 2>/dev/null)" == 1 ]] || fail unsafe-lock
+if [[ "$operation" == validate ]]; then exec 9<"$lock_path" || fail unsafe-lock
+else exec 9<>"$lock_path" || fail unsafe-lock; fi
+flock -n 9 || fail lock-contended
+if [[ "$operation" == validate ]]; then [[ "$(stat -c %u:%a "$lock_path" 2>/dev/null)" == "$runtime_uid:600" ]] || fail completed-drift
+else chmod 600 "$lock_path" || fail unsafe-lock; fi
+lock_expected=$'HVO-DEPLOY-PREPARE-LOCK\t1\nmarker\t'"$marker_digest"
+lock_actual=$(<"$lock_path")
+if [[ -z "$lock_actual" ]]; then
+  [[ "$operation" != validate ]] || fail completed-drift
+  printf '%s\n' "$lock_expected" >&9; lock_actual=$lock_expected
+fi
+[[ "$lock_actual" == "$lock_expected" ]] || fail lock-content-mismatch
+validate_components "$parent" || fail unsafe-path
+state_path="$lock_path.state"; state_preexisting=false
+if [[ -e "$state_path" || -L "$state_path" ]]; then
+  [[ -f "$state_path" && ! -L "$state_path" && "$(stat -c %h "$state_path" 2>/dev/null)" == 1 ]] || fail state-mismatch
+  state_preexisting=true; state_header=; state_marker=; creating_run=; root_new=; control_new=; marker_new=
+  while IFS=$'\t' read -r key value; do
+    case "$key" in HVO-DEPLOY-PREPARE-STATE) state_header=$value ;; marker) state_marker=$value ;; creatingRun) creating_run=$value ;; rootNew) root_new=$value ;; controlNew) control_new=$value ;; markerNew) marker_new=$value ;; *) fail state-mismatch ;; esac
+  done < "$state_path"
+  [[ "$state_header" == 1 && "$state_marker" == "$marker_digest" && "$creating_run" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && ( "$root_new" == true || "$root_new" == false ) &&
+     ( "$control_new" == true || "$control_new" == false ) && ( "$marker_new" == true || "$marker_new" == false ) ]] || fail state-mismatch
+else
+  creating_run=$run_id; root_new=false; control_new=false; marker_new=false
+fi
+validate_completed_layout() {
+  [[ "$state_preexisting" == true && -d "$root" && ! -L "$root" && -d "$root/.hvo-deploy" && ! -L "$root/.hvo-deploy" ]] || fail completed-drift
+  validate_components "$root/.hvo-deploy" || fail completed-drift
+  marker="$root/.hvo-deploy/ownership"
+  [[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker" 2>/dev/null)" == 1 ]] || fail completed-drift
+  marker_expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
+  [[ "$(<"$marker")" == "$marker_expected" ]] || fail completed-drift
+  [[ "$(stat -c %u:%a "$root" 2>/dev/null)" == "$runtime_uid:700" &&
+     "$(stat -c %u:%a "$root/.hvo-deploy" 2>/dev/null)" == "$runtime_uid:700" &&
+     "$(stat -c %u:%a "$marker" 2>/dev/null)" == "$runtime_uid:600" &&
+     "$(stat -c %u:%a "$state_path" 2>/dev/null)" == "$runtime_uid:600" ]] || fail completed-drift
+}
+if [[ "$operation" == validate ]]; then
+  validate_completed_layout
+  if [[ "$creating_run" == "$run_id" ]]; then effective_root=$root_new; effective_control=$control_new; effective_marker=$marker_new
+  elif [[ "$mode" == persistent ]]; then effective_root=false; effective_control=false; effective_marker=false
+  else fail completed-drift; fi
+  printf 'validated\t%s\t%s\t%s\t%s\t%s\n' "$marker_digest" "$creating_run" "$effective_root" "$effective_control" "$effective_marker"
+  exit 0
+fi
+if [[ "$state_preexisting" == true && "$creating_run" != "$run_id" ]]; then
+  [[ "$mode" == persistent ]] || fail state-mismatch
+  validate_completed_layout
+  printf 'prepared\tfalse\tfalse\tfalse\t%s\t%s\n' "$marker_digest" "$creating_run"
+  exit 0
+fi
+control="$root/.hvo-deploy"; marker="$control/ownership"
+if [[ -e "$root" || -L "$root" ]]; then
+  [[ -d "$root" && ! -L "$root" ]] || fail unsafe-path
+  validate_components "$root" || fail unsafe-path
+  if [[ -e "$control" || -L "$control" ]]; then [[ -d "$control" && ! -L "$control" ]] || fail unsafe-path; validate_components "$control" || fail unsafe-path; fi
+  if [[ -f "$marker" && ! -L "$marker" ]]; then
+    [[ "$(stat -c %h "$marker" 2>/dev/null)" == 1 ]] || fail marker-mismatch
+    marker_actual=$(<"$marker")
+    marker_expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
+    [[ "$marker_actual" == "$marker_expected" ]] || fail marker-mismatch
+    [[ "$state_preexisting" == true ]] || fail state-mismatch
+  else
+    nonempty=$(find "$root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) || fail unsafe-path
+    if [[ "$mode" == isolated ]]; then
+      [[ -z "$nonempty" && "$state_preexisting" == true && "$root_new" == true ]] || fail unmarked-root
+    else
+      [[ -z "$nonempty" ]] || fail nonempty-unmarked-root
+    fi
+  fi
+else
+  [[ "$state_preexisting" == false || "$root_new" == true ]] || fail state-mismatch
+  root_new=true
+fi
+if [[ "$state_preexisting" == false ]]; then
+  [[ ! -e "$control" && ! -L "$control" ]] && control_new=true
+  [[ ! -e "$marker" && ! -L "$marker" ]] && marker_new=true
+  state_expected=$(printf 'HVO-DEPLOY-PREPARE-STATE\t1\nmarker\t%s\ncreatingRun\t%s\nrootNew\t%s\ncontrolNew\t%s\nmarkerNew\t%s\n' "$marker_digest" "$creating_run" "$root_new" "$control_new" "$marker_new")
+  state_temporary="$state_path.tmp.$marker_digest"
+  if [[ ! -e "$state_temporary" ]]; then (umask 077; printf '%s\n' "$state_expected" > "$state_temporary") || fail create-failed; fi
+  [[ -f "$state_temporary" && ! -L "$state_temporary" && "$(<"$state_temporary")" == "$state_expected" ]] || fail state-mismatch
+  chmod 600 "$state_temporary" || fail create-failed
+  mv -T "$state_temporary" "$state_path" || fail create-failed
+fi
+if [[ ! -e "$root" ]]; then mkdir -m 700 -- "$root" || fail create-failed; fi
+[[ "$failpoint" != after-root-creation ]] || exit 70
+if [[ ! -e "$control" ]]; then mkdir -m 700 -- "$control" || fail create-failed; control_new=true; fi
+[[ -d "$control" && ! -L "$control" ]] || fail unsafe-path
+validate_components "$control" || fail unsafe-path
+marker_expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
+if [[ ! -e "$marker" ]]; then
+  temporary="$control/.ownership.tmp.$marker_digest"
+  if [[ ! -e "$temporary" ]]; then (umask 077; printf '%s\n' "$marker_expected" > "$temporary") || fail create-failed; fi
+  [[ -f "$temporary" && ! -L "$temporary" && "$(<"$temporary")" == "$marker_expected" ]] || fail marker-mismatch
+  chmod 600 "$temporary" || fail create-failed
+  mv -T "$temporary" "$marker" || fail create-failed
+  marker_new=true
+fi
+[[ -f "$marker" && ! -L "$marker" && "$(<"$marker")" == "$marker_expected" ]] || fail marker-mismatch
+chmod 700 "$root" "$control" || fail create-failed
+chmod 600 "$marker" || fail create-failed
+[[ "$(stat -c %u:%a "$root" 2>/dev/null)" == "$runtime_uid:700" && "$(stat -c %u:%a "$control" 2>/dev/null)" == "$runtime_uid:700" &&
+   "$(stat -c %u:%a "$marker" 2>/dev/null)" == "$runtime_uid:600" ]] || fail owner-failed
+[[ "$failpoint" != after-marker-creation ]] || exit 71
+printf 'prepared\t%s\t%s\t%s\t%s\t%s\n' "$root_new" "$control_new" "$marker_new" "$marker_digest" "$creating_run"
+REMOTE
+)"
+    if output="$(printf '%s\n' "$remote_script" | ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null)"; then status=0; else status=$?; fi
+    if [[ "$status" == 0 && "$output" == validated$'\t'* ]]; then
+        IFS=$'\t' read -r _ prepared_digest prepared_run prepared_root prepared_control prepared_marker <<< "$output"
+        if [[ "$prepared_digest" == "$expected_digest" && "$prepared_run" =~ ^[a-z0-9][a-z0-9-]{0,31}$ &&
+              ( "$prepared_root" == true || "$prepared_root" == false ) && ( "$prepared_control" == true || "$prepared_control" == false ) &&
+              ( "$prepared_marker" == true || "$prepared_marker" == false ) ]]; then printf '%s\n' "$output"
+        else printf 'failed\tinvalid-response\n'; fi
+    elif [[ "$status" == 0 && "$output" == prepared$'\t'* ]]; then
+        IFS=$'\t' read -r _ prepared_root prepared_control prepared_marker prepared_digest prepared_run <<< "$output"
+        if [[ ( "$prepared_root" == true || "$prepared_root" == false ) && ( "$prepared_control" == true || "$prepared_control" == false ) &&
+              ( "$prepared_marker" == true || "$prepared_marker" == false ) && "$prepared_digest" == "$expected_digest" &&
+              "$prepared_run" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]; then printf '%s\n' "$output"
+        else printf 'failed\tinvalid-response\n'; fi
+    elif [[ "$output" == failed$'\t'* ]]; then
+        reason="${output#*$'\t'}"
+        case "$reason" in
+          identity-mismatch|owner-unavailable|owner-controlled-parent-required|unsafe-path|unsafe-owner|parent-missing|unsafe-lock|lock-contended|lock-content-mismatch|state-mismatch|completed-drift|unmarked-root|nonempty-unmarked-root|marker-mismatch|create-failed|owner-failed) printf 'failed\t%s\n' "$reason" ;;
+          *) printf 'failed\tinvalid-response\n' ;;
+        esac
+    else printf 'failed\ttransport-failed\n'; fi
+}

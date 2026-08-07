@@ -18,14 +18,16 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/run-state.sh"
 # shellcheck source=scripts/deploy/preflight.sh
 . "$SCRIPT_DIR/deploy/preflight.sh"
+# shellcheck source=scripts/deploy/prepare.sh
+. "$SCRIPT_DIR/deploy/prepare.sh"
 
 usage() {
-    printf 'Usage: %s preflight --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>]\n' "${0##*/}" >&2
     exit 2
 }
 
 phase="${1:-}"
-[[ "$phase" == preflight ]] || usage
+[[ "$phase" == preflight || "$phase" == prepare ]] || usage
 shift
 inventory="" mode="" run_id="" state_root="" evidence_root=""
 while (( $# > 0 )); do
@@ -47,7 +49,8 @@ done
 unset DOCKER_HOST DOCKER_CONTEXT SSH_HOST SSH_CONFIG 2>/dev/null || true
 unset ambient_name
 
-deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh docker date grep || exit 1
+deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh date grep cut || exit 1
+[[ "$phase" != preflight ]] || deploy_require_commands docker || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
 deploy_validate_inventory "$inventory" "$mode"
 deploy_validate_secret_references "$inventory"
@@ -59,11 +62,40 @@ worktree_state=clean
 [[ -z "$(git -C "$REPO_ROOT" status --porcelain)" ]] || worktree_state=dirty
 [[ "$dirty_disposition" == allow-dirty || "$worktree_state" == clean ]] || deploy_fail validate source "dirty-worktree-rejected"
 inventory_hash="$(jq -S -c . "$inventory" | sha256sum)"; inventory_hash="${inventory_hash%% *}"
-if [[ -z "$run_id" ]]; then run_id="preflight-$(date -u +%Y%m%dt%H%M%Sz)"; fi
+if [[ -z "$run_id" ]]; then
+    [[ "$phase" != prepare ]] || deploy_fail validate run-id "prepare-requires-run-id"
+    run_id="preflight-$(date -u +%Y%m%dt%H%M%Sz)"
+fi
 deploy_is_safe_name "$run_id" || deploy_fail validate run-id "unsafe-run-id"
 state_root="${state_root:-$REPO_ROOT/TestResults/deploy/$run_id/state}"
 evidence_root="${evidence_root:-$REPO_ROOT/TestResults/deploy/$run_id/evidence}"
 deploy_prepare_run_state "$state_root" "$evidence_root"
+
+if [[ "$phase" == prepare ]]; then
+    # shellcheck disable=SC2317 # Invoked indirectly by the ERR trap.
+    deploy_prepare_mark_failed() {
+        local status="${1:-$?}" now
+        trap - ERR
+        now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        if [[ -n "${DEPLOY_PREPARE_LEDGER_JSON:-}" && -n "${DEPLOY_PREPARE_LEDGER:-}" ]]; then
+            DEPLOY_PREPARE_LEDGER_JSON="$(jq -c --arg now "$now" '.phaseStatus="failed" | .updatedAt=$now' <<< "$DEPLOY_PREPARE_LEDGER_JSON")"
+            deploy_publish_json "$DEPLOY_PREPARE_LEDGER" "$DEPLOY_PREPARE_LEDGER_JSON" >/dev/null 2>&1 || true
+        fi
+        if [[ -n "${DEPLOY_PREPARE_MANIFEST_JSON:-}" && -n "${DEPLOY_PREPARE_MANIFEST:-}" ]]; then
+            DEPLOY_PREPARE_MANIFEST_JSON="$(jq -c --arg now "$now" '.phaseStatus="failed" | .updatedAt=$now' <<< "$DEPLOY_PREPARE_MANIFEST_JSON")"
+            [[ -z "${DEPLOY_PREPARE_EVIDENCE:-}" ]] || deploy_publish_json "$DEPLOY_PREPARE_EVIDENCE" "$(deploy_prepare_evidence_json "$DEPLOY_PREPARE_MANIFEST_JSON")" >/dev/null 2>&1 || true
+            deploy_publish_json "$DEPLOY_PREPARE_MANIFEST" "$DEPLOY_PREPARE_MANIFEST_JSON" >/dev/null 2>&1 || true
+        fi
+        exit "$status"
+    }
+    trap deploy_prepare_mark_failed ERR
+    if ! deploy_run_prepare "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state"; then
+        deploy_prepare_mark_failed 1
+    fi
+    trap - ERR
+    deploy_status prepare complete passed prepared
+    exit 0
+fi
 
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 old_manifest=""

@@ -12,19 +12,20 @@ deploy_validate_inventory() {
         (contains("//") | not) and (split("/") | any(. == "." or . == "..") | not);
       def url: text and test("^https?://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}(/[^[:space:]]*)?$") and
         (contains("@") | not);
-      def base: exact(["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot"]) and
+      def base: exact(["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner"]) and
         (.name | name) and (.sshHost | text and test("^[A-Za-z0-9][A-Za-z0-9._@-]{0,254}$")) and
         (.dockerContext | text and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
         (.expectedArchitecture == "amd64" or .expectedArchitecture == "arm64") and
         (.expectedHostName | text and test("^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$")) and
-        (.expectedHostIdentity | token) and (.expectedDockerDaemonIdentity | token) and (.runtimeRoot | root);
-      def app: exact(["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","publicEndpoint","ports"]) and
-        ({name,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot} | base) and
+        (.expectedHostIdentity | token) and (.expectedDockerDaemonIdentity | token) and (.runtimeRoot | root) and
+        (.runtimeOwner | text and test("^[a-z_][a-z0-9_-]{0,31}$"));
+      def app: exact(["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","publicEndpoint","ports"]) and
+        ({name,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot,runtimeOwner} | base) and
         (.publicEndpoint | url) and (.ports | type == "array" and length > 0 and all(type == "number" and floor == . and . >= 1 and . <= 65535) and length == (unique | length)) and
         (. as $target | (.publicEndpoint | capture("^https?://[^/:]+:(?<port>[0-9]+)").port | tonumber) as $publicPort |
           $publicPort <= 65535 and ($target.ports | index($publicPort) != null));
-      exact(["schemaVersion","environment","source","secretSource","logicHost","cameraAgents","sharedServices","serviceEndpoints","catalog","images"]) and
-      .schemaVersion == 1 and (.environment | name) and
+      exact(["schemaVersion","environment","installationId","source","secretSource","logicHost","cameraAgents","sharedServices","serviceEndpoints","catalog","images"]) and
+      .schemaVersion == 1 and (.environment | name) and (.installationId | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) and
       (.source | exact(["revision","dirtyDisposition"]) and (.revision | type == "string" and test("^[0-9a-f]{40}$")) and
         (.dirtyDisposition == "require-clean" or .dirtyDisposition == "allow-dirty")) and
       (.secretSource | exact(["path","requiredReferences"]) and (.path | text) and
@@ -55,7 +56,7 @@ deploy_validate_inventory() {
     if [[ "$mode" == persistent ]]; then
         jq -e '.catalog.kind == "production" and
           (([.logicHost] + .cameraAgents + (if .sharedServices then [.sharedServices] else [] end)) |
-            all(.publicEndpoint; startswith("https://")))' "$inventory" >/dev/null ||
+            all(.[]; .publicEndpoint | startswith("https://")))' "$inventory" >/dev/null ||
             deploy_fail validate inventory "persistent-mode-requires-production-https" || return 1
     fi
     local root_duplicates port_duplicates

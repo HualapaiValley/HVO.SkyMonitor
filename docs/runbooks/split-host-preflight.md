@@ -1,9 +1,11 @@
-# Split-Host Preflight Runbook
+# Split-Host Preflight And Prepare Runbook
 
-This runbook covers the frozen first deployment slice from issue #151. It
-validates a versioned multi-host inventory and records sanitized evidence. It
-does not build or load images, create deployment paths, start Compose, bootstrap
-applications, mutate shared services, stop applications, or tear anything down.
+This runbook covers the frozen preflight and runtime-root preparation slices from
+issue #151. Preflight validates a versioned multi-host inventory without remote
+mutation. The separately authorized prepare phase creates only declared runtime
+roots and exact ownership/lock metadata. Neither phase builds or loads images,
+starts Compose, deploys catalogs, bootstraps applications, mutates shared
+services, stops applications, deletes state, or tears anything down.
 
 ## Inventory And Secrets
 
@@ -137,3 +139,84 @@ hosted by the pinned .NET SDK already installed by the devcontainer and CI. It
 asserts routing, host correlation, path and lock safety, missing-tool behavior,
 redaction, failed-evidence replacement, resume behavior, atomic publication
 recovery, and absence of mutation commands.
+
+## Prepare Runtime Roots
+
+After the exact run has a matching passed preflight, prepare its declared roots:
+
+```bash
+./scripts/deploy:environment prepare \
+  --inventory /absolute/path/inventory.yml \
+  --mode persistent \
+  --run-id observatory-preflight-01
+```
+
+`prepare` requires the same inventory hash, mode, source revision, worktree
+disposition, completed checks, and target identities recorded by preflight. It
+never skips or synthesizes preflight. Each target explicitly declares
+`runtimeOwner`, which must resolve to the effective SSH UID. This slice has no
+root helper, password, interactive privilege, or ownership-escalation path.
+The immediate parent of a missing runtime root must already be owned and writable
+by that SSH user while remaining non-writable to group and world.
+The example assumes packaging has provisioned `/srv/hvo/skymonitor` to user
+`hvo`; its LogicHost and CameraAgent roots are distinct children of that parent.
+
+For each target, prepare validates every existing component again and acquires a
+nonblocking sibling `.hvo-deploy-prepare-<digest>.lock` before root mutation. The
+lock metadata is bound to the expected ownership marker and remains held through
+that target's preparation. Symlinks, special files, writable ancestors, foreign
+non-root ownership, changed host identity, unsafe roots, lock mismatch, and lock
+contention fail with bounded reasons.
+
+Consequently, preflight may validly report `needs_prepare` beneath a trusted
+root-owned ancestor such as `/srv`, but prepare will refuse until an operator or
+platform package creates an owner-controlled child parent out of band. Supplying
+that production directory/package ownership is a later packaging prerequisite,
+not a privileged operation implemented by this slice.
+
+The final created target entries are the declared runtime root, its private
+`.hvo-deploy/` control directory, the `ownership` marker, the cooperative lock
+beside the root, and the lock's `.state` provenance sidecar. Root/control mode is
+`0700`; marker, lock, and state sidecar mode is `0600`. Atomic publication may
+temporarily create `<lock>.state.tmp.<marker-digest>` and
+`.hvo-deploy/.ownership.tmp.<marker-digest>`; exact interrupted temporaries are
+validated and completed on resume. Prepare does not invoke Docker, Compose,
+service endpoints, catalogs, bootstrap, or deletion commands.
+
+In `isolated` mode, an existing root must carry the exact run/inventory/target
+marker. An empty root left after an interrupted exact run is recoverable only
+through its matching lock metadata. Other unmarked or cross-run roots are
+refused. In `persistent` mode, the marker is stable for installation ID, target,
+root, and owner. A first run may initialize only an absent or empty root;
+nonempty unmarked roots and markers from another installation are refused.
+Existing application state is never reset or deleted.
+
+Private `prepare-ledger.json` records each target's declared root, marker digest,
+newly-created entries versus reused/resumed state, and phase status. Before use,
+the complete ledger shape, revision, run, mode, inventory hash, unique inventory
+targets, roots, marker identities, dispositions, booleans, and statuses are
+validated. Creation flags are persisted in the mode-`0600` lock state sidecar
+before each corresponding remote mutation together with the creating run ID, so
+same-run recovery retains exact provenance. A later run for the same persistent
+installation validates the complete prior root and records it as
+`preexisting-or-resumed` with all creation flags false while retaining the
+original creating run identity. After every successful target, the running manifest and sanitized
+evidence are refreshed from the ledger; a later failure therefore lists all and
+only completed target mutations. On resume, every completed target still runs a
+non-mutating locked remote validation of SSH identity, root/control/marker,
+ownership, modes, marker digest, lock, and state sidecar. Valid targets retain
+their original ledger provenance and are not mutated again; drift fails before
+later targets continue.
+
+Completed validation is strictly read-only: it never initializes, chmods, or
+repairs an empty or mismatched lock/state file. Remote validation returns the
+state sidecar's creating run and effective creation flags. Those values must
+exactly match the ledger booleans and disposition before any running manifest or
+prepare evidence is published; a type-valid but false provenance claim is
+rejected without changing prior artifacts.
+Sanitized `prepare.json` omits runtime roots and machine identities. Evidence is
+published before the passed `prepare-manifest.json` commit. An accepted rerun
+commits its running manifest before safely clearing stale prepare evidence;
+rejected validation leaves prior evidence untouched. Interruptions after root,
+marker, ledger, running-manifest, or evidence publication resume idempotently.
+Prepare failure never changes the valid preflight manifest or evidence.

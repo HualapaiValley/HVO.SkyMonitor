@@ -20,6 +20,7 @@ readonly BASE_INVENTORY="$TEMP_DIR/inventory.base"
 readonly SECRET_FILE="$TEMP_DIR/deploy.env"
 readonly LOG="$TEMP_DIR/commands.log"
 readonly REMOTE_LOG="$TEMP_DIR/remote-scripts.log"
+readonly PREPARE_REMOTE_LOG="$TEMP_DIR/prepare-remote-scripts.log"
 REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 readonly REVISION
 REAL_STAT="$(command -v stat)"
@@ -87,14 +88,16 @@ shift 3
 script="${FAKE_SCRIPT_ROOT:?}/remote-$host-$BASHPID.sh"
 umask 077
 /usr/bin/cat > "$script"
+prepare=false; (( $# >= 12 )) && prepare=true
 printf 'remote-script-begin %s\n' "$host" >> "${FAKE_REMOTE_LOG:?}"
 /usr/bin/cat "$script" >> "$FAKE_REMOTE_LOG"
 printf 'remote-script-end %s\n' "$host" >> "$FAKE_REMOTE_LOG"
+if [[ "$prepare" == true ]]; then /usr/bin/cat "$script" >> "${FAKE_PREPARE_REMOTE_LOG:?}"; fi
 remote_path="${FAKE_REMOTE_BIN:?}"
 [[ "${FAKE_MISSING_SS_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_SS:?}"
 [[ "${FAKE_MISSING_CURL_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_CURL:?}"
 [[ "${FAKE_MISSING_TIMEOUT_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_TIMEOUT:?}"
-FAKE_REMOTE_HOST="$host" PATH="$remote_path" /usr/bin/bash "$script" "$@"
+FAKE_REMOTE_HOST="$host" FAKE_REMOTE_PREPARE="$prepare" PATH="$remote_path" /usr/bin/bash "$script" "$@"
 EOF
 cat > "$BIN/docker" <<'EOF'
 #!/usr/bin/bash
@@ -140,7 +143,10 @@ chmod +x "$BIN/ssh" "$BIN/docker" "$BIN/stat" "$BIN/grep"
 
 cat > "$REMOTE_BIN/cat" <<'EOF'
 #!/usr/bin/bash
-if [[ "$1" == /etc/machine-id ]]; then printf '%s-machine\n' "${FAKE_REMOTE_HOST:?}"; else exec /usr/bin/cat "$@"; fi
+if [[ "$1" == /etc/machine-id ]]; then
+  if [[ "${FAKE_PREPARE_IDENTITY_MISMATCH_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "${FAKE_REMOTE_PREPARE:-false}" == true ]]; then printf 'changed-machine\n'
+  else printf '%s-machine\n' "${FAKE_REMOTE_HOST:?}"; fi
+else exec /usr/bin/cat "$@"; fi
 EOF
 cat > "$REMOTE_BIN/hostname" <<'EOF'
 #!/usr/bin/bash
@@ -161,6 +167,13 @@ EOF
 cat > "$REMOTE_BIN/stat" <<'EOF'
 #!/usr/bin/bash
 path="${*: -1}"
+if [[ "${FAKE_REMOTE_PREPARE:-false}" == true ]]; then
+  if [[ "${2:-}" == %a && "${FAKE_PREPARE_UNSAFE_MODE_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/"*"$FAKE_REMOTE_HOST"* ]]; then printf '777\n'; exit 0; fi
+  if [[ "${2:-}" == %u && "${FAKE_PREPARE_FOREIGN_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/"*"$FAKE_REMOTE_HOST"* ]]; then printf '4242\n'; exit 0; fi
+  if [[ "${2:-}" == %u && "${FAKE_PREPARE_ROOT_PARENT_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/"*"$FAKE_REMOTE_HOST"* ]]; then printf '0\n'; exit 0; fi
+  if [[ "${2:-}" == %a ]]; then printf '755\n'; exit 0; fi
+  if [[ "${2:-}" == %u && ( "$path" == / || "$path" == /tmp ) ]]; then printf '0\n'; exit 0; fi
+fi
 if [[ "$*" == *'%u'* && "${FAKE_RUNTIME_OTHER_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/$FAKE_REMOTE_HOST" ]]; then printf '4242\n'; exit 0; fi
 if [[ "$*" == *'%u'* && "${FAKE_RUNTIME_ROOT_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/$FAKE_REMOTE_HOST" ]]; then printf '0\n'; exit 0; fi
 exec /usr/bin/stat "$@"
@@ -170,7 +183,13 @@ cat > "$REMOTE_BIN/ss" <<'EOF'
 if [[ "${FAKE_PORT_CONFLICT_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then printf 'LISTEN 0 1 127.0.0.1:1\n'; fi
 EOF
 chmod +x "$REMOTE_BIN/"*
-for tool in bash curl date df grep id timeout; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
+cat > "$REMOTE_BIN/curl" <<'EOF'
+#!/usr/bin/bash
+[[ "${FAKE_CURL_ALWAYS_SUCCESS:-false}" == true ]] && exit 0
+exec /usr/bin/curl "$@"
+EOF
+chmod +x "$REMOTE_BIN/curl"
+for tool in bash date df grep id timeout chmod find flock mkdir mv; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
 for entry in "$REMOTE_BIN/"*; do
     [[ "$(basename "$entry")" == ss ]] || ln -s "$entry" "$REMOTE_BIN_NO_SS/$(basename "$entry")"
     [[ "$(basename "$entry")" == curl ]] || ln -s "$entry" "$REMOTE_BIN_NO_CURL/$(basename "$entry")"
@@ -178,6 +197,7 @@ for entry in "$REMOTE_BIN/"*; do
 done
 
 export FAKE_LOG="$LOG" FAKE_REMOTE_LOG="$REMOTE_LOG" FAKE_SCRIPT_ROOT="$TEMP_DIR"
+export FAKE_PREPARE_REMOTE_LOG="$PREPARE_REMOTE_LOG"
 export FAKE_REMOTE_BIN="$REMOTE_BIN" FAKE_REMOTE_BIN_NO_SS="$REMOTE_BIN_NO_SS" REAL_STAT REAL_GREP
 export FAKE_REMOTE_BIN_NO_CURL="$REMOTE_BIN_NO_CURL"
 export FAKE_REMOTE_BIN_NO_TIMEOUT="$REMOTE_BIN_NO_TIMEOUT"
@@ -187,20 +207,20 @@ printf 'SQL_PASSWORD=fixture-secret-never-print\nOAUTH_SECRET=malicious-$(touch 
 chmod 600 "$SECRET_FILE"
 
 write_inventory() {
-    jq -n --arg revision "$REVISION" --arg secret "$SECRET_FILE" --arg root "$TEMP_DIR/remote" \
+    jq -n --arg revision "$REVISION" --arg secret "$SECRET_FILE" --arg root "$TEMP_DIR/remote" --arg owner "$(id -un)" \
       --argjson logicPort "$HTTP_PORT" --argjson eastPort "$EAST_PORT" --argjson westPort "$WEST_PORT" '{
-      schemaVersion:1, environment:"test-observatory",
+      schemaVersion:1, environment:"test-observatory", installationId:"test-installation",
       source:{revision:$revision,dirtyDisposition:"allow-dirty"},
       secretSource:{path:$secret,requiredReferences:["SQL_PASSWORD","OAUTH_SECRET"]},
       logicHost:{name:"logic",sshHost:"logic@example",dockerContext:"logic-context",expectedArchitecture:"amd64",expectedHostName:"logic-node",
-        expectedHostIdentity:"logic-machine",expectedDockerDaemonIdentity:"logic-daemon",runtimeRoot:($root+"/logic/runtime"),
+        expectedHostIdentity:"logic-machine",expectedDockerDaemonIdentity:"logic-daemon",runtimeRoot:($root+"/logic/runtime"),runtimeOwner:$owner,
         publicEndpoint:("http://127.0.0.1:"+($logicPort|tostring)),ports:[$logicPort]},
       cameraAgents:[
         {name:"east",sshHost:"east@example",dockerContext:"east-context",expectedArchitecture:"arm64",expectedHostName:"east-node",
-          expectedHostIdentity:"east-machine",expectedDockerDaemonIdentity:"east-daemon",runtimeRoot:($root+"/east/runtime"),
+          expectedHostIdentity:"east-machine",expectedDockerDaemonIdentity:"east-daemon",runtimeRoot:($root+"/east/runtime"),runtimeOwner:$owner,
           publicEndpoint:("http://127.0.0.1:"+($eastPort|tostring)),ports:[$eastPort]},
         {name:"west",sshHost:"west@example",dockerContext:"west-context",expectedArchitecture:"arm64",expectedHostName:"west-node",
-          expectedHostIdentity:"west-machine",expectedDockerDaemonIdentity:"west-daemon",runtimeRoot:($root+"/west/runtime"),
+          expectedHostIdentity:"west-machine",expectedDockerDaemonIdentity:"west-daemon",runtimeRoot:($root+"/west/runtime"),runtimeOwner:$owner,
           publicEndpoint:("http://127.0.0.1:"+($westPort|tostring)),ports:[$westPort]}],
       sharedServices:null,
       serviceEndpoints:[{name:"test-service",host:"127.0.0.1",port:$logicPort,fromTargets:["logic","east","west"]}],
@@ -215,6 +235,45 @@ run_deploy() {
     local run_id="$1"; shift
     PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$INVENTORY" --mode isolated \
       --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"
+}
+
+run_deploy_mode() {
+    local phase="$1" run_id="$2" mode="$3"; shift 3
+    PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"
+}
+
+write_prepare_case() {
+    local prefix="$1" mode="$2"
+    mkdir -m 700 "$TEMP_DIR/remote/$prefix-logic" "$TEMP_DIR/remote/$prefix-east" "$TEMP_DIR/remote/$prefix-west"
+    jq --arg base "$TEMP_DIR/remote" --arg prefix "$prefix" '
+      .logicHost.runtimeRoot=($base+"/"+$prefix+"-logic/runtime") |
+      .cameraAgents[0].runtimeRoot=($base+"/"+$prefix+"-east/runtime") |
+      .cameraAgents[1].runtimeRoot=($base+"/"+$prefix+"-west/runtime")' "$BASE_INVENTORY" > "$INVENTORY"
+    if [[ "$mode" == persistent ]]; then
+        jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:")' "$INVENTORY" > "$INVENTORY.changed"
+        mv "$INVENTORY.changed" "$INVENTORY"
+    fi
+}
+
+run_prepare_preflight() {
+    local run_id="$1" mode="$2"
+    if [[ "$mode" == persistent ]]; then FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode preflight "$run_id" "$mode" >/dev/null
+    else run_deploy_mode preflight "$run_id" "$mode" >/dev/null; fi
+}
+
+expect_prepare_failure() {
+    local expected="$1" run_id="$2" mode="$3"
+    if run_deploy_mode prepare "$run_id" "$mode" > "$TEMP_DIR/prepare-failure.log" 2>&1; then fail "Invalid prepare passed: $run_id"; fi
+    grep -Fq "$expected" "$TEMP_DIR/prepare-failure.log" || fail "Prepare failure was not bounded: $run_id ($expected)"
+    ! grep -Fq 'fixture-secret-never-print' "$TEMP_DIR/prepare-failure.log" || fail 'Prepare failure exposed a secret.'
+}
+
+create_partial_prepare_case() {
+    local run_id="$1"
+    write_prepare_case "$run_id" isolated
+    run_prepare_preflight "$run_id" isolated
+    FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' "$run_id" isolated
 }
 
 expect_failure() {
@@ -239,7 +298,7 @@ bash -n "$REPO_ROOT/scripts/deploy:environment" "$REPO_ROOT/scripts/deploy/"*.sh
 write_inventory
 
 # The checked-in shape reference, example, and executable jq contract stay aligned.
-jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","publicEndpoint","ports"] and
+jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","publicEndpoint","ports"] and
   (.properties.sharedServices.oneOf[1]."$ref" | endswith("/applicationTarget")) and
   (."$defs".applicationTarget.properties.publicEndpoint.pattern | contains(":"))' "$REPO_ROOT/deploy/split-host/inventory.schema.json" >/dev/null
 (
@@ -248,9 +307,9 @@ jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext",
   # shellcheck source=scripts/deploy/inventory.sh
   . "$REPO_ROOT/scripts/deploy/inventory.sh"
   deploy_validate_inventory "$REPO_ROOT/deploy/split-host/inventory.example.yml" isolated
-  jq '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
+  jq --arg owner "$(id -un)" '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
     expectedHostName:"shared-node",expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:"/srv/hvo/shared",
-    publicEndpoint:"https://shared.example:9443",ports:[9443]}' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
+    runtimeOwner:$owner,publicEndpoint:"https://shared.example:9443",ports:[9443]}' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
   deploy_validate_inventory "$TEMP_DIR/shared-valid.json" isolated
   jq 'del(.sharedServices.publicEndpoint)' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
   if deploy_validate_inventory "$TEMP_DIR/shared-invalid.json" isolated >/dev/null 2>&1; then exit 91; fi
@@ -366,9 +425,9 @@ jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";
 jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-logic-http
 jq '.cameraAgents[0].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-east-http
 jq '.cameraAgents[1].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-west-http
-jq '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
+jq --arg owner "$(id -un)" '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
   expectedHostName:"shared-node",expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:"/srv/hvo/shared",
-  publicEndpoint:"http://shared.example:9443",ports:[9443]}' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-shared-http
+  runtimeOwner:$owner,publicEndpoint:"http://shared.example:9443",ports:[9443]}' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-shared-http
 jq '.catalog.kind="fixture"' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-fixture-catalog
 
 # A successful run followed by a transport failure publishes failed, not stale passed, evidence.
@@ -419,6 +478,272 @@ cp "$TEMP_DIR/output/corrupt-manifest-evidence/preflight.json" "$TEMP_DIR/corrup
 printf 'not-json\n' > "$TEMP_DIR/output/corrupt-manifest-state/manifest.json"
 expect_failure 'invalid-existing-manifest' corrupt-manifest
 cmp -s "$TEMP_DIR/corrupt-manifest.evidence" "$TEMP_DIR/output/corrupt-manifest-evidence/preflight.json" || fail 'Corrupt manifest invocation changed prior evidence.'
+
+# Prepare requires the exact passed preflight and mutates only declared roots/control metadata.
+mkdir -m 700 "$TEMP_DIR/remote/prepare-logic" "$TEMP_DIR/remote/prepare-east" "$TEMP_DIR/remote/prepare-west"
+jq --arg base "$TEMP_DIR/remote" --arg owner "$(id -un)" '
+  .logicHost.runtimeRoot=($base+"/prepare-logic/runtime") |
+  .cameraAgents[0].runtimeRoot=($base+"/prepare-east/runtime") |
+  .cameraAgents[1].runtimeRoot=($base+"/prepare-west/runtime") |
+  .logicHost.runtimeOwner=$owner' "$BASE_INVENTORY" > "$INVENTORY"
+cp "$INVENTORY" "$TEMP_DIR/prepare-happy.inventory"
+run_deploy prepare-happy >/dev/null
+docker_count_before_prepare="$(grep -c '^docker' "$LOG")"
+run_deploy_mode prepare prepare-happy isolated > "$TEMP_DIR/prepare.out"
+docker_count_after_prepare="$(grep -c '^docker' "$LOG")"
+[[ "$docker_count_before_prepare" == "$docker_count_after_prepare" ]] || fail 'Prepare invoked Docker.'
+grep -Fq $'logic@example\tbash\t-s\t--' "$LOG"
+grep -Fq $'east@example\tbash\t-s\t--' "$LOG"
+for prepared_target in prepare-logic prepare-east prepare-west; do
+    test -d "$TEMP_DIR/remote/$prepared_target/runtime/.hvo-deploy"
+    test "$(stat -c %a "$TEMP_DIR/remote/$prepared_target/runtime")" = 700
+    test "$(stat -c %u "$TEMP_DIR/remote/$prepared_target/runtime")" = "$(id -u)"
+    test "$(stat -c %u "$TEMP_DIR/remote/$prepared_target/runtime/.hvo-deploy")" = "$(id -u)"
+    test "$(stat -c %a "$TEMP_DIR/remote/$prepared_target/runtime/.hvo-deploy/ownership")" = 600
+    test "$(stat -c %u "$TEMP_DIR/remote/$prepared_target/runtime/.hvo-deploy/ownership")" = "$(id -u)"
+done
+# shellcheck disable=SC2016 # Assert literal commands in the captured remote script.
+grep -Fq '[[ "$(id -u)" == "$runtime_uid" ]]' "$PREPARE_REMOTE_LOG"
+# shellcheck disable=SC2016
+grep -Fq 'chmod 700 "$root" "$control"' "$PREPARE_REMOTE_LOG"
+# shellcheck disable=SC2016
+grep -Fq 'chmod 600 "$marker"' "$PREPARE_REMOTE_LOG"
+if grep -Fq 'chown ' "$PREPARE_REMOTE_LOG"; then fail 'Prepare retained privileged ownership mutation.'; fi
+prepare_ledger="$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+prepare_manifest="$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json"
+prepare_evidence="$TEMP_DIR/output/prepare-happy-evidence/prepare.json"
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and all(.targets[]; .disposition == "newly-created")' "$prepare_ledger" >/dev/null
+jq -e --slurp '.[0].phaseStatus == "passed" and .[1].phaseStatus == "passed" and
+  ([.[0].targets[].target] | sort) == ([.[1].targets[].target] | sort)' "$prepare_manifest" "$prepare_evidence" >/dev/null
+run_deploy_mode prepare prepare-happy isolated >/dev/null
+jq -e 'all(.targets[]; .disposition == "newly-created" and .newlyCreated.root == true)' "$prepare_ledger" >/dev/null
+
+write_prepare_case no-preflight isolated
+expect_prepare_failure 'preflight-required' prepare-without-preflight isolated
+
+write_prepare_case isolated-unmarked isolated
+mkdir -m 700 "$TEMP_DIR/remote/isolated-unmarked-logic/runtime"
+run_prepare_preflight isolated-unmarked isolated
+expect_prepare_failure 'unmarked-root' isolated-unmarked isolated
+
+write_prepare_case persistent-empty persistent
+mkdir -m 700 "$TEMP_DIR/remote/persistent-empty-logic/runtime"
+run_prepare_preflight persistent-empty persistent
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-empty persistent >/dev/null
+printf 'preserved\n' > "$TEMP_DIR/remote/persistent-empty-logic/runtime/application-state"
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-empty persistent >/dev/null
+test "$(<"$TEMP_DIR/remote/persistent-empty-logic/runtime/application-state")" = preserved
+
+write_prepare_case persistent-nonempty persistent
+mkdir -m 700 "$TEMP_DIR/remote/persistent-nonempty-logic/runtime"
+printf 'existing\n' > "$TEMP_DIR/remote/persistent-nonempty-logic/runtime/application-state"
+run_prepare_preflight persistent-nonempty persistent
+expect_prepare_failure 'nonempty-unmarked-root' persistent-nonempty persistent
+test "$(<"$TEMP_DIR/remote/persistent-nonempty-logic/runtime/application-state")" = existing
+
+write_prepare_case unsafe-symlink isolated
+run_prepare_preflight unsafe-symlink isolated
+mkdir -m 700 "$TEMP_DIR/remote/unsafe-symlink-target"
+ln -s "$TEMP_DIR/remote/unsafe-symlink-target" "$TEMP_DIR/remote/unsafe-symlink-east/runtime"
+expect_prepare_failure 'unsafe-path' unsafe-symlink isolated
+rm "$TEMP_DIR/remote/unsafe-symlink-east/runtime"
+
+write_prepare_case unsafe-mode isolated
+run_prepare_preflight unsafe-mode isolated
+FAKE_PREPARE_UNSAFE_MODE_HOST=east expect_prepare_failure 'unsafe-path' unsafe-mode isolated
+write_prepare_case unsafe-owner isolated
+run_prepare_preflight unsafe-owner isolated
+FAKE_PREPARE_FOREIGN_OWNER_HOST=east expect_prepare_failure 'unsafe-owner' unsafe-owner isolated
+write_prepare_case root-parent isolated
+run_prepare_preflight root-parent isolated
+FAKE_PREPARE_ROOT_PARENT_HOST=east expect_prepare_failure 'owner-controlled-parent-required' root-parent isolated
+write_prepare_case changed-identity isolated
+run_prepare_preflight changed-identity isolated
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' changed-identity isolated
+
+# Failure on later targets publishes exact successful progress; resume skips completed targets.
+write_prepare_case fail-second isolated
+run_prepare_preflight fail-second isolated
+logic_prepare_root="$TEMP_DIR/remote/fail-second-logic/runtime"
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' fail-second isolated
+jq -e --slurp 'all(.[]; .phaseStatus == "failed") and
+  all(.[]; [.targets[].target] == ["logic"])' \
+  "$TEMP_DIR/output/fail-second-state/prepare-ledger.json" "$TEMP_DIR/output/fail-second-state/prepare-manifest.json" \
+  "$TEMP_DIR/output/fail-second-evidence/prepare.json" >/dev/null || {
+    jq -s '{phases:map(.phaseStatus),targets:map([.targets[].target])}' "$TEMP_DIR/output/fail-second-state/prepare-ledger.json" \
+      "$TEMP_DIR/output/fail-second-state/prepare-manifest.json" "$TEMP_DIR/output/fail-second-evidence/prepare.json" >&2
+    fail 'Second-target failure progress was inconsistent.'
+  }
+logic_calls_before_resume="$(grep -F "$logic_prepare_root" "$LOG" | grep -c 'logic@example')"
+logic_marker_before_resume="$(sha256sum "$logic_prepare_root/.hvo-deploy/ownership")"
+logic_metadata_before_resume="$(stat -c '%u:%a' "$logic_prepare_root" "$logic_prepare_root/.hvo-deploy" "$logic_prepare_root/.hvo-deploy/ownership")"
+run_deploy_mode prepare fail-second isolated >/dev/null
+logic_calls_after_resume="$(grep -F "$logic_prepare_root" "$LOG" | grep -c 'logic@example')"
+(( logic_calls_after_resume == logic_calls_before_resume + 1 )) || fail 'Resume did not validate completed first target exactly once.'
+grep -F "$logic_prepare_root" "$LOG" | grep -Fq $'\tvalidate'
+[[ "$(sha256sum "$logic_prepare_root/.hvo-deploy/ownership")" == "$logic_marker_before_resume" ]] || fail 'Completed-target validation changed marker.'
+[[ "$(stat -c '%u:%a' "$logic_prepare_root" "$logic_prepare_root/.hvo-deploy" "$logic_prepare_root/.hvo-deploy/ownership")" == "$logic_metadata_before_resume" ]] || fail 'Completed-target validation changed ownership or modes.'
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3' "$TEMP_DIR/output/fail-second-state/prepare-ledger.json" >/dev/null
+
+write_prepare_case fail-third isolated
+run_prepare_preflight fail-third isolated
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=west expect_prepare_failure 'identity-mismatch' fail-third isolated
+jq -e --slurp 'all(.[]; .phaseStatus == "failed") and
+  all(.[]; [.targets[].target] == ["logic","east"])' \
+  "$TEMP_DIR/output/fail-third-state/prepare-ledger.json" "$TEMP_DIR/output/fail-third-state/prepare-manifest.json" \
+  "$TEMP_DIR/output/fail-third-evidence/prepare.json" >/dev/null
+run_deploy_mode prepare fail-third isolated >/dev/null
+
+# Completed-target validation detects drift before continuing later targets.
+create_partial_prepare_case drift-deleted-root
+rm -rf "$TEMP_DIR/remote/drift-deleted-root-logic/runtime"
+expect_prepare_failure 'completed-drift' drift-deleted-root isolated
+
+create_partial_prepare_case drift-marker
+printf 'altered\n' > "$TEMP_DIR/remote/drift-marker-logic/runtime/.hvo-deploy/ownership"
+expect_prepare_failure 'completed-drift' drift-marker isolated
+
+create_partial_prepare_case drift-mode
+chmod 755 "$TEMP_DIR/remote/drift-mode-logic/runtime"
+expect_prepare_failure 'completed-drift' drift-mode isolated
+
+create_partial_prepare_case drift-owner
+FAKE_PREPARE_FOREIGN_OWNER_HOST=logic expect_prepare_failure 'unsafe-owner' drift-owner isolated
+
+create_partial_prepare_case drift-host
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=logic expect_prepare_failure 'identity-mismatch' drift-host isolated
+
+# A root-creation interruption leaves exact lock metadata that permits recovery and enforces contention.
+write_prepare_case prepare-root-fail isolated
+run_prepare_preflight prepare-root-fail isolated
+if DEPLOY_TEST_FAILPOINT=after-root-creation run_deploy_mode prepare prepare-root-fail isolated > "$TEMP_DIR/prepare-failure.log" 2>&1; then fail 'Root failpoint passed.'; fi
+lock_path=("$TEMP_DIR/remote/prepare-root-fail-logic"/.hvo-deploy-prepare-*.lock)
+test "${#lock_path[@]}" = 1
+exec 88<>"${lock_path[0]}"; flock -n 88
+expect_prepare_failure 'lock-contended' prepare-root-fail isolated
+flock -u 88; exec 88>&-
+run_deploy_mode prepare prepare-root-fail isolated >/dev/null
+
+for prepare_failpoint in after-marker-creation after-ledger-publication after-prepare-evidence; do
+    prepare_case="prepare-$prepare_failpoint"
+    write_prepare_case "$prepare_case" isolated
+    run_prepare_preflight "$prepare_case" isolated
+    if DEPLOY_TEST_FAILPOINT="$prepare_failpoint" run_deploy_mode prepare "$prepare_case" isolated > "$TEMP_DIR/prepare-failure.log" 2>&1; then
+        fail "Prepare failpoint passed: $prepare_failpoint"
+    fi
+    run_deploy_mode prepare "$prepare_case" isolated >/dev/null
+    jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$prepare_case-state/prepare-manifest.json" >/dev/null
+    jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$prepare_case-state/prepare-ledger.json" >/dev/null
+    jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$prepare_case-evidence/prepare.json" >/dev/null
+done
+
+# Persistent failpoint recovery retains pre-mutation creation provenance.
+write_prepare_case persistent-root-provenance persistent
+run_prepare_preflight persistent-root-provenance persistent
+if DEPLOY_TEST_FAILPOINT=after-root-creation FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-root-provenance persistent > "$TEMP_DIR/prepare-failure.log" 2>&1; then
+    fail 'Persistent root failpoint passed.'
+fi
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-root-provenance persistent >/dev/null
+jq -e 'all(.targets[]; .newlyCreated.root == true and .newlyCreated.controlDirectory == true and .newlyCreated.marker == true)' \
+  "$TEMP_DIR/output/persistent-root-provenance-state/prepare-ledger.json" >/dev/null
+
+write_prepare_case persistent-empty-provenance persistent
+mkdir -m 700 "$TEMP_DIR/remote/persistent-empty-provenance-logic/runtime"
+run_prepare_preflight persistent-empty-provenance persistent
+if DEPLOY_TEST_FAILPOINT=after-marker-creation FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-empty-provenance persistent > "$TEMP_DIR/prepare-failure.log" 2>&1; then
+    fail 'Persistent marker failpoint passed.'
+fi
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-empty-provenance persistent >/dev/null
+jq -e '.targets[] | select(.target == "logic") |
+  .newlyCreated.root == false and .newlyCreated.controlDirectory == true and .newlyCreated.marker == true' \
+  "$TEMP_DIR/output/persistent-empty-provenance-state/prepare-ledger.json" >/dev/null
+
+# An accepted idempotent rerun commits running before clearing stale prepare evidence and recovers interruption.
+cp "$TEMP_DIR/prepare-happy.inventory" "$INVENTORY"
+cp "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" "$TEMP_DIR/prepare-happy.prior-evidence"
+if DEPLOY_TEST_FAILPOINT=after-prepare-running-manifest run_deploy_mode prepare prepare-happy isolated > "$TEMP_DIR/prepare-failure.log" 2>&1; then
+    fail 'Prepare running-manifest failpoint passed.'
+fi
+jq -e '.phaseStatus == "running"' "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" >/dev/null
+cmp -s "$TEMP_DIR/prepare-happy.prior-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Interrupted accepted rerun changed stale evidence before clear.'
+run_deploy_mode prepare prepare-happy isolated >/dev/null
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" >/dev/null
+cp "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" "$TEMP_DIR/prepare-happy.accepted-evidence"
+jq '.installationId="rejected-installation"' "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+expect_prepare_failure 'resume-contract-mismatch' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.accepted-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Rejected prepare validation changed prior prepare evidence.'
+cp "$TEMP_DIR/prepare-happy.inventory" "$INVENTORY"
+
+# Corrupt, duplicate, and inventory-mismatched ledgers are rejected before prepare artifacts change.
+cp "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json" "$TEMP_DIR/prepare-happy.valid-ledger"
+cp "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" "$TEMP_DIR/prepare-happy.valid-manifest"
+cp "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" "$TEMP_DIR/prepare-happy.valid-prepare-evidence"
+printf 'not-json\n' > "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+expect_prepare_failure 'ledger' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.valid-manifest" "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" || fail 'Corrupt ledger invocation changed prepare manifest.'
+cmp -s "$TEMP_DIR/prepare-happy.valid-prepare-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Corrupt ledger invocation changed prepare evidence.'
+cp "$TEMP_DIR/prepare-happy.valid-ledger" "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+jq '.targets += [.targets[0]]' "$TEMP_DIR/prepare-happy.valid-ledger" > "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+expect_prepare_failure 'duplicate-target' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.valid-manifest" "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" || fail 'Duplicate ledger invocation changed prepare manifest.'
+cp "$TEMP_DIR/prepare-happy.valid-ledger" "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+jq '.targets[0].runtimeRoot="/mismatched/root"' "$TEMP_DIR/prepare-happy.valid-ledger" > "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+expect_prepare_failure 'target-mismatch' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.valid-prepare-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Mismatched ledger invocation changed prepare evidence.'
+cp "$TEMP_DIR/prepare-happy.valid-ledger" "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+jq '.targets[0].newlyCreated.controlDirectory = false' "$TEMP_DIR/prepare-happy.valid-ledger" > "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+expect_prepare_failure 'provenance-mismatch' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.valid-manifest" "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" || fail 'Provenance mismatch changed prepare manifest.'
+cmp -s "$TEMP_DIR/prepare-happy.valid-prepare-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Provenance mismatch changed prepare evidence.'
+cp "$TEMP_DIR/prepare-happy.valid-ledger" "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+
+# Completed validation never initializes or repairs an empty lock.
+write_prepare_case empty-lock isolated
+run_prepare_preflight empty-lock isolated
+run_deploy_mode prepare empty-lock isolated >/dev/null
+empty_lock_path=("$TEMP_DIR/remote/empty-lock-logic"/.hvo-deploy-prepare-*.lock)
+test "${#empty_lock_path[@]}" = 1
+cp "$TEMP_DIR/output/empty-lock-state/prepare-manifest.json" "$TEMP_DIR/empty-lock.manifest"
+cp "$TEMP_DIR/output/empty-lock-evidence/prepare.json" "$TEMP_DIR/empty-lock.evidence"
+: > "${empty_lock_path[0]}"
+expect_prepare_failure 'completed-drift' empty-lock isolated
+test ! -s "${empty_lock_path[0]}" || fail 'Completed validation repaired an empty lock.'
+cmp -s "$TEMP_DIR/empty-lock.manifest" "$TEMP_DIR/output/empty-lock-state/prepare-manifest.json" || fail 'Empty-lock validation changed prepare manifest.'
+cmp -s "$TEMP_DIR/empty-lock.evidence" "$TEMP_DIR/output/empty-lock-evidence/prepare.json" || fail 'Empty-lock validation changed prepare evidence.'
+
+# Persistent ownership cannot be adopted by another installation identity.
+write_prepare_case persistent-same-install persistent
+run_prepare_preflight persistent-same-a persistent
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-same-a persistent >/dev/null
+run_prepare_preflight persistent-same-b persistent
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-same-b persistent >/dev/null
+jq -e 'all(.targets[]; .creatingRunId == "persistent-same-a" and .disposition == "preexisting-or-resumed" and
+  .newlyCreated.root == false and .newlyCreated.controlDirectory == false and .newlyCreated.marker == false)' \
+  "$TEMP_DIR/output/persistent-same-b-state/prepare-ledger.json" >/dev/null
+
+write_prepare_case persistent-cross persistent
+run_prepare_preflight persistent-cross-a persistent
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-cross-a persistent >/dev/null
+jq '.installationId="other-installation"' "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode preflight persistent-cross-b persistent >/dev/null
+expect_prepare_failure 'lock-content-mismatch' persistent-cross-b persistent
+
+write_prepare_case isolated-cross isolated
+run_prepare_preflight isolated-cross-a isolated
+run_deploy_mode prepare isolated-cross-a isolated >/dev/null
+run_prepare_preflight isolated-cross-b isolated
+expect_prepare_failure 'lock-content-mismatch' isolated-cross-b isolated
+
+if grep -Eq '(^|[[:space:]])(rm|rmdir|docker|compose|curl|timeout)([[:space:]]|$)' "$PREPARE_REMOTE_LOG"; then
+    fail 'Prepare remote script contains deletion or unrelated mutation commands.'
+fi
+if grep -Fq 'fixture-secret-never-print' "$PREPARE_REMOTE_LOG" || grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output"; then
+    fail 'Prepare logs or state exposed a fixture secret.'
+fi
+if grep -R -Eq 'logic-machine|east-machine|west-machine' "$TEMP_DIR/output"/*-evidence/prepare.json 2>/dev/null; then
+    fail 'Sanitized prepare evidence exposed machine identity.'
+fi
+
 cp "$BASE_INVENTORY" "$INVENTORY"
 if DEPLOY_TEST_FAILPOINT=after-evidence-before-passed-manifest run_deploy evidence-first-crash > "$TEMP_DIR/failure.log" 2>&1; then
     fail 'Evidence-first publication failpoint passed.'

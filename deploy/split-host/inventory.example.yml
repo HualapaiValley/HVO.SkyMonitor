@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "environment": "observatory-production",
+  "installationId": "observatory-main",
   "source": {
     "revision": "0000000000000000000000000000000000000000",
     "dirtyDisposition": "require-clean"
@@ -11,25 +12,27 @@
   },
   "logicHost": {
     "name": "logic-01",
-    "sshHost": "operator@logic-01.example.net",
+    "sshHost": "hvo@logic-01.example.net",
     "dockerContext": "logic-01",
     "expectedArchitecture": "amd64",
     "expectedHostName": "logic-01",
     "expectedHostIdentity": "11111111111111111111111111111111",
     "expectedDockerDaemonIdentity": "LOGICDAEMON0001",
-    "runtimeRoot": "/srv/hvo-skymonitor",
+    "runtimeRoot": "/srv/hvo/skymonitor/logic-01",
+    "runtimeOwner": "hvo",
     "publicEndpoint": "https://sky.example.net:5174",
     "ports": [5174]
   },
   "cameraAgents": [{
     "name": "camera-east",
-    "sshHost": "operator@camera-east.example.net",
+    "sshHost": "hvo@camera-east.example.net",
     "dockerContext": "camera-east",
     "expectedArchitecture": "arm64",
     "expectedHostName": "camera-east",
     "expectedHostIdentity": "22222222222222222222222222222222",
     "expectedDockerDaemonIdentity": "CAMERADAEMON0001",
-    "runtimeRoot": "/srv/hvo-skymonitor",
+    "runtimeRoot": "/srv/hvo/skymonitor/camera-east",
+    "runtimeOwner": "hvo",
     "publicEndpoint": "https://camera-east.example.net:5130",
     "ports": [5130]
   }],
