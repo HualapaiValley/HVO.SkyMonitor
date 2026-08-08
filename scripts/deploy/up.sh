@@ -171,6 +171,20 @@ deploy_up_stage_target() {
                 deploy_up_stage_value "$target" "$render_root" "$destination" "$key" "$(jq -r '.scope' <<< "$value")" || return 1
             done < <(jq -c '.deployment.deviceBootstrap.scopes | to_entries[] | {index:.key,scope:.value}' "$inventory")
         done
+        deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$config_root/initializer-secrets" \
+          "$(jq -r '.deployment.automation.ownerApiKeySecretReference' "$inventory")" DatabaseSeed__ApiKeys__0__RawKey || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ApiKeys__0__DisplayName "Split-host deployment owner" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ApiKeys__0__AccessLevel ReadWrite || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ConfidentialClients__0__ClientId \
+          "$(jq -r '.deployment.deviceBootstrap.clientId' "$inventory")" || return 1
+        deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$config_root/initializer-secrets" \
+          "$(jq -r '.deployment.deviceBootstrap.clientSecretReference' "$inventory")" DatabaseSeed__ConfidentialClients__0__ClientSecret || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ConfidentialClients__0__DisplayName \
+          "Split-host camera agents" || return 1
+        while IFS= read -r value; do
+            key="DatabaseSeed__ConfidentialClients__0__Scopes__$(jq -r '.index' <<< "$value")"
+            deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" "$key" "$(jq -r '.scope' <<< "$value")" || return 1
+        done < <(jq -c '.deployment.deviceBootstrap.scopes | to_entries[] | {index:.key,scope:.value}' "$inventory")
         value="$(deploy_secret_value "$(jq -r '.secretSource.path' "$inventory")" "$(jq -r '.deployment.services.redis.secretReference' "$inventory")")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$config_root/runtime-secrets" Redis__Configuration \
           "$(jq -r '.deployment.services.redis.host' "$inventory"):$(jq -r '.deployment.services.redis.port' "$inventory"),user=$(jq -r '.deployment.services.redis.user' "$inventory"),password=$value" || return 1
