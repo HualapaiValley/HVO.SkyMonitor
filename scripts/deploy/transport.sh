@@ -639,11 +639,12 @@ REMOTE
 
 deploy_transport_http_private() {
     local ssh_host="$1" method="$2" url="$3" body_path="$4" header_path="$5" cookie_path="$6" output_path="$7"
+    local remote_url="${url//&/\\&}"
     [[ -n "$body_path" ]] || body_path=-
     [[ -n "$header_path" ]] || header_path=-
     [[ -n "$cookie_path" ]] || cookie_path=-
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
-      "$method" "$url" "$body_path" "$header_path" "$cookie_path" "$output_path" 2>/dev/null <<'REMOTE'
+      "$method" "$remote_url" "$body_path" "$header_path" "$cookie_path" "$output_path" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 method=$1; url=$2; body=$3; headers=$4; cookies=$5; output=$6
 [[ "$body" != - ]] || body=

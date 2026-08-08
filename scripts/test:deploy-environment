@@ -465,6 +465,7 @@ cat > "$REMOTE_BIN/curl" <<'EOF'
 #!/usr/bin/bash
 set -euo pipefail
 output= response_headers= cookie_jar= cookies= body= method=GET explicit_request=false location=false url="${*: -1}"
+url="${url//\\&/$'\x26'}"
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
