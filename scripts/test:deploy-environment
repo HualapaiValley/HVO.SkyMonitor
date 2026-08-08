@@ -582,7 +582,8 @@ if [[ "$url" == */api/internal/deployment/continuity* ]]; then
     upper=$count; (( upper <= to )) || upper=$to
     for ((sequence=from; sequence<=upper; sequence++)); do
       printf -v capture_id '00000000-0000-0000-0000-%012d' "$sequence"
-      printf -v artifact_id '10000000-0000-0000-0000-%012d' "$sequence"
+      artifact_id=99999999-9999-9999-9999-999999999999
+      [[ ! -f "$FAKE_HTTP_STATE/$host.measure-profile" ]] || printf -v artifact_id '10000000-0000-0000-0000-%012d' "$sequence"
       window="$(jq -c --argjson sequence "$sequence" --arg capture "$capture_id" --arg artifact "$artifact_id" --arg checksum "$FAKE_RAW_ARTIFACT_SHA" \
         '. + [{captureSequence:$sequence,captureId:$capture,rawArtifactId:$artifact,rawChecksumSha256:$checksum,rawByteLength:6144,state:"committed"}]' <<< "$window")"
     done
@@ -2116,7 +2117,7 @@ for artifact_failure in checksum recipe object dimensions format lineage derivat
 done
 proof_fixture="$(
   source "$REPO_ROOT/scripts/deploy/smoke.sh"
-  deploy_smoke_select_checksum_proof "$valid_central" "$TEMP_DIR/output/$deploy_case-state/smoke-private/east-current-continuity.json" \
+  deploy_smoke_select_checksum_proof "$valid_central" "$TEMP_DIR/output/$deploy_case-state/smoke-private/east-proof-continuity.json" \
     "$(jq -r '.maximumCaptureSequence // 0' "$initial_central_file")"
 )"
 test "$(jq -r '.artifactId' <<< "$proof_fixture")" = 99999999-9999-9999-9999-999999999999

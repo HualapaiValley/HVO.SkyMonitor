@@ -51,9 +51,9 @@ deploy_smoke_select_checksum_proof() {
     jq -c --argjson before "$before" --slurpfile local "$local_continuity" '
       [.latestArtifacts[] | select((.captureSequence // -1) > $before) as $central |
         select($central.role == "Raw") |
-        $local[0].durable.latestArtifacts[] |
-        select(.status == "acknowledged" and .role == "Raw" and .artifactId == $central.artifactId) |
-        $central + {localChecksumSha256:.checksumSha256}] |
+        $local[0].durable.captureWindow[] |
+        select(.state == "committed" and .rawArtifactId == $central.artifactId and .rawByteLength == $central.byteLength) |
+        $central + {localChecksumSha256:.rawChecksumSha256}] |
       sort_by(.captureSequence,.artifactId) | first // empty' "$central"
 }
 
@@ -229,8 +229,12 @@ deploy_run_smoke() {
         done
         [[ "$checks" == true ]] || { deploy_fail smoke "$name" bounded-convergence-timeout; return 1; }
         deploy_smoke_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$run_id" pause Paused || return 1
+        status="$(deploy_bootstrap_request "$target" GET \
+          "$endpoint/api/internal/deployment/continuity?fromCaptureSequence=$((initial_local + 1))&toCaptureSequence=$current_local" "" "" "$cookies" \
+          "$target_remote/proof-continuity.json" "$private_root/$name-proof-continuity.json")" || return 1
+        [[ "$status" == 200 ]] || { deploy_fail smoke "$name" local-proof-continuity-failed; return 1; }
         proof_artifact="$(deploy_smoke_select_checksum_proof "$private_root/$name-current-central.json" \
-          "$private_root/$name-current-continuity.json" "$initial_central")"
+          "$private_root/$name-proof-continuity.json" "$initial_central")"
         [[ -n "$proof_artifact" ]] || { deploy_fail smoke "$name" retrievable-artifact-missing; return 1; }
         proof_id="$(jq -er '.artifactId' <<< "$proof_artifact")"; proof_device="$(jq -er '.devicePublicId' "$private_root/$name-current-central.json")"
         local_checksum="$(jq -er '.localChecksumSha256' <<< "$proof_artifact")"
