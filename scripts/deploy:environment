@@ -34,14 +34,16 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/down.sh"
 # shellcheck source=scripts/deploy/measure.sh
 . "$SCRIPT_DIR/deploy/measure.sh"
+# shellcheck source=scripts/deploy/acceptance.sh
+. "$SCRIPT_DIR/deploy/acceptance.sh"
 
 usage() {
-    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
     exit 2
 }
 
 phase="${1:-}"
-[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == down ]] || usage
+[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == acceptance-init || "$phase" == down ]] || usage
 shift
 inventory="" mode="" run_id="" state_root="" evidence_root="" down_policy="" confirm="" workload=""
 while (( $# > 0 )); do
@@ -70,7 +72,7 @@ unset DOCKER_HOST DOCKER_CONTEXT SSH_HOST SSH_CONFIG 2>/dev/null || true
 unset ambient_name
 
 deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh date grep cut awk wc || exit 1
-[[ "$phase" == prepare || "$phase" == catalog ]] || deploy_require_commands docker || exit 1
+[[ "$phase" == prepare || "$phase" == catalog || "$phase" == acceptance-init ]] || deploy_require_commands docker || exit 1
 [[ "$phase" != images ]] || deploy_require_commands tar mv rm || exit 1
 [[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
@@ -213,6 +215,14 @@ if [[ "$phase" == measure ]]; then
     fi
     trap - ERR
     deploy_status measure complete passed "$workload"
+    exit 0
+fi
+
+if [[ "$phase" == acceptance-init ]]; then
+    if ! deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$source_tree"; then
+        exit 1
+    fi
+    deploy_status acceptance-init complete passed campaign-index-initialized
     exit 0
 fi
 

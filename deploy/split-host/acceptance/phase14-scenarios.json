@@ -1,0 +1,1354 @@
+{
+  "schemaVersion": 2,
+  "campaign": "phase-14-virtualsky-two-host",
+  "classifications": [
+    {
+      "id": "normal",
+      "normalCampaign": true
+    },
+    {
+      "id": "fault",
+      "normalCampaign": true
+    },
+    {
+      "id": "external",
+      "normalCampaign": false
+    },
+    {
+      "id": "soak",
+      "normalCampaign": false
+    },
+    {
+      "id": "stellarium",
+      "normalCampaign": false
+    },
+    {
+      "id": "future-hardware",
+      "normalCampaign": false
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "normal-flow",
+      "title": "Complete VirtualSky two-host normal flow",
+      "classification": "normal",
+      "executionClass": "real-campaign",
+      "source": "project-plan:E2E-002",
+      "evidenceSource": "campaign:normal-flow",
+      "workloads": [
+        "W1",
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/normal-flow.json"
+    },
+    {
+      "id": "raw-payload-write-crash",
+      "title": "Normative row 1: crash during raw payload write",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "project-plan:phase-14-fault-row-1",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-payload-write-crash.json"
+    },
+    {
+      "id": "payload-published-before-journal-crash",
+      "title": "Normative row 2: crash after payload publication before journal commit",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "project-plan:phase-14-fault-row-2",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/payload-published-before-journal-crash.json"
+    },
+    {
+      "id": "journal-committed-before-wakeup-crash",
+      "title": "Normative row 3: crash after journal commit before wake-up",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "project-plan:phase-14-fault-row-3",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/journal-committed-before-wakeup-crash.json"
+    },
+    {
+      "id": "logichost-network-outage",
+      "title": "Normative row 4: LogicHost or network outage",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "project-plan:phase-14-fault-row-4",
+      "evidenceSource": "campaign:logichost-network-outage",
+      "workloads": [
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/logichost-network-outage.json"
+    },
+    {
+      "id": "minio-failure",
+      "title": "Normative row 5: MinIO failure",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "project-plan:phase-14-fault-row-5",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound;case=Minio",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/minio-failure.json"
+    },
+    {
+      "id": "sql-failure",
+      "title": "Normative row 6: SQL failure",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "project-plan:phase-14-fault-row-6",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound;case=SqlServer",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/sql-failure.json"
+    },
+    {
+      "id": "worker-before-output-crash",
+      "title": "Normative row 7: worker crash before output persistence",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "project-plan:phase-14-fault-row-7",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDerivativeWorkerPerformanceTests.CentralDerivativeWorker_CanonicalWorkloads_RecordPerformanceEvidence;case=IntentCommitted",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/worker-before-output-crash.json"
+    },
+    {
+      "id": "worker-after-output-before-completion-crash",
+      "title": "Normative row 8: worker crash after output persistence before completion",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "project-plan:phase-14-fault-row-8",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDerivativeWorkerPerformanceTests.CentralDerivativeWorker_CanonicalWorkloads_RecordPerformanceEvidence;case=CanonicalPublished",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/worker-after-output-before-completion-crash.json"
+    },
+    {
+      "id": "out-of-order-upload",
+      "title": "Normative row 9: out-of-order upload",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "project-plan:phase-14-fault-row-9",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence;case=out-of-order",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/out-of-order-upload.json"
+    },
+    {
+      "id": "permanent-upload-rejection",
+      "title": "Normative row 10: permanent upload rejection",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "project-plan:phase-14-fault-row-10",
+      "evidenceSource": "campaign:permanent-upload-rejection",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/permanent-upload-rejection.json"
+    },
+    {
+      "id": "disk-pressure",
+      "title": "Normative row 11: disk pressure",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "project-plan:phase-14-fault-row-11",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync;case=AssertPressureAndDrainAsync",
+      "workloads": [
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/disk-pressure.json"
+    },
+    {
+      "id": "optional-lane-backlog",
+      "title": "Normative row 12: optional-lane backlog",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "project-plan:phase-14-fault-row-12",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests.Service_RediscoversWithoutWakeupAndBlockedOptionalLaneDoesNotBlockStandard",
+      "workloads": [
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/optional-lane-backlog.json"
+    },
+    {
+      "id": "duplicate-delivery",
+      "title": "Duplicate delivery",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "issue-108:duplicate-delivery",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence;case=duplicate",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/duplicate-delivery.json"
+    },
+    {
+      "id": "corrupt-delivery",
+      "title": "Corrupt delivery",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "issue-108:corrupt-delivery",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence;case=corrupt",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/corrupt-delivery.json"
+    },
+    {
+      "id": "lease-crash-before-work",
+      "title": "Lease holder crash before work",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "issue-108:lease-crash-points",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests.HandlerBoundaryFaults_AreReleasedAndRecoveredByLiveWorker;case=BeforeHandler",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/lease-crash-before-work.json"
+    },
+    {
+      "id": "lease-crash-after-work",
+      "title": "Lease holder crash after work before acknowledgement",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "issue-108:lease-crash-points",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests.HandlerBoundaryFaults_AreReleasedAndRecoveredByLiveWorker;case=AfterHandler",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/lease-crash-after-work.json"
+    },
+    {
+      "id": "bounded-shutdown",
+      "title": "Bounded shutdown with queued and leased work",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "issue-108:bounded-shutdown",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync;case=AssertBoundedShutdownAsync",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/bounded-shutdown.json"
+    },
+    {
+      "id": "raw-boundary-payload-written",
+      "title": "Raw ingress payload write completed",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:PayloadWritten",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce;case=PayloadWritten",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-payload-written.json"
+    },
+    {
+      "id": "raw-boundary-payload-flushed",
+      "title": "Raw ingress payload flushed",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:PayloadFlushed",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce;case=PayloadFlushed",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-payload-flushed.json"
+    },
+    {
+      "id": "raw-boundary-payload-published",
+      "title": "Raw ingress payload published",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:PayloadPublished",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce;case=PayloadPublished",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-payload-published.json"
+    },
+    {
+      "id": "raw-boundary-before-journal-commit",
+      "title": "Raw ingress before journal transaction commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:BeforeJournalTransactionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce;case=BeforeJournalTransactionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-before-journal-commit.json"
+    },
+    {
+      "id": "raw-boundary-after-journal-commit",
+      "title": "Raw ingress after journal commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:AfterJournalCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce;case=AfterJournalCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-after-journal-commit.json"
+    },
+    {
+      "id": "raw-boundary-before-wakeup",
+      "title": "Raw ingress before wake-up notification",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:BeforeWakeUpNotification",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce;case=BeforeWakeUpNotification",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-before-wakeup.json"
+    },
+    {
+      "id": "raw-boundary-sidecar-directory-sync",
+      "title": "Raw payload and sidecar directory synchronized",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "boundary:raw-ingress:SidecarDirectorySynced",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync;case=AssertRawPublicationKillBoundaryAsync",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-sidecar-directory-sync.json"
+    },
+    {
+      "id": "raw-boundary-migration-transaction-began",
+      "title": "Raw ingress migration transaction began",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:AfterMigrationTransactionBegan",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=AfterMigrationTransactionBegan",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-migration-transaction-began.json"
+    },
+    {
+      "id": "raw-boundary-before-migration-commit",
+      "title": "Raw ingress before migration commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:BeforeMigrationCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=BeforeMigrationCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-before-migration-commit.json"
+    },
+    {
+      "id": "raw-boundary-validation-completed",
+      "title": "Raw ingress validation completed",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:ValidationCompleted",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=ValidationCompleted",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-validation-completed.json"
+    },
+    {
+      "id": "raw-boundary-payload-directory-sync",
+      "title": "Raw payload directory synchronized",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:PayloadDirectorySynced",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=PayloadDirectorySynced",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-payload-directory-sync.json"
+    },
+    {
+      "id": "raw-boundary-sidecar-written",
+      "title": "Raw sidecar write completed",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:SidecarWritten",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=SidecarWritten",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-sidecar-written.json"
+    },
+    {
+      "id": "raw-boundary-sidecar-flushed",
+      "title": "Raw sidecar flushed",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:SidecarFlushed",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=SidecarFlushed",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-sidecar-flushed.json"
+    },
+    {
+      "id": "raw-boundary-sidecar-published",
+      "title": "Raw sidecar published",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:SidecarPublished",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=SidecarPublished",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-sidecar-published.json"
+    },
+    {
+      "id": "raw-boundary-before-journal-transaction",
+      "title": "Raw ingress before opening journal transaction",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:BeforeJournalCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=BeforeJournalCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-before-journal-transaction.json"
+    },
+    {
+      "id": "raw-boundary-journal-transaction-began",
+      "title": "Raw ingress journal transaction began",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:AfterJournalTransactionBegan",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=AfterJournalTransactionBegan",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-journal-transaction-began.json"
+    },
+    {
+      "id": "raw-boundary-journal-row-inserted",
+      "title": "Raw ingress journal row inserted",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:AfterJournalRowInserted",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=AfterJournalRowInserted",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-journal-row-inserted.json"
+    },
+    {
+      "id": "raw-boundary-before-index-projection",
+      "title": "Raw ingress before index projection",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:BeforeIndexProjection",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=BeforeIndexProjection",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-before-index-projection.json"
+    },
+    {
+      "id": "raw-boundary-after-index-projection",
+      "title": "Raw ingress after index projection",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:AfterIndexProjection",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture;case=AfterIndexProjection",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-after-index-projection.json"
+    },
+    {
+      "id": "capture-lane-work-rows-commit",
+      "title": "Capture-lane work rows inserted before shared commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:capture-lane:AfterWorkRowsInserted",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests.LaneCommitAndClaimFaults_RetryToOneDurableWorkItem;case=AfterWorkRowsInserted",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/capture-lane-work-rows-commit.json"
+    },
+    {
+      "id": "capture-lane-claim-commit",
+      "title": "Capture-lane lease claim committed",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:capture-lane:AfterClaimCommitted",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests.LaneCommitAndClaimFaults_RetryToOneDurableWorkItem;case=AfterClaimCommitted",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/capture-lane-claim-commit.json"
+    },
+    {
+      "id": "capture-lane-completion-before-commit",
+      "title": "Capture-lane completion before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:capture-lane:BeforeCompletionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests.CompletionRetryAndQuarantineFaults_PreserveCommittedTransition;case=BeforeCompletionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/capture-lane-completion-before-commit.json"
+    },
+    {
+      "id": "capture-lane-completion-after-commit",
+      "title": "Capture-lane completion after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:capture-lane:AfterCompletionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests.CompletionRetryAndQuarantineFaults_PreserveCommittedTransition;case=AfterCompletionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/capture-lane-completion-after-commit.json"
+    },
+    {
+      "id": "capture-lane-retry-commit",
+      "title": "Capture-lane retry transition committed",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:capture-lane:AfterRetryCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests.CompletionRetryAndQuarantineFaults_PreserveCommittedTransition;case=AfterRetryCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/capture-lane-retry-commit.json"
+    },
+    {
+      "id": "capture-lane-quarantine-commit",
+      "title": "Capture-lane quarantine transition committed",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:capture-lane:AfterQuarantineCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution.DurableCaptureDistributionTests.CompletionRetryAndQuarantineFaults_PreserveCommittedTransition;case=AfterQuarantineCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/capture-lane-quarantine-commit.json"
+    },
+    {
+      "id": "processing-output-before-node-commit",
+      "title": "Processing outputs published before node commit",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "boundary:capture-processing:AfterOutputsPublishedBeforeNodeCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync;case=AssertAnnotationPublicationKillBoundaryAsync",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/processing-output-before-node-commit.json"
+    },
+    {
+      "id": "calibration-before-payload-write",
+      "title": "Calibration before payload write",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:BeforePayloadWrite",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.VirtualCalibrationAcquisitionCoordinatorTests.AcquireAsync_InterruptionBeforeAndAfterPlanningLeavesDurableWorkResumable;case=BeforePayloadWrite",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-before-payload-write.json"
+    },
+    {
+      "id": "calibration-payload-publication",
+      "title": "Calibration payload publication",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:AfterPayloadPublished",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterPayloadPublished",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-payload-publication.json"
+    },
+    {
+      "id": "calibration-before-manifest-write",
+      "title": "Calibration before manifest write",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:BeforeManifestWrite",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.VirtualCalibrationAcquisitionCoordinatorTests.AcquireAsync_OneNonterminalJobPerCameraAndExactCommandReplay;case=BeforeManifestWrite",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-before-manifest-write.json"
+    },
+    {
+      "id": "calibration-manifest-publication",
+      "title": "Calibration manifest publication",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:AfterManifestPublished",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterManifestPublished",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-manifest-publication.json"
+    },
+    {
+      "id": "calibration-before-profile-write",
+      "title": "Calibration before profile write",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:BeforeProfileWrite",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.VirtualCalibrationAcquisitionCoordinatorTests.ResumePendingAsync_RestartsAfterMarkerBoundaryWithoutMutatingSources;case=BeforeProfileWrite",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-before-profile-write.json"
+    },
+    {
+      "id": "calibration-profile-publication",
+      "title": "Calibration profile marker publication",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:AfterProfilePublished",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterProfilePublished",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-profile-publication.json"
+    },
+    {
+      "id": "calibration-directory-sync",
+      "title": "Calibration profile directory synchronization",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:DirectorySynced",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=DirectorySynced",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-directory-sync.json"
+    },
+    {
+      "id": "calibration-sqlite-publication",
+      "title": "Calibration SQLite publication commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:AfterSqlitePublication",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterSqlitePublication",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-sqlite-publication.json"
+    },
+    {
+      "id": "calibration-activation-commit",
+      "title": "Calibration activation commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:AfterActivationCommitted",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterActivationCommitted",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-activation-commit.json"
+    },
+    {
+      "id": "transient-candidate-stage-before-commit",
+      "title": "Transient candidate stage before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:BeforeStageCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=BeforeStageCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-stage-before-commit.json"
+    },
+    {
+      "id": "transient-candidate-stage-after-commit",
+      "title": "Transient candidate stage after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:AfterStageCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=AfterStageCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-stage-after-commit.json"
+    },
+    {
+      "id": "transient-candidate-reservation-before-commit",
+      "title": "Transient candidate reservation before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:BeforeReservationCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=BeforeReservationCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-reservation-before-commit.json"
+    },
+    {
+      "id": "transient-candidate-reservation-after-commit",
+      "title": "Transient candidate reservation after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:AfterReservationCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=AfterReservationCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-reservation-after-commit.json"
+    },
+    {
+      "id": "transient-candidate-record-before-commit",
+      "title": "Transient candidate record before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:BeforeCandidateCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=BeforeCandidateCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-record-before-commit.json"
+    },
+    {
+      "id": "transient-candidate-record-after-commit",
+      "title": "Transient candidate record after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:AfterCandidateCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=AfterCandidateCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-record-after-commit.json"
+    },
+    {
+      "id": "transient-candidate-finalization-before-commit",
+      "title": "Transient candidate finalization before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:BeforeFinalizationCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=BeforeFinalizationCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-finalization-before-commit.json"
+    },
+    {
+      "id": "transient-candidate-finalization-after-commit",
+      "title": "Transient candidate finalization after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:AfterFinalizationCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=AfterFinalizationCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-finalization-after-commit.json"
+    },
+    {
+      "id": "transient-candidate-submission-before-commit",
+      "title": "Transient candidate submission before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:BeforeSubmissionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=BeforeSubmissionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-submission-before-commit.json"
+    },
+    {
+      "id": "transient-candidate-submission-after-commit",
+      "title": "Transient candidate submission after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:AfterSubmissionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=AfterSubmissionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-submission-after-commit.json"
+    },
+    {
+      "id": "transient-candidate-acknowledgement-before-commit",
+      "title": "Transient candidate acknowledgement before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:BeforeAcknowledgementCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=BeforeAcknowledgementCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-acknowledgement-before-commit.json"
+    },
+    {
+      "id": "transient-candidate-acknowledgement-after-commit",
+      "title": "Transient candidate acknowledgement after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:AfterAcknowledgementCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.SqliteTransientCandidateJournalTests.DurableCandidateBoundaryFaultMatrix_RetryConvergesExactlyOnce;case=AfterAcknowledgementCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-acknowledgement-after-commit.json"
+    },
+    {
+      "id": "transient-candidate-reservation-before-validation",
+      "title": "Transient candidate before reservation validation",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:BeforeReservationValidation",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.Issue247TransientCandidateReservationCorrectionTests.ReserveAsync_FaultBoundaryFreshReconstructionConverges;case=BeforeReservationValidation",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-reservation-before-validation.json"
+    },
+    {
+      "id": "transient-candidate-reservation-after-validation",
+      "title": "Transient candidate after reservation validation",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-candidate:AfterReservationValidation",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.Issue247TransientCandidateReservationCorrectionTests.ReserveAsync_FaultBoundaryFreshReconstructionConverges;case=AfterReservationValidation",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-candidate-reservation-after-validation.json"
+    },
+    {
+      "id": "transient-runtime-frame-history-before-commit",
+      "title": "Transient frame history before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:BeforeFrameHistoryCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.FrameHistoryCommitFault_RestartPreservesCausalSuccessAndFailure;case=BeforeFrameHistoryCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-frame-history-before-commit.json"
+    },
+    {
+      "id": "transient-runtime-frame-history-after-commit",
+      "title": "Transient frame history after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:AfterFrameHistoryCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.FrameHistoryCommitFault_RestartPreservesCausalSuccessAndFailure;case=AfterFrameHistoryCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-frame-history-after-commit.json"
+    },
+    {
+      "id": "transient-runtime-identity-before-commit",
+      "title": "Transient identity batch before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:BeforeIdentityBatchCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=BeforeIdentityBatchCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-identity-before-commit.json"
+    },
+    {
+      "id": "transient-runtime-identity-after-commit",
+      "title": "Transient identity batch after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:AfterIdentityBatchCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=AfterIdentityBatchCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-identity-after-commit.json"
+    },
+    {
+      "id": "transient-runtime-causal-before-commit",
+      "title": "Transient causal extraction before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:BeforeCausalExtractionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=BeforeCausalExtractionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-causal-before-commit.json"
+    },
+    {
+      "id": "transient-runtime-causal-after-commit",
+      "title": "Transient causal extraction after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:AfterCausalExtractionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=AfterCausalExtractionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-causal-after-commit.json"
+    },
+    {
+      "id": "transient-runtime-candidate-journal-after-commit",
+      "title": "Transient runtime candidate journal after commit",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "boundary:transient-runtime:AfterCandidateJournalCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync;case=AssertTransientCandidateKillBoundaryAsync",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-candidate-journal-after-commit.json"
+    },
+    {
+      "id": "transient-runtime-observation-before-commit",
+      "title": "Transient observation extraction before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:BeforeObservationExtractionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=BeforeObservationExtractionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-observation-before-commit.json"
+    },
+    {
+      "id": "transient-runtime-observation-after-commit",
+      "title": "Transient observation extraction after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:AfterObservationExtractionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=AfterObservationExtractionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-observation-after-commit.json"
+    },
+    {
+      "id": "transient-runtime-assessment-before-commit",
+      "title": "Transient assessment before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:BeforeAssessmentCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=BeforeAssessmentCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-assessment-before-commit.json"
+    },
+    {
+      "id": "transient-runtime-assessment-after-commit",
+      "title": "Transient assessment after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:AfterAssessmentCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=AfterAssessmentCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-assessment-after-commit.json"
+    },
+    {
+      "id": "transient-runtime-finalization-after-commit",
+      "title": "Transient finalization journal after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:AfterFinalizationJournalCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=AfterFinalizationJournalCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-finalization-after-commit.json"
+    },
+    {
+      "id": "transient-runtime-handoff-after-commit",
+      "title": "Transient handoff journal after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:AfterHandoffJournalCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=AfterHandoffJournalCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-handoff-after-commit.json"
+    },
+    {
+      "id": "transient-runtime-completion-before-commit",
+      "title": "Transient runtime completion before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:BeforeRuntimeCompletionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=BeforeRuntimeCompletionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-completion-before-commit.json"
+    },
+    {
+      "id": "transient-runtime-completion-after-commit",
+      "title": "Transient runtime completion after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:AfterRuntimeCompletionCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=AfterRuntimeCompletionCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-completion-after-commit.json"
+    },
+    {
+      "id": "transient-runtime-retirement-before-commit",
+      "title": "Transient retirement before commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:BeforeRetirementCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=BeforeRetirementCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-retirement-before-commit.json"
+    },
+    {
+      "id": "transient-runtime-retirement-after-commit",
+      "title": "Transient retirement after commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:transient-runtime:AfterRetirementCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Transients.TransientWorkerRuntimeTests.HostedWorker_DurableRuntimeFaultMatrix_RestartConvergesExactlyOnce;case=AfterRetirementCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/transient-runtime-retirement-after-commit.json"
+    },
+    {
+      "id": "outbox-enqueue-commit",
+      "title": "Artifact outbox enqueue commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:artifact-outbox:enqueue",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Upload.SqliteArtifactOutboxTests.EnqueueV2_CanonicalDuplicateIsIdempotentAndConflictFailsClosed",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/outbox-enqueue-commit.json"
+    },
+    {
+      "id": "outbox-claim-commit",
+      "title": "Artifact outbox lease claim commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:artifact-outbox:claim",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Upload.SqliteArtifactOutboxTests.ExpiredLease_IsReclaimedInCreatedOrderAndOldOwnerIsFenced",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/outbox-claim-commit.json"
+    },
+    {
+      "id": "outbox-retry-commit",
+      "title": "Artifact outbox retry commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:artifact-outbox:retry",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Upload.SqliteArtifactOutboxTests.RetryAndAcknowledgement_PersistAttemptDeadlineAndFenceStaleLeaseAcrossReopen",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/outbox-retry-commit.json"
+    },
+    {
+      "id": "outbox-acknowledgement-commit",
+      "title": "Artifact outbox acknowledgement commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:artifact-outbox:acknowledgement",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Upload.SqliteArtifactOutboxTests.RetryAndAcknowledgement_PersistAttemptDeadlineAndFenceStaleLeaseAcrossReopen",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/outbox-acknowledgement-commit.json"
+    },
+    {
+      "id": "outbox-quarantine-commit",
+      "title": "Artifact outbox quarantine and terminal resolution commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:artifact-outbox:quarantine",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Upload.SqliteArtifactOutboxTests.QuarantineReplayAndAbandon_AreAuditedAndReleaseHoldOnlyAtTerminalResolution",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/outbox-quarantine-commit.json"
+    },
+    {
+      "id": "central-ingest-intent-commit",
+      "title": "Central ingest durable intent commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-ingest:intent-commit",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence;case=restart-reconciliation",
+      "workloads": [
+        "W1",
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/central-ingest-intent-commit.json"
+    },
+    {
+      "id": "central-ingest-object-publication",
+      "title": "Central ingest canonical object publication",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-ingest:object-publication",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence;case=object-store-fault",
+      "workloads": [
+        "W1",
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/central-ingest-object-publication.json"
+    },
+    {
+      "id": "central-ingest-finalization-commit",
+      "title": "Central ingest availability and completion commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-ingest:finalization-commit",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence;case=sql-commit-fault",
+      "workloads": [
+        "W1",
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/central-ingest-finalization-commit.json"
+    },
+    {
+      "id": "central-job-intent-commit",
+      "title": "Central derivative output intent committed",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-job:IntentCommitted",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDerivativeWorkerPerformanceTests.CentralDerivativeWorker_CanonicalWorkloads_RecordPerformanceEvidence;case=IntentCommitted",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/central-job-intent-commit.json"
+    },
+    {
+      "id": "central-job-staging-publication",
+      "title": "Central derivative staging object written",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-job:StagingWritten",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDerivativeWorkerPerformanceTests.CentralDerivativeWorker_CanonicalWorkloads_RecordPerformanceEvidence;case=StagingWritten",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/central-job-staging-publication.json"
+    },
+    {
+      "id": "central-job-canonical-publication",
+      "title": "Central derivative canonical object published",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-job:CanonicalPublished",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDerivativeWorkerPerformanceTests.CentralDerivativeWorker_CanonicalWorkloads_RecordPerformanceEvidence;case=CanonicalPublished",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/central-job-canonical-publication.json"
+    },
+    {
+      "id": "central-job-completion-before-commit",
+      "title": "Central derivative completion before SQL commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-job:CompletionPreCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDerivativeWorkerPerformanceTests.CentralDerivativeWorker_CanonicalWorkloads_RecordPerformanceEvidence;case=CompletionPreCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/central-job-completion-before-commit.json"
+    },
+    {
+      "id": "central-job-completion-after-commit",
+      "title": "Central derivative completion after SQL commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-job:CompletionPostCommit",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDerivativeWorkerPerformanceTests.CentralDerivativeWorker_CanonicalWorkloads_RecordPerformanceEvidence;case=CompletionPostCommit",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/central-job-completion-after-commit.json"
+    },
+    {
+      "id": "central-window-freeze-commit",
+      "title": "Central derivative window identity and frozen-input commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-window:freeze",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.ConcurrentTransientScheduling_ConvergesToOneJobWindowAndIdentitySet",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/central-window-freeze-commit.json"
+    },
+    {
+      "id": "central-window-timeout-commit",
+      "title": "Central waiting-window timeout commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-window:timeout",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.WaitingWindow_SurvivesScopeRestartAndTimesOutWithReason",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/central-window-timeout-commit.json"
+    },
+    {
+      "id": "central-window-output-object-publication",
+      "title": "Central window derivative output object publication",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-window:output-object-publication",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome;case=FailCanonicalCopyHandler",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/central-window-output-object-publication.json"
+    },
+    {
+      "id": "central-window-output-finalization-commit",
+      "title": "Central window derivative output finalization commit",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:central-window:output-finalization-commit",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.CentralDerivativeWindowIntegrationTests.CentralTransientRuntime_UsesDelayedExactWindowAndPersistsCanonicalOutcome;case=ThrowBeforeCommitInterceptor",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/central-window-output-finalization-commit.json"
+    },
+    {
+      "id": "cameraagent-host-failure",
+      "title": "CameraAgent host process failure and durable restart",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "issue-108:cameraagent-host-failure",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync;case=AssertDurableRestartAsync",
+      "workloads": [
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/cameraagent-host-failure.json"
+    },
+    {
+      "id": "logichost-host-failure",
+      "title": "LogicHost host restart and ingest reconciliation",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "issue-108:logichost-host-failure",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence;case=restart-reconciliation",
+      "workloads": [
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/logichost-host-failure.json"
+    },
+    {
+      "id": "network-failure",
+      "title": "CameraAgent-to-LogicHost network failure",
+      "classification": "fault",
+      "executionClass": "real-campaign",
+      "source": "issue-108:network-failure",
+      "evidenceSource": "campaign:network-failure",
+      "workloads": [
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/network-failure.json"
+    },
+    {
+      "id": "redis-failure",
+      "title": "Redis dependency failure and recovery",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "issue-108:redis-failure",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound;case=Redis",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/redis-failure.json"
+    },
+    {
+      "id": "smtp-failure",
+      "title": "SMTP dependency failure and recovery",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "issue-108:smtp-failure",
+      "evidenceSource": "test:HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound;case=Smtp",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/smtp-failure.json"
+    },
+    {
+      "id": "external-system-validation",
+      "title": "External-system validation",
+      "classification": "external",
+      "executionClass": "separate-gate",
+      "source": "project-plan:E2E-006",
+      "evidenceSource": "gate:external",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/external-system-validation.json"
+    },
+    {
+      "id": "accelerated-soak",
+      "title": "Accelerated soak validation",
+      "classification": "soak",
+      "executionClass": "separate-gate",
+      "source": "project-plan:E2E-006",
+      "evidenceSource": "script:scripts/run:cameraagent-soak",
+      "workloads": [
+        "W2"
+      ],
+      "artifactPath": "acceptance-artifacts/accelerated-soak.json"
+    },
+    {
+      "id": "stellarium-validation",
+      "title": "Stellarium validation",
+      "classification": "stellarium",
+      "executionClass": "separate-gate",
+      "source": "project-plan:E2E-006",
+      "evidenceSource": "script:scripts/validate:stellarium",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/stellarium-validation.json"
+    },
+    {
+      "id": "future-hardware-acceptance",
+      "title": "Future physical-hardware acceptance",
+      "classification": "future-hardware",
+      "executionClass": "separate-gate",
+      "source": "project-plan:E2E-006",
+      "evidenceSource": "gate:future-hardware",
+      "workloads": [],
+      "artifactPath": "acceptance-artifacts/future-hardware-acceptance.json"
+    }
+  ]
+}

@@ -1733,10 +1733,12 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task ProcessKill_AfterPayloadPublicationOrJournalCommit_RestartConvergesOnce()
+    public async Task ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce()
     {
         foreach (var point in new[]
                  {
+                      RawIngressFaultPoint.PayloadWritten,
+                      RawIngressFaultPoint.PayloadFlushed,
                       RawIngressFaultPoint.PayloadPublished,
                       RawIngressFaultPoint.BeforeJournalTransactionCommit,
                       RawIngressFaultPoint.AfterJournalCommit,
@@ -1746,8 +1748,12 @@ public sealed class RawCaptureIngressTests
             var root = CreateRoot();
             try
             {
-                var exitCode = await RunCrashChildAsync(root, point).ConfigureAwait(false);
-                Assert.AreNotEqual(0, exitCode, point.ToString());
+                var crash = await RunCrashChildAsync(root, point).ConfigureAwait(false);
+                Assert.AreNotEqual(0, crash.ExitCode, point.ToString());
+                StringAssert.Contains(
+                    crash.Output,
+                    $"Injected raw ingress process termination at {point}.",
+                    point.ToString());
                 var state = new RawIngressState(TimeProvider.System);
                 using var restarted = CreateIngress(root, state);
                 var receipt = await restarted.AcceptAsync(
@@ -1756,6 +1762,17 @@ public sealed class RawCaptureIngressTests
                     CancellationToken.None).ConfigureAwait(false);
 
                 Assert.IsNotNull(receipt, point.ToString());
+                CollectionAssert.AreEqual(
+                    new byte[] { 10, 10, 10, 10 },
+                    await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false),
+                    point.ToString());
+                Assert.IsEmpty(
+                    Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).ToArray(),
+                    point.ToString());
+                Assert.HasCount(
+                    2,
+                    Directory.EnumerateFiles(Path.Combine(root, "frames"), "*", SearchOption.AllDirectories).ToArray(),
+                    point.ToString());
                 using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
                 Assert.AreEqual(1L, await ScalarLongAsync(
                     connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false), point.ToString());
@@ -1768,6 +1785,25 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
+    public async Task ProcessKillTimeout_KillsAndReapsChild()
+    {
+        var root = CreateRoot();
+        try
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await RunCrashChildAsync(
+                    root,
+                    RawIngressFaultPoint.PayloadWritten,
+                    TimeSpan.FromMilliseconds(250),
+                    hang: true).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task RawIngressCrashChild()
     {
         var root = Environment.GetEnvironmentVariable("HVO_RAW_INGRESS_CRASH_ROOT");
@@ -1775,6 +1811,10 @@ public sealed class RawCaptureIngressTests
         if (string.IsNullOrWhiteSpace(root) || !Enum.TryParse<RawIngressFaultPoint>(pointValue, out var point))
         {
             return;
+        }
+        if (string.Equals(Environment.GetEnvironmentVariable("HVO_RAW_INGRESS_CRASH_HANG"), "true", StringComparison.Ordinal))
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
         }
         using var ingress = CreateIngress(
             root,
@@ -2011,7 +2051,11 @@ public sealed class RawCaptureIngressTests
         return connection;
     }
 
-    private static async Task<int> RunCrashChildAsync(string root, RawIngressFaultPoint point)
+    private static async Task<(int ExitCode, string Output)> RunCrashChildAsync(
+        string root,
+        RawIngressFaultPoint point,
+        TimeSpan? timeoutAfter = null,
+        bool hang = false)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -2026,14 +2070,28 @@ public sealed class RawCaptureIngressTests
         startInfo.ArgumentList.Add($"FullyQualifiedName~{nameof(RawIngressCrashChild)}");
         startInfo.Environment["HVO_RAW_INGRESS_CRASH_ROOT"] = root;
         startInfo.Environment["HVO_RAW_INGRESS_CRASH_POINT"] = point.ToString();
+        startInfo.Environment["HVO_RAW_INGRESS_CRASH_HANG"] = hang ? "true" : "false";
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start raw ingress crash child.");
         var standardOutput = process.StandardOutput.ReadToEndAsync();
         var standardError = process.StandardError.ReadToEndAsync();
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-        _ = await standardOutput.ConfigureAwait(false);
-        _ = await standardError.ConfigureAwait(false);
-        return process.ExitCode;
+        using var timeout = new CancellationTokenSource(timeoutAfter ?? TimeSpan.FromSeconds(30));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            Assert.IsTrue(process.HasExited);
+            throw;
+        }
+        return (process.ExitCode, string.Concat(
+            await standardOutput.ConfigureAwait(false),
+            await standardError.ConfigureAwait(false)));
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Tests pass only fixed SQL assertions.")]

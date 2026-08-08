@@ -160,7 +160,7 @@ manifest, removes the staged evidence, reruns all remote checks, and publishes a
 new matching passed evidence/manifest pair. Failed publication follows the same
 evidence-first order before committing a failed manifest.
 
-For `bootstrap`, `smoke`, `measure`, and `down`, recovery validates the
+For `bootstrap`, `smoke`, `measure`, `acceptance-init`, and `down`, recovery validates the
 phase-specific next-generation ledger before reconstructing any mirror. A
 malformed candidate leaves the prior manifest, evidence, and digest commit
 unchanged. A manifest, evidence, or commit without its authoritative phase
@@ -558,7 +558,7 @@ representative hook; Tier M candidate evidence uses the inventory's canonical 5
 warm-up plus 30 measured operations fixed by the canonical manifest and the trial/regression rules in
 `docs/planning/performance-validation.md`.
 
-`bootstrap`, `smoke`, `measure`, and `down` publish an authoritative private
+`bootstrap`, `smoke`, `measure`, `acceptance-init`, and `down` publish an authoritative private
 ledger with a monotonically increasing publication generation. A digest commit
 identifies the generation for which ledger, manifest, and evidence are all
 equal. If the process exits after any individual rename, the next invocation
@@ -567,6 +567,68 @@ missing mirrors before resuming. A fully committed generation with a changed
 ledger, manifest, or evidence fails as tampering rather than being repaired. The
 phase validator runs before mirror reconstruction, and orphan phase companions
 without the ledger fail closed.
+
+## Initialize Phase 14 Acceptance
+
+After `smoke` passes, use a clean worktree to initialize the versioned Phase 14
+campaign index without executing or claiming any scenario:
+
+```bash
+./scripts/deploy:environment acceptance-init --inventory /absolute/path/inventory.yml \
+  --mode isolated --run-id observatory-preflight-01
+```
+
+The repository manifest at
+`../../deploy/split-host/acceptance/phase14-scenarios.json` enumerates normal
+flow, all twelve Phase 14 project-plan fault-row identities, and explicit
+executable commit/publication boundaries for raw ingress, capture lanes,
+processing, calibration, transient candidate/runtime journals, outbox
+transitions, central ingest/object publication, jobs, and windows. Raw ingress
+`ValidationCompleted` and transient-candidate `BeforeReservationValidation` and
+`AfterReservationValidation` are also tracked explicitly even though they are
+validation hooks rather than durable commits. The capture-lane `BeforeHandler`
+and `AfterHandler` execution hooks are not labeled commit boundaries; the
+separate lease-crash scenarios cover them. Processing `BeforeNodeExecution` is
+likewise an execution hook used by pressure/shutdown campaigns, not a publication
+boundary. CameraAgent host, LogicHost host, network, SQL,
+Redis, MinIO, and SMTP failures are distinct scenarios. `executionClass`
+distinguishes existing component automation from boundaries requiring the real
+campaign; external, soak, Stellarium, and future-hardware remain separate gates.
+Every test evidence source uses an existing public MSTest fully-qualified method
+name and an optional `;case=<selector>`; the focused contract audits every FQN
+against source and compares the manifest boundary sets with the relevant fault
+enums. The owner-only
+`acceptance-index.json` binds the run, inventory, source revision/tree, sanitized
+target identities, canonical workload identities, scenario status, and expected
+artifact metadata. Initialization first parses the inventory once, canonicalizes
+it, and requires its SHA-256 to equal the invocation's inventory hash. Smoke
+validation and topology projection use only that immutable JSON snapshot; the
+live inventory file is never reread. Initialization requires smoke to be a fully
+committed passed phase: owner-only regular ledger, manifest, evidence, and commit
+files; exact smoke ledger shape and run/mode/inventory/revision/workload/target
+identity; an exact generation/digest commit; and canonical ledger/manifest/
+evidence equality. This check is read-only and never repairs or rewrites smoke.
+Initialization reads the campaign, workload manifest, and
+workload sources as blobs from the exact inventory revision rather than from the
+working tree. It verifies clean HEAD, source tree, and status immediately before
+and after recovery/publication; initialization and every resume reject drift
+before reporting success. Every scenario and classification starts `not-run`.
+Machine output reports `stage=acceptance-init`; its `passed` status means only
+that campaign-index initialization passed and never means `GATE-P14` passed.
+Artifact bytes are not copied, and byte length/SHA-256 remain null until a later
+execution slice records a sanitized artifact. Resume rejects contract drift,
+changed source/topology/workload identities, unsafe files, or committed mirror
+tampering without changing prior evidence. Contract tests cover interruptions
+after each ledger, manifest, evidence, and commit rename plus symlink, hardlink,
+orphan, and tamper rejection for the four phase files. They also reject
+mirror-only, tampered, and unsafe smoke quartets and verify inventory hash drift
+cannot create acceptance files or alter topology projected from a prior snapshot.
+
+Run the focused contract test with:
+
+```bash
+./scripts/test:phase14-acceptance
+```
 
 ## Stop Or Delete
 
