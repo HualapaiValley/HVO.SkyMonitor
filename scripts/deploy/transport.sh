@@ -755,7 +755,8 @@ deploy_transport_prepare_target() {
     remote_script="$(cat <<'REMOTE'
 set -euo pipefail
 root=$1; mode=$2; runtime_owner=$3; run_id=$4; inventory_hash=$5; target=$6
-installation_id=$7; marker_digest=$8; lock_name=$9; expected_machine=${10}; expected_host=${11}; failpoint=${12}; operation=${13}
+installation_id=$7; marker_digest=$8; lock_name=$9; expected_machine=${10}; expected_host=${11}
+if (( $# == 12 )); then failpoint=; operation=${12}; else failpoint=${12}; operation=${13}; fi
 fail() { printf 'failed\t%s\n' "$1"; exit 1; }
 [[ "$(cat /etc/machine-id 2>/dev/null || hostname)" == "$expected_machine" && "$(hostname)" == "$expected_host" ]] || fail identity-mismatch
 runtime_uid=$(id -u "$runtime_owner" 2>/dev/null) || fail owner-unavailable

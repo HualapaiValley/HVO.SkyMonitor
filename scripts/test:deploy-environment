@@ -88,6 +88,10 @@ case "$ssh_host" in logic@*) host=logic ;; east@*) host=east ;; west@*) host=wes
 if [[ "${FAKE_MISSING_BASH_HOST:-}" == "$host" ]]; then /usr/bin/cat >/dev/null; exit 127; fi
 [[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
 shift 3
+# OpenSSH reconstructs the remote command and does not preserve empty arguments.
+ssh_args=()
+for arg in "$@"; do [[ -n "$arg" ]] && ssh_args+=("$arg"); done
+set -- "${ssh_args[@]}"
 prepare=false; (( $# >= 12 )) && prepare=true
 remote_args=(-s --)
 if [[ "${FAKE_CAPTURE_REMOTE_SCRIPTS:-false}" == true || "$prepare" == true ]]; then
