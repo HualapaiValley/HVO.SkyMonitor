@@ -46,11 +46,8 @@
       }
     },
     "logicHost": {
-      "$comment": "LogicHost is the public OIDC authority and requires HTTPS in every deployment mode.",
-      "allOf": [
-        { "$ref": "#/$defs/applicationTarget" },
-        { "properties": { "publicEndpoint": { "pattern": "^https://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}(?:/[^\\s]*)?$" } } }
-      ]
+      "$comment": "Isolated local-network runs may use explicit HTTP. Persistent production mode requires HTTPS through the executable inventory contract.",
+      "$ref": "#/$defs/applicationTarget"
     },
     "cameraAgents": {
       "type": "array",

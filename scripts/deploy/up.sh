@@ -154,6 +154,7 @@ deploy_up_stage_target() {
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__Mode ClientCredentials || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__ServiceUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__ClientCredentials__ClientId "$(jq -r '.deployment.deviceBootstrap.clientId' "$inventory")" || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" Deployment__Mode "$mode" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" ReverseProxy__Enabled "$(jq -r '(.trustedProxyAddresses | length) > 0' <<< "$target")" || return 1
             while IFS= read -r value; do
                 key="ReverseProxy__TrustedProxies__$(jq -r '.index' <<< "$value")"
@@ -356,7 +357,7 @@ deploy_run_up() {
     endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     for path in /alive /health /metrics; do deploy_transport_http_ready "$ssh" "${endpoint%/}$path" || { deploy_fail up logic readiness-failed; return 1; }; done
     endpoint="$(jq -r '.logicHost.publicEndpoint' "$inventory")"
-    [[ "$endpoint" == https://* ]] || { deploy_fail up logic public-authority-https-required; return 1; }
+    [[ "$mode" == isolated || "$endpoint" == https://* ]] || { deploy_fail up logic public-authority-https-required; return 1; }
     while IFS= read -r agent; do
         deploy_transport_http_ready "$(jq -r '.sshHost' <<< "$agent")" "${endpoint%/}/.well-known/openid-configuration" ||
           { deploy_fail up logic public-authority-readiness-failed; return 1; }

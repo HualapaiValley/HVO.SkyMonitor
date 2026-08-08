@@ -49,4 +49,14 @@ public sealed class DeploymentConfigurationTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [TestMethod]
+    public void InsecureOpenIddictTransportRequiresExplicitIsolatedModeInProduction()
+    {
+        Assert.IsTrue(DeploymentTransportSecurity.AllowsInsecureOpenIddictTransport(false, null));
+        Assert.IsTrue(DeploymentTransportSecurity.AllowsInsecureOpenIddictTransport(true, "isolated"));
+        Assert.IsFalse(DeploymentTransportSecurity.AllowsInsecureOpenIddictTransport(true, null));
+        Assert.IsFalse(DeploymentTransportSecurity.AllowsInsecureOpenIddictTransport(true, "persistent"));
+        Assert.IsFalse(DeploymentTransportSecurity.AllowsInsecureOpenIddictTransport(true, "ISOLATED"));
+    }
 }

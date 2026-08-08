@@ -1042,7 +1042,7 @@ jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext",
   .properties.schemaVersion.const == 6 and
   .properties.images.required == ["distributionMode","artifactRoot","tag","builder","registryImmutableTags","logicHost","cameraAgent"] and
   (.properties.sharedServices.oneOf[1]."$ref" | endswith("/infrastructureTarget")) and
-  (.properties.logicHost.allOf[1].properties.publicEndpoint.pattern | startswith("^https://")) and
+  (.properties.logicHost."$ref" | endswith("/applicationTarget")) and
   (."$defs".applicationTarget.properties.publicEndpoint.pattern | contains(":"))' "$REPO_ROOT/deploy/split-host/inventory.schema.json" >/dev/null
 canonical_workloads="$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json"
 jq -e '.schemaVersion == 1 and .profiles.W1.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json" and
@@ -1189,8 +1189,8 @@ expect_failure 'unsafe-lock-entry' lock-hardlink; test "$(<"$TEMP_DIR/hardlink-t
 jq '.logicHost.publicEndpoint="http://127.0.0.1"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' missing-public-port
 : > "$LOG"
 jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$BASE_INVENTORY" > "$INVENTORY"
-expect_failure 'schema-or-value-invalid' isolated-logic-http
-test ! -s "$LOG" || fail 'Isolated LogicHost HTTP rejection contacted transport.'
+run_deploy isolated-logic-http >/dev/null
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/isolated-logic-http-state/manifest.json" >/dev/null
 jq '.logicHost.internalEndpoint="http://127.0.0.1:12345"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' internal-port-mismatch
 jq '.logicHost.runtimeRoot="/srv/../private"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' traversal
 jq '.logicHost.extra="rejected"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' unknown
@@ -1260,7 +1260,7 @@ cp "$BASE_INVENTORY" "$INVENTORY"
 # Persistent mode requires a production catalog and HTTPS on LogicHost, every CameraAgent, and shared services.
 jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:") |
   .logicHost.trustedProxyAddresses=["127.0.0.1"] | (.cameraAgents[].trustedProxyAddresses)=["127.0.0.1"]' "$BASE_INVENTORY" > "$TEMP_DIR/persistent-base.json"
-jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-logic-http schema-or-value-invalid
+jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-logic-http
 jq '.cameraAgents[0].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-east-http
 jq '.cameraAgents[1].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-west-http
 jq '.logicHost.trustedProxyAddresses=[]' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-proxy-missing
@@ -1814,6 +1814,8 @@ test -f "$logic_config/runtime-secrets/ConnectionStrings__skymonitordb"
 test ! -e "$logic_config/initializer-secrets/ConnectionStrings__skymonitordb"
 test "$(<"$logic_config/initializer-secrets/Catalog__Root")" = /app/catalog
 test "$(<"$logic_config/runtime-secrets/Catalog__Root")" = /app/catalog
+test "$(<"$logic_config/initializer-secrets/Deployment__Mode")" = isolated
+test "$(<"$logic_config/runtime-secrets/Deployment__Mode")" = isolated
 test "$(<"$logic_config/initializer-secrets/Catalog__RequiredPackageKind")" = Fixture
 grep -Fq "HVO_CATALOG_ROOT=$TEMP_DIR/catalog-install" "$TEMP_DIR/output/$deploy_case-state/up-rendered/logic.env"
 test ! -e "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case/secrets/ConnectionStrings__skymonitordb"

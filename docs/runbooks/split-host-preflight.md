@@ -27,8 +27,9 @@ machine identity, daemon identity, architecture, absolute runtime root, and
 host ports. Application targets separately declare an HTTP `internalEndpoint`
 for host-bound Compose/readiness and a `publicEndpoint` used by browsers,
 CameraAgents, bootstrap payloads, and OIDC. LogicHost is the public OIDC
-authority, so its `publicEndpoint` must use HTTPS in both isolated and persistent
-modes; inventory validation rejects HTTP before any host contact. Preflight
+authority. Isolated runs may use an explicit HTTP `publicEndpoint` on an
+operator-selected local network; persistent production mode requires HTTPS and
+rejects HTTP before any host contact. Preflight
 requires the hostname observed through SSH to equal both the
 declared hostname and Docker daemon `Name`; this correlates the two routes rather
 than trusting unrelated inventory assertions. Docker daemon architecture values
@@ -88,9 +89,10 @@ Use an explicit inventory and mode:
   --run-id observatory-preflight-01
 ```
 
-`--mode` is `isolated` or `persistent`. LogicHost requires an HTTPS public
-authority in both modes. Persistent mode additionally rejects fixture catalogs
-and requires HTTPS public authorities for every CameraAgent.
+`--mode` is `isolated` or `persistent`. Isolated mode permits explicit HTTP
+authorities for portable local-network validation. Persistent mode rejects
+fixture catalogs and requires HTTPS public authorities for LogicHost and every
+CameraAgent.
 The shipped Compose files remain HTTP-only. Before persistent preflight, provision
 TLS termination/reverse proxies at every public authority, configure each
 target's exact proxy IP in `trustedProxyAddresses`, forward only
@@ -430,8 +432,11 @@ Production OpenIddict signing and encryption PFX files are mounted read-only and
 loaded from configured absolute paths. Both hosts mount the complete catalog
 installation root at `/app/catalog` and receive the inventory package kind.
 Internal HTTP `/alive`, `/health`, and `/metrics` must pass before agents start;
-OIDC discovery is checked only through the public HTTPS authority from every
-CameraAgent host through the declared TLS proxy.
+OIDC discovery is checked through the declared public authority from every
+CameraAgent host. Isolated mode explicitly stages `Deployment:Mode=isolated`,
+which permits HTTP token transport for the local-network campaign. Persistent
+mode never stages that exception and reaches the HTTPS authority through the
+declared TLS proxy.
 
 Each CameraAgent receives separate Identity, Data Protection, provisioning, raw,
 and archive roots, but no central SQL/Redis/MinIO credentials. Fresh durable

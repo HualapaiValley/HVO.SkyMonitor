@@ -565,9 +565,11 @@ public sealed partial class Program
                     .EnableTokenEndpointPassthrough()
                     .EnableStatusCodePagesIntegration();
 
-                if (!builder.Environment.IsProduction())
+                if (DeploymentTransportSecurity.AllowsInsecureOpenIddictTransport(
+                        builder.Environment.IsProduction(),
+                        builder.Configuration["Deployment:Mode"]))
                 {
-                    // Allow HTTP endpoints in development and integration testing
+                    // Isolated deployments explicitly permit local-network HTTP; persistent production never does.
                     aspNetCoreBuilder.DisableTransportSecurityRequirement();
                 }
 
