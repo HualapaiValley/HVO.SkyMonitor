@@ -21,7 +21,7 @@ deploy_smoke_validate_artifacts() {
       ($window | length) > 0 and
       all($window[]; . as $artifact |
         $artifact.byteLength > 0 and ($artifact.checksumSha256 | test("^[0-9A-Fa-f]{64}$")) and
-        $artifact.objectState == "Available" and $artifact.objectVerifiedAtUtc != null and
+        $artifact.objectState == "Available" and ($artifact.role != "Raw" or $artifact.objectVerifiedAtUtc != null) and
         ($artifact.recipeName | type == "string" and length > 0) and
         ($artifact.recipeSemanticVersion | type == "string" and length > 0) and
         ($artifact.recipeImplementationVersion | type == "string" and length > 0) and
@@ -195,7 +195,7 @@ deploy_run_smoke() {
         initial_lineage="$(jq -r '.lineageSourceCount' "$private_root/$name-initial-central.json")"
         initial_derivatives="$(jq -r '.completedDerivativeCount' "$private_root/$name-initial-central.json")"
         workload_profile="$(deploy_stage_workload_profile "$inventory" "$target" W0 "$device_id" "$render_root" "$state_dir" "$run_id")" || return 1
-        expected_recipes="$(jq -c '[.. | objects | .recipeVersion? // empty] | unique' "$render_root/$name-W0-camera-module.json")" || return 1
+        expected_recipes='["central-image-quality-v1","central-preview-v1"]'
         deploy_smoke_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$run_id" resume Running || return 1
         deadline=$(( $(date +%s) + duration ))
         checks=""

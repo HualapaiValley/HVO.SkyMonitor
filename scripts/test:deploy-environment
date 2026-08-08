@@ -746,19 +746,19 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
     devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",status:"Active",
     issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",currentRigProfileVersion:1,maximumCaptureSequence:$sequence,
     fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",maximumHeartbeatSequence:$sequence,lastHeartbeatReceivedAtUtc:$acknowledged,
-     centralFrameCount:$sequence,centralArtifactCount:($sequence*3),lineageSourceCount:$sequence,completedDerivativeCount:$sequence,
+     centralFrameCount:$sequence,centralArtifactCount:($sequence*3),lineageSourceCount:($sequence*2),completedDerivativeCount:($sequence*2),
      currentRigProfileVersion:(if $ENV.FAKE_RIG_PROFILE_MISSING == "true" then null else 1 end),
      currentRigProfileHash:(if $ENV.FAKE_RIG_PROFILE_HASH_MISMATCH == "true" then ("F"*64) else $ENV.FAKE_RIG_HASH end),
     latestArtifacts:[
-       {artifactId:"99999999-9999-9999-9999-999999999999",role:"Raw",recipeVersion:"raw-v1",width:64,height:48,pixelFormat:"Mono16",byteLength:6144,checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA,
-       objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"RawCapture",recipeSemanticVersion:"1.0.0",
-       recipeImplementationVersion:"fixture",sources:[],completedDerivativeCount:0},
-       {artifactId:"11111111-1111-1111-1111-111111111111",role:"Preview",recipeVersion:"mono16-asinh-v2",width:64,height:48,pixelFormat:"Mono16",byteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),checksumSha256:$ENV.FAKE_ARTIFACT_SHA,
-        objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"Preview",recipeSemanticVersion:"1.0.0",
-        recipeImplementationVersion:"fixture",sources:[],completedDerivativeCount:1},
-       {artifactId:"77777777-7777-7777-7777-777777777777",role:"Preview",recipeVersion:"mono16-asinh-v2",width:64,height:48,pixelFormat:"Mono16",byteLength:128,checksumSha256:("C"*64),
-        objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"CentralPreview",recipeSemanticVersion:"1.0.0",
-          recipeImplementationVersion:"fixture",sources:[{artifactId:"11111111-1111-1111-1111-111111111111",checksumSha256:$ENV.FAKE_ARTIFACT_SHA}],completedDerivativeCount:0}],captureWindow:$window,
+       {artifactId:"99999999-9999-9999-9999-999999999999",role:"Raw",recipeVersion:"raw-ingress-v1",width:64,height:48,pixelFormat:"Mono16",byteLength:6144,checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA,
+        objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"RawCapture",recipeSemanticVersion:"1.0.0",
+        recipeImplementationVersion:"fixture",sources:[],completedDerivativeCount:0},
+       {artifactId:"11111111-1111-1111-1111-111111111111",role:"Preview",recipeVersion:"central-preview-v1",width:null,height:null,pixelFormat:null,byteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),checksumSha256:$ENV.FAKE_ARTIFACT_SHA,
+        objectState:"Available",objectVerifiedAtUtc:null,captureSequence:$sequence,recipeName:"encoded-preview",recipeSemanticVersion:"1.0.0",
+        recipeImplementationVersion:"fixture",sources:[{artifactId:"99999999-9999-9999-9999-999999999999",checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA}],completedDerivativeCount:0},
+       {artifactId:"77777777-7777-7777-7777-777777777777",role:"Metadata",recipeVersion:"central-image-quality-v1",width:null,height:null,pixelFormat:null,byteLength:128,checksumSha256:("C"*64),
+        objectState:"Available",objectVerifiedAtUtc:null,captureSequence:$sequence,recipeName:"image-quality",recipeSemanticVersion:"1.0.0",
+          recipeImplementationVersion:"fixture",sources:[{artifactId:"99999999-9999-9999-9999-999999999999",checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA}],completedDerivativeCount:0}],captureWindow:$window,
     registrations:[{registrationId:"22222222-2222-2222-2222-222222222222",status:"Active",
       devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",
       issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",isAuthoritative:true}]}' > "$output"
@@ -2084,7 +2084,7 @@ jq -e '.phaseStatus == "passed" and .workload.kind == "W0" and (.targets | lengt
 exercise_phase_cleanup_recovery smoke "$deploy_case"
 valid_central="$TEMP_DIR/output/$deploy_case-state/smoke-private/east-current-central.json"
 initial_central_file="$TEMP_DIR/output/$deploy_case-state/smoke-private/east-initial-central.json"
-expected_recipes="$(jq -c '[.. | objects | .recipeVersion? // empty] | unique' "$REPO_ROOT/deploy/split-host/workloads/w0-virtual-mono16.json")"
+expected_recipes='["central-image-quality-v1","central-preview-v1"]'
 for artifact_failure in checksum recipe object dimensions format lineage derivative provenance; do
   case "$artifact_failure" in
     checksum) jq '.latestArtifacts[1].checksumSha256="invalid"' "$valid_central" ;;
