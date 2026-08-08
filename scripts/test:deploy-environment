@@ -189,9 +189,13 @@ if [[ "$1" == buildx && "$2" == build ]]; then
     printf '{"architecture":"%s","os":"linux","config":{"Labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}}' \
       "$architecture" "${FAKE_REVISION:?}" "$created" "$source_reference" "$component" "$sdk" "$tree" > "$fixture/config"
     config_digest="$(sha256sum "$fixture/config" | cut -d' ' -f1)"
-    mv "$fixture/config" "$fixture/$config_digest.json"
-    printf '[{"Config":"%s.json","RepoTags":["%s"],"Layers":[]}]\n' "$config_digest" "$repository" > "$fixture/manifest.json"
-    tar -cf "$destination" -C "$fixture" manifest.json "$config_digest.json"
+    config_path="$config_digest.json"
+    if [[ "${FAKE_BUILD_ARCHIVE_BLOB_CONFIG:-false}" == true ]]; then
+      mkdir -p "$fixture/blobs/sha256"; config_path="blobs/sha256/$config_digest"
+    fi
+    mv "$fixture/config" "$fixture/$config_path"
+    printf '[{"Config":"%s","RepoTags":["%s"],"Layers":[]}]\n' "$config_path" "$repository" > "$fixture/manifest.json"
+    tar -cf "$destination" -C "$fixture" manifest.json "$config_path"
     rm -rf "$fixture"
   fi
   exit 0
@@ -1468,7 +1472,7 @@ grep -Fq 'mismatch-or-remote' "$TEMP_DIR/images-failure.log"
 write_prepare_case images-canonical-local-builder isolated
 run_prepare_preflight images-canonical-local-builder isolated
 run_deploy_mode prepare images-canonical-local-builder isolated >/dev/null
-FAKE_BUILDER_CANONICAL_LOCAL=true run_deploy_mode images images-canonical-local-builder isolated >/dev/null
+FAKE_BUILDER_CANONICAL_LOCAL=true FAKE_BUILD_ARCHIVE_BLOB_CONFIG=true run_deploy_mode images images-canonical-local-builder isolated >/dev/null
 
 write_prepare_case images-target-wrong-daemon isolated
 run_prepare_preflight images-target-wrong-daemon isolated

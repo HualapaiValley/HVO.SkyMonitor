@@ -144,10 +144,11 @@ deploy_images_build_archive() {
     chmod 600 "$temporary" || return 1
     config_name="$(tar -xOf "$temporary" manifest.json 2>/dev/null | jq -er 'if type == "array" and length == 1 then .[0].Config else empty end')" ||
       { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" invalid-archive; return 1; }
-    [[ "$config_name" =~ ^[0-9a-f]{64}\.json$ ]] || { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" unsafe-archive-config; return 1; }
+    [[ "$config_name" =~ ^([0-9a-f]{64}\.json|blobs/sha256/[0-9a-f]{64})$ ]] || { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" unsafe-archive-config; return 1; }
     config="$(tar -xOf "$temporary" "$config_name" 2>/dev/null)" || { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" invalid-archive; return 1; }
     config_digest="$(printf '%s' "$config" | sha256sum)"; config_digest="${config_digest%% *}"
-    [[ "$config_name" == "$config_digest.json" ]] || { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" config-digest-mismatch; return 1; }
+    [[ "$config_name" == "$config_digest.json" || "$config_name" == "blobs/sha256/$config_digest" ]] ||
+      { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" config-digest-mismatch; return 1; }
     jq -e --arg arch "$architecture" --arg revision "$revision" --arg tree "$tree" --arg component "$component" '
       .architecture == $arch and .os == "linux" and .config.Labels["org.opencontainers.image.revision"] == $revision and
       .config.Labels["io.hvoskymonitor.source-tree"] == $tree and
