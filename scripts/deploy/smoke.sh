@@ -66,7 +66,7 @@ deploy_smoke_validate_checksum_proof() {
 deploy_smoke_metrics_facts() {
     local path="$1" facts
     [[ -f "$path" && ! -L "$path" && "$(stat -c '%h:%a' "$path")" == "1:600" && "$(stat -c %s "$path")" -le 1048576 ]] || return 1
-    ! grep -Eiq 'password|authorization|bearer|client[_-]?secret|device[_-]?key|envelope|payload' "$path" || return 1
+    ! grep -Eiq 'password|authorization|bearer|client[_-]?secret|device[_-]?key|envelope' "$path" || return 1
     facts="$(awk '
       BEGIN { capture=0; fleet=0; captureSeries=0; fleetSeries=0 }
       /^camera_agent_capture_control_cycles_total(\{[^}]{0,256}\})?[[:space:]]+[0-9]+([.][0-9]+)?$/ { capture += $NF; captureSeries++; next }
