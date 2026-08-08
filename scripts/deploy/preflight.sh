@@ -88,7 +88,7 @@ deploy_preflight_target() {
 }
 
 deploy_run_preflight() {
-    local inventory="$1" old_manifest="${2:-}" target endpoint name host port route agent logic_url connectivity_status
+    local inventory="$1" mode="$2" old_manifest="${3:-}" target endpoint name host port route agent logic_url connectivity_status
     DEPLOY_TARGETS_JSON='[]'
     while IFS= read -r target; do deploy_preflight_target "$target" || return 1; done < <(deploy_inventory_targets "$inventory")
 
@@ -110,6 +110,10 @@ deploy_run_preflight() {
     logic_url="$(jq -r '.logicHost.publicEndpoint' "$inventory")"
     while IFS= read -r agent; do
         name="$(jq -r '.name' <<< "$agent")"
+        if [[ "$mode" == isolated ]]; then
+            deploy_record connectivity "$name" logic-public-authority passed deferred-until-up || return 1
+            continue
+        fi
         connectivity_status="$(deploy_transport_ssh_http "$(jq -r '.sshHost' <<< "$agent")" "$logic_url")"
         [[ "$connectivity_status" == reachable ]] || {
             deploy_record connectivity "$name" logic-public-authority failed "$connectivity_status"

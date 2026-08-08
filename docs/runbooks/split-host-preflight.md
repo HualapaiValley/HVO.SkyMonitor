@@ -123,7 +123,10 @@ For every explicitly selected target, preflight checks:
 - lexical and component-by-component runtime-root safety without creating it;
 - listening-port and Docker container conflicts;
 - each declared service route from its declared source targets;
-- the LogicHost public authority from every CameraAgent target.
+- in persistent mode, the pre-provisioned LogicHost public authority from every
+  CameraAgent target. Isolated mode records this check as deferred because the
+  authority is created by `up`, which performs the required cross-host readiness
+  check before bootstrap.
 
 Remote TCP checks require Bash and `timeout`; HTTP checks require Bash and curl.
 Missing required tools are reported as bounded `tool-unavailable` failures,

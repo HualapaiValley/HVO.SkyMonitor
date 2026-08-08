@@ -359,7 +359,7 @@ deploy_run_up() {
     endpoint="$(jq -r '.logicHost.publicEndpoint' "$inventory")"
     [[ "$mode" == isolated || "$endpoint" == https://* ]] || { deploy_fail up logic public-authority-https-required; return 1; }
     while IFS= read -r agent; do
-        deploy_transport_http_ready "$(jq -r '.sshHost' <<< "$agent")" "${endpoint%/}/.well-known/openid-configuration" ||
+        deploy_transport_oidc_ready "$(jq -r '.sshHost' <<< "$agent")" "$endpoint" ||
           { deploy_fail up logic public-authority-readiness-failed; return 1; }
     done < <(jq -c '.cameraAgents[]' "$inventory")
     DEPLOY_UP_JSON="$(jq -c --arg target "$name" '.targets = ([.targets[] | select(.target != $target)] + [{target:$target,component:"logicHost",status:"ready"}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"

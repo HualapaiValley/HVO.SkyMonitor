@@ -487,6 +487,20 @@ if [[ "$url" == */metrics ]]; then
   printf '# TYPE hvo_fleet_edge_reports_total counter\nhvo_fleet_edge_reports_total{outcome="acknowledged"} 1\n' >> "$output"
   printf 200; exit 0
 fi
+if [[ "$url" == */.well-known/openid-configuration ]]; then
+  authority="${url%/.well-known/openid-configuration}"
+  issuer="$authority/"
+  [[ "${FAKE_OIDC_ISSUER_MISMATCH:-false}" != true ]] || issuer="https://wrong.example.test/"
+  token="$authority/connect/token"
+  [[ "${FAKE_OIDC_TOKEN_MISMATCH:-false}" != true ]] || token="https://wrong.example.test/connect/token"
+  if [[ "${FAKE_OIDC_MALFORMED:-false}" == true ]]; then discovery='not-json'
+  elif [[ "${FAKE_OIDC_OVERSIZED:-false}" == true ]]; then printf -v discovery '%*s' 65537 ''
+  else discovery="$(jq -cn --arg issuer "$issuer" --arg token "$token" '{issuer:$issuer,token_endpoint:$token}')"; fi
+  if [[ -n "$output" ]]; then printf '%s\n' "$discovery" > "$output"; else printf '%s\n' "$discovery"; fi
+  printf '%s' "${FAKE_OIDC_STATUS:-200}"
+  [[ "${FAKE_OIDC_OVERSIZED:-false}" != true ]] || exit 63
+  exit 0
+fi
 if [[ "$url" == */api/internal/deployment/telemetry* ]]; then
   [[ "${FAKE_TRACE_UNAVAILABLE:-false}" != true ]] || { : > "$output"; printf 503; exit 0; }
   sequence="${url#*captureSequence=}"; sequence="${sequence%%&*}"; artifact="${url##*artifactId=}"
@@ -1123,9 +1137,9 @@ test "$(stat -c %a "$evidence")" = 600
 grep -Fq $'docker\t--context\teast-context\tinfo' "$LOG"
 grep -Fq $'docker\t--context\teast-context\tcompose\tversion\t--short' "$LOG"
 grep -Fq $'east@example\tbash\t-s\t--\t127.0.0.1' "$LOG"
-grep -Fq $'east@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
+! grep -Fq $'east@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
 grep -Fq 'timeout 8 bash -c' "$REMOTE_LOG"
-grep -Fq 'curl --silent --show-error' "$REMOTE_LOG"
+! grep -Fq 'curl --silent --show-error' "$REMOTE_LOG"
 if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|rm|create|mkdir|install|touch)([[:space:]]|$)' "$REMOTE_LOG"; then fail 'Remote preflight script contains mutation commands.'; fi
 if grep -Fq 'fixture-secret-never-print' "$LOG" || grep -Fq 'fixture-secret-never-print' "$REMOTE_LOG" ||
    grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output"; then fail 'Logs or evidence exposed a secret.'; fi
@@ -1154,13 +1168,27 @@ FAKE_MISSING_BASH_HOST=east expect_failure 'ssh status=failed reason=tool-unavai
 jq --argjson port "$UNREACHABLE_PORT" '.serviceEndpoints[0].port=$port' "$BASE_INVENTORY" > "$INVENTORY"
 expect_failure 'test-service status=failed reason=unreachable' tcp-unreachable
 jq --argjson port "$UNREACHABLE_PORT" '.logicHost.publicEndpoint=("https://127.0.0.1:"+($port|tostring))' "$BASE_INVENTORY" > "$INVENTORY"
-expect_failure 'logic-public-authority status=failed reason=unreachable' http-unreachable
+run_deploy http-deferred >/dev/null
+jq -e '.checks[] | select(.target == "east") | select(.check == "logic-public-authority") |
+  .status == "passed" and .reason == "deferred-until-up"' "$TEMP_DIR/output/http-deferred-state/manifest.json" >/dev/null
 cp "$BASE_INVENTORY" "$INVENTORY"
 
 # Missing socket inspection and both host/Docker port conflicts fail closed.
 FAKE_MISSING_SS_HOST=east expect_failure 'ports status=failed reason=inspector-unavailable' missing-ss
 FAKE_MISSING_TIMEOUT_HOST=east expect_failure 'test-service status=failed reason=tool-unavailable' missing-timeout
-FAKE_MISSING_CURL_HOST=east expect_failure 'logic-public-authority status=failed reason=tool-unavailable' missing-curl
+for oidc_failure in issuer token malformed oversized status; do
+  (
+    case "$oidc_failure" in
+      issuer) export FAKE_OIDC_ISSUER_MISMATCH=true ;;
+      token) export FAKE_OIDC_TOKEN_MISMATCH=true ;;
+      malformed) export FAKE_OIDC_MALFORMED=true ;;
+      oversized) export FAKE_OIDC_OVERSIZED=true ;;
+      status) export FAKE_OIDC_STATUS=302 ;;
+    esac
+    source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/transport.sh"
+    if deploy_transport_oidc_ready east@example "https://public.example.test:$HTTP_PORT"; then exit 91; fi
+  )
+done
 FAKE_PORT_CONFLICT_HOST=east expect_failure 'ports status=failed reason=conflict' host-port-conflict
 FAKE_DOCKER_PORT_CONFLICT="$EAST_PORT" expect_failure 'containers status=failed reason=port-conflict' docker-port-conflict
 
@@ -1265,6 +1293,22 @@ jq '.cameraAgents[0].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persis
 jq '.cameraAgents[1].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-west-http
 jq '.logicHost.trustedProxyAddresses=[]' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-proxy-missing
 jq '.catalog.kind="fixture"' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-fixture-catalog
+jq '.catalog.kind="production" | .deployment.catalog.allowFixture=false | .deployment.services.smtp.kind="production"' \
+  "$TEMP_DIR/persistent-base.json" > "$TEMP_DIR/persistent-connectivity.json"
+cp "$TEMP_DIR/persistent-connectivity.json" "$INVENTORY"
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode preflight persistent-connectivity-valid persistent >/dev/null
+jq --argjson port "$UNREACHABLE_PORT" '.logicHost.publicEndpoint=("https://127.0.0.1:"+($port|tostring))' \
+  "$TEMP_DIR/persistent-connectivity.json" > "$INVENTORY"
+if run_deploy_mode preflight persistent-authority-unreachable persistent > "$TEMP_DIR/persistent-authority-unreachable.log" 2>&1; then
+  fail 'Persistent preflight accepted an unreachable public authority.'
+fi
+grep -Fq 'logic-public-authority status=failed reason=unreachable' "$TEMP_DIR/persistent-authority-unreachable.log"
+cp "$TEMP_DIR/persistent-connectivity.json" "$INVENTORY"
+if FAKE_MISSING_CURL_HOST=east FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode preflight persistent-authority-no-curl persistent \
+  > "$TEMP_DIR/persistent-authority-no-curl.log" 2>&1; then
+  fail 'Persistent preflight accepted a CameraAgent host without curl.'
+fi
+grep -Fq 'logic-public-authority status=failed reason=tool-unavailable' "$TEMP_DIR/persistent-authority-no-curl.log"
 
 # A successful run followed by a transport failure publishes failed, not stale passed, evidence.
 cp "$BASE_INVENTORY" "$INVENTORY"; run_deploy stale-evidence >/dev/null
@@ -1830,6 +1874,8 @@ test -s "$east_config/private/owner-password"
 test ! -e "$east_config/cameraagent.json"
 if grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output/$deploy_case-evidence"; then fail 'Deployment evidence exposed a secret.'; fi
 grep -Fq $'compose\t--project-name\thvo-deploy-up-logic' "$LOG"
+grep -Fq $'east@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
+grep -Fq $'west@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
 
 # Registry publication is a hard barrier for every bootstrap credential destination.
 bootstrap_state="$TEMP_DIR/output/$deploy_case-state"

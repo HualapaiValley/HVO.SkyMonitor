@@ -71,7 +71,7 @@ done
 unset DOCKER_HOST DOCKER_CONTEXT SSH_HOST SSH_CONFIG 2>/dev/null || true
 unset ambient_name
 
-deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh date grep cut awk wc || exit 1
+deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh timeout date grep cut awk wc || exit 1
 [[ "$phase" == prepare || "$phase" == catalog || "$phase" == acceptance-init ]] || deploy_require_commands docker || exit 1
 [[ "$phase" != images ]] || deploy_require_commands tar mv rm || exit 1
 [[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
@@ -252,6 +252,6 @@ deploy_mark_failed() {
     exit "$status"
 }
 trap deploy_mark_failed ERR
-deploy_run_preflight "$inventory" "$old_manifest"
+deploy_run_preflight "$inventory" "$mode" "$old_manifest"
 trap - ERR
 deploy_status preflight complete passed read-only

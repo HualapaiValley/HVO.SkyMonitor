@@ -603,6 +603,40 @@ exit 1
 REMOTE
 }
 
+deploy_transport_oidc_ready() {
+    local ssh_host="$1" authority="$2" discovery issuer token_endpoint discovery_json poll_seconds
+    discovery="${authority%/}/.well-known/openid-configuration"
+    issuer="${authority%/}/"
+    token_endpoint="${authority%/}/connect/token"
+    poll_seconds="${DEPLOY_TEST_POLL_SECONDS:-2}"
+    [[ "$poll_seconds" =~ ^[0-9]+$ ]] || return 1
+    if ! discovery_json="$(timeout --signal=TERM --kill-after=5s 430 ssh -o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=10 \
+      -o ServerAliveCountMax=3 -- "$ssh_host" bash -s -- "$discovery" "$poll_seconds" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+for _ in $(seq 1 60); do
+  if ! response=$(curl --silent --show-error --max-time 5 --max-filesize 65536 --write-out $'\n%{http_code}' "$1"); then
+    sleep "$2"
+    continue
+  fi
+  status=${response##*$'\n'}
+  body=${response%$'\n'*}
+  if [[ "$status" == 200 && "${#body}" -le 65536 ]]; then
+    printf '%s' "$body"
+    exit 0
+  fi
+  sleep "$2"
+done
+exit 1
+REMOTE
+)"; then
+        return 1
+    fi
+    jq -e --arg issuer "$issuer" --arg token "$token_endpoint" '
+      type == "object" and (.issuer | type == "string") and (.token_endpoint | type == "string") and
+      .issuer == $issuer and .token_endpoint == $token
+    ' <<< "$discovery_json" >/dev/null 2>&1
+}
+
 deploy_transport_http_private() {
     local ssh_host="$1" method="$2" url="$3" body_path="$4" header_path="$5" cookie_path="$6" output_path="$7"
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
