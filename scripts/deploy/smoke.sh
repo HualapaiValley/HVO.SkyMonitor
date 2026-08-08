@@ -220,7 +220,7 @@ deploy_run_smoke() {
               deploy_smoke_validate_derivative_provenance "$private_root/$name-current-central.json" "$initial_central" "$initial_derivatives" &&
               jq -e --arg device "$device_id" '
               .configuration.value.agentId == $device and .configuration.value.centralIntegration == "Enabled" and
-              .captureTelemetry.value.sampleCount > 0 and .rawIngress.value.pendingCount == 0 and
+              any(.captureRuntime.value.timings[]; .sampleCount > 0) and .rawIngress.value.pendingCount == 0 and
               .captureLanes.value.pendingCount == 0 and .captureProcessing.value.pendingCount == 0 and
               .artifactOutbox.value.pendingCount == 0 and .rawIngress.value.quarantineCount == 0 and
               .captureLanes.value.quarantineCount == 0 and .artifactOutbox.value.quarantineCount == 0 and

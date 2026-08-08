@@ -609,6 +609,7 @@ fi
 if [[ "$url" == */api/v1/operations/summary ]]; then
   host="${FAKE_REMOTE_HOST:?}"; device="device-$host"
   measurement_samples=1; timings='[{"segment":"Module","sampleCount":1,"medianMilliseconds":1,"p95Milliseconds":1,"maximumMilliseconds":1}]'
+  [[ "${FAKE_CAPTURE_TELEMETRY_EMPTY:-false}" != true ]] || measurement_samples=0
   if [[ -f "${FAKE_HTTP_STATE:?}/$host.measurement-reset" ]]; then measurement_samples=0; timings='[]'; rm -f "$FAKE_HTTP_STATE/$host.measurement-reset"; fi
   control_state="Running"; control_version=0
   [[ ! -f "${FAKE_HTTP_STATE:?}/$host.control-state" ]] || control_state="$(<"$FAKE_HTTP_STATE/$host.control-state")"
@@ -2075,7 +2076,7 @@ for credential in \
   "$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers"; do
   test ! -e "$credential"
 done
-FAKE_SLOW_FIRST_AGENT=true run_deploy_mode smoke "$deploy_case" isolated >/dev/null
+FAKE_SLOW_FIRST_AGENT=true FAKE_CAPTURE_TELEMETRY_EMPTY=true run_deploy_mode smoke "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and .workload.kind == "W0" and (.targets | length) == 2 and all(.targets[];
   .status == "passed" and .captureSequence.localAfter > .captureSequence.localBefore and
   .captureSequence.centralAfter > .captureSequence.centralBefore and all(.checks[]; . == true))' \
