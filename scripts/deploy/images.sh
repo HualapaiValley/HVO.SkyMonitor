@@ -30,7 +30,8 @@ deploy_images_validate_builder() {
     jq -se --arg builder "$builder" --arg driver "$expected_driver" --arg endpoint "$expected_endpoint" --argjson platforms "$required_platforms" '
       [ .[] | select(.Name == $builder) ] as $matches |
       ($matches | length) > 0 and all($matches[]; .Driver == $driver and (.Err // "") == "" and
-        (.Nodes | type == "array" and length == 1 and .[0].Endpoint == $endpoint and .[0].Status == "running" and
+        (.Nodes | type == "array" and length == 1 and
+          (.[0].Endpoint == $endpoint or ($endpoint == "default" and .[0].Endpoint == "unix:///var/run/docker.sock")) and .[0].Status == "running" and
           .[0] as $node | all($platforms[]; . as $platform | $node.Platforms | index("linux/" + $platform) != null)))' <<< "$listing" >/dev/null 2>&1 ||
       { deploy_fail images builder mismatch-or-remote; return 1; }
     info="$(docker info --format '{"ID":{{json .ID}},"Name":{{json .Name}},"Architecture":{{json .Architecture}},"OSType":{{json .OSType}}}' 2>/dev/null)" ||
