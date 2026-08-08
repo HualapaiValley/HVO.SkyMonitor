@@ -90,7 +90,7 @@ deploy_smoke_log_facts() {
 
 deploy_smoke_capture_control() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" run_id="$6" action="$7" desired="$8"
-    local name endpoint body request_headers status attempt
+    local name endpoint body request_headers status attempt desired_value
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     attempt="$(jq -r '.publicationGeneration' <<< "$DEPLOY_SMOKE_JSON")"
     body="$render_root/$name-$action-$attempt.json"; request_headers="$target_remote/$action-$attempt-control.headers"
@@ -102,7 +102,9 @@ deploy_smoke_capture_control() {
     status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/capture/$action" "$target_remote/$action-$attempt.json" \
       "$request_headers" "$cookies" "$target_remote/$action-$attempt-response.json" "$private_root/$name-$action-$attempt-response.json")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail smoke "$name" "$action-control-failed"; return 1; }
-    jq -e --arg desired "$desired" '.state == $desired' "$private_root/$name-$action-$attempt-response.json" >/dev/null || return 1
+    desired_value=1; [[ "$desired" != Paused ]] || desired_value=3
+    jq -e --arg desired "$desired" --argjson desiredValue "$desired_value" '.state == $desired or .state == $desiredValue' \
+      "$private_root/$name-$action-$attempt-response.json" >/dev/null || return 1
     deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" "$target_remote/$action-$attempt.json" "$request_headers" || return 1
     deploy_transport_forget_private_path "$request_headers" || return 1
 }

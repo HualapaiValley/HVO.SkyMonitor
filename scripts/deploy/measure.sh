@@ -133,7 +133,7 @@ deploy_measure_read_sequence() {
 
 deploy_measure_capture_control() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" action="$6" run_id="$7" boundary="$8" desired="$9" force="${10:-false}"
-    local name endpoint body base_headers request_headers status key attempt latest latest_status current_state current_version result_state result_version
+    local name endpoint body base_headers request_headers status key attempt latest latest_status current_state current_version result_state result_version desired_value
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/summary" "" "" "$cookies" \
       "$target_remote/$boundary-control-state.json" "$private_root/$name-$boundary-control-state.json")" || return 1
@@ -172,7 +172,10 @@ deploy_measure_capture_control() {
       "$request_headers" "$cookies" "$target_remote/$boundary-$attempt-response.json" "$private_root/$name-$boundary-$attempt-response.json")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail measure "$name" "$action-control-failed"; return 1; }
     [[ "${DEPLOY_TEST_FAILPOINT:-}" != "abrupt-after-measure-$boundary" ]] || exit 75
-    result_state="$(jq -er --arg desired "$desired" '.state | select(. == $desired)' "$private_root/$name-$boundary-$attempt-response.json")" || return 1
+    desired_value=1; [[ "$desired" != Paused ]] || desired_value=3
+    jq -e --arg desired "$desired" --argjson desiredValue "$desired_value" '.state == $desired or .state == $desiredValue' \
+      "$private_root/$name-$boundary-$attempt-response.json" >/dev/null || return 1
+    result_state="$desired"
     result_version="$(jq -er '.version | numbers' "$private_root/$name-$boundary-$attempt-response.json")" || return 1
     jq -e '.replayed == false' "$private_root/$name-$boundary-$attempt-response.json" >/dev/null || return 1
     DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --arg key "$key" --arg state "$result_state" --argjson version "$result_version" '

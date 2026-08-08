@@ -660,7 +660,8 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
       count_file="$FAKE_HTTP_STATE/$host.count"; printf '%s\n' "$(( $(<"$count_file") + 1 ))" > "$count_file"
     fi
   fi
-  jq -cn --arg state "$desired" --argjson version "$version" --argjson changed "$changed" \
+  state_value=1; [[ "$desired" != Paused ]] || state_value=3
+  jq -cn --argjson state "$state_value" --argjson version "$version" --argjson changed "$changed" \
     '{state:$state,version:$version,changed:$changed,replayed:false,requestedUtc:"2026-08-07T00:00:00Z",completedUtc:"2026-08-07T00:00:00Z"}' > "$receipt"
   cp "$receipt" "$output"
   printf 'control\t%s\t%s\t%s\t%s\tfalse\n' "$header_path" "$key" "$token_count" "$id_count" >> "${FAKE_LOG:?}"
