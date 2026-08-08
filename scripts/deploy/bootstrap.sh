@@ -464,7 +464,7 @@ deploy_run_bootstrap() {
                  (.currentRigProfileVersion | numbers) >= 1 and .currentRigProfileHash == $expectedHash' \
                 "$private_root/$name-post-restart-central.json" >/dev/null; then fleet_ack=true; break; fi
             [[ "${DEPLOY_TEST_FAILPOINT:-}" != rig-profile-unavailable ]] || break
-            sleep 2
+            sleep "${DEPLOY_TEST_POLL_SECONDS:-2}"
         done
         [[ "$fleet_ack" == true ]] || { deploy_fail bootstrap "$name" first-fleet-acknowledgement-timeout; return 1; }
         continuity="$(jq -c --argjson beforeLocal "$pre_local_ack" --argjson beforeCentral "$pre_central_ack" --arg beforeTime "$pre_ack_time" \

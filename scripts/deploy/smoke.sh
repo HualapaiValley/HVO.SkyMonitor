@@ -203,7 +203,7 @@ deploy_run_smoke() {
               .artifactOutbox.value.pendingCount == 0 and .rawIngress.value.quarantineCount == 0 and
               .captureLanes.value.quarantineCount == 0 and .artifactOutbox.value.quarantineCount == 0 and
               .heartbeat.value.lastAcknowledgedUtc != null' "$operations" >/dev/null; then checks=true; break; fi
-            sleep 2
+            sleep "${DEPLOY_TEST_POLL_SECONDS:-2}"
         done
         [[ "$checks" == true ]] || { deploy_fail smoke "$name" bounded-convergence-timeout; return 1; }
         proof_artifact="$(deploy_smoke_select_checksum_proof "$private_root/$name-current-central.json" \

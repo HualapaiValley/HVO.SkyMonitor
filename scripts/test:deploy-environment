@@ -88,20 +88,26 @@ case "$ssh_host" in logic@*) host=logic ;; east@*) host=east ;; west@*) host=wes
 if [[ "${FAKE_MISSING_BASH_HOST:-}" == "$host" ]]; then /usr/bin/cat >/dev/null; exit 127; fi
 [[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
 shift 3
-script="${FAKE_SCRIPT_ROOT:?}/remote-$host-$BASHPID.sh"
-umask 077
-/usr/bin/cat > "$script"
 prepare=false; (( $# >= 12 )) && prepare=true
-printf 'remote-script-begin %s\n' "$host" >> "${FAKE_REMOTE_LOG:?}"
-/usr/bin/cat "$script" >> "$FAKE_REMOTE_LOG"
-printf 'remote-script-end %s\n' "$host" >> "$FAKE_REMOTE_LOG"
+remote_args=(-s --)
+if [[ "${FAKE_CAPTURE_REMOTE_SCRIPTS:-false}" == true || "$prepare" == true ]]; then
+  script="${FAKE_SCRIPT_ROOT:?}/remote-$host-$BASHPID.sh"
+  umask 077
+  /usr/bin/cat > "$script"
+  remote_args=("$script")
+fi
+if [[ "${FAKE_CAPTURE_REMOTE_SCRIPTS:-false}" == true ]]; then
+  printf 'remote-script-begin %s\n' "$host" >> "${FAKE_REMOTE_LOG:?}"
+  /usr/bin/cat "$script" >> "$FAKE_REMOTE_LOG"
+  printf 'remote-script-end %s\n' "$host" >> "$FAKE_REMOTE_LOG"
+fi
 if [[ "$prepare" == true ]]; then /usr/bin/cat "$script" >> "${FAKE_PREPARE_REMOTE_LOG:?}"; fi
 if [[ -n "${FAKE_SSH_FAIL_UPLOAD_MOVE_MATCH:-}" && $# -eq 2 && "$2" == *"$FAKE_SSH_FAIL_UPLOAD_MOVE_MATCH"* ]]; then exit 73; fi
 remote_path="${FAKE_REMOTE_BIN:?}"
 [[ "${FAKE_MISSING_SS_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_SS:?}"
 [[ "${FAKE_MISSING_CURL_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_CURL:?}"
 [[ "${FAKE_MISSING_TIMEOUT_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_TIMEOUT:?}"
-if FAKE_REMOTE_HOST="$host" FAKE_REMOTE_PREPARE="$prepare" PATH="$remote_path" /usr/bin/bash "$script" "$@"; then
+if FAKE_REMOTE_HOST="$host" FAKE_REMOTE_PREPARE="$prepare" PATH="$remote_path" /usr/bin/bash "${remote_args[@]}" "$@"; then
   if (( $# == 2 )) && [[ "$2" == */camera-module.json ]]; then
     canonical="$(/usr/bin/jq -S -c . "$2")"
     printf '%s' "$canonical" | /usr/bin/sha256sum | /usr/bin/cut -d' ' -f1 > "${FAKE_HTTP_STATE:?}/$host.active-config-sha"
@@ -749,6 +755,7 @@ for entry in "$REMOTE_BIN/"*; do
 done
 
 export FAKE_LOG="$LOG" FAKE_REMOTE_LOG="$REMOTE_LOG" FAKE_SCRIPT_ROOT="$TEMP_DIR"
+export FAKE_CAPTURE_REMOTE_SCRIPTS=true
 export FAKE_IMAGE_STATE="$TEMP_DIR/image-state" FAKE_REVISION="$REVISION" FAKE_IMAGE_TAG="rev-$REVISION"
 export FAKE_PREPARE_REMOTE_LOG="$PREPARE_REMOTE_LOG"
 export FAKE_REMOTE_BIN="$REMOTE_BIN" FAKE_REMOTE_BIN_NO_SS="$REMOTE_BIN_NO_SS" REAL_STAT REAL_GREP REAL_GIT
@@ -1122,6 +1129,7 @@ grep -Fq 'curl --silent --show-error' "$REMOTE_LOG"
 if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|rm|create|mkdir|install|touch)([[:space:]]|$)' "$REMOTE_LOG"; then fail 'Remote preflight script contains mutation commands.'; fi
 if grep -Fq 'fixture-secret-never-print' "$LOG" || grep -Fq 'fixture-secret-never-print' "$REMOTE_LOG" ||
    grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output"; then fail 'Logs or evidence exposed a secret.'; fi
+export FAKE_CAPTURE_REMOTE_SCRIPTS=false
 
 mkdir -p "$TEMP_DIR/remote/east space"
 jq --arg root "$TEMP_DIR/remote/east space/runtime" '.cameraAgents[0].runtimeRoot=$root' "$BASE_INVENTORY" > "$INVENTORY"

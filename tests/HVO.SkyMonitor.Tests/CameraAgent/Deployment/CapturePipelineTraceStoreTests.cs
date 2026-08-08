@@ -42,6 +42,24 @@ public sealed class CapturePipelineTraceStoreTests
         store.Find(4, artifactId)!.TraceId.Should().Be(Context(5).TraceId.ToHexString());
     }
 
+    [TestMethod]
+    public void Record_ReplacesOnlyExactCaptureSequenceAndArtifactPair()
+    {
+        var store = new CapturePipelineTraceStore();
+        var firstArtifact = Guid.NewGuid();
+        var secondArtifact = Guid.NewGuid();
+
+        store.Record(4, Guid.NewGuid(), firstArtifact, Context(1));
+        store.Record(4, Guid.NewGuid(), secondArtifact, Context(2));
+        store.Record(5, Guid.NewGuid(), firstArtifact, Context(3));
+        store.Record(4, Guid.NewGuid(), firstArtifact, Context(4));
+
+        store.Snapshot().Should().HaveCount(3).And.HaveCountLessThanOrEqualTo(CapturePipelineTraceStore.Capacity);
+        store.Find(4, firstArtifact)!.TraceId.Should().Be(Context(4).TraceId.ToHexString());
+        store.Find(4, secondArtifact)!.TraceId.Should().Be(Context(2).TraceId.ToHexString());
+        store.Find(5, firstArtifact)!.TraceId.Should().Be(Context(3).TraceId.ToHexString());
+    }
+
     private static ActivityContext Context(int value)
         => new(
             ActivityTraceId.CreateFromString(value.ToString("x32", CultureInfo.InvariantCulture).AsSpan()),

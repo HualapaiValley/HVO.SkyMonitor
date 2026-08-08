@@ -44,12 +44,15 @@ The existing local-development `scripts/infra:*` workflow remains unchanged.
 - Formatting verification: passed.
 - Package audit: passed with no vulnerabilities and the reviewed deprecation
   allowlist unchanged.
-- Category audit: `Unit=1754`, `Integration=533`, `Manual=75`, `Soak=1`,
+- Category audit: `Unit=1755`, `Integration=533`, `Manual=75`, `Soak=1`,
   `External=0`, and `Hardware=1`.
 - Deployment/failpoint contract: passed.
 - Documentation audit, Bash syntax, ShellCheck, JSON/schema checks, Compose model
   checks, and actionlint: passed.
-- Unit selection with an invalid Docker endpoint: all 1,754 cases passed.
+- Unit selection with an invalid Docker endpoint: the pre-review 1,754-case gate
+  passed; the added trace-key regression passed in its focused three-case suite,
+  bringing current discovery to 1,755. Protected replacement CI owns the full
+  corrected-head Unit gate.
 - Integration evidence: CameraAgent storage 145/145, central 357/357,
   CameraAgent host 21/21, architecture/publish 6/6, and standalone acceptance
   4/4. The aggregate run initially produced the separately known transient local

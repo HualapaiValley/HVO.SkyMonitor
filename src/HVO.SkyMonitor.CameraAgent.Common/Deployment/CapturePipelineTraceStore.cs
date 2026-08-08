@@ -34,7 +34,7 @@ public sealed class CapturePipelineTraceStore
         {
             for (var node = _entries.First; node is not null; node = node.Next)
             {
-                if (node.Value.CaptureSequence != captureSequence && node.Value.ArtifactId != artifactId) continue;
+                if (node.Value.CaptureSequence != captureSequence || node.Value.ArtifactId != artifactId) continue;
                 _entries.Remove(node);
                 break;
             }

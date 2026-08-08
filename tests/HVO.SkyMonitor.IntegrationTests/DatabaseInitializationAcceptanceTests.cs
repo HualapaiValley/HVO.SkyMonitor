@@ -223,6 +223,7 @@ public sealed class DatabaseInitializationAcceptanceTests
     public async Task ProductionInitializationHostMode_UsesDedicatedConnectionAndExits()
     {
         await using var database = await InitializedDatabase.CreateAsync("HostMode").ConfigureAwait(false);
+        using var certificates = new TestOpenIddictCertificates();
         var logicHostAssembly = typeof(HVO.SkyMonitor.LogicHost.Program).Assembly.Location;
         var outputDirectory = Path.GetDirectoryName(logicHostAssembly)!;
         using var process = new Process
@@ -239,6 +240,8 @@ public sealed class DatabaseInitializationAcceptanceTests
         process.StartInfo.ArgumentList.Add("--host-mode=database-initialize");
         process.StartInfo.Environment["ASPNETCORE_ENVIRONMENT"] = Environments.Production;
         process.StartInfo.Environment["ConnectionStrings__skymonitordb-migrations"] = database.ConnectionString;
+        process.StartInfo.Environment["OpenIddictCertificates__SigningPath"] = certificates.SigningPath;
+        process.StartInfo.Environment["OpenIddictCertificates__EncryptionPath"] = certificates.EncryptionPath;
         process.StartInfo.Environment["DeviceBootstrap__CentralIdentity__ServiceUrl"] = "https://issue256.invalid";
         process.StartInfo.Environment["DeviceBootstrap__CentralIdentity__Mode"] = "ClientCredentials";
         process.StartInfo.Environment["DeviceBootstrap__CentralIdentity__ClientCredentials__ClientId"] =
