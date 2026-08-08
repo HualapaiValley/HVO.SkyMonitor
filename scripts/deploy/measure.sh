@@ -30,7 +30,8 @@ deploy_measure_validate_snapshot() {
       .durable.artifactOutboxMaximumRecordId >= 0 and (.durable.artifactOutboxMaximumAuditId | type) == "number" and
       .durable.artifactOutboxMaximumAuditId >= 0 and .durable.fleetDatabaseExists == true and
       (.durable.fleetNextSequence | type) == "number" and .durable.fleetNextSequence >= 1 and
-      (.durable.fleetMaximumSequence | type) == "number" and .durable.fleetMaximumSequence >= 0' "$continuity" >/dev/null || return 1
+      (.durable.fleetMaximumSequence == null or
+        ((.durable.fleetMaximumSequence | type) == "number" and .durable.fleetMaximumSequence >= 0))' "$continuity" >/dev/null || return 1
     jq -e --arg device "$device" '
       .configuration.value.agentId == $device and .configuration.value.moduleType == "VirtualSky" and
       (.captureTelemetry.value.sampleCount | type) == "number" and .captureTelemetry.value.sampleCount >= 0 and

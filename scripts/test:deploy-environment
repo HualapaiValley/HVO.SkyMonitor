@@ -593,7 +593,7 @@ if [[ "$url" == */api/internal/deployment/continuity* ]]; then
     fleetPendingCount:0,fleetLeasedCount:0,fleetRetryCount:0,fleetQuarantineCount:0,lastFleetAcknowledgedUtc:$acknowledged,
     durable:{rawIngressDatabaseExists:true,captureSequences:[{agentId:$device,lastSequence:$sequence}],artifactOutboxDatabaseExists:true,
       artifactOutboxMaximumRecordId:$sequence,artifactOutboxMaximumAuditId:$sequence,fleetDatabaseExists:true,
-      fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",fleetNextSequence:($sequence+1),fleetMaximumSequence:$sequence,
+      fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",fleetNextSequence:($sequence+1),fleetMaximumSequence:null,
        latestArtifacts:[
          {artifactId:"11111111-1111-1111-1111-111111111111",agentId:$device,role:"Preview",captureSequence:$sequence,
            checksumSha256:$ENV.FAKE_ARTIFACT_SHA,byteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),status:"acknowledged"},

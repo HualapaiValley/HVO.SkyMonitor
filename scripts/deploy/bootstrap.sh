@@ -100,12 +100,15 @@ deploy_bootstrap_validate_persistent_capture_continuity() {
         local_fleet_instance="$(jq -r '.durable.fleetAgentInstanceId // ""' "$identity")"
         local_fleet_maximum="$(jq -r '.durable.fleetMaximumSequence // 0' "$identity")"
         local_fleet_next="$(jq -r '.durable.fleetNextSequence // 0' "$identity")"
+        [[ "$local_fleet_maximum" =~ ^[0-9]+$ && "$local_fleet_next" =~ ^[0-9]+$ ]] || return 1
+        if (( local_fleet_next > 0 && local_fleet_next - 1 > local_fleet_maximum )); then
+            local_fleet_maximum=$((local_fleet_next - 1))
+        fi
         if [[ -z "$central_fleet_instance" || "$local_fleet_instance" != "$central_fleet_instance" ]]; then
             deploy_fail bootstrap "$name" persistent-local-fleet-identity-mismatch
             return 1
         fi
-        if [[ ! "$local_fleet_maximum" =~ ^[0-9]+$ || ! "$local_fleet_next" =~ ^[0-9]+$ ]] ||
-          (( local_fleet_maximum < central_fleet_maximum || local_fleet_next <= central_fleet_maximum )); then
+        if (( local_fleet_maximum < central_fleet_maximum || local_fleet_next <= central_fleet_maximum )); then
             deploy_fail bootstrap "$name" persistent-local-fleet-history-behind
             return 1
         fi
@@ -435,7 +438,7 @@ deploy_run_bootstrap() {
         status="$(deploy_bootstrap_request "$logic" GET "$(jq -r '.internalEndpoint' <<< "$logic")/api/internal/devices/continuity/$device_id" "" "$headers" "" \
           "$logic_remote/$name-pre-restart-central.json" "$private_root/$name-pre-restart-central.json")" || return 1
         [[ "$status" == 200 ]] || { deploy_fail bootstrap "$name" pre-restart-central-continuity-failed; return 1; }
-        pre_local_ack="$(jq -r '.durable.fleetMaximumSequence // -1' "$private_root/$name-pre-restart-continuity.json")"
+        pre_local_ack="$(jq -r '.durable.fleetNextSequence // -1' "$private_root/$name-pre-restart-continuity.json")"
         pre_central_ack="$(jq -r '.maximumHeartbeatSequence // -1' "$private_root/$name-pre-restart-central.json")"
         pre_ack_time="$(jq -r '.lastHeartbeatReceivedAtUtc // ""' "$private_root/$name-pre-restart-central.json")"
 
@@ -453,7 +456,7 @@ deploy_run_bootstrap() {
             status="$(deploy_bootstrap_request "$logic" GET "$(jq -r '.internalEndpoint' <<< "$logic")/api/internal/devices/continuity/$device_id" "" "$headers" "" \
               "$logic_remote/$name-post-restart-central.json" "$private_root/$name-post-restart-central.json")" || return 1
             [[ "$status" == 200 ]] || { deploy_fail bootstrap "$name" unexpected-central-post-restart-status; return 1; }
-            current_local_ack="$(jq -r '.durable.fleetMaximumSequence // -1' "$private_root/$name-continuity.json")"
+            current_local_ack="$(jq -r '.durable.fleetNextSequence // -1' "$private_root/$name-continuity.json")"
             current_central_ack="$(jq -r '.maximumHeartbeatSequence // -1' "$private_root/$name-post-restart-central.json")"
             if jq -e --arg device "$device_id" --arg beforeTime "$pre_ack_time" --argjson beforeLocal "$pre_local_ack" --argjson beforeCentral "$pre_central_ack" \
               --argjson currentLocal "$current_local_ack" --argjson currentCentral "$current_central_ack" '
