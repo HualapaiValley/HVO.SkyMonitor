@@ -26,6 +26,18 @@ public sealed class CaptureTelemetrySinkTests
         Assert.AreEqual(2, snapshot.Aggregate.FramesStored);
     }
 
+    [TestMethod]
+    public void Reset_StartsFreshMeasurementWindow()
+    {
+        var sink = new CaptureTelemetrySink();
+        sink.Report(Sample(0, 1, frameStored: true));
+
+        sink.Reset();
+
+        Assert.IsNull(sink.Latest);
+        Assert.IsEmpty(sink.GetSnapshot().Samples);
+    }
+
     private static CaptureTelemetrySample Sample(int minute, double gain, bool frameStored)
         => new(
             DateTimeOffset.UnixEpoch.AddMinutes(minute),

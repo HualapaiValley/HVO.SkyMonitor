@@ -180,6 +180,7 @@ public sealed class OperationsPageTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
     public async Task Disposal_CancelsPendingReadAndAwaitsPollingCleanupAsync()
     {
         using var context = new BunitContext();
@@ -202,6 +203,7 @@ public sealed class OperationsPageTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
     public async Task Disposal_CancelsAndAwaitsPendingCommandAsync()
     {
         using var context = new BunitContext();

@@ -31,17 +31,22 @@ deploy_validate_inventory() {
          (.ports | type == "array" and length > 0 and all(type == "number" and floor == . and . >= 1 and . <= 65535) and length == (unique | length)) and
          (. as $target | (.internalEndpoint | capture("^http://[^/:]+:(?<port>[0-9]+)").port | tonumber) as $internalPort |
            $internalPort <= 65535 and ($target.ports | index($internalPort) != null));
-       def camera: exact(["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","internalEndpoint","publicEndpoint","trustedProxyAddresses","ports","moduleConfigPath","ownerPasswordSecretReference"]) and
-         ({name,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot,runtimeOwner,
-           internalEndpoint,publicEndpoint,trustedProxyAddresses,ports} | app) and
-         (.moduleConfigPath | root) and (.ownerPasswordSecretReference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$"));
-       exact(["schemaVersion","environment","installationId","source","secretSource","logicHost","cameraAgents","sharedServices","serviceEndpoints","catalog","images","deployment"]) and
-       .schemaVersion == 5 and (.environment | name) and (.installationId | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) and
+         def camera: exact(["name","friendlyName","ownerEmail","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","internalEndpoint","publicEndpoint","trustedProxyAddresses","ports","moduleConfigPath","ownerPasswordSecretReference"]) and
+          ({name,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot,runtimeOwner,
+            internalEndpoint,publicEndpoint,trustedProxyAddresses,ports} | app) and
+           (.friendlyName | text and length <= 200) and (.ownerEmail | text and length <= 254 and test("^[^@[:space:]]+@[^@[:space:]]+$")) and
+           (.moduleConfigPath | root) and (.ownerPasswordSecretReference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$"));
+        exact(["schemaVersion","environment","installationId","source","secretSource","observatory","logicHost","cameraAgents","sharedServices","serviceEndpoints","catalog","images","deployment"]) and
+        .schemaVersion == 6 and (.environment | name) and (.installationId | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) and
       (.source | exact(["revision","dirtyDisposition"]) and (.revision | type == "string" and test("^[0-9a-f]{40}$")) and
         (.dirtyDisposition == "require-clean" or .dirtyDisposition == "allow-dirty")) and
-      (.secretSource | exact(["path","requiredReferences"]) and (.path | text) and
-        (.requiredReferences | type == "array" and length > 0 and length == (unique | length) and
-          all(type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")))) and
+       (.secretSource | exact(["path","requiredReferences"]) and (.path | text) and
+         (.requiredReferences | type == "array" and length > 0 and length == (unique | length) and
+           all(type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")))) and
+       (.observatory | exact(["name","latitudeDegrees","longitudeDegrees","elevationMeters","timeZoneId"]) and
+         (.name | text and length <= 200) and (.latitudeDegrees | type == "number" and . >= -90 and . <= 90) and
+         (.longitudeDegrees | type == "number" and . >= -180 and . <= 180) and
+         (.elevationMeters | type == "number" and . >= -1000 and . <= 10000) and (.timeZoneId | text and length <= 128)) and
        (.logicHost | app and (.publicEndpoint | startswith("https://"))) and
        (.cameraAgents | type == "array" and length > 0 and all(camera) and
         ([.[].ownerPasswordSecretReference] | unique | length) == length) and
@@ -73,7 +78,7 @@ deploy_validate_inventory() {
       .images.tag == ("rev-" + .source.revision) and
       ((.images.distributionMode == "archive" and .images.artifactRoot != null and .images.registryImmutableTags == false) or
        (.images.distributionMode == "registry" and .images.artifactRoot == null and .images.registryImmutableTags == true)) and
-      (.deployment | exact(["catalog","services","resources","certificates","deviceBootstrap","secretMappings","limits"]) and
+      (.deployment | exact(["catalog","services","resources","certificates","automation","deviceBootstrap","workload","secretMappings","limits"]) and
         (.catalog | exact(["bundlePath","installRoot","allowFixture"]) and (.bundlePath | root) and (.installRoot | root) and (.allowFixture | type == "boolean")) and
         (.services | exact(["mode","sql","redis","minio","smtp","images"]) and (.mode == "existing" or .mode == "deploy") and
           all(.sql,.redis,.minio,.smtp; .host | text and test("^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")) and
@@ -94,13 +99,20 @@ deploy_validate_inventory() {
         (.resources | exact(["project","sqlDatabase","redisPrefix","artifactBucket","diagnosticsBucket"]) and
           (.project | name) and (.sqlDatabase | name) and (.redisPrefix | text and test("^[a-z0-9][a-z0-9:-]{0,63}:$")) and
           (.artifactBucket | name) and (.diagnosticsBucket | name)) and
-        (.certificates | exact(["signingPath","encryptionPath","signingPasswordReference","encryptionPasswordReference"]) and
+         (.certificates | exact(["signingPath","encryptionPath","signingPasswordReference","encryptionPasswordReference"]) and
           (.signingPath | root) and (.encryptionPath | root) and
-          all(.signingPasswordReference,.encryptionPasswordReference; . == null or (type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")))) and
+           all(.signingPasswordReference,.encryptionPasswordReference; . == null or (type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")))) and
+        (.automation | exact(["ownerApiKeySecretReference"]) and
+          (.ownerApiKeySecretReference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$"))) and
         (.deviceBootstrap | exact(["clientId","clientSecretReference","scopes"]) and
           (.clientId | text and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
           (.clientSecretReference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")) and
-          (.scopes | type == "array" and length > 0 and length == (unique | length) and all(type == "string" and test("^[a-z][a-z0-9.:-]{0,127}$")))) and
+           (.scopes | type == "array" and length > 0 and length == (unique | length) and all(type == "string" and test("^[a-z][a-z0-9.:-]{0,127}$")))) and
+         (.workload | exact(["kind","durationSeconds","sustainedArmOptIn"]) and
+           (.kind == "W0" or .kind == "W1" or .kind == "W2") and
+           (.durationSeconds | type == "number" and floor == . and . >= 1 and . <= 86400) and
+            (.sustainedArmOptIn | type == "boolean") and
+           (.kind == "W0" or .sustainedArmOptIn == true)) and
         (.secretMappings | type == "array" and length > 0 and length == ([.[].key] | unique | length) and all(exact(["reference","key"]) and
           (.reference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")) and (.key | text and test("^[A-Za-z][A-Za-z0-9]*(?:__[A-Za-z0-9][A-Za-z0-9-]*)+$")))) and
         (.limits | exact(["cpus","memory"]) and (.cpus == null or (.cpus | type == "string" and test("^[0-9]+(?:[.][0-9]+)?$"))) and
@@ -148,7 +160,7 @@ deploy_validate_inventory() {
         .deployment.services.minio.accessKeyReference,.deployment.services.minio.secretKeyReference,
         .deployment.services.smtp.usernameReference,.deployment.services.smtp.passwordReference,
         .deployment.certificates.signingPasswordReference,.deployment.certificates.encryptionPasswordReference,
-        .deployment.deviceBootstrap.clientSecretReference,.cameraAgents[].ownerPasswordSecretReference] |
+        .deployment.automation.ownerApiKeySecretReference,.deployment.deviceBootstrap.clientSecretReference,.cameraAgents[].ownerPasswordSecretReference] |
         map(select(. != null)) | unique | all(. as $reference | $required | index($reference) != null))' "$inventory" >/dev/null ||
       deploy_fail validate inventory "unknown-deployment-secret-reference" || return 1
     if [[ "$mode" == persistent ]]; then

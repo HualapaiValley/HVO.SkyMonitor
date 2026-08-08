@@ -70,4 +70,15 @@ public sealed class CaptureTelemetrySink : ICaptureTelemetrySink, ICaptureTeleme
         var aggregate = CaptureTelemetryAggregate.FromSamples(snapshot);
         return new CaptureTelemetrySnapshot(snapshot, aggregate);
     }
+
+    public void Reset()
+    {
+        lock (_gate)
+        {
+            Array.Clear(_buffer);
+            _nextIndex = 0;
+            _count = 0;
+            _latest = null;
+        }
+    }
 }

@@ -1,10 +1,10 @@
 # Smoke-Test Environment Runbook
 
-This runbook defines the configuration boundary for reproducible platform smoke
-tests. Issue #151 now provides a separate
-[read-only split-host preflight](split-host-preflight.md); deployment mutation and
-bootstrap automation remain later slices. These smoke commands only generate and
-verify inputs and do not start, stop, reset, or mutate resources.
+This runbook defines the legacy environment-file boundary for local reproducible
+platform smoke tests. Issue #151 provides the inventory-driven split-host
+[deployment, bootstrap, W0 smoke, and teardown workflow](split-host-preflight.md).
+The commands in this document only generate and verify legacy smoke inputs and do
+not start, stop, reset, or mutate resources.
 
 ## Environment Contract
 
@@ -24,8 +24,8 @@ complete operator inputs:
 
 Device ID, verification code, registration/public IDs, envelope, and device
 secret are application-generated state. They must never be added to
-`.env.smoketest`; future #151 automation will obtain them through the supported
-bootstrap APIs/UI and retain them under the owner-protected
+`.env.smoketest`; split-host automation obtains them through supported
+application APIs and retains private transient material under the owner-protected
 `SMOKETEST_RUN_STATE_PATH`.
 
 ## Initialize
@@ -87,7 +87,7 @@ endpoints because the applications may not have started yet.
 `SMOKETEST_DATA_POLICY` is one of:
 
 - `preserve`: retain existing application and shared-service history;
-- `isolated`: use run-scoped resources created by the future #151 orchestrator;
+- `isolated`: use run-scoped resources created by the #151 orchestrator;
 - `reset-shared`: permit a future explicit shared-data reset.
 
 `reset-shared` is rejected unless `SMOKETEST_CONFIRM_SHARED_DATA_RESET` exactly

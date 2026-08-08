@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 5,
+  "schemaVersion": 6,
   "environment": "observatory-production",
   "installationId": "observatory-main",
   "source": {
@@ -8,8 +8,9 @@
   },
   "secretSource": {
     "path": "/home/operator/.config/hvo-skymonitor/deploy.env",
-    "requiredReferences": ["SQLSERVER_PASSWORD", "SQL_INIT_PASSWORD", "SQL_RUNTIME_PASSWORD", "SQL_INIT_CONNECTION", "SQL_RUNTIME_CONNECTION", "REDIS_ADMIN_PASSWORD", "REDIS_PASSWORD", "MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "SMTP_USERNAME", "SMTP_PASSWORD", "OIDC_SIGNING_PASSWORD", "OIDC_ENCRYPTION_PASSWORD", "CAMERA_AGENT_OAUTH_CLIENT_SECRET", "CAMERA_EAST_OWNER_PASSWORD"]
+    "requiredReferences": ["SQLSERVER_PASSWORD", "SQL_INIT_PASSWORD", "SQL_RUNTIME_PASSWORD", "SQL_INIT_CONNECTION", "SQL_RUNTIME_CONNECTION", "REDIS_ADMIN_PASSWORD", "REDIS_PASSWORD", "MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "SMTP_USERNAME", "SMTP_PASSWORD", "OIDC_SIGNING_PASSWORD", "OIDC_ENCRYPTION_PASSWORD", "LOGICHOST_OWNER_API_KEY", "CAMERA_AGENT_OAUTH_CLIENT_SECRET", "CAMERA_EAST_OWNER_PASSWORD"]
   },
+  "observatory": { "name": "Main Observatory", "latitudeDegrees": 19.5362, "longitudeDegrees": -155.5763, "elevationMeters": 3397, "timeZoneId": "Pacific/Honolulu" },
   "logicHost": {
     "name": "logic-01",
     "sshHost": "hvo@logic-01.example.net",
@@ -27,6 +28,8 @@
   },
   "cameraAgents": [{
     "name": "camera-east",
+    "friendlyName": "East All-Sky Camera",
+    "ownerEmail": "owner-east@cameraagent.local",
     "sshHost": "hvo@camera-east.example.net",
     "dockerContext": "camera-east",
     "expectedArchitecture": "arm64",
@@ -88,7 +91,9 @@
     },
     "resources": { "project": "hvo-main", "sqlDatabase": "hvo-main", "redisPrefix": "hvo-main:", "artifactBucket": "hvo-main-artifacts", "diagnosticsBucket": "hvo-main-diagnostics" },
     "certificates": { "signingPath": "/home/operator/certs/signing.pfx", "encryptionPath": "/home/operator/certs/encryption.pfx", "signingPasswordReference": "OIDC_SIGNING_PASSWORD", "encryptionPasswordReference": "OIDC_ENCRYPTION_PASSWORD" },
+    "automation": { "ownerApiKeySecretReference": "LOGICHOST_OWNER_API_KEY" },
     "deviceBootstrap": { "clientId": "system-camera-agent", "clientSecretReference": "CAMERA_AGENT_OAUTH_CLIENT_SECRET", "scopes": ["api.camera", "api.frames", "api.images"] },
+    "workload": { "kind": "W0", "durationSeconds": 300, "sustainedArmOptIn": false },
     "secretMappings": [
       { "reference": "SQL_RUNTIME_CONNECTION", "key": "ConnectionStrings__skymonitordb" },
       { "reference": "SQL_INIT_CONNECTION", "key": "ConnectionStrings__skymonitordb-migrations" },

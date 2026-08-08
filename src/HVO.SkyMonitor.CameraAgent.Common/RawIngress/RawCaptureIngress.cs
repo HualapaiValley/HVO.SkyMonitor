@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -34,6 +35,7 @@ internal sealed class RawCaptureIngress :
     private readonly SqliteCaptureLaneStore _laneStore;
     private readonly CaptureLaneState? _laneState;
     private readonly CaptureLaneTelemetry? _laneTelemetry;
+    private readonly CapturePipelineTraceStore? _captureTraceStore;
     private bool _initialized;
     private bool _capacityRevalidationRequired;
     private long _minimumRecoveryCapacityBytes;
@@ -50,7 +52,8 @@ internal sealed class RawCaptureIngress :
         CaptureLanePolicy? lanePolicy = null,
         ICaptureLaneFaultInjector? laneFaultInjector = null,
         CaptureLaneState? laneState = null,
-        CaptureLaneTelemetry? laneTelemetry = null)
+        CaptureLaneTelemetry? laneTelemetry = null,
+        CapturePipelineTraceStore? captureTraceStore = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -62,6 +65,7 @@ internal sealed class RawCaptureIngress :
         _lanePolicy = lanePolicy ?? new CaptureLanePolicy(options);
         _laneState = laneState;
         _laneTelemetry = laneTelemetry;
+        _captureTraceStore = captureTraceStore;
         var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
         var root = Path.GetFullPath(_options.RawIngressRoot);
         _journal = new SqliteRawCaptureJournal(
@@ -460,6 +464,14 @@ internal sealed class RawCaptureIngress :
                 _logger.RawIngressExisting(duration.TotalMilliseconds);
             }
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+            if (activity is not null)
+            {
+                _captureTraceStore?.Record(
+                    identity.CaptureSequence,
+                    identity.CaptureId,
+                    identity.ArtifactId,
+                    activity.Context);
+            }
             return receipt;
         }
         catch (OperationCanceledException) when (!lifecycleAcquired)

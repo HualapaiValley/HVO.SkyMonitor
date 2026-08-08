@@ -103,6 +103,14 @@ public sealed class FleetRuntimeState(TimeProvider timeProvider)
         }
     }
 
+    public void ResetTimings()
+    {
+        lock (_gate)
+        {
+            _timings.Clear();
+        }
+    }
+
     private void Add(FleetTimingSegment segment, TimeSpan duration)
     {
         if (duration < TimeSpan.Zero)

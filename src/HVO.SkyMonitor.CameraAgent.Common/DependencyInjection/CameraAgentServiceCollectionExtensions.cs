@@ -21,6 +21,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using Microsoft.Extensions.Configuration;
@@ -91,6 +92,7 @@ public static class CameraAgentServiceCollectionExtensions
             services.AddSingleton<ICaptureProcessingFaultInjector>(NullCaptureProcessingFaultInjector.Instance);
         }
         services.AddSingleton<StoragePressureState>();
+        services.AddSingleton<DeploymentContinuityReader>();
         services.AddSingleton<RawIngressState>();
         services.AddSingleton<RawIngressTelemetry>();
         services.AddSingleton<CaptureLaneState>();
@@ -185,6 +187,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalAcquisitionService>();
         services.AddSingleton<EnvironmentalCaptureTriggerBridge>();
         services.AddSingleton<CaptureControlTelemetry>();
+        services.AddSingleton<CapturePipelineTraceStore>();
         services.AddSingleton<CaptureAdmissionCoordinator>();
         services.AddSingleton<CaptureScheduleRuntimeCoordinator>();
         services.AddSingleton<CameraAgentStorageResolver>();

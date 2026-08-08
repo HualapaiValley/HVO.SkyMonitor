@@ -328,6 +328,15 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         });
         using var response = await client.PostAsync(new Uri("/Account/Login", UriKind.Relative), form).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
+        using var ownerCheck = await client.GetAsync(
+            new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
+        if (ownerCheck.StatusCode != HttpStatusCode.OK)
+        {
+            var body = await ownerCheck.Content.ReadAsStringAsync().ConfigureAwait(false);
+            client.Dispose();
+            throw new InvalidOperationException(
+                $"The local owner session check returned {(int)ownerCheck.StatusCode}: {body}");
+        }
         return client;
     }
 

@@ -26,16 +26,24 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/catalog.sh"
 # shellcheck source=scripts/deploy/up.sh
 . "$SCRIPT_DIR/deploy/up.sh"
+# shellcheck source=scripts/deploy/bootstrap.sh
+. "$SCRIPT_DIR/deploy/bootstrap.sh"
+# shellcheck source=scripts/deploy/smoke.sh
+. "$SCRIPT_DIR/deploy/smoke.sh"
+# shellcheck source=scripts/deploy/down.sh
+. "$SCRIPT_DIR/deploy/down.sh"
+# shellcheck source=scripts/deploy/measure.sh
+. "$SCRIPT_DIR/deploy/measure.sh"
 
 usage() {
-    printf 'Usage: %s <preflight|prepare|images|catalog|up> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
     exit 2
 }
 
 phase="${1:-}"
-[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up ]] || usage
+[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == down ]] || usage
 shift
-inventory="" mode="" run_id="" state_root="" evidence_root=""
+inventory="" mode="" run_id="" state_root="" evidence_root="" down_policy="" confirm="" workload=""
 while (( $# > 0 )); do
     case "$1" in
         --inventory) (( $# >= 2 )) || usage; inventory="$2"; shift 2 ;;
@@ -43,10 +51,16 @@ while (( $# > 0 )); do
         --run-id) (( $# >= 2 )) || usage; run_id="$2"; shift 2 ;;
         --state-root) (( $# >= 2 )) || usage; state_root="$2"; shift 2 ;;
         --evidence-root) (( $# >= 2 )) || usage; evidence_root="$2"; shift 2 ;;
+        --preserve-state) [[ -z "$down_policy" ]] || usage; down_policy=preserve; shift ;;
+        --delete-state) [[ -z "$down_policy" ]] || usage; down_policy=delete; shift ;;
+        --confirm) (( $# >= 2 )) || usage; confirm="$2"; shift 2 ;;
+        --workload) (( $# >= 2 )) || usage; workload="$2"; shift 2 ;;
         *) usage ;;
     esac
 done
 [[ -n "$inventory" && ( "$mode" == isolated || "$mode" == persistent ) ]] || usage
+if [[ "$phase" == down ]]; then [[ -n "$down_policy" ]] || usage; else [[ -z "$down_policy" && -z "$confirm" ]] || usage; fi
+if [[ "$phase" == measure ]]; then [[ "$workload" == W1 || "$workload" == W2 ]] || usage; else [[ -z "$workload" ]] || usage; fi
 
 # Target selection and credentials must come only from the validated inventory contract.
 for ambient_name in ${!DEPLOY_@} ${!SMOKETEST_@}; do
@@ -55,10 +69,10 @@ done
 unset DOCKER_HOST DOCKER_CONTEXT SSH_HOST SSH_CONFIG 2>/dev/null || true
 unset ambient_name
 
-deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh date grep cut || exit 1
+deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh date grep cut awk wc || exit 1
 [[ "$phase" == prepare || "$phase" == catalog ]] || deploy_require_commands docker || exit 1
 [[ "$phase" != images ]] || deploy_require_commands tar mv rm || exit 1
-[[ "$phase" != catalog && "$phase" != up ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
+[[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
 deploy_validate_inventory "$inventory" "$mode"
 deploy_validate_secret_references "$inventory"
@@ -81,6 +95,8 @@ deploy_is_safe_name "$run_id" || deploy_fail validate run-id "unsafe-run-id"
 state_root="${state_root:-$REPO_ROOT/TestResults/deploy/$run_id/state}"
 evidence_root="${evidence_root:-$REPO_ROOT/TestResults/deploy/$run_id/evidence}"
 deploy_prepare_run_state "$state_root" "$evidence_root"
+deploy_transport_initialize_private_upload_registry "$state_root/private-upload-registry.json" "$inventory" "$phase" ||
+  deploy_fail state private-upload-registry invalid
 
 if [[ "$phase" == prepare ]]; then
     # shellcheck disable=SC2317 # Invoked indirectly by the ERR trap.
@@ -150,8 +166,53 @@ if [[ "$phase" == up ]]; then
         deploy_up_mark_failed 1
         exit 1
     fi
+    deploy_transport_reconcile_private_uploads strict
     trap - ERR
     deploy_status up complete passed ready
+    exit 0
+fi
+
+if [[ "$phase" == bootstrap ]]; then
+    trap 'deploy_bootstrap_mark_failed $?' ERR
+    if ! deploy_run_bootstrap "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state"; then
+        deploy_bootstrap_mark_failed 1
+        exit 1
+    fi
+    trap - ERR
+    deploy_status bootstrap complete passed ready
+    exit 0
+fi
+
+if [[ "$phase" == smoke ]]; then
+    trap 'deploy_smoke_mark_failed $?' ERR
+    if ! deploy_run_smoke "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state"; then
+        deploy_smoke_mark_failed 1
+        exit 1
+    fi
+    trap - ERR
+    deploy_status smoke complete passed converged
+    exit 0
+fi
+
+if [[ "$phase" == down ]]; then
+    trap 'deploy_down_mark_failed $?' ERR
+    if ! deploy_run_down "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$down_policy" "$confirm"; then
+        deploy_down_mark_failed 1
+        exit 1
+    fi
+    trap - ERR
+    deploy_status down complete passed "$down_policy"
+    exit 0
+fi
+
+if [[ "$phase" == measure ]]; then
+    trap 'deploy_measure_mark_failed $?' ERR
+    if ! deploy_run_measure "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$workload"; then
+        deploy_measure_mark_failed 1
+        exit 1
+    fi
+    trap - ERR
+    deploy_status measure complete passed "$workload"
     exit 0
 fi
 

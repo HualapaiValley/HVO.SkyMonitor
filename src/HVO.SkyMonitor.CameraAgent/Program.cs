@@ -345,6 +345,7 @@ public class Program
         app.MapCameraAgentCalibrationOperationsEndpoints();
         app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapCameraAgentEnvironmentalOperationsEndpoints();
+        app.MapCameraAgentDeploymentEndpoints();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();

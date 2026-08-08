@@ -101,6 +101,7 @@ deploy_up_mark_failed() {
         [[ -z "${DEPLOY_UP_EVIDENCE:-}" ]] || deploy_publish_json "$DEPLOY_UP_EVIDENCE" "$DEPLOY_UP_JSON" >/dev/null 2>&1 || true
         [[ -z "${DEPLOY_UP_MANIFEST:-}" ]] || deploy_publish_json "$DEPLOY_UP_MANIFEST" "$DEPLOY_UP_JSON" >/dev/null 2>&1 || true
     fi
+    deploy_transport_reconcile_private_uploads best-effort >/dev/null 2>&1 || true
     return "$status"
 }
 
@@ -178,11 +179,12 @@ deploy_up_stage_target() {
         deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$config_root/private" \
           "$(jq -r '.ownerPasswordSecretReference' <<< "$target")" owner-password || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" LocalIdentity__AdminPasswordFile /run/hvo-private/owner-password || return 1
+        deploy_up_stage_value "$target" "$render_root" "$secrets_root" LocalIdentity__AdminEmail "$(jq -r '.ownerEmail' <<< "$target")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__ConfigFilePath /app/cameraagent.deploy.json || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__RawIngressRoot /app/data/raw || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__ProvisioningStartupGate__Enabled true || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CaptureDistribution__UploadEnabled false || return 1
-        deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CentralIntegration__Mode Disabled || return 1
+        deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CentralIntegration__Mode Enabled || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" SkyMonitor__BaseUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__Root /app/catalog || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__RequiredPackageKind "$(deploy_up_catalog_required_kind "$inventory")" || return 1
@@ -195,9 +197,9 @@ deploy_up_stage_target() {
     [[ "$component" != shared ]] || { DEPLOY_UP_CONFIG_ROOT="$config_root"; DEPLOY_UP_STATE_ROOT="$state_root"; return 0; }
     port="$(jq -r '.internalEndpoint | capture("^http://[^/:]+:(?<port>[0-9]+)").port' <<< "$target")"; env_file="$render_root/$name.env"
     if [[ "$component" == logicHost ]]; then image_key=LOGICHOST_IMAGE; else image_key=CAMERAAGENT_IMAGE; fi
-    (umask 077; printf 'HVO_CONFIG_ROOT=%s\nHVO_STATE_ROOT=%s\nHVO_CATALOG_ROOT=%s\nHVO_PUBLIC_PORT=%s\nHVO_CPUS=%s\nHVO_MEMORY=%s\n%s=%s\n' \
+    (umask 077; printf 'HVO_CONFIG_ROOT=%s\nHVO_STATE_ROOT=%s\nHVO_CATALOG_ROOT=%s\nHVO_PUBLIC_PORT=%s\nHVO_CPUS=%s\nHVO_MEMORY=%s\nHVO_RUN_ID=%s\nHVO_INVENTORY_SHA256=%s\n%s=%s\n' \
       "$config_root" "$state_root" "$catalog_root" "$port" "$(jq -r '.deployment.limits.cpus // "1"' "$inventory")" \
-      "$(jq -r '.deployment.limits.memory // "1G"' "$inventory")" \
+      "$(jq -r '.deployment.limits.memory // "1G"' "$inventory")" "$run_id" "$(jq -S -c . "$inventory" | sha256sum | cut -d' ' -f1)" \
       "$image_key" "$image" > "$env_file")
     DEPLOY_UP_ENV_FILE="$env_file"; DEPLOY_UP_CONFIG_ROOT="$config_root"; DEPLOY_UP_STATE_ROOT="$state_root"
     deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
@@ -212,6 +214,7 @@ deploy_run_up() {
     deploy_up_validate_local_inputs "$inventory" || return 1
     deploy_up_validate_namespaces "$inventory" "$mode" "$run_id" || return 1
     DEPLOY_IMAGES_PREFLIGHT_JSON="$(jq -c . "$DEPLOY_MANIFEST")"
+    deploy_transport_reconcile_private_uploads strict || { deploy_fail up private-upload-registry cleanup-failed; return 1; }
     deploy_require_committed_images "$inventory" "$run_id" "$mode" "$hash" "$revision" || return 1
     state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"; render_root="$state_dir/up-rendered"
     install -d -m 700 "$render_root"
@@ -305,8 +308,9 @@ deploy_run_up() {
             "SQL_INITIALIZER_USER="+.deployment.services.sql.initializerUser,"SQL_RUNTIME_USER="+.deployment.services.sql.runtimeUser,
             "REDIS_RUNTIME_USER="+.deployment.services.redis.user,"REDIS_PREFIX="+.deployment.services.redis.prefix,
              "MINIO_ARTIFACT_BUCKET="+.deployment.services.minio.artifactBucket,"MINIO_DIAGNOSTICS_BUCKET="+.deployment.services.minio.diagnosticsBucket,
-             "HVO_CPUS="+(.deployment.limits.cpus // "2"),"HVO_MEMORY="+(.deployment.limits.memory // "2G")][]' "$inventory" > "$shared_env")
-        printf 'HVO_RUNTIME_UID=%s\nHVO_RUNTIME_GID=%s\n' "$runtime_uid" "$runtime_gid" >> "$shared_env"
+              "HVO_CPUS="+(.deployment.limits.cpus // "2"),"HVO_MEMORY="+(.deployment.limits.memory // "2G")][]' "$inventory" > "$shared_env")
+        printf 'HVO_RUNTIME_UID=%s\nHVO_RUNTIME_GID=%s\nHVO_RUN_ID=%s\nHVO_INVENTORY_SHA256=%s\n' \
+          "$runtime_uid" "$runtime_gid" "$run_id" "$hash" >> "$shared_env"
         deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         if [[ "$(jq -r '.deployment.services.smtp.kind' "$inventory")" == mailpit ]]; then
             deploy_up_compose_mutation "$target" "$context" "$project-services" "$shared_env" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" --profile test-smtp up -d --wait || return 1

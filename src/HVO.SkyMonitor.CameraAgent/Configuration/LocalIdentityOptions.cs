@@ -10,9 +10,9 @@ public sealed class LocalIdentityOptions : IValidatableObject
     [EmailAddress]
     public string AdminEmail { get; set; } = "owner@cameraagent.local";
 
-    [Required]
-    [MinLength(12)]
     public string AdminPassword { get; set; } = string.Empty;
+
+    public bool AllowMissingAdminPassword { get; set; }
 
     [Required]
     [StringLength(128, MinimumLength = 1)]
@@ -28,6 +28,12 @@ public sealed class LocalIdentityOptions : IValidatableObject
     {
         if (string.IsNullOrEmpty(AdminPassword))
         {
+            if (!AllowMissingAdminPassword)
+            {
+                yield return new ValidationResult(
+                    "AdminPassword is required until local identity has been seeded.",
+                    [nameof(AdminPassword)]);
+            }
             yield break;
         }
 

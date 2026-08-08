@@ -41,6 +41,90 @@ deploy_publish_json() {
     mv -fT -- "$temporary" "$destination" 2>/dev/null
 }
 
+deploy_phase_file_safe() {
+    local path="$1"
+    [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%h:%a' -- "$path" 2>/dev/null)" == "$(id -u):1:600" ]]
+}
+
+deploy_phase_commit_json() {
+    local json="$1" generation digest
+    generation="$(jq -er '.publicationGeneration | numbers | select(. >= 1 and floor == .)' <<< "$json")" || return 1
+    digest="$(printf '%s\n' "$(jq -S -c . <<< "$json")" | sha256sum)"; digest="${digest%% *}"
+    jq -cn --argjson generation "$generation" --arg digest "$digest" \
+      '{schemaVersion:1,generation:$generation,ledgerSha256:$digest}'
+}
+
+# The ledger rename is authoritative. The commit records when all mirrors for that
+# generation are durable; an interrupted next generation can therefore repair them.
+deploy_phase_publish() {
+    local phase="$1" json_name="$2" ledger="$3" manifest="$4" evidence="$5" commit="$6"
+    local json commit_json
+    json="${!json_name}"
+    if [[ "$(jq -r '.phaseStatus' <<< "$json")" == passed && -n "${DEPLOY_PRIVATE_UPLOAD_REGISTRY:-}" ]]; then
+        jq -e 'length == 0' "$DEPLOY_PRIVATE_UPLOAD_REGISTRY" >/dev/null 2>&1 || {
+            deploy_fail "$phase" cleanup "private-cleanup-incomplete"
+            return 1
+        }
+    fi
+    json="$(jq -c '.publicationGeneration = ((.publicationGeneration // 0) + 1)' <<< "$json")" || return 1
+    printf -v "$json_name" '%s' "$json"
+    commit_json="$(deploy_phase_commit_json "$json")" || return 1
+    deploy_publish_json "$ledger" "$json" || return 1
+    [[ "${DEPLOY_TEST_FAILPOINT:-}" != "abrupt-after-$phase-ledger" ]] || exit 75
+    deploy_publish_json "$manifest" "$json" || return 1
+    [[ "${DEPLOY_TEST_FAILPOINT:-}" != "abrupt-after-$phase-manifest" ]] || exit 75
+    deploy_publish_json "$evidence" "$json" || return 1
+    [[ "${DEPLOY_TEST_FAILPOINT:-}" != "abrupt-after-$phase-evidence" ]] || exit 75
+    deploy_publish_json "$commit" "$commit_json" || return 1
+    [[ "${DEPLOY_TEST_FAILPOINT:-}" != "abrupt-after-$phase-commit" ]] || exit 75
+}
+
+deploy_phase_recover_publication() {
+    local ledger="$1" manifest="$2" evidence="$3" commit="$4" validator="$5" ledger_json expected_commit ledger_generation commit_generation path
+    shift 5
+    deploy_phase_file_safe "$ledger" || { deploy_fail state phase "unsafe-phase-ledger"; return 1; }
+    ledger_json="$(jq -c . "$ledger" 2>/dev/null)" || { deploy_fail state phase "invalid-phase-json"; return 1; }
+    "$validator" "$ledger" "$@" || return 1
+    expected_commit="$(deploy_phase_commit_json "$ledger_json")" || { deploy_fail state phase "invalid-publication-generation"; return 1; }
+    ledger_generation="$(jq -r '.generation' <<< "$expected_commit")"
+    if [[ -e "$commit" || -L "$commit" ]]; then
+        deploy_phase_file_safe "$commit" || { deploy_fail state phase "unsafe-phase-commit"; return 1; }
+        jq -e '.schemaVersion == 1 and (.generation | numbers) and (.ledgerSha256 | test("^[0-9a-f]{64}$"))' "$commit" >/dev/null 2>&1 ||
+          { deploy_fail state phase "invalid-phase-commit"; return 1; }
+        commit_generation="$(jq -r '.generation' "$commit")"
+        if [[ "$commit_generation" == "$ledger_generation" ]]; then
+            [[ "$(jq -S -c . "$commit")" == "$(jq -S -c . <<< "$expected_commit")" ]] ||
+              { deploy_fail state phase "committed-ledger-mismatch"; return 1; }
+            for path in "$manifest" "$evidence"; do
+                if ! deploy_phase_file_safe "$path" || [[ "$(jq -S -c . "$path" 2>/dev/null)" != "$(jq -S -c . <<< "$ledger_json")" ]]; then
+                    deploy_fail state phase "committed-phase-mirror-mismatch"
+                    return 1
+                fi
+            done
+            return 0
+        fi
+        [[ "$commit_generation" =~ ^[0-9]+$ && "$ledger_generation" == "$((commit_generation + 1))" ]] ||
+          { deploy_fail state phase "publication-generation-gap"; return 1; }
+    else
+        [[ "$ledger_generation" == 1 ]] || { deploy_fail state phase "phase-commit-missing"; return 1; }
+    fi
+    if ! deploy_publish_json "$manifest" "$ledger_json" || ! deploy_publish_json "$evidence" "$ledger_json" ||
+      ! deploy_publish_json "$commit" "$expected_commit"; then
+        deploy_fail state phase "publication-recovery-failed"
+        return 1
+    fi
+}
+
+deploy_require_no_orphan_phase_files() {
+    local ledger="$1"
+    shift
+    [[ -e "$ledger" || -L "$ledger" ]] && return 0
+    local path
+    for path in "$@"; do
+        [[ ! -e "$path" && ! -L "$path" ]] || { deploy_fail state phase "orphan-phase-companion"; return 1; }
+    done
+}
+
 deploy_clear_evidence() {
     if [[ -e "$DEPLOY_EVIDENCE" || -L "$DEPLOY_EVIDENCE" ]]; then
         [[ ! -d "$DEPLOY_EVIDENCE" ]] || { deploy_fail state evidence "unsafe-evidence-entry"; return 1; }
@@ -80,4 +164,8 @@ deploy_require_completed_evidence_match() {
       .inventorySha256 == $manifest.inventorySha256 and .source == $manifest.source and
       .phaseStatus == "passed" and .targets == $manifest.targets and .checks == $manifest.checks' \
       "$evidence" >/dev/null 2>&1 || deploy_fail state resume "completed-check-or-target-mismatch" || return 1
+}
+
+deploy_require_phase_files_match() {
+    deploy_phase_recover_publication "$@"
 }

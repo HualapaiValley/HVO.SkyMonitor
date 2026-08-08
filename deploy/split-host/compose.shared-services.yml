@@ -114,5 +114,14 @@ services:
 
 volumes:
   sql-data:
+    labels: { io.hvoskymonitor.run-id: "${HVO_RUN_ID:?run id required}", io.hvoskymonitor.inventory-sha256: "${HVO_INVENTORY_SHA256:?inventory hash required}" }
   redis-data:
+    labels: { io.hvoskymonitor.run-id: "${HVO_RUN_ID:?run id required}", io.hvoskymonitor.inventory-sha256: "${HVO_INVENTORY_SHA256:?inventory hash required}" }
   minio-data:
+    labels: { io.hvoskymonitor.run-id: "${HVO_RUN_ID:?run id required}", io.hvoskymonitor.inventory-sha256: "${HVO_INVENTORY_SHA256:?inventory hash required}" }
+
+networks:
+  default:
+    labels:
+      io.hvoskymonitor.run-id: "${HVO_RUN_ID:?run id required}"
+      io.hvoskymonitor.inventory-sha256: "${HVO_INVENTORY_SHA256:?inventory hash required}"

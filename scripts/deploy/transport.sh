@@ -139,10 +139,21 @@ deploy_transport_copy() {
 }
 
 deploy_transport_copy_private_file() {
-    local source="$1" ssh_host="$2" destination="$3" temporary="$3.hvo-upload.$$"
+    local source="$1" ssh_host="$2" destination="$3" target runtime_root upload_root token temporary
     [[ -f "$source" && ! -L "$source" ]] || return 1
-    scp -q -o BatchMode=yes -o ConnectTimeout=8 -- "$source" "$ssh_host:$temporary" >/dev/null 2>&1 || return 1
-    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$temporary" "$destination" 2>/dev/null <<'REMOTE'
+    target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
+    runtime_root="$(jq -r '.runtimeRoot' <<< "$target")"; upload_root="$runtime_root/.hvo-deploy/uploads"
+    [[ "$destination" == "$runtime_root"/* ]] || return 1
+    token="$(printf '%s' "${DEPLOY_PRIVATE_UPLOAD_PHASE:?}|$destination|$$" | sha256sum | cut -c1-32)"
+    temporary="$upload_root/hvo-upload-${DEPLOY_PRIVATE_UPLOAD_PHASE}-$$-$token.tmp"
+    deploy_transport_remote_directories "$ssh_host" "$runtime_root/.hvo-deploy" "$upload_root" || return 1
+    deploy_transport_register_private_upload "$ssh_host" "$temporary" || return 1
+    if ! scp -q -o BatchMode=yes -o ConnectTimeout=8 -- "$source" "$ssh_host:$temporary" >/dev/null 2>&1; then
+        deploy_transport_complete_private_upload "$ssh_host" "$temporary" || return 1
+        return 1
+    fi
+    [[ "${DEPLOY_TEST_FAILPOINT:-}" != abrupt-after-private-scp-upload ]] || exit 75
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$temporary" "$destination" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 temporary=$1; destination=$2; parent=${destination%/*}
 trap 'rm -f -- "$temporary"' EXIT
@@ -151,6 +162,164 @@ trap 'rm -f -- "$temporary"' EXIT
 chmod 600 "$temporary"
 mv -Tf -- "$temporary" "$destination"
 trap - EXIT
+REMOTE
+    then
+        deploy_transport_complete_private_upload "$ssh_host" "$temporary" || return 1
+        return 1
+    fi
+    deploy_transport_forget_private_upload "$ssh_host" "$temporary"
+}
+
+deploy_transport_private_upload_target() {
+    local ssh_host="$1" target
+    [[ -n "${DEPLOY_PRIVATE_UPLOAD_INVENTORY:-}" ]] || return 1
+    target="$(jq -c --arg ssh "$ssh_host" '([.logicHost] + .cameraAgents + (if .sharedServices then [.sharedServices] else [] end)) |
+      [.[] | select(.sshHost == $ssh)] | if length == 1 then .[0] else empty end' "$DEPLOY_PRIVATE_UPLOAD_INVENTORY")"
+    [[ -n "$target" ]] || return 1
+    printf '%s\n' "$target"
+}
+
+deploy_transport_initialize_private_upload_registry() {
+    local registry="$1" inventory="$2" phase="$3"
+    DEPLOY_PRIVATE_UPLOAD_REGISTRY="$registry"; DEPLOY_PRIVATE_UPLOAD_INVENTORY="$inventory"; DEPLOY_PRIVATE_UPLOAD_PHASE="$phase"
+    if [[ -e "$registry" || -L "$registry" ]]; then
+        [[ -f "$registry" && ! -L "$registry" && "$(stat -c '%u:%h:%a' "$registry" 2>/dev/null)" == "$(id -u):1:600" ]] || return 1
+        jq -e --argjson inventory "$(jq -c . "$inventory")" '
+          def targets: ([$inventory.logicHost] + $inventory.cameraAgents + (if $inventory.sharedServices then [$inventory.sharedServices] else [] end));
+          type == "array" and length <= 256 and all(.[]; . as $entry |
+            (keys | sort) == (["phase","kind","target","path"] | sort) and
+            (.phase | test("^(up|bootstrap|smoke|measure|down)$")) and
+            (if .kind == "upload-temp" then
+              any(targets[]; . == $entry.target) and
+              ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/uploads/") and
+                (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))
+             elif .kind == "remote-private" then
+               any(targets[]; . == $entry.target) and ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/")) and
+               (($entry.path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
+                ($entry.path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")))
+             elif .kind == "local-private" then
+               any(targets[]; . == $entry.target) and ($entry.path | startswith(($registry | sub("/private-upload-registry[.]json$"; "")) + "/")) and
+               ($entry.path | test("/(central[.]headers|[A-Za-z0-9._-]+-(owner-password|antiforgery[.]headers|antiforgery[.]json|envelope[.]json|bootstrap-request[.]json))$")) and
+               (($entry.path | split("/")[-1]) as $basename |
+                 if $basename == "central.headers" then $entry.target == $inventory.logicHost
+                 else ($basename | startswith($entry.target.name + "-")) end)
+             else false end))' --arg registry "$registry" "$registry" >/dev/null || return 1
+    else
+        deploy_publish_json "$registry" '[]' || return 1
+    fi
+}
+
+deploy_transport_publish_private_registration() {
+    local path="$1" json="$2" failpoint="${DEPLOY_TEST_FAILPOINT:-}" match=
+    [[ "$failpoint" != private-registry-publication:* ]] || match="${failpoint#private-registry-publication:}"
+    [[ -z "$match" || "$path" != *"$match"* ]] || return 75
+    deploy_publish_json "$DEPLOY_PRIVATE_UPLOAD_REGISTRY" "$json" || return 1
+}
+
+deploy_transport_register_private_upload() {
+    local ssh_host="$1" temporary="$2" target updated
+    if [[ -z "${DEPLOY_PRIVATE_UPLOAD_REGISTRY:-}" ]]; then
+        DEPLOY_PRIVATE_UPLOADS+="${DEPLOY_PRIVATE_UPLOADS:+$'\n'}$ssh_host"$'\t'"$temporary"
+        return 0
+    fi
+    target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
+    jq -e --arg path "$temporary" --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" '
+      .runtimeRoot as $root | ($path | startswith($root + "/.hvo-deploy/uploads/") and
+      (split("/")[-1] | test("^hvo-upload-" + $phase + "-[0-9]+-[0-9a-f]{32}[.]tmp$")))' <<< "$target" >/dev/null || return 1
+    updated="$(jq -c --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" --arg path "$temporary" --argjson target "$target" '
+      if any(.[]; .path == $path) then . else . + [{phase:$phase,kind:"upload-temp",target:$target,path:$path}] end' "$DEPLOY_PRIVATE_UPLOAD_REGISTRY")" || return 1
+    deploy_transport_publish_private_registration "$temporary" "$updated" || return 1
+}
+
+deploy_transport_register_remote_private() {
+    local target="$1" path="$2" updated
+    jq -e --arg path "$path" '.runtimeRoot as $root | ($path | startswith($root + "/.hvo-deploy/")) and
+      (($path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
+       ($path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")))' \
+      <<< "$target" >/dev/null || return 1
+    updated="$(jq -c --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" --arg path "$path" --argjson target "$target" '
+      if any(.[]; .path == $path and .phase == $phase and .kind == "remote-private" and .target == $target) then .
+      elif any(.[]; .path == $path) then error("private path already registered to another entry")
+      else . + [{phase:$phase,kind:"remote-private",target:$target,path:$path}] end' \
+      "$DEPLOY_PRIVATE_UPLOAD_REGISTRY")" || return 1
+    deploy_transport_publish_private_registration "$path" "$updated" || return 1
+}
+
+deploy_transport_register_local_private() {
+    local target="$1" path="$2" state_root updated
+    state_root="$(dirname "$DEPLOY_PRIVATE_UPLOAD_REGISTRY")"
+    jq -e --argjson inventory "$(jq -c . "$DEPLOY_PRIVATE_UPLOAD_INVENTORY")" '. as $target |
+      any(([$inventory.logicHost] + $inventory.cameraAgents + (if $inventory.sharedServices then [$inventory.sharedServices] else [] end))[]; . == $target)' \
+      <<< "$target" >/dev/null || return 1
+    [[ "$path" == "$state_root"/* && "$path" =~ /(central[.]headers|[A-Za-z0-9._-]+-(owner-password|antiforgery[.]headers|antiforgery[.]json|envelope[.]json|bootstrap-request[.]json))$ ]] || return 1
+    if [[ "${path##*/}" == central.headers ]]; then
+        jq -e --argjson inventory "$(jq -c . "$DEPLOY_PRIVATE_UPLOAD_INVENTORY")" '. == $inventory.logicHost' <<< "$target" >/dev/null || return 1
+    else
+        [[ "${path##*/}" == "$(jq -r '.name' <<< "$target")-"* ]] || return 1
+    fi
+    updated="$(jq -c --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" --arg path "$path" --argjson target "$target" '
+      if any(.[]; .path == $path and .phase == $phase and .kind == "local-private" and .target == $target) then .
+      elif any(.[]; .path == $path) then error("private path already registered to another entry")
+      else . + [{phase:$phase,kind:"local-private",target:$target,path:$path}] end' \
+      "$DEPLOY_PRIVATE_UPLOAD_REGISTRY")" || return 1
+    deploy_transport_publish_private_registration "$path" "$updated" || return 1
+}
+
+deploy_transport_forget_private_path() {
+    local path="$1" updated
+    updated="$(jq -c --arg path "$path" '[.[] | select(.path != $path)]' "$DEPLOY_PRIVATE_UPLOAD_REGISTRY")" || return 1
+    deploy_publish_json "$DEPLOY_PRIVATE_UPLOAD_REGISTRY" "$updated" || return 1
+}
+
+deploy_transport_forget_private_upload() {
+    local ssh_host="$1" temporary="$2" updated
+    if [[ -z "${DEPLOY_PRIVATE_UPLOAD_REGISTRY:-}" ]]; then
+        DEPLOY_PRIVATE_UPLOADS="$(printf '%s\n' "${DEPLOY_PRIVATE_UPLOADS:-}" | grep -Fvx "$ssh_host"$'\t'"$temporary" || true)"
+        return 0
+    fi
+    updated="$(jq -c --arg path "$temporary" '[.[] | select(.path != $path)]' "$DEPLOY_PRIVATE_UPLOAD_REGISTRY")" || return 1
+    deploy_publish_json "$DEPLOY_PRIVATE_UPLOAD_REGISTRY" "$updated" || return 1
+}
+
+deploy_transport_complete_private_upload() {
+    local ssh_host="$1" temporary="$2"
+    deploy_transport_cleanup_private_upload "$ssh_host" "$temporary" || return 1
+    deploy_transport_forget_private_upload "$ssh_host" "$temporary"
+}
+
+deploy_transport_reconcile_private_uploads() {
+    local policy="${1:-strict}" entry kind target ssh path retained='[]' failed=false
+    [[ -n "${DEPLOY_PRIVATE_UPLOAD_REGISTRY:-}" ]] || return 0
+    while IFS= read -r entry; do
+        kind="$(jq -r '.kind' <<< "$entry")"; path="$(jq -r '.path' <<< "$entry")"
+        if [[ "$kind" == local-private ]]; then
+            if [[ ! -L "$path" ]] && { rm -f -- "$path" 2>/dev/null || [[ ! -e "$path" ]]; } && [[ ! -e "$path" && ! -L "$path" ]]; then continue; fi
+        else
+            target="$(jq -c '.target' <<< "$entry")"; ssh="$(jq -r '.sshHost' <<< "$target")"
+            if deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" >/dev/null 2>&1 &&
+              { [[ "$kind" == upload-temp ]] && deploy_transport_cleanup_private_upload "$ssh" "$path" >/dev/null 2>&1 ||
+                [[ "$kind" == remote-private ]] && deploy_transport_remove_private_files "$ssh" "$path" >/dev/null 2>&1; } &&
+              deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" >/dev/null 2>&1; then continue; fi
+        fi
+        failed=true; retained="$(jq -c --argjson entry "$entry" '. + [$entry]' <<< "$retained")"
+    done < <(jq -c '.[]' "$DEPLOY_PRIVATE_UPLOAD_REGISTRY")
+    deploy_publish_json "$DEPLOY_PRIVATE_UPLOAD_REGISTRY" "$retained" || return 1
+    [[ "$failed" == false || "$policy" != strict ]]
+}
+
+deploy_transport_cleanup_private_upload() {
+    local ssh_host="$1" temporary="$2" target
+    target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
+    jq -e --arg path "$temporary" '.runtimeRoot as $root |
+      ($path | startswith($root + "/.hvo-deploy/uploads/") and
+        (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))' \
+      <<< "$target" >/dev/null || return 1
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$temporary" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+temporary=$1
+[[ "$temporary" == /* && "$temporary" != *//* && "$temporary" != */../* && "$temporary" != */./* ]] || exit 90
+if [[ -e "$temporary" || -L "$temporary" ]]; then [[ -f "$temporary" && ! -L "$temporary" ]] || exit 91; rm -f -- "$temporary"; fi
+[[ ! -e "$temporary" && ! -L "$temporary" ]]
 REMOTE
 }
 
@@ -267,6 +436,161 @@ deploy_transport_compose() {
     docker --context "$context" compose --project-name "$project" --env-file "$env_file" --file "$compose_file" "$@" >/dev/null 2>&1
 }
 
+deploy_transport_compose_stats() {
+    local context="$1" project="$2" env_file="$3" compose_file="$4" service="$5" container
+    container="$(docker --context "$context" compose --project-name "$project" --env-file "$env_file" --file "$compose_file" ps -q "$service" 2>/dev/null)" || return 1
+    [[ "$container" =~ ^[a-f0-9]{12,64}$ ]] || return 1
+    docker --context "$context" stats --no-stream --format \
+      '{"cpu":{{json .CPUPerc}},"memory":{{json .MemUsage}},"memoryPercent":{{json .MemPerc}},"blockIo":{{json .BlockIO}},"networkIo":{{json .NetIO}},"pids":{{json .PIDs}}}' \
+      "$container" 2>/dev/null
+}
+
+deploy_transport_docker_inspect_json() {
+    local context="$1" kind="$2" name="$3" format="$4" output error status
+    error="$(mktemp /tmp/hvo-docker-inspect.XXXXXX)" || return 1
+    if output="$(docker --context "$context" "$kind" inspect --format "$format" "$name" 2>"$error")"; then
+        rm -f -- "$error"
+        [[ -n "$output" && "$output" != *$'\n'* ]] || return 1
+        printf '%s\n' "$output"
+        return 0
+    else
+        status=$?
+    fi
+    if [[ "$status" == 1 ]] && grep -Eq "^(Error: No such $kind: $name|Error response from daemon: (get $name: no such $kind|$kind $name not found))$" "$error"; then
+        rm -f -- "$error"
+        return 44
+    fi
+    rm -f -- "$error"
+    return 1
+}
+
+deploy_transport_compose_logs() {
+    local context="$1" project="$2" env_file="$3" compose_file="$4" service="$5" since="$6" destination="$7" temporary
+    [[ "$since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+    temporary="$(mktemp "${destination}.tmp.XXXXXX")" || return 1
+    chmod 600 "$temporary" || { rm -f -- "$temporary"; return 1; }
+    if ! docker --context "$context" compose --project-name "$project" --env-file "$env_file" --file "$compose_file" \
+      logs --no-color --since "$since" --tail 200 "$service" > "$temporary" 2>/dev/null; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+    [[ -f "$temporary" && ! -L "$temporary" && "$(stat -c '%h:%a:%s' "$temporary")" =~ ^1:600:[0-9]+$ ]] ||
+      { rm -f -- "$temporary"; return 1; }
+    mv -fT -- "$temporary" "$destination"
+}
+
+deploy_transport_remove_volume() {
+    local context="$1" volume="$2" run_id="$3" inventory_hash="$4" allow_absent="${5:-false}" identity status
+    [[ "$volume" =~ ^[a-z0-9][a-z0-9_.-]{0,127}$ ]] || return 1
+    if identity="$(deploy_transport_docker_inspect_json "$context" volume "$volume" \
+       '{"runId":{{json (index .Labels "io.hvoskymonitor.run-id")}},"inventorySha256":{{json (index .Labels "io.hvoskymonitor.inventory-sha256")}}}')"; then :
+    else status=$?; [[ "$status" == 44 && "$allow_absent" == true ]] || return 1; return 0; fi
+    jq -e --arg run "$run_id" --arg hash "$inventory_hash" '.runId == $run and .inventorySha256 == $hash' <<< "$identity" >/dev/null || return 1
+    docker --context "$context" volume rm "$volume" >/dev/null 2>&1
+}
+
+deploy_transport_validate_volume() {
+    local context="$1" volume="$2" run_id="$3" inventory_hash="$4" identity
+    identity="$(deploy_transport_docker_inspect_json "$context" volume "$volume" \
+      '{"runId":{{json (index .Labels "io.hvoskymonitor.run-id")}},"inventorySha256":{{json (index .Labels "io.hvoskymonitor.inventory-sha256")}}}')" || return 1
+    jq -e --arg run "$run_id" --arg hash "$inventory_hash" '.runId == $run and .inventorySha256 == $hash' <<< "$identity" >/dev/null
+}
+
+deploy_transport_require_volume_absent() {
+    local status
+    deploy_transport_docker_inspect_json "$1" volume "$2" '{{json .Name}}' >/dev/null && return 1
+    status=$?
+    [[ "$status" == 44 ]]
+}
+
+deploy_transport_remove_network() {
+    local context="$1" network="$2" project="$3" run_id="$4" inventory_hash="$5" allow_absent="${6:-false}" identity status
+    [[ "$network" =~ ^[a-z0-9][a-z0-9_.-]{0,127}$ && "$project" =~ ^[a-z0-9][a-z0-9_.-]{0,127}$ ]] || return 1
+    if identity="$(deploy_transport_docker_inspect_json "$context" network "$network" \
+      '{"name":{{json .Name}},"project":{{json (index .Labels "com.docker.compose.project")}},"network":{{json (index .Labels "com.docker.compose.network")}},"runId":{{json (index .Labels "io.hvoskymonitor.run-id")}},"inventorySha256":{{json (index .Labels "io.hvoskymonitor.inventory-sha256")}}}')"; then :
+    else status=$?; [[ "$status" == 44 && "$allow_absent" == true ]] || return 1; return 0; fi
+    jq -e --arg name "$network" --arg project "$project" --arg run "$run_id" --arg hash "$inventory_hash" \
+      '.name == $name and .project == $project and .network == "default" and .runId == $run and .inventorySha256 == $hash' <<< "$identity" >/dev/null || return 1
+    docker --context "$context" network rm "$network" >/dev/null 2>&1
+}
+
+deploy_transport_validate_network() {
+    local context="$1" network="$2" project="$3" run_id="$4" inventory_hash="$5" identity
+    identity="$(deploy_transport_docker_inspect_json "$context" network "$network" \
+      '{"name":{{json .Name}},"project":{{json (index .Labels "com.docker.compose.project")}},"network":{{json (index .Labels "com.docker.compose.network")}},"runId":{{json (index .Labels "io.hvoskymonitor.run-id")}},"inventorySha256":{{json (index .Labels "io.hvoskymonitor.inventory-sha256")}}}')" || return 1
+    jq -e --arg name "$network" --arg project "$project" --arg run "$run_id" --arg hash "$inventory_hash" \
+      '.name == $name and .project == $project and .network == "default" and .runId == $run and .inventorySha256 == $hash' <<< "$identity" >/dev/null
+}
+
+deploy_transport_require_network_absent() {
+    local status
+    deploy_transport_docker_inspect_json "$1" network "$2" '{{json .Name}}' >/dev/null && return 1
+    status=$?
+    [[ "$status" == 44 ]]
+}
+
+deploy_transport_compose_service_state() {
+    local context="$1" project="$2" env_file="$3" compose_file="$4" service="$5" container identity
+    container="$(docker --context "$context" compose --project-name "$project" --env-file "$env_file" --file "$compose_file" ps --all -q "$service" 2>/dev/null)" || return 1
+    if [[ -z "$container" ]]; then printf 'absent\n'; return 0; fi
+    [[ "$container" =~ ^[a-f0-9]{12,64}$ ]] || return 1
+    identity="$(docker --context "$context" container inspect --format \
+      '{"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"running":{{json .State.Running}}}' \
+      "$container" 2>/dev/null)" || return 1
+    jq -e --arg project "$project" --arg service "$service" '.project == $project and .service == $service and (.running | type == "boolean")' <<< "$identity" >/dev/null || return 1
+    if [[ "$(jq -r '.running' <<< "$identity")" == true ]]; then printf 'running\n'; else printf 'stopped\n'; fi
+}
+
+deploy_transport_require_runtime_root_absent() {
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$1" bash -s -- "$2" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1
+[[ "$root" == /* && "$root" != / && "$root" != *//* && "$root" != */../* && "$root" != */./* ]] || exit 90
+[[ ! -e "$root" && ! -L "$root" ]]
+REMOTE
+}
+
+deploy_transport_remove_runtime_root() {
+    local ssh_host="$1" root="$2" marker_digest="$3" allow_absent="${4:-false}"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$marker_digest" "$allow_absent" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; marker_digest=$2; allow_absent=$3
+[[ "$root" == /* && "$root" != / && "$root" != *//* && "$root" != */../* && "$root" != */./* ]] || exit 90
+[[ "$marker_digest" =~ ^[0-9a-f]{64}$ ]] || exit 91
+if [[ ! -e "$root" && ! -L "$root" && "$allow_absent" == true ]]; then exit 0; fi
+current=/
+IFS=/ read -r -a components <<< "${root#/}"
+for component in "${components[@]}"; do
+  [[ -n "$component" ]] || continue
+  [[ "$current" == / ]] && current="/$component" || current="$current/$component"
+  [[ -d "$current" && ! -L "$current" ]] || exit 92
+done
+marker="$root/.hvo-deploy/ownership"
+expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
+[[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker")" == 1 && "$(<"$marker")" == "$expected" ]] || exit 93
+rm -rf --one-file-system -- "$root"
+[[ ! -e "$root" && ! -L "$root" ]] || exit 94
+REMOTE
+}
+
+deploy_transport_validate_runtime_root() {
+    local ssh_host="$1" root="$2" marker_digest="$3"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$marker_digest" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; marker_digest=$2
+[[ "$root" == /* && "$root" != / && "$marker_digest" =~ ^[0-9a-f]{64}$ ]] || exit 90
+current=/
+IFS=/ read -r -a components <<< "${root#/}"
+for component in "${components[@]}"; do
+  [[ -n "$component" ]] || continue
+  [[ "$current" == / ]] && current="/$component" || current="$current/$component"
+  [[ -d "$current" && ! -L "$current" ]] || exit 91
+done
+marker="$root/.hvo-deploy/ownership"; expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
+[[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker")" == 1 && "$(<"$marker")" == "$expected" ]] || exit 92
+REMOTE
+}
+
 deploy_transport_http_ready() {
     local ssh_host="$1" url="$2"
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$url" 2>/dev/null <<'REMOTE'
@@ -276,6 +600,117 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 exit 1
+REMOTE
+}
+
+deploy_transport_http_private() {
+    local ssh_host="$1" method="$2" url="$3" body_path="$4" header_path="$5" cookie_path="$6" output_path="$7"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
+      "$method" "$url" "$body_path" "$header_path" "$cookie_path" "$output_path" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+method=$1; url=$2; body=$3; headers=$4; cookies=$5; output=$6
+[[ "$method" == GET || "$method" == POST ]] || exit 90
+[[ "$output" == /* && "$output" != *//* && "$output" != */../* && "$output" != */./* ]] || exit 91
+[[ -z "$body" || ( "$body" == /* && "$body" != *//* && "$body" != */../* && "$body" != */./* ) ]] || exit 91
+[[ -z "$headers" || ( "$headers" == /* && "$headers" != *//* && "$headers" != */../* && "$headers" != */./* ) ]] || exit 91
+[[ -z "$body" || ( -f "$body" && ! -L "$body" && "$(stat -c %a "$body")" == 600 ) ]] || exit 92
+[[ -z "$headers" || ( -f "$headers" && ! -L "$headers" && "$(stat -c %a "$headers")" == 600 ) ]] || exit 93
+args=(--silent --show-error --max-time 30 --max-filesize 1048576 --request "$method" --output "$output" --write-out '%{http_code}')
+[[ -z "$body" ]] || args+=(--header 'Content-Type: application/json' --data-binary "@$body")
+[[ -z "$headers" ]] || args+=(--header "@$headers")
+if [[ -n "$cookies" ]]; then
+  [[ "$cookies" == /* ]] || exit 94
+  args+=(--cookie "$cookies" --cookie-jar "$cookies")
+fi
+status=$(curl "${args[@]}" "$url") || exit 95
+[[ "$status" =~ ^[0-9]{3}$ && -f "$output" && ! -L "$output" ]] || exit 96
+chmod 600 "$output"
+[[ -z "$cookies" || ( -f "$cookies" && ! -L "$cookies" ) ]] || exit 97
+[[ -z "$cookies" ]] || chmod 600 "$cookies"
+printf '%s\n' "$status"
+REMOTE
+}
+
+deploy_transport_http_hash_private() {
+    local ssh_host="$1" url="$2" header_path="$3" temporary_root="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$url" "$header_path" "$temporary_root" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+url=$1; headers=$2; root=$3
+[[ "$url" == http://* && "$headers" == /* && "$root" == /* && -d "$root" && ! -L "$root" ]] || exit 90
+[[ -f "$headers" && ! -L "$headers" && "$(stat -c '%h:%a' "$headers")" == "1:600" ]] || exit 91
+payload="$root/retrieval.$$.bin"; response_headers="$root/retrieval.$$.headers"
+cleanup() { rm -f -- "$payload" "$response_headers"; [[ ! -e "$payload" && ! -L "$payload" && ! -e "$response_headers" && ! -L "$response_headers" ]]; }
+trap cleanup EXIT
+status=$(curl --silent --show-error --max-time 60 --output "$payload" --dump-header "$response_headers" --write-out '%{http_code}' --header "@$headers" "$url") || exit 92
+[[ "$status" =~ ^[0-9]{3}$ && -f "$payload" && ! -L "$payload" && -f "$response_headers" && ! -L "$response_headers" ]] || exit 93
+chmod 600 "$payload" "$response_headers"
+hash=$(sha256sum "$payload"); hash=${hash%% *}; bytes=$(wc -c < "$payload")
+declared=$(awk 'BEGIN{IGNORECASE=1} /^X-Artifact-SHA256:/ {gsub("\r", "", $2); print toupper($2)}' "$response_headers")
+[[ "$declared" =~ ^[0-9A-F]{64}$ && "$bytes" =~ ^[0-9]+$ ]] || exit 94
+printf '%s\t%s\t%s\t%s\n' "$status" "${hash^^}" "$bytes" "$declared"
+REMOTE
+}
+
+deploy_transport_owner_login() {
+    local ssh_host="$1" endpoint="$2" email="$3" password_path="$4" cookie_path="$5" scratch_root="$6"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
+      "$endpoint" "$email" "$password_path" "$cookie_path" "$scratch_root" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+endpoint=$1; email=$2; password=$3; cookies=$4; scratch=$5
+[[ "$endpoint" == http://* && "$password" == /* && "$cookies" == /* && "$scratch" == /* ]] || exit 90
+[[ -f "$password" && ! -L "$password" && "$(stat -c %a "$password")" == 600 ]] || exit 91
+[[ -d "$scratch" && ! -L "$scratch" ]] || exit 91
+chmod 700 "$scratch"
+login="$scratch/login.html"; response="$scratch/login-response.html"; verification="$scratch/owner-verification.json"
+cleanup() { rm -f -- "$login" "$response" "$verification" "$password"; }
+trap cleanup EXIT
+status=$(curl --silent --show-error --max-time 30 --output "$login" --write-out '%{http_code}' \
+  --cookie "$cookies" --cookie-jar "$cookies" "$endpoint/Account/Login") || exit 92
+[[ "$status" == 200 && -f "$login" ]] || exit 93
+html=$(<"$login")
+pattern='name="__RequestVerificationToken"[^>]*value="([^"]+)"'
+[[ "$html" =~ $pattern ]] || exit 94
+token=${BASH_REMATCH[1]}
+status=$(curl --silent --show-error --max-time 30 --location --output "$response" --write-out '%{http_code}' \
+  --cookie "$cookies" --cookie-jar "$cookies" \
+  --data-urlencode "__RequestVerificationToken=$token" --data-urlencode "Input.Email=$email" \
+  --data-urlencode "Input.Password@$password" --data-urlencode 'Input.RememberMe=false' --data-urlencode '_handler=login' \
+  "$endpoint/Account/Login") || exit 95
+[[ "$status" == 200 && -f "$cookies" && ! -L "$cookies" ]] || exit 96
+chmod 600 "$cookies"
+status=$(curl --silent --show-error --max-time 30 --output "$verification" --write-out '%{http_code}' \
+  --cookie "$cookies" --cookie-jar "$cookies" "$endpoint/api/internal/deployment/antiforgery") || exit 97
+[[ "$status" == 200 && -f "$verification" && ! -L "$verification" ]] || exit 98
+REMOTE
+}
+
+deploy_transport_derive_idempotent_headers() {
+    local ssh_host="$1" base_path="$2" derived_path="$3" key="$4"
+    [[ "$key" =~ ^[A-Za-z0-9._:-]{1,128}$ ]] || return 1
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$base_path" "$derived_path" "$key" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+base=$1; derived=$2; key=$3
+[[ "$base" == /* && "$derived" == /* && "$base" != "$derived" && -f "$base" && ! -L "$base" && "$(stat -c '%h:%a' "$base")" == "1:600" ]] || exit 90
+[[ ! -e "$derived" && ! -L "$derived" ]] || exit 91
+[[ "$(grep -c '^Idempotency-Key:' "$base" || true)" == 0 && "$(grep -Ec '^[A-Za-z0-9-]+: .+$' "$base" || true)" -ge 1 ]] || exit 92
+umask 077
+cp -- "$base" "$derived"
+printf 'Idempotency-Key: %s\n' "$key" >> "$derived"
+chmod 600 "$derived"
+[[ "$(grep -c '^Idempotency-Key:' "$derived")" == 1 && "$(grep -Fxc "Idempotency-Key: $key" "$derived")" == 1 ]] || exit 93
+REMOTE
+}
+
+deploy_transport_remove_private_files() {
+    local ssh_host="$1"
+    shift
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+for path in "$@"; do
+  [[ "$path" == /* && "$path" != *//* && "$path" != */../* && "$path" != */./* ]] || exit 90
+  if [[ -e "$path" || -L "$path" ]]; then [[ -f "$path" && ! -L "$path" ]] || exit 91; rm -f -- "$path"; fi
+  [[ ! -e "$path" && ! -L "$path" ]] || exit 92
+done
 REMOTE
 }
 

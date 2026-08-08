@@ -85,6 +85,7 @@ project for LogicHost keys.
 | `CentralIdentity:ClientCredentials:ClientSecret` | CameraAgent outbound client-credentials mode | Imported encrypted device state, User Secrets, or environment variables |
 | `CentralIdentity:ApiKey:Key` | CameraAgent outbound API-key mode | Imported encrypted device state, User Secrets, or environment variables |
 | `CAMERA_AGENT_ADMIN_PASSWORD` / `LocalIdentity:AdminPassword` | Configuration-seeded local site owner | Ignored `.env` or CameraAgent User Secrets |
+| Split-host owner API key and per-agent owner passwords | LogicHost owner automation and normal local Identity login | Schema-v6 owner-only `secretSource`; each temporary path is bound to the full correlated target identity, remote password is deleted after login, final cookie/header/envelope cleanup verifies absence and is phase-fatal on failure, failure traps retry cleanup best-effort, and none enter evidence |
 | `CentralIdentity:LocalFallback:AccessCodeHash` | Reserved option; no runtime fallback handler is implemented | Do not configure as an active control |
 | OpenIddict signing/encryption PFX files and passwords | Token, code, and refresh-token cryptography | Development certificate store locally; split-host production mounts owner-supplied files and reads passwords through KeyPerFile |
 | Kestrel/TLS private key and password | HTTPS when Kestrel owns TLS | Framework configuration is available, but repository Compose has no HTTPS profile or secure mount |
@@ -112,7 +113,38 @@ ignored, access-controlled, and out of support bundles:
 - `src/HVO.SkyMonitor.CameraAgent/App_Data/`
 - any host `DataProtection-Keys/` directory
 - `.env` and `.devcontainer/devcontainer.local.env`
-- the ignored schema-v5 split-host `secretSource` file and remote `.hvo-deploy/up-<run-id>/{secrets,initializer-secrets,runtime-secrets,private}/`
+- the ignored schema-v6 split-host `secretSource` file and transient remote `.hvo-deploy/{up,bootstrap,smoke,measure,down}-<run-id>/` private files (credentials are removed at phase exit)
+
+Every local credential staging file, remote credential/session file, and private
+SCP temporary is atomically registered with its phase, kind, path, and complete
+non-secret target identity in
+`<state-root>/private-upload-registry.json` before creation. Successful deletion
+is followed by registry removal. Every private phase entry and exit re-correlates
+and reconciles retained entries. Transfer, process interruption, or follow-up SSH
+failure therefore leaves an authoritative retry record; failed cleanup remains
+registered for the next invocation. Cleanup never substitutes another inventory
+alias when target correlation fails. The registry contains paths and target
+identity but no credential value, request body, or payload. Owner cookies,
+owner/central headers, and the exact generated login and antiforgery response
+files are registered before either local creation or remote staging.
+
+Every registered temporary path must be beneath the exact target
+`<runtimeRoot>/.hvo-deploy/uploads/` directory and use the generated
+`hvo-upload-<phase>-<pid>-<32 lowercase hex>.tmp` basename. Registry load,
+registration, reconciliation, and deletion all enforce the same target/root/path
+contract. Local and final remote credential entries have separate basename and
+runtime/state-root constraints. An arbitrary or tampered path is rejected
+without deletion. `bootstrap`, `smoke`, `measure`, and `down` reconcile cleanup
+before passed publication; the shared publisher rejects passed state while the
+registry is nonempty. A resume performs reconciliation even when phase work or
+down actions were already completed.
+
+Capture-control requests never append idempotency material to the reusable owner
+antiforgery header. Each request derives a new owner-only header containing the
+original antiforgery value and exactly one boundary/attempt-specific idempotency
+key. The derived header is registered before creation and deleted before its
+cleanup entry is removed. An unverified measure failure pause retains the owner
+session and derived-header cleanup entries for the next safety reconciliation.
 
 `device-secrets.dat` is encrypted with CameraAgent Data Protection. Encryption
 does not make it safe to publish, and it cannot be recovered without the

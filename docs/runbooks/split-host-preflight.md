@@ -1,4 +1,4 @@
-# Split-Host Deployment Through Controlled Startup
+# Split-Host Deployment, Bootstrap, Smoke, And Teardown
 
 This runbook covers preflight, runtime-root preparation, immutable image
 distribution, catalog installation, and controlled application startup from issue #151. Preflight validates a versioned multi-host
@@ -7,8 +7,10 @@ and exact ownership/lock metadata. Images then builds on the control host and
 either pushes and pulls registry manifests or transfers local archives through
 declared Docker contexts. `catalog` installs the declared verified catalog on
 every host. `up` optionally creates isolated shared services, runs controlled
-database initialization, starts LogicHost, and starts CameraAgents paused with
-upload disabled. Bootstrap, workloads, stop, and deletion remain out of scope.
+database initialization, starts LogicHost, and starts CameraAgents behind the
+provisioning gate with upload disabled. `bootstrap` provisions through
+application APIs, `smoke` runs bounded W0 convergence checks, and `down`
+implements explicit preserve or run-owned deletion.
 
 ## Inventory And Secrets
 
@@ -39,7 +41,7 @@ arguments. Control characters, repeated separators, and `.` or `..` components
 are rejected. Catalog versions follow the repository's existing `4.2`,
 `hyg-v4.2-p3-s2-r1`, and fixture-style identifiers; colon is not a supported
 catalog-version separator.
-Inventory schema v5 pins the Git revision, catalog, source-revision image tag,
+Inventory schema v6 pins the Git revision, catalog, source-revision image tag,
 distribution mode, named control-host buildx builder, repositories, registry tag
 policy, and non-secret service routes. Image platforms are derived from target
 architectures rather than separately asserted. There are no ambient target or
@@ -53,7 +55,8 @@ their values. Keep the inventory owner-only too if its declared runtime roots or
 hostnames are operationally sensitive, although they are intentionally treated
 as non-secret evidence fields.
 
-Schema v5 also declares service ownership, distinct SQL
+Schema v6 also declares the observatory, agent friendly names, owner automation
+credential reference, workload selection, service ownership, distinct SQL
 administrator/initializer/runtime users, Redis administrator/runtime identities
 and key prefix, MinIO root/runtime identities and buckets, certificate paths,
 KeyPerFile mappings, and resource limits. `existing` service mode never
@@ -66,6 +69,13 @@ path to a complete `CameraModuleDocument`. `up` copies that document separately,
 sets `CameraAgent:ConfigFilePath` through KeyPerFile, and stages only an
 `AdminPasswordFile` pointer plus the private password file. Appsettings-shaped
 objects are not valid module documents and are rejected before startup.
+Inventory selects only workload kind, deadline, and sustained-run opt-in. The
+repository-owned `deploy/split-host/workloads/canonical-workloads.json` pins W0,
+W1, and W2 source paths, file and canonical-configuration SHA-256 identities,
+module-options hash, dimensions, format, seed, warm-up count, measured count, and
+concurrency. Activation verifies that manifest and the checked-in source bytes;
+an inventory-provided or arbitrary same-shape profile cannot claim canonical
+identity.
 
 ## Run Preflight
 
@@ -149,6 +159,12 @@ passed evidence is not authoritative. The next invocation validates the running
 manifest, removes the staged evidence, reruns all remote checks, and publishes a
 new matching passed evidence/manifest pair. Failed publication follows the same
 evidence-first order before committing a failed manifest.
+
+For `bootstrap`, `smoke`, `measure`, and `down`, recovery validates the
+phase-specific next-generation ledger before reconstructing any mirror. A
+malformed candidate leaves the prior manifest, evidence, and digest commit
+unchanged. A manifest, evidence, or commit without its authoritative phase
+ledger is rejected as an orphan companion rather than adopted or deleted.
 
 The private manifest contains declared non-secret runtime roots, target
 identities, bounded checks, source dirty disposition, and timestamps. The
@@ -419,12 +435,180 @@ CameraAgent host through the declared TLS proxy.
 
 Each CameraAgent receives separate Identity, Data Protection, provisioning, raw,
 and archive roots, but no central SQL/Redis/MinIO credentials. Fresh durable
-capture state is paused and upload/central integration are disabled. `/alive`
-and `/health` prove provisioning-gated startup only; they do not claim bootstrap
-or fleet readiness. Private ledgers and evidence contain resource names, image
+capture state is paused and upload is disabled; central integration remains
+enabled so the supported bootstrap workflow can reach LogicHost. `/alive` and
+`/health` prove provisioning-gated startup only; they do not claim bootstrap or
+fleet readiness. Private ledgers and evidence contain resource names, image
 and catalog identities, and bounded status, but no secret values or connection
 strings.
 Failed startup atomically publishes the exact completed service, initializer,
 runtime-role, and target progress. Resume validates committed or failed
 ledger/manifest/evidence equality, rechecks completed state, and converges without
 duplicating target entries.
+
+## Bootstrap Agents
+
+```bash
+./scripts/deploy:environment bootstrap --inventory /absolute/path/inventory.yml \
+  --mode isolated --run-id observatory-preflight-01
+```
+
+The phase automates the existing `/Account/Login` antiforgery form and normal
+owner cookie. Curl submits the form without pinning POST across the redirect,
+follows the resulting GET, and proves the cookie against an owner-only endpoint before obtaining an owner-authorized antiforgery header for the
+identity/bootstrap mutations. There is no anonymous password API. It asks the
+application to create/read its device identity, selects the exact declared
+observatory through LogicHost's owner API, verifies the device, requests a
+short-lived envelope, and imports it through `DeviceBootstrapWorkflow`. Passwords,
+API keys, verification codes, envelopes, device keys, and registration tokens
+remain in mode-`0600` request/response files and never enter process arguments,
+ledgers, evidence, or status output. The remote plaintext owner password is
+deleted immediately after login; cookie and header files are deleted on every
+phase exit.
+
+The one-time envelope response is retained only under the owner-private local
+state root while its exact authoritative registration remains Pending and its
+expiry is still in the future. It is deleted locally and remotely after import
+is confirmed. Continuity returns deterministic registration history: one Active
+registration is authoritative; otherwise the newest Pending registration is;
+multiple Active registrations are an incident. If LogicHost is Active while the
+edge remains unprovisioned, automation rotates the registration only when there
+are no central frames, artifacts, or fleet records. Any central evidence fails
+closed for incident recovery. A successful Active-to-Pending rotation always
+discards the retained old envelope and requests and stores a newly issued one
+before retrying local import. Revoked, expired, mismatched, ambiguous, and all
+unexpected HTTP states fail closed. The phase then writes final `AgentId=DeviceId`, disables the provisioning
+gate, enables upload, recreates the CameraAgent, and waits for the first fleet
+acknowledgement whose local and central sequence and central receive timestamp
+are strictly newer than the pre-recreation values. Durable raw-capture, artifact-outbox, and fleet metadata are
+exposed only through the owner-authorized continuity projection; counters are
+never edited or repaired. Persistent mode additionally requires the durable raw
+ingress database and a nonzero local capture sequence at least as large as the
+central maximum. If central artifacts exist, the local artifact-outbox database,
+record/audit progress, and device-bound acknowledged artifact capture sequence
+must not be missing, reset, or behind the central artifact window. If central
+fleet history exists, the local fleet database must retain the exact agent
+instance identity, a maximum sequence at least as large as central, and a next
+sequence strictly larger than central. These checks occur before registration,
+configuration, or gate mutation. Missing, reset, stale, or rebound state fails
+closed. Readiness
+also requires the central current rig-profile version and immutable hash to equal
+the edge expectation, so a restart cannot silently acknowledge a different rig
+configuration.
+
+## Run W0 Smoke
+
+```bash
+./scripts/deploy:environment smoke --inventory /absolute/path/inventory.yml \
+  --mode isolated --run-id observatory-preflight-01
+```
+
+`smoke` accepts only inventory workload `W0`. It renders the pinned profile with
+the registered device ID, stages it through the private configuration path,
+recreates the CameraAgent, and gates health before the measured window. The
+profile is exactly 64 x 48 Mono16 with seed 2025 and a stable source/config hash.
+Each agent receives its own `durationSeconds` deadline and W0 observes one deterministic capture advance; it requires
+all host health and metrics endpoints, exact configured identity, a local and
+central capture-sequence advance, zero pending/quarantined capture, processing,
+lane, and artifact queues, enabled central integration, and a current fleet
+acknowledgement. Artifacts created in the sequence window must have Available
+objects with verification timestamps, exact SHA-256 source relations, configured
+recipe identities, lineage counts, and a positive central completed-derivative
+delta. Derivative provenance is validated separately by resolving every ordered
+source identity and checksum in the central window. Raw output must be 64 x 48
+Mono16, 6,144 bytes, and match the activated profile. Evidence
+records these sanitized facts rather than checksum/recipe booleans. For one W0
+Raw artifact per agent, `smoke` selects an explicit intersection of central-window
+Raw artifacts and device-bound locally acknowledged Raw artifacts. Preview UUID
+ordering and central-only derivatives cannot influence the checksum proof. It proves that local durable-outbox,
+central metadata, private retrieved bytes, and response-declared SHA-256 are equal; the
+temporary retrieval is deleted after hashing. It also records only bounded
+metric totals and series counts, a bounded application-log line count, and one
+owner-projected capture-pipeline trace/span identity whose capture sequence and
+Raw artifact identity exactly match the checksum proof. The endpoint request's own
+Activity is never evidence. The runtime retains at most 64 correlated entries.
+Missing signals,
+excessive metric cardinality or output size, and credential/payload-like content
+fail the phase; raw metrics, logs, traces, paths, and payloads never enter the
+ledger or evidence.
+
+`measure --workload W1|W2` activates the selected repository-pinned canonical profile and
+executes its declared warm-up plus measured capture count. With explicit
+`sustainedArmOptIn: true`, use:
+
+```bash
+./scripts/deploy:environment measure --inventory /absolute/path/inventory.yml \
+  --mode isolated --run-id observatory-preflight-01 --workload W1
+```
+
+The W1 profile is `virtual-asi174.full.json` at 1936 x 1216 Mono16; W2 is
+`virtual-asi178mc.full.json` at 3096 x 2080 BayerRggb16. `measure` records source
+and rendered config hashes, options identity, seed, dimensions, format,
+concurrency, and exact warm-up and measured counts. Warm-up waits for the exact
+capture-sequence boundary; overshoot fails. The phase then resets the bounded
+capture telemetry and timing windows through the owner-mutating deployment API,
+requires an empty fresh baseline, and executes the exact measured boundary.
+Evidence records `warmupCompleted` and `measuredCompleted` separately and retains
+only measured-window before/after durable continuity, complete queue/backlog,
+capture telemetry, timing, and Docker CPU/RSS/block/network-I/O snapshots. Missing fields, wrong
+types, target-shape drift, or failure to reach the declared operation count by
+`durationSeconds` fails the phase. Evidence is marked `executionMode: canonical`
+and `canonicalWorkloadConfigured: true`. Normal contract tests use a one-operation
+representative hook; Tier M candidate evidence uses the inventory's canonical 5
+warm-up plus 30 measured operations fixed by the canonical manifest and the trial/regression rules in
+`docs/planning/performance-validation.md`.
+
+`bootstrap`, `smoke`, `measure`, and `down` publish an authoritative private
+ledger with a monotonically increasing publication generation. A digest commit
+identifies the generation for which ledger, manifest, and evidence are all
+equal. If the process exits after any individual rename, the next invocation
+accepts only the immediately newer ledger generation and reconstructs stale or
+missing mirrors before resuming. A fully committed generation with a changed
+ledger, manifest, or evidence fails as tampering rather than being repaired. The
+phase validator runs before mirror reconstruction, and orphan phase companions
+without the ledger fail closed.
+
+## Stop Or Delete
+
+Preserve all state:
+
+```bash
+./scripts/deploy:environment down --inventory /absolute/path/inventory.yml \
+  --mode persistent --run-id observatory-preflight-01 --preserve-state
+```
+
+Delete a fully isolated, orchestrator-owned stack:
+
+```bash
+./scripts/deploy:environment down --inventory /absolute/path/inventory.yml \
+  --mode isolated --run-id observatory-preflight-01 \
+  --delete-state --confirm observatory-preflight-01
+```
+
+Exactly one policy is required. CameraAgents are paused and drained before they
+stop, LogicHost stops second, and
+deployed shared services last; existing shared services are left running.
+The pause command carries a stable run-and-target-scoped `Idempotency-Key`; only
+an HTTP success response is accepted, and an arbitrary conflict is not treated
+as an idempotent replay. Deletion is accepted only in isolated `services.mode: deploy`, only when every
+runtime root was created by the confirmed run, and only after all guards pass.
+Before parsing, the prepare ledger, manifest, and evidence must each be an
+owner-UID, mode-`0600`, single-link regular non-symlink, and the passed private
+manifest must equal the ledger. Deletion removes explicit Compose services, all
+four exact project default networks, the three exact project-named volumes, and
+marker-validated runtime roots. Mailpit is included through the `test-smtp`
+profile. Every mutation is journaled with an atomic intent and completion; resume
+accepts absence only after a committed ownership-validated intent/completion.
+SSH host and Docker daemon identity are re-correlated immediately before and
+after each mutation. Every removable network and volume carries the exact
+run-ID and inventory-SHA labels written at creation; network identity additionally
+requires the exact Compose project and `default` network labels. Completed
+actions re-probe container stopped/absent state and require networks, volumes,
+and runtime roots to remain absent. Recreated or relabeled resources therefore
+retry through a prior intent or fail instead of producing a false passed phase.
+Docker absence is recognized only from the exact object-type not-found response;
+daemon, transport, authorization, and malformed-output failures are errors, not
+absence proof. Completed-resource verification applies the same distinction and
+re-correlates the target before and after every check.
+It never invokes generic `compose down -v`, a
+Redis flush, production bucket/database deletion, or deletion of reused roots.

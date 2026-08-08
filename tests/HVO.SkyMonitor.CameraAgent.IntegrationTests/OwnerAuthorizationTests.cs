@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Data;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -128,6 +130,156 @@ public sealed class OwnerAuthorizationTests
         using var missingDetail = await ownerClient.GetAsync(
             new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.NotFound, missingDetail.StatusCode);
+    }
+
+    [TestMethod]
+    public async Task DeploymentContinuityEndpointExposesOnlyOwnerSafeStateAsync()
+    {
+        string ownerId;
+        string nonOwnerId;
+        using (var scope = AssemblyHooks.Fixture.CreateCameraAgentScope())
+        {
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var owner = await userManager.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
+            Assert.IsNotNull(owner);
+            ownerId = owner.Id;
+            var nonOwner = await userManager.FindByEmailAsync("deployment-non-owner@cameraagent.integration")
+                .ConfigureAwait(false);
+            if (nonOwner is null)
+            {
+                nonOwner = new ApplicationUser
+                {
+                    UserName = "deployment-non-owner@cameraagent.integration",
+                    Email = "deployment-non-owner@cameraagent.integration",
+                    EmailConfirmed = true
+                };
+                var created = await userManager.CreateAsync(nonOwner, "DeploymentNonOwner!123").ConfigureAwait(false);
+                Assert.IsTrue(created.Succeeded, string.Join(", ", created.Errors.Select(static error => error.Description)));
+            }
+            nonOwnerId = nonOwner.Id;
+        }
+
+        using var anonymousClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        using var anonymous = await anonymousClient.GetAsync(
+            new Uri("/api/internal/deployment/continuity", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+        using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
+        using var forbidden = await nonOwnerClient.GetAsync(
+            new Uri("/api/internal/deployment/continuity", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, forbidden.StatusCode);
+
+        using var ownerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        ownerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
+        using var response = await ownerClient.GetAsync(
+            new Uri("/api/internal/deployment/continuity", UriKind.Relative)).ConfigureAwait(false);
+        var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, json);
+        StringAssert.Contains(json, AssemblyHooks.Fixture.DeviceId, StringComparison.Ordinal);
+        Assert.IsFalse(json.Contains("verificationCode", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains("deviceKey", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains("registrationToken", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task DeploymentTelemetryRequiresOwnerAndExactCaptureArtifactCorrelationAsync()
+    {
+        var artifactId = Guid.NewGuid();
+        string ownerId;
+        using (var scope = AssemblyHooks.Fixture.CreateCameraAgentScope())
+        {
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            ownerId = (await userManager.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false))!.Id;
+            scope.ServiceProvider.GetRequiredService<CapturePipelineTraceStore>().Record(
+                42,
+                Guid.NewGuid(),
+                artifactId,
+                new ActivityContext(
+                    ActivityTraceId.CreateFromString("11111111111111111111111111111111"),
+                    ActivitySpanId.CreateFromString("2222222222222222"),
+                    ActivityTraceFlags.Recorded));
+        }
+
+        var path = $"/api/internal/deployment/telemetry?captureSequence=42&artifactId={artifactId:D}";
+        using var anonymousClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        using var anonymous = await anonymousClient.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+        using var ownerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        ownerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
+        using var mismatch = await ownerClient.GetAsync(
+            new Uri($"/api/internal/deployment/telemetry?captureSequence=41&artifactId={artifactId:D}", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.ServiceUnavailable, mismatch.StatusCode);
+        using var response = await ownerClient.GetAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
+        var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, json);
+        StringAssert.Contains(json, artifactId.ToString("D"), StringComparison.OrdinalIgnoreCase);
+        StringAssert.Contains(json, "11111111111111111111111111111111", StringComparison.Ordinal);
+        Assert.IsFalse(json.Contains("request", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(json.Contains("payload", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task DeploymentMutationUsesOwnerCookieAuthorityAndAntiforgery()
+    {
+        string ownerId;
+        string nonOwnerId;
+        using (var scope = AssemblyHooks.Fixture.CreateCameraAgentScope())
+        {
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            ownerId = (await userManager.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false))!.Id;
+            var nonOwner = await userManager.FindByEmailAsync("deployment-antiforgery-non-owner@cameraagent.integration").ConfigureAwait(false);
+            if (nonOwner is null)
+            {
+                nonOwner = new ApplicationUser
+                {
+                    UserName = "deployment-antiforgery-non-owner@cameraagent.integration",
+                    Email = "deployment-antiforgery-non-owner@cameraagent.integration",
+                    EmailConfirmed = true
+                };
+                var created = await userManager.CreateAsync(nonOwner, "DeploymentNonOwner!456").ConfigureAwait(false);
+                Assert.IsTrue(created.Succeeded);
+            }
+            nonOwnerId = nonOwner.Id;
+        }
+
+        using var anonymousClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        using var removedPasswordEndpoint = await anonymousClient.PostAsync(
+            new Uri("/api/internal/deployment/session", UriKind.Relative), null).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, removedPasswordEndpoint.StatusCode);
+        using var anonymousMutation = await anonymousClient.PostAsync(
+            new Uri("/api/internal/deployment/identity", UriKind.Relative), null).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousMutation.StatusCode);
+
+        using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
+        using var nonOwnerToken = await nonOwnerClient.GetAsync(
+            new Uri("/api/internal/deployment/antiforgery", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerToken.StatusCode);
+
+        using var ownerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        ownerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
+        using var missingToken = await ownerClient.PostAsync(
+            new Uri("/api/internal/deployment/identity", UriKind.Relative), null).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, missingToken.StatusCode);
+        using var missingResetToken = await ownerClient.PostAsync(
+            new Uri("/api/internal/deployment/measurement/reset", UriKind.Relative), null).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, missingResetToken.StatusCode);
+        using var tokenResponse = await ownerClient.GetAsync(
+            new Uri("/api/internal/deployment/antiforgery", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, tokenResponse.StatusCode);
+        using var tokenJson = JsonDocument.Parse(await tokenResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        ownerClient.DefaultRequestHeaders.Add(
+            tokenJson.RootElement.GetProperty("headerName").GetString()!,
+            tokenJson.RootElement.GetProperty("requestToken").GetString()!);
+        using var mutation = await ownerClient.PostAsync(
+            new Uri("/api/internal/deployment/identity", UriKind.Relative), null).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, mutation.StatusCode);
+        using var reset = await ownerClient.PostAsync(
+            new Uri("/api/internal/deployment/measurement/reset", UriKind.Relative), null).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, reset.StatusCode);
     }
 
     [TestMethod]

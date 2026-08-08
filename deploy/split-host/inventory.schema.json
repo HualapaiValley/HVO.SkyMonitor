@@ -5,9 +5,9 @@
   "title": "HVO.SkyMonitor split-host preflight inventory",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "environment", "installationId", "source", "secretSource", "logicHost", "cameraAgents", "sharedServices", "serviceEndpoints", "catalog", "images", "deployment"],
+  "required": ["schemaVersion", "environment", "installationId", "source", "secretSource", "observatory", "logicHost", "cameraAgents", "sharedServices", "serviceEndpoints", "catalog", "images", "deployment"],
   "properties": {
-    "schemaVersion": { "const": 5 },
+    "schemaVersion": { "const": 6 },
     "environment": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
     "installationId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
     "source": {
@@ -31,6 +31,18 @@
           "uniqueItems": true,
           "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }
         }
+      }
+    },
+    "observatory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "latitudeDegrees", "longitudeDegrees", "elevationMeters", "timeZoneId"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "latitudeDegrees": { "type": "number", "minimum": -90, "maximum": 90 },
+        "longitudeDegrees": { "type": "number", "minimum": -180, "maximum": 180 },
+        "elevationMeters": { "type": "number", "minimum": -1000, "maximum": 10000 },
+        "timeZoneId": { "type": "string", "minLength": 1, "maxLength": 128 }
       }
     },
     "logicHost": {
@@ -93,7 +105,7 @@
     "deployment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["catalog", "services", "resources", "certificates", "deviceBootstrap", "secretMappings", "limits"],
+      "required": ["catalog", "services", "resources", "certificates", "automation", "deviceBootstrap", "workload", "secretMappings", "limits"],
       "properties": {
         "catalog": {
           "type": "object", "additionalProperties": false,
@@ -123,6 +135,13 @@
             "encryptionPasswordReference": { "$ref": "#/$defs/nullableSecretReference" }
           }
         },
+        "automation": {
+          "type": "object", "additionalProperties": false,
+          "required": ["ownerApiKeySecretReference"],
+          "properties": {
+            "ownerApiKeySecretReference": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }
+          }
+        },
         "deviceBootstrap": {
           "type": "object", "additionalProperties": false,
           "required": ["clientId", "clientSecretReference", "scopes"],
@@ -130,6 +149,15 @@
             "clientId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
             "clientSecretReference": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
             "scopes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9.:-]{0,127}$" } }
+          }
+        },
+        "workload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "durationSeconds", "sustainedArmOptIn"],
+          "properties": {
+            "kind": { "enum": ["W0", "W1", "W2"] },
+            "durationSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+            "sustainedArmOptIn": { "type": "boolean" }
           }
         },
         "secretMappings": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/secretMapping" } },
@@ -212,9 +240,11 @@
     },
     "cameraAgentTarget": {
       "type": "object", "additionalProperties": false,
-      "required": ["name", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner", "internalEndpoint", "publicEndpoint", "trustedProxyAddresses", "ports", "moduleConfigPath", "ownerPasswordSecretReference"],
+      "required": ["name", "friendlyName", "ownerEmail", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner", "internalEndpoint", "publicEndpoint", "trustedProxyAddresses", "ports", "moduleConfigPath", "ownerPasswordSecretReference"],
       "properties": {
         "name": { "$ref": "#/$defs/name" },
+        "friendlyName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "ownerEmail": { "type": "string", "format": "email", "maxLength": 254 },
         "sshHost": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,254}$" },
         "dockerContext": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
         "expectedArchitecture": { "enum": ["amd64", "arm64"] },
