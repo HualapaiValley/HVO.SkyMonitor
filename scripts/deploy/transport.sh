@@ -685,9 +685,21 @@ url=$1; headers=$2; root=$3
 [[ "$url" == http://* && "$headers" == /* && "$root" == /* && -d "$root" && ! -L "$root" ]] || exit 90
 [[ -f "$headers" && ! -L "$headers" && "$(stat -c '%h:%a' "$headers")" == "1:600" ]] || exit 91
 payload="$root/retrieval.$$.bin"; response_headers="$root/retrieval.$$.headers"
-cleanup() { rm -f -- "$payload" "$response_headers"; [[ ! -e "$payload" && ! -L "$payload" && ! -e "$response_headers" && ! -L "$response_headers" ]]; }
+authorization="$root/retrieval.$$.authorization.json"; cookies="$root/retrieval.$$.cookies"
+cleanup() {
+  rm -f -- "$payload" "$response_headers" "$authorization" "$cookies"
+  [[ ! -e "$payload" && ! -L "$payload" && ! -e "$response_headers" && ! -L "$response_headers" &&
+     ! -e "$authorization" && ! -L "$authorization" && ! -e "$cookies" && ! -L "$cookies" ]]
+}
 trap cleanup EXIT
-status=$(curl --silent --show-error --max-time 60 --output "$payload" --dump-header "$response_headers" --write-out '%{http_code}' --header "@$headers" "$url") || exit 92
+umask 077
+authorization_status=$(curl --silent --show-error --max-time 30 --output "$authorization" --write-out '%{http_code}' \
+  --header "@$headers" --header 'Content-Type: application/json' --cookie-jar "$cookies" \
+  --data-binary '{"range":null}' "${url%/content}/download-authorizations") || exit 92
+[[ "$authorization_status" == 200 && -f "$authorization" && ! -L "$authorization" && -f "$cookies" && ! -L "$cookies" ]] || exit 93
+chmod 600 "$authorization" "$cookies"
+status=$(curl --silent --show-error --max-time 60 --output "$payload" --dump-header "$response_headers" --write-out '%{http_code}' \
+  --header "@$headers" --cookie "$cookies" "$url") || exit 92
 [[ "$status" =~ ^[0-9]{3}$ && -f "$payload" && ! -L "$payload" && -f "$response_headers" && ! -L "$response_headers" ]] || exit 93
 chmod 600 "$payload" "$response_headers"
 hash=$(sha256sum "$payload"); hash=${hash%% *}; bytes=$(wc -c < "$payload")

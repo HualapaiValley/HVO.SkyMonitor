@@ -472,7 +472,7 @@ for ((i=0; i<${#args[@]}; i++)); do
     --dump-header) response_headers="${args[$((i+1))]}" ;;
     --cookie-jar) cookie_jar="${args[$((i+1))]}" ;;
     --cookie) cookies="${args[$((i+1))]}" ;;
-    --data-binary) body="${args[$((i+1))]#@}" ;;
+    --data-binary) body="${args[$((i+1))]#@}"; [[ "$method" != GET ]] || method=POST ;;
     --request) method="${args[$((i+1))]}"; explicit_request=true ;;
     --data-urlencode) [[ "$method" != GET ]] || method=POST ;;
     --location) location=true ;;
@@ -668,7 +668,14 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   printf 'control\t%s\t%s\t%s\t%s\tfalse\n' "$header_path" "$key" "$token_count" "$id_count" >> "${FAKE_LOG:?}"
   printf 200; exit 0
 fi
+if [[ "$url" == */api/v1.0/devices/*/artifacts/*/download-authorizations ]]; then
+  [[ "$method" == POST && "$body" == '{"range":null}' && -n "$cookie_jar" ]] || { : > "$output"; printf 400; exit 0; }
+  printf 'artifact-download-authorized\n' >> "$cookie_jar"
+  jq -cn '{authorizationId:"88888888-8888-8888-8888-888888888888",expiresAtUtc:"2026-08-07T00:05:00Z",contentUri:"/content"}' > "$output"
+  printf 200; exit 0
+fi
 if [[ "$url" == */api/v1.0/devices/*/artifacts/*/content ]]; then
+  [[ -n "$cookies" && -f "$cookies" ]] && grep -Fq artifact-download-authorized "$cookies" || { : > "$output"; printf 404; exit 0; }
   if [[ "${FAKE_RETRIEVAL_HASH_MISMATCH:-false}" == true ]]; then printf 'tampered-artifact-content' > "$output"
   elif [[ "$url" == */99999999-9999-9999-9999-999999999999/content ]]; then printf 'R%.0s' {1..6144} > "$output"
   else printf 'fixture-artifact-content' > "$output"; fi
