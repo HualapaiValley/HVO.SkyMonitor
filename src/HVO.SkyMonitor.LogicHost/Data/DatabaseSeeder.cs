@@ -40,7 +40,7 @@ internal static class DatabaseSeeder
         var systemAccount = await SeedSystemAccountAsync(userManager, logger);
 
         // Seed API keys for system integrations
-        await SeedApiKeysAsync(dbContext, apiKeyHasher, systemAccount, options.ApiKeys, logger);
+        await SeedApiKeysAsync(dbContext, userManager, apiKeyHasher, systemAccount, options.ApiKeys, logger);
 
         // Seed OpenIddict scopes and clients
         await SeedOpenIddictDataAsync(serviceProvider, options, bootstrapClient, logger);
@@ -483,6 +483,7 @@ internal static class DatabaseSeeder
 
     private static async Task SeedApiKeysAsync(
         ApplicationDbContext dbContext,
+        UserManager<ApplicationUser> userManager,
         IApiKeyHasher hasher,
         ApplicationUser systemAccount,
         IEnumerable<SeedApiKeyOptions> apiKeys,
@@ -490,11 +491,34 @@ internal static class DatabaseSeeder
     {
         foreach (var descriptor in apiKeys)
         {
+            var owner = systemAccount;
+            if (!string.IsNullOrWhiteSpace(descriptor.UserEmail))
+            {
+                owner = await userManager.FindByEmailAsync(descriptor.UserEmail);
+                if (owner is null)
+                {
+                    owner = new ApplicationUser
+                    {
+                        UserName = descriptor.UserEmail,
+                        Email = descriptor.UserEmail,
+                        EmailConfirmed = true,
+                        AccountType = AccountType.User
+                    };
+                    var result = await userManager.CreateAsync(owner);
+                    if (!result.Succeeded)
+                    {
+                        throw new InvalidOperationException(
+                            $"Failed to create API-key owner '{descriptor.UserEmail}': "
+                            + string.Join(", ", result.Errors.Select(error => error.Description)));
+                    }
+                }
+            }
+
             var hashed = hasher.Hash(descriptor.RawKey);
             var existing = await dbContext.ApiKeys.SingleOrDefaultAsync(key => key.HashedKey == hashed);
             if (existing is not null)
             {
-                existing.UserId = systemAccount.Id;
+                existing.UserId = owner.Id;
                 existing.DisplayName = descriptor.DisplayName;
                 existing.AccessLevel = descriptor.AccessLevel;
                 existing.ObservatoryId = null;
@@ -506,7 +530,7 @@ internal static class DatabaseSeeder
 
             dbContext.ApiKeys.Add(new ApiKey
             {
-                UserId = systemAccount.Id,
+                UserId = owner.Id,
                 DisplayName = descriptor.DisplayName,
                 AccessLevel = descriptor.AccessLevel,
                 HashedKey = hashed,

@@ -1,10 +1,14 @@
 using System.Text.Json;
+using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.Common.Security;
+using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using OpenIddict.Abstractions;
 using static OpenIddict.Abstractions.OpenIddictConstants;
 
@@ -14,6 +18,59 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestCategory("Integration")]
 public sealed class DatabaseSeederTests
 {
+    [TestMethod]
+    public async Task SeedAsyncAssignsConfiguredApiKeyToPasswordlessOwner()
+    {
+        const string email = "seeded-api-owner@integration.test";
+        const string rawKey = "integration-owner-key";
+        var descriptor = new SeedApiKeyOptions
+        {
+            RawKey = rawKey,
+            DisplayName = "Integration API owner",
+            AccessLevel = ApiKeyAccessLevel.ReadWrite,
+            UserEmail = email
+        };
+        using var scope = AssemblyHooks.Fixture.Factory.Services.CreateScope();
+        var options = scope.ServiceProvider.GetRequiredService<IOptions<DatabaseSeedOptions>>().Value;
+        options.ApiKeys.Add(descriptor);
+
+        try
+        {
+            await DatabaseSeeder.SeedAsync(scope.ServiceProvider, NullLogger.Instance);
+
+            using var verificationScope = AssemblyHooks.Fixture.Factory.Services.CreateScope();
+            var dbContext = verificationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var hasher = verificationScope.ServiceProvider.GetRequiredService<IApiKeyHasher>();
+            var userManager = verificationScope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var owner = await userManager.FindByEmailAsync(email)
+                ?? throw new InvalidOperationException("API-key owner was not seeded.");
+            var apiKey = await dbContext.ApiKeys.SingleAsync(key => key.HashedKey == hasher.Hash(rawKey));
+
+            Assert.AreEqual(owner.Id, apiKey.UserId);
+            Assert.AreEqual(AccountType.User, owner.AccountType);
+            Assert.IsNull(owner.PasswordHash);
+        }
+        finally
+        {
+            options.ApiKeys.Remove(descriptor);
+            using var cleanupScope = AssemblyHooks.Fixture.Factory.Services.CreateScope();
+            var dbContext = cleanupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var hasher = cleanupScope.ServiceProvider.GetRequiredService<IApiKeyHasher>();
+            var apiKey = await dbContext.ApiKeys.SingleOrDefaultAsync(key => key.HashedKey == hasher.Hash(rawKey));
+            if (apiKey is not null)
+            {
+                dbContext.ApiKeys.Remove(apiKey);
+                await dbContext.SaveChangesAsync();
+            }
+            var userManager = cleanupScope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var owner = await userManager.FindByEmailAsync(email);
+            if (owner is not null)
+            {
+                Assert.IsTrue((await userManager.DeleteAsync(owner)).Succeeded);
+            }
+        }
+    }
+
     [TestMethod]
     public async Task SeedAsyncCreatesPlatformEditorRoleAndPreservesUnspecifiedGrant()
     {

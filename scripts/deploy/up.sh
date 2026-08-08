@@ -175,6 +175,8 @@ deploy_up_stage_target() {
           "$(jq -r '.deployment.automation.ownerApiKeySecretReference' "$inventory")" DatabaseSeed__ApiKeys__0__RawKey || return 1
         deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ApiKeys__0__DisplayName "Split-host deployment owner" || return 1
         deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ApiKeys__0__AccessLevel ReadWrite || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ApiKeys__0__UserEmail \
+          "split-host-owner@hvo.local" || return 1
         deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ConfidentialClients__0__ClientId \
           "$(jq -r '.deployment.deviceBootstrap.clientId' "$inventory")" || return 1
         deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$config_root/initializer-secrets" \

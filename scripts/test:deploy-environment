@@ -1880,6 +1880,10 @@ test "$(<"$logic_config/runtime-secrets/Catalog__Root")" = /app/catalog
 test "$(<"$logic_config/initializer-secrets/Deployment__Mode")" = isolated
 test "$(<"$logic_config/runtime-secrets/Deployment__Mode")" = isolated
 test "$(<"$logic_config/initializer-secrets/Catalog__RequiredPackageKind")" = Fixture
+test "$(<"$logic_config/initializer-secrets/DatabaseSeed__ApiKeys__0__UserEmail")" = split-host-owner@hvo.local
+test "$(<"$logic_config/initializer-secrets/DatabaseSeed__ApiKeys__0__AccessLevel")" = ReadWrite
+test -f "$logic_config/initializer-secrets/DatabaseSeed__ApiKeys__0__RawKey"
+test ! -e "$logic_config/runtime-secrets/DatabaseSeed__ApiKeys__0__RawKey"
 grep -Fq "HVO_CATALOG_ROOT=$TEMP_DIR/catalog-install" "$TEMP_DIR/output/$deploy_case-state/up-rendered/logic.env"
 test ! -e "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case/secrets/ConnectionStrings__skymonitordb"
 east_config="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case"
