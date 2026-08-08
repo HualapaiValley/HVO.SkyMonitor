@@ -328,8 +328,12 @@ deploy_validate_images_ledger() {
         reference="$(jq -r '.reference' <<< "$entry")"; image_id="$(jq -r '.imageId' <<< "$entry")"
         [[ "$(jq -r '.component' <<< "$entry")" == "$component" && "$(jq -r '.architecture' <<< "$entry")" == "$architecture" &&
            "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { deploy_fail images ledger target-mismatch; return 1; }
-        jq -e --arg component "$component" --arg architecture "$architecture" --arg reference "$reference" --arg distribution "$distribution" '
-          any(.images[]; .component == $component and .reference == $reference and ($distribution == "registry" or .architecture == $architecture))' <<< "$json" >/dev/null 2>&1 ||
+        jq -e --arg component "$component" --arg architecture "$architecture" --arg reference "$reference" --arg imageId "$image_id" --arg distribution "$distribution" '
+          if $distribution == "registry" then
+            any(.images[]; .component == $component and .reference == $reference)
+          else
+            $reference == $imageId and any(.images[]; .component == $component and .architecture == $architecture)
+          end' <<< "$json" >/dev/null 2>&1 ||
           { deploy_fail images ledger target-reference-mismatch; return 1; }
     done < <(jq -c '.targets[]' <<< "$json")
 }
@@ -501,17 +505,18 @@ deploy_run_images() {
             [[ -f "$archive_path" && ! -L "$archive_path" && "$(sha256sum "$archive_path" | cut -d' ' -f1)" == "$expected_digest" ]] ||
               { deploy_fail images "$target_name" archive-drift; return 1; }
             deploy_transport_archive_load "$context" "$archive_path" || { deploy_fail images "$target_name" load-failed; return 1; }
-            reference="$(jq -r '.reference' <<< "$image_entry")"
+            reference="$source_reference"
         fi
         deploy_images_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         [[ "${DEPLOY_TEST_FAILPOINT:-}" != after-image-transfer ]] || return 75
         inspect="$(deploy_transport_image_inspect "$context" "$reference")" || { deploy_fail images "$target_name" inspect-failed; return 1; }
         inspect_id=""; inspect_digest=""
-        if [[ "$distribution" == archive ]]; then inspect_id="$reference"; else inspect_digest="$expected_digest"; fi
+        if [[ "$distribution" != archive ]]; then inspect_digest="$expected_digest"; fi
         deploy_images_validate_inspect "$inspect" "$architecture" "$revision" "$tree" "$component" "$inspect_id" "$inspect_digest" \
           "$created" "$sdk" "$source_reference" || { deploy_fail images "$target_name" image-identity-mismatch; return 1; }
         deploy_images_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         image_id="$(jq -r '.id' <<< "$inspect")"
+        if [[ "$distribution" == archive ]]; then reference="$image_id"; fi
         DEPLOY_IMAGES_LEDGER_JSON="$(jq -c --arg target "$target_name" --arg component "$component" --arg architecture "$architecture" \
           --arg reference "$reference" --arg imageId "$image_id" '.targets += [{target:$target,component:$component,architecture:$architecture,reference:$reference,imageId:$imageId,status:"verified"}]' <<< "$DEPLOY_IMAGES_LEDGER_JSON")"
         deploy_images_publish || return 1

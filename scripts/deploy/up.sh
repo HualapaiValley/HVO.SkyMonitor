@@ -340,7 +340,7 @@ deploy_run_up() {
         DEPLOY_UP_JSON="$(jq -c '.resources = ([.resources[] | select(.kind != "existing-services")] + [{kind:"existing-services",status:"validated"}])' <<< "$DEPLOY_UP_JSON")"
     fi
     target="$(jq -c '.logicHost' "$inventory")"; name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
-    image="$(jq -r '.images[] | select(.component == "logicHost") | .reference' <<< "$images")"
+    image="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .reference' <<< "$images")"
     deploy_up_stage_target "$inventory" "$target" "$run_id" "$render_root" "$image" logicHost || return 1
     if [[ "$mode_services" == deploy ]]; then
         deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/runtime-secrets" Minio__AccessKey "$minio_runtime_access" || return 1
@@ -365,7 +365,7 @@ deploy_run_up() {
     DEPLOY_UP_JSON="$(jq -c --arg target "$name" '.targets = ([.targets[] | select(.target != $target)] + [{target:$target,component:"logicHost",status:"ready"}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
     while IFS= read -r target; do
         name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
-        image="$(jq -r '.images[] | select(.component == "cameraAgent") | .reference' <<< "$images")"
+        image="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .reference' <<< "$images")"
         deploy_up_stage_target "$inventory" "$target" "$run_id" "$render_root" "$image" cameraAgent || return 1
         deploy_up_compose_mutation "$target" "$context" "$project-$name" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" up -d cameraagent || return 1
         endpoint="$(jq -r '.internalEndpoint' <<< "$target")"; deploy_transport_http_ready "$ssh" "${endpoint%/}/alive" || return 1

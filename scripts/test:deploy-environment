@@ -244,7 +244,10 @@ elif [[ "$3" == image && "$4" == load ]]; then
   [[ "${FAKE_IMAGE_TRANSFER_FAIL:-}" != "$context" ]] || exit 1
   config_name="$(tar -xOf "$archive" manifest.json | jq -r '.[0].Config')"
   tar -xOf "$archive" "$config_name" > "${FAKE_IMAGE_STATE:?}/$context.config"
-  printf 'sha256:%s\n' "${config_name%.json}" > "${FAKE_IMAGE_STATE:?}/$context.reference"
+  config_digest="${config_name##*/}"; config_digest="${config_digest%.json}"
+  image_id="sha256:$config_digest"
+  [[ "${FAKE_CONTAINERD_IMAGE_STORE:-false}" != true ]] || image_id="sha256:$(printf '%064d' 7)"
+  printf '%s\n' "$image_id" > "${FAKE_IMAGE_STATE:?}/$context.reference"
 elif [[ "$3" == image && "$4" == inspect ]]; then
   reference="${*: -1}"
   [[ "${FAKE_IMAGE_INSPECT_DRIFT:-}" != "$context" ]] || image_architecture=amd64
@@ -1472,7 +1475,8 @@ grep -Fq 'mismatch-or-remote' "$TEMP_DIR/images-failure.log"
 write_prepare_case images-canonical-local-builder isolated
 run_prepare_preflight images-canonical-local-builder isolated
 run_deploy_mode prepare images-canonical-local-builder isolated >/dev/null
-FAKE_BUILDER_CANONICAL_LOCAL=true FAKE_BUILD_ARCHIVE_BLOB_CONFIG=true run_deploy_mode images images-canonical-local-builder isolated >/dev/null
+FAKE_BUILDER_CANONICAL_LOCAL=true FAKE_BUILD_ARCHIVE_BLOB_CONFIG=true FAKE_CONTAINERD_IMAGE_STORE=true \
+  run_deploy_mode images images-canonical-local-builder isolated >/dev/null
 
 write_prepare_case images-target-wrong-daemon isolated
 run_prepare_preflight images-target-wrong-daemon isolated
