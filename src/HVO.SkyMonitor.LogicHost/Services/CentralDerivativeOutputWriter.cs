@@ -31,9 +31,11 @@ internal sealed partial class CentralDerivativeOutputWriter(
     ICentralArtifactObjectReader objectReader,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider,
-    ILogger<CentralDerivativeOutputWriter> logger) : ICentralDerivativeOutputWriter
+    ILogger<CentralDerivativeOutputWriter> logger,
+    CentralObjectStorageNames? storageNames = null) : ICentralDerivativeOutputWriter
 {
-    private const string Bucket = "skymonitor-artifacts";
+    private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
+    private string Bucket => _storageNames.ArtifactBucket;
     private const string ManifestSchemaVersion = "central-v1";
 
     public async Task<Guid?> TryCompletePendingAsync(
@@ -99,7 +101,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         ArgumentNullException.ThrowIfNull(product);
         ValidateProduct(lease, product);
         var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
-        var storageReference = CreateStorageReference(lease, product);
+        var storageReference = CreateStorageReference(lease, product, Bucket);
         var objectKey = storageReference[$"minio://{Bucket}/".Length..];
         await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
             dbContext, storageReference, cancellationToken).ConfigureAwait(false);
@@ -156,7 +158,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
             .ConfigureAwait(false);
         if (existing is not null)
         {
-            ValidateExisting(existing, lease, product, artifactId, objectKey);
+            ValidateExisting(existing, lease, product, artifactId, objectKey, Bucket);
             return existing.Artifact!;
         }
 
@@ -401,7 +403,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
     private async Task EnsureNotRetiredAsync(string storageReference, CancellationToken cancellationToken)
     {
         if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                dbContext, storageReference, cancellationToken).ConfigureAwait(false))
+                dbContext, storageReference, cancellationToken, $"minio://{Bucket}/").ConfigureAwait(false))
         {
             throw new CentralDerivativeJobStateException(
                 "The immutable derivative object key has been permanently retired.");
@@ -414,7 +416,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         CancellationToken cancellationToken)
     {
         if (!await CentralObjectOwnershipFence.IsRetiredAsync(
-                dbContext, storageReference, cancellationToken).ConfigureAwait(false))
+                dbContext, storageReference, cancellationToken, $"minio://{Bucket}/").ConfigureAwait(false))
         {
             return;
         }
@@ -428,7 +430,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         string storageReference)
     {
         if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                dbContext, storageReference, CancellationToken.None).ConfigureAwait(false))
+                dbContext, storageReference, CancellationToken.None, $"minio://{Bucket}/").ConfigureAwait(false))
         {
             await ExpireOwnIntentAsync(lease, storageReference).ConfigureAwait(false);
         }
@@ -568,8 +570,9 @@ internal sealed partial class CentralDerivativeOutputWriter(
 
     internal static string CreateStorageReference(
         CentralDerivativeJobLease lease,
-        ProcessingProduct product)
-        => $"minio://{Bucket}/derivatives/{lease.SourceDevicePublicId:N}/{product.OutputIdentitySha256}.bin";
+        ProcessingProduct product,
+        string bucket = Configuration.CentralObjectStorageOptions.DefaultArtifactBucket)
+        => $"minio://{bucket}/derivatives/{lease.SourceDevicePublicId:N}/{product.OutputIdentitySha256}.bin";
 
     private static void ValidateProduct(CentralDerivativeJobLease lease, ProcessingProduct product)
     {
@@ -596,7 +599,8 @@ internal sealed partial class CentralDerivativeOutputWriter(
         CentralDerivativeJobLease lease,
         ProcessingProduct product,
         Guid artifactId,
-        string objectKey)
+        string objectKey,
+        string bucket)
     {
         var artifact = evidence.Artifact!;
         if (evidence.CentralDerivativeJobId != lease.JobId
@@ -608,7 +612,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
             || !HasExpectedSources(artifact, lease)
             || artifact.ByteLength != product.Payload.Length
             || !string.Equals(artifact.ChecksumSha256, product.ChecksumSha256, StringComparison.OrdinalIgnoreCase)
-            || artifact.StorageReference != $"minio://{Bucket}/{objectKey}")
+            || artifact.StorageReference != $"minio://{bucket}/{objectKey}")
         {
             throw new CentralDerivativeJobStateException("The derivative output identity conflicts with existing evidence.");
         }

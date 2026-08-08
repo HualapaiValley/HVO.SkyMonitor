@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hvoskymonitor.local/deploy/split-host/inventory.schema.json",
+  "$comment": "Published shape reference kept aligned with the executable jq contract in scripts/deploy/inventory.sh.",
+  "title": "HVO.SkyMonitor split-host preflight inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "environment", "installationId", "source", "secretSource", "observatory", "logicHost", "cameraAgents", "sharedServices", "serviceEndpoints", "catalog", "images", "deployment"],
+  "properties": {
+    "schemaVersion": { "const": 6 },
+    "environment": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+    "installationId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "dirtyDisposition"],
+      "properties": {
+        "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "dirtyDisposition": { "enum": ["require-clean", "allow-dirty"] }
+      }
+    },
+    "secretSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "requiredReferences"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "requiredReferences": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }
+        }
+      }
+    },
+    "observatory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "latitudeDegrees", "longitudeDegrees", "elevationMeters", "timeZoneId"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "latitudeDegrees": { "type": "number", "minimum": -90, "maximum": 90 },
+        "longitudeDegrees": { "type": "number", "minimum": -180, "maximum": 180 },
+        "elevationMeters": { "type": "number", "minimum": -1000, "maximum": 10000 },
+        "timeZoneId": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "logicHost": {
+      "$comment": "LogicHost is the public OIDC authority and requires HTTPS in every deployment mode.",
+      "allOf": [
+        { "$ref": "#/$defs/applicationTarget" },
+        { "properties": { "publicEndpoint": { "pattern": "^https://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}(?:/[^\\s]*)?$" } } }
+      ]
+    },
+    "cameraAgents": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/cameraAgentTarget" }
+    },
+    "sharedServices": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/infrastructureTarget" }]
+    },
+    "serviceEndpoints": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/serviceEndpoint" }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version", "sha256", "length", "rowCount"],
+      "properties": {
+        "kind": { "enum": ["production", "fixture"] },
+        "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+        "length": { "type": "integer", "minimum": 1 },
+        "rowCount": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["distributionMode", "artifactRoot", "tag", "builder", "registryImmutableTags", "logicHost", "cameraAgent"],
+      "properties": {
+        "distributionMode": { "enum": ["registry", "archive"] },
+        "artifactRoot": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^/(?![.]{1,2}(?:/|$))(?!.*(?:/)[.]{1,2}(?:/|$))(?!.*//)(?!.*[\\x00-\\x1F\\x7F]).+$" }
+          ]
+        },
+        "tag": { "type": "string", "pattern": "^rev-[0-9a-f]{40}$" },
+        "builder": { "$ref": "#/$defs/builder" },
+        "registryImmutableTags": { "type": "boolean" },
+        "logicHost": { "$ref": "#/$defs/image" },
+        "cameraAgent": { "$ref": "#/$defs/image" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "distributionMode": { "const": "archive" } } },
+          "then": { "properties": { "artifactRoot": { "type": "string" }, "registryImmutableTags": { "const": false } } },
+          "else": { "properties": { "artifactRoot": { "type": "null" }, "registryImmutableTags": { "const": true } } }
+        }
+      ]
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["catalog", "services", "resources", "certificates", "automation", "deviceBootstrap", "workload", "secretMappings", "limits"],
+      "properties": {
+        "catalog": {
+          "type": "object", "additionalProperties": false,
+          "required": ["bundlePath", "installRoot", "allowFixture"],
+          "properties": {
+            "bundlePath": { "type": "string", "pattern": "^/" },
+            "installRoot": { "type": "string", "pattern": "^/" },
+            "allowFixture": { "type": "boolean" }
+          }
+        },
+        "services": { "$ref": "#/$defs/deploymentServices" },
+        "resources": {
+          "type": "object", "additionalProperties": false,
+          "required": ["project", "sqlDatabase", "redisPrefix", "artifactBucket", "diagnosticsBucket"],
+          "properties": {
+            "project": { "$ref": "#/$defs/name" }, "sqlDatabase": { "$ref": "#/$defs/name" },
+            "redisPrefix": { "type": "string" }, "artifactBucket": { "$ref": "#/$defs/name" },
+            "diagnosticsBucket": { "$ref": "#/$defs/name" }
+          }
+        },
+        "certificates": {
+          "type": "object", "additionalProperties": false,
+          "required": ["signingPath", "encryptionPath", "signingPasswordReference", "encryptionPasswordReference"],
+          "properties": {
+            "signingPath": { "type": "string", "pattern": "^/" }, "encryptionPath": { "type": "string", "pattern": "^/" },
+            "signingPasswordReference": { "$ref": "#/$defs/nullableSecretReference" },
+            "encryptionPasswordReference": { "$ref": "#/$defs/nullableSecretReference" }
+          }
+        },
+        "automation": {
+          "type": "object", "additionalProperties": false,
+          "required": ["ownerApiKeySecretReference"],
+          "properties": {
+            "ownerApiKeySecretReference": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }
+          }
+        },
+        "deviceBootstrap": {
+          "type": "object", "additionalProperties": false,
+          "required": ["clientId", "clientSecretReference", "scopes"],
+          "properties": {
+            "clientId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+            "clientSecretReference": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+            "scopes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9.:-]{0,127}$" } }
+          }
+        },
+        "workload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "durationSeconds", "sustainedArmOptIn"],
+          "properties": {
+            "kind": { "enum": ["W0", "W1", "W2"] },
+            "durationSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+            "sustainedArmOptIn": { "type": "boolean" }
+          }
+        },
+        "secretMappings": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/secretMapping" } },
+        "limits": {
+          "type": "object", "additionalProperties": false, "required": ["cpus", "memory"],
+          "properties": { "cpus": { "type": ["string", "null"] }, "memory": { "type": ["string", "null"] } }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+    "nullableSecretReference": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }] },
+    "secretMapping": {
+      "type": "object", "additionalProperties": false, "required": ["reference", "key"],
+      "properties": {
+        "reference": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+        "key": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*(?:__[A-Za-z0-9][A-Za-z0-9-]*)+$" }
+      }
+    },
+    "serviceEndpointConfig": {
+      "type": "object",
+      "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+    },
+    "deploymentServices": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "sql", "redis", "minio", "smtp", "images"],
+      "properties": {
+        "mode": { "enum": ["existing", "deploy"] },
+        "sql": { "type": "object", "additionalProperties": false, "required": ["host", "port", "database", "adminUser", "adminSecretReference", "initializerUser", "initializerSecretReference", "initializerConnectionReference", "runtimeUser", "runtimeSecretReference", "runtimeConnectionReference"] },
+        "redis": { "type": "object", "additionalProperties": false, "required": ["host", "port", "prefix", "adminSecretReference", "user", "secretReference"] },
+        "minio": { "type": "object", "additionalProperties": false, "required": ["host", "port", "useSsl", "artifactBucket", "diagnosticsBucket", "rootAccessKeyReference", "rootSecretKeyReference", "accessKeyReference", "secretKeyReference"] },
+        "smtp": { "type": "object", "additionalProperties": false, "required": ["kind", "host", "port", "usernameReference", "passwordReference"] },
+        "images": { "type": "object", "additionalProperties": false, "required": ["sqlServer", "redis", "minio", "minioClient", "mailpit"] }
+      }
+    },
+    "builder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "driver", "endpoint", "expectedDaemonIdentity", "expectedDaemonName", "expectedArchitecture"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "driver": { "enum": ["docker", "docker-container"] },
+        "endpoint": { "const": "default" },
+        "expectedDaemonIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "expectedDaemonName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$" },
+        "expectedArchitecture": { "enum": ["amd64", "arm64"] }
+      }
+    },
+    "applicationTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner", "internalEndpoint", "publicEndpoint", "trustedProxyAddresses", "ports"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+        "sshHost": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,254}$" },
+        "dockerContext": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "expectedArchitecture": { "enum": ["amd64", "arm64"] },
+        "expectedHostName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$" },
+        "expectedHostIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "expectedDockerDaemonIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "runtimeRoot": { "type": "string", "pattern": "^/(?![.]{1,2}(?:/|$))(?!.*(?:/)[.]{1,2}(?:/|$))(?!.*//)(?!.*[\\x00-\\x1F\\x7F]).+$" },
+        "runtimeOwner": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$" },
+        "internalEndpoint": { "type": "string", "format": "uri", "pattern": "^http://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}(?:/[^\\s]*)?$" },
+        "publicEndpoint": { "type": "string", "format": "uri", "pattern": "^https?://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}(?:/[^\\s]*)?$" },
+        "trustedProxyAddresses": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[0-9]{1,3}(?:[.][0-9]{1,3}){3}$" } },
+        "ports": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+      }
+    },
+    "infrastructureTarget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner", "ports"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" }, "sshHost": { "type": "string" }, "dockerContext": { "type": "string" },
+        "expectedArchitecture": { "enum": ["amd64", "arm64"] }, "expectedHostName": { "type": "string" },
+        "expectedHostIdentity": { "type": "string" }, "expectedDockerDaemonIdentity": { "type": "string" },
+        "runtimeRoot": { "type": "string", "pattern": "^/" }, "runtimeOwner": { "type": "string" },
+        "ports": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+      }
+    },
+    "cameraAgentTarget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "friendlyName", "ownerEmail", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner", "internalEndpoint", "publicEndpoint", "trustedProxyAddresses", "ports", "moduleConfigPath", "ownerPasswordSecretReference"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "friendlyName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "ownerEmail": { "type": "string", "format": "email", "maxLength": 254 },
+        "sshHost": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,254}$" },
+        "dockerContext": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "expectedArchitecture": { "enum": ["amd64", "arm64"] },
+        "expectedHostName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$" },
+        "expectedHostIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "expectedDockerDaemonIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "runtimeRoot": { "type": "string", "pattern": "^/" }, "runtimeOwner": { "type": "string" },
+        "internalEndpoint": { "type": "string", "pattern": "^http://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}" },
+        "publicEndpoint": { "type": "string", "pattern": "^https?://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}" },
+        "trustedProxyAddresses": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[0-9]{1,3}(?:[.][0-9]{1,3}){3}$" } },
+        "ports": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } },
+        "moduleConfigPath": { "type": "string", "pattern": "^/" },
+        "ownerPasswordSecretReference": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }
+      }
+    },
+    "serviceEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "host", "port", "fromTargets"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+        "host": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "fromTargets": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?/[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?$" }
+      }
+    }
+  }
+}

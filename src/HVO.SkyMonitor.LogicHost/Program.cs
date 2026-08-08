@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading.RateLimiting;
 using Asp.Versioning;
 using HVO.SkyMonitor.Astronomy;
@@ -17,6 +19,7 @@ using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Common.Observability;
+using HVO.SkyMonitor.Common.Configuration;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
 using HVO.SkyMonitor.LogicHost.Hosting;
 using HVO.SkyMonitor.LogicHost.Middleware;
@@ -24,6 +27,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpLogging;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -49,6 +53,27 @@ public sealed partial class Program
     {
         var command = LogicHostCommandParser.Parse(args);
         var builder = WebApplication.CreateBuilder(command.ForwardedArguments.ToArray());
+        DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);
+
+        var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
+        if (reverseProxy.Enabled)
+        {
+            if (reverseProxy.TrustedProxies.Count == 0 || reverseProxy.TrustedProxies.Any(static value => !IPAddress.TryParse(value, out _)))
+            {
+                throw new InvalidOperationException("ReverseProxy:TrustedProxies must contain valid explicit IP addresses when forwarded headers are enabled.");
+            }
+            builder.Services.Configure<ForwardedHeadersOptions>(options =>
+            {
+                options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedHost | ForwardedHeaders.XForwardedProto;
+                options.ForwardLimit = 1;
+                options.KnownIPNetworks.Clear();
+                options.KnownProxies.Clear();
+                foreach (var proxy in reverseProxy.TrustedProxies)
+                {
+                    options.KnownProxies.Add(IPAddress.Parse(proxy));
+                }
+            });
+        }
 
         // Configure shared HVO telemetry, logging, and health defaults.
         builder.AddSkyMonitorObservability();
@@ -329,6 +354,13 @@ public sealed partial class Program
         builder.Services.AddOptions<MinioOptions>()
             .Bind(builder.Configuration.GetSection("Minio"))
             .ValidateOnStart();
+        builder.Services.AddOptions<CentralObjectStorageOptions>()
+            .Bind(builder.Configuration.GetSection(CentralObjectStorageOptions.SectionName))
+            .ValidateDataAnnotations()
+            .Validate(options => !string.Equals(options.ArtifactBucket, options.DiagnosticsBucket, StringComparison.Ordinal),
+                "Artifact and diagnostics buckets must be distinct.")
+            .ValidateOnStart();
+        builder.Services.AddSingleton<CentralObjectStorageNames>();
 
         builder.Services.AddOptions<SmtpOptions>()
             .Bind(builder.Configuration.GetSection("Smtp"))
@@ -509,9 +541,18 @@ public sealed partial class Program
                 }
                 else
                 {
-                    // In production, use proper certificates from Key Vault or certificate store
-                    // options.AddEncryptionCertificate(encryptionCert)
-                    //        .AddSigningCertificate(signingCert);
+                    var configured = builder.Configuration.GetSection(OpenIddictCertificateOptions.SectionName)
+                        .Get<OpenIddictCertificateOptions>() ?? throw new InvalidOperationException(
+                            "Production OpenIddict certificate configuration is required.");
+                    var signing = OpenIddictCertificateOptions.Load(
+                        configured.SigningPath,
+                        configured.SigningPassword,
+                        X509KeyUsageFlags.DigitalSignature);
+                    var encryption = OpenIddictCertificateOptions.Load(
+                        configured.EncryptionPath,
+                        configured.EncryptionPassword,
+                        X509KeyUsageFlags.KeyEncipherment | X509KeyUsageFlags.DataEncipherment);
+                    options.AddSigningCertificate(signing).AddEncryptionCertificate(encryption);
                 }
 
                 // Downstream services validate tokens via standard JwtBearer handlers, so emit
@@ -866,6 +907,11 @@ public sealed partial class Program
         _ = app.Services.GetRequiredService<CatalogSnapshotResult>();
 
         // Configure the HTTP request pipeline
+
+        if (reverseProxy.Enabled)
+        {
+            app.UseForwardedHeaders();
+        }
 
         if (app.Environment.IsDevelopment())
         {

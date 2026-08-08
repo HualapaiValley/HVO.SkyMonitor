@@ -56,7 +56,42 @@ public class LocalIdentityOptionsTests
         var isValid = Validator.TryValidateObject(options, context, validationResults, validateAllProperties: true);
 
         Assert.IsFalse(isValid);
-        Assert.IsTrue(validationResults.Count >= 2);
+        Assert.IsTrue(validationResults.Any(result => result.MemberNames.Contains(nameof(LocalIdentityOptions.AdminEmail))));
+    }
+
+    [TestMethod]
+    public void Validate_WithExplicitSeededOwnerOptIn_AllowsMissingPassword()
+    {
+        var options = new LocalIdentityOptions { AllowMissingAdminPassword = true };
+        var validationResults = new List<ValidationResult>();
+
+        var isValid = Validator.TryValidateObject(
+            options,
+            new ValidationContext(options),
+            validationResults,
+            validateAllProperties: true);
+
+        Assert.IsTrue(isValid, string.Join("; ", validationResults));
+    }
+
+    [TestMethod]
+    public void Validate_WithWeakPassword_Fails()
+    {
+        var options = new LocalIdentityOptions
+        {
+            AdminEmail = "owner@cameraagent.test",
+            AdminPassword = "short"
+        };
+        var validationResults = new List<ValidationResult>();
+
+        var isValid = Validator.TryValidateObject(
+            options,
+            new ValidationContext(options),
+            validationResults,
+            validateAllProperties: true);
+
+        Assert.IsFalse(isValid);
+        Assert.IsTrue(validationResults.Any(result => result.MemberNames.Contains(nameof(LocalIdentityOptions.AdminPassword))));
     }
 
     [TestMethod]

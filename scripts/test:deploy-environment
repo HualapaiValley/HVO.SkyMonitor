@@ -1,0 +1,2411 @@
+#!/usr/bin/env bash
+# Exercise split-host preflight with fake hosts and Docker contexts; no target is mutated.
+
+set -euo pipefail
+export LC_ALL=C
+export DEPLOY_TEST_POLL_SECONDS=0
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+TEMP_DIR="$(mktemp -d -t hvo-deploy-test.XXXXXX)"
+readonly TEMP_DIR
+readonly BIN="$TEMP_DIR/bin"
+readonly REMOTE_BIN="$TEMP_DIR/remote-bin"
+readonly REMOTE_BIN_NO_SS="$TEMP_DIR/remote-bin-no-ss"
+readonly REMOTE_BIN_NO_CURL="$TEMP_DIR/remote-bin-no-curl"
+readonly REMOTE_BIN_NO_TIMEOUT="$TEMP_DIR/remote-bin-no-timeout"
+readonly INVENTORY="$TEMP_DIR/inventory.yml"
+readonly BASE_INVENTORY="$TEMP_DIR/inventory.base"
+readonly SECRET_FILE="$TEMP_DIR/deploy.env"
+readonly LOG="$TEMP_DIR/commands.log"
+readonly REMOTE_LOG="$TEMP_DIR/remote-scripts.log"
+readonly PREPARE_REMOTE_LOG="$TEMP_DIR/prepare-remote-scripts.log"
+REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+readonly REVISION
+REAL_STAT="$(command -v stat)"
+readonly REAL_STAT
+REAL_GREP="$(command -v grep)"
+readonly REAL_GREP
+REAL_GIT="$(command -v git)"
+readonly REAL_GIT
+SERVER_PID=""
+
+cleanup() {
+    [[ -z "$SERVER_PID" ]] || kill "$SERVER_PID" 2>/dev/null || true
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+trap 'printf "Deploy environment contract test failed near line %s.\n" "$LINENO" >&2' ERR
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+mkdir -m 700 "$BIN" "$REMOTE_BIN" "$REMOTE_BIN_NO_SS" "$REMOTE_BIN_NO_CURL" "$REMOTE_BIN_NO_TIMEOUT" "$TEMP_DIR/output" "$TEMP_DIR/remote"
+mkdir -p "$TEMP_DIR/remote/logic/runtime" "$TEMP_DIR/remote/east" "$TEMP_DIR/remote/west/runtime"
+cat > "$TEMP_DIR/Listener.cs" <<'EOF'
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+
+var listener = new TcpListener(IPAddress.Loopback, 0);
+listener.Start();
+using var blocked = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+blocked.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+File.WriteAllText(args[0], $"{((IPEndPoint)listener.LocalEndpoint).Port} {((IPEndPoint)blocked.LocalEndPoint!).Port}\n");
+var response = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+while (true)
+{
+    using var client = await listener.AcceptTcpClientAsync();
+    try { await client.GetStream().WriteAsync(response); } catch (IOException) { }
+}
+EOF
+dotnet run "$TEMP_DIR/Listener.cs" -- "$TEMP_DIR/listener.ports" >"$TEMP_DIR/server.log" 2>&1 &
+SERVER_PID=$!
+listener_ready=false
+for _ in {1..100}; do
+    kill -0 "$SERVER_PID" 2>/dev/null || break
+    if [[ -s "$TEMP_DIR/listener.ports" ]]; then
+        read -r HTTP_PORT UNREACHABLE_PORT < "$TEMP_DIR/listener.ports"
+        if curl --silent --max-time 1 --output /dev/null "http://127.0.0.1:$HTTP_PORT"; then listener_ready=true; break; fi
+    fi
+    sleep 0.1
+done
+[[ "$listener_ready" == true ]] || fail 'Local connectivity fixture did not start with the pinned .NET SDK.'
+readonly HTTP_PORT UNREACHABLE_PORT
+readonly EAST_PORT=5130
+readonly WEST_PORT=5131
+
+cat > "$BIN/ssh" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+printf 'ssh' >> "${FAKE_LOG:?}"; printf '\t%s' "$@" >> "$FAKE_LOG"; printf '\n' >> "$FAKE_LOG"
+while [[ "$1" != -- ]]; do shift; done
+shift
+ssh_host=$1
+shift
+case "$ssh_host" in logic@*) host=logic ;; east@*) host=east ;; west@*) host=west ;; shared@*) host=shared ;; *) exit 1 ;; esac
+[[ "${FAKE_SSH_UNREACHABLE:-}" != "$host" ]] || exit 255
+if [[ "${FAKE_MISSING_BASH_HOST:-}" == "$host" ]]; then /usr/bin/cat >/dev/null; exit 127; fi
+[[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
+shift 3
+prepare=false; (( $# >= 12 )) && prepare=true
+remote_args=(-s --)
+if [[ "${FAKE_CAPTURE_REMOTE_SCRIPTS:-false}" == true || "$prepare" == true ]]; then
+  script="${FAKE_SCRIPT_ROOT:?}/remote-$host-$BASHPID.sh"
+  umask 077
+  /usr/bin/cat > "$script"
+  remote_args=("$script")
+fi
+if [[ "${FAKE_CAPTURE_REMOTE_SCRIPTS:-false}" == true ]]; then
+  printf 'remote-script-begin %s\n' "$host" >> "${FAKE_REMOTE_LOG:?}"
+  /usr/bin/cat "$script" >> "$FAKE_REMOTE_LOG"
+  printf 'remote-script-end %s\n' "$host" >> "$FAKE_REMOTE_LOG"
+fi
+if [[ "$prepare" == true ]]; then /usr/bin/cat "$script" >> "${FAKE_PREPARE_REMOTE_LOG:?}"; fi
+if [[ -n "${FAKE_SSH_FAIL_UPLOAD_MOVE_MATCH:-}" && $# -eq 2 && "$2" == *"$FAKE_SSH_FAIL_UPLOAD_MOVE_MATCH"* ]]; then exit 73; fi
+remote_path="${FAKE_REMOTE_BIN:?}"
+[[ "${FAKE_MISSING_SS_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_SS:?}"
+[[ "${FAKE_MISSING_CURL_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_CURL:?}"
+[[ "${FAKE_MISSING_TIMEOUT_HOST:-}" != "$host" ]] || remote_path="${FAKE_REMOTE_BIN_NO_TIMEOUT:?}"
+if FAKE_REMOTE_HOST="$host" FAKE_REMOTE_PREPARE="$prepare" PATH="$remote_path" /usr/bin/bash "${remote_args[@]}" "$@"; then
+  if (( $# == 2 )) && [[ "$2" == */camera-module.json ]]; then
+    canonical="$(/usr/bin/jq -S -c . "$2")"
+    printf '%s' "$canonical" | /usr/bin/sha256sum | /usr/bin/cut -d' ' -f1 > "${FAKE_HTTP_STATE:?}/$host.active-config-sha"
+    rm -f "${FAKE_HTTP_STATE:?}/$host.measure-profile" "$FAKE_HTTP_STATE/$host.measure-running" "$FAKE_HTTP_STATE/$host.measure-stage"
+    width="$(/usr/bin/jq -r '.rig.sensor.widthPixels' "$2")"
+    if [[ "$width" == 1936 || "$width" == 3096 ]]; then
+      : > "$FAKE_HTTP_STATE/$host.measure-profile"; : > "$FAKE_HTTP_STATE/$host.measure-running"
+      printf 'Running\n' > "$FAKE_HTTP_STATE/$host.control-state"; printf '0\n' > "$FAKE_HTTP_STATE/$host.control-version"
+    fi
+  fi
+else exit $?; fi
+EOF
+cat > "$BIN/docker" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+printf 'docker' >> "${FAKE_LOG:?}"; printf '\t%s' "$@" >> "$FAKE_LOG"; printf '\n' >> "$FAKE_LOG"
+digest_for() {
+  case "$1-$2" in logicHost-amd64) printf 'a%.0s' {1..64} ;; cameraAgent-arm64) printf 'b%.0s' {1..64} ;; cameraAgent-amd64) printf 'c%.0s' {1..64} ;; *) exit 1 ;; esac
+}
+registry_manifest() {
+  local component=$1 platform_file="${FAKE_IMAGE_STATE:?}/$1.platforms" first=true architecture digest descriptors=''
+  while IFS= read -r architecture; do
+    digest="$(digest_for "$component" "$architecture")"
+    [[ "$first" == true ]] || descriptors+=','; first=false
+    descriptors+="{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:$digest\",\"size\":1,\"platform\":{\"architecture\":\"$architecture\",\"os\":\"linux\"}}"
+    if [[ "${FAKE_REGISTRY_ATTESTATION:-true}" == true ]]; then
+      attest="$(printf 'd%.0s' {1..64})"
+      descriptors+=",{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:$attest\",\"size\":1,\"annotations\":{\"vnd.docker.reference.digest\":\"sha256:$digest\",\"vnd.docker.reference.type\":\"attestation-manifest\"},\"platform\":{\"architecture\":\"unknown\",\"os\":\"unknown\"}}"
+    fi
+  done < "$platform_file"
+  printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[%s]}\n' "$descriptors"
+}
+if [[ "$1" == buildx && "$2" == ls ]]; then
+  endpoint=default; [[ "${FAKE_BUILDER_REMOTE:-false}" != true ]] || endpoint=remote-context
+  printf '{"Current":false,"Driver":"docker","Dynamic":false,"Name":"control-builder","Nodes":[{"Endpoint":"%s","Name":"control-builder0","Platforms":["linux/amd64","linux/arm64"],"Status":"running","Version":"v0.31.0"}]}\n' "$endpoint"
+  exit 0
+fi
+if [[ "$1" == info ]]; then
+  printf '{"ID":"control-daemon","Name":"control-node","Architecture":"x86_64","OSType":"linux"}\n'
+  exit 0
+fi
+if [[ "$1" == buildx && "$2" == build ]]; then
+  destination= component= repository= platforms= created= sdk= source_reference= tree= builder=
+  while (( $# > 0 )); do
+    case "$1" in
+      --builder) builder=$2; shift 2 ;;
+      --output) destination="${2#type=docker,dest=}"; shift 2 ;;
+      --platform) platforms="$2"; shift 2 ;;
+      --tag) repository="$2"; shift 2 ;;
+      --label)
+        [[ "$2" != io.hvoskymonitor.component=* ]] || component="${2#*=}"
+        [[ "$2" != org.opencontainers.image.created=* ]] || created="${2#*=}"
+        [[ "$2" != org.opencontainers.image.ref.name=* ]] || source_reference="${2#*=}"
+        [[ "$2" != io.hvoskymonitor.dotnet-sdk=* ]] || sdk="${2#*=}"
+        [[ "$2" != io.hvoskymonitor.source-tree=* ]] || tree="${2#*=}"
+        shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ "$builder" == control-builder ]] || exit 1
+  architecture="${platforms#linux/}"
+  [[ "${FAKE_IMAGE_BUILD_FAIL:-}" != "$component-$architecture" ]] || exit 1
+  jq -cn --arg created "$created" --arg sdk "$sdk" --arg source "$source_reference" --arg tree "$tree" \
+    '{created:$created,sdk:$sdk,source:$source,tree:$tree}' > "${FAKE_IMAGE_STATE:?}/$component.labels"
+  if [[ -z "$destination" ]]; then
+    : > "${FAKE_IMAGE_STATE:?}/$component.platforms"
+    IFS=, read -r -a selected <<< "$platforms"
+    for platform in "${selected[@]}"; do printf '%s\n' "${platform#linux/}" >> "${FAKE_IMAGE_STATE:?}/$component.platforms"; done
+    : > "${FAKE_IMAGE_STATE:?}/$component.pushed"
+  fi
+  if [[ -n "$destination" ]]; then
+    fixture="${FAKE_IMAGE_STATE:?}/archive-$BASHPID"; mkdir -m 700 "$fixture"
+    printf '{"architecture":"%s","os":"linux","config":{"Labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}}' \
+      "$architecture" "${FAKE_REVISION:?}" "$created" "$source_reference" "$component" "$sdk" "$tree" > "$fixture/config"
+    config_digest="$(sha256sum "$fixture/config" | cut -d' ' -f1)"
+    mv "$fixture/config" "$fixture/$config_digest.json"
+    printf '[{"Config":"%s.json","RepoTags":["%s"],"Layers":[]}]\n' "$config_digest" "$repository" > "$fixture/manifest.json"
+    tar -cf "$destination" -C "$fixture" manifest.json "$config_digest.json"
+    rm -rf "$fixture"
+  fi
+  exit 0
+fi
+if [[ "$1" == buildx && "$2" == imagetools && "$3" == inspect ]]; then
+  builder= format= raw=false; shift 3
+  while (( $# > 0 )); do
+    case "$1" in --builder) builder=$2; shift 2 ;; --raw) raw=true; shift ;; --format) format=$2; shift 2 ;; *) reference=$1; shift ;; esac
+  done
+  [[ "$builder" == control-builder ]] || exit 1
+  component=cameraAgent; [[ "$reference" == *logichost* ]] && component=logicHost
+  [[ -f "${FAKE_IMAGE_STATE:?}/$component.pushed" ]] || exit 1
+  if [[ "$raw" == true ]]; then registry_manifest "$component"; exit 0; fi
+  if [[ "$format" == '{{json .Manifest}}' ]]; then
+    raw_manifest="$(registry_manifest "$component")"; parent="$(registry_manifest "$component" | sha256sum | cut -d' ' -f1)"
+    jq -c --arg digest "sha256:$parent" '. + {digest:$digest}' <<< "$raw_manifest"
+    exit 0
+  fi
+  [[ "$format" == '{{json .Image}}' ]] || exit 1
+  digest="${reference##*@sha256:}"; architecture=arm64
+  [[ "$digest" == "$(digest_for "$component" amd64)" ]] && architecture=amd64
+  labels="$(<"${FAKE_IMAGE_STATE:?}/$component.labels")"
+  tree="$(jq -r .tree <<< "$labels")"; [[ "${FAKE_REGISTRY_MISMATCH_COMPONENT:-}" != "$component" ]] || tree="$(printf 'f%.0s' {1..40})"
+  printf '{"architecture":"%s","os":"linux","config":{"Labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}}\n' \
+    "$architecture" "${FAKE_REVISION:?}" "$(jq -r .created <<< "$labels")" "$(jq -r .source <<< "$labels")" "$component" "$(jq -r .sdk <<< "$labels")" "$tree"
+  exit 0
+fi
+if [[ "$1" == context && "$2" == inspect ]]; then printf '%s\n' "${*: -1}"; exit 0; fi
+context=$2
+case "$context" in
+  logic-context) id=logic-daemon; name=logic-node; daemon_architecture=x86_64; image_architecture=amd64 ;;
+  east-context) id=east-daemon; name=east-node; daemon_architecture=aarch64; image_architecture=arm64 ;;
+  west-context) id=west-daemon; name=west-node; daemon_architecture=x86_64; image_architecture=amd64 ;;
+  shared-context) id=shared-daemon; name=shared-node; daemon_architecture=x86_64; image_architecture=amd64 ;;
+  *) exit 1 ;;
+esac
+[[ "${FAKE_DOCKER_MISMATCH:-}" != "$context" ]] || id=changed-daemon
+[[ "${FAKE_DOCKER_WRONG_HOST_CONTEXT:-}" != "$context" ]] || name=wrong-node
+[[ "${FAKE_DOCKER_UNSUPPORTED_ARCH:-}" != "$context" ]] || daemon_architecture=ppc64le
+if [[ "$3" == image && "$4" == pull ]]; then
+  reference=$5
+  [[ "${FAKE_IMAGE_TRANSFER_FAIL:-}" != "$context" ]] || exit 1
+  printf '%s\n' "$reference" > "${FAKE_IMAGE_STATE:?}/$context.reference"
+elif [[ "$3" == image && "$4" == load ]]; then
+  archive=$6
+  [[ "${FAKE_IMAGE_TRANSFER_FAIL:-}" != "$context" ]] || exit 1
+  config_name="$(tar -xOf "$archive" manifest.json | jq -r '.[0].Config')"
+  tar -xOf "$archive" "$config_name" > "${FAKE_IMAGE_STATE:?}/$context.config"
+  printf 'sha256:%s\n' "${config_name%.json}" > "${FAKE_IMAGE_STATE:?}/$context.reference"
+elif [[ "$3" == image && "$4" == inspect ]]; then
+  reference="${*: -1}"
+  [[ "${FAKE_IMAGE_INSPECT_DRIFT:-}" != "$context" ]] || image_architecture=amd64
+  if [[ -f "${FAKE_IMAGE_STATE:?}/$context.config" ]]; then
+    config="$(<"$FAKE_IMAGE_STATE/$context.config")"
+    image_id="$(<"$FAKE_IMAGE_STATE/$context.reference")"
+    labels="$(jq -c '.config.Labels' <<< "$config")"
+    printf '{"id":"%s","architecture":"%s","os":"linux","repoDigests":[],"labels":%s}\n' "$image_id" "$image_architecture" "$labels"
+  else
+    component=cameraAgent; [[ "$reference" == *logichost* ]] && component=logicHost
+    labels="$(<"${FAKE_IMAGE_STATE:?}/$component.labels")"
+    manifest_digest="$(registry_manifest "$component" | sha256sum | cut -d' ' -f1)"
+    printf '{"id":"sha256:%064d","architecture":"%s","os":"linux","repoDigests":["%s@sha256:%s"],"labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}\n' \
+      0 "$image_architecture" "${reference%@*}" "$manifest_digest" "${FAKE_REVISION:?}" "$(jq -r .created <<< "$labels")" \
+      "$(jq -r .source <<< "$labels")" "$component" "$(jq -r .sdk <<< "$labels")" "$(jq -r .tree <<< "$labels")"
+  fi
+elif [[ "$3" == volume && "$4" == inspect ]]; then
+  [[ "${FAKE_DOCKER_INSPECT_OUTAGE:-}" != "$context-volume" ]] || { printf 'authorization failed\n' >&2; exit 70; }
+  volume="${*: -1}"; state="${FAKE_IMAGE_STATE:?}/volume-$context-$volume"
+  [[ -f "$state" ]] || { printf 'Error: No such volume: %s\n' "$volume" >&2; exit 1; }
+  /usr/bin/cat "$state"
+elif [[ "$3" == volume && "$4" == rm ]]; then
+  volume="${*: -1}"; rm -f "${FAKE_IMAGE_STATE:?}/volume-$context-$volume"
+elif [[ "$3" == network && "$4" == inspect ]]; then
+  [[ "${FAKE_DOCKER_INSPECT_OUTAGE:-}" != "$context-network" ]] || { printf 'authorization failed\n' >&2; exit 70; }
+  network="${*: -1}"; state="${FAKE_IMAGE_STATE:?}/network-$context-$network"
+  [[ -f "$state" ]] || { printf 'Error: No such network: %s\n' "$network" >&2; exit 1; }
+  /usr/bin/cat "$state"
+elif [[ "$3" == network && "$4" == rm ]]; then
+  network="${*: -1}"; rm -f "${FAKE_IMAGE_STATE:?}/network-$context-$network"
+elif [[ "$3" == container && "$4" == inspect ]]; then
+  container="${*: -1}"; state="${FAKE_IMAGE_STATE:?}/container-$container"
+  [[ -f "$state" ]] || exit 1
+  /usr/bin/cat "$state"
+elif [[ "$3" == stats ]]; then
+  printf '{"cpu":"1.0%%","memory":"10MiB / 1GiB","memoryPercent":"1.0%%","blockIo":"1kB / 2kB","networkIo":"3kB / 4kB","pids":"8"}\n'
+elif [[ "$3" == info ]]; then
+  case "${FAKE_DOCKER_INFO_MALFORMED:-}" in
+    architecture) printf '{"ID":"%s","Name":"%s","OSType":"linux","ServerVersion":"28.1.0"}\n' "$id" "$name" ;;
+    os) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":{"secret":"raw-docker-secret"},"ServerVersion":"28.1.0"}\n' "$id" "$name" "$daemon_architecture" ;;
+    version) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":"linux","ServerVersion":null}\n' "$id" "$name" "$daemon_architecture" ;;
+    *) printf '{"ID":"%s","Name":"%s","Architecture":"%s","OSType":"linux","ServerVersion":"28.1.0"}\n' "$id" "$name" "$daemon_architecture" ;;
+  esac
+elif [[ "$3" == compose ]]; then
+  [[ "${FAKE_COMPOSE_MISSING:-}" != "$context" ]] || exit 1
+  [[ -z "${FAKE_COMPOSE_FAIL_MATCH:-}" || "$*" != *"$FAKE_COMPOSE_FAIL_MATCH"* ]] || exit 1
+  env_file=; project=; args=("$@"); for ((i=0; i<${#args[@]}; i++)); do
+    [[ "${args[$i]}" != --env-file ]] || env_file="${args[$((i+1))]}"
+    [[ "${args[$i]}" != --project-name ]] || project="${args[$((i+1))]}"
+  done
+  [[ "${4:-}" == version || ( -n "$env_file" && -f "$env_file" ) ]] || exit 78
+  container_state() {
+    local service=$1 state="${FAKE_IMAGE_STATE:?}/service-$context-$project-$1" id
+    [[ -f "$state" ]] || return 0
+    id="$(sha256sum <<< "$context/$project/$service" | cut -c1-64)"
+    printf '%s\n' "$id"
+  }
+  set_service() {
+    local service=$1 running=$2 id
+    id="$(sha256sum <<< "$context/$project/$service" | cut -c1-64)"
+    printf '%s\n' "$running" > "${FAKE_IMAGE_STATE:?}/service-$context-$project-$service"
+    printf '{"project":"%s","service":"%s","running":%s}\n' "$project" "$service" "$running" > "${FAKE_IMAGE_STATE:?}/container-$id"
+  }
+  remove_service() {
+    local service=$1 id
+    id="$(sha256sum <<< "$context/$project/$service" | cut -c1-64)"
+    rm -f "${FAKE_IMAGE_STATE:?}/service-$context-$project-$service" "${FAKE_IMAGE_STATE:?}/container-$id"
+  }
+  if [[ "$*" == *" ps --all -q "* ]]; then
+    [[ "${FAKE_COMPOSE_PS_OUTAGE:-}" != "$context" ]] || exit 70
+    container_state "${*: -1}"
+  elif [[ "$*" == *" ps -q cameraagent"* ]]; then
+    printf 'abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n'
+  elif [[ "$*" == *" logs --no-color "* ]]; then
+    printf 'cameraagent | {"event":"capture-complete","runId":"%s","status":"ok"}\n' "$(/usr/bin/grep '^HVO_RUN_ID=' "$env_file" | /usr/bin/cut -d= -f2-)"
+  elif [[ "$*" == *"minio-provision"* ]]; then
+    config_root="$(/usr/bin/grep '^HVO_CONFIG_ROOT=' "$env_file" | /usr/bin/cut -d= -f2-)"
+    /usr/bin/jq -e '.version == "10" and .aliases.local.url == "http://minio:9000" and
+      .aliases.local.accessKey == "fixture-minio-root" and .aliases.local.secretKey == "fixture:/@\"minio-root-never-print"' \
+      "$config_root/private/mc/config.json" >/dev/null
+    /usr/bin/jq -cn --arg secret 'generated:/@"minio-secret-never-print' \
+      '{accessKey:"generated-minio-access",secretKey:$secret}' > "$config_root/minio-output/minio-runtime.json"
+    chmod 600 "$config_root/minio-output/minio-runtime.json"
+  elif [[ "$*" == *" up -d"* ]]; then
+    run_id="$(/usr/bin/grep '^HVO_RUN_ID=' "$env_file" | /usr/bin/cut -d= -f2-)"
+    inventory_hash="$(/usr/bin/grep '^HVO_INVENTORY_SHA256=' "$env_file" | /usr/bin/cut -d= -f2-)"
+    network="${project}_default"
+    printf '{"name":"%s","project":"%s","network":"default","runId":"%s","inventorySha256":"%s"}\n' \
+      "$network" "$project" "$run_id" "$inventory_hash" > "${FAKE_IMAGE_STATE:?}/network-$context-$network"
+    if [[ "$project" == *-services ]]; then
+      for service in sqlserver redis minio mailpit; do set_service "$service" true; done
+      for volume in "${project}_sql-data" "${project}_redis-data" "${project}_minio-data"; do
+        printf '{"runId":"%s","inventorySha256":"%s"}\n' "$run_id" "$inventory_hash" > "${FAKE_IMAGE_STATE:?}/volume-$context-$volume"
+      done
+    elif [[ "$project" == *-logic ]]; then set_service logichost true
+    else set_service cameraagent true; fi
+    printf 'v2.39.1\n'
+  elif [[ "$*" == *" stop -t 60"* ]]; then
+    if [[ "$project" == *-services ]]; then for service in sqlserver redis minio mailpit; do [[ ! -f "${FAKE_IMAGE_STATE:?}/service-$context-$project-$service" ]] || set_service "$service" false; done
+    elif [[ "$project" == *-logic ]]; then [[ ! -f "${FAKE_IMAGE_STATE:?}/service-$context-$project-logichost" ]] || set_service logichost false
+    else [[ ! -f "${FAKE_IMAGE_STATE:?}/service-$context-$project-cameraagent" ]] || set_service cameraagent false; fi
+    printf 'v2.39.1\n'
+  elif [[ "$*" == *" rm -f"* ]]; then
+    if [[ "$project" == *-services ]]; then for service in sqlserver redis minio mailpit; do remove_service "$service"; done
+    elif [[ "$project" == *-logic ]]; then remove_service logichost
+    else remove_service cameraagent; fi
+    printf 'v2.39.1\n'
+  else
+    printf 'v2.39.1\n'
+  fi
+elif [[ "$3" == ps && -n "${FAKE_DOCKER_PORT_CONFLICT:-}" && "${*: -1}" == "publish=$FAKE_DOCKER_PORT_CONFLICT" ]]; then
+  printf 'container-id\n'
+fi
+EOF
+cat > "$BIN/stat" <<'EOF'
+#!/usr/bin/bash
+if [[ -n "${FAKE_NONOWNER_PATH:-}" && "${*: -1}" == "$FAKE_NONOWNER_PATH" && "$*" == *"-c %u"* ]]; then printf '99999\n'; exit 0; fi
+if [[ -n "${FAKE_STAT_ERROR_PATH:-}" && "${*: -1}" == "$FAKE_STAT_ERROR_PATH" ]]; then printf 'fixture-secret-never-print raw stat error\n' >&2; exit 1; fi
+exec "${REAL_STAT:?}" "$@"
+EOF
+cat > "$BIN/grep" <<'EOF'
+#!/usr/bin/bash
+if [[ "${FAKE_GREP_ERROR:-}" == true ]]; then printf 'fixture-secret-never-print raw grep error\n' >&2; exit 2; fi
+exec "${REAL_GREP:?}" "$@"
+EOF
+cat > "$BIN/git" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+if [[ "$*" == *" status --porcelain"* ]]; then
+  count_file="${FAKE_IMAGE_STATE:?}/git-status-count"
+  count=0; [[ ! -f "$count_file" ]] || count="$(<"$count_file")"
+  count=$((count + 1)); printf '%s\n' "$count" > "$count_file"
+  if [[ -n "${FAKE_SOURCE_DIRTY_AT_STATUS:-}" && "$count" -ge "$FAKE_SOURCE_DIRTY_AT_STATUS" ]]; then printf ' M tracked-file\n'; fi
+  exit 0
+fi
+exec "${REAL_GIT:?}" "$@"
+EOF
+cat > "$BIN/scp" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+printf 'scp' >> "${FAKE_LOG:?}"; printf '\t%s' "$@" >> "$FAKE_LOG"; printf '\n' >> "$FAKE_LOG"
+while (( $# > 2 )); do shift; done
+source=$1; destination=$2
+if [[ "$source" != /* && "$source" == *:* ]]; then source=${source#*:}; else destination=${destination#*:}; fi
+[[ -z "${FAKE_SCP_FAIL_DEST:-}" || "$destination" != *"$FAKE_SCP_FAIL_DEST"* ]] || exit 73
+if [[ "$source" == */. ]]; then
+  [[ -d "$destination" ]] || exit 74
+  /usr/bin/cp -a -- "$source" "$destination"
+elif [[ -d "$source" ]]; then
+  [[ -d "${destination%/*}" ]] || exit 74
+  /usr/bin/cp -a -- "$source" "$destination"
+else
+  [[ -d "${destination%/*}" ]] || exit 74
+  /usr/bin/cp -- "$source" "$destination"
+fi
+EOF
+chmod +x "$BIN/ssh" "$BIN/docker" "$BIN/stat" "$BIN/grep" "$BIN/git" "$BIN/scp"
+
+cat > "$REMOTE_BIN/cat" <<'EOF'
+#!/usr/bin/bash
+if [[ "$1" == /etc/machine-id ]]; then
+  if [[ "${FAKE_PREPARE_IDENTITY_MISMATCH_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "${FAKE_REMOTE_PREPARE:-false}" == true ]]; then printf 'changed-machine\n'
+  else printf '%s-machine\n' "${FAKE_REMOTE_HOST:?}"; fi
+else exec /usr/bin/cat "$@"; fi
+EOF
+cat > "$REMOTE_BIN/hostname" <<'EOF'
+#!/usr/bin/bash
+printf '%s-node\n' "${FAKE_REMOTE_HOST:?}"
+EOF
+cat > "$REMOTE_BIN/uname" <<'EOF'
+#!/usr/bin/bash
+case "${FAKE_REMOTE_HOST:?}" in logic|shared|west) printf 'x86_64\n' ;; *) printf 'aarch64\n' ;; esac
+EOF
+cat > "$REMOTE_BIN/getconf" <<'EOF'
+#!/usr/bin/bash
+printf '4\n'
+EOF
+cat > "$REMOTE_BIN/awk" <<'EOF'
+#!/usr/bin/bash
+if [[ "${*: -1}" == /proc/meminfo ]]; then printf '8192000\n'; else exec /usr/bin/awk "$@"; fi
+EOF
+cat > "$REMOTE_BIN/stat" <<'EOF'
+#!/usr/bin/bash
+path="${*: -1}"
+if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" &&
+      ( "$path" == */minio-output/minio-runtime.json || "$path" == */private/mc/config.json ) && "$*" == *"%u:%g:%h:%a"* ]]; then
+  printf '%s:%s:1:600\n' "${FAKE_RUNTIME_UID:?}" "${FAKE_RUNTIME_GID:?}"
+  exit 0
+fi
+if [[ "${FAKE_REMOTE_PREPARE:-false}" == true ]]; then
+  if [[ "${2:-}" == %a && "${FAKE_PREPARE_UNSAFE_MODE_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/"*"$FAKE_REMOTE_HOST"* ]]; then printf '777\n'; exit 0; fi
+  if [[ "${2:-}" == %u && "${FAKE_PREPARE_FOREIGN_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/"*"$FAKE_REMOTE_HOST"* ]]; then printf '4242\n'; exit 0; fi
+  if [[ "${2:-}" == %u && "${FAKE_PREPARE_ROOT_PARENT_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/"*"$FAKE_REMOTE_HOST"* ]]; then printf '0\n'; exit 0; fi
+  if [[ "${2:-}" == %a ]]; then printf '755\n'; exit 0; fi
+  if [[ "${2:-}" == %u && ( "$path" == / || "$path" == /tmp ) ]]; then printf '0\n'; exit 0; fi
+fi
+if [[ "$*" == *'%u'* && "${FAKE_RUNTIME_OTHER_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/$FAKE_REMOTE_HOST" ]]; then printf '4242\n'; exit 0; fi
+if [[ "$*" == *'%u'* && "${FAKE_RUNTIME_ROOT_OWNER_HOST:-}" == "${FAKE_REMOTE_HOST:-}" && "$path" == *"/remote/$FAKE_REMOTE_HOST" ]]; then printf '0\n'; exit 0; fi
+exec /usr/bin/stat "$@"
+EOF
+cat > "$REMOTE_BIN/id" <<'EOF'
+#!/usr/bin/bash
+if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then
+  case "$1" in -u) printf '%s\n' "${FAKE_RUNTIME_UID:?}" ;; -g) printf '%s\n' "${FAKE_RUNTIME_GID:?}" ;; *) exec /usr/bin/id "$@" ;; esac
+else
+  exec /usr/bin/id "$@"
+fi
+EOF
+cat > "$REMOTE_BIN/ss" <<'EOF'
+#!/usr/bin/bash
+if [[ "${FAKE_PORT_CONFLICT_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then printf 'LISTEN 0 1 127.0.0.1:1\n'; fi
+EOF
+chmod +x "$REMOTE_BIN/"*
+cat > "$REMOTE_BIN/curl" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+output= response_headers= cookie_jar= cookies= body= method=GET explicit_request=false location=false url="${*: -1}"
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --output) output="${args[$((i+1))]}" ;;
+    --dump-header) response_headers="${args[$((i+1))]}" ;;
+    --cookie-jar) cookie_jar="${args[$((i+1))]}" ;;
+    --cookie) cookies="${args[$((i+1))]}" ;;
+    --data-binary) body="${args[$((i+1))]#@}" ;;
+    --request) method="${args[$((i+1))]}"; explicit_request=true ;;
+    --data-urlencode) [[ "$method" != GET ]] || method=POST ;;
+    --location) location=true ;;
+  esac
+done
+if [[ -n "$cookie_jar" ]]; then [[ -e "$cookie_jar" ]] || : > "$cookie_jar"; chmod 600 "$cookie_jar"; fi
+if [[ "$url" == */Account/Login && "$method" == GET ]]; then
+  printf '<input name="__RequestVerificationToken" type="hidden" value="fixture-antiforgery" />\n' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */Account/Login && "$method" == POST ]]; then
+  [[ "$location" == true ]] || { : > "$output"; printf 302; exit 0; }
+  if [[ "$explicit_request" == true ]]; then : > "$output"; printf 405; exit 0; fi
+  printf 'owner-authenticated\n' >> "$cookie_jar"
+  : > "$output"; printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/deployment/antiforgery ]]; then
+  [[ -n "$cookies" && -f "$cookies" ]] && grep -Fq owner-authenticated "$cookies" || { : > "$output"; printf 403; exit 0; }
+  jq -cn '{formFieldName:"__RequestVerificationToken",headerName:"RequestVerificationToken",requestToken:"fixture-request-token"}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */metrics ]]; then
+  [[ -n "$output" ]] || exit 0
+  printf '# TYPE camera_agent_capture_control_cycles_total counter\ncamera_agent_capture_control_cycles_total{outcome="completed"} 1\n' > "$output"
+  printf '# TYPE hvo_fleet_edge_reports_total counter\nhvo_fleet_edge_reports_total{outcome="acknowledged"} 1\n' >> "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/deployment/telemetry* ]]; then
+  [[ "${FAKE_TRACE_UNAVAILABLE:-false}" != true ]] || { : > "$output"; printf 503; exit 0; }
+  sequence="${url#*captureSequence=}"; sequence="${sequence%%&*}"; artifact="${url##*artifactId=}"
+  jq -cn --argjson sequence "$sequence" --arg artifact "$artifact" \
+    '{captureSequence:$sequence,captureId:"88888888-8888-8888-8888-888888888888",artifactId:$artifact,traceId:("a"*32),spanId:("b"*16)}' > "$output"; printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/deployment/identity ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; device="device-$host"; provisioned=false
+  [[ ! -f "${FAKE_HTTP_STATE:?}/$host.provisioned" ]] || provisioned=true
+  jq -cn --arg device "$device" --argjson provisioned "$provisioned" \
+    --arg public "33333333-3333-3333-3333-333333333333" \
+    '{deviceId:$device,verificationCode:"VERIFY1234",createdUtc:"2026-08-07T00:00:00Z",configuredAgentId:null,
+      isProvisioned:$provisioned,devicePublicId:(if $provisioned then $public else null end),
+      observatoryId:(if $provisioned then "11111111-1111-1111-1111-111111111111" else null end)}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/observatories ]]; then
+  jq -cn '[{id:"11111111-1111-1111-1111-111111111111",name:"Test Observatory",latitudeDegrees:19.5,
+    longitudeDegrees:-155.5,elevationMeters:1000,timeZoneId:"Pacific/Honolulu"}]' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/devices/verify ]]; then
+  device="$(jq -r .deviceId "$body")"; : > "${FAKE_HTTP_STATE:?}/$device.pending"
+  jq -cn --arg device "$device" '{registrationId:"22222222-2222-2222-2222-222222222222",deviceId:$device,status:"Pending"}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/devices/envelope ]]; then
+  count_file="${FAKE_HTTP_STATE:?}/envelope-count"; count=1
+  [[ ! -f "$count_file" ]] || count=$(( $(<"$count_file") + 1 )); printf '%s\n' "$count" > "$count_file"
+  jq -cn --arg envelope "fixture-envelope-$count-never-print" '{registrationId:"22222222-2222-2222-2222-222222222222",devicePublicId:"33333333-3333-3333-3333-333333333333",
+    issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:"2099-08-07T00:15:00Z",envelope:$envelope,envelopeVersion:"v2"}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/deployment/bootstrap ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; count="$(<"${FAKE_HTTP_STATE:?}/envelope-count")"; grep -Fq "fixture-envelope-$count-never-print" "$body"
+  : > "${FAKE_HTTP_STATE:?}/device-$host.active"; : > "${FAKE_HTTP_STATE:?}/device-$host.active-no-evidence"
+  if [[ "${DEPLOY_TEST_FAILPOINT:-}" != after-central-activation || -f "${FAKE_HTTP_STATE:?}/device-$host.recovered" ]]; then
+    : > "${FAKE_HTTP_STATE:?}/$host.provisioned"; rm -f "${FAKE_HTTP_STATE:?}/device-$host.active-no-evidence"
+  fi
+  jq -cn --arg device "device-$host" '{deviceId:$device,devicePublicId:"33333333-3333-3333-3333-333333333333",
+    observatoryId:"11111111-1111-1111-1111-111111111111",friendlyName:"Camera",issuedAtUtc:"2026-08-07T00:00:00Z",
+    expiresAtUtc:"2026-08-08T00:00:00Z",alreadyProvisioned:false}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/deployment/continuity* ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; device="device-$host"; count_file="${FAKE_HTTP_STATE:?}/$host.count"; count=1
+  if [[ "${FAKE_MEASURE_SEQUENCE_READ_FAIL:-}" == "$host" && -f "$FAKE_HTTP_STATE/$host.measure-running" && ! -f "$FAKE_HTTP_STATE/$host.sequence-read-failed" ]]; then
+    : > "$FAKE_HTTP_STATE/$host.sequence-read-failed"; : > "$output"; printf 503; exit 0
+  fi
+  increment="${FAKE_CONTINUITY_INCREMENT:-}"
+  if [[ -z "$increment" && -f "${FAKE_HTTP_STATE:?}/$host.measure-profile" ]]; then
+    increment=0
+    if [[ -f "$FAKE_HTTP_STATE/$host.measure-running" ]]; then
+      stage=; [[ ! -f "$FAKE_HTTP_STATE/$host.measure-stage" ]] || stage="$(<"$FAKE_HTTP_STATE/$host.measure-stage")"
+      [[ "$stage" != warmup ]] || increment=1
+      [[ "$stage" != measured ]] || increment=10
+    fi
+  else increment="${increment:-1}"; fi
+  [[ ! -f "$count_file" ]] || count=$(( $(<"$count_file") + increment )); printf '%s\n' "$count" > "$count_file"
+  printf -v acknowledged '2026-08-07T00:00:%02dZ' "$count"
+  active_config_sha="$(printf 'B%.0s' {1..64})"; [[ ! -f "${FAKE_HTTP_STATE:?}/$host.active-config-sha" ]] || active_config_sha="$(<"$FAKE_HTTP_STATE/$host.active-config-sha")"
+  from="${url#*fromCaptureSequence=}"; [[ "$from" != "$url" ]] || from=0; from="${from%%&*}"
+  to="${url#*toCaptureSequence=}"; [[ "$to" != "$url" ]] || to=-1; to="${to%%&*}"
+  window='[]'
+  if (( from > 0 && to >= from )); then
+    upper=$count; (( upper <= to )) || upper=$to
+    for ((sequence=from; sequence<=upper; sequence++)); do
+      printf -v capture_id '00000000-0000-0000-0000-%012d' "$sequence"
+      printf -v artifact_id '10000000-0000-0000-0000-%012d' "$sequence"
+      window="$(jq -c --argjson sequence "$sequence" --arg capture "$capture_id" --arg artifact "$artifact_id" --arg checksum "$FAKE_RAW_ARTIFACT_SHA" \
+        '. + [{captureSequence:$sequence,captureId:$capture,rawArtifactId:$artifact,rawChecksumSha256:$checksum,rawByteLength:6144,state:"committed"}]' <<< "$window")"
+    done
+  fi
+  jq -cn --arg device "$device" --argjson sequence "$count" --arg acknowledged "$acknowledged" --arg activeConfigSha "$active_config_sha" --argjson window "$window" '{deviceId:$device,configuredAgentId:$device,isProvisioned:true,
+    devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",
+    rawPendingCount:0,rawQuarantineCount:0,artifactPendingCount:0,artifactLeasedCount:0,artifactRetryCount:0,artifactQuarantineCount:0,
+    fleetPendingCount:0,fleetLeasedCount:0,fleetRetryCount:0,fleetQuarantineCount:0,lastFleetAcknowledgedUtc:$acknowledged,
+    durable:{rawIngressDatabaseExists:true,captureSequences:[{agentId:$device,lastSequence:$sequence}],artifactOutboxDatabaseExists:true,
+      artifactOutboxMaximumRecordId:$sequence,artifactOutboxMaximumAuditId:$sequence,fleetDatabaseExists:true,
+      fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",fleetNextSequence:($sequence+1),fleetMaximumSequence:$sequence,
+       latestArtifacts:[
+         {artifactId:"11111111-1111-1111-1111-111111111111",agentId:$device,role:"Preview",captureSequence:$sequence,
+           checksumSha256:$ENV.FAKE_ARTIFACT_SHA,byteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),status:"acknowledged"},
+          {artifactId:"99999999-9999-9999-9999-999999999999",agentId:$device,role:"Raw",captureSequence:$sequence,
+            checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA,byteLength:6144,status:"acknowledged"}],captureWindow:$window},
+      expectedRigProfileVersion:"fixture-v1",expectedRigProfileHash:$ENV.FAKE_RIG_HASH,activeConfigurationSha256:$activeConfigSha}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/deployment/measurement/reset ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; : > "${FAKE_HTTP_STATE:?}/$host.measurement-reset"
+  jq -cn '{status:"reset"}' > "$output"; printf 200; exit 0
+fi
+if [[ "$url" == */api/v1/operations/summary ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; device="device-$host"
+  measurement_samples=1; timings='[{"segment":"Module","sampleCount":1,"medianMilliseconds":1,"p95Milliseconds":1,"maximumMilliseconds":1}]'
+  if [[ -f "${FAKE_HTTP_STATE:?}/$host.measurement-reset" ]]; then measurement_samples=0; timings='[]'; rm -f "$FAKE_HTTP_STATE/$host.measurement-reset"; fi
+  control_state="Running"; control_version=0
+  [[ ! -f "${FAKE_HTTP_STATE:?}/$host.control-state" ]] || control_state="$(<"$FAKE_HTTP_STATE/$host.control-state")"
+  [[ ! -f "$FAKE_HTTP_STATE/$host.control-version" ]] || control_version="$(<"$FAKE_HTTP_STATE/$host.control-version")"
+  leased=0
+  if [[ "${FAKE_DOWN_LEASED_ONLY:-none}" != none && "$control_state" == Paused ]]; then
+    leased=1; lease_reads="$FAKE_HTTP_STATE/$host.down-lease-reads"; reads=0; [[ ! -f "$lease_reads" ]] || reads="$(<"$lease_reads")"
+    reads=$((reads+1)); printf '%s\n' "$reads" > "$lease_reads"
+    [[ "${FAKE_DOWN_LEASED_ONLY}" != delay || "$reads" -lt 3 ]] || leased=0
+  fi
+  jq -cn --arg device "$device" --argjson samples "$measurement_samples" --argjson timings "$timings" --arg controlState "$control_state" --argjson controlVersion "$control_version" --argjson leased "$leased" '
+    def queue:{pendingCount:0,pendingBytes:0,leasedCount:$leased,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null};
+    {configuration:{value:{agentId:$device,moduleType:"VirtualSky",centralIntegration:"Enabled"}},captureControl:{value:{state:$controlState,version:$controlVersion,isInitialized:true}},
+     captureTelemetry:{value:{sampleCount:$samples,latestCaptureStartedUtc:(if $samples == 0 then null else "2026-08-07T00:00:01Z" end),latestMode:(if $samples == 0 then null else "Light" end),latestExposureMilliseconds:(if $samples == 0 then null else 1 end),
+       latestGain:10,averageIntervalMilliseconds:1,averageExposureMilliseconds:1,averageProcessingMilliseconds:1,averageLoopMilliseconds:1,
+       capturesPerMinute:1,dutyCycle:0.5,framesStored:1,immediateUploadCount:1}},
+     captureRuntime:{value:{timings:$timings}},
+     rawIngress:{value:queue},captureLanes:{value:{availability:"Accepting",lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,
+        leasedCount:$leased,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null}],pendingCount:0,pendingBytes:0,leasedCount:$leased,quarantineCount:0,oldestPendingUtc:null}},
+     captureProcessing:{value:queue},artifactOutbox:{value:queue},heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operations/capture/resume ]]; then
+  header_path=; for ((i=0; i<${#args[@]}; i++)); do [[ "${args[$i]}" != --header || "${args[$((i+1))]}" != @* ]] || header_path="${args[$((i+1))]#@}"; done
+  key=; while IFS= read -r header_line; do [[ "$header_line" != 'Idempotency-Key: '* ]] || key="${header_line#Idempotency-Key: }"; done < "$header_path"
+  id_count="$(grep -c '^Idempotency-Key:' "$header_path")"; token_count="$(grep -c '^RequestVerificationToken:' "$header_path")"
+  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(down-[a-z0-9-]+-[a-z0-9-]+-pause-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
+  action="${url##*/}"; desired=Running; [[ "$action" != pause ]] || desired=Paused
+  [[ "$action" != pause || "${FAKE_PAUSE_CONFLICT:-false}" != true ]] || { : > "$output"; printf 409; exit 0; }
+  host="${FAKE_REMOTE_HOST:?}"
+  if [[ "$key" == *-failure-pause-* && "${FAKE_MEASURE_FAILURE_PAUSE_FAIL:-}" == "$host" ]]; then : > "$output"; printf 503; exit 0; fi
+  receipt="$FAKE_HTTP_STATE/$host.idempotency.$(printf '%s' "$key" | sha256sum | cut -c1-32).json"
+  if [[ -f "$receipt" ]]; then
+    jq '.replayed=true' "$receipt" > "$output"
+    printf 'control\t%s\t%s\t%s\t%s\ttrue\n' "$header_path" "$key" "$token_count" "$id_count" >> "${FAKE_LOG:?}"
+    printf 200; exit 0
+  fi
+  current=Running; version=0
+  [[ ! -f "$FAKE_HTTP_STATE/$host.control-state" ]] || current="$(<"$FAKE_HTTP_STATE/$host.control-state")"
+  [[ ! -f "$FAKE_HTTP_STATE/$host.control-version" ]] || version="$(<"$FAKE_HTTP_STATE/$host.control-version")"
+  changed=false
+  if [[ "$current" != "$desired" ]]; then changed=true; version=$((version+1)); printf '%s\n' "$desired" > "$FAKE_HTTP_STATE/$host.control-state"; printf '%s\n' "$version" > "$FAKE_HTTP_STATE/$host.control-version"; fi
+  if [[ "$desired" == Running ]]; then
+    stage=measured; [[ "$key" != *-warmup-resume-* ]] || stage=warmup
+    printf '%s\n' "$stage" > "$FAKE_HTTP_STATE/$host.measure-stage"; : > "$FAKE_HTTP_STATE/$host.measure-running"
+  else
+    rm -f "$FAKE_HTTP_STATE/$host.measure-running"
+    if [[ "$changed" == true && "${FAKE_MEASURE_EXTRA_CAPTURE:-false}" == true && -f "$FAKE_HTTP_STATE/$host.measure-profile" ]]; then
+      count_file="$FAKE_HTTP_STATE/$host.count"; printf '%s\n' "$(( $(<"$count_file") + 1 ))" > "$count_file"
+    fi
+  fi
+  jq -cn --arg state "$desired" --argjson version "$version" --argjson changed "$changed" \
+    '{state:$state,version:$version,changed:$changed,replayed:false,requestedUtc:"2026-08-07T00:00:00Z",completedUtc:"2026-08-07T00:00:00Z"}' > "$receipt"
+  cp "$receipt" "$output"
+  printf 'control\t%s\t%s\t%s\t%s\tfalse\n' "$header_path" "$key" "$token_count" "$id_count" >> "${FAKE_LOG:?}"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/v1.0/devices/*/artifacts/*/content ]]; then
+  if [[ "${FAKE_RETRIEVAL_HASH_MISMATCH:-false}" == true ]]; then printf 'tampered-artifact-content' > "$output"
+  elif [[ "$url" == */99999999-9999-9999-9999-999999999999/content ]]; then printf 'R%.0s' {1..6144} > "$output"
+  else printf 'fixture-artifact-content' > "$output"; fi
+  response_sha="${FAKE_ARTIFACT_SHA:?}"; response_bytes="${FAKE_ARTIFACT_BYTES:?}"
+  if [[ "$url" == */99999999-9999-9999-9999-999999999999/content ]]; then response_sha="${FAKE_RAW_ARTIFACT_SHA:?}"; response_bytes=6144; fi
+  printf 'HTTP/1.1 200 OK\r\nX-Artifact-SHA256: %s\r\nContent-Length: %s\r\n\r\n' \
+    "$response_sha" "$response_bytes" > "$response_headers"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/devices/recover ]]; then
+  device="$(jq -r .deviceId "$body")"; rm -f "${FAKE_HTTP_STATE:?}/$device.active" "${FAKE_HTTP_STATE:?}/$device.active-no-evidence"
+  : > "${FAKE_HTTP_STATE:?}/$device.pending"; : > "${FAKE_HTTP_STATE:?}/$device.recovered"
+  jq -cn --arg device "$device" '{registrationId:"22222222-2222-2222-2222-222222222222",deviceId:$device,status:"Pending"}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/internal/devices/continuity/* ]]; then
+  continuity_path="${url%%\?*}"; device="${continuity_path##*/}"
+  if [[ ! -f "${FAKE_HTTP_STATE:?}/$device.active" ]]; then
+    if [[ -f "${FAKE_HTTP_STATE:?}/$device.pending" ]]; then
+      jq -cn --arg device "$device" '{registrationId:"22222222-2222-2222-2222-222222222222",deviceId:$device,
+        devicePublicId:null,observatoryId:"11111111-1111-1111-1111-111111111111",status:"Pending",issuedAtUtc:"2026-08-07T00:00:00Z",
+        expiresAtUtc:"2099-08-07T00:15:00Z",activatedAtUtc:null,currentRigProfileVersion:null,maximumCaptureSequence:null,
+        fleetAgentInstanceId:null,maximumHeartbeatSequence:null,lastHeartbeatReceivedAtUtc:null,centralFrameCount:0,centralArtifactCount:0,
+        lineageSourceCount:0,completedDerivativeCount:0,latestArtifacts:[],registrations:[{registrationId:"22222222-2222-2222-2222-222222222222",
+          status:"Pending",devicePublicId:null,observatoryId:"11111111-1111-1111-1111-111111111111",issuedAtUtc:"2026-08-07T00:00:00Z",
+          expiresAtUtc:"2099-08-07T00:15:00Z",activatedAtUtc:null,isAuthoritative:true}]}' > "$output"
+      printf 200; exit 0
+    fi
+    : > "$output"; printf 404; exit 0
+  fi
+  if [[ -f "${FAKE_HTTP_STATE:?}/$device.active-no-evidence" ]]; then
+    jq -cn --arg device "$device" '{registrationId:"22222222-2222-2222-2222-222222222222",deviceId:$device,
+      devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",status:"Active",
+      issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",currentRigProfileVersion:1,
+      maximumCaptureSequence:null,fleetAgentInstanceId:null,maximumHeartbeatSequence:null,lastHeartbeatReceivedAtUtc:null,
+      centralFrameCount:0,centralArtifactCount:0,lineageSourceCount:0,completedDerivativeCount:0,latestArtifacts:[],
+      registrations:[{registrationId:"22222222-2222-2222-2222-222222222222",status:"Active",devicePublicId:"33333333-3333-3333-3333-333333333333",
+        observatoryId:"11111111-1111-1111-1111-111111111111",issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,
+        activatedAtUtc:"2026-08-07T00:00:00Z",isAuthoritative:true}]}' > "$output"
+    printf 200; exit 0
+  fi
+  from="${url#*fromCaptureSequence=}"; [[ "$from" != "$url" ]] || from=0; from="${from%%&*}"
+  to="${url#*toCaptureSequence=}"; [[ "$to" != "$url" ]] || to=-1; to="${to%%&*}"
+  count_file="${FAKE_HTTP_STATE:?}/$device.central-count"; count=1
+  if (( from > 0 )); then
+    agent="${device#device-}"; count="$(<"$FAKE_HTTP_STATE/$agent.count")"
+  else
+    [[ ! -f "$count_file" ]] || count=$(( $(<"$count_file") + 1 )); printf '%s\n' "$count" > "$count_file"
+  fi
+  window='[]'
+  if (( from > 0 && to >= from )); then
+    upper=$count; (( upper <= to )) || upper=$to
+    lag_marker="$FAKE_HTTP_STATE/$device.${output##*/}.seen"
+    if [[ "${FAKE_MEASURE_ASYNC_LAG:-true}" == true && ! -f "$lag_marker" ]]; then : > "$lag_marker"; upper=$((upper-1)); fi
+    for ((sequence=from; sequence<=upper; sequence++)); do
+      printf -v capture_id '00000000-0000-0000-0000-%012d' "$sequence"
+      printf -v raw_id '10000000-0000-0000-0000-%012d' "$sequence"
+      printf -v derivative_id '20000000-0000-0000-0000-%012d' "$sequence"
+      central_raw_id="$raw_id"; central_raw_sha="$FAKE_RAW_ARTIFACT_SHA"; central_raw_length=6144
+      if (( sequence == from )); then
+        [[ "${FAKE_MEASURE_RAW_MISMATCH:-}" != id ]] || central_raw_id="30000000-0000-0000-0000-${raw_id##*-}"
+        [[ "${FAKE_MEASURE_RAW_MISMATCH:-}" != checksum ]] || central_raw_sha="$(printf 'E%.0s' {1..64})"
+        [[ "${FAKE_MEASURE_RAW_MISMATCH:-}" != length ]] || central_raw_length=6145
+      fi
+      window="$(jq -c --argjson sequence "$sequence" --arg capture "$capture_id" --arg raw "$central_raw_id" --arg derivative "$derivative_id" \
+        --arg rawSha "$central_raw_sha" --argjson rawLength "$central_raw_length" --arg derivativeSha "$FAKE_ARTIFACT_SHA" --arg acknowledged "2026-08-07T00:01:00Z" '
+        . + [{captureSequence:$sequence,captureId:$capture,artifacts:[
+          {artifactId:$raw,role:"Raw",checksumSha256:$rawSha,byteLength:$rawLength,objectState:"Available",objectVerifiedAtUtc:$acknowledged,sources:[],completedDerivativeCount:1},
+          {artifactId:$derivative,role:"Preview",checksumSha256:$derivativeSha,objectState:"Available",objectVerifiedAtUtc:$acknowledged,
+           sources:[{sourceArtifactId:$raw,checksumSha256:$rawSha}],completedDerivativeCount:0}]}]' <<< "$window")"
+    done
+  fi
+  printf -v acknowledged '2026-08-07T00:01:%02dZ' "$count"
+  jq -cn --arg device "$device" --argjson sequence "$count" --arg acknowledged "$acknowledged" --argjson window "$window" '{registrationId:"22222222-2222-2222-2222-222222222222",deviceId:$device,
+    devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",status:"Active",
+    issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",currentRigProfileVersion:1,maximumCaptureSequence:$sequence,
+    fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",maximumHeartbeatSequence:$sequence,lastHeartbeatReceivedAtUtc:$acknowledged,
+     centralFrameCount:$sequence,centralArtifactCount:($sequence*3),lineageSourceCount:$sequence,completedDerivativeCount:$sequence,
+     currentRigProfileVersion:(if $ENV.FAKE_RIG_PROFILE_MISSING == "true" then null else 1 end),
+     currentRigProfileHash:(if $ENV.FAKE_RIG_PROFILE_HASH_MISMATCH == "true" then ("F"*64) else $ENV.FAKE_RIG_HASH end),
+    latestArtifacts:[
+       {artifactId:"99999999-9999-9999-9999-999999999999",role:"Raw",recipeVersion:"raw-v1",width:64,height:48,pixelFormat:"Mono16",byteLength:6144,checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA,
+       objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"RawCapture",recipeSemanticVersion:"1.0.0",
+       recipeImplementationVersion:"fixture",sources:[],completedDerivativeCount:0},
+       {artifactId:"11111111-1111-1111-1111-111111111111",role:"Preview",recipeVersion:"mono16-asinh-v2",width:64,height:48,pixelFormat:"Mono16",byteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),checksumSha256:$ENV.FAKE_ARTIFACT_SHA,
+        objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"Preview",recipeSemanticVersion:"1.0.0",
+        recipeImplementationVersion:"fixture",sources:[],completedDerivativeCount:1},
+       {artifactId:"77777777-7777-7777-7777-777777777777",role:"Preview",recipeVersion:"mono16-asinh-v2",width:64,height:48,pixelFormat:"Mono16",byteLength:128,checksumSha256:("C"*64),
+        objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"CentralPreview",recipeSemanticVersion:"1.0.0",
+          recipeImplementationVersion:"fixture",sources:[{artifactId:"11111111-1111-1111-1111-111111111111",checksumSha256:$ENV.FAKE_ARTIFACT_SHA}],completedDerivativeCount:0}],captureWindow:$window,
+    registrations:[{registrationId:"22222222-2222-2222-2222-222222222222",status:"Active",
+      devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",
+      issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",isAuthoritative:true}]}' > "$output"
+  printf 200; exit 0
+fi
+[[ "${FAKE_CURL_ALWAYS_SUCCESS:-false}" == true || "$url" == https://public.example.test:* ]] && exit 0
+exec /usr/bin/curl "$@"
+EOF
+chmod +x "$REMOTE_BIN/curl"
+cat > "$REMOTE_BIN/rm" <<'EOF'
+#!/usr/bin/bash
+for argument in "$@"; do
+  if [[ -n "${FAKE_PRIVATE_REMOVE_FAIL_MATCH:-}" && "$argument" == *"$FAKE_PRIVATE_REMOVE_FAIL_MATCH"* ]]; then exit 73; fi
+done
+exec /usr/bin/rm "$@"
+EOF
+chmod +x "$REMOTE_BIN/rm"
+for tool in bash date df grep timeout chmod find flock mkdir mv cp ln readlink sha256sum sqlite3 wc cut seq sleep jq; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
+for entry in "$REMOTE_BIN/"*; do
+    [[ "$(basename "$entry")" == ss ]] || ln -s "$entry" "$REMOTE_BIN_NO_SS/$(basename "$entry")"
+    [[ "$(basename "$entry")" == curl ]] || ln -s "$entry" "$REMOTE_BIN_NO_CURL/$(basename "$entry")"
+    [[ "$(basename "$entry")" == timeout ]] || ln -s "$entry" "$REMOTE_BIN_NO_TIMEOUT/$(basename "$entry")"
+done
+
+export FAKE_LOG="$LOG" FAKE_REMOTE_LOG="$REMOTE_LOG" FAKE_SCRIPT_ROOT="$TEMP_DIR"
+export FAKE_CAPTURE_REMOTE_SCRIPTS=true
+export FAKE_IMAGE_STATE="$TEMP_DIR/image-state" FAKE_REVISION="$REVISION" FAKE_IMAGE_TAG="rev-$REVISION"
+export FAKE_PREPARE_REMOTE_LOG="$PREPARE_REMOTE_LOG"
+export FAKE_REMOTE_BIN="$REMOTE_BIN" FAKE_REMOTE_BIN_NO_SS="$REMOTE_BIN_NO_SS" REAL_STAT REAL_GREP REAL_GIT
+export FAKE_REMOTE_BIN_NO_CURL="$REMOTE_BIN_NO_CURL"
+export FAKE_REMOTE_BIN_NO_TIMEOUT="$REMOTE_BIN_NO_TIMEOUT"
+export FAKE_HTTP_STATE="$TEMP_DIR/http-state"
+mkdir -m 700 "$FAKE_IMAGE_STATE" "$FAKE_HTTP_STATE"
+FAKE_ARTIFACT_SHA="$(printf 'fixture-artifact-content' | sha256sum | cut -d' ' -f1)"
+FAKE_ARTIFACT_BYTES="$(printf 'fixture-artifact-content' | wc -c)"
+FAKE_RAW_ARTIFACT_SHA="$(printf 'R%.0s' {1..6144} | sha256sum | cut -d' ' -f1)"
+FAKE_RIG_HASH="$(printf 'A%.0s' {1..64})"
+export FAKE_ARTIFACT_SHA FAKE_ARTIFACT_BYTES FAKE_RAW_ARTIFACT_SHA FAKE_RIG_HASH
+legacy_login_status="$(FAKE_REMOTE_HOST=east PATH="$REMOTE_BIN" curl --silent --location --request POST \
+  --output "$TEMP_DIR/legacy-login.out" --write-out '%{http_code}' --cookie-jar "$TEMP_DIR/legacy.cookies" \
+  --data-urlencode 'Input.Email=owner@example.test' 'http://127.0.0.1/Account/Login')"
+test "$legacy_login_status" = 405
+rm -f "$TEMP_DIR/legacy-login.out" "$TEMP_DIR/legacy.cookies"
+
+# A completed SCP followed by a failed remote rename removes and verifies the registered upload temp.
+(
+  source "$REPO_ROOT/scripts/deploy/common.sh"
+  source "$REPO_ROOT/scripts/deploy/run-state.sh"
+  source "$REPO_ROOT/scripts/deploy/transport.sh"
+  jq -n --arg root "$TEMP_DIR/remote/east" '{logicHost:{name:"logic",sshHost:"logic@example",runtimeRoot:"/unused"},
+    cameraAgents:[{name:"east",sshHost:"east@example",runtimeRoot:$root}],sharedServices:null}' > "$TEMP_DIR/private-upload-inventory.json"
+  deploy_transport_initialize_private_upload_registry "$TEMP_DIR/private-upload-registry.json" "$TEMP_DIR/private-upload-inventory.json" smoke
+  printf 'private-upload\n' > "$TEMP_DIR/private-upload-source"; chmod 600 "$TEMP_DIR/private-upload-source"
+  mkdir -m 700 "$TEMP_DIR/remote/east/upload-test"
+  for private_kind in secret certificate; do
+    private_destination="$TEMP_DIR/remote/east/upload-test/$private_kind"
+    if PATH="$BIN:$PATH" DEPLOY_TEST_FAILPOINT=private-registry-publication:hvo-upload-smoke \
+      deploy_transport_copy_private_file "$TEMP_DIR/private-upload-source" east@example "$private_destination"; then exit 90; fi
+    [[ ! -e "$private_destination" ]]
+    jq -e 'length == 0' "$TEMP_DIR/private-upload-registry.json" >/dev/null
+  done
+  if PATH="$BIN:$PATH" FAKE_SSH_FAIL_UPLOAD_MOVE_MATCH=destination deploy_transport_copy_private_file "$TEMP_DIR/private-upload-source" east@example \
+    "$TEMP_DIR/remote/east/upload-test/destination"; then exit 91; fi
+  upload_temps=("$TEMP_DIR/remote/east/.hvo-deploy/uploads"/hvo-upload-smoke-*.tmp)
+  [[ ! -e "${upload_temps[0]}" ]]
+  jq -e 'length == 0' "$TEMP_DIR/private-upload-registry.json" >/dev/null
+)
+
+# Docker not-found is accepted as absence; transport/auth failures are never absence proof.
+(
+  source "$REPO_ROOT/scripts/deploy/transport.sh"
+  PATH="$BIN:$PATH" deploy_transport_require_volume_absent shared-context absent-volume
+  PATH="$BIN:$PATH" deploy_transport_require_network_absent shared-context absent-network
+  if PATH="$BIN:$PATH" FAKE_DOCKER_INSPECT_OUTAGE=shared-context-volume deploy_transport_require_volume_absent shared-context absent-volume; then exit 92; fi
+  if PATH="$BIN:$PATH" FAKE_DOCKER_INSPECT_OUTAGE=shared-context-network deploy_transport_require_network_absent shared-context absent-network; then exit 93; fi
+)
+
+# shellcheck disable=SC2016 # The literal shell syntax verifies secrets are never evaluated.
+printf 'SQL_PASSWORD=fixture-secret-never-print\nMINIO_ROOT_ACCESS=fixture-minio-root\nMINIO_ROOT_SECRET=fixture:/@"minio-root-never-print\nOWNER_API_KEY=owner-api-key-never-print\nEAST_PASSWORD=east-owner-never-print\nWEST_PASSWORD=west-owner-never-print\nOAUTH_SECRET=malicious-$(touch /tmp/must-not-run)-never-print\n' > "$SECRET_FILE"
+chmod 600 "$SECRET_FILE"
+
+write_inventory() {
+    jq -n --arg revision "$REVISION" --arg secret "$SECRET_FILE" --arg root "$TEMP_DIR/remote" --arg owner "$(id -un)" \
+      --arg module "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json" \
+      --argjson logicPort "$HTTP_PORT" --argjson eastPort "$EAST_PORT" --argjson westPort "$WEST_PORT" '{
+      schemaVersion:6, environment:"test-observatory", installationId:"test-installation",
+      source:{revision:$revision,dirtyDisposition:"allow-dirty"},
+      secretSource:{path:$secret,requiredReferences:["SQL_PASSWORD","MINIO_ROOT_ACCESS","MINIO_ROOT_SECRET","OWNER_API_KEY","EAST_PASSWORD","WEST_PASSWORD","OAUTH_SECRET"]},
+      observatory:{name:"Test Observatory",latitudeDegrees:19.5,longitudeDegrees:-155.5,elevationMeters:1000,timeZoneId:"Pacific/Honolulu"},
+      logicHost:{name:"logic",sshHost:"logic@example",dockerContext:"logic-context",expectedArchitecture:"amd64",expectedHostName:"logic-node",
+        expectedHostIdentity:"logic-machine",expectedDockerDaemonIdentity:"logic-daemon",runtimeRoot:($root+"/logic/runtime"),runtimeOwner:$owner,
+        internalEndpoint:("http://127.0.0.1:"+($logicPort|tostring)),publicEndpoint:("https://public.example.test:"+($logicPort|tostring)),trustedProxyAddresses:[],ports:[$logicPort]},
+      cameraAgents:[
+        {name:"east",friendlyName:"East Camera",ownerEmail:"east-owner@cameraagent.local",sshHost:"east@example",dockerContext:"east-context",expectedArchitecture:"arm64",expectedHostName:"east-node",
+          expectedHostIdentity:"east-machine",expectedDockerDaemonIdentity:"east-daemon",runtimeRoot:($root+"/east/runtime"),runtimeOwner:$owner,
+          internalEndpoint:("http://127.0.0.1:"+($eastPort|tostring)),publicEndpoint:("http://127.0.0.1:"+($eastPort|tostring)),trustedProxyAddresses:[],ports:[$eastPort],moduleConfigPath:$module,ownerPasswordSecretReference:"EAST_PASSWORD"},
+        {name:"west",friendlyName:"West Camera",ownerEmail:"west-owner@cameraagent.local",sshHost:"west@example",dockerContext:"west-context",expectedArchitecture:"amd64",expectedHostName:"west-node",
+          expectedHostIdentity:"west-machine",expectedDockerDaemonIdentity:"west-daemon",runtimeRoot:($root+"/west/runtime"),runtimeOwner:$owner,
+          internalEndpoint:("http://127.0.0.1:"+($westPort|tostring)),publicEndpoint:("http://127.0.0.1:"+($westPort|tostring)),trustedProxyAddresses:[],ports:[$westPort],moduleConfigPath:$module,ownerPasswordSecretReference:"WEST_PASSWORD"}],
+      sharedServices:null,
+      serviceEndpoints:[{name:"test-service",host:"127.0.0.1",port:$logicPort,fromTargets:["logic","east","west"]}],
+      catalog:{kind:"production",version:"catalog-v1",sha256:("0"*64),length:1,rowCount:1},
+      images:{distributionMode:"registry",artifactRoot:null,tag:("rev-"+$revision),registryImmutableTags:true,
+        builder:{name:"control-builder",driver:"docker",endpoint:"default",expectedDaemonIdentity:"control-daemon",expectedDaemonName:"control-node",expectedArchitecture:"amd64"},
+        logicHost:{repository:"registry.example/logichost"},cameraAgent:{repository:"registry.example/cameraagent"}},
+      deployment:{
+        catalog:{bundlePath:($root+"/catalog-bundle"),installRoot:($root+"/catalog-install"),allowFixture:false},
+        services:{mode:"existing",
+          sql:{host:"127.0.0.1",port:1433,database:"hvo-test",adminUser:"sa",adminSecretReference:"SQL_PASSWORD",initializerUser:"hvo-init",initializerSecretReference:"SQL_PASSWORD",initializerConnectionReference:"SQL_PASSWORD",runtimeUser:"hvo-runtime",runtimeSecretReference:"SQL_PASSWORD",runtimeConnectionReference:"SQL_PASSWORD"},
+          redis:{host:"127.0.0.1",port:6379,prefix:"hvo-test:",adminSecretReference:"SQL_PASSWORD",user:"hvo-runtime",secretReference:"SQL_PASSWORD"},
+          minio:{host:"127.0.0.1",port:9000,useSsl:false,artifactBucket:"hvo-test-artifacts",diagnosticsBucket:"hvo-test-diagnostics",rootAccessKeyReference:"MINIO_ROOT_ACCESS",rootSecretKeyReference:"MINIO_ROOT_SECRET",accessKeyReference:"SQL_PASSWORD",secretKeyReference:"SQL_PASSWORD"},
+          smtp:{kind:"production",host:"127.0.0.1",port:2525,usernameReference:null,passwordReference:null},
+          images:{sqlServer:null,redis:null,minio:null,minioClient:null,mailpit:null}},
+        resources:{project:"hvo-test",sqlDatabase:"hvo-test",redisPrefix:"hvo-test:",artifactBucket:"hvo-test-artifacts",diagnosticsBucket:"hvo-test-diagnostics"},
+        certificates:{signingPath:($root+"/signing.pfx"),encryptionPath:($root+"/encryption.pfx"),signingPasswordReference:null,encryptionPasswordReference:null},
+        automation:{ownerApiKeySecretReference:"OWNER_API_KEY"},
+        deviceBootstrap:{clientId:"system-camera-agent",clientSecretReference:"SQL_PASSWORD",scopes:["api.camera"]},
+        workload:{kind:"W0",durationSeconds:120,sustainedArmOptIn:true},
+        secretMappings:[{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb"},{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb-migrations"},
+          {reference:"SQL_PASSWORD",key:"Minio__AccessKey"},{reference:"SQL_PASSWORD",key:"Minio__SecretKey"}],limits:{cpus:null,memory:null}}
+    }' > "$INVENTORY"
+    cp "$INVENTORY" "$BASE_INVENTORY"
+}
+
+run_deploy() {
+    local run_id="$1"; shift
+    PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$INVENTORY" --mode isolated \
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"
+}
+
+run_deploy_mode() {
+    local phase="$1" run_id="$2" mode="$3"; shift 3
+    PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"
+}
+
+run_deploy_mode_with_registry_failure() {
+    local match="$1" phase="$2" run_id="$3" mode="$4"; shift 4
+    env DEPLOY_TEST_FAILPOINT="private-registry-publication:$match" PATH="$BIN:$PATH" \
+      "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"
+}
+
+exercise_phase_publication_recovery() {
+    local phase="$1" run_id="$2" state="$TEMP_DIR/output/$2-state" evidence="$TEMP_DIR/output/$2-evidence" boundary
+    shift 2
+    for boundary in ledger manifest evidence commit; do
+        if DEPLOY_TEST_FAILPOINT="abrupt-after-$phase-$boundary" run_deploy_mode "$phase" "$run_id" isolated "$@" > "$TEMP_DIR/$phase-$boundary-crash.log" 2>&1; then
+            fail "$phase publication failpoint passed after $boundary."
+        fi
+        jq -e 'length == 0' "$state/private-upload-registry.json" >/dev/null ||
+          fail "$phase publication boundary retained private cleanup entries."
+        run_deploy_mode "$phase" "$run_id" isolated "$@" >/dev/null
+        jq -e --slurp '.[0] == .[1] and .[0] == .[2]' \
+          "$state/$phase-ledger.json" "$state/$phase-manifest.json" "$evidence/$phase.json" >/dev/null
+        generation="$(jq -r '.publicationGeneration' "$state/$phase-ledger.json")"
+        test "$(jq -r '.generation' "$state/$phase-commit.json")" = "$generation"
+    done
+}
+
+exercise_phase_cleanup_recovery() {
+    local phase="$1" run_id="$2" state="$TEMP_DIR/output/$2-state" evidence="$TEMP_DIR/output/$2-evidence"
+    shift 2
+    if DEPLOY_TEST_FAILPOINT="abrupt-after-$phase-cleanup" run_deploy_mode "$phase" "$run_id" isolated "$@" > "$TEMP_DIR/$phase-cleanup-crash.log" 2>&1; then
+        fail "$phase cleanup boundary failpoint passed."
+    fi
+    jq -e 'length == 0' "$state/private-upload-registry.json" >/dev/null || fail "$phase cleanup boundary retained private files."
+    if jq -e '.phaseStatus == "passed"' "$evidence/$phase.json" >/dev/null; then
+        fail "$phase published passed evidence before cleanup-boundary recovery."
+    fi
+    run_deploy_mode "$phase" "$run_id" isolated "$@" >/dev/null
+}
+
+exercise_phase_tampered_publication_rejection() {
+    local phase="$1" run_id="$2" state="$TEMP_DIR/output/$2-state" evidence="$TEMP_DIR/output/$2-evidence"
+    shift 2
+    cp "$state/$phase-ledger.json" "$TEMP_DIR/$phase.valid-ledger"
+    cp "$state/$phase-manifest.json" "$TEMP_DIR/$phase.valid-manifest"
+    cp "$evidence/$phase.json" "$TEMP_DIR/$phase.valid-evidence"
+    cp "$state/$phase-commit.json" "$TEMP_DIR/$phase.valid-commit"
+    jq '.publicationGeneration += 1 | .unexpectedCrashField=true' "$TEMP_DIR/$phase.valid-ledger" > "$state/$phase-ledger.json"
+    chmod 600 "$state/$phase-ledger.json"
+    if run_deploy_mode "$phase" "$run_id" isolated "$@" > "$TEMP_DIR/$phase-tampered-publication.log" 2>&1; then
+        fail "$phase accepted a malformed next-generation ledger."
+    fi
+    cmp -s "$TEMP_DIR/$phase.valid-manifest" "$state/$phase-manifest.json" || fail "$phase changed its prior manifest after rejecting a malformed ledger."
+    cmp -s "$TEMP_DIR/$phase.valid-evidence" "$evidence/$phase.json" || fail "$phase changed its prior evidence after rejecting a malformed ledger."
+    cmp -s "$TEMP_DIR/$phase.valid-commit" "$state/$phase-commit.json" || fail "$phase changed its prior commit after rejecting a malformed ledger."
+    cp "$TEMP_DIR/$phase.valid-ledger" "$state/$phase-ledger.json"
+    chmod 600 "$state/$phase-ledger.json"
+}
+
+exercise_phase_orphan_rejection() {
+    local phase="$1" run_id="$2" state="$TEMP_DIR/output/$2-state"
+    shift 2
+    mv "$state/$phase-ledger.json" "$TEMP_DIR/$phase.orphan-ledger"
+    if run_deploy_mode "$phase" "$run_id" isolated "$@" > "$TEMP_DIR/$phase-orphan.log" 2>&1; then
+        fail "$phase accepted companion files without its authoritative ledger."
+    fi
+    grep -Fq 'orphan-phase-companion' "$TEMP_DIR/$phase-orphan.log"
+    mv "$TEMP_DIR/$phase.orphan-ledger" "$state/$phase-ledger.json"
+}
+
+write_prepare_case() {
+    local prefix="$1" mode="$2"
+    mkdir -m 700 "$TEMP_DIR/remote/$prefix-logic" "$TEMP_DIR/remote/$prefix-east" "$TEMP_DIR/remote/$prefix-west"
+    jq --arg base "$TEMP_DIR/remote" --arg prefix "$prefix" '
+      .logicHost.runtimeRoot=($base+"/"+$prefix+"-logic/runtime") |
+      .cameraAgents[0].runtimeRoot=($base+"/"+$prefix+"-east/runtime") |
+      .cameraAgents[1].runtimeRoot=($base+"/"+$prefix+"-west/runtime")' "$BASE_INVENTORY" > "$INVENTORY"
+    if [[ "$mode" == persistent ]]; then
+        jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:") |
+          .logicHost.trustedProxyAddresses=["127.0.0.1"] | (.cameraAgents[].trustedProxyAddresses)=["127.0.0.1"]' "$INVENTORY" > "$INVENTORY.changed"
+        mv "$INVENTORY.changed" "$INVENTORY"
+    fi
+}
+
+run_prepare_preflight() {
+    local run_id="$1" mode="$2"
+    if [[ "$mode" == persistent ]]; then FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode preflight "$run_id" "$mode" >/dev/null
+    else run_deploy_mode preflight "$run_id" "$mode" >/dev/null; fi
+}
+
+expect_prepare_failure() {
+    local expected="$1" run_id="$2" mode="$3"
+    if run_deploy_mode prepare "$run_id" "$mode" > "$TEMP_DIR/prepare-failure.log" 2>&1; then fail "Invalid prepare passed: $run_id"; fi
+    grep -Fq "$expected" "$TEMP_DIR/prepare-failure.log" || fail "Prepare failure was not bounded: $run_id ($expected)"
+    ! grep -Fq 'fixture-secret-never-print' "$TEMP_DIR/prepare-failure.log" || fail 'Prepare failure exposed a secret.'
+}
+
+create_partial_prepare_case() {
+    local run_id="$1"
+    write_prepare_case "$run_id" isolated
+    run_prepare_preflight "$run_id" isolated
+    FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' "$run_id" isolated
+}
+
+expect_failure() {
+    local expected="$1" run_id="$2"
+    if run_deploy "$run_id" > "$TEMP_DIR/failure.log" 2>&1; then fail "Invalid preflight passed: $expected"; fi
+    grep -Fq "$expected" "$TEMP_DIR/failure.log" || fail "Missing bounded failure: $expected"
+    if grep -Fq 'fixture-secret-never-print' "$TEMP_DIR/failure.log" || grep -Fq 'malicious-' "$TEMP_DIR/failure.log"; then
+        fail 'Failure output exposed a fixture secret or raw diagnostic.'
+    fi
+    ! grep -Fq 'raw-docker-secret' "$TEMP_DIR/failure.log" || fail 'Failure output exposed malformed Docker response content.'
+}
+
+expect_persistent_invalid() {
+    local run_id="$1" expected="${2:-persistent-mode-requires-production-https}"
+    if PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$INVENTORY" --mode persistent \
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" \
+      > "$TEMP_DIR/failure.log" 2>&1; then fail "Invalid persistent inventory passed: $run_id"; fi
+    grep -Fq "$expected" "$TEMP_DIR/failure.log" || fail "Persistent rejection was not bounded: $run_id"
+}
+
+bash -n "$REPO_ROOT/scripts/deploy:environment" "$REPO_ROOT/scripts/deploy/"*.sh "$REPO_ROOT/scripts/test:deploy-environment" \
+  "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$REPO_ROOT/deploy/split-host/provision-minio.sh"
+write_inventory
+
+# A tampered registry path outside the approved upload subtree is rejected without deleting it.
+tampered_state="$TEMP_DIR/output/tampered-upload-state"; tampered_evidence="$TEMP_DIR/output/tampered-upload-evidence"
+mkdir -p "$tampered_state" "$tampered_evidence"; chmod 700 "$tampered_state" "$tampered_evidence"
+tampered_path="$TEMP_DIR/remote/east/arbitrary-do-not-delete"; printf 'retain\n' > "$tampered_path"; chmod 600 "$tampered_path"
+jq -cn --arg path "$tampered_path" --argjson target "$(jq -c '.cameraAgents[0]' "$INVENTORY")" \
+  '[{phase:"up",kind:"upload-temp",target:$target,path:$path}]' > "$tampered_state/private-upload-registry.json"; chmod 600 "$tampered_state/private-upload-registry.json"
+if PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$INVENTORY" --mode isolated --run-id tampered-upload \
+  --state-root "$tampered_state" --evidence-root "$tampered_evidence" > "$TEMP_DIR/tampered-upload.log" 2>&1; then
+  fail 'A registry path outside the approved private-upload subtree passed validation.'
+fi
+test -f "$tampered_path"
+
+# Persistent bootstrap never accepts missing, reset, or behind local capture continuity when central history exists.
+(
+  source "$REPO_ROOT/scripts/deploy/common.sh"
+  source "$REPO_ROOT/scripts/deploy/bootstrap.sh"
+  local_continuity="$TEMP_DIR/local-continuity.json"; central_continuity="$TEMP_DIR/central-continuity.json"
+  jq -n '{deviceId:"device-east",durable:{rawIngressDatabaseExists:true,captureSequences:[{agentId:"device-east",lastSequence:12}],
+    artifactOutboxDatabaseExists:true,artifactOutboxMaximumRecordId:12,artifactOutboxMaximumAuditId:12,
+    latestArtifacts:[{artifactId:"66666666-6666-6666-6666-666666666666",agentId:"device-east",captureSequence:12,status:"acknowledged"}],
+    fleetDatabaseExists:true,fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",fleetMaximumSequence:12,fleetNextSequence:13}}' > "$local_continuity"
+  jq -n '{maximumCaptureSequence:12,centralFrameCount:12,centralArtifactCount:1,
+    latestArtifacts:[{artifactId:"66666666-6666-6666-6666-666666666666",captureSequence:12}],
+    fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",maximumHeartbeatSequence:12}' > "$central_continuity"
+  deploy_bootstrap_validate_persistent_capture_continuity persistent "$local_continuity" "$central_continuity" east
+  jq '.durable.rawIngressDatabaseExists=false | .durable.captureSequences=[]' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 91; fi
+  jq '.durable.captureSequences[0].lastSequence=0' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 92; fi
+  jq '.durable.captureSequences[0].lastSequence=11' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 93; fi
+  jq '.durable.artifactOutboxDatabaseExists=false | .durable.latestArtifacts=[]' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 94; fi
+  jq '.durable.artifactOutboxMaximumRecordId=0 | .durable.artifactOutboxMaximumAuditId=0' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 95; fi
+  jq '.durable.latestArtifacts[0].captureSequence=11' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 96; fi
+  jq '.durable.latestArtifacts[0].agentId="device-west"' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 100; fi
+  jq '.durable.fleetDatabaseExists=false | .durable.fleetAgentInstanceId=null' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 97; fi
+  jq '.durable.fleetAgentInstanceId="55555555-5555-5555-5555-555555555555"' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 98; fi
+  jq '.durable.fleetMaximumSequence=11 | .durable.fleetNextSequence=12' "$local_continuity" > "$TEMP_DIR/local-invalid.json"
+  if deploy_bootstrap_validate_persistent_capture_continuity persistent "$TEMP_DIR/local-invalid.json" "$central_continuity" east >/dev/null 2>&1; then exit 99; fi
+  deploy_bootstrap_validate_persistent_capture_continuity isolated "$TEMP_DIR/local-invalid.json" "$central_continuity" east
+)
+
+# The checked-in shape reference, example, and executable jq contract stay aligned.
+jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","internalEndpoint","publicEndpoint","trustedProxyAddresses","ports"] and
+  .properties.schemaVersion.const == 6 and
+  .properties.images.required == ["distributionMode","artifactRoot","tag","builder","registryImmutableTags","logicHost","cameraAgent"] and
+  (.properties.sharedServices.oneOf[1]."$ref" | endswith("/infrastructureTarget")) and
+  (.properties.logicHost.allOf[1].properties.publicEndpoint.pattern | startswith("^https://")) and
+  (."$defs".applicationTarget.properties.publicEndpoint.pattern | contains(":"))' "$REPO_ROOT/deploy/split-host/inventory.schema.json" >/dev/null
+canonical_workloads="$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json"
+jq -e '.schemaVersion == 1 and .profiles.W1.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json" and
+  .profiles.W1.warmupOperations == 5 and .profiles.W1.measuredOperations == 30 and .profiles.W1.width == 1936 and
+  .profiles.W1.height == 1216 and .profiles.W1.pixelFormat == "Mono16" and .profiles.W1.seed == 2025 and
+  .profiles.W2.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json" and
+  .profiles.W2.warmupOperations == 5 and .profiles.W2.measuredOperations == 30 and .profiles.W2.width == 3096 and
+  .profiles.W2.height == 2080 and .profiles.W2.pixelFormat == "BayerRggb16" and .profiles.W2.seed == 2025' "$canonical_workloads" >/dev/null
+while IFS=$'\t' read -r source expected_file expected_config expected_options; do
+  test "$(sha256sum "$REPO_ROOT/$source" | cut -d' ' -f1)" = "$expected_file"
+  test "$(printf '%s' "$(jq -S -c . "$REPO_ROOT/$source")" | sha256sum | cut -d' ' -f1)" = "$expected_config"
+  test "$(printf '%s' "$(jq -S -c '.module.options' "$REPO_ROOT/$source")" | sha256sum | cut -d' ' -f1)" = "$expected_options"
+done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentitySha256,.optionsSha256] | @tsv' "$canonical_workloads")
+(
+  # shellcheck source=scripts/deploy/common.sh
+  . "$REPO_ROOT/scripts/deploy/common.sh"
+  # shellcheck source=scripts/deploy/inventory.sh
+  . "$REPO_ROOT/scripts/deploy/inventory.sh"
+  deploy_validate_inventory "$REPO_ROOT/deploy/split-host/inventory.example.yml" isolated
+  jq '.deployment.workload.profiles={W1:{path:"/tmp/arbitrary-same-shape.json",sha256:("a"*64)}}' "$BASE_INVENTORY" > "$TEMP_DIR/arbitrary-workload-inventory.json"
+  if deploy_validate_inventory "$TEMP_DIR/arbitrary-workload-inventory.json" isolated >/dev/null 2>&1; then exit 100; fi
+  jq --arg owner "$(id -un)" '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",
+    expectedHostName:"shared-node",expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:"/srv/hvo/shared",
+    runtimeOwner:$owner,ports:[1433,6379,9000,2525]} |
+    .deployment.services.mode="deploy" | .deployment.services.smtp.kind="mailpit" |
+    .deployment.services.images={sqlServer:("registry.example/sql@sha256:"+("a"*64)),redis:("registry.example/redis@sha256:"+("b"*64)),
+      minio:("registry.example/minio@sha256:"+("c"*64)),minioClient:("registry.example/mc@sha256:"+("d"*64)),mailpit:("registry.example/mailpit@sha256:"+("e"*64))}' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
+  deploy_validate_inventory "$TEMP_DIR/shared-valid.json" isolated
+  jq 'del(.sharedServices.sshHost)' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-invalid.json" isolated >/dev/null 2>&1; then exit 91; fi
+  jq '.sharedServices.ports=[1433,6379,9000]' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-invalid.json" isolated >/dev/null 2>&1; then exit 94; fi
+  jq '.deployment.services.redis.port=.deployment.services.sql.port | .sharedServices.ports=[1433,9000,2525]' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-invalid.json" isolated >/dev/null 2>&1; then exit 95; fi
+  for accepted_root in /srv/hvo '/opt/hvo data/runtime'; do
+    jq --arg root "$accepted_root" '.logicHost.runtimeRoot=$root' "$BASE_INVENTORY" > "$TEMP_DIR/root.json"
+    deploy_validate_inventory "$TEMP_DIR/root.json" isolated
+  done
+  for rejected_root in /./srv /../srv /srv/./hvo /srv/../hvo /srv//hvo $'/srv/hvo\tdata' $'/srv/hvo\ndata'; do
+    jq --arg root "$rejected_root" '.logicHost.runtimeRoot=$root' "$BASE_INVENTORY" > "$TEMP_DIR/root.json"
+    if deploy_validate_inventory "$TEMP_DIR/root.json" isolated >/dev/null 2>&1; then exit 92; fi
+  done
+  for accepted_catalog in 4.2 hyg-v4.2-p3-s2-r1 hyg-v42-fixture-1; do
+    jq --arg version "$accepted_catalog" '.catalog.version=$version' "$BASE_INVENTORY" > "$TEMP_DIR/catalog.json"
+    deploy_validate_inventory "$TEMP_DIR/catalog.json" isolated
+  done
+  jq '.catalog.version="catalog:v1"' "$BASE_INVENTORY" > "$TEMP_DIR/catalog.json"
+  if deploy_validate_inventory "$TEMP_DIR/catalog.json" isolated >/dev/null 2>&1; then exit 93; fi
+  jq '.deployment.secretMappings |= map(select(.key != "Minio__AccessKey"))' "$BASE_INVENTORY" > "$TEMP_DIR/mapping-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/mapping-invalid.json" isolated >/dev/null 2>&1; then exit 96; fi
+)
+runtime_pattern="$(jq -r '."$defs".applicationTarget.properties.runtimeRoot.pattern' "$REPO_ROOT/deploy/split-host/inventory.schema.json")"
+for accepted_root in /srv/hvo '/opt/hvo data/runtime'; do
+    jq -en --arg value "$accepted_root" --arg pattern "$runtime_pattern" '$value | test($pattern)' >/dev/null || fail "Schema pattern rejected $accepted_root"
+done
+for rejected_root in /./srv /../srv /srv/./hvo /srv/../hvo /srv//hvo $'/srv/hvo\tdata' $'/srv/hvo\ndata'; do
+    if jq -en --arg value "$rejected_root" --arg pattern "$runtime_pattern" '$value | test($pattern)' >/dev/null; then fail "Schema pattern accepted $rejected_root"; fi
+done
+catalog_pattern="$(jq -r '.properties.catalog.properties.version.pattern' "$REPO_ROOT/deploy/split-host/inventory.schema.json")"
+for accepted_catalog in 4.2 hyg-v4.2-p3-s2-r1 hyg-v42-fixture-1; do
+    jq -en --arg value "$accepted_catalog" --arg pattern "$catalog_pattern" '$value | test($pattern)' >/dev/null || fail "Schema pattern rejected catalog $accepted_catalog"
+done
+if jq -en --arg value 'catalog:v1' --arg pattern "$catalog_pattern" '$value | test($pattern)' >/dev/null; then fail 'Schema pattern accepted colon catalog version.'; fi
+
+: > "$LOG"; : > "$REMOTE_LOG"
+output="$(run_deploy valid)"
+[[ "$output" == *'stage=preflight check=complete status=passed reason=read-only'* ]] || fail 'Valid preflight did not pass.'
+manifest="$TEMP_DIR/output/valid-state/manifest.json"
+evidence="$TEMP_DIR/output/valid-evidence/preflight.json"
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and
+  ([.targets[].dockerComposeVersion] | all(. == "v2.39.1")) and
+  (.targets[] | select(.name == "logic") | .architecture == "amd64") and
+  (.targets[] | select(.name == "east") | .architecture == "arm64") and
+  (.targets[] | select(.name == "east") | .deploymentState == "needs_prepare")' "$manifest" >/dev/null
+test "$(stat -c %a "$TEMP_DIR/output/valid-state")" = 700
+test "$(stat -c %a "$manifest")" = 600
+test "$(stat -c %a "$evidence")" = 600
+grep -Fq $'docker\t--context\teast-context\tinfo' "$LOG"
+grep -Fq $'docker\t--context\teast-context\tcompose\tversion\t--short' "$LOG"
+grep -Fq $'east@example\tbash\t-s\t--\t127.0.0.1' "$LOG"
+grep -Fq $'east@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
+grep -Fq 'timeout 8 bash -c' "$REMOTE_LOG"
+grep -Fq 'curl --silent --show-error' "$REMOTE_LOG"
+if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|rm|create|mkdir|install|touch)([[:space:]]|$)' "$REMOTE_LOG"; then fail 'Remote preflight script contains mutation commands.'; fi
+if grep -Fq 'fixture-secret-never-print' "$LOG" || grep -Fq 'fixture-secret-never-print' "$REMOTE_LOG" ||
+   grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output"; then fail 'Logs or evidence exposed a secret.'; fi
+export FAKE_CAPTURE_REMOTE_SCRIPTS=false
+
+mkdir -p "$TEMP_DIR/remote/east space"
+jq --arg root "$TEMP_DIR/remote/east space/runtime" '.cameraAgents[0].runtimeRoot=$root' "$BASE_INVENTORY" > "$INVENTORY"
+run_deploy spaced-runtime >/dev/null
+jq -e --arg root "$TEMP_DIR/remote/east space/runtime" '.targets[] | select(.name == "east") | .runtimeRoot == $root' \
+  "$TEMP_DIR/output/spaced-runtime-state/manifest.json" >/dev/null
+cp "$BASE_INVENTORY" "$INVENTORY"
+
+# Context selection must correlate the Docker daemon host name with the SSH hostname.
+FAKE_DOCKER_WRONG_HOST_CONTEXT=east-context expect_failure 'ssh-docker-correlation status=failed reason=mismatch' wrong-context-host
+FAKE_DOCKER_MISMATCH=east-context expect_failure 'ssh-docker-correlation status=failed reason=mismatch' daemon-mismatch
+FAKE_DOCKER_INFO_MALFORMED=architecture expect_failure 'docker-daemon status=failed reason=invalid-response' docker-architecture-malformed
+FAKE_DOCKER_INFO_MALFORMED=os expect_failure 'docker-daemon status=failed reason=invalid-response' docker-os-malformed
+FAKE_DOCKER_INFO_MALFORMED=version expect_failure 'docker-daemon status=failed reason=invalid-response' docker-version-malformed
+FAKE_DOCKER_UNSUPPORTED_ARCH=east-context expect_failure 'docker-daemon status=failed reason=unsupported-architecture' docker-architecture-unsupported
+! grep -Fq 'ppc64le' "$TEMP_DIR/failure.log" || fail 'Unsupported Docker architecture leaked raw output.'
+FAKE_COMPOSE_MISSING=east-context expect_failure 'docker-compose status=failed reason=unavailable' compose-missing
+FAKE_SSH_UNREACHABLE=east expect_failure 'ssh status=failed reason=unreachable-or-invalid-response' ssh-unreachable
+FAKE_MISSING_BASH_HOST=east expect_failure 'ssh status=failed reason=tool-unavailable' missing-bash
+
+# The actual remote Bash scripts exercise reachable and unreachable TCP/HTTP paths.
+jq --argjson port "$UNREACHABLE_PORT" '.serviceEndpoints[0].port=$port' "$BASE_INVENTORY" > "$INVENTORY"
+expect_failure 'test-service status=failed reason=unreachable' tcp-unreachable
+jq --argjson port "$UNREACHABLE_PORT" '.logicHost.publicEndpoint=("https://127.0.0.1:"+($port|tostring))' "$BASE_INVENTORY" > "$INVENTORY"
+expect_failure 'logic-public-authority status=failed reason=unreachable' http-unreachable
+cp "$BASE_INVENTORY" "$INVENTORY"
+
+# Missing socket inspection and both host/Docker port conflicts fail closed.
+FAKE_MISSING_SS_HOST=east expect_failure 'ports status=failed reason=inspector-unavailable' missing-ss
+FAKE_MISSING_TIMEOUT_HOST=east expect_failure 'test-service status=failed reason=tool-unavailable' missing-timeout
+FAKE_MISSING_CURL_HOST=east expect_failure 'logic-public-authority status=failed reason=tool-unavailable' missing-curl
+FAKE_PORT_CONFLICT_HOST=east expect_failure 'ports status=failed reason=conflict' host-port-conflict
+FAKE_DOCKER_PORT_CONFLICT="$EAST_PORT" expect_failure 'containers status=failed reason=port-conflict' docker-port-conflict
+
+# Every existing runtime component is lstat-checked; trusted root ownership may require preparation.
+mv "$TEMP_DIR/remote/east" "$TEMP_DIR/remote/east-real"
+ln -s "$TEMP_DIR/remote/east-real" "$TEMP_DIR/remote/east"
+expect_failure 'runtime-root status=failed reason=unsafe' runtime-symlink
+rm "$TEMP_DIR/remote/east"; mv "$TEMP_DIR/remote/east-real" "$TEMP_DIR/remote/east"
+chmod 777 "$TEMP_DIR/remote/east"; expect_failure 'runtime-root status=failed reason=unsafe' runtime-mode; chmod 700 "$TEMP_DIR/remote/east"
+FAKE_RUNTIME_OTHER_OWNER_HOST=east expect_failure 'runtime-root status=failed reason=unsafe' runtime-owner
+FAKE_RUNTIME_ROOT_OWNER_HOST=east run_deploy root-owned >/dev/null
+jq -e '.targets[] | select(.name == "east") | .deploymentState == "needs_prepare"' "$TEMP_DIR/output/root-owned-state/manifest.json" >/dev/null
+
+# Secret diagnostics are bounded, and unsafe local lock entries are never followed or truncated.
+chmod 644 "$SECRET_FILE"; : > "$LOG"; expect_failure 'secret-source-must-be-owner-only' secret-mode; test ! -s "$LOG"; chmod 600 "$SECRET_FILE"
+FAKE_STAT_ERROR_PATH="$SECRET_FILE" expect_failure 'secret-source-stat-failed' secret-stat-error
+FAKE_GREP_ERROR=true expect_failure 'required-reference-scan-failed' secret-grep-error
+mkdir -m 700 "$TEMP_DIR/output/lock-symlink-state" "$TEMP_DIR/output/lock-symlink-evidence"
+printf 'preserve-lock-target\n' > "$TEMP_DIR/lock-target"; ln -s "$TEMP_DIR/lock-target" "$TEMP_DIR/output/lock-symlink-state/run.lock"
+expect_failure 'unsafe-lock-entry' lock-symlink; test "$(<"$TEMP_DIR/lock-target")" = preserve-lock-target
+mkdir -m 700 "$TEMP_DIR/output/lock-hardlink-state" "$TEMP_DIR/output/lock-hardlink-evidence"
+printf 'preserve-hardlink-target\n' > "$TEMP_DIR/hardlink-target"; ln "$TEMP_DIR/hardlink-target" "$TEMP_DIR/output/lock-hardlink-state/run.lock"
+expect_failure 'unsafe-lock-entry' lock-hardlink; test "$(<"$TEMP_DIR/hardlink-target")" = preserve-hardlink-target
+
+# Static strictness includes explicit endpoint ports and shared target shape.
+jq '.logicHost.publicEndpoint="http://127.0.0.1"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' missing-public-port
+: > "$LOG"
+jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$BASE_INVENTORY" > "$INVENTORY"
+expect_failure 'schema-or-value-invalid' isolated-logic-http
+test ! -s "$LOG" || fail 'Isolated LogicHost HTTP rejection contacted transport.'
+jq '.logicHost.internalEndpoint="http://127.0.0.1:12345"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' internal-port-mismatch
+jq '.logicHost.runtimeRoot="/srv/../private"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' traversal
+jq '.logicHost.extra="rejected"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' unknown
+jq '.images.tag="latest"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' mutable-image-tag
+jq '.images.logicHost.repository="https://user:password@registry.example/logichost"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' credential-image-url
+jq '.images.distributionMode="archive" | .images.registryImmutableTags=false | .images.artifactRoot="relative/artifacts"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' relative-artifact-root
+jq '.images.registryImmutableTags=false' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' mutable-registry-policy
+jq '.images.builder.endpoint="remote-context"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' declared-remote-builder
+
+# Duplicate secret entries are rejected globally before transport for every controlled secret class.
+for secret_case in sql redis minio certificate owner bootstrap; do
+    duplicate_reference="DUPLICATE_${secret_case^^}"
+    cp "$SECRET_FILE" "$TEMP_DIR/duplicate-secret.base"
+    printf '%s=first\n%s=second\n' "$duplicate_reference" "$duplicate_reference" >> "$SECRET_FILE"
+    case "$secret_case" in
+      sql) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.sql.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      redis) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.redis.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      minio) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.minio.rootSecretKeyReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      certificate) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] |
+        .deployment.certificates.signingPasswordReference=$reference |
+        .deployment.secretMappings += [{reference:$reference,key:"OpenIddictCertificates__SigningPassword"}]' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      owner) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .cameraAgents[0].ownerPasswordSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      bootstrap) jq --arg reference "$duplicate_reference" '.secretSource.requiredReferences += [$reference] | .deployment.deviceBootstrap.clientSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+    esac
+    : > "$LOG"
+    expect_failure 'duplicate-secret-reference' "duplicate-$secret_case"
+    test ! -s "$LOG" || fail "Duplicate $secret_case secret reached transport."
+    mv "$TEMP_DIR/duplicate-secret.base" "$SECRET_FILE"
+done
+cp "$BASE_INVENTORY" "$INVENTORY"
+cp "$SECRET_FILE" "$TEMP_DIR/duplicate-secret.base"
+printf 'UNUSED_DUPLICATE=first\nUNUSED_DUPLICATE=second\n' >> "$SECRET_FILE"
+: > "$LOG"
+expect_failure 'duplicate-secret-reference' duplicate-unrequired
+test ! -s "$LOG" || fail 'Unrequired duplicate secret reached transport.'
+mv "$TEMP_DIR/duplicate-secret.base" "$SECRET_FILE"
+(
+  # shellcheck source=scripts/deploy/up.sh
+  source "$REPO_ROOT/scripts/deploy/up.sh"
+  printf 'EXACT=one\nEXACT=two\n' > "$TEMP_DIR/extraction-duplicate.env"
+  printf 'CONTROL=before\rafter\n' > "$TEMP_DIR/extraction-control.env"
+  chmod 600 "$TEMP_DIR/extraction-duplicate.env" "$TEMP_DIR/extraction-control.env"
+  if deploy_secret_value "$TEMP_DIR/extraction-duplicate.env" EXACT >/dev/null 2>&1; then exit 91; fi
+  if deploy_secret_value "$TEMP_DIR/extraction-duplicate.env" MISSING >/dev/null 2>&1; then exit 92; fi
+  if deploy_secret_value "$TEMP_DIR/extraction-control.env" CONTROL >/dev/null 2>&1; then exit 93; fi
+)
+
+# Every secret class rejects carriage returns and other control bytes before rendering.
+for secret_case in sql redis minio client certificate; do
+    control_reference="CONTROL_${secret_case^^}"
+    cp "$SECRET_FILE" "$TEMP_DIR/control-secret.base"
+    printf '%s=before\rafter\n' "$control_reference" >> "$SECRET_FILE"
+    case "$secret_case" in
+      sql) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.sql.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      redis) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.redis.adminSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      minio) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.services.minio.rootSecretKeyReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      client) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] | .deployment.deviceBootstrap.clientSecretReference=$reference' "$BASE_INVENTORY" > "$INVENTORY" ;;
+      certificate) jq --arg reference "$control_reference" '.secretSource.requiredReferences += [$reference] |
+        .deployment.certificates.signingPasswordReference=$reference |
+        .deployment.secretMappings += [{reference:$reference,key:"OpenIddictCertificates__SigningPassword"}]' "$BASE_INVENTORY" > "$INVENTORY" ;;
+    esac
+    expect_failure 'control-character-rejected' "control-$secret_case"
+    mv "$TEMP_DIR/control-secret.base" "$SECRET_FILE"
+done
+cp "$BASE_INVENTORY" "$INVENTORY"
+
+# Persistent mode requires a production catalog and HTTPS on LogicHost, every CameraAgent, and shared services.
+jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:") |
+  .logicHost.trustedProxyAddresses=["127.0.0.1"] | (.cameraAgents[].trustedProxyAddresses)=["127.0.0.1"]' "$BASE_INVENTORY" > "$TEMP_DIR/persistent-base.json"
+jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-logic-http schema-or-value-invalid
+jq '.cameraAgents[0].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-east-http
+jq '.cameraAgents[1].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-west-http
+jq '.logicHost.trustedProxyAddresses=[]' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-proxy-missing
+jq '.catalog.kind="fixture"' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-fixture-catalog
+
+# A successful run followed by a transport failure publishes failed, not stale passed, evidence.
+cp "$BASE_INVENTORY" "$INVENTORY"; run_deploy stale-evidence >/dev/null
+FAKE_SSH_UNREACHABLE=east expect_failure 'ssh status=failed reason=unreachable-or-invalid-response' stale-evidence
+jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/stale-evidence-state/manifest.json" >/dev/null
+jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/stale-evidence-evidence/preflight.json" >/dev/null
+if grep -Fq '"phaseStatus":"passed"' "$TEMP_DIR/output/stale-evidence-evidence/preflight.json"; then fail 'Failed rerun retained passed evidence.'; fi
+
+run_deploy evidence-symlink >/dev/null
+printf 'preserve-evidence-target\n' > "$TEMP_DIR/evidence-target"
+rm "$TEMP_DIR/output/evidence-symlink-evidence/preflight.json"
+ln -s "$TEMP_DIR/evidence-target" "$TEMP_DIR/output/evidence-symlink-evidence/preflight.json"
+FAKE_SSH_UNREACHABLE=east expect_failure 'completed-check-or-target-mismatch' evidence-symlink
+test "$(<"$TEMP_DIR/evidence-target")" = preserve-evidence-target
+test -L "$TEMP_DIR/output/evidence-symlink-evidence/preflight.json"
+
+# Rejected inventory, resume, and corrupt-manifest invocations preserve prior valid evidence.
+cp "$BASE_INVENTORY" "$INVENTORY"
+run_deploy completed-check >/dev/null
+cp "$TEMP_DIR/output/completed-check-evidence/preflight.json" "$TEMP_DIR/completed-check.evidence"
+jq '.checks[0].status="failed"' "$TEMP_DIR/output/completed-check-state/manifest.json" > "$TEMP_DIR/completed-check.manifest"
+mv "$TEMP_DIR/completed-check.manifest" "$TEMP_DIR/output/completed-check-state/manifest.json"; chmod 600 "$TEMP_DIR/output/completed-check-state/manifest.json"
+cp "$TEMP_DIR/output/completed-check-state/manifest.json" "$TEMP_DIR/completed-check.tampered"
+expect_failure 'completed-check-or-target-mismatch' completed-check
+cmp -s "$TEMP_DIR/completed-check.tampered" "$TEMP_DIR/output/completed-check-state/manifest.json" || fail 'Rejected completed-check resume rewrote manifest.'
+cmp -s "$TEMP_DIR/completed-check.evidence" "$TEMP_DIR/output/completed-check-evidence/preflight.json" || fail 'Rejected completed-check resume rewrote evidence.'
+run_deploy completed-target >/dev/null
+cp "$TEMP_DIR/output/completed-target-evidence/preflight.json" "$TEMP_DIR/completed-target.evidence"
+jq '.targets[0].hostIdentity="tampered-machine"' "$TEMP_DIR/output/completed-target-state/manifest.json" > "$TEMP_DIR/completed-target.manifest"
+mv "$TEMP_DIR/completed-target.manifest" "$TEMP_DIR/output/completed-target-state/manifest.json"; chmod 600 "$TEMP_DIR/output/completed-target-state/manifest.json"
+cp "$TEMP_DIR/output/completed-target-state/manifest.json" "$TEMP_DIR/completed-target.tampered"
+expect_failure 'completed-check-or-target-mismatch' completed-target
+cmp -s "$TEMP_DIR/completed-target.tampered" "$TEMP_DIR/output/completed-target-state/manifest.json" || fail 'Rejected completed-target resume rewrote manifest.'
+cmp -s "$TEMP_DIR/completed-target.evidence" "$TEMP_DIR/output/completed-target-evidence/preflight.json" || fail 'Rejected completed-target resume rewrote evidence.'
+run_deploy resume-hash >/dev/null
+cp "$TEMP_DIR/output/resume-hash-evidence/preflight.json" "$TEMP_DIR/resume-hash.evidence"
+jq '.catalog.version="catalog-v2"' "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+expect_failure 'resume-contract-mismatch' resume-hash
+cmp -s "$TEMP_DIR/resume-hash.evidence" "$TEMP_DIR/output/resume-hash-evidence/preflight.json" || fail 'Rejected resume changed prior evidence.'
+cp "$BASE_INVENTORY" "$INVENTORY"; run_deploy invalid-inventory >/dev/null
+cp "$TEMP_DIR/output/invalid-inventory-evidence/preflight.json" "$TEMP_DIR/invalid-inventory.evidence"
+jq '.unexpected="invalid"' "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+expect_failure 'schema-or-value-invalid' invalid-inventory
+cmp -s "$TEMP_DIR/invalid-inventory.evidence" "$TEMP_DIR/output/invalid-inventory-evidence/preflight.json" || fail 'Rejected inventory changed prior evidence.'
+cp "$BASE_INVENTORY" "$INVENTORY"; run_deploy corrupt-manifest >/dev/null
+cp "$TEMP_DIR/output/corrupt-manifest-evidence/preflight.json" "$TEMP_DIR/corrupt-manifest.evidence"
+printf 'not-json\n' > "$TEMP_DIR/output/corrupt-manifest-state/manifest.json"
+expect_failure 'invalid-existing-manifest' corrupt-manifest
+cmp -s "$TEMP_DIR/corrupt-manifest.evidence" "$TEMP_DIR/output/corrupt-manifest-evidence/preflight.json" || fail 'Corrupt manifest invocation changed prior evidence.'
+
+# Prepare requires the exact passed preflight and mutates only declared roots/control metadata.
+mkdir -m 700 "$TEMP_DIR/remote/prepare-logic" "$TEMP_DIR/remote/prepare-east" "$TEMP_DIR/remote/prepare-west"
+jq --arg base "$TEMP_DIR/remote" --arg owner "$(id -un)" '
+  .logicHost.runtimeRoot=($base+"/prepare-logic/runtime") |
+  .cameraAgents[0].runtimeRoot=($base+"/prepare-east/runtime") |
+  .cameraAgents[1].runtimeRoot=($base+"/prepare-west/runtime") |
+  .logicHost.runtimeOwner=$owner' "$BASE_INVENTORY" > "$INVENTORY"
+cp "$INVENTORY" "$TEMP_DIR/prepare-happy.inventory"
+run_deploy prepare-happy >/dev/null
+docker_count_before_prepare="$(grep -c '^docker' "$LOG")"
+run_deploy_mode prepare prepare-happy isolated > "$TEMP_DIR/prepare.out"
+docker_count_after_prepare="$(grep -c '^docker' "$LOG")"
+[[ "$docker_count_before_prepare" == "$docker_count_after_prepare" ]] || fail 'Prepare invoked Docker.'
+grep -Fq $'logic@example\tbash\t-s\t--' "$LOG"
+grep -Fq $'east@example\tbash\t-s\t--' "$LOG"
+for prepared_target in prepare-logic prepare-east prepare-west; do
+    test -d "$TEMP_DIR/remote/$prepared_target/runtime/.hvo-deploy"
+    test "$(stat -c %a "$TEMP_DIR/remote/$prepared_target/runtime")" = 700
+    test "$(stat -c %u "$TEMP_DIR/remote/$prepared_target/runtime")" = "$(id -u)"
+    test "$(stat -c %u "$TEMP_DIR/remote/$prepared_target/runtime/.hvo-deploy")" = "$(id -u)"
+    test "$(stat -c %a "$TEMP_DIR/remote/$prepared_target/runtime/.hvo-deploy/ownership")" = 600
+    test "$(stat -c %u "$TEMP_DIR/remote/$prepared_target/runtime/.hvo-deploy/ownership")" = "$(id -u)"
+done
+# shellcheck disable=SC2016 # Assert literal commands in the captured remote script.
+grep -Fq '[[ "$(id -u)" == "$runtime_uid" ]]' "$PREPARE_REMOTE_LOG"
+# shellcheck disable=SC2016
+grep -Fq 'chmod 700 "$root" "$control"' "$PREPARE_REMOTE_LOG"
+# shellcheck disable=SC2016
+grep -Fq 'chmod 600 "$marker"' "$PREPARE_REMOTE_LOG"
+if grep -Fq 'chown ' "$PREPARE_REMOTE_LOG"; then fail 'Prepare retained privileged ownership mutation.'; fi
+prepare_ledger="$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+prepare_manifest="$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json"
+prepare_evidence="$TEMP_DIR/output/prepare-happy-evidence/prepare.json"
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and all(.targets[]; .disposition == "newly-created")' "$prepare_ledger" >/dev/null
+jq -e --slurp '.[0].phaseStatus == "passed" and .[1].phaseStatus == "passed" and
+  ([.[0].targets[].target] | sort) == ([.[1].targets[].target] | sort)' "$prepare_manifest" "$prepare_evidence" >/dev/null
+run_deploy_mode prepare prepare-happy isolated >/dev/null
+jq -e 'all(.targets[]; .disposition == "newly-created" and .newlyCreated.root == true)' "$prepare_ledger" >/dev/null
+
+# Images requires exact prepare state, builds only on the control host, and verifies every target through its declared context.
+: > "$LOG"
+if DEPLOY_TEST_FAILPOINT=abrupt-after-registry-push run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Abrupt post-push failpoint passed.'; fi
+jq -e '.phaseStatus == "running" and [.images[].status] == ["push-intended"]' "$TEMP_DIR/output/prepare-happy-state/images-ledger.json" >/dev/null
+run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-registry.out"
+images_ledger="$TEMP_DIR/output/prepare-happy-state/images-ledger.json"
+images_evidence="$TEMP_DIR/output/prepare-happy-evidence/images.json"
+jq -e '.phaseStatus == "passed" and .distributionMode == "registry" and (.images | length) == 2 and (.targets | length) == 3 and
+  all(.images[]; (.reference | test("@sha256:[0-9a-f]{64}$"))) and all(.targets[]; .status == "verified")' "$images_ledger" >/dev/null
+jq -e '.sourceTree | test("^[0-9a-f]{40,64}$")' "$images_ledger" >/dev/null
+jq -e '(.targets[] | select(.target == "east") | .architecture) == "arm64" and
+  (.targets[] | select(.target == "west") | .architecture) == "amd64"' "$images_ledger" >/dev/null
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3' "$images_evidence" >/dev/null
+grep -Fq $'docker\tbuildx\tbuild\t--builder\tcontrol-builder\t--platform\tlinux/amd64' "$LOG"
+grep -Fq $'docker\tbuildx\tbuild\t--builder\tcontrol-builder\t--platform\tlinux/amd64,linux/arm64' "$LOG"
+grep -Fq $'docker\t--context\teast-context\timage\tpull\tregistry.example/cameraagent@sha256:' "$LOG"
+grep -Fq $'docker\tbuildx\timagetools\tinspect\t--builder\tcontrol-builder' "$LOG"
+jq -e '.images[] | select(.component == "cameraAgent") | [.platforms[].architecture] == ["amd64","arm64"]' "$images_ledger" >/dev/null
+jq -e --arg a "sha256:$(printf 'a%.0s' {1..64})" --arg b "sha256:$(printf 'b%.0s' {1..64})" --arg c "sha256:$(printf 'c%.0s' {1..64})" '
+  (.images[] | select(.component == "logicHost") | .platforms) == [{architecture:"amd64",digest:$a}] and
+  (.images[] | select(.component == "cameraAgent") | .platforms) == [{architecture:"amd64",digest:$c},{architecture:"arm64",digest:$b}]' "$images_ledger" >/dev/null
+while IFS= read -r target_reference; do grep -Fq $'\timage\tpull\t'"$target_reference" "$LOG"; done < <(jq -r '.targets[].reference' "$images_ledger" | sort -u)
+(( $(grep -c $'^docker\t--context\tlogic-context\tinfo' "$LOG") >= 3 )) || fail 'Logic target was not re-correlated around pull and validation.'
+build_count_before_resume="$(grep -c $'^docker\tbuildx\tbuild' "$LOG")"
+if FAKE_IMAGE_INSPECT_DRIFT=east-context run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Completed image architecture drift passed.'; fi
+grep -Fq 'completed-image-drift' "$TEMP_DIR/images-failure.log"
+if FAKE_DOCKER_MISMATCH=west-context run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Same-architecture wrong daemon passed.'; fi
+grep -Fq 'docker-daemon-correlation-mismatch' "$TEMP_DIR/images-failure.log"
+if FAKE_DOCKER_UNSUPPORTED_ARCH=west-context run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Unsupported target daemon architecture passed.'; fi
+grep -Fq 'docker-daemon-unsupported-architecture' "$TEMP_DIR/images-failure.log"
+! grep -Fq 'ppc64le' "$TEMP_DIR/images-failure.log" || fail 'Image correlation leaked raw unsupported architecture.'
+run_deploy_mode images prepare-happy isolated >/dev/null
+build_count_after_resume="$(grep -c $'^docker\tbuildx\tbuild' "$LOG")"
+[[ "$build_count_before_resume" == "$build_count_after_resume" ]] || fail 'Images resume rebuilt completed registry images.'
+if grep -Eq $'docker\t.*\t(compose|container|run|start|up|down)(\t|$)' "$LOG"; then fail 'Images phase started or managed applications.'; fi
+if grep -Eq $'docker\tbuildx\t(rm|stop)' "$LOG"; then fail 'Images phase destructively managed the buildx builder.'; fi
+
+: > "$FAKE_IMAGE_STATE/git-status-count"
+if FAKE_SOURCE_DIRTY_AT_STATUS=1 run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Dirty image source passed.'; fi
+grep -Fq 'images-require-clean-source' "$TEMP_DIR/images-failure.log"
+
+write_prepare_case images-registry-duplicate isolated
+run_prepare_preflight images-registry-duplicate isolated
+run_deploy_mode prepare images-registry-duplicate isolated >/dev/null
+registry_builds_before_adopt="$(grep -c $'^docker\tbuildx\tbuild' "$LOG")"
+run_deploy_mode images images-registry-duplicate isolated >/dev/null
+registry_builds_after_adopt="$(grep -c $'^docker\tbuildx\tbuild' "$LOG")"
+[[ "$registry_builds_before_adopt" == "$registry_builds_after_adopt" ]] || fail 'Exact registry adoption rebuilt or overwrote the tag.'
+
+write_prepare_case images-registry-mismatch isolated
+run_prepare_preflight images-registry-mismatch isolated
+run_deploy_mode prepare images-registry-mismatch isolated >/dev/null
+if FAKE_REGISTRY_MISMATCH_COMPONENT=logicHost run_deploy_mode images images-registry-mismatch isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Mismatched registry tag was adopted or overwritten.'; fi
+grep -Fq 'registry-config-mismatch' "$TEMP_DIR/images-failure.log"
+
+write_prepare_case images-wrong-builder isolated
+run_prepare_preflight images-wrong-builder isolated
+run_deploy_mode prepare images-wrong-builder isolated >/dev/null
+if FAKE_BUILDER_REMOTE=true run_deploy_mode images images-wrong-builder isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Remote buildx builder passed.'; fi
+grep -Fq 'mismatch-or-remote' "$TEMP_DIR/images-failure.log"
+
+write_prepare_case images-target-wrong-daemon isolated
+run_prepare_preflight images-target-wrong-daemon isolated
+run_deploy_mode prepare images-target-wrong-daemon isolated >/dev/null
+if FAKE_DOCKER_MISMATCH=logic-context run_deploy_mode images images-target-wrong-daemon isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Wrong same-architecture daemon passed before pull.'; fi
+grep -Fq 'docker-daemon-correlation-mismatch' "$TEMP_DIR/images-failure.log"
+jq -e '(.targets | length) == 0' "$TEMP_DIR/output/images-target-wrong-daemon-state/images-ledger.json" >/dev/null
+
+write_prepare_case images-without-prepare isolated
+if run_deploy_mode images images-without-prepare isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Images passed without prepare.'; fi
+grep -Fq 'prepare-required' "$TEMP_DIR/images-failure.log"
+
+write_prepare_case images-archive isolated
+archive_root="$TEMP_DIR/artifacts/images-archive"
+mkdir -m 700 "$TEMP_DIR/artifacts"
+jq --arg root "$archive_root" '.images.distributionMode="archive" | .images.registryImmutableTags=false | .images.artifactRoot=$root' "$INVENTORY" > "$INVENTORY.changed"
+mv "$INVENTORY.changed" "$INVENTORY"
+run_prepare_preflight images-archive isolated
+run_deploy_mode prepare images-archive isolated >/dev/null
+: > "$LOG"
+if DEPLOY_TEST_FAILPOINT=after-image-build run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Image build failpoint passed.'; fi
+jq -e '.phaseStatus == "failed" and (.images | length) == 1 and (.targets | length) == 0' "$TEMP_DIR/output/images-archive-state/images-ledger.json" >/dev/null
+if DEPLOY_TEST_FAILPOINT=after-image-transfer run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Image transfer failpoint passed.'; fi
+jq -e '.phaseStatus == "failed" and (.images | length) == 3 and (.targets | length) == 0' "$TEMP_DIR/output/images-archive-state/images-ledger.json" >/dev/null
+if DEPLOY_TEST_FAILPOINT=abrupt-after-images-ledger run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Image ledger publication failpoint passed.'; fi
+jq -e '.phaseStatus == "passed" and (.images | length) == 3 and (.targets | length) == 3' "$TEMP_DIR/output/images-archive-state/images-ledger.json" >/dev/null
+jq -e '.phaseStatus == "running"' "$TEMP_DIR/output/images-archive-state/images-manifest.json" >/dev/null
+jq -e '.phaseStatus == "running"' "$TEMP_DIR/output/images-archive-evidence/images.json" >/dev/null
+run_deploy_mode images images-archive isolated >/dev/null
+jq -e --slurp '.[0] == .[1] and .[0].phaseStatus == "passed"' \
+  "$TEMP_DIR/output/images-archive-state/images-ledger.json" "$TEMP_DIR/output/images-archive-state/images-manifest.json" >/dev/null
+if DEPLOY_TEST_FAILPOINT=abrupt-after-images-ledger run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Second image ledger publication failpoint passed.'; fi
+rm -f "$TEMP_DIR/output/images-archive-evidence/images.json"
+if DEPLOY_TEST_FAILPOINT=abrupt-after-images-evidence run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Image final commit failpoint passed.'; fi
+jq -e '.phaseStatus == "passed" and (.images | length) == 3 and (.targets | length) == 3' "$TEMP_DIR/output/images-archive-state/images-ledger.json" >/dev/null
+jq -e '.phaseStatus == "running"' "$TEMP_DIR/output/images-archive-state/images-manifest.json" >/dev/null
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/images-archive-evidence/images.json" >/dev/null
+run_deploy_mode images images-archive isolated > "$TEMP_DIR/images-archive.out"
+archive_ledger="$TEMP_DIR/output/images-archive-state/images-ledger.json"
+jq -e '.phaseStatus == "passed" and .distributionMode == "archive" and (.images | length) == 3 and (.targets | length) == 3 and
+  all(.images[]; .archivePath != null and (.archiveSha256 | test("^[0-9a-f]{64}$")) and (.configDigest | test("^sha256:[0-9a-f]{64}$")))' "$archive_ledger" >/dev/null
+jq -e --slurp '.[0] == .[1] and
+  (.[0] | {schemaVersion,runId,mode,inventorySha256,sourceRevision,sourceTree,builder,distributionMode,phaseStatus,startedAt,updatedAt,completedAt,
+    images:[.images[] | del(.archivePath)],targets}) == .[2]' \
+  "$archive_ledger" "$TEMP_DIR/output/images-archive-state/images-manifest.json" "$TEMP_DIR/output/images-archive-evidence/images.json" >/dev/null
+while IFS= read -r archive_entry; do
+    archive_path="$(jq -r '.archivePath' <<< "$archive_entry")"
+    test -f "$archive_path"; test "$(stat -c %a "$archive_path")" = 600
+    test "$(sha256sum "$archive_path" | cut -d' ' -f1)" = "$(jq -r '.archiveSha256' <<< "$archive_entry")"
+done < <(jq -c '.images[]' "$archive_ledger")
+grep -Fq $'docker\t--context\teast-context\timage\tload\t--input' "$LOG"
+if grep -Eq $'docker\tbuildx\tbuild.*--push' "$LOG"; then fail 'Archive mode pushed to a registry.'; fi
+
+write_prepare_case images-source-drift isolated
+source_drift_root="$TEMP_DIR/artifacts/images-source-drift"
+jq --arg root "$source_drift_root" '.images.distributionMode="archive" | .images.registryImmutableTags=false | .images.artifactRoot=$root' "$INVENTORY" > "$INVENTORY.changed"
+mv "$INVENTORY.changed" "$INVENTORY"
+run_prepare_preflight images-source-drift isolated
+run_deploy_mode prepare images-source-drift isolated >/dev/null
+: > "$FAKE_IMAGE_STATE/git-status-count"
+if FAKE_SOURCE_DIRTY_AT_STATUS=4 run_deploy_mode images images-source-drift isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Source change between component builds passed.'; fi
+grep -Fq 'source-changed-or-dirty' "$TEMP_DIR/images-failure.log"
+jq -e '.phaseStatus == "failed" and (.images | length) == 1' "$TEMP_DIR/output/images-source-drift-state/images-ledger.json" >/dev/null
+run_deploy_mode images images-source-drift isolated >/dev/null
+if grep -Fq 'fixture-secret-never-print' "$TEMP_DIR/images-failure.log" ||
+   grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output"/*-evidence/images.json 2>/dev/null; then
+    fail 'Image failure or evidence exposed a secret.'
+fi
+cp "$BASE_INVENTORY" "$INVENTORY"
+
+write_prepare_case no-preflight isolated
+expect_prepare_failure 'preflight-required' prepare-without-preflight isolated
+
+write_prepare_case isolated-unmarked isolated
+mkdir -m 700 "$TEMP_DIR/remote/isolated-unmarked-logic/runtime"
+run_prepare_preflight isolated-unmarked isolated
+expect_prepare_failure 'unmarked-root' isolated-unmarked isolated
+
+write_prepare_case persistent-empty persistent
+mkdir -m 700 "$TEMP_DIR/remote/persistent-empty-logic/runtime"
+run_prepare_preflight persistent-empty persistent
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-empty persistent >/dev/null
+printf 'preserved\n' > "$TEMP_DIR/remote/persistent-empty-logic/runtime/application-state"
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-empty persistent >/dev/null
+test "$(<"$TEMP_DIR/remote/persistent-empty-logic/runtime/application-state")" = preserved
+
+write_prepare_case persistent-nonempty persistent
+mkdir -m 700 "$TEMP_DIR/remote/persistent-nonempty-logic/runtime"
+printf 'existing\n' > "$TEMP_DIR/remote/persistent-nonempty-logic/runtime/application-state"
+run_prepare_preflight persistent-nonempty persistent
+expect_prepare_failure 'nonempty-unmarked-root' persistent-nonempty persistent
+test "$(<"$TEMP_DIR/remote/persistent-nonempty-logic/runtime/application-state")" = existing
+
+write_prepare_case unsafe-symlink isolated
+run_prepare_preflight unsafe-symlink isolated
+mkdir -m 700 "$TEMP_DIR/remote/unsafe-symlink-target"
+ln -s "$TEMP_DIR/remote/unsafe-symlink-target" "$TEMP_DIR/remote/unsafe-symlink-east/runtime"
+expect_prepare_failure 'unsafe-path' unsafe-symlink isolated
+rm "$TEMP_DIR/remote/unsafe-symlink-east/runtime"
+
+write_prepare_case unsafe-mode isolated
+run_prepare_preflight unsafe-mode isolated
+FAKE_PREPARE_UNSAFE_MODE_HOST=east expect_prepare_failure 'unsafe-path' unsafe-mode isolated
+write_prepare_case unsafe-owner isolated
+run_prepare_preflight unsafe-owner isolated
+FAKE_PREPARE_FOREIGN_OWNER_HOST=east expect_prepare_failure 'unsafe-owner' unsafe-owner isolated
+write_prepare_case root-parent isolated
+run_prepare_preflight root-parent isolated
+FAKE_PREPARE_ROOT_PARENT_HOST=east expect_prepare_failure 'owner-controlled-parent-required' root-parent isolated
+write_prepare_case changed-identity isolated
+run_prepare_preflight changed-identity isolated
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' changed-identity isolated
+
+# Failure on later targets publishes exact successful progress; resume skips completed targets.
+write_prepare_case fail-second isolated
+run_prepare_preflight fail-second isolated
+logic_prepare_root="$TEMP_DIR/remote/fail-second-logic/runtime"
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' fail-second isolated
+jq -e --slurp 'all(.[]; .phaseStatus == "failed") and
+  all(.[]; [.targets[].target] == ["logic"])' \
+  "$TEMP_DIR/output/fail-second-state/prepare-ledger.json" "$TEMP_DIR/output/fail-second-state/prepare-manifest.json" \
+  "$TEMP_DIR/output/fail-second-evidence/prepare.json" >/dev/null || {
+    jq -s '{phases:map(.phaseStatus),targets:map([.targets[].target])}' "$TEMP_DIR/output/fail-second-state/prepare-ledger.json" \
+      "$TEMP_DIR/output/fail-second-state/prepare-manifest.json" "$TEMP_DIR/output/fail-second-evidence/prepare.json" >&2
+    fail 'Second-target failure progress was inconsistent.'
+  }
+logic_calls_before_resume="$(grep -F "$logic_prepare_root" "$LOG" | grep -c 'logic@example')"
+logic_marker_before_resume="$(sha256sum "$logic_prepare_root/.hvo-deploy/ownership")"
+logic_metadata_before_resume="$(stat -c '%u:%a' "$logic_prepare_root" "$logic_prepare_root/.hvo-deploy" "$logic_prepare_root/.hvo-deploy/ownership")"
+run_deploy_mode prepare fail-second isolated >/dev/null
+logic_calls_after_resume="$(grep -F "$logic_prepare_root" "$LOG" | grep -c 'logic@example')"
+(( logic_calls_after_resume == logic_calls_before_resume + 1 )) || fail 'Resume did not validate completed first target exactly once.'
+grep -F "$logic_prepare_root" "$LOG" | grep -Fq $'\tvalidate'
+[[ "$(sha256sum "$logic_prepare_root/.hvo-deploy/ownership")" == "$logic_marker_before_resume" ]] || fail 'Completed-target validation changed marker.'
+[[ "$(stat -c '%u:%a' "$logic_prepare_root" "$logic_prepare_root/.hvo-deploy" "$logic_prepare_root/.hvo-deploy/ownership")" == "$logic_metadata_before_resume" ]] || fail 'Completed-target validation changed ownership or modes.'
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3' "$TEMP_DIR/output/fail-second-state/prepare-ledger.json" >/dev/null
+
+write_prepare_case fail-third isolated
+run_prepare_preflight fail-third isolated
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=west expect_prepare_failure 'identity-mismatch' fail-third isolated
+jq -e --slurp 'all(.[]; .phaseStatus == "failed") and
+  all(.[]; [.targets[].target] == ["logic","east"])' \
+  "$TEMP_DIR/output/fail-third-state/prepare-ledger.json" "$TEMP_DIR/output/fail-third-state/prepare-manifest.json" \
+  "$TEMP_DIR/output/fail-third-evidence/prepare.json" >/dev/null
+run_deploy_mode prepare fail-third isolated >/dev/null
+
+# Completed-target validation detects drift before continuing later targets.
+create_partial_prepare_case drift-deleted-root
+rm -rf "$TEMP_DIR/remote/drift-deleted-root-logic/runtime"
+expect_prepare_failure 'completed-drift' drift-deleted-root isolated
+
+create_partial_prepare_case drift-marker
+printf 'altered\n' > "$TEMP_DIR/remote/drift-marker-logic/runtime/.hvo-deploy/ownership"
+expect_prepare_failure 'completed-drift' drift-marker isolated
+
+create_partial_prepare_case drift-mode
+chmod 755 "$TEMP_DIR/remote/drift-mode-logic/runtime"
+expect_prepare_failure 'completed-drift' drift-mode isolated
+
+create_partial_prepare_case drift-owner
+FAKE_PREPARE_FOREIGN_OWNER_HOST=logic expect_prepare_failure 'unsafe-owner' drift-owner isolated
+
+create_partial_prepare_case drift-host
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=logic expect_prepare_failure 'identity-mismatch' drift-host isolated
+
+# A root-creation interruption leaves exact lock metadata that permits recovery and enforces contention.
+write_prepare_case prepare-root-fail isolated
+run_prepare_preflight prepare-root-fail isolated
+if DEPLOY_TEST_FAILPOINT=after-root-creation run_deploy_mode prepare prepare-root-fail isolated > "$TEMP_DIR/prepare-failure.log" 2>&1; then fail 'Root failpoint passed.'; fi
+lock_path=("$TEMP_DIR/remote/prepare-root-fail-logic"/.hvo-deploy-prepare-*.lock)
+test "${#lock_path[@]}" = 1
+exec 88<>"${lock_path[0]}"; flock -n 88
+expect_prepare_failure 'lock-contended' prepare-root-fail isolated
+flock -u 88; exec 88>&-
+run_deploy_mode prepare prepare-root-fail isolated >/dev/null
+
+for prepare_failpoint in after-marker-creation after-ledger-publication after-prepare-evidence; do
+    prepare_case="prepare-$prepare_failpoint"
+    write_prepare_case "$prepare_case" isolated
+    run_prepare_preflight "$prepare_case" isolated
+    if DEPLOY_TEST_FAILPOINT="$prepare_failpoint" run_deploy_mode prepare "$prepare_case" isolated > "$TEMP_DIR/prepare-failure.log" 2>&1; then
+        fail "Prepare failpoint passed: $prepare_failpoint"
+    fi
+    run_deploy_mode prepare "$prepare_case" isolated >/dev/null
+    jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$prepare_case-state/prepare-manifest.json" >/dev/null
+    jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$prepare_case-state/prepare-ledger.json" >/dev/null
+    jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$prepare_case-evidence/prepare.json" >/dev/null
+done
+
+# Persistent failpoint recovery retains pre-mutation creation provenance.
+write_prepare_case persistent-root-provenance persistent
+run_prepare_preflight persistent-root-provenance persistent
+if DEPLOY_TEST_FAILPOINT=after-root-creation FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-root-provenance persistent > "$TEMP_DIR/prepare-failure.log" 2>&1; then
+    fail 'Persistent root failpoint passed.'
+fi
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-root-provenance persistent >/dev/null
+jq -e 'all(.targets[]; .newlyCreated.root == true and .newlyCreated.controlDirectory == true and .newlyCreated.marker == true)' \
+  "$TEMP_DIR/output/persistent-root-provenance-state/prepare-ledger.json" >/dev/null
+
+write_prepare_case persistent-empty-provenance persistent
+mkdir -m 700 "$TEMP_DIR/remote/persistent-empty-provenance-logic/runtime"
+run_prepare_preflight persistent-empty-provenance persistent
+if DEPLOY_TEST_FAILPOINT=after-marker-creation FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-empty-provenance persistent > "$TEMP_DIR/prepare-failure.log" 2>&1; then
+    fail 'Persistent marker failpoint passed.'
+fi
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-empty-provenance persistent >/dev/null
+jq -e '.targets[] | select(.target == "logic") |
+  .newlyCreated.root == false and .newlyCreated.controlDirectory == true and .newlyCreated.marker == true' \
+  "$TEMP_DIR/output/persistent-empty-provenance-state/prepare-ledger.json" >/dev/null
+
+# An accepted idempotent rerun commits running before clearing stale prepare evidence and recovers interruption.
+cp "$TEMP_DIR/prepare-happy.inventory" "$INVENTORY"
+cp "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" "$TEMP_DIR/prepare-happy.prior-evidence"
+if DEPLOY_TEST_FAILPOINT=after-prepare-running-manifest run_deploy_mode prepare prepare-happy isolated > "$TEMP_DIR/prepare-failure.log" 2>&1; then
+    fail 'Prepare running-manifest failpoint passed.'
+fi
+jq -e '.phaseStatus == "running"' "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" >/dev/null
+cmp -s "$TEMP_DIR/prepare-happy.prior-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Interrupted accepted rerun changed stale evidence before clear.'
+run_deploy_mode prepare prepare-happy isolated >/dev/null
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" >/dev/null
+cp "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" "$TEMP_DIR/prepare-happy.accepted-evidence"
+jq '.installationId="rejected-installation"' "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+expect_prepare_failure 'resume-contract-mismatch' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.accepted-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Rejected prepare validation changed prior prepare evidence.'
+cp "$TEMP_DIR/prepare-happy.inventory" "$INVENTORY"
+
+# Corrupt, duplicate, and inventory-mismatched ledgers are rejected before prepare artifacts change.
+cp "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json" "$TEMP_DIR/prepare-happy.valid-ledger"
+cp "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" "$TEMP_DIR/prepare-happy.valid-manifest"
+cp "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" "$TEMP_DIR/prepare-happy.valid-prepare-evidence"
+printf 'not-json\n' > "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+expect_prepare_failure 'ledger' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.valid-manifest" "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" || fail 'Corrupt ledger invocation changed prepare manifest.'
+cmp -s "$TEMP_DIR/prepare-happy.valid-prepare-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Corrupt ledger invocation changed prepare evidence.'
+cp "$TEMP_DIR/prepare-happy.valid-ledger" "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+jq '.targets += [.targets[0]]' "$TEMP_DIR/prepare-happy.valid-ledger" > "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+expect_prepare_failure 'duplicate-target' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.valid-manifest" "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" || fail 'Duplicate ledger invocation changed prepare manifest.'
+cp "$TEMP_DIR/prepare-happy.valid-ledger" "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+jq '.targets[0].runtimeRoot="/mismatched/root"' "$TEMP_DIR/prepare-happy.valid-ledger" > "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+expect_prepare_failure 'target-mismatch' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.valid-prepare-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Mismatched ledger invocation changed prepare evidence.'
+cp "$TEMP_DIR/prepare-happy.valid-ledger" "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+jq '.targets[0].newlyCreated.controlDirectory = false' "$TEMP_DIR/prepare-happy.valid-ledger" > "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+expect_prepare_failure 'provenance-mismatch' prepare-happy isolated
+cmp -s "$TEMP_DIR/prepare-happy.valid-manifest" "$TEMP_DIR/output/prepare-happy-state/prepare-manifest.json" || fail 'Provenance mismatch changed prepare manifest.'
+cmp -s "$TEMP_DIR/prepare-happy.valid-prepare-evidence" "$TEMP_DIR/output/prepare-happy-evidence/prepare.json" || fail 'Provenance mismatch changed prepare evidence.'
+cp "$TEMP_DIR/prepare-happy.valid-ledger" "$TEMP_DIR/output/prepare-happy-state/prepare-ledger.json"
+
+# Completed validation never initializes or repairs an empty lock.
+write_prepare_case empty-lock isolated
+run_prepare_preflight empty-lock isolated
+run_deploy_mode prepare empty-lock isolated >/dev/null
+empty_lock_path=("$TEMP_DIR/remote/empty-lock-logic"/.hvo-deploy-prepare-*.lock)
+test "${#empty_lock_path[@]}" = 1
+cp "$TEMP_DIR/output/empty-lock-state/prepare-manifest.json" "$TEMP_DIR/empty-lock.manifest"
+cp "$TEMP_DIR/output/empty-lock-evidence/prepare.json" "$TEMP_DIR/empty-lock.evidence"
+: > "${empty_lock_path[0]}"
+expect_prepare_failure 'completed-drift' empty-lock isolated
+test ! -s "${empty_lock_path[0]}" || fail 'Completed validation repaired an empty lock.'
+cmp -s "$TEMP_DIR/empty-lock.manifest" "$TEMP_DIR/output/empty-lock-state/prepare-manifest.json" || fail 'Empty-lock validation changed prepare manifest.'
+cmp -s "$TEMP_DIR/empty-lock.evidence" "$TEMP_DIR/output/empty-lock-evidence/prepare.json" || fail 'Empty-lock validation changed prepare evidence.'
+
+# Persistent ownership cannot be adopted by another installation identity.
+write_prepare_case persistent-same-install persistent
+run_prepare_preflight persistent-same-a persistent
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-same-a persistent >/dev/null
+run_prepare_preflight persistent-same-b persistent
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-same-b persistent >/dev/null
+jq -e 'all(.targets[]; .creatingRunId == "persistent-same-a" and .disposition == "preexisting-or-resumed" and
+  .newlyCreated.root == false and .newlyCreated.controlDirectory == false and .newlyCreated.marker == false)' \
+  "$TEMP_DIR/output/persistent-same-b-state/prepare-ledger.json" >/dev/null
+
+write_prepare_case persistent-cross persistent
+run_prepare_preflight persistent-cross-a persistent
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare persistent-cross-a persistent >/dev/null
+jq '.installationId="other-installation"' "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode preflight persistent-cross-b persistent >/dev/null
+expect_prepare_failure 'lock-content-mismatch' persistent-cross-b persistent
+
+write_prepare_case isolated-cross isolated
+run_prepare_preflight isolated-cross-a isolated
+run_deploy_mode prepare isolated-cross-a isolated >/dev/null
+run_prepare_preflight isolated-cross-b isolated
+expect_prepare_failure 'lock-content-mismatch' isolated-cross-b isolated
+
+if grep -Eq '(^|[[:space:]])(rm|rmdir|docker|compose|curl|timeout)([[:space:]]|$)' "$PREPARE_REMOTE_LOG"; then
+    fail 'Prepare remote script contains deletion or unrelated mutation commands.'
+fi
+if grep -Fq 'fixture-secret-never-print' "$PREPARE_REMOTE_LOG" || grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output"; then
+    fail 'Prepare logs or state exposed a fixture secret.'
+fi
+if grep -R -Eq 'logic-machine|east-machine|west-machine' "$TEMP_DIR/output"/*-evidence/prepare.json 2>/dev/null; then
+    fail 'Sanitized prepare evidence exposed machine identity.'
+fi
+
+# Catalog and up execute against fake remote hosts without trusting prior phase state.
+deploy_case=deploy-up
+bundle="$TEMP_DIR/catalog-bundle"
+install_root="$TEMP_DIR/catalog-install"
+mkdir -m 700 "$bundle"
+cp "$REPO_ROOT/tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" "$bundle/hyg_v42.sqlite"
+catalog_sha="$(sha256sum "$bundle/hyg_v42.sqlite" | cut -d' ' -f1)"
+catalog_length="$(wc -c < "$bundle/hyg_v42.sqlite")"
+jq -n --arg sha "$catalog_sha" --argjson length "$catalog_length" '{manifestVersion:1,
+  package:{kind:"fixture",version:"fixture-v1"},catalog:{name:"HYG bright-star test fixture",version:"4.2-fixture.1"},
+  schemaVersion:"2",preprocessingVersion:"3",database:{relativePath:"hyg_v42.sqlite",sha256:$sha,length:$length,rowCount:9}}' > "$bundle/manifest.json"
+printf 'certificate-fixture\n' > "$TEMP_DIR/signing.pfx"
+printf 'certificate-fixture\n' > "$TEMP_DIR/encryption.pfx"
+chmod 600 "$TEMP_DIR/signing.pfx" "$TEMP_DIR/encryption.pfx"
+jq --arg root "$TEMP_DIR/remote/$deploy_case" --arg bundle "$bundle" --arg install "$install_root" --arg endpoint "http://127.0.0.1:$HTTP_PORT" \
+  --arg public "https://public.example.test:$HTTP_PORT" \
+  --arg signing "$TEMP_DIR/signing.pfx" --arg encryption "$TEMP_DIR/encryption.pfx" --arg sha "$catalog_sha" \
+  --argjson port "$HTTP_PORT" --argjson length "$catalog_length" '
+  .catalog={kind:"fixture",version:"fixture-v1",sha256:$sha,length:$length,rowCount:9} |
+  .deployment.catalog={bundlePath:$bundle,installRoot:$install,allowFixture:true} |
+  .deployment.services.sql.database="hvo-deploy-up" | .deployment.resources.sqlDatabase="hvo-deploy-up" |
+  .deployment.services.redis.prefix="hvo-deploy-up:" | .deployment.resources.redisPrefix="hvo-deploy-up:" |
+  .deployment.services.minio.artifactBucket="hvo-deploy-up-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-up-artifacts" |
+  .deployment.services.minio.diagnosticsBucket="hvo-deploy-up-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-up-diagnostics" |
+  .deployment.resources.project="hvo-deploy-up" |
+  .deployment.certificates.signingPath=$signing | .deployment.certificates.encryptionPath=$encryption |
+  .logicHost.runtimeRoot=($root+"-logic/runtime") | .logicHost.internalEndpoint=$endpoint | .logicHost.publicEndpoint=$public | .logicHost.trustedProxyAddresses=["127.0.0.1"] | .logicHost.ports=[$port] |
+  (.cameraAgents[0].runtimeRoot)=($root+"-east/runtime") | (.cameraAgents[0].internalEndpoint)=$endpoint | (.cameraAgents[0].publicEndpoint)=$public | (.cameraAgents[0].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[0].ports)=[$port] |
+  (.cameraAgents[1].runtimeRoot)=($root+"-west/runtime") | (.cameraAgents[1].internalEndpoint)=$endpoint | (.cameraAgents[1].publicEndpoint)=$public | (.cameraAgents[1].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[1].ports)=[$port] |
+  (.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.minio.port,.deployment.services.smtp.port)=$port |
+  .serviceEndpoints=[{name:"test-service",host:"127.0.0.1",port:$port,fromTargets:["logic","east","west"]}]' \
+  "$BASE_INVENTORY" > "$INVENTORY"
+mkdir -m 700 "$TEMP_DIR/remote/$deploy_case-logic" "$TEMP_DIR/remote/$deploy_case-east" "$TEMP_DIR/remote/$deploy_case-west"
+run_deploy_mode preflight "$deploy_case" isolated >/dev/null
+run_deploy_mode prepare "$deploy_case" isolated >/dev/null
+rm -f "$FAKE_IMAGE_STATE"/*.pushed "$FAKE_IMAGE_STATE"/*.platforms "$FAKE_IMAGE_STATE"/*.labels "$FAKE_IMAGE_STATE"/*.reference "$FAKE_IMAGE_STATE"/*.config
+run_deploy_mode images "$deploy_case" isolated >/dev/null
+
+# Fixture manifest identity and shape mismatches fail before SSH, SCP, or installation.
+cp "$bundle/manifest.json" "$TEMP_DIR/fixture-manifest.valid"
+for fixture_mismatch in kind version sha length rows shape; do
+    case "$fixture_mismatch" in
+      kind) jq '.package.kind="production"' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      version) jq '.package.version="other-fixture"' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      sha) jq '.database.sha256=("0"*64)' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      length) jq '.database.length += 1' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      rows) jq '.database.rowCount += 1' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      shape) cp "$TEMP_DIR/fixture-manifest.valid" "$bundle/manifest.json"; printf 'unexpected\n' > "$bundle/unexpected.txt" ;;
+    esac
+    : > "$LOG"
+    if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-mismatch.log" 2>&1; then fail "Fixture catalog $fixture_mismatch mismatch passed."; fi
+    test ! -s "$LOG" || fail "Fixture catalog $fixture_mismatch mismatch reached transport."
+    rm -f "$bundle/unexpected.txt"
+done
+cp "$TEMP_DIR/fixture-manifest.valid" "$bundle/manifest.json"
+
+# A production-shaped bundle with inventory-mismatched identity is rejected before transport or the production installer.
+production_mismatch_bundle="$TEMP_DIR/production-mismatch-bundle"
+mkdir -m 700 "$production_mismatch_bundle"
+cp "$bundle/hyg_v42.sqlite" "$production_mismatch_bundle/hyg_v42.sqlite"
+printf 'license\n' > "$production_mismatch_bundle/LICENSE-HYG.md"
+printf 'attribution\n' > "$production_mismatch_bundle/ATTRIBUTION-HYG.md"
+jq '.package.kind="production" | .package.version="wrong-production"' "$TEMP_DIR/fixture-manifest.valid" > "$production_mismatch_bundle/manifest.json"
+jq --arg bundle "$production_mismatch_bundle" '.catalog.kind="production" | .catalog.version="expected-production" |
+  .deployment.catalog.bundlePath=$bundle' "$INVENTORY" > "$TEMP_DIR/production-mismatch-inventory.json"
+: > "$LOG"
+(
+  # shellcheck source=scripts/deploy/common.sh
+  source "$REPO_ROOT/scripts/deploy/common.sh"
+  # shellcheck source=scripts/deploy/catalog.sh
+  source "$REPO_ROOT/scripts/deploy/catalog.sh"
+  if deploy_validate_local_catalog "$TEMP_DIR/production-mismatch-inventory.json" > "$TEMP_DIR/production-catalog-mismatch.log" 2>&1; then
+      exit 91
+  fi
+)
+test ! -s "$LOG" || fail 'Production catalog mismatch reached transport.'
+run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+if DEPLOY_TEST_FAILPOINT=abrupt-after-private-scp-upload run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/up-private-upload-crash.log" 2>&1; then
+  fail 'Private SCP interruption failpoint passed.'
+fi
+jq -e 'length == 1 and (.[0].path | test("/[.]hvo-deploy/uploads/hvo-upload-up-[0-9]+-[0-9a-f]{32}[.]tmp$")) and .[0].target.name == "logic"' \
+  "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+upload_path="$(jq -r '.[0].path' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json")"
+test -f "$upload_path"
+if FAKE_SSH_UNREACHABLE=logic run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/up-private-upload-cleanup-failure.log" 2>&1; then
+  fail 'Up passed while a registered private upload could not be reconciled.'
+fi
+test -f "$upload_path"
+jq -e 'length == 1' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+run_deploy_mode up "$deploy_case" isolated >/dev/null
+test ! -e "$upload_path"
+jq -e 'length == 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+run_deploy_mode up "$deploy_case" isolated >/dev/null
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and ([.targets[].target] | unique | length) == 3 and
+  ([.resources[].kind] | sort) == ["existing-services","logic-initializer"]' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null
+jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and all(.targets[]; .status == "installed")' \
+  "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" >/dev/null
+logic_config="$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/up-$deploy_case"
+test -f "$logic_config/initializer-secrets/ConnectionStrings__skymonitordb-migrations"
+test ! -e "$logic_config/runtime-secrets/ConnectionStrings__skymonitordb-migrations"
+test -f "$logic_config/runtime-secrets/ConnectionStrings__skymonitordb"
+test ! -e "$logic_config/initializer-secrets/ConnectionStrings__skymonitordb"
+test "$(<"$logic_config/initializer-secrets/Catalog__Root")" = /app/catalog
+test "$(<"$logic_config/runtime-secrets/Catalog__Root")" = /app/catalog
+test "$(<"$logic_config/initializer-secrets/Catalog__RequiredPackageKind")" = Fixture
+grep -Fq "HVO_CATALOG_ROOT=$TEMP_DIR/catalog-install" "$TEMP_DIR/output/$deploy_case-state/up-rendered/logic.env"
+test ! -e "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case/secrets/ConnectionStrings__skymonitordb"
+east_config="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case"
+test "$(<"$east_config/secrets/LocalIdentity__AdminPasswordFile")" = /run/hvo-private/owner-password
+test "$(<"$east_config/secrets/CameraAgent__ConfigFilePath")" = /app/cameraagent.deploy.json
+test "$(<"$east_config/secrets/SkyMonitor__BaseUrl")" = "https://public.example.test:$HTTP_PORT"
+test "$(<"$east_config/secrets/Catalog__Root")" = /app/catalog
+test "$(<"$east_config/secrets/Catalog__RequiredPackageKind")" = Fixture
+cmp -s "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json" "$east_config/camera-module.json"
+test -s "$east_config/private/owner-password"
+test ! -e "$east_config/cameraagent.json"
+if grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output/$deploy_case-evidence"; then fail 'Deployment evidence exposed a secret.'; fi
+grep -Fq $'compose\t--project-name\thvo-deploy-up-logic' "$LOG"
+
+# Registry publication is a hard barrier for every bootstrap credential destination.
+bootstrap_state="$TEMP_DIR/output/$deploy_case-state"
+bootstrap_rendered="$bootstrap_state/bootstrap-rendered"
+bootstrap_private="$bootstrap_state/bootstrap-private"
+logic_private="$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/bootstrap-$deploy_case"
+east_private="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case"
+while IFS=$'\t' read -r registry_match sensitive_destination; do
+  if run_deploy_mode_with_registry_failure "$registry_match" bootstrap "$deploy_case" isolated > "$TEMP_DIR/registry-publication-failure.log" 2>&1; then
+    fail "Bootstrap passed after registry publication failure for $registry_match."
+  fi
+  test ! -e "$sensitive_destination" || fail "Bootstrap created a sensitive destination after registry publication failure: $sensitive_destination"
+  jq -e 'length == 0' "$bootstrap_state/private-upload-registry.json" >/dev/null ||
+    fail "Bootstrap retained registry entries after publication failure for $registry_match."
+done <<EOF
+$bootstrap_rendered/central.headers	$bootstrap_rendered/central.headers
+$logic_private/owner.headers	$logic_private/owner.headers
+$bootstrap_rendered/east-owner-password	$bootstrap_rendered/east-owner-password
+$east_private/owner-password	$east_private/owner-password
+$east_private/owner.cookies	$east_private/owner.cookies
+$east_private/login.html	$east_private/login.html
+$east_private/login-response.html	$east_private/login-response.html
+$east_private/owner-verification.json	$east_private/owner-verification.json
+$east_private/antiforgery.json	$east_private/antiforgery.json
+$bootstrap_private/east-antiforgery.json	$bootstrap_private/east-antiforgery.json
+$bootstrap_rendered/east-antiforgery.headers	$bootstrap_rendered/east-antiforgery.headers
+$east_private/owner.headers	$east_private/owner.headers
+EOF
+owner_stage_count="$(grep -c $'^scp\t.*east-owner-password\teast@example:' "$LOG" || true)"
+for prerequisite in \
+  "$east_config/private/owner-password" \
+  "$east_config/secrets/LocalIdentity__AdminPasswordFile"; do
+  if run_deploy_mode_with_registry_failure "$prerequisite" bootstrap "$deploy_case" isolated > "$TEMP_DIR/registry-prerequisite-failure.log" 2>&1; then
+    fail "Bootstrap passed after registry publication failure for $prerequisite."
+  fi
+  test "$(grep -c $'^scp\t.*east-owner-password\teast@example:' "$LOG" || true)" = "$owner_stage_count" ||
+    fail "Bootstrap staged an owner password after prerequisite registration failed: $prerequisite"
+  jq -e 'length == 0' "$bootstrap_state/private-upload-registry.json" >/dev/null
+done
+# Bootstrap resumes every one-time-envelope ambiguity boundary without duplicating authority.
+if DEPLOY_TEST_FAILPOINT=after-registration run_deploy_mode bootstrap "$deploy_case" isolated > "$TEMP_DIR/after-registration.log" 2>&1; then
+  fail 'Bootstrap failpoint after-registration passed.'
+fi
+jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_case-state/bootstrap-ledger.json" >/dev/null
+if run_deploy_mode_with_registry_failure "$bootstrap_private/east-envelope.json" bootstrap "$deploy_case" isolated \
+  > "$TEMP_DIR/registry-envelope-local-failure.log" 2>&1; then
+  fail 'Bootstrap passed after local envelope registry publication failed.'
+fi
+test ! -e "$bootstrap_private/east-envelope.json"
+if run_deploy_mode_with_registry_failure "$logic_private/east-envelope.json" bootstrap "$deploy_case" isolated \
+  > "$TEMP_DIR/registry-envelope-remote-failure.log" 2>&1; then
+  fail 'Bootstrap passed after remote envelope registry publication failed.'
+fi
+test ! -e "$logic_private/east-envelope.json"
+if run_deploy_mode_with_registry_failure "$east_private/bootstrap-request.json" bootstrap "$deploy_case" isolated \
+  > "$TEMP_DIR/registry-bootstrap-remote-failure.log" 2>&1; then
+  fail 'Bootstrap passed after remote bootstrap-request registry publication failed.'
+fi
+test ! -e "$east_private/bootstrap-request.json"
+if run_deploy_mode_with_registry_failure "$bootstrap_rendered/east-bootstrap-request.json" bootstrap "$deploy_case" isolated \
+  > "$TEMP_DIR/registry-bootstrap-local-failure.log" 2>&1; then
+  fail 'Bootstrap passed after local bootstrap-request registry publication failed.'
+fi
+test ! -e "$bootstrap_rendered/east-bootstrap-request.json"
+jq -e 'length == 0' "$bootstrap_state/private-upload-registry.json" >/dev/null
+for bootstrap_failpoint in after-envelope after-central-activation after-local-secret-save; do
+  if DEPLOY_TEST_FAILPOINT="$bootstrap_failpoint" run_deploy_mode bootstrap "$deploy_case" isolated > "$TEMP_DIR/$bootstrap_failpoint.log" 2>&1; then
+    fail "Bootstrap failpoint $bootstrap_failpoint passed."
+  fi
+  jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_case-state/bootstrap-ledger.json" >/dev/null
+done
+run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
+run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
+jq -e '.phaseStatus == "passed" and (.targets | length) == 2 and all(.targets[];
+  .status == "ready" and .continuity.deviceId == .continuity.configuredAgentId and .continuity.lastFleetAcknowledgedUtc != null)' \
+  "$TEMP_DIR/output/$deploy_case-state/bootstrap-ledger.json" >/dev/null
+test "$(<"$east_config/secrets/CameraAgent__AgentId")" = device-east
+test "$(<"$east_config/secrets/CameraAgent__ProvisioningStartupGate__Enabled")" = false
+test "$(<"$east_config/secrets/CameraAgent__CaptureDistribution__UploadEnabled")" = true
+test ! -e "$east_config/private/owner-password"
+test ! -e "$east_config/secrets/LocalIdentity__AdminPasswordFile"
+test "$(<"$east_config/secrets/LocalIdentity__AllowMissingAdminPassword")" = true
+test ! -e "$TEMP_DIR/output/$deploy_case-state/bootstrap-private/east-envelope.json"
+test -f "$FAKE_HTTP_STATE/device-east.recovered"
+(( $(<"$FAKE_HTTP_STATE/envelope-count") >= 3 )) || fail 'Active recovery reused the retained pre-recovery envelope.'
+# Every owner/central credential destination is target-bound before creation, and an interrupted run is strictly reconciled.
+bootstrap_state="$TEMP_DIR/output/$deploy_case-state"
+while IFS=$'\t' read -r credential_failpoint credential_target credential_path credential_exists; do
+  if DEPLOY_TEST_FAILPOINT="$credential_failpoint" run_deploy_mode bootstrap "$deploy_case" isolated > "$TEMP_DIR/$credential_failpoint.log" 2>&1; then
+    fail "Bootstrap credential failpoint $credential_failpoint passed."
+  fi
+  jq -e --arg path "$credential_path" --arg target "$credential_target" \
+    'any(.[]; .path == $path and .target.name == $target)' "$bootstrap_state/private-upload-registry.json" >/dev/null ||
+    fail "Bootstrap credential failpoint $credential_failpoint was not registered first."
+  if [[ "$credential_exists" == true ]]; then
+    test -f "$credential_path" || fail "Bootstrap credential failpoint $credential_failpoint did not create its registered file."
+  else
+    test ! -e "$credential_path" || fail "Bootstrap credential failpoint $credential_failpoint created its file before the boundary."
+  fi
+  run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
+  jq -e 'length == 0' "$bootstrap_state/private-upload-registry.json" >/dev/null ||
+    fail "Bootstrap credential failpoint $credential_failpoint was not reconciled."
+  test ! -e "$credential_path" || fail "Bootstrap credential failpoint $credential_failpoint retained its private file."
+done <<EOF
+abrupt-before-central-header-create	logic	$bootstrap_state/bootstrap-rendered/central.headers	false
+abrupt-after-central-header-create	logic	$bootstrap_state/bootstrap-rendered/central.headers	true
+abrupt-before-central-header-stage	logic	$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers	false
+abrupt-after-central-header-stage	logic	$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers	true
+abrupt-before-owner-session-create	east	$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.cookies	false
+abrupt-after-owner-session-create	east	$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.cookies	true
+abrupt-before-antiforgery-response-create	east	$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/antiforgery.json	false
+abrupt-after-antiforgery-response-create	east	$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/antiforgery.json	true
+abrupt-before-owner-header-create	east	$bootstrap_state/bootstrap-rendered/east-antiforgery.headers	false
+abrupt-after-owner-header-create	east	$bootstrap_state/bootstrap-rendered/east-antiforgery.headers	true
+abrupt-before-owner-header-stage	east	$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers	false
+abrupt-after-owner-header-stage	east	$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers	true
+EOF
+for rig_failure in missing mismatch; do
+  if [[ "$rig_failure" == missing ]]; then rig_env=(FAKE_RIG_PROFILE_MISSING=true); else rig_env=(FAKE_RIG_PROFILE_HASH_MISMATCH=true); fi
+  if env "${rig_env[@]}" DEPLOY_TEST_FAILPOINT=rig-profile-unavailable PATH="$BIN:$PATH" \
+    "$REPO_ROOT/scripts/deploy:environment" bootstrap --inventory "$INVENTORY" --mode isolated --run-id "$deploy_case" \
+    --state-root "$TEMP_DIR/output/$deploy_case-state" --evidence-root "$TEMP_DIR/output/$deploy_case-evidence" > "$TEMP_DIR/rig-$rig_failure.log" 2>&1; then
+    fail "Bootstrap accepted $rig_failure central rig profile state."
+  fi
+  grep -Fq 'first-fleet-acknowledgement-timeout' "$TEMP_DIR/rig-$rig_failure.log"
+  run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
+done
+# Cleanup binds the complete target identity before deleting a registered credential path.
+(
+  source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/run-state.sh"; source "$REPO_ROOT/scripts/deploy/transport.sh"
+  source "$REPO_ROOT/scripts/deploy/images.sh"; source "$REPO_ROOT/scripts/deploy/catalog.sh"; source "$REPO_ROOT/scripts/deploy/bootstrap.sh"
+  DEPLOY_IMAGES_PREFLIGHT_JSON="$(jq -c . "$TEMP_DIR/output/$deploy_case-state/manifest.json")"
+  target="$(jq -c '.cameraAgents[] | select(.name=="east")' "$INVENTORY")"
+  wrong_target="$(jq -c '.sshHost="west@example" | .dockerContext="west-context"' <<< "$target")"
+  credential="$(jq -r '.runtimeRoot' <<< "$target")/.hvo-deploy/bootstrap-$deploy_case/owner.cookies"; mkdir -p "${credential%/*}"; printf 'secret\n' > "$credential"; chmod 600 "$credential"
+  registry="$TEMP_DIR/cleanup-target-registry.json"; deploy_transport_initialize_private_upload_registry "$registry" "$INVENTORY" bootstrap
+  jq -cn --arg path "$credential" --argjson target "$wrong_target" '[{phase:"bootstrap",kind:"remote-private",target:$target,path:$path}]' > "$registry"; chmod 600 "$registry"
+  if PATH="$BIN:$PATH" deploy_bootstrap_cleanup_private_remote strict >/dev/null 2>&1; then exit 94; fi
+  [[ -f "$credential" ]]
+  jq -cn --arg path "$credential" --argjson target "$target" '[{phase:"bootstrap",kind:"remote-private",target:$target,path:$path}]' > "$registry"; chmod 600 "$registry"
+  PATH="$BIN:$PATH" deploy_bootstrap_cleanup_private_remote strict; [[ ! -e "$credential" ]]
+  exact_response="$(jq -r '.runtimeRoot' <<< "$target")/.hvo-deploy/bootstrap-$deploy_case/owner-verification.json"
+  deploy_bootstrap_register_private_remote "$target" "$exact_response"
+  jq -e --arg path "$exact_response" 'any(.[]; .path == $path and .target.name == "east")' "$registry" >/dev/null
+  deploy_transport_forget_private_path "$exact_response"
+  if deploy_bootstrap_register_private_remote "$target" "$(jq -r '.runtimeRoot' <<< "$target")/.hvo-deploy/not-a-phase/owner-verification.json"; then exit 95; fi
+  logic="$(jq -c '.logicHost' "$INVENTORY")"; central_local="${registry%/*}/central.headers"
+  if deploy_transport_register_local_private "$target" "$central_local"; then exit 96; fi
+  deploy_transport_register_local_private "$logic" "$central_local"
+  jq -e --arg path "$central_local" 'any(.[]; .path == $path and .target.name == "logic")' "$registry" >/dev/null
+  deploy_transport_forget_private_path "$central_local"
+)
+grep -Fq $'POST\thttp://127.0.0.1:' "$LOG"
+if grep -Fq -- '--request POST' "$REPO_ROOT/scripts/deploy/transport.sh"; then fail 'Owner login pins POST across its redirect.'; fi
+if FAKE_PRIVATE_REMOVE_FAIL_MATCH=owner.cookies run_deploy_mode bootstrap "$deploy_case" isolated > "$TEMP_DIR/bootstrap-cleanup-failure.log" 2>&1; then
+  fail 'Bootstrap passed while strict credential cleanup failed.'
+fi
+test -e "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.cookies"
+run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
+exercise_phase_cleanup_recovery bootstrap "$deploy_case"
+exercise_phase_publication_recovery bootstrap "$deploy_case"
+exercise_phase_tampered_publication_rejection bootstrap "$deploy_case"
+exercise_phase_orphan_rejection bootstrap "$deploy_case"
+for credential in \
+  "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.cookies" \
+  "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers" \
+  "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/login.html" \
+  "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/login-response.html" \
+  "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/owner-verification.json" \
+  "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case/antiforgery.json" \
+  "$TEMP_DIR/remote/$deploy_case-west/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.cookies" \
+  "$TEMP_DIR/remote/$deploy_case-west/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers" \
+  "$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers"; do
+  test ! -e "$credential"
+done
+FAKE_SLOW_FIRST_AGENT=true run_deploy_mode smoke "$deploy_case" isolated >/dev/null
+jq -e '.phaseStatus == "passed" and .workload.kind == "W0" and (.targets | length) == 2 and all(.targets[];
+  .status == "passed" and .captureSequence.localAfter > .captureSequence.localBefore and
+  .captureSequence.centralAfter > .captureSequence.centralBefore and all(.checks[]; . == true))' \
+  "$TEMP_DIR/output/$deploy_case-state/smoke-ledger.json" >/dev/null
+exercise_phase_cleanup_recovery smoke "$deploy_case"
+valid_central="$TEMP_DIR/output/$deploy_case-state/smoke-private/east-current-central.json"
+initial_central_file="$TEMP_DIR/output/$deploy_case-state/smoke-private/east-initial-central.json"
+expected_recipes="$(jq -c '[.. | objects | .recipeVersion? // empty] | unique' "$REPO_ROOT/deploy/split-host/workloads/w0-virtual-mono16.json")"
+for artifact_failure in checksum recipe object dimensions format lineage derivative provenance; do
+  case "$artifact_failure" in
+    checksum) jq '.latestArtifacts[1].checksumSha256="invalid"' "$valid_central" ;;
+    recipe) jq '.latestArtifacts[1].recipeVersion="unexpected-recipe-v9"' "$valid_central" ;;
+    object) jq '.latestArtifacts[1].objectState="Pending" | .latestArtifacts[1].objectVerifiedAtUtc=null' "$valid_central" ;;
+    dimensions) jq '.latestArtifacts[0].width=63' "$valid_central" ;;
+    format) jq '.latestArtifacts[0].pixelFormat="Mono8"' "$valid_central" ;;
+    lineage) jq '.lineageSourceCount=0' "$valid_central" ;;
+    derivative) jq '.latestArtifacts[0].completedDerivativeCount=1 | .completedDerivativeCount=0' "$valid_central" ;;
+    provenance) jq '.latestArtifacts[2].sources[0].checksumSha256=("D"*64)' "$valid_central" ;;
+  esac > "$TEMP_DIR/smoke-$artifact_failure.json"
+  if (
+    source "$REPO_ROOT/scripts/deploy/smoke.sh"
+    deploy_smoke_validate_artifacts "$TEMP_DIR/smoke-$artifact_failure.json" \
+      "$(jq -r '.maximumCaptureSequence // 0' "$initial_central_file")" \
+      "$(jq -r '.lineageSourceCount' "$initial_central_file")" \
+      "$(jq -r '.completedDerivativeCount' "$initial_central_file")" "$expected_recipes" 64 48 Mono16 &&
+    deploy_smoke_validate_derivative_provenance "$TEMP_DIR/smoke-$artifact_failure.json" \
+      "$(jq -r '.maximumCaptureSequence // 0' "$initial_central_file")" \
+      "$(jq -r '.completedDerivativeCount' "$initial_central_file")"
+  ); then fail "Smoke accepted invalid $artifact_failure evidence."; fi
+done
+proof_fixture="$(
+  source "$REPO_ROOT/scripts/deploy/smoke.sh"
+  deploy_smoke_select_checksum_proof "$valid_central" "$TEMP_DIR/output/$deploy_case-state/smoke-private/east-current-continuity.json" \
+    "$(jq -r '.maximumCaptureSequence // 0' "$initial_central_file")"
+)"
+test "$(jq -r '.artifactId' <<< "$proof_fixture")" = 99999999-9999-9999-9999-999999999999
+test "$(jq -r '.role' <<< "$proof_fixture")" = Raw
+test "$(jq -r '.artifactId' <<< "$proof_fixture")" != 11111111-1111-1111-1111-111111111111
+test "$(jq -r '.artifactId' <<< "$proof_fixture")" != 77777777-7777-7777-7777-777777777777
+if (
+  source "$REPO_ROOT/scripts/deploy/smoke.sh"
+  deploy_smoke_validate_checksum_proof "$(printf 'A%.0s' {1..64})" "$(printf 'A%.0s' {1..64})" \
+    "$(printf 'B%.0s' {1..64})" "$(printf 'A%.0s' {1..64})"
+); then fail 'Smoke accepted unequal local, central, and retrieved artifact hashes.'; fi
+printf 'camera_agent_capture_control_cycles_total 1\nhvo_fleet_edge_reports_total 1\npassword=forbidden\n' > "$TEMP_DIR/unsafe-metrics.txt"; chmod 600 "$TEMP_DIR/unsafe-metrics.txt"
+if (source "$REPO_ROOT/scripts/deploy/smoke.sh"; deploy_smoke_metrics_facts "$TEMP_DIR/unsafe-metrics.txt"); then fail 'Smoke accepted sensitive metric output.'; fi
+printf 'authorization: Bearer forbidden\n' > "$TEMP_DIR/unsafe-application.log"; chmod 600 "$TEMP_DIR/unsafe-application.log"
+if (source "$REPO_ROOT/scripts/deploy/smoke.sh"; deploy_smoke_log_facts "$TEMP_DIR/unsafe-application.log"); then fail 'Smoke accepted sensitive application logs.'; fi
+for series in {1..33}; do printf 'camera_agent_capture_control_cycles_total{camera="%s"} 1\n' "$series"; done > "$TEMP_DIR/high-cardinality-metrics.txt"
+printf 'hvo_fleet_edge_reports_total 1\n' >> "$TEMP_DIR/high-cardinality-metrics.txt"; chmod 600 "$TEMP_DIR/high-cardinality-metrics.txt"
+if (source "$REPO_ROOT/scripts/deploy/smoke.sh"; deploy_smoke_metrics_facts "$TEMP_DIR/high-cardinality-metrics.txt"); then fail 'Smoke accepted high-cardinality metric output.'; fi
+printf 'camera_agent_capture_control_cycles_total 0\nhvo_fleet_edge_reports_total 0\n' > "$TEMP_DIR/unavailable-metrics.txt"; chmod 600 "$TEMP_DIR/unavailable-metrics.txt"
+if (source "$REPO_ROOT/scripts/deploy/smoke.sh"; deploy_smoke_metrics_facts "$TEMP_DIR/unavailable-metrics.txt"); then fail 'Smoke accepted unavailable metric evidence.'; fi
+if FAKE_RETRIEVAL_HASH_MISMATCH=true run_deploy_mode smoke "$deploy_case" isolated > "$TEMP_DIR/smoke-retrieval-mismatch.log" 2>&1; then
+  fail 'Smoke accepted a retrieved artifact hash mismatch.'
+fi
+grep -Fq 'artifact-checksum-proof-mismatch' "$TEMP_DIR/smoke-retrieval-mismatch.log"
+run_deploy_mode smoke "$deploy_case" isolated >/dev/null
+if FAKE_TRACE_UNAVAILABLE=true run_deploy_mode smoke "$deploy_case" isolated > "$TEMP_DIR/smoke-trace-missing.log" 2>&1; then
+  fail 'Isolated smoke claimed success without a trace/span projection.'
+fi
+grep -Fq 'required-trace-unavailable' "$TEMP_DIR/smoke-trace-missing.log"
+run_deploy_mode smoke "$deploy_case" isolated >/dev/null
+if grep -R -Eiq 'password|authorization:|bearer[[:space:]]|client[_-]?secret|device[_-]?key|envelope|request body|response body' \
+  "$TEMP_DIR/output/$deploy_case-evidence/smoke.json"; then fail 'Smoke evidence retained raw sensitive telemetry.'; fi
+jq -e 'all(.targets[]; .checks.artifactHashProof and .checks.traces and .checks.boundedLogs and
+  .telemetry.metrics.captureControlCycles > 0 and .telemetry.metrics.fleetReports > 0 and
+  (.telemetry.trace.traceId | test("^[0-9a-f]{32}$")) and
+  any(.artifacts[] | select(.localChecksumSha256 != null); (.localChecksumSha256 | ascii_downcase) == (.checksumSha256 | ascii_downcase) and
+    (.retrievedChecksumSha256 | ascii_downcase) == (.checksumSha256 | ascii_downcase) and .objectVerified == true))' \
+  "$TEMP_DIR/output/$deploy_case-state/smoke-ledger.json" >/dev/null
+exercise_phase_publication_recovery smoke "$deploy_case"
+exercise_phase_tampered_publication_rejection smoke "$deploy_case"
+exercise_phase_orphan_rejection smoke "$deploy_case"
+measure_cleanup="$(jq -r '.cameraAgents[] | select(.name=="east") | .runtimeRoot' "$INVENTORY")/.hvo-deploy/measure-$deploy_case/owner.cookies"
+mkdir -p "${measure_cleanup%/*}"; printf 'retained-credential\n' > "$measure_cleanup"; chmod 600 "$measure_cleanup"
+jq -cn --arg path "$measure_cleanup" --argjson target "$(jq -c '.cameraAgents[] | select(.name=="east")' "$INVENTORY")" \
+  '[{phase:"measure",kind:"remote-private",target:$target,path:$path}]' > "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+chmod 600 "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+if FAKE_SSH_UNREACHABLE=east run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-entry-cleanup-failure.log" 2>&1; then
+  fail 'Measure proceeded while strict entry cleanup was unreachable.'
+fi
+grep -Fq 'private-upload-registry' "$TEMP_DIR/measure-entry-cleanup-failure.log"
+test -f "$measure_cleanup"
+jq -e 'length == 1' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+test ! -e "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json"
+active_before_stage="$(<"$FAKE_HTTP_STATE/east.active-config-sha")"
+activation_count_before="$(grep -c $'^scp\t.*east-W1-camera-module[.]json\teast@example:' "$LOG" || true)"
+if DEPLOY_TEST_FAILPOINT=abrupt-before-measure-profile-stage run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-before-profile-stage.log" 2>&1; then
+  fail 'Measure pre-stage failpoint passed.'
+fi
+grep -Fq 'owner-authenticated' "$measure_cleanup"
+! grep -Fq 'retained-credential' "$measure_cleanup" || fail 'Measure reused a credential that strict entry cleanup should remove.'
+jq -e 'length > 0 and any(.[]; .path == $path)' --arg path "$measure_cleanup" "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+jq -e '.phaseStatus == "running" and (.targets | length) == 1 and .targets[0].profile == null' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" = "$active_before_stage"
+if DEPLOY_TEST_FAILPOINT=abrupt-after-measure-profile-activation run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-after-profile-activation.log" 2>&1; then
+  fail 'Measure post-activation failpoint passed.'
+fi
+jq -e '.phaseStatus == "running" and .targets[0].profile == null' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null ||
+  fail 'Measure did not retain an incomplete profile intent after activation interruption.'
+active_after_activation="$(<"$FAKE_HTTP_STATE/east.active-config-sha")"
+test "$active_after_activation" != "$active_before_stage"
+activation_count_after="$(grep -c $'^scp\t.*east-W1-camera-module[.]json\teast@example:' "$LOG" || true)"
+(( activation_count_after == activation_count_before + 1 )) || fail 'Measure profile activation did not occur exactly once.'
+for measure_boundary in initial-pause warmup-resume warmup-pause warmup-complete measured-resume measured-pause measured-complete; do
+  if DEPLOY_TEST_FAILPOINT="abrupt-after-measure-$measure_boundary" run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-$measure_boundary.log" 2>&1; then
+    fail "Measure boundary failpoint passed: $measure_boundary"
+  fi
+  jq -e '([.targets[].controlAttempts[].key] | length == (unique | length)) and
+    all(.targets[].controlAttempts[]; (.attempt | type) == "number" and (.key | test("-[0-9]+$")))' \
+    "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+  if [[ "$measure_boundary" == warmup-resume ]]; then
+    if FAKE_MEASURE_SEQUENCE_READ_FAIL=east FAKE_MEASURE_FAILURE_PAUSE_FAIL=east run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-failure-pause.log" 2>&1; then
+      fail 'Measure passed after a resumed target read failure and failed safety pause.'
+    fi
+    jq -e '.phaseStatus == "failed" and any(.targets[]; .target == "east" and .failureCleanup.status == "capture-may-be-running" and
+      any(.controlAttempts[]; .boundary == "failure-pause" and .status == "intent"))' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+    jq -e 'length > 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+  fi
+  if [[ "$measure_boundary" == initial-pause ]]; then
+    jq -e '.targets[0].profile != null' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+    test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" = "$active_after_activation"
+    test "$(grep -c $'^scp\t.*east-W1-camera-module[.]json\teast@example:' "$LOG" || true)" = "$activation_count_after"
+  fi
+done
+run_deploy_mode measure "$deploy_case" isolated --workload W1 >/dev/null
+jq -e '.phaseStatus == "passed" and .executionMode == "canonical" and .canonicalWorkloadConfigured == true and
+  .workload == "W1" and all(.targets[]; .status == "measured" and .warmupCompleted == 5 and .measuredCompleted == 30 and
+    .warmup.count == 5 and .warmup.endSequence == (.warmup.startSequence + 5) and .warmup.drained and .warmup.correctness and
+    .measured.count == 30 and .measured.endSequence == (.measured.startSequence + 30) and .measured.drained and .measured.correctness and
+    ([.warmup.captures[].captureSequence] | length == 5 and length == (unique | length)) and
+    ([.measured.captures[].captureSequence] | length == 30 and length == (unique | length)) and
+    ([.measured.captures[].captureId] | length == 30 and length == (unique | length)) and
+    all(.warmup.captures[],.measured.captures[];
+      (.rawArtifactId | test("^[0-9a-fA-F-]{36}$")) and (.rawChecksumSha256 | test("^[0-9A-Fa-f]{64}$")) and .rawByteLength == 6144) and
+    ([.controlAttempts[].key] | length == (unique | length)) and
+    .before.telemetry.sampleCount == 0 and (.before.timings | length) == 0 and .after.telemetry.sampleCount > 0 and
+    .profile.width == 1936 and .profile.height == 1216 and .profile.pixelFormat == "Mono16" and
+    .profile.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json")' \
+  "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+for missing_measure_field in continuity telemetry timing queue stats; do
+  cp "$TEMP_DIR/output/$deploy_case-state/measure-private/east-after-continuity.json" "$TEMP_DIR/measure-invalid-continuity.json"
+  cp "$TEMP_DIR/output/$deploy_case-state/measure-private/east-after-operations.json" "$TEMP_DIR/measure-invalid-operations.json"
+  cp "$TEMP_DIR/output/$deploy_case-state/measure-private/east-after-stats.json" "$TEMP_DIR/measure-invalid-stats.json"
+  case "$missing_measure_field" in
+    continuity) jq 'del(.durable.fleetNextSequence)' "$TEMP_DIR/measure-invalid-continuity.json" > "$TEMP_DIR/changed" && mv "$TEMP_DIR/changed" "$TEMP_DIR/measure-invalid-continuity.json" ;;
+    telemetry) jq 'del(.captureTelemetry.value.averageLoopMilliseconds)' "$TEMP_DIR/measure-invalid-operations.json" > "$TEMP_DIR/changed" && mv "$TEMP_DIR/changed" "$TEMP_DIR/measure-invalid-operations.json" ;;
+    timing) jq '.captureRuntime.value.timings[0].sampleCount="one"' "$TEMP_DIR/measure-invalid-operations.json" > "$TEMP_DIR/changed" && mv "$TEMP_DIR/changed" "$TEMP_DIR/measure-invalid-operations.json" ;;
+    queue) jq 'del(.artifactOutbox.value.pendingBytes)' "$TEMP_DIR/measure-invalid-operations.json" > "$TEMP_DIR/changed" && mv "$TEMP_DIR/changed" "$TEMP_DIR/measure-invalid-operations.json" ;;
+    stats) jq 'del(.networkIo)' "$TEMP_DIR/measure-invalid-stats.json" > "$TEMP_DIR/changed" && mv "$TEMP_DIR/changed" "$TEMP_DIR/measure-invalid-stats.json" ;;
+  esac
+  if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_validate_snapshot "$TEMP_DIR/measure-invalid-continuity.json" \
+    "$TEMP_DIR/measure-invalid-operations.json" "$TEMP_DIR/measure-invalid-stats.json" device-east); then
+    fail "Measure accepted missing or invalid $missing_measure_field evidence."
+  fi
+done
+jq -e 'all(.targets[]; .failureCleanup.status != "capture-may-be-running")' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+for raw_mismatch in id checksum length; do
+  if FAKE_MEASURE_RAW_MISMATCH="$raw_mismatch" DEPLOY_TEST_MEASURE_DURATION_SECONDS=2 run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-raw-$raw_mismatch.log" 2>&1; then
+    fail "Measure accepted a central Raw $raw_mismatch mismatch."
+  fi
+  grep -Fq 'measured-convergence-timeout' "$TEMP_DIR/measure-raw-$raw_mismatch.log"
+  run_deploy_mode measure "$deploy_case" isolated --workload W1 >/dev/null
+done
+control_lines="$(grep -c '^control' "$LOG")"
+(( control_lines >= 12 )) || fail 'Measure did not issue multiple capture-control commands.'
+if grep '^control' "$LOG" | grep -Ev $'^[^\t]+\t[^\t]+-control[.]headers\t[^\t]+\t1\t1\tfalse$' >/dev/null; then
+  fail 'A capture-control command did not use a fresh authenticated/antiforgery header with exactly one idempotency key.'
+fi
+if [[ "$(grep '^control' "$LOG" | cut -f2 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control header path was reused.'; fi
+if [[ "$(grep '^control' "$LOG" | cut -f3 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control idempotency key was reused.'; fi
+exercise_phase_cleanup_recovery measure "$deploy_case" --workload W1
+exercise_phase_publication_recovery measure "$deploy_case" --workload W1
+exercise_phase_tampered_publication_rejection measure "$deploy_case" --workload W1
+exercise_phase_orphan_rejection measure "$deploy_case" --workload W1
+if grep -R -Eq 'owner-api-key-never-print|east-owner-never-print|west-owner-never-print|fixture-envelope-[0-9]+-never-print|VERIFY1234' \
+  "$TEMP_DIR/output/$deploy_case-evidence" "$LOG"; then fail 'Bootstrap or smoke logs/evidence exposed private provisioning material.'; fi
+
+# Teardown rejects deletion of existing services before mutation and supports an explicit preserve stop.
+down_upload_root="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/uploads"; mkdir -p "$down_upload_root"; chmod 700 "$down_upload_root"
+down_upload="$down_upload_root/hvo-upload-down-123-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp"
+printf 'interrupted\n' > "$down_upload"; chmod 600 "$down_upload"
+jq -cn --arg path "$down_upload" --argjson target "$(jq -c '.cameraAgents[] | select(.name=="east")' "$INVENTORY")" \
+  '[{phase:"down",kind:"upload-temp",target:$target,path:$path}]' > "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+chmod 600 "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+if FAKE_SSH_UNREACHABLE=east run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-upload-cleanup-failure.log" 2>&1; then
+  fail 'Down passed with an unreconciled private upload.'
+fi
+test -f "$down_upload"
+jq -e 'length == 1' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+: > "$LOG"
+if run_deploy_mode down "$deploy_case" isolated --delete-state --confirm "$deploy_case" > "$TEMP_DIR/down-failure.log" 2>&1; then
+    fail 'Delete-state accepted resources not owned by the deployed shared-services stack.'
+fi
+grep -Fq 'existing-services-not-owned' "$TEMP_DIR/down-failure.log"
+! grep -Fq $'compose\t' "$LOG" || fail 'Rejected deletion mutated a Compose project.'
+if FAKE_PAUSE_CONFLICT=true run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-pause-conflict.log" 2>&1; then
+  fail 'Down accepted an arbitrary pause conflict as idempotent success.'
+fi
+grep -Fq 'unexpected-pause-status' "$TEMP_DIR/down-pause-conflict.log"
+if FAKE_DOWN_LEASED_ONLY=fail DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-leased-failure.log" 2>&1; then
+  fail 'Down stopped an agent while work remained leased.'
+fi
+grep -Fq 'drain-timeout' "$TEMP_DIR/down-leased-failure.log"
+if grep -Eq $'docker\t.*compose\t.*stop' "$LOG"; then fail 'Leased-only drain failure stopped a Compose service.'; fi
+summary_reads_before="$(grep -c '/api/v1/operations/summary' "$LOG" || true)"
+FAKE_DOWN_LEASED_ONLY=delay DEPLOY_TEST_POLL_SECONDS=0 run_deploy_mode down "$deploy_case" isolated --preserve-state >/dev/null
+summary_reads_after="$(grep -c '/api/v1/operations/summary' "$LOG" || true)"
+(( summary_reads_after >= summary_reads_before + 3 )) || fail 'Down did not wait for leased-only work to clear.'
+test ! -e "$down_upload"
+jq -e 'length == 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+jq -e '.phaseStatus == "passed" and .policy == "preserve" and
+  ([.resources[] | select(.action == "graceful-stop" and .status == "completed")] | length) == 3 and
+  ([.resources[] | select(.action == "preserve" and .resource == "existing-services" and .status == "completed")] | length) == 1' \
+  "$TEMP_DIR/output/$deploy_case-state/down-ledger.json" >/dev/null
+completed_cleanup="$(jq -r '.cameraAgents[] | select(.name=="east") | .runtimeRoot' "$INVENTORY")/.hvo-deploy/down-$deploy_case/owner.cookies"
+mkdir -p "${completed_cleanup%/*}"; printf 'credential\n' > "$completed_cleanup"; chmod 600 "$completed_cleanup"
+jq -cn --arg path "$completed_cleanup" --argjson target "$(jq -c '.cameraAgents[] | select(.name=="east")' "$INVENTORY")" \
+  '[{phase:"down",kind:"remote-private",target:$target,path:$path}]' > "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+chmod 600 "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+exercise_phase_cleanup_recovery down "$deploy_case" --preserve-state
+test ! -e "$completed_cleanup"
+if grep '^control' "$LOG" | grep -Ev $'^[^\t]+\t[^\t]+-control[.]headers\t[^\t]+\t1\t1\tfalse$' >/dev/null; then
+  fail 'Down capture control did not use a fresh derived header with exactly one idempotency key.'
+fi
+exercise_phase_publication_recovery down "$deploy_case" --preserve-state
+exercise_phase_tampered_publication_rejection down "$deploy_case" --preserve-state
+exercise_phase_orphan_rejection down "$deploy_case" --preserve-state
+if FAKE_SSH_UNREACHABLE=east run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-completed-outage.log" 2>&1; then
+  fail 'Completed teardown treated an unreachable target as verified absence.'
+fi
+run_deploy_mode down "$deploy_case" isolated --preserve-state >/dev/null
+
+# Production startup selects the production resolver contract; fixture staging above covers both hosts and the complete root mount.
+production_inventory="$TEMP_DIR/production-startup-inventory.json"
+jq '.catalog.kind="production"' "$INVENTORY" > "$production_inventory"
+(
+  # shellcheck source=scripts/deploy/up.sh
+  source "$REPO_ROOT/scripts/deploy/up.sh"
+  test "$(deploy_up_catalog_required_kind "$production_inventory")" = Production
+)
+
+# Corrupt image evidence and mutable references are rejected before startup state changes.
+cp "$TEMP_DIR/output/$deploy_case-evidence/images.json" "$TEMP_DIR/images.valid.json"
+jq '.images[0].reference="registry.example/logichost:latest"' "$TEMP_DIR/images.valid.json" > "$TEMP_DIR/output/$deploy_case-evidence/images.json"
+if run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/up-failure.log" 2>&1; then fail 'Corrupt image evidence passed up.'; fi
+grep -Fq 'images-authority' "$TEMP_DIR/up-failure.log"
+cp "$TEMP_DIR/images.valid.json" "$TEMP_DIR/output/$deploy_case-evidence/images.json"
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null
+
+# Deploy-mode services use the declared shared SSH/Docker target and preserve partial progress on failure.
+deploy_services=deploy-services
+jq --arg root "$TEMP_DIR/remote/$deploy_services" --arg endpoint "http://127.0.0.1:$HTTP_PORT" --arg owner "$(id -un)" --argjson port "$HTTP_PORT" '
+  .deployment.services.mode="deploy" | .deployment.services.smtp.kind="mailpit" |
+  .deployment.services.sql.port=1433 | .deployment.services.redis.port=6379 | .deployment.services.minio.port=9000 | .deployment.services.smtp.port=2525 |
+  .deployment.services.images={sqlServer:("registry.example/sql@sha256:"+("1"*64)),redis:("registry.example/redis@sha256:"+("2"*64)),
+    minio:("registry.example/minio@sha256:"+("3"*64)),minioClient:("registry.example/mc@sha256:"+("4"*64)),mailpit:("registry.example/mailpit@sha256:"+("5"*64))} |
+  .deployment.services.sql.database="hvo-deploy-services" | .deployment.resources.sqlDatabase="hvo-deploy-services" |
+  .deployment.services.redis.prefix="hvo-deploy-services:" | .deployment.resources.redisPrefix="hvo-deploy-services:" |
+  .deployment.services.minio.artifactBucket="hvo-deploy-services-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-services-artifacts" |
+  .deployment.services.minio.diagnosticsBucket="hvo-deploy-services-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-services-diagnostics" |
+  .deployment.resources.project="hvo-deploy-services" |
+  .sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",expectedHostName:"shared-node",
+    expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:($root+"-shared/runtime"),runtimeOwner:$owner,ports:[1433,6379,9000,2525]} |
+  .logicHost.runtimeRoot=($root+"-logic/runtime") | .logicHost.internalEndpoint=$endpoint | .logicHost.ports=[$port] |
+  (.cameraAgents[0].runtimeRoot)=($root+"-east/runtime") | (.cameraAgents[0].internalEndpoint)=$endpoint | (.cameraAgents[0].ports)=[$port] |
+  (.cameraAgents[1].runtimeRoot)=($root+"-west/runtime") | (.cameraAgents[1].internalEndpoint)=$endpoint | (.cameraAgents[1].ports)=[$port]' \
+  "$INVENTORY" > "$INVENTORY.changed" && mv "$INVENTORY.changed" "$INVENTORY"
+mkdir -m 700 "$TEMP_DIR/remote/$deploy_services-logic" "$TEMP_DIR/remote/$deploy_services-east" "$TEMP_DIR/remote/$deploy_services-west" "$TEMP_DIR/remote/$deploy_services-shared"
+run_deploy_mode preflight "$deploy_services" isolated >/dev/null
+run_deploy_mode prepare "$deploy_services" isolated >/dev/null
+rm -f "$FAKE_IMAGE_STATE"/*.pushed "$FAKE_IMAGE_STATE"/*.platforms "$FAKE_IMAGE_STATE"/*.labels "$FAKE_IMAGE_STATE"/*.reference "$FAKE_IMAGE_STATE"/*.config
+run_deploy_mode images "$deploy_services" isolated >/dev/null
+if FAKE_SCP_FAIL_DEST="$deploy_services-west" run_deploy_mode catalog "$deploy_services" isolated > "$TEMP_DIR/catalog-failure.log" 2>&1; then fail 'Catalog partial failure passed.'; fi
+jq -e '.phaseStatus == "failed" and ([.targets[].target] | sort) == ["east","logic"]' "$TEMP_DIR/output/$deploy_services-state/catalog-ledger.json" >/dev/null
+jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_services-evidence/catalog.json" >/dev/null
+run_deploy_mode catalog "$deploy_services" isolated >/dev/null
+export FAKE_RUNTIME_UID_HOST=shared FAKE_RUNTIME_UID=4242 FAKE_RUNTIME_GID=4343
+if FAKE_COMPOSE_FAIL_MATCH="hvo-deploy-services-east" run_deploy_mode up "$deploy_services" isolated > "$TEMP_DIR/up-failure.log" 2>&1; then fail 'Up partial failure passed.'; fi
+jq -e '.phaseStatus == "failed" and ([.targets[].target] | sort) == ["logic"] and
+  ([.resources[].kind] | sort) == ["logic-initializer","runtime-role","shared-services"]' "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null
+jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_services-evidence/up.json" >/dev/null
+run_deploy_mode up "$deploy_services" isolated >/dev/null
+jq -e '.phaseStatus == "passed" and ([.resources[].kind] | sort) == ["logic-initializer","runtime-role","shared-services"] and (.targets | length) == 3' \
+  "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null
+test "$(<"$TEMP_DIR/remote/$deploy_services-logic/runtime/.hvo-deploy/up-$deploy_services/runtime-secrets/Minio__AccessKey")" = generated-minio-access
+test "$(<"$TEMP_DIR/remote/$deploy_services-logic/runtime/.hvo-deploy/up-$deploy_services/runtime-secrets/Minio__SecretKey")" = 'generated:/@"minio-secret-never-print'
+shared_render_env="$TEMP_DIR/output/$deploy_services-state/up-rendered/shared.env"
+grep -Fxq 'HVO_RUNTIME_UID=4242' "$shared_render_env"
+grep -Fxq 'HVO_RUNTIME_GID=4343' "$shared_render_env"
+grep -Fq $'SQL_PROVISION_PHASE=after\tsql-provision' "$LOG"
+grep -Fq $'ssh\t-o\tBatchMode=yes\t-o\tConnectTimeout=8\t--\tshared@example' "$LOG"
+grep -Fq $'docker\t--context\tshared-context\tcompose' "$LOG"
+if grep -Fq '+@all' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"; then fail 'Redis deploy ACL grants all commands.'; fi
+if grep -Eq 'sqlcmd[^\n]*[[:space:]]-P|redis-cli[^\n]*[[:space:]]-a|mc alias set|MC_HOST_' \
+  "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then
+  fail 'Provisioning places a credential in process arguments.'
+fi
+if grep -Eq 'fixture-secret-never-print|minio-root-never-print|minio-secret-never-print|east-owner-never-print|west-owner-never-print' "$LOG" ||
+  grep -R -Eq 'fixture-secret-never-print|minio-root-never-print|minio-secret-never-print|east-owner-never-print|west-owner-never-print' \
+    "$TEMP_DIR/output/$deploy_services-evidence" "$TEMP_DIR/output/$deploy_services-state/up-rendered"; then fail 'Deploy-mode command/evidence/rendering exposed a secret.'; fi
+test ! -e "$TEMP_DIR/output/$deploy_services-state/up-rendered/minio-runtime.json"
+
+# Run-owned isolated deletion removes explicit containers, named volumes, and marker-validated roots only.
+FAKE_VOLUME_HASH="$(jq -S -c . "$INVENTORY" | sha256sum | cut -d' ' -f1)"
+export FAKE_VOLUME_HASH
+prepare_ledger_path="$TEMP_DIR/output/$deploy_services-state/prepare-ledger.json"
+prepare_manifest_path="$TEMP_DIR/output/$deploy_services-state/prepare-manifest.json"
+prepare_evidence_path="$TEMP_DIR/output/$deploy_services-evidence/prepare.json"
+chmod 640 "$prepare_ledger_path"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-prepare-security.log" 2>&1; then fail 'Down accepted a non-0600 prepare ledger.'; fi
+chmod 600 "$prepare_ledger_path"
+ln "$prepare_evidence_path" "$TEMP_DIR/prepare-evidence-hardlink"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-prepare-security.log" 2>&1; then fail 'Down accepted a multiply-linked prepare evidence file.'; fi
+rm "$TEMP_DIR/prepare-evidence-hardlink"
+cp "$prepare_manifest_path" "$TEMP_DIR/prepare-manifest.valid"
+jq '.updatedAt="tampered"' "$prepare_manifest_path" > "$TEMP_DIR/prepare-manifest.tampered" && mv "$TEMP_DIR/prepare-manifest.tampered" "$prepare_manifest_path"
+chmod 600 "$prepare_manifest_path"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-prepare-security.log" 2>&1; then fail 'Down accepted a prepare manifest that differed from its ledger.'; fi
+cp "$TEMP_DIR/prepare-manifest.valid" "$prepare_manifest_path"
+chmod 600 "$prepare_manifest_path"
+
+down_failpoint='after-graceful-stop-mutation-cameraagent:east'
+if DEPLOY_TEST_FAILPOINT="$down_failpoint" run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-resume.log" 2>&1; then
+  fail "Down failpoint $down_failpoint passed."
+fi
+jq -e '.phaseStatus == "failed" and any(.resources[]; .status == "intent" or .status == "completed")' \
+  "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
+east_network_state="$FAKE_IMAGE_STATE/network-east-context-hvo-deploy-services-east_default"
+cp "$east_network_state" "$TEMP_DIR/east-network.valid"
+jq '.inventorySha256="tampered"' "$east_network_state" > "$east_network_state.changed" && mv "$east_network_state.changed" "$east_network_state"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-network-identity.log" 2>&1; then
+  fail 'Down removed a Compose network with mismatched ownership labels.'
+fi
+cp "$TEMP_DIR/east-network.valid" "$east_network_state"
+for down_failpoint in \
+  'after-delete-volume-mutation-sql:hvo-deploy-services-services_sql-data' \
+  'after-delete-mutation-runtime-root:logic'; do
+  if DEPLOY_TEST_FAILPOINT="$down_failpoint" run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-resume.log" 2>&1; then
+    fail "Down failpoint $down_failpoint passed."
+  fi
+  jq -e '.phaseStatus == "failed" and any(.resources[]; .status == "intent" or .status == "completed")' \
+    "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
+done
+run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" >/dev/null
+jq -e '.phaseStatus == "passed" and .policy == "delete" and
+  ([.resources[] | select(.action == "delete-network" and .status == "completed")] | length) == 4 and
+  ([.resources[] | select(.action == "delete-volume" and .status == "completed")] | length) == 3 and
+  ([.resources[] | select(.action == "delete" and .status == "completed" and (.resource | startswith("runtime-root:")))] | length) == 4' \
+  "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
+grep -Fq -- $'--profile\ttest-smtp\t--profile\tprovision\trm\t-f' "$LOG"
+for removed in logic east west shared; do test ! -e "$TEMP_DIR/remote/$deploy_services-$removed/runtime"; done
+for network_state in \
+  network-east-context-hvo-deploy-services-east_default \
+  network-west-context-hvo-deploy-services-west_default \
+  network-logic-context-hvo-deploy-services-logic_default \
+  network-shared-context-hvo-deploy-services-services_default; do
+  test ! -e "$FAKE_IMAGE_STATE/$network_state" || fail "Orphan network remained: $network_state."
+done
+
+printf '{"runId":"%s","inventorySha256":"%s"}\n' "$deploy_services" "$FAKE_VOLUME_HASH" > \
+  "$FAKE_IMAGE_STATE/volume-shared-context-hvo-deploy-services-services_sql-data"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-recreated.log" 2>&1; then fail 'Completed down accepted a recreated volume.'; fi
+rm "$FAKE_IMAGE_STATE/volume-shared-context-hvo-deploy-services-services_sql-data"
+printf '{"name":"hvo-deploy-services-east_default","project":"tampered","network":"default","runId":"other","inventorySha256":"%s"}\n' "$FAKE_VOLUME_HASH" > "$east_network_state"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-recreated.log" 2>&1; then fail 'Completed down accepted a recreated network.'; fi
+rm "$east_network_state"
+mkdir -m 700 "$TEMP_DIR/remote/$deploy_services-logic/runtime"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-recreated.log" 2>&1; then fail 'Completed down accepted a recreated runtime root.'; fi
+rm -rf "$TEMP_DIR/remote/$deploy_services-logic/runtime"
+east_container_id="$(sha256sum <<< "east-context/hvo-deploy-services-east/cameraagent" | cut -c1-64)"
+printf 'true\n' > "$FAKE_IMAGE_STATE/service-east-context-hvo-deploy-services-east-cameraagent"
+printf '{"project":"hvo-deploy-services-east","service":"cameraagent","running":true}\n' > "$FAKE_IMAGE_STATE/container-$east_container_id"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-recreated.log" 2>&1; then fail 'Completed down accepted a recreated running container.'; fi
+rm "$FAKE_IMAGE_STATE/service-east-context-hvo-deploy-services-east-cameraagent" "$FAKE_IMAGE_STATE/container-$east_container_id"
+run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" >/dev/null
+if grep -Eq 'compose([^\n]*)(down[[:space:]]+-v|down[[:space:]]+--volumes)|redis-cli([^\n]*)flush|mc([^\n]*)rm([^\n]*)--recursive' \
+  "$REPO_ROOT/scripts/deploy/down.sh"; then fail 'Teardown contains an unscoped destructive operation.'; fi
+
+: > "$LOG"
+cp "$BASE_INVENTORY" "$INVENTORY"
+if DEPLOY_TEST_FAILPOINT=after-evidence-before-passed-manifest run_deploy evidence-first-crash > "$TEMP_DIR/failure.log" 2>&1; then
+    fail 'Evidence-first publication failpoint passed.'
+fi
+crash_manifest="$TEMP_DIR/output/evidence-first-crash-state/manifest.json"
+crash_evidence="$TEMP_DIR/output/evidence-first-crash-evidence/preflight.json"
+jq -e --slurp '.[0].phaseStatus == "running" and .[1].phaseStatus == "passed" and
+  .[0].runId == .[1].runId and .[0].inventorySha256 == .[1].inventorySha256' "$crash_manifest" "$crash_evidence" >/dev/null
+remote_count_before_recovery="$(grep -c '^ssh' "$LOG")"
+run_deploy evidence-first-crash >/dev/null
+remote_count_after_recovery="$(grep -c '^ssh' "$LOG")"
+(( remote_count_after_recovery > remote_count_before_recovery )) || fail 'Interrupted publication recovery did not rerun remote checks.'
+jq -e --slurp '.[0].phaseStatus == "passed" and .[1].phaseStatus == "passed" and
+  .[0].runId == .[1].runId and .[0].inventorySha256 == .[1].inventorySha256 and
+  .[0].source == .[1].source and .[0].targets == .[1].targets and .[0].checks == .[1].checks' \
+  "$crash_manifest" "$crash_evidence" >/dev/null
+
+if DEPLOY_TEST_FAILPOINT=before-manifest-rename run_deploy interrupted > "$TEMP_DIR/failure.log" 2>&1; then fail 'Manifest failpoint passed.'; fi
+test ! -e "$TEMP_DIR/output/interrupted-state/manifest.json"
+test ! -e "$TEMP_DIR/output/interrupted-evidence/preflight.json"
+run_deploy interrupted >/dev/null
+
+if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|compose[[:space:]]+up|compose[[:space:]]+down)([[:space:]]|$)' "$LOG"; then fail 'Preflight invoked deployment mutation.'; fi
+printf 'Split-host deployment contract passed.\n'

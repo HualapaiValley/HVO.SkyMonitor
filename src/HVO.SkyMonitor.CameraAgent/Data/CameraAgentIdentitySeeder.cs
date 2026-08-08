@@ -31,6 +31,10 @@ internal sealed class CameraAgentIdentitySeeder(
         var user = await userManager.FindByEmailAsync(_options.AdminEmail);
         if (user is null)
         {
+            if (string.IsNullOrEmpty(_options.AdminPassword))
+            {
+                throw new InvalidOperationException("The initial site owner password is required until local identity has been seeded.");
+            }
             user = new ApplicationUser
             {
                 UserName = _options.AdminEmail,
@@ -95,7 +99,8 @@ internal sealed class CameraAgentIdentitySeeder(
             }
         }
 
-        if (!await userManager.CheckPasswordAsync(user, _options.AdminPassword))
+        if (!string.IsNullOrEmpty(_options.AdminPassword)
+            && !await userManager.CheckPasswordAsync(user, _options.AdminPassword))
         {
             IdentityResult resetResult;
             if (await userManager.HasPasswordAsync(user))

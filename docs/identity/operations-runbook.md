@@ -170,6 +170,34 @@ Compose persists these CameraAgent files together:
 The encrypted secrets file and its Data Protection key ring are one recovery
 unit. Restoring only one of them makes the secrets unreadable.
 
+The split-host orchestrator performs the same workflow by automating the existing
+`/Account/Login` antiforgery form without retaining POST across the login
+redirect, verifying the resulting cookie against an owner-only endpoint, then calling `/identity`, `/bootstrap`, and
+`/continuity`. There is no anonymous deployment password endpoint. Identity and
+bootstrap require the normal owner cookie plus antiforgery validation; continuity
+requires owner-read authorization. LogicHost observatory, registration,
+envelope, and continuity calls require an owner-scoped API key. Continuity
+responses contain identifiers, queue counts, durable sequence maxima, bounded
+artifact checksum metadata, and expected/current rig-profile versions and hashes
+only, never verification codes, envelopes, credentials, paths, or payloads. The
+owner-only deployment telemetry projection requires a capture sequence and
+artifact ID and returns only the matching bounded capture-pipeline capture ID,
+trace ID, and span ID. It never uses the telemetry HTTP request Activity and does
+not expose request or response bodies.
+
+After the owner database is seeded, CameraAgent can restart without retaining the
+configuration password. Split-host automation deletes the remote plaintext
+password and its password-file setting immediately after login, then records the
+non-secret `AllowMissingAdminPassword` restart opt-in. A missing password is valid
+only when that opt-in is explicit and the durable owner already exists; initial
+seeding still fails.
+
+Every temporary remote credential registration binds the full inventory target
+identity. Cleanup re-correlates that identity before and after deletion and
+fails the phase if an alias or target changes. A retained credential is safer
+than deleting the same path on an unverified host; investigate and remove it on
+the originally correlated target.
+
 ### Fleet heartbeat operation
 
 - CameraAgent stores status reports in `<RawIngressRoot>/.fleet/fleet-status.db`
@@ -318,12 +346,16 @@ for another database engine. Likewise, MinIO backup must use the approved
 site-specific replication or snapshot procedure; copying SQL metadata without
 the corresponding objects is not a complete backup.
 
-The application connection must use a login scoped to `SkyMonitor`, such as the
-template `skymonitor-app` identity, never `sa` or another instance
-administrator. Because LogicHost applies EF migrations at startup, the current
-combined migration/runtime identity needs database-local schema rights; the SQL
-operator must not grant it instance-wide roles. Redis similarly uses the
-`skymonitor-app` ACL identity restricted to `skymonitor:*` keys.
+The application connection must use a login scoped to `SkyMonitor`, never `sa`
+or another instance administrator. Production separates the one-shot
+`ConnectionStrings:skymonitordb-migrations` principal from runtime
+`ConnectionStrings:skymonitordb`; runtime receives no migration secret and
+startup rejects effective DDL authority. The schema-v6 split-host workflow
+applies the migration role before controlled initialization and the runtime role
+afterward. Redis similarly uses a runtime ACL identity restricted to the
+declared prefix. See
+[`logichost-database-initialization.md`](../runbooks/logichost-database-initialization.md)
+and [`split-host-preflight.md`](../runbooks/split-host-preflight.md).
 
 Back up bind-mounted application state to an encrypted, access-controlled
 destination outside the runtime data root:

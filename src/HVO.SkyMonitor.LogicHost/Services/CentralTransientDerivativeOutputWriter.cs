@@ -28,10 +28,12 @@ internal sealed class CentralTransientDerivativeOutputWriter(
     IMinioClient minio,
     ICentralTransientEventVersionAppender versionAppender,
     TimeProvider timeProvider,
-    CentralTransientLifecycleTelemetry? telemetry = null) : ICentralTransientDerivativeOutputWriter
+    CentralTransientLifecycleTelemetry? telemetry = null,
+    CentralObjectStorageNames? storageNames = null) : ICentralTransientDerivativeOutputWriter
 {
-    private const string Bucket = "skymonitor-artifacts";
-    private const string BucketPrefix = "minio://skymonitor-artifacts/";
+    private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
+    private string Bucket => _storageNames.ArtifactBucket;
+    private string BucketPrefix => _storageNames.ArtifactPrefix;
     private static readonly TransientDerivativeLimitation[] Limitations =
     [
         TransientDerivativeLimitation.IntraExposureTimingUnavailable,
@@ -74,7 +76,7 @@ internal sealed class CentralTransientDerivativeOutputWriter(
         var objectLocks = new List<CentralObjectApplicationLock>(outputs.Count);
         try
         {
-            foreach (var storageReference in CreateStorageReferences(outputs))
+            foreach (var storageReference in CreateStorageReferences(outputs, BucketPrefix))
             {
                 objectLocks.Add(await CentralObjectApplicationLock.AcquireAsync(
                     dbContext, storageReference, cancellationToken).ConfigureAwait(false));
@@ -172,7 +174,7 @@ internal sealed class CentralTransientDerivativeOutputWriter(
             var existing = derivativeJob.OutputIntents.SingleOrDefault(item => item.Kind == output.Kind);
             if (existing is not null)
             {
-                ValidateIntent(existing, output);
+                ValidateIntent(existing, output, BucketPrefix);
                 continue;
             }
             _ = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
@@ -254,7 +256,7 @@ internal sealed class CentralTransientDerivativeOutputWriter(
     private async Task EnsureNotRetiredAsync(string storageReference, CancellationToken cancellationToken)
     {
         if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                dbContext, storageReference, cancellationToken).ConfigureAwait(false))
+                dbContext, storageReference, cancellationToken, BucketPrefix).ConfigureAwait(false))
         {
             throw new CentralDerivativeJobStateException(
                 "The immutable transient derivative object key has been permanently retired.");
@@ -270,7 +272,7 @@ internal sealed class CentralTransientDerivativeOutputWriter(
         {
             var storageReference = $"{BucketPrefix}{output.ObjectKey}";
             if (!await CentralObjectOwnershipFence.IsRetiredAsync(
-                    dbContext, storageReference, cancellationToken).ConfigureAwait(false))
+                    dbContext, storageReference, cancellationToken, BucketPrefix).ConfigureAwait(false))
             {
                 continue;
             }
@@ -287,7 +289,7 @@ internal sealed class CentralTransientDerivativeOutputWriter(
         foreach (var output in outputs)
         {
             if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                    dbContext, $"{BucketPrefix}{output.ObjectKey}", CancellationToken.None).ConfigureAwait(false))
+                    dbContext, $"{BucketPrefix}{output.ObjectKey}", CancellationToken.None, BucketPrefix).ConfigureAwait(false))
             {
                 await ExpireOwnIntentsAsync(centralDerivativeJobId, outputs).ConfigureAwait(false);
                 return;
@@ -584,10 +586,11 @@ internal sealed class CentralTransientDerivativeOutputWriter(
     internal static string[] CreateStorageReferences(
         CentralDerivativeJobLease lease,
         CentralTransientDerivativeBundle bundle)
-        => CreateStorageReferences(CreateOutputs(lease, bundle));
+        => CreateStorageReferences(CreateOutputs(lease, bundle),
+            $"minio://{Configuration.CentralObjectStorageOptions.DefaultArtifactBucket}/");
 
-    private static string[] CreateStorageReferences(IReadOnlyList<Output> outputs)
-        => outputs.Select(output => $"{BucketPrefix}{output.ObjectKey}")
+    private static string[] CreateStorageReferences(IReadOnlyList<Output> outputs, string bucketPrefix)
+        => outputs.Select(output => $"{bucketPrefix}{output.ObjectKey}")
             .Order(StringComparer.Ordinal)
             .ToArray();
 
@@ -625,7 +628,7 @@ internal sealed class CentralTransientDerivativeOutputWriter(
             $"derivatives/transient-events/{bundle.SourceEvent.EventId:N}/{outputIdentity}.bin");
     }
 
-    private static void ValidateIntent(CentralTransientDerivativeOutputIntent intent, Output output)
+    private static void ValidateIntent(CentralTransientDerivativeOutputIntent intent, Output output, string bucketPrefix)
     {
         if (intent.DerivativeId != output.DerivativeId || intent.ArtifactId != output.ArtifactId ||
             intent.ArtifactRole != output.Role || !string.Equals(intent.ArtifactVariant, output.Variant, StringComparison.Ordinal) ||
@@ -633,7 +636,7 @@ internal sealed class CentralTransientDerivativeOutputWriter(
             intent.ByteLength != output.Payload.Length ||
             !string.Equals(intent.ChecksumSha256, output.ChecksumSha256, StringComparison.Ordinal) ||
             !string.Equals(intent.OutputIdentitySha256, output.OutputIdentitySha256, StringComparison.Ordinal) ||
-            !string.Equals(intent.StorageReference, $"{BucketPrefix}{output.ObjectKey}", StringComparison.Ordinal))
+            !string.Equals(intent.StorageReference, $"{bucketPrefix}{output.ObjectKey}", StringComparison.Ordinal))
         {
             throw new CentralDerivativeJobStateException("A persisted transient derivative intent conflicts with the frozen output.");
         }

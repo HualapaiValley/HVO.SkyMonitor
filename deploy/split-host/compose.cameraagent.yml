@@ -1,0 +1,36 @@
+services:
+  cameraagent:
+    image: ${CAMERAAGENT_IMAGE:?digest reference required}
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      HVO_KEY_PER_FILE_DIRECTORY: /run/hvo-secrets
+    ports:
+      - ${HVO_PUBLIC_PORT:?public port required}:8080
+    volumes:
+      - ${HVO_CONFIG_ROOT:?config root required}/secrets:/run/hvo-secrets:ro
+      - ${HVO_CONFIG_ROOT}/private:/run/hvo-private:ro
+      - ${HVO_CONFIG_ROOT}/camera-module.json:/app/cameraagent.deploy.json:ro
+      - ${HVO_CATALOG_ROOT:?catalog root required}:/app/catalog:ro
+      - ${HVO_STATE_ROOT:?state root required}/identity:/app/App_Data
+      - ${HVO_STATE_ROOT}/data-protection:/app/DataProtection-Keys
+      - ${HVO_STATE_ROOT}/provisioning:/app/data/provisioning
+      - ${HVO_STATE_ROOT}/raw:/app/data/raw
+      - ${HVO_STATE_ROOT}/archive:/app/data/archive
+    read_only: true
+    tmpfs: [/tmp]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/alive"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    cpus: ${HVO_CPUS:-1}
+    mem_limit: ${HVO_MEMORY:-1G}
+
+networks:
+  default:
+    labels:
+      io.hvoskymonitor.run-id: "${HVO_RUN_ID:?run id required}"
+      io.hvoskymonitor.inventory-sha256: "${HVO_INVENTORY_SHA256:?inventory hash required}"

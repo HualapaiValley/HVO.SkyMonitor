@@ -44,7 +44,7 @@ milestone. Do not rerun a phase benchmark for an unrelated tier A/B change.
 
 | ID | Workload | Reference input and default scale | Use |
 | --- | --- | --- | --- |
-| `W0` | 64 x 48 deterministic Mono16, one object | Fixture/config in `AcceleratedCameraAgentSoakTests`; exact seed/options copied into the active fault harness | Fast fault injection and state transitions only |
+| `W0` | 64 x 48 deterministic Mono16, one object | `deploy/split-host/workloads/w0-virtual-mono16.json`; seed 2025, maximum 10 results, shot noise disabled, fixed profile/config hash | Fast fault injection and state transitions only |
 | `W1` | ASI174 1936 x 1216 Mono16, 4,708,352 raw bytes | `virtual-asi174.full.json` and `hualapai-asi174-conformance-v1.json`; 5 warm-up plus 30 measured operations for an in-process algorithm | Canonical monochrome full-frame path |
 | `W2` | ASI178 3096 x 2080 RGGB16, 12,879,360 raw bytes; 19,319,040-byte RGB24 preview | `virtual-asi178mc.full.json` with fixed fixture time/options/seed; 5 warm-up plus 30 measured operations for an in-process algorithm | Large color/CFA full-frame and memory path |
 | `W3M` | 10,000 metadata-only durable records | Manifests, lane references, jobs, dependencies, or history rows with no payload duplication | Scan, index, claim, recovery, and pagination behavior |
@@ -80,6 +80,27 @@ or duration, arrival rate, initial backlog, outage/fault duration, concurrency,
 warm-up, and measured stages. Terms such as configured generation rate,
 representative DAG, recovery margin, and material latency must be replaced by
 values in that manifest.
+
+The split-host `measure` phase is an executable deployment harness for W1/W2.
+`deploy/split-host/workloads/canonical-workloads.json`, not inventory, pins each
+profile path, source/config/options identities, dimensions, format, seed, exact
+five-operation warm-up, 30 measured operations, and concurrency. The phase
+activates the selected profile, restarts the target, and uses authenticated
+pause/resume capture control to delimit both windows. After each pause it rejects
+in-flight overshoot, proves the exact ordered sequence/capture-ID set, and waits
+for local queue drain plus central frame, artifact, checksum, derivative, and
+provenance convergence. Raw proof binds each local raw artifact ID, checksum, and
+byte length to the central Raw artifact for the same sequence and capture ID. It
+resets collectors and captures an empty baseline only
+after warm-up convergence; the final snapshot is taken only after measured-set
+convergence. Warm-up and measured correctness/drain identities are retained
+separately. Boundary-specific command attempts and idempotency keys are durable;
+recovery reconciles live capture-control state and recorded capture boundaries
+without replaying a completed workload. Failure handling attempts a fresh safety
+pause for every possibly resumed target and records `capture-may-be-running`
+while retaining cleanup credentials when that pause cannot be verified. Only the measured window contributes telemetry, timing,
+queue/backlog, and Docker resource snapshots. The deployment contract runs this same fixed representative hook;
+Tier M candidate evidence applies the trial/reporting rules below.
 
 An issue may add a named workload when these do not represent its access
 pattern. The PR must state why it was added and how another agent can reproduce

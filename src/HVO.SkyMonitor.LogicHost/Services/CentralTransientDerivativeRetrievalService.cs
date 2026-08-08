@@ -46,10 +46,12 @@ internal interface ICentralTransientDerivativeRetrievalService
 
 internal sealed class CentralTransientDerivativeRetrievalService(
     ApplicationDbContext dbContext,
-    IMinioClient minio) : ICentralTransientDerivativeRetrievalService
+    IMinioClient minio,
+    CentralObjectStorageNames? storageNames = null) : ICentralTransientDerivativeRetrievalService
 {
-    private const string Bucket = "skymonitor-artifacts";
-    private const string BucketPrefix = "minio://skymonitor-artifacts/";
+    private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
+    private string Bucket => _storageNames.ArtifactBucket;
+    private string BucketPrefix => _storageNames.ArtifactPrefix;
 
     public async Task<CentralTransientDerivativeContent> GetAsync(
         ClaimsPrincipal principal,

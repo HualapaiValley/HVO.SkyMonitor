@@ -133,11 +133,13 @@ internal sealed class CentralTransientPayloadReleaseService(
     IOptions<CentralTransientPayloadReleaseOptions> options,
     TimeProvider timeProvider,
     CentralTransientLifecycleTelemetry? telemetry = null,
-    ICentralTransientPayloadReleaseFaultInjector? faultInjector = null)
+    ICentralTransientPayloadReleaseFaultInjector? faultInjector = null,
+    CentralObjectStorageNames? storageNames = null)
     : ICentralTransientPayloadReleaseService, ICentralTransientPayloadReleaseProcessor
 {
-    private const string Bucket = "skymonitor-artifacts";
-    private const string BucketPrefix = "minio://skymonitor-artifacts/";
+    private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
+    private string Bucket => _storageNames.ArtifactBucket;
+    private string BucketPrefix => _storageNames.ArtifactPrefix;
     internal const int MaximumCreationConflictRetries = 3;
 
     internal Func<int, Guid, CentralTransientPayloadReleaseCreationFaultStage, Exception?>? CreationFaultInjector
@@ -1417,7 +1419,7 @@ internal sealed class CentralTransientPayloadReleaseService(
         return TimeSpan.FromTicks((long)ticks);
     }
 
-    private static bool IsCanonicalStorageReference(string? storageReference)
+    private bool IsCanonicalStorageReference(string? storageReference)
         => storageReference is not null && storageReference.Length <= 1024 &&
            storageReference.StartsWith(BucketPrefix, StringComparison.Ordinal) &&
            storageReference.Length > BucketPrefix.Length;

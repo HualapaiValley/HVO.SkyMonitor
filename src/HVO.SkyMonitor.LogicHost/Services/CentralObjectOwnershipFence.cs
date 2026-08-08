@@ -7,15 +7,15 @@ namespace HVO.SkyMonitor.LogicHost.Services;
 
 internal static class CentralObjectOwnershipFence
 {
-    internal const string Bucket = "skymonitor-artifacts";
-    internal const string BucketPrefix = "minio://skymonitor-artifacts/";
     internal const string BinaryCollation = "Latin1_General_100_BIN2";
 
     public static async Task<bool> IsRetiredAsync(
         ApplicationDbContext db,
         string storageReference,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? bucketPrefix = null)
     {
+        bucketPrefix ??= $"minio://{Configuration.CentralObjectStorageOptions.DefaultArtifactBucket}/";
         if (await db.CentralArtifacts.AsNoTracking().AnyAsync(artifact =>
                 (artifact.RetentionDeletionToken != null
                     || artifact.ObjectState == CentralArtifactObjectState.Expired)
@@ -24,10 +24,10 @@ internal static class CentralObjectOwnershipFence
         {
             return true;
         }
-        if (storageReference.StartsWith(BucketPrefix, StringComparison.Ordinal)
-            && storageReference.Length > BucketPrefix.Length)
+        if (storageReference.StartsWith(bucketPrefix, StringComparison.Ordinal)
+            && storageReference.Length > bucketPrefix.Length)
         {
-            var objectKey = storageReference[BucketPrefix.Length..];
+            var objectKey = storageReference[bucketPrefix.Length..];
             var objectKeyIdentity = CreateObjectKeyIdentity(objectKey);
             var dispositionKeys = await db.CentralObjectRecoveryDispositions.AsNoTracking()
                 .Where(disposition => disposition.SourceObjectIdentitySha256 == objectKeyIdentity

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Asp.Versioning;
@@ -23,11 +24,13 @@ using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Common.Observability;
+using HVO.SkyMonitor.Common.Configuration;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpLogging;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -48,6 +51,27 @@ public class Program
     public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
+        DeploymentKeyPerFile.AddConfiguredDirectory(builder.Configuration);
+
+        var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
+        if (reverseProxy.Enabled)
+        {
+            if (reverseProxy.TrustedProxies.Count == 0 || reverseProxy.TrustedProxies.Any(static value => !IPAddress.TryParse(value, out _)))
+            {
+                throw new InvalidOperationException("ReverseProxy:TrustedProxies must contain valid explicit IP addresses when forwarded headers are enabled.");
+            }
+            builder.Services.Configure<ForwardedHeadersOptions>(options =>
+            {
+                options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedHost | ForwardedHeaders.XForwardedProto;
+                options.ForwardLimit = 1;
+                options.KnownIPNetworks.Clear();
+                options.KnownProxies.Clear();
+                foreach (var proxy in reverseProxy.TrustedProxies)
+                {
+                    options.KnownProxies.Add(IPAddress.Parse(proxy));
+                }
+            });
+        }
 
         builder.AddSkyMonitorObservability();
 
@@ -254,6 +278,11 @@ public class Program
         var app = builder.Build();
         _ = app.Services.GetRequiredService<CatalogSnapshotResult>();
 
+        if (reverseProxy.Enabled)
+        {
+            app.UseForwardedHeaders();
+        }
+
         if (app.Environment.IsDevelopment())
         {
             app.UseDeveloperExceptionPage();
@@ -316,6 +345,7 @@ public class Program
         app.MapCameraAgentCalibrationOperationsEndpoints();
         app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapCameraAgentEnvironmentalOperationsEndpoints();
+        app.MapCameraAgentDeploymentEndpoints();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();

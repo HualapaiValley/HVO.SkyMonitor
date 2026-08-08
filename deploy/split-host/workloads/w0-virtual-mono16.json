@@ -1,0 +1,65 @@
+{
+  "agentId": "replace-with-registered-device-id",
+  "module": {
+    "type": "VirtualSky",
+    "options": {
+      "seed": 2025,
+      "maximumMagnitude": 6.5,
+      "maximumResults": 10,
+      "shotNoiseEnabled": false
+    }
+  },
+  "rig": {
+    "sensor": {
+      "name": "W0DeterministicMono16",
+      "widthPixels": 64,
+      "heightPixels": 48,
+      "pixelSizeMicrons": 5.0,
+      "colorMode": "Mono",
+      "pixelFormat": "Mono16",
+      "responseMode": "Monochrome",
+      "strideBytes": 128,
+      "byteOrder": "LittleEndian",
+      "sensorRecipeVersion": "w0-deterministic-mono16-v1"
+    },
+    "optics": {
+      "projectionModel": "EquidistantFisheye",
+      "focalLengthMillimeters": 0.0,
+      "fieldOfViewDegrees": 180.0,
+      "rollDegrees": 0.0,
+      "lensKind": "Fisheye",
+      "principalPointX": 32.0,
+      "principalPointY": 24.0,
+      "imageCircleRadiusPixels": 23.0,
+      "horizontalFlip": false,
+      "calibrationVersion": "w0-equidistant-v1"
+    },
+    "orientation": {
+      "boresightAltitudeDegrees": 90.0,
+      "boresightAzimuthDegrees": 0.0,
+      "rollAdjustmentDegrees": 0.0
+    },
+    "pipeline": {
+      "captureInterval": "00:05:00",
+      "dayExposure": "00:00:01",
+      "nightExposure": "00:00:01",
+      "dayGain": 10.0,
+      "nightGain": 10.0
+    },
+    "profileVersion": "w0-deterministic-mono16-v1"
+  },
+  "processingSteps": [
+    {
+      "id": "Preview",
+      "type": "Preview",
+      "order": 50,
+      "options": {
+        "enabled": true,
+        "recipeVersion": "mono16-asinh-v2",
+        "blackPercentile": 0.5,
+        "whitePercentile": 0.9999,
+        "asinhStrength": 4.0
+      }
+    }
+  ]
+}

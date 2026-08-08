@@ -17,13 +17,15 @@ internal sealed partial class CentralArtifactReconciliationService(
     IServiceScopeFactory scopeFactory,
     TimeProvider timeProvider,
     CentralIngestTelemetry telemetry,
-    ILogger<CentralArtifactReconciliationService> logger) : BackgroundService
+    ILogger<CentralArtifactReconciliationService> logger,
+    CentralObjectStorageNames? storageNames = null) : BackgroundService
 {
+    private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
     internal const int MaximumSchedulingAttempts = 3;
 
     private const string VerificationRetryFenceMarker = "HVO.SkyMonitor.VerificationRetryFence";
-    private const string Bucket = "skymonitor-artifacts";
-    private const string BucketPrefix = "minio://skymonitor-artifacts/";
+    private string Bucket => _storageNames.ArtifactBucket;
+    private string BucketPrefix => _storageNames.ArtifactPrefix;
     private const string BinaryCollation = "Latin1_General_100_BIN2";
     private const int MaximumPendingArtifactsPerCycle = 100;
     internal const int MaximumSqlInventoryArtifactsPerCycle = 25;
@@ -1189,7 +1191,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         return true;
     }
 
-    private static async Task<IReadOnlyList<CentralArtifactObjectState>> GetObjectOwnerStatesAsync(
+    private async Task<IReadOnlyList<CentralArtifactObjectState>> GetObjectOwnerStatesAsync(
         ApplicationDbContext db,
         string objectKey,
         CancellationToken cancellationToken)
@@ -1442,7 +1444,7 @@ internal sealed partial class CentralArtifactReconciliationService(
             return RecoveryArtifactResult.None;
         }
         if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                db, artifact.StorageReference, cancellationToken).ConfigureAwait(false))
+                db, artifact.StorageReference, cancellationToken, BucketPrefix).ConfigureAwait(false))
         {
             artifact.ObjectState = CentralArtifactObjectState.Expired;
             artifact.StateReasonCode = "retention.key-retired";
@@ -1550,7 +1552,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         if (artifact.ObjectState == CentralArtifactObjectState.Available
             && await CentralObjectOwnershipFence.IsRetiredAsync(
-                db, artifact.StorageReference, cancellationToken).ConfigureAwait(false))
+                db, artifact.StorageReference, cancellationToken, BucketPrefix).ConfigureAwait(false))
         {
             artifact.ObjectState = CentralArtifactObjectState.Expired;
             artifact.StateReasonCode = "retention.key-retired";
@@ -1849,7 +1851,7 @@ internal sealed partial class CentralArtifactReconciliationService(
             GetAgeSeconds(pendingVerifications?.OldestAtUtc));
     }
 
-    private static async Task<bool> IsObjectMissingAsync(
+    private async Task<bool> IsObjectMissingAsync(
         IMinioClient minio,
         CentralArtifact artifact,
         CancellationToken cancellationToken)
@@ -2009,7 +2011,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
     }
 
-    private static async Task<ObjectFingerprint?> TryGetObjectFingerprintAsync(
+    private async Task<ObjectFingerprint?> TryGetObjectFingerprintAsync(
         IMinioClient minio,
         string objectKey,
         CancellationToken cancellationToken)

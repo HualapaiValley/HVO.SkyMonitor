@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "profiles": {
+    "W0": {
+      "sourcePath": "deploy/split-host/workloads/w0-virtual-mono16.json",
+      "sourceSha256": "b163cd6f380515c67dcdf4076687197e6e454b48c59cf25eee218f2f8378e33f",
+      "configurationIdentitySha256": "43c5b981af16c81c4c722fe03f72eeb5c896ce5b565a3ed2d663ad0096d061bb",
+      "optionsSha256": "f7f898c02a9a93c19820dc658e55ae79a061e8fce2b0ba66275bd0b06dd5cda6",
+      "width": 64,
+      "height": 48,
+      "pixelFormat": "Mono16",
+      "seed": 2025,
+      "warmupOperations": 0,
+      "measuredOperations": 1,
+      "concurrency": 1
+    },
+    "W1": {
+      "sourcePath": "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json",
+      "sourceSha256": "587f6b02de5d254026db2fb6d59d1e4fb3185e8577ce23988f57ce7006b10c51",
+      "configurationIdentitySha256": "6f812b380373a41b1e6045ad51e9a8027b0f7cc81c320d711df33f5641ce4900",
+      "optionsSha256": "d60f2c07e374076b0e4f717be839630c34ef447a83c82f68edf2290b84be1618",
+      "width": 1936,
+      "height": 1216,
+      "pixelFormat": "Mono16",
+      "seed": 2025,
+      "warmupOperations": 5,
+      "measuredOperations": 30,
+      "concurrency": 1
+    },
+    "W2": {
+      "sourcePath": "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json",
+      "sourceSha256": "227fb3c0484ab5bbafc4ca3674ea0d68b473315ebdd63f547cb2851d0a00f499",
+      "configurationIdentitySha256": "ed7f3619e4d9ef1b6b1492162359bb71dbe3e567fa14992890fbd5a67e436674",
+      "optionsSha256": "923e297c9e0a0dff159b5b51570e74535821bcc1819043cd53bc1e66b19b8fab",
+      "width": 3096,
+      "height": 2080,
+      "pixelFormat": "BayerRggb16",
+      "seed": 2025,
+      "warmupOperations": 5,
+      "measuredOperations": 30,
+      "concurrency": 1
+    }
+  }
+}
