@@ -88,6 +88,25 @@ deploy_smoke_log_facts() {
     jq -cn --argjson lines "$lines" '{boundedLineCount:$lines,sensitiveContentRejected:true}'
 }
 
+deploy_smoke_capture_control() {
+    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" run_id="$6" action="$7" desired="$8"
+    local name endpoint body request_headers status attempt
+    name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
+    attempt="$(jq -r '.publicationGeneration' <<< "$DEPLOY_SMOKE_JSON")"
+    body="$render_root/$name-$action-$attempt.json"; request_headers="$target_remote/$action-$attempt-control.headers"
+    jq -cn --arg reason "W0 smoke $action" '{reason:$reason}' > "$body"
+    deploy_bootstrap_stage_json "$target" "$body" "$target_remote/$action-$attempt.json" || return 1
+    deploy_bootstrap_register_private_remote "$target" "$request_headers" || return 1
+    deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$request_headers" \
+      "deploy-smoke-$run_id-$name-$action-$attempt" || return 1
+    status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/capture/$action" "$target_remote/$action-$attempt.json" \
+      "$request_headers" "$cookies" "$target_remote/$action-$attempt-response.json" "$private_root/$name-$action-$attempt-response.json")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail smoke "$name" "$action-control-failed"; return 1; }
+    jq -e --arg desired "$desired" '.state == $desired' "$private_root/$name-$action-$attempt-response.json" >/dev/null || return 1
+    deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" "$target_remote/$action-$attempt.json" "$request_headers" || return 1
+    deploy_transport_forget_private_path "$request_headers" || return 1
+}
+
 deploy_smoke_publish() {
     deploy_phase_publish smoke DEPLOY_SMOKE_JSON "$DEPLOY_SMOKE_LEDGER" "$DEPLOY_SMOKE_MANIFEST" \
       "$DEPLOY_SMOKE_EVIDENCE" "$DEPLOY_SMOKE_COMMIT"
@@ -175,6 +194,7 @@ deploy_run_smoke() {
         initial_derivatives="$(jq -r '.completedDerivativeCount' "$private_root/$name-initial-central.json")"
         workload_profile="$(deploy_stage_workload_profile "$inventory" "$target" W0 "$device_id" "$render_root" "$state_dir" "$run_id")" || return 1
         expected_recipes="$(jq -c '[.. | objects | .recipeVersion? // empty] | unique' "$render_root/$name-W0-camera-module.json")" || return 1
+        deploy_smoke_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$run_id" resume Running || return 1
         deadline=$(( $(date +%s) + duration ))
         checks=""
         while (( $(date +%s) <= deadline )); do
@@ -206,6 +226,7 @@ deploy_run_smoke() {
             sleep "${DEPLOY_TEST_POLL_SECONDS:-2}"
         done
         [[ "$checks" == true ]] || { deploy_fail smoke "$name" bounded-convergence-timeout; return 1; }
+        deploy_smoke_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$run_id" pause Paused || return 1
         proof_artifact="$(deploy_smoke_select_checksum_proof "$private_root/$name-current-central.json" \
           "$private_root/$name-current-continuity.json" "$initial_central")"
         [[ -n "$proof_artifact" ]] || { deploy_fail smoke "$name" retrievable-artifact-missing; return 1; }
