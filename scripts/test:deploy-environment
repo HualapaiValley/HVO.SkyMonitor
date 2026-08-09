@@ -848,6 +848,26 @@ rm -f "$TEMP_DIR/legacy-login.out" "$TEMP_DIR/legacy.cookies"
   jq -e 'length == 0' "$TEMP_DIR/private-upload-registry.json" >/dev/null
 )
 
+# Acceptance campaigns can persist and resume their registered private session files.
+(
+  source "$REPO_ROOT/scripts/deploy/common.sh"
+  source "$REPO_ROOT/scripts/deploy/run-state.sh"
+  source "$REPO_ROOT/scripts/deploy/transport.sh"
+  registry="$TEMP_DIR/acceptance-private-upload-registry.json"
+  inventory="$TEMP_DIR/private-upload-inventory.json"
+  deploy_transport_initialize_private_upload_registry "$registry" "$inventory" acceptance-run
+  target="$(jq -c '.cameraAgents[0]' "$inventory")"
+  deploy_transport_register_remote_private "$target" "$TEMP_DIR/remote/east/.hvo-deploy/campaign-phase14/login.html"
+  upload="$TEMP_DIR/remote/east/.hvo-deploy/uploads/hvo-upload-acceptance-run-123-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp"
+  install -d -m 700 "${upload%/*}"; printf 'private\n' > "$upload"; chmod 600 "$upload"
+  deploy_transport_register_private_upload east@example "$upload"
+  deploy_transport_initialize_private_upload_registry "$registry" "$inventory" acceptance-run
+  jq -e 'length == 2 and all(.[]; .phase == "acceptance-run") and any(.[]; .kind == "remote-private") and any(.[]; .kind == "upload-temp")' "$registry" >/dev/null
+  PATH="$BIN:$PATH" deploy_transport_cleanup_private_upload east@example "$upload"
+  deploy_transport_forget_private_upload east@example "$upload"
+  [[ ! -e "$upload" ]]; jq -e 'length == 1 and .[0].kind == "remote-private"' "$registry" >/dev/null
+)
+
 # Docker not-found is accepted as absence; transport/auth failures are never absence proof.
 (
   source "$REPO_ROOT/scripts/deploy/transport.sh"
@@ -2298,7 +2318,10 @@ grep -Fq 'existing-services-not-owned' "$TEMP_DIR/down-failure.log"
 if FAKE_PAUSE_CONFLICT=true run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-pause-conflict.log" 2>&1; then
   fail 'Down accepted an arbitrary pause conflict as idempotent success.'
 fi
-grep -Fq 'unexpected-pause-status' "$TEMP_DIR/down-pause-conflict.log"
+if ! grep -Fq 'unexpected-pause-status' "$TEMP_DIR/down-pause-conflict.log"; then
+  while IFS= read -r diagnostic; do printf '%s\n' "$diagnostic" >&2; done < "$TEMP_DIR/down-pause-conflict.log"
+  fail 'Down pause conflict did not reach the expected rejection.'
+fi
 if FAKE_DOWN_LEASED_ONLY=fail DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-leased-failure.log" 2>&1; then
   fail 'Down stopped an agent while work remained leased.'
 fi

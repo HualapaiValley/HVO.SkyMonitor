@@ -636,7 +636,82 @@ Run the focused contract test with:
 
 ```bash
 ./scripts/test:phase14-acceptance
+./scripts/test:phase14-campaign
 ```
+
+The campaign contract uses stateful fake transport boundaries to validate
+orchestration and sanitized artifact shape. It is not a substitute for the real
+split-host outage execution and retained evidence required before recording the
+scenario.
+
+## Record Phase 14 Scenario Evidence
+
+After `acceptance-init`, record one strict sanitized scenario artifact without
+executing or evaluating the scenario:
+
+```bash
+./scripts/deploy:environment acceptance-record \
+  --inventory /absolute/path/inventory.yml \
+  --mode isolated \
+  --run-id observatory-preflight-01 \
+  --scenario normal-flow \
+  --artifact /absolute/private/path/normal-flow.json
+```
+
+The owner-only input must be a mode-`0600`, single-link regular JSON file no
+larger than 256 KiB. Its exact schema binds the run, inventory, source revision
+and tree, scenario classification and execution class, evidence source, and
+ordered workload identities. It permits only bounded assertions, output byte
+lengths/SHA-256 identities, and nonnegative measurements with allowlisted units.
+It does not permit paths, authorities, logs, credentials, payloads, exception
+text, or arbitrary fields.
+
+Recording uses `not-run -> recording -> recorded`, never `passed`. It commits
+the expected artifact length and SHA-256 as an intent, atomically publishes the
+canonical artifact beneath the manifest-owned `acceptance-artifacts/` path, and
+then commits `recorded`. Recovery accepts an interrupted intent only when the
+artifact is absent or exactly matches the committed identity. A recorded
+artifact is immutable; mismatched bytes, unsafe links or modes, changed context,
+or replacement input fail without rewriting prior evidence. Failed execution
+artifacts are retained under the same rules, and another attempt requires a new
+deployment run.
+
+`acceptance-record` does not execute a scenario, decide whether its evidence is
+sufficient, mark a scenario or classification passed, or claim `GATE-P14`.
+`normal-flow` requires the exact ordered W1/W2 binding.
+`logichost-network-outage` requires W2 and remains distinct from the separate
+`logichost-host-failure` and `network-failure` scenarios.
+
+Execute the scoped normative LogicHost outage only after the same run has passed
+canonical W2 measurement and `acceptance-init`:
+
+```bash
+./scripts/deploy:environment acceptance-run \
+  --inventory /absolute/path/inventory.yml \
+  --mode isolated \
+  --run-id observatory-preflight-01 \
+  --scenario logichost-network-outage
+```
+
+This campaign requires one CameraAgent. It starts from the paused, converged W2
+measurement boundary, stops only the LogicHost application container, and keeps
+the CameraAgent and shared services running. It executes exactly 10 additional
+W2 captures at the canonical 25-second cadence, pauses acquisition, requires a
+nonzero outbox backlog with no quarantine or terminal work, restores LogicHost,
+and waits up to 900 seconds from campaign start for exact local/central capture,
+Raw checksum, object verification, derivative lineage, and zero-queue
+convergence. Recovery must complete within the declared window at more than the
+configured 0.04 captures-per-second arrival rate. The sanitized artifact retains
+the exact 10 Raw lengths/checksums, outage backlog count/bytes, outage and
+recovery durations, and drain rate.
+
+Ordinary command failure attempts both an authenticated safety pause and
+LogicHost restoration. An abrupt process or control-host loss can leave the
+exact-count window contaminated; such a runtime fails closed as
+`fresh-run-required` rather than fabricating recovery or replaying captures. The
+campaign exercises the normative “LogicHost or network outage” row only. It does
+not satisfy the separate generic `network-failure` or `logichost-host-failure`
+scenario.
 
 ## Stop Or Delete
 

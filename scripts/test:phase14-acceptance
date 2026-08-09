@@ -106,6 +106,36 @@ run_acceptance_child() {
     ' phase14-atomic "$SOURCE_REPO_ROOT" "$REPO_ROOT" "$state" "$evidence" "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" "$tree"
 }
 
+run_acceptance_record_child() {
+    local state="$1" evidence="$2" artifact="$3" failpoint="${4:-}"
+    DEPLOY_TEST_FAILPOINT="$failpoint" bash -c '
+      set -euo pipefail
+      source_root="$1"
+      REPO_ROOT="$2"
+      . "$source_root/scripts/deploy/common.sh"
+      . "$source_root/scripts/deploy/run-state.sh"
+      . "$source_root/scripts/deploy/catalog.sh"
+      . "$source_root/scripts/deploy/acceptance.sh"
+      deploy_prepare_run_state "$3" "$4"
+      deploy_run_acceptance_record "$5" "$6" "$7" "$8" "$9" clean "${10}" normal-flow "${11}"
+    ' phase14-record "$SOURCE_REPO_ROOT" "$REPO_ROOT" "$state" "$evidence" "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" "$tree" "$artifact"
+}
+
+write_scenario_artifact() {
+    local destination="$1" scenario_id="$2" outcome="${3:-passed}" scenario ledger
+    ledger="$(jq -c . "$FIXTURE_STATE/acceptance-ledger.json")"
+    scenario="$(jq -c --arg id "$scenario_id" '.scenarios[] | select(.id == $id)' <<< "$ledger")"
+    jq -S -n --argjson ledger "$ledger" --argjson scenario "$scenario" --arg outcome "$outcome" '
+      {schemaVersion:1,runId:$ledger.runId,scenarioId:$scenario.id,inventorySha256:$ledger.inventorySha256,
+       sourceRevision:$ledger.sourceRevision,sourceTree:$ledger.sourceTree,classification:$scenario.classification,
+       executionClass:$scenario.executionClass,evidenceSource:$scenario.evidenceSource,workloads:$scenario.workloads,
+       outcome:$outcome,startedAt:"2026-08-09T00:00:00Z",completedAt:"2026-08-09T00:10:00Z",
+       assertions:[{id:"durable-convergence",passed:($outcome == "passed")}],
+       outputs:[{id:"raw-window",byteLength:12879360,sha256:("a" * 64)}],
+       measurements:[{id:"elapsed",value:600,unit:"seconds"}]}' > "$destination"
+    chmod 600 "$destination"
+}
+
 expect_rejected() {
     local message="$1"
     shift
@@ -422,10 +452,113 @@ for entry in ledger manifest evidence commit; do
     close_fixture
 done
 
+initialize_fixture record-happy
+record_artifact="$TEMP_DIR/normal-flow.json"
+write_scenario_artifact "$record_artifact" normal-flow
+deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" normal-flow "$record_artifact"
+recorded="$FIXTURE_EVIDENCE/acceptance-artifacts/normal-flow.json"
+jq -e '.campaignStatus == "in-progress" and .phaseStatus == "passed" and .publicationGeneration == 4 and
+  ([.classifications[] | select(.status == "in-progress") | .classification] == ["normal"]) and
+  ([.scenarios[] | select(.status == "recorded") | .id] == ["normal-flow"]) and
+  all(.scenarios[] | select(.id != "normal-flow"); .status == "not-run") and
+  all(.scenarios[]; .status != "passed")' "$FIXTURE_EVIDENCE/acceptance-index.json" >/dev/null
+[[ "$(stat -c '%u:%h:%a' "$recorded")" == "$(id -u):1:600" ]] || fail 'Recorded artifact is not owner-only.'
+record_digest="$(sha256sum "$recorded")"
+index_digest="$(sha256sum "$FIXTURE_EVIDENCE/acceptance-index.json")"
+deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" normal-flow "$record_artifact"
+[[ "$(sha256sum "$recorded")" == "$record_digest" && "$(sha256sum "$FIXTURE_EVIDENCE/acceptance-index.json")" == "$index_digest" ]] ||
+  fail 'Idempotent artifact recording rewrote committed evidence.'
+expect_rejected 'Unknown scenario recording was accepted.' \
+  deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" missing-scenario "$record_artifact"
+mismatched="$TEMP_DIR/mismatched-flow.json"
+jq '.scenarioId="logichost-network-outage"' "$record_artifact" > "$mismatched"; chmod 600 "$mismatched"
+expect_rejected 'Contextually mismatched artifact was accepted.' \
+  deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" normal-flow "$mismatched"
+close_fixture
+
+initialize_fixture record-artifact-tamper
+tamper_input="$TEMP_DIR/tamper-input.json"
+write_scenario_artifact "$tamper_input" normal-flow
+deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" normal-flow "$tamper_input"
+tampered_record="$FIXTURE_EVIDENCE/acceptance-artifacts/normal-flow.json"
+jq '.measurements[0].value=601' "$tampered_record" > "$TEMP_DIR/tampered-record"; chmod 600 "$TEMP_DIR/tampered-record"; mv "$TEMP_DIR/tampered-record" "$tampered_record"
+tampered_digest="$(sha256sum "$tampered_record")"
+expect_rejected 'Tampered recorded artifact was accepted.' \
+  deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+[[ "$(sha256sum "$tampered_record")" == "$tampered_digest" ]] || fail 'Rejected artifact tamper was changed.'
+close_fixture
+
+initialize_fixture record-hardlink-input
+hardlink_input="$TEMP_DIR/hardlink-input.json"
+write_scenario_artifact "$hardlink_input" normal-flow
+ln "$hardlink_input" "$TEMP_DIR/hardlink-input-copy"
+expect_rejected 'Hardlinked artifact input was accepted.' \
+  deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" normal-flow "$hardlink_input"
+close_fixture
+
+initialize_fixture record-symlink-input
+symlink_target="$TEMP_DIR/symlink-input-target.json"
+write_scenario_artifact "$symlink_target" normal-flow
+ln -s "$symlink_target" "$TEMP_DIR/symlink-input.json"
+expect_rejected 'Symlinked artifact input was accepted.' \
+  deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" normal-flow "$TEMP_DIR/symlink-input.json"
+close_fixture
+
+for boundary in ledger manifest evidence commit; do
+    initialize_fixture "record-atomic-$boundary"
+    atomic_record_state="$FIXTURE_STATE"; atomic_record_evidence="$FIXTURE_EVIDENCE"
+    atomic_record_input="$TEMP_DIR/record-atomic-$boundary.json"
+    write_scenario_artifact "$atomic_record_input" normal-flow
+    close_fixture
+    if run_acceptance_record_child "$atomic_record_state" "$atomic_record_evidence" "$atomic_record_input" "abrupt-after-acceptance-record-$boundary" \
+      > "$TEMP_DIR/record-atomic-$boundary.log" 2>&1; then
+        fail "Atomic acceptance-record $boundary failpoint unexpectedly passed."
+    fi
+    deploy_prepare_run_state "$atomic_record_state" "$atomic_record_evidence"
+    deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" normal-flow "$atomic_record_input"
+    jq -e '.publicationGeneration == 4 and (.scenarios[] | select(.id == "normal-flow") | .status) == "recorded"' \
+      "$atomic_record_evidence/acceptance-index.json" >/dev/null
+    close_fixture
+done
+
+for boundary in ledger manifest evidence commit; do
+    initialize_fixture "record-final-$boundary"
+    final_state="$FIXTURE_STATE"; final_evidence="$FIXTURE_EVIDENCE"
+    final_input="$TEMP_DIR/record-final-$boundary.json"
+    write_scenario_artifact "$final_input" normal-flow
+    close_fixture
+    if run_acceptance_record_child "$final_state" "$final_evidence" "$final_input" "abrupt-after-acceptance-record-final-$boundary" \
+      > "$TEMP_DIR/record-final-$boundary.log" 2>&1; then
+        fail "Final acceptance-record $boundary failpoint unexpectedly passed."
+    fi
+    deploy_prepare_run_state "$final_state" "$final_evidence"
+    deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" normal-flow "$final_input"
+    jq -e '.publicationGeneration == 4 and (.scenarios[] | select(.id == "normal-flow") | .status) == "recorded"' \
+      "$final_evidence/acceptance-index.json" >/dev/null
+    close_fixture
+done
+
+for failpoint in abrupt-after-acceptance-record-intent abrupt-after-acceptance-record-artifact; do
+    initialize_fixture "record-${failpoint##*-}"
+    interrupted_state="$FIXTURE_STATE"; interrupted_evidence="$FIXTURE_EVIDENCE"
+    interrupted_input="$TEMP_DIR/$failpoint.json"
+    write_scenario_artifact "$interrupted_input" normal-flow
+    close_fixture
+    if run_acceptance_record_child "$interrupted_state" "$interrupted_evidence" "$interrupted_input" "$failpoint" \
+      > "$TEMP_DIR/$failpoint.log" 2>&1; then
+        fail "$failpoint unexpectedly passed."
+    fi
+    deploy_prepare_run_state "$interrupted_state" "$interrupted_evidence"
+    deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree" normal-flow "$interrupted_input"
+    jq -e '.publicationGeneration == 4 and (.scenarios[] | select(.id == "normal-flow") | .status) == "recorded"' \
+      "$interrupted_evidence/acceptance-index.json" >/dev/null
+    close_fixture
+done
+
 prepare_fixture concurrent-lock
 if (deploy_prepare_run_state "$FIXTURE_STATE" "$FIXTURE_EVIDENCE") >/dev/null 2>&1; then
     fail 'The shared deployment run lock allowed a concurrent acceptance-init invocation.'
 fi
 close_fixture
 
-printf 'Phase 14 acceptance-init manifest/index contract tests passed.\n'
+printf 'Phase 14 acceptance manifest/index contract tests passed.\n'

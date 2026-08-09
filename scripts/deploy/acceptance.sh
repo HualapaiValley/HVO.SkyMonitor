@@ -1,8 +1,66 @@
 #!/usr/bin/env bash
 
 deploy_acceptance_publish() {
-    deploy_phase_publish acceptance-init DEPLOY_ACCEPTANCE_JSON "$DEPLOY_ACCEPTANCE_LEDGER" "$DEPLOY_ACCEPTANCE_MANIFEST" \
+    deploy_phase_publish "${DEPLOY_ACCEPTANCE_PHASE:-acceptance-init}" DEPLOY_ACCEPTANCE_JSON "$DEPLOY_ACCEPTANCE_LEDGER" "$DEPLOY_ACCEPTANCE_MANIFEST" \
       "$DEPLOY_ACCEPTANCE_EVIDENCE" "$DEPLOY_ACCEPTANCE_COMMIT"
+}
+
+deploy_acceptance_artifact_file_safe() {
+    local path="$1"
+    [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%h:%a' -- "$path" 2>/dev/null)" == "$(id -u):1:600" ]]
+}
+
+deploy_acceptance_validate_artifact_json() {
+    local path="$1" ledger="$2" scenario="$3"
+    jq -e --argjson ledger "$ledger" --argjson scenario "$scenario" '
+      def safe: type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$");
+      def timestamp: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+      def digest: type == "string" and test("^[0-9a-f]{64}$");
+      def unit: . == "milliseconds" or . == "seconds" or . == "bytes" or . == "captures" or
+        . == "captures-per-second" or . == "count" or . == "percent";
+      .schemaVersion == 1 and .runId == $ledger.runId and .scenarioId == $scenario.id and
+      .inventorySha256 == $ledger.inventorySha256 and .sourceRevision == $ledger.sourceRevision and
+      .sourceTree == $ledger.sourceTree and .classification == $scenario.classification and
+      .executionClass == $scenario.executionClass and .evidenceSource == $scenario.evidenceSource and
+      .workloads == $scenario.workloads and
+      (keys | sort) == (["schemaVersion","runId","scenarioId","inventorySha256","sourceRevision","sourceTree",
+        "classification","executionClass","evidenceSource","workloads","outcome","startedAt","completedAt",
+        "assertions","outputs","measurements"] | sort) and
+      (.outcome == "passed" or .outcome == "failed") and (.startedAt | timestamp) and (.completedAt | timestamp) and
+      (.startedAt | fromdateiso8601) <= (.completedAt | fromdateiso8601) and
+      (.assertions | type == "array" and length >= 1 and length <= 256 and length == ([.[].id] | unique | length) and
+        all(.[]; (keys | sort) == ["id","passed"] and (.id | safe) and (.passed | type) == "boolean")) and
+      (.outputs | type == "array" and length <= 256 and length == ([.[].id] | unique | length) and
+        all(.[]; (keys | sort) == ["byteLength","id","sha256"] and (.id | safe) and
+          (.byteLength | numbers) >= 0 and (.byteLength | floor) == .byteLength and (.sha256 | digest))) and
+      (.measurements | type == "array" and length <= 256 and length == ([.[].id] | unique | length) and
+        all(.[]; (keys | sort) == ["id","unit","value"] and (.id | safe) and
+          (.value | numbers) >= 0 and (.unit | unit))) and
+      (if .outcome == "passed" then all(.assertions[]; .passed) else any(.assertions[]; .passed == false) end)
+    ' "$path" >/dev/null 2>&1
+}
+
+deploy_acceptance_validate_recorded_artifacts() {
+    local ledger="$1" evidence_dir="$2" scenario status relative path expected_length expected_sha actual_length actual_sha
+    while IFS= read -r scenario; do
+        status="$(jq -r '.status' <<< "$scenario")"
+        [[ "$status" != not-run ]] || continue
+        relative="$(jq -r '.artifact.relativePath' <<< "$scenario")"
+        path="$evidence_dir/$relative"
+        if [[ ! -e "$path" && ! -L "$path" ]]; then
+            [[ "$status" == recording ]] || { deploy_fail acceptance-init artifact missing; return 1; }
+            continue
+        fi
+        deploy_acceptance_artifact_file_safe "$path" || { deploy_fail acceptance-init artifact unsafe; return 1; }
+        actual_length="$(stat -c %s -- "$path" 2>/dev/null)" || return 1
+        actual_sha="$(sha256sum "$path")"; actual_sha="${actual_sha%% *}"
+        expected_length="$(jq -r '.artifact.byteLength' <<< "$scenario")"
+        expected_sha="$(jq -r '.artifact.sha256' <<< "$scenario")"
+        [[ "$actual_length" == "$expected_length" && "$actual_sha" == "$expected_sha" ]] ||
+          { deploy_fail acceptance-init artifact digest-or-length-mismatch; return 1; }
+        deploy_acceptance_validate_artifact_json "$path" "$ledger" "$scenario" ||
+          { deploy_fail acceptance-init artifact invalid; return 1; }
+    done < <(jq -c '.scenarios[]' <<< "$ledger")
 }
 
 deploy_acceptance_required_ids() {
@@ -161,19 +219,35 @@ deploy_acceptance_require_committed_smoke() {
 }
 
 deploy_acceptance_validate_candidate() {
-    local path="$1" run_id="$2" mode="$3" hash="$4" revision="$5" tree="$6" expected="$7"
+    local path="$1" run_id="$2" mode="$3" hash="$4" revision="$5" tree="$6" expected="$7" evidence_dir="$8" ledger
     jq -e --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg tree "$tree" \
       --argjson expected "$expected" '
+      . as $root |
       .schemaVersion == 2 and .runId == $run and .mode == $mode and .inventorySha256 == $hash and
       .sourceRevision == $revision and .sourceTree == $tree and (.publicationGeneration | numbers) >= 1 and
-      (.phaseStatus == "running" or .phaseStatus == "passed") and .campaignStatus == "not-run" and
+      (.phaseStatus == "running" or .phaseStatus == "passed") and
+      (.campaignStatus == "not-run" or .campaignStatus == "in-progress") and
       ((keys - ["completedAt"] | sort) == (["schemaVersion","publicationGeneration","runId","mode","inventorySha256",
         "sourceRevision","sourceTree","campaignManifest","topology","workloadIdentities","campaignStatus",
         "classifications","scenarios","phaseStatus","startedAt","updatedAt"] | sort)) and
-      {campaignManifest,topology,workloadIdentities,classifications,scenarios} == $expected and
-      all(.classifications[]; .status == "not-run") and
-      all(.scenarios[]; .status == "not-run" and .artifact.byteLength == null and .artifact.sha256 == null)
+      {campaignManifest,topology,workloadIdentities} ==
+        ($expected | {campaignManifest,topology,workloadIdentities}) and
+      [.classifications[] | del(.status)] == [$expected.classifications[] | del(.status)] and
+      [.scenarios[] | del(.status,.artifact.byteLength,.artifact.sha256)] ==
+        [$expected.scenarios[] | del(.status,.artifact.byteLength,.artifact.sha256)] and
+      all(.classifications[]; .status == "not-run" or .status == "in-progress") and
+      all(.scenarios[];
+        (.status == "not-run" and .artifact.byteLength == null and .artifact.sha256 == null) or
+        ((.status == "recording" or .status == "recorded") and
+          (.artifact.byteLength | numbers) > 0 and (.artifact.byteLength | floor) == .artifact.byteLength and
+          (.artifact.sha256 | test("^[0-9a-f]{64}$")))) and
+      ((.campaignStatus == "in-progress") == (any(.scenarios[]; .status != "not-run"))) and
+      all(.classifications[]; . as $classification |
+        (($classification.status == "in-progress") == (any($root.scenarios[];
+          .classification == $classification.classification and .status != "not-run"))))
     ' "$path" >/dev/null 2>&1 || { deploy_fail acceptance-init ledger invalid-or-tampered; return 1; }
+    ledger="$(jq -c . "$path")" || return 1
+    deploy_acceptance_validate_recorded_artifacts "$ledger" "$evidence_dir"
 }
 
 deploy_run_acceptance() {
@@ -220,7 +294,7 @@ deploy_run_acceptance() {
     if [[ -e "$DEPLOY_ACCEPTANCE_LEDGER" || -L "$DEPLOY_ACCEPTANCE_LEDGER" ]]; then
         deploy_acceptance_verify_source_snapshot "$revision" "$tree" || return 1
         deploy_require_phase_files_match "$DEPLOY_ACCEPTANCE_LEDGER" "$DEPLOY_ACCEPTANCE_MANIFEST" "$DEPLOY_ACCEPTANCE_EVIDENCE" \
-          "$DEPLOY_ACCEPTANCE_COMMIT" deploy_acceptance_validate_candidate "$run_id" "$mode" "$hash" "$revision" "$tree" "$expected" || return 1
+          "$DEPLOY_ACCEPTANCE_COMMIT" deploy_acceptance_validate_candidate "$run_id" "$mode" "$hash" "$revision" "$tree" "$expected" "$evidence_dir" || return 1
         deploy_acceptance_verify_source_snapshot "$revision" "$tree" || return 1
         if [[ "$(jq -r '.phaseStatus' "$DEPLOY_ACCEPTANCE_LEDGER")" == passed ]]; then return 0; fi
         DEPLOY_ACCEPTANCE_JSON="$(jq -c --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -244,4 +318,76 @@ deploy_run_acceptance() {
     deploy_acceptance_verify_source_snapshot "$revision" "$tree" || return 1
     deploy_acceptance_publish || return 1
     deploy_acceptance_verify_source_snapshot "$revision" "$tree"
+}
+
+deploy_acceptance_publish_artifact() {
+    local destination="$1" json="$2" directory temporary
+    directory="$(dirname "$destination")"
+    if [[ -e "$directory" || -L "$directory" ]]; then
+        [[ -d "$directory" && ! -L "$directory" && "$(stat -c '%u:%a' -- "$directory" 2>/dev/null)" == "$(id -u):700" ]] ||
+          { deploy_fail acceptance-record artifact-directory unsafe; return 1; }
+    else
+        install -d -m 700 -- "$directory" 2>/dev/null || { deploy_fail acceptance-record artifact-directory create-failed; return 1; }
+    fi
+    [[ ! -e "$destination" && ! -L "$destination" ]] || { deploy_fail acceptance-record artifact exists; return 1; }
+    temporary="$(mktemp "$directory/.artifact.tmp.XXXXXX" 2>/dev/null)" || return 1
+    chmod 600 "$temporary" || { rm -f -- "$temporary"; return 1; }
+    printf '%s\n' "$json" > "$temporary" || { rm -f -- "$temporary"; return 1; }
+    mv -T -- "$temporary" "$destination" 2>/dev/null || { rm -f -- "$temporary"; return 1; }
+}
+
+deploy_run_acceptance_record() {
+    local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6" tree="$7" scenario_id="$8" artifact_input="$9"
+    local state_dir evidence_dir scenario canonical length digest destination current_status now
+    deploy_run_acceptance "$inventory" "$run_id" "$mode" "$hash" "$revision" "$worktree" "$tree" || return 1
+    state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"
+    DEPLOY_ACCEPTANCE_JSON="$(jq -c . "$DEPLOY_ACCEPTANCE_LEDGER")" || return 1
+    scenario="$(jq -c --arg id "$scenario_id" '.scenarios[] | select(.id == $id)' <<< "$DEPLOY_ACCEPTANCE_JSON")"
+    [[ -n "$scenario" ]] || { deploy_fail acceptance-record scenario unknown; return 1; }
+    [[ -f "$artifact_input" && ! -L "$artifact_input" && "$(stat -c '%u:%h:%a' -- "$artifact_input" 2>/dev/null)" == "$(id -u):1:600" ]] ||
+      { deploy_fail acceptance-record artifact-input unsafe; return 1; }
+    [[ "$(stat -c %s -- "$artifact_input" 2>/dev/null)" -le 262144 ]] || { deploy_fail acceptance-record artifact-input too-large; return 1; }
+    canonical="$(jq -S -c . "$artifact_input" 2>/dev/null)" || { deploy_fail acceptance-record artifact-input invalid-json; return 1; }
+    deploy_acceptance_validate_artifact_json <(printf '%s\n' "$canonical") "$DEPLOY_ACCEPTANCE_JSON" "$scenario" ||
+      { deploy_fail acceptance-record artifact-input invalid; return 1; }
+    length="$(printf '%s\n' "$canonical" | wc -c)" || return 1
+    digest="$(printf '%s\n' "$canonical" | sha256sum)"; digest="${digest%% *}"
+    destination="$evidence_dir/$(jq -r '.artifact.relativePath' <<< "$scenario")"
+    current_status="$(jq -r '.status' <<< "$scenario")"
+    if [[ "$current_status" == recorded ]]; then
+        [[ "$(jq -r '.artifact.byteLength' <<< "$scenario")" == "$length" && "$(jq -r '.artifact.sha256' <<< "$scenario")" == "$digest" ]] ||
+          { deploy_fail acceptance-record artifact immutable-mismatch; return 1; }
+        deploy_acceptance_artifact_file_safe "$destination" && [[ "$(jq -S -c . "$destination")" == "$canonical" ]] ||
+          { deploy_fail acceptance-record artifact recorded-file-mismatch; return 1; }
+        return 0
+    fi
+    if [[ "$current_status" == not-run ]]; then
+        now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        DEPLOY_ACCEPTANCE_JSON="$(jq -c --arg id "$scenario_id" --arg sha "$digest" --arg now "$now" --argjson length "$length" '
+          .campaignStatus="in-progress" | .updatedAt=$now |
+          .scenarios |= map(if .id == $id then .status="recording" | .artifact.byteLength=$length | .artifact.sha256=$sha else . end) |
+          (.scenarios[] | select(.id == $id) | .classification) as $classification |
+          .classifications |= map(if .classification == $classification then .status="in-progress" else . end)
+        ' <<< "$DEPLOY_ACCEPTANCE_JSON")" || return 1
+        DEPLOY_ACCEPTANCE_PHASE=acceptance-record
+        deploy_acceptance_publish || return 1
+        [[ "${DEPLOY_TEST_FAILPOINT:-}" != abrupt-after-acceptance-record-intent ]] || exit 75
+        scenario="$(jq -c --arg id "$scenario_id" '.scenarios[] | select(.id == $id)' <<< "$DEPLOY_ACCEPTANCE_JSON")"
+    else
+        [[ "$current_status" == recording && "$(jq -r '.artifact.byteLength' <<< "$scenario")" == "$length" &&
+           "$(jq -r '.artifact.sha256' <<< "$scenario")" == "$digest" ]] ||
+          { deploy_fail acceptance-record artifact recording-mismatch; return 1; }
+    fi
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        deploy_acceptance_artifact_file_safe "$destination" && [[ "$(jq -S -c . "$destination")" == "$canonical" ]] ||
+          { deploy_fail acceptance-record artifact publication-mismatch; return 1; }
+    else
+        deploy_acceptance_publish_artifact "$destination" "$canonical" || return 1
+    fi
+    [[ "${DEPLOY_TEST_FAILPOINT:-}" != abrupt-after-acceptance-record-artifact ]] || exit 75
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    DEPLOY_ACCEPTANCE_JSON="$(jq -c --arg id "$scenario_id" --arg now "$now" \
+      '.updatedAt=$now | .scenarios |= map(if .id == $id then .status="recorded" else . end)' <<< "$DEPLOY_ACCEPTANCE_JSON")" || return 1
+    DEPLOY_ACCEPTANCE_PHASE=acceptance-record-final
+    deploy_acceptance_publish || return 1
 }
