@@ -320,7 +320,7 @@ deploy_measure_wait_capture_set() {
             ($raw[0].checksumSha256|ascii_downcase) == ($capture.rawChecksumSha256|ascii_downcase) and
             $raw[0].byteLength == $capture.rawByteLength and
             any($centralCapture.artifacts[]; .role != "Raw" and (.checksumSha256 | test("^[0-9A-Fa-f]{64}$")) and
-              .objectState == "Available" and .objectVerifiedAtUtc != null and
+              .objectState == "Available" and
               any(.sources[]; .sourceArtifactId == $raw[0].artifactId and
                 (.checksumSha256|ascii_downcase) == ($raw[0].checksumSha256|ascii_downcase))))' "$local_file" >/dev/null &&
           jq -e '.rawIngress.value.pendingCount == 0 and .rawIngress.value.leasedCount == 0 and

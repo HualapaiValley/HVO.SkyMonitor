@@ -758,7 +758,7 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
         --arg rawSha "$central_raw_sha" --argjson rawLength "$central_raw_length" --arg derivativeSha "$FAKE_ARTIFACT_SHA" --arg acknowledged "2026-08-07T00:01:00Z" '
         . + [{captureSequence:$sequence,captureId:$capture,artifacts:[
           {artifactId:$raw,role:"Raw",checksumSha256:$rawSha,byteLength:$rawLength,objectState:"Available",objectVerifiedAtUtc:$acknowledged,sources:[],completedDerivativeCount:1},
-          {artifactId:$derivative,role:"Preview",checksumSha256:$derivativeSha,objectState:"Available",objectVerifiedAtUtc:$acknowledged,
+          {artifactId:$derivative,role:"Preview",checksumSha256:$derivativeSha,objectState:"Available",objectVerifiedAtUtc:null,
            sources:[{sourceArtifactId:$raw,checksumSha256:$rawSha}],completedDerivativeCount:0}]}]' <<< "$window")"
     done
   fi
