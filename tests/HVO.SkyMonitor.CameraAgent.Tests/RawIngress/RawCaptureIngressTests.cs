@@ -2182,7 +2182,10 @@ public sealed class RawCaptureIngressTests
         {
             if (point == target)
             {
-                Environment.FailFast($"Injected raw ingress process termination at {point}.");
+                var message = $"Injected raw ingress process termination at {point}.";
+                Console.Error.WriteLine(message);
+                Console.Error.Flush();
+                Environment.FailFast(message);
             }
         }
     }
