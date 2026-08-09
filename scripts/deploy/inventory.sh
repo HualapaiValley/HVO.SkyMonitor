@@ -47,7 +47,7 @@ deploy_validate_inventory() {
          (.name | text and length <= 200) and (.latitudeDegrees | type == "number" and . >= -90 and . <= 90) and
          (.longitudeDegrees | type == "number" and . >= -180 and . <= 180) and
          (.elevationMeters | type == "number" and . >= -1000 and . <= 10000) and (.timeZoneId | text and length <= 128)) and
-       (.logicHost | app and (.publicEndpoint | startswith("https://"))) and
+       (.logicHost | app) and
        (.cameraAgents | type == "array" and length > 0 and all(camera) and
         ([.[].ownerPasswordSecretReference] | unique | length) == length) and
       (.sharedServices == null or (.sharedServices | infra)) and

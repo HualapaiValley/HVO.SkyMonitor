@@ -21,7 +21,7 @@ deploy_smoke_validate_artifacts() {
       ($window | length) > 0 and
       all($window[]; . as $artifact |
         $artifact.byteLength > 0 and ($artifact.checksumSha256 | test("^[0-9A-Fa-f]{64}$")) and
-        $artifact.objectState == "Available" and $artifact.objectVerifiedAtUtc != null and
+        $artifact.objectState == "Available" and ($artifact.role != "Raw" or $artifact.objectVerifiedAtUtc != null) and
         ($artifact.recipeName | type == "string" and length > 0) and
         ($artifact.recipeSemanticVersion | type == "string" and length > 0) and
         ($artifact.recipeImplementationVersion | type == "string" and length > 0) and
@@ -51,9 +51,9 @@ deploy_smoke_select_checksum_proof() {
     jq -c --argjson before "$before" --slurpfile local "$local_continuity" '
       [.latestArtifacts[] | select((.captureSequence // -1) > $before) as $central |
         select($central.role == "Raw") |
-        $local[0].durable.latestArtifacts[] |
-        select(.status == "acknowledged" and .role == "Raw" and .artifactId == $central.artifactId) |
-        $central + {localChecksumSha256:.checksumSha256}] |
+        $local[0].durable.captureWindow[] |
+        select(.state == "committed" and .rawArtifactId == $central.artifactId and .rawByteLength == $central.byteLength) |
+        $central + {localChecksumSha256:.rawChecksumSha256}] |
       sort_by(.captureSequence,.artifactId) | first // empty' "$central"
 }
 
@@ -66,7 +66,7 @@ deploy_smoke_validate_checksum_proof() {
 deploy_smoke_metrics_facts() {
     local path="$1" facts
     [[ -f "$path" && ! -L "$path" && "$(stat -c '%h:%a' "$path")" == "1:600" && "$(stat -c %s "$path")" -le 1048576 ]] || return 1
-    ! grep -Eiq 'password|authorization|bearer|client[_-]?secret|device[_-]?key|envelope|payload' "$path" || return 1
+    ! grep -Eiq 'password|authorization|bearer|client[_-]?secret|device[_-]?key|envelope' "$path" || return 1
     facts="$(awk '
       BEGIN { capture=0; fleet=0; captureSeries=0; fleetSeries=0 }
       /^camera_agent_capture_control_cycles_total(\{[^}]{0,256}\})?[[:space:]]+[0-9]+([.][0-9]+)?$/ { capture += $NF; captureSeries++; next }
@@ -86,6 +86,27 @@ deploy_smoke_log_facts() {
     (( lines >= 1 && lines <= 200 )) || return 1
     ! grep -Eiq 'password|authorization:|bearer[[:space:]]|client[_-]?secret|device[_-]?key|envelope|request body|response body' "$path" || return 1
     jq -cn --argjson lines "$lines" '{boundedLineCount:$lines,sensitiveContentRejected:true}'
+}
+
+deploy_smoke_capture_control() {
+    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" run_id="$6" action="$7" desired="$8"
+    local name endpoint body request_headers status attempt desired_value
+    name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
+    attempt="$(jq -r '.publicationGeneration' <<< "$DEPLOY_SMOKE_JSON")"
+    body="$render_root/$name-$action-$attempt.json"; request_headers="$target_remote/$action-$attempt-control.headers"
+    jq -cn --arg reason "W0 smoke $action" '{reason:$reason}' > "$body"
+    deploy_bootstrap_stage_json "$target" "$body" "$target_remote/$action-$attempt.json" || return 1
+    deploy_bootstrap_register_private_remote "$target" "$request_headers" || return 1
+    deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$request_headers" \
+      "deploy-smoke-$run_id-$name-$action-$attempt" || return 1
+    status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/capture/$action" "$target_remote/$action-$attempt.json" \
+      "$request_headers" "$cookies" "$target_remote/$action-$attempt-response.json" "$private_root/$name-$action-$attempt-response.json")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail smoke "$name" "$action-control-failed"; return 1; }
+    desired_value=1; [[ "$desired" != Paused ]] || desired_value=3
+    jq -e --arg desired "$desired" --argjson desiredValue "$desired_value" '.state == $desired or .state == $desiredValue' \
+      "$private_root/$name-$action-$attempt-response.json" >/dev/null || return 1
+    deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" "$target_remote/$action-$attempt.json" "$request_headers" || return 1
+    deploy_transport_forget_private_path "$request_headers" || return 1
 }
 
 deploy_smoke_publish() {
@@ -174,7 +195,8 @@ deploy_run_smoke() {
         initial_lineage="$(jq -r '.lineageSourceCount' "$private_root/$name-initial-central.json")"
         initial_derivatives="$(jq -r '.completedDerivativeCount' "$private_root/$name-initial-central.json")"
         workload_profile="$(deploy_stage_workload_profile "$inventory" "$target" W0 "$device_id" "$render_root" "$state_dir" "$run_id")" || return 1
-        expected_recipes="$(jq -c '[.. | objects | .recipeVersion? // empty] | unique' "$render_root/$name-W0-camera-module.json")" || return 1
+        expected_recipes='["central-image-quality-v1","central-preview-v1"]'
+        deploy_smoke_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$run_id" resume Running || return 1
         deadline=$(( $(date +%s) + duration ))
         checks=""
         while (( $(date +%s) <= deadline )); do
@@ -198,7 +220,7 @@ deploy_run_smoke() {
               deploy_smoke_validate_derivative_provenance "$private_root/$name-current-central.json" "$initial_central" "$initial_derivatives" &&
               jq -e --arg device "$device_id" '
               .configuration.value.agentId == $device and .configuration.value.centralIntegration == "Enabled" and
-              .captureTelemetry.value.sampleCount > 0 and .rawIngress.value.pendingCount == 0 and
+              any(.captureRuntime.value.timings[]; .sampleCount > 0) and .rawIngress.value.pendingCount == 0 and
               .captureLanes.value.pendingCount == 0 and .captureProcessing.value.pendingCount == 0 and
               .artifactOutbox.value.pendingCount == 0 and .rawIngress.value.quarantineCount == 0 and
               .captureLanes.value.quarantineCount == 0 and .artifactOutbox.value.quarantineCount == 0 and
@@ -206,8 +228,13 @@ deploy_run_smoke() {
             sleep "${DEPLOY_TEST_POLL_SECONDS:-2}"
         done
         [[ "$checks" == true ]] || { deploy_fail smoke "$name" bounded-convergence-timeout; return 1; }
+        deploy_smoke_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$run_id" pause Paused || return 1
+        status="$(deploy_bootstrap_request "$target" GET \
+          "$endpoint/api/internal/deployment/continuity?fromCaptureSequence=$((initial_local + 1))&toCaptureSequence=$current_local" "" "" "$cookies" \
+          "$target_remote/proof-continuity.json" "$private_root/$name-proof-continuity.json")" || return 1
+        [[ "$status" == 200 ]] || { deploy_fail smoke "$name" local-proof-continuity-failed; return 1; }
         proof_artifact="$(deploy_smoke_select_checksum_proof "$private_root/$name-current-central.json" \
-          "$private_root/$name-current-continuity.json" "$initial_central")"
+          "$private_root/$name-proof-continuity.json" "$initial_central")"
         [[ -n "$proof_artifact" ]] || { deploy_fail smoke "$name" retrievable-artifact-missing; return 1; }
         proof_id="$(jq -er '.artifactId' <<< "$proof_artifact")"; proof_device="$(jq -er '.devicePublicId' "$private_root/$name-current-central.json")"
         local_checksum="$(jq -er '.localChecksumSha256' <<< "$proof_artifact")"

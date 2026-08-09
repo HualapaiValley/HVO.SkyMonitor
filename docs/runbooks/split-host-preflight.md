@@ -27,8 +27,9 @@ machine identity, daemon identity, architecture, absolute runtime root, and
 host ports. Application targets separately declare an HTTP `internalEndpoint`
 for host-bound Compose/readiness and a `publicEndpoint` used by browsers,
 CameraAgents, bootstrap payloads, and OIDC. LogicHost is the public OIDC
-authority, so its `publicEndpoint` must use HTTPS in both isolated and persistent
-modes; inventory validation rejects HTTP before any host contact. Preflight
+authority. Isolated runs may use an explicit HTTP `publicEndpoint` on an
+operator-selected local network; persistent production mode requires HTTPS and
+rejects HTTP before any host contact. Preflight
 requires the hostname observed through SSH to equal both the
 declared hostname and Docker daemon `Name`; this correlates the two routes rather
 than trusting unrelated inventory assertions. Docker daemon architecture values
@@ -88,9 +89,10 @@ Use an explicit inventory and mode:
   --run-id observatory-preflight-01
 ```
 
-`--mode` is `isolated` or `persistent`. LogicHost requires an HTTPS public
-authority in both modes. Persistent mode additionally rejects fixture catalogs
-and requires HTTPS public authorities for every CameraAgent.
+`--mode` is `isolated` or `persistent`. Isolated mode permits explicit HTTP
+authorities for portable local-network validation. Persistent mode rejects
+fixture catalogs and requires HTTPS public authorities for LogicHost and every
+CameraAgent.
 The shipped Compose files remain HTTP-only. Before persistent preflight, provision
 TLS termination/reverse proxies at every public authority, configure each
 target's exact proxy IP in `trustedProxyAddresses`, forward only
@@ -121,7 +123,10 @@ For every explicitly selected target, preflight checks:
 - lexical and component-by-component runtime-root safety without creating it;
 - listening-port and Docker container conflicts;
 - each declared service route from its declared source targets;
-- the LogicHost public authority from every CameraAgent target.
+- in persistent mode, the pre-provisioned LogicHost public authority from every
+  CameraAgent target. Isolated mode records this check as deferred because the
+  authority is created by `up`, which performs the required cross-host readiness
+  check before bootstrap.
 
 Remote TCP checks require Bash and `timeout`; HTTP checks require Bash and curl.
 Missing required tools are reported as bounded `tool-unavailable` failures,
@@ -160,7 +165,7 @@ manifest, removes the staged evidence, reruns all remote checks, and publishes a
 new matching passed evidence/manifest pair. Failed publication follows the same
 evidence-first order before committing a failed manifest.
 
-For `bootstrap`, `smoke`, `measure`, and `down`, recovery validates the
+For `bootstrap`, `smoke`, `measure`, `acceptance-init`, and `down`, recovery validates the
 phase-specific next-generation ledger before reconstructing any mirror. A
 malformed candidate leaves the prior manifest, evidence, and digest commit
 unchanged. A manifest, evidence, or commit without its authoritative phase
@@ -430,8 +435,11 @@ Production OpenIddict signing and encryption PFX files are mounted read-only and
 loaded from configured absolute paths. Both hosts mount the complete catalog
 installation root at `/app/catalog` and receive the inventory package kind.
 Internal HTTP `/alive`, `/health`, and `/metrics` must pass before agents start;
-OIDC discovery is checked only through the public HTTPS authority from every
-CameraAgent host through the declared TLS proxy.
+OIDC discovery is checked through the declared public authority from every
+CameraAgent host. Isolated mode explicitly stages `Deployment:Mode=isolated`,
+which permits HTTP token transport for the local-network campaign. Persistent
+mode never stages that exception and reaches the HTTPS authority through the
+declared TLS proxy.
 
 Each CameraAgent receives separate Identity, Data Protection, provisioning, raw,
 and archive roots, but no central SQL/Redis/MinIO credentials. Fresh durable
@@ -558,7 +566,7 @@ representative hook; Tier M candidate evidence uses the inventory's canonical 5
 warm-up plus 30 measured operations fixed by the canonical manifest and the trial/regression rules in
 `docs/planning/performance-validation.md`.
 
-`bootstrap`, `smoke`, `measure`, and `down` publish an authoritative private
+`bootstrap`, `smoke`, `measure`, `acceptance-init`, and `down` publish an authoritative private
 ledger with a monotonically increasing publication generation. A digest commit
 identifies the generation for which ledger, manifest, and evidence are all
 equal. If the process exits after any individual rename, the next invocation
@@ -567,6 +575,68 @@ missing mirrors before resuming. A fully committed generation with a changed
 ledger, manifest, or evidence fails as tampering rather than being repaired. The
 phase validator runs before mirror reconstruction, and orphan phase companions
 without the ledger fail closed.
+
+## Initialize Phase 14 Acceptance
+
+After `smoke` passes, use a clean worktree to initialize the versioned Phase 14
+campaign index without executing or claiming any scenario:
+
+```bash
+./scripts/deploy:environment acceptance-init --inventory /absolute/path/inventory.yml \
+  --mode isolated --run-id observatory-preflight-01
+```
+
+The repository manifest at
+`../../deploy/split-host/acceptance/phase14-scenarios.json` enumerates normal
+flow, all twelve Phase 14 project-plan fault-row identities, and explicit
+executable commit/publication boundaries for raw ingress, capture lanes,
+processing, calibration, transient candidate/runtime journals, outbox
+transitions, central ingest/object publication, jobs, and windows. Raw ingress
+`ValidationCompleted` and transient-candidate `BeforeReservationValidation` and
+`AfterReservationValidation` are also tracked explicitly even though they are
+validation hooks rather than durable commits. The capture-lane `BeforeHandler`
+and `AfterHandler` execution hooks are not labeled commit boundaries; the
+separate lease-crash scenarios cover them. Processing `BeforeNodeExecution` is
+likewise an execution hook used by pressure/shutdown campaigns, not a publication
+boundary. CameraAgent host, LogicHost host, network, SQL,
+Redis, MinIO, and SMTP failures are distinct scenarios. `executionClass`
+distinguishes existing component automation from boundaries requiring the real
+campaign; external, soak, Stellarium, and future-hardware remain separate gates.
+Every test evidence source uses an existing public MSTest fully-qualified method
+name and an optional `;case=<selector>`; the focused contract audits every FQN
+against source and compares the manifest boundary sets with the relevant fault
+enums. The owner-only
+`acceptance-index.json` binds the run, inventory, source revision/tree, sanitized
+target identities, canonical workload identities, scenario status, and expected
+artifact metadata. Initialization first parses the inventory once, canonicalizes
+it, and requires its SHA-256 to equal the invocation's inventory hash. Smoke
+validation and topology projection use only that immutable JSON snapshot; the
+live inventory file is never reread. Initialization requires smoke to be a fully
+committed passed phase: owner-only regular ledger, manifest, evidence, and commit
+files; exact smoke ledger shape and run/mode/inventory/revision/workload/target
+identity; an exact generation/digest commit; and canonical ledger/manifest/
+evidence equality. This check is read-only and never repairs or rewrites smoke.
+Initialization reads the campaign, workload manifest, and
+workload sources as blobs from the exact inventory revision rather than from the
+working tree. It verifies clean HEAD, source tree, and status immediately before
+and after recovery/publication; initialization and every resume reject drift
+before reporting success. Every scenario and classification starts `not-run`.
+Machine output reports `stage=acceptance-init`; its `passed` status means only
+that campaign-index initialization passed and never means `GATE-P14` passed.
+Artifact bytes are not copied, and byte length/SHA-256 remain null until a later
+execution slice records a sanitized artifact. Resume rejects contract drift,
+changed source/topology/workload identities, unsafe files, or committed mirror
+tampering without changing prior evidence. Contract tests cover interruptions
+after each ledger, manifest, evidence, and commit rename plus symlink, hardlink,
+orphan, and tamper rejection for the four phase files. They also reject
+mirror-only, tampered, and unsafe smoke quartets and verify inventory hash drift
+cannot create acceptance files or alter topology projected from a prior snapshot.
+
+Run the focused contract test with:
+
+```bash
+./scripts/test:phase14-acceptance
+```
 
 ## Stop Or Delete
 

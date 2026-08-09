@@ -603,12 +603,53 @@ exit 1
 REMOTE
 }
 
+deploy_transport_oidc_ready() {
+    local ssh_host="$1" authority="$2" discovery issuer token_endpoint discovery_json poll_seconds
+    discovery="${authority%/}/.well-known/openid-configuration"
+    issuer="${authority%/}/"
+    token_endpoint="${authority%/}/connect/token"
+    poll_seconds="${DEPLOY_TEST_POLL_SECONDS:-2}"
+    [[ "$poll_seconds" =~ ^[0-9]+$ ]] || return 1
+    if ! discovery_json="$(timeout --signal=TERM --kill-after=5s 430 ssh -o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=10 \
+      -o ServerAliveCountMax=3 -- "$ssh_host" bash -s -- "$discovery" "$poll_seconds" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+for _ in $(seq 1 60); do
+  if ! response=$(curl --silent --show-error --max-time 5 --max-filesize 65536 --write-out $'\n%{http_code}' "$1"); then
+    sleep "$2"
+    continue
+  fi
+  status=${response##*$'\n'}
+  body=${response%$'\n'*}
+  if [[ "$status" == 200 && "${#body}" -le 65536 ]]; then
+    printf '%s' "$body"
+    exit 0
+  fi
+  sleep "$2"
+done
+exit 1
+REMOTE
+)"; then
+        return 1
+    fi
+    jq -e --arg issuer "$issuer" --arg token "$token_endpoint" '
+      type == "object" and (.issuer | type == "string") and (.token_endpoint | type == "string") and
+      .issuer == $issuer and .token_endpoint == $token
+    ' <<< "$discovery_json" >/dev/null 2>&1
+}
+
 deploy_transport_http_private() {
     local ssh_host="$1" method="$2" url="$3" body_path="$4" header_path="$5" cookie_path="$6" output_path="$7"
+    local remote_url="${url//&/\\&}"
+    [[ -n "$body_path" ]] || body_path=-
+    [[ -n "$header_path" ]] || header_path=-
+    [[ -n "$cookie_path" ]] || cookie_path=-
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
-      "$method" "$url" "$body_path" "$header_path" "$cookie_path" "$output_path" 2>/dev/null <<'REMOTE'
+      "$method" "$remote_url" "$body_path" "$header_path" "$cookie_path" "$output_path" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 method=$1; url=$2; body=$3; headers=$4; cookies=$5; output=$6
+[[ "$body" != - ]] || body=
+[[ "$headers" != - ]] || headers=
+[[ "$cookies" != - ]] || cookies=
 [[ "$method" == GET || "$method" == POST ]] || exit 90
 [[ "$output" == /* && "$output" != *//* && "$output" != */../* && "$output" != */./* ]] || exit 91
 [[ -z "$body" || ( "$body" == /* && "$body" != *//* && "$body" != */../* && "$body" != */./* ) ]] || exit 91
@@ -624,6 +665,12 @@ if [[ -n "$cookies" ]]; then
 fi
 status=$(curl "${args[@]}" "$url") || exit 95
 [[ "$status" =~ ^[0-9]{3}$ && -f "$output" && ! -L "$output" ]] || exit 96
+if jq -e . "$output" >/dev/null 2>&1; then
+  normalized="$output.normalized"; trap 'rm -f -- "$normalized"' EXIT
+  [[ ! -e "$normalized" && ! -L "$normalized" ]] || exit 97
+  (umask 077; jq -c 'walk(if type == "object" then with_entries(.key = ((.key[0:1] | ascii_downcase) + .key[1:])) else . end)' "$output" > "$normalized") || exit 98
+  chmod 600 "$normalized" && mv -T "$normalized" "$output" || exit 99
+fi
 chmod 600 "$output"
 [[ -z "$cookies" || ( -f "$cookies" && ! -L "$cookies" ) ]] || exit 97
 [[ -z "$cookies" ]] || chmod 600 "$cookies"
@@ -639,9 +686,21 @@ url=$1; headers=$2; root=$3
 [[ "$url" == http://* && "$headers" == /* && "$root" == /* && -d "$root" && ! -L "$root" ]] || exit 90
 [[ -f "$headers" && ! -L "$headers" && "$(stat -c '%h:%a' "$headers")" == "1:600" ]] || exit 91
 payload="$root/retrieval.$$.bin"; response_headers="$root/retrieval.$$.headers"
-cleanup() { rm -f -- "$payload" "$response_headers"; [[ ! -e "$payload" && ! -L "$payload" && ! -e "$response_headers" && ! -L "$response_headers" ]]; }
+authorization="$root/retrieval.$$.authorization.json"; cookies="$root/retrieval.$$.cookies"
+cleanup() {
+  rm -f -- "$payload" "$response_headers" "$authorization" "$cookies"
+  [[ ! -e "$payload" && ! -L "$payload" && ! -e "$response_headers" && ! -L "$response_headers" &&
+     ! -e "$authorization" && ! -L "$authorization" && ! -e "$cookies" && ! -L "$cookies" ]]
+}
 trap cleanup EXIT
-status=$(curl --silent --show-error --max-time 60 --output "$payload" --dump-header "$response_headers" --write-out '%{http_code}' --header "@$headers" "$url") || exit 92
+umask 077
+authorization_status=$(curl --silent --show-error --max-time 30 --output "$authorization" --write-out '%{http_code}' \
+  --header "@$headers" --header 'Content-Type: application/json' --cookie-jar "$cookies" \
+  --data-binary '{"range":null}' "${url%/content}/download-authorizations") || exit 92
+[[ "$authorization_status" == 200 && -f "$authorization" && ! -L "$authorization" && -f "$cookies" && ! -L "$cookies" ]] || exit 93
+chmod 600 "$authorization" "$cookies"
+status=$(curl --silent --show-error --max-time 60 --output "$payload" --dump-header "$response_headers" --write-out '%{http_code}' \
+  --header "@$headers" --cookie "$cookies" "$url") || exit 92
 [[ "$status" =~ ^[0-9]{3}$ && -f "$payload" && ! -L "$payload" && -f "$response_headers" && ! -L "$response_headers" ]] || exit 93
 chmod 600 "$payload" "$response_headers"
 hash=$(sha256sum "$payload"); hash=${hash%% *}; bytes=$(wc -c < "$payload")
@@ -721,7 +780,8 @@ deploy_transport_prepare_target() {
     remote_script="$(cat <<'REMOTE'
 set -euo pipefail
 root=$1; mode=$2; runtime_owner=$3; run_id=$4; inventory_hash=$5; target=$6
-installation_id=$7; marker_digest=$8; lock_name=$9; expected_machine=${10}; expected_host=${11}; failpoint=${12}; operation=${13}
+installation_id=$7; marker_digest=$8; lock_name=$9; expected_machine=${10}; expected_host=${11}
+if (( $# == 12 )); then failpoint=; operation=${12}; else failpoint=${12}; operation=${13}; fi
 fail() { printf 'failed\t%s\n' "$1"; exit 1; }
 [[ "$(cat /etc/machine-id 2>/dev/null || hostname)" == "$expected_machine" && "$(hostname)" == "$expected_host" ]] || fail identity-mismatch
 runtime_uid=$(id -u "$runtime_owner" 2>/dev/null) || fail owner-unavailable

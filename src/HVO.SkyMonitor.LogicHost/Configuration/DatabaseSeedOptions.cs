@@ -33,6 +33,8 @@ internal sealed class SeedApiKeyOptions
     public string DisplayName { get; set; } = string.Empty;
 
     public ApiKeyAccessLevel AccessLevel { get; set; } = ApiKeyAccessLevel.Read;
+
+    public string UserEmail { get; set; } = string.Empty;
 }
 
 internal sealed class SeedConfidentialClientOptions

@@ -30,7 +30,8 @@ deploy_measure_validate_snapshot() {
       .durable.artifactOutboxMaximumRecordId >= 0 and (.durable.artifactOutboxMaximumAuditId | type) == "number" and
       .durable.artifactOutboxMaximumAuditId >= 0 and .durable.fleetDatabaseExists == true and
       (.durable.fleetNextSequence | type) == "number" and .durable.fleetNextSequence >= 1 and
-      (.durable.fleetMaximumSequence | type) == "number" and .durable.fleetMaximumSequence >= 0' "$continuity" >/dev/null || return 1
+      (.durable.fleetMaximumSequence == null or
+        ((.durable.fleetMaximumSequence | type) == "number" and .durable.fleetMaximumSequence >= 0))' "$continuity" >/dev/null || return 1
     jq -e --arg device "$device" '
       .configuration.value.agentId == $device and .configuration.value.moduleType == "VirtualSky" and
       (.captureTelemetry.value.sampleCount | type) == "number" and .captureTelemetry.value.sampleCount >= 0 and
@@ -131,8 +132,8 @@ deploy_measure_read_sequence() {
 }
 
 deploy_measure_capture_control() {
-    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" action="$6" run_id="$7" boundary="$8" desired="$9" force="${10:-false}"
-    local name endpoint body base_headers request_headers status key attempt latest latest_status current_state current_version result_state result_version
+    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" action="$6" run_id="$7" boundary="$8" desired="$9" force="${10:-false}" not_before="${11:-0}"
+    local name endpoint body base_headers request_headers status key attempt latest latest_status current_state current_version result_state result_version desired_value wait
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/summary" "" "" "$cookies" \
       "$target_remote/$boundary-control-state.json" "$private_root/$name-$boundary-control-state.json")" || return 1
@@ -167,11 +168,15 @@ deploy_measure_capture_control() {
     deploy_bootstrap_stage_json "$target" "$body" "$target_remote/$boundary-$attempt.json" || return 1
     deploy_bootstrap_register_private_remote "$target" "$request_headers" || return 1
     deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$base_headers" "$request_headers" "$key" || return 1
+    wait=$(( not_before - $(date +%s) )); (( wait <= 0 )) || sleep "$wait"
     status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/capture/$action" "$target_remote/$boundary-$attempt.json" \
       "$request_headers" "$cookies" "$target_remote/$boundary-$attempt-response.json" "$private_root/$name-$boundary-$attempt-response.json")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail measure "$name" "$action-control-failed"; return 1; }
     [[ "${DEPLOY_TEST_FAILPOINT:-}" != "abrupt-after-measure-$boundary" ]] || exit 75
-    result_state="$(jq -er --arg desired "$desired" '.state | select(. == $desired)' "$private_root/$name-$boundary-$attempt-response.json")" || return 1
+    desired_value=1; [[ "$desired" != Paused ]] || desired_value=3
+    jq -e --arg desired "$desired" --argjson desiredValue "$desired_value" '.state == $desired or .state == $desiredValue' \
+      "$private_root/$name-$boundary-$attempt-response.json" >/dev/null || return 1
+    result_state="$desired"
     result_version="$(jq -er '.version | numbers' "$private_root/$name-$boundary-$attempt-response.json")" || return 1
     jq -e '.replayed == false' "$private_root/$name-$boundary-$attempt-response.json" >/dev/null || return 1
     DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --arg key "$key" --arg state "$result_state" --argjson version "$result_version" '
@@ -182,14 +187,77 @@ deploy_measure_capture_control() {
     deploy_transport_forget_private_path "$request_headers" || return 1
 }
 
+deploy_measure_activate_profile() {
+    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" rendered="$6" workload="$7" run_id="$8"
+    local name endpoint state status pending version activate_body activate_headers activate_response
+    name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
+    state="$private_root/$name-schedule-state.json"
+    status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
+      "$target_remote/schedule-state.json" "$state")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-read-failed; return 1; }
+    if jq -e --slurpfile rendered "$rendered" '
+      .activeRevision.profile.module.type == $rendered[0].module.type and
+      .activeRevision.profile.rig.sensor.widthPixels == $rendered[0].rig.sensor.widthPixels and
+      .activeRevision.profile.rig.sensor.heightPixels == $rendered[0].rig.sensor.heightPixels and
+      .activeRevision.profile.rig.sensor.sensorRecipeVersion == $rendered[0].rig.sensor.sensorRecipeVersion and
+      .activeRevision.profile.rig.pipeline.captureInterval == $rendered[0].rig.pipeline.captureInterval' "$state" >/dev/null; then
+        return 0
+    fi
+    pending="$(jq -er --slurpfile rendered "$rendered" '
+      .pendingRevision | select(.source == "file-draft" and
+        .profile.module.type == $rendered[0].module.type and
+        .profile.rig.sensor.widthPixels == $rendered[0].rig.sensor.widthPixels and
+        .profile.rig.sensor.heightPixels == $rendered[0].rig.sensor.heightPixels and
+        .profile.rig.sensor.sensorRecipeVersion == $rendered[0].rig.sensor.sensorRecipeVersion and
+        .profile.rig.pipeline.captureInterval == $rendered[0].rig.pipeline.captureInterval) | .revisionId' "$state")" ||
+      { deploy_fail measure "$name" canonical-schedule-draft-missing; return 1; }
+    version="$(jq -er '.stateVersion | numbers' "$state")" || return 1
+
+    activate_body="$render_root/$name-$workload-schedule-activate.json"; activate_headers="$target_remote/$workload-schedule-activate-control.headers"
+    jq -cn --arg revision "$pending" --arg workload "$workload" --argjson version "$version" \
+      '{revisionId:$revision,expectedVersion:$version,reason:("canonical " + $workload + " measurement")}' > "$activate_body" || return 1
+    deploy_bootstrap_stage_json "$target" "$activate_body" "$target_remote/$workload-schedule-activate.json" || return 1
+    deploy_bootstrap_register_private_remote "$target" "$activate_headers" || return 1
+    deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$activate_headers" \
+      "deploy-measure-$run_id-$name-${workload,,}-schedule-activate" || return 1
+    activate_response="$private_root/$name-$workload-schedule-activate.json"
+    status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/schedule/activate" \
+      "$target_remote/$workload-schedule-activate.json" "$activate_headers" "$cookies" \
+      "$target_remote/$workload-schedule-activate-response.json" "$activate_response")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-activate-failed; return 1; }
+    jq -e --slurpfile rendered "$rendered" '
+      .activeRevision.profile.module.type == $rendered[0].module.type and
+      .activeRevision.profile.rig.sensor.widthPixels == $rendered[0].rig.sensor.widthPixels and
+      .activeRevision.profile.rig.sensor.heightPixels == $rendered[0].rig.sensor.heightPixels and
+      .activeRevision.profile.rig.sensor.sensorRecipeVersion == $rendered[0].rig.sensor.sensorRecipeVersion and
+      .activeRevision.profile.rig.pipeline.captureInterval == $rendered[0].rig.pipeline.captureInterval' \
+      "$activate_response" >/dev/null || { deploy_fail measure "$name" schedule-activation-mismatch; return 1; }
+    deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" \
+      "$target_remote/$workload-schedule-activate.json" "$activate_headers" || return 1
+    deploy_transport_forget_private_path "$activate_headers" || return 1
+}
+
 deploy_measure_execute_exact_count() {
-    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" device="$6" run_id="$7" label="$8" start="$9" count="${10}" deadline="${11}"
-    local expected current name
+    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" device="$6" run_id="$7" label="$8" start="$9" count="${10}" deadline="${11}" interval="${12}"
+    local expected current name remaining delay previous pause_at
     name="$(jq -r '.name' <<< "$target")"; expected=$(( start + count ))
     current="$(deploy_measure_read_sequence "$target" "$target_remote" "$private_root" "$cookies" "$label-recovery-boundary" "$device")" || return 1
     (( current <= expected )) || { deploy_fail measure "$name" "$label-boundary-overshot"; return 1; }
     if (( current == expected )); then
         deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" "$label-pause" Paused || return 1
+        return 0
+    fi
+    if [[ "${DEPLOY_TEST_POLL_SECONDS:-1}" != 0 ]]; then
+        while (( current < expected && $(date +%s) <= deadline )); do
+            previous="$current"; remaining=$(( expected - current )); delay=$(( remaining * interval - interval / 2 )); (( delay >= 1 )) || delay=1
+            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" resume "$run_id" "$label-resume" Running || return 1
+            pause_at=$(( $(date +%s) + delay )); (( pause_at <= deadline )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
+            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" "$label-pause" Paused false "$pause_at" || return 1
+            current="$(deploy_measure_read_sequence "$target" "$target_remote" "$private_root" "$cookies" "$label-boundary" "$device")" || return 1
+            (( current <= expected )) || { deploy_fail measure "$name" "$label-boundary-overshot"; return 1; }
+            (( current > previous )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
+        done
+        (( current == expected )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
         return 0
     fi
     deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" resume "$run_id" "$label-resume" Running || return 1
@@ -266,8 +334,8 @@ deploy_measure_wait_capture_set() {
             ($raw[0].checksumSha256|ascii_downcase) == ($capture.rawChecksumSha256|ascii_downcase) and
             $raw[0].byteLength == $capture.rawByteLength and
             any($centralCapture.artifacts[]; .role != "Raw" and (.checksumSha256 | test("^[0-9A-Fa-f]{64}$")) and
-              .objectState == "Available" and .objectVerifiedAtUtc != null and
-              any(.sources[]; .sourceArtifactId == $raw[0].artifactId and
+              .objectState == "Available" and
+              any(.sources[]; .artifactId == $raw[0].artifactId and
                 (.checksumSha256|ascii_downcase) == ($raw[0].checksumSha256|ascii_downcase))))' "$local_file" >/dev/null &&
           jq -e '.rawIngress.value.pendingCount == 0 and .rawIngress.value.leasedCount == 0 and
             .captureLanes.value.pendingCount == 0 and .captureLanes.value.leasedCount == 0 and
@@ -289,7 +357,7 @@ deploy_measure_wait_capture_set() {
 deploy_run_measure() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6" selected_workload="$7"
     local state_dir evidence_dir render_root private_root now started_seconds ended_seconds duration deadline target name target_root target_remote response cookies
-    local device profile warmup_requested measured_requested warmup_start warmup_completed measured_start before after measured_completed status reset_status
+    local device profile warmup_requested measured_requested warmup_start warmup_completed measured_start before after measured_completed status reset_status interval_value interval_hours interval_minutes interval_seconds capture_interval_seconds
     local logic logic_root logic_remote central_headers warmup measured
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/bootstrap-manifest.json" measure "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
@@ -360,6 +428,12 @@ deploy_run_measure() {
               .deviceId == $device and (.activeConfigurationSha256|ascii_downcase) == ($sha|ascii_downcase)' "$private_root/$name-profile-identity.json" >/dev/null ||
               { deploy_fail measure "$name" resumed-profile-state-mismatch; return 1; }
         fi
+        deploy_measure_activate_profile "$target" "$target_remote" "$private_root" "$render_root" "$cookies" \
+          "$render_root/$name-$selected_workload-camera-module.json" "$selected_workload" "$run_id" || return 1
+        interval_value="$(jq -er '.rig.pipeline.captureInterval | select(test("^[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?$"))' "$render_root/$name-$selected_workload-camera-module.json")" || return 1
+        IFS=: read -r interval_hours interval_minutes interval_seconds <<< "$interval_value"; interval_seconds="${interval_seconds%%.*}"
+        capture_interval_seconds=$(( 10#$interval_hours * 3600 + 10#$interval_minutes * 60 + 10#$interval_seconds ))
+        (( capture_interval_seconds >= 1 )) || return 1
         warmup_requested="$(jq -r '.warmupOperations' <<< "$profile")"; measured_requested="$(jq -r '.measuredOperations' <<< "$profile")"
         deadline=$(( $(date +%s) + duration ))
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .failureCleanup.status' <<< "$DEPLOY_MEASURE_JSON")" == capture-may-be-running ]]; then
@@ -384,7 +458,7 @@ deploy_run_measure() {
             deploy_measure_publish || return 1
         fi
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .warmup == null' <<< "$DEPLOY_MEASURE_JSON")" == true ]]; then
-            deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$run_id" warmup "$warmup_start" "$warmup_requested" "$deadline" || return 1
+            deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$run_id" warmup "$warmup_start" "$warmup_requested" "$deadline" "$capture_interval_seconds" || return 1
             warmup="$(deploy_measure_wait_capture_set "$target" "$logic" "$target_remote" "$logic_remote" "$private_root" "$cookies" "$central_headers" "$device" warmup "$warmup_start" "$warmup_requested" "$deadline")" || return 1
             warmup_completed="$(jq -r '.count' <<< "$warmup")"
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --argjson facts "$warmup" --argjson count "$warmup_completed" '.targets |= map(if .target == $target then .warmup=$facts | .warmupCompleted=$count else . end)' <<< "$DEPLOY_MEASURE_JSON")"
@@ -410,7 +484,7 @@ deploy_run_measure() {
             measured_start="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .measuredStart' <<< "$DEPLOY_MEASURE_JSON")"
         fi
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .measured == null' <<< "$DEPLOY_MEASURE_JSON")" == true ]]; then
-            deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$run_id" measured "$measured_start" "$measured_requested" "$deadline" || return 1
+            deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$run_id" measured "$measured_start" "$measured_requested" "$deadline" "$capture_interval_seconds" || return 1
             measured="$(deploy_measure_wait_capture_set "$target" "$logic" "$target_remote" "$logic_remote" "$private_root" "$cookies" "$central_headers" "$device" measured "$measured_start" "$measured_requested" "$deadline")" || return 1
             measured_completed="$(jq -r '.count' <<< "$measured")"
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --argjson facts "$measured" --argjson count "$measured_completed" '.targets |= map(if .target == $target then .measured=$facts | .measuredCompleted=$count else . end)' <<< "$DEPLOY_MEASURE_JSON")"

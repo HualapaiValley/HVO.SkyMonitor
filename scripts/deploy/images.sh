@@ -30,7 +30,8 @@ deploy_images_validate_builder() {
     jq -se --arg builder "$builder" --arg driver "$expected_driver" --arg endpoint "$expected_endpoint" --argjson platforms "$required_platforms" '
       [ .[] | select(.Name == $builder) ] as $matches |
       ($matches | length) > 0 and all($matches[]; .Driver == $driver and (.Err // "") == "" and
-        (.Nodes | type == "array" and length == 1 and .[0].Endpoint == $endpoint and .[0].Status == "running" and
+        (.Nodes | type == "array" and length == 1 and
+          (.[0].Endpoint == $endpoint or ($endpoint == "default" and .[0].Endpoint == "unix:///var/run/docker.sock")) and .[0].Status == "running" and
           .[0] as $node | all($platforms[]; . as $platform | $node.Platforms | index("linux/" + $platform) != null)))' <<< "$listing" >/dev/null 2>&1 ||
       { deploy_fail images builder mismatch-or-remote; return 1; }
     info="$(docker info --format '{"ID":{{json .ID}},"Name":{{json .Name}},"Architecture":{{json .Architecture}},"OSType":{{json .OSType}}}' 2>/dev/null)" ||
@@ -143,10 +144,11 @@ deploy_images_build_archive() {
     chmod 600 "$temporary" || return 1
     config_name="$(tar -xOf "$temporary" manifest.json 2>/dev/null | jq -er 'if type == "array" and length == 1 then .[0].Config else empty end')" ||
       { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" invalid-archive; return 1; }
-    [[ "$config_name" =~ ^[0-9a-f]{64}\.json$ ]] || { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" unsafe-archive-config; return 1; }
+    [[ "$config_name" =~ ^([0-9a-f]{64}\.json|blobs/sha256/[0-9a-f]{64})$ ]] || { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" unsafe-archive-config; return 1; }
     config="$(tar -xOf "$temporary" "$config_name" 2>/dev/null)" || { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" invalid-archive; return 1; }
     config_digest="$(printf '%s' "$config" | sha256sum)"; config_digest="${config_digest%% *}"
-    [[ "$config_name" == "$config_digest.json" ]] || { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" config-digest-mismatch; return 1; }
+    [[ "$config_name" == "$config_digest.json" || "$config_name" == "blobs/sha256/$config_digest" ]] ||
+      { rm -f -- "$temporary"; deploy_fail images "$component-$architecture" config-digest-mismatch; return 1; }
     jq -e --arg arch "$architecture" --arg revision "$revision" --arg tree "$tree" --arg component "$component" '
       .architecture == $arch and .os == "linux" and .config.Labels["org.opencontainers.image.revision"] == $revision and
       .config.Labels["io.hvoskymonitor.source-tree"] == $tree and
@@ -326,8 +328,12 @@ deploy_validate_images_ledger() {
         reference="$(jq -r '.reference' <<< "$entry")"; image_id="$(jq -r '.imageId' <<< "$entry")"
         [[ "$(jq -r '.component' <<< "$entry")" == "$component" && "$(jq -r '.architecture' <<< "$entry")" == "$architecture" &&
            "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { deploy_fail images ledger target-mismatch; return 1; }
-        jq -e --arg component "$component" --arg architecture "$architecture" --arg reference "$reference" --arg distribution "$distribution" '
-          any(.images[]; .component == $component and .reference == $reference and ($distribution == "registry" or .architecture == $architecture))' <<< "$json" >/dev/null 2>&1 ||
+        jq -e --arg component "$component" --arg architecture "$architecture" --arg reference "$reference" --arg imageId "$image_id" --arg distribution "$distribution" '
+          if $distribution == "registry" then
+            any(.images[]; .component == $component and .reference == $reference)
+          else
+            $reference == $imageId and any(.images[]; .component == $component and .architecture == $architecture)
+          end' <<< "$json" >/dev/null 2>&1 ||
           { deploy_fail images ledger target-reference-mismatch; return 1; }
     done < <(jq -c '.targets[]' <<< "$json")
 }
@@ -499,17 +505,18 @@ deploy_run_images() {
             [[ -f "$archive_path" && ! -L "$archive_path" && "$(sha256sum "$archive_path" | cut -d' ' -f1)" == "$expected_digest" ]] ||
               { deploy_fail images "$target_name" archive-drift; return 1; }
             deploy_transport_archive_load "$context" "$archive_path" || { deploy_fail images "$target_name" load-failed; return 1; }
-            reference="$(jq -r '.reference' <<< "$image_entry")"
+            reference="$source_reference"
         fi
         deploy_images_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         [[ "${DEPLOY_TEST_FAILPOINT:-}" != after-image-transfer ]] || return 75
         inspect="$(deploy_transport_image_inspect "$context" "$reference")" || { deploy_fail images "$target_name" inspect-failed; return 1; }
         inspect_id=""; inspect_digest=""
-        if [[ "$distribution" == archive ]]; then inspect_id="$reference"; else inspect_digest="$expected_digest"; fi
+        if [[ "$distribution" != archive ]]; then inspect_digest="$expected_digest"; fi
         deploy_images_validate_inspect "$inspect" "$architecture" "$revision" "$tree" "$component" "$inspect_id" "$inspect_digest" \
           "$created" "$sdk" "$source_reference" || { deploy_fail images "$target_name" image-identity-mismatch; return 1; }
         deploy_images_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         image_id="$(jq -r '.id' <<< "$inspect")"
+        if [[ "$distribution" == archive ]]; then reference="$image_id"; fi
         DEPLOY_IMAGES_LEDGER_JSON="$(jq -c --arg target "$target_name" --arg component "$component" --arg architecture "$architecture" \
           --arg reference "$reference" --arg imageId "$image_id" '.targets += [{target:$target,component:$component,architecture:$architecture,reference:$reference,imageId:$imageId,status:"verified"}]' <<< "$DEPLOY_IMAGES_LEDGER_JSON")"
         deploy_images_publish || return 1

@@ -154,6 +154,7 @@ deploy_up_stage_target() {
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__Mode ClientCredentials || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__ServiceUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__ClientCredentials__ClientId "$(jq -r '.deployment.deviceBootstrap.clientId' "$inventory")" || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" Deployment__Mode "$mode" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" ReverseProxy__Enabled "$(jq -r '(.trustedProxyAddresses | length) > 0' <<< "$target")" || return 1
             while IFS= read -r value; do
                 key="ReverseProxy__TrustedProxies__$(jq -r '.index' <<< "$value")"
@@ -170,6 +171,22 @@ deploy_up_stage_target() {
                 deploy_up_stage_value "$target" "$render_root" "$destination" "$key" "$(jq -r '.scope' <<< "$value")" || return 1
             done < <(jq -c '.deployment.deviceBootstrap.scopes | to_entries[] | {index:.key,scope:.value}' "$inventory")
         done
+        deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$config_root/initializer-secrets" \
+          "$(jq -r '.deployment.automation.ownerApiKeySecretReference' "$inventory")" DatabaseSeed__ApiKeys__0__RawKey || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ApiKeys__0__DisplayName "Split-host deployment owner" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ApiKeys__0__AccessLevel ReadWrite || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ApiKeys__0__UserEmail \
+          "split-host-owner@hvo.local" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ConfidentialClients__0__ClientId \
+          "$(jq -r '.deployment.deviceBootstrap.clientId' "$inventory")" || return 1
+        deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$config_root/initializer-secrets" \
+          "$(jq -r '.deployment.deviceBootstrap.clientSecretReference' "$inventory")" DatabaseSeed__ConfidentialClients__0__ClientSecret || return 1
+        deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" DatabaseSeed__ConfidentialClients__0__DisplayName \
+          "Split-host camera agents" || return 1
+        while IFS= read -r value; do
+            key="DatabaseSeed__ConfidentialClients__0__Scopes__$(jq -r '.index' <<< "$value")"
+            deploy_up_stage_value "$target" "$render_root" "$config_root/initializer-secrets" "$key" "$(jq -r '.scope' <<< "$value")" || return 1
+        done < <(jq -c '.deployment.deviceBootstrap.scopes | to_entries[] | {index:.key,scope:.value}' "$inventory")
         value="$(deploy_secret_value "$(jq -r '.secretSource.path' "$inventory")" "$(jq -r '.deployment.services.redis.secretReference' "$inventory")")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$config_root/runtime-secrets" Redis__Configuration \
           "$(jq -r '.deployment.services.redis.host' "$inventory"):$(jq -r '.deployment.services.redis.port' "$inventory"),user=$(jq -r '.deployment.services.redis.user' "$inventory"),password=$value" || return 1
@@ -339,7 +356,7 @@ deploy_run_up() {
         DEPLOY_UP_JSON="$(jq -c '.resources = ([.resources[] | select(.kind != "existing-services")] + [{kind:"existing-services",status:"validated"}])' <<< "$DEPLOY_UP_JSON")"
     fi
     target="$(jq -c '.logicHost' "$inventory")"; name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
-    image="$(jq -r '.images[] | select(.component == "logicHost") | .reference' <<< "$images")"
+    image="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .reference' <<< "$images")"
     deploy_up_stage_target "$inventory" "$target" "$run_id" "$render_root" "$image" logicHost || return 1
     if [[ "$mode_services" == deploy ]]; then
         deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/runtime-secrets" Minio__AccessKey "$minio_runtime_access" || return 1
@@ -356,15 +373,15 @@ deploy_run_up() {
     endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     for path in /alive /health /metrics; do deploy_transport_http_ready "$ssh" "${endpoint%/}$path" || { deploy_fail up logic readiness-failed; return 1; }; done
     endpoint="$(jq -r '.logicHost.publicEndpoint' "$inventory")"
-    [[ "$endpoint" == https://* ]] || { deploy_fail up logic public-authority-https-required; return 1; }
+    [[ "$mode" == isolated || "$endpoint" == https://* ]] || { deploy_fail up logic public-authority-https-required; return 1; }
     while IFS= read -r agent; do
-        deploy_transport_http_ready "$(jq -r '.sshHost' <<< "$agent")" "${endpoint%/}/.well-known/openid-configuration" ||
+        deploy_transport_oidc_ready "$(jq -r '.sshHost' <<< "$agent")" "$endpoint" ||
           { deploy_fail up logic public-authority-readiness-failed; return 1; }
     done < <(jq -c '.cameraAgents[]' "$inventory")
     DEPLOY_UP_JSON="$(jq -c --arg target "$name" '.targets = ([.targets[] | select(.target != $target)] + [{target:$target,component:"logicHost",status:"ready"}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
     while IFS= read -r target; do
         name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
-        image="$(jq -r '.images[] | select(.component == "cameraAgent") | .reference' <<< "$images")"
+        image="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .reference' <<< "$images")"
         deploy_up_stage_target "$inventory" "$target" "$run_id" "$render_root" "$image" cameraAgent || return 1
         deploy_up_compose_mutation "$target" "$context" "$project-$name" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" up -d cameraagent || return 1
         endpoint="$(jq -r '.internalEndpoint' <<< "$target")"; deploy_transport_http_ready "$ssh" "${endpoint%/}/alive" || return 1

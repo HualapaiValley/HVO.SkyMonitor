@@ -1,0 +1,431 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+SOURCE_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly SOURCE_REPO_ROOT
+# shellcheck source=scripts/deploy/common.sh
+. "$SCRIPT_DIR/deploy/common.sh"
+# shellcheck source=scripts/deploy/run-state.sh
+. "$SCRIPT_DIR/deploy/run-state.sh"
+# shellcheck source=scripts/deploy/catalog.sh
+. "$SCRIPT_DIR/deploy/catalog.sh"
+# shellcheck source=scripts/deploy/acceptance.sh
+. "$SCRIPT_DIR/deploy/acceptance.sh"
+
+TEMP_DIR="$(mktemp -d -t hvo-acceptance-test.XXXXXX)"
+readonly TEMP_DIR
+trap 'rm -rf "$TEMP_DIR"' EXIT
+trap 'printf "Phase 14 acceptance-init contract test failed near line %s.\n" "$LINENO" >&2' ERR
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+REPO_ROOT="$TEMP_DIR/repository"
+install -d -m 700 "$REPO_ROOT/deploy/split-host/acceptance" "$REPO_ROOT/deploy/split-host/workloads" \
+  "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent"
+cp "$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json" "$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json"
+cp "$SOURCE_REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json" "$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json"
+cp "$SOURCE_REPO_ROOT/deploy/split-host/workloads/w0-virtual-mono16.json" "$REPO_ROOT/deploy/split-host/workloads/w0-virtual-mono16.json"
+cp "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json" "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json"
+cp "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json" "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json"
+git -C "$REPO_ROOT" init --quiet
+git -C "$REPO_ROOT" config user.email phase14-contract@example.invalid
+git -C "$REPO_ROOT" config user.name "Phase 14 Contract Test"
+git -C "$REPO_ROOT" add --all
+git -C "$REPO_ROOT" commit --quiet -m fixture
+revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+tree="$(git -C "$REPO_ROOT" rev-parse "${revision}^{tree}")"
+inventory="$TEMP_DIR/inventory.json"
+run_id="phase14-contract"
+mode="isolated"
+inventory_hash=""
+FIXTURE_STATE=""
+FIXTURE_EVIDENCE=""
+
+jq -n --arg revision "$revision" '{environment:"contract",installationId:"contract-installation",source:{revision:$revision},
+  logicHost:{name:"logic",expectedHostName:"logic-node",expectedArchitecture:"amd64",expectedHostIdentity:"logic-host",expectedDockerDaemonIdentity:"logic-daemon"},
+  cameraAgents:[{name:"east",expectedHostName:"east-node",expectedArchitecture:"arm64",expectedHostIdentity:"east-host",expectedDockerDaemonIdentity:"east-daemon"}],
+  sharedServices:{name:"services",expectedHostName:"services-node",expectedArchitecture:"amd64",expectedHostIdentity:"services-host",expectedDockerDaemonIdentity:"services-daemon"},
+  deployment:{workload:{kind:"W0",durationSeconds:30,sustainedArmOptIn:false}}}' > "$inventory"
+chmod 600 "$inventory"
+inventory_hash="$(jq -S -c . "$inventory" | sha256sum)"; inventory_hash="${inventory_hash%% *}"
+
+prepare_run_base() {
+    local label="$1"
+    FIXTURE_STATE="$TEMP_DIR/$label-state"
+    FIXTURE_EVIDENCE="$TEMP_DIR/$label-evidence"
+    deploy_prepare_run_state "$FIXTURE_STATE" "$FIXTURE_EVIDENCE"
+    DEPLOY_MANIFEST_JSON="$(jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$inventory_hash" --arg revision "$revision" \
+      '{schemaVersion:1,runId:$run,mode:$mode,inventorySha256:$hash,source:{revision:$revision,worktreeState:"clean"},phaseStatus:"passed"}')"
+    deploy_publish_json "$DEPLOY_MANIFEST" "$DEPLOY_MANIFEST_JSON"
+}
+
+publish_smoke_fixture() {
+    local smoke_json smoke_commit
+    smoke_json="$(jq -cn --arg run "$run_id" --arg mode "$mode" --arg hash "$inventory_hash" --arg revision "$revision" \
+      --argjson workload "$(jq -c '.deployment.workload' "$inventory")" '
+      {schemaVersion:1,publicationGeneration:1,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,
+       workload:$workload,phaseStatus:"passed",startedAt:"2026-08-08T00:00:00Z",updatedAt:"2026-08-08T00:01:00Z",
+       completedAt:"2026-08-08T00:01:00Z",targets:[{target:"east",deviceId:"east-device",status:"passed",profile:{},
+       captureSequence:{},checks:{health:true},artifacts:[],telemetry:{}}]}')"
+    smoke_commit="$(deploy_phase_commit_json "$smoke_json")"
+    deploy_publish_json "$FIXTURE_STATE/smoke-ledger.json" "$smoke_json"
+    deploy_publish_json "$FIXTURE_STATE/smoke-manifest.json" "$smoke_json"
+    deploy_publish_json "$FIXTURE_EVIDENCE/smoke.json" "$smoke_json"
+    deploy_publish_json "$FIXTURE_STATE/smoke-commit.json" "$smoke_commit"
+}
+
+prepare_fixture() {
+    prepare_run_base "$1"
+    publish_smoke_fixture
+}
+
+initialize_fixture() {
+    prepare_fixture "$1"
+    deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+}
+
+close_fixture() {
+    exec 201>&-
+}
+
+run_acceptance_child() {
+    local state="$1" evidence="$2" failpoint="${3:-}"
+    DEPLOY_TEST_FAILPOINT="$failpoint" bash -c '
+      set -euo pipefail
+      source_root="$1"
+      REPO_ROOT="$2"
+      . "$source_root/scripts/deploy/common.sh"
+      . "$source_root/scripts/deploy/run-state.sh"
+      . "$source_root/scripts/deploy/catalog.sh"
+      . "$source_root/scripts/deploy/acceptance.sh"
+      deploy_prepare_run_state "$3" "$4"
+      deploy_run_acceptance "$5" "$6" "$7" "$8" "$9" clean "${10}"
+    ' phase14-atomic "$SOURCE_REPO_ROOT" "$REPO_ROOT" "$state" "$evidence" "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" "$tree"
+}
+
+expect_rejected() {
+    local message="$1"
+    shift
+    if "$@" > "$TEMP_DIR/rejection.log" 2>&1; then fail "$message"; fi
+}
+
+audit_test_reference() {
+    local reference="$1" payload fqn owner namespace class method
+    local -a files
+    [[ "$reference" =~ ^test:([A-Za-z_][A-Za-z0-9_]*\.){2,}[A-Za-z_][A-Za-z0-9_]*(\;case=[A-Za-z0-9._-]+)?$ && "$reference" != *'#'* ]] ||
+      fail "Invalid test evidence syntax: $reference"
+    payload="${reference#test:}"
+    fqn="${payload%%;case=*}"
+    method="${fqn##*.}"
+    owner="${fqn%.*}"
+    class="${owner##*.}"
+    namespace="${owner%.*}"
+    shopt -s globstar nullglob
+    files=("$SOURCE_REPO_ROOT"/tests/**/"$class.cs")
+    shopt -u globstar nullglob
+    [[ "${#files[@]}" == 1 ]] || fail "Test evidence class did not resolve uniquely: $fqn"
+    perl -0777 -e '
+      my ($namespace, $class, $method, $path) = @ARGV;
+      open my $file, "<", $path or exit 2;
+      local $/; my $source = <$file>;
+      exit 1 unless $source =~ /namespace\s+\Q$namespace\E\s*;/s;
+      exit 1 unless $source =~ /(?:public\s+)?(?:sealed\s+)?class\s+\Q$class\E\b/s;
+      exit 1 unless $source =~ /\[TestMethod\](?:(?!\bpublic\b).)*\bpublic\s+(?:async\s+)?(?:Task(?:<[^>]+>)?|void)\s+\Q$method\E\s*\(/s;
+    ' "$namespace" "$class" "$method" "${files[0]}" || fail "Test evidence method is not a public MSTest method: $fqn"
+}
+
+audit_test_references() {
+    local manifest="$1" reference
+    while IFS= read -r reference; do audit_test_reference "$reference"; done < <(
+      jq -r '[.scenarios[].evidenceSource | select(startswith("test:"))] | unique[]' "$manifest")
+}
+
+enum_values_json() {
+    local file="$1" enum="$2"
+    perl -0777 -e '
+      my ($enum, $path) = @ARGV;
+      open my $file, "<", $path or exit 2;
+      local $/; my $source = <$file>;
+      $source =~ /enum\s+\Q$enum\E\s*\{([^}]*)\}/s or exit 1;
+      for my $value (split /,/, $1) {
+        $value =~ s{//.*$}{}mg; $value =~ s/=.*//s; $value =~ s/^\s+|\s+$//g;
+        print "$value\n" if $value =~ /^[A-Za-z_][A-Za-z0-9_]*$/;
+      }
+    ' "$enum" "$file" | jq -Rsc 'split("\n") | map(select(length > 0)) | sort'
+}
+
+assert_enum_coverage() {
+    local file="$1" enum="$2" source_prefix="$3" exclusions="$4" actual expected
+    actual="$(enum_values_json "$file" "$enum")" || fail "Could not parse fault enum $enum."
+    actual="$(jq -c --argjson exclusions "$exclusions" '[.[] | select(. as $value | $exclusions | index($value) | not)]' <<< "$actual")"
+    expected="$(jq -c --arg prefix "$source_prefix" '[.scenarios[].source | select(startswith($prefix)) | ltrimstr($prefix)] | sort' "$campaign")"
+    [[ "$actual" == "$expected" ]] || fail "Manifest boundary coverage differs from $enum: enum=$actual manifest=$expected"
+}
+
+required_ids="$(deploy_acceptance_required_ids)"
+campaign="$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json"
+deploy_acceptance_validate_repository_manifest "$campaign"
+audit_test_references "$campaign"
+assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawIngressFaults.cs" \
+  RawIngressFaultPoint 'boundary:raw-ingress:' '[]'
+assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Transients/TransientCandidateFaults.cs" \
+  TransientCandidateFaultPoint 'boundary:transient-candidate:' '[]'
+assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Transients/TransientCandidateFaults.cs" \
+  TransientRuntimeFaultPoint 'boundary:transient-runtime:' '[]'
+assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Capture/Calibration/CalibrationArtifactPublisher.cs" \
+  CalibrationPublicationFaultPoint 'boundary:calibration:' '[]'
+assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Capture/Distribution/CaptureLaneFaults.cs" \
+  CaptureLaneFaultPoint 'boundary:capture-lane:' '["BeforeHandler","AfterHandler"]'
+assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/CaptureProcessingFaults.cs" \
+  CaptureProcessingFaultPoint 'boundary:capture-processing:' '["BeforeNodeExecution"]'
+jq -e --argjson required "$required_ids" '
+  .schemaVersion == 2 and ([.scenarios[].id] | sort) == ($required | sort) and
+  ([.scenarios[] | select(.source | startswith("project-plan:phase-14-fault-row-"))] | length) == 12 and
+  all(.scenarios[] | select(.source | startswith("boundary:"));
+    .executionClass == "component-automated" or .executionClass == "real-campaign") and
+  all(.scenarios[] | select(.source | startswith("boundary:")); .evidenceSource | startswith("test:")) and
+  ([.scenarios[] | select(.id == "cameraagent-host-failure" or .id == "logichost-host-failure" or .id == "network-failure" or
+    .id == "sql-failure" or .id == "redis-failure" or .id == "minio-failure" or .id == "smtp-failure") | .id] | length) == 7
+' "$campaign" >/dev/null
+jq 'del(.scenarios[0])' "$campaign" > "$TEMP_DIR/missing-scenario.json"
+expect_rejected 'A campaign manifest missing a required scenario was accepted.' \
+  deploy_acceptance_validate_repository_manifest "$TEMP_DIR/missing-scenario.json"
+jq '(.scenarios[] | select(.evidenceSource | startswith("test:")) | .evidenceSource) =
+  "test:HVO.SkyMonitor.DoesNotExist.MissingTests.MissingMethod"' "$campaign" > "$TEMP_DIR/missing-test-reference.json"
+if (audit_test_references "$TEMP_DIR/missing-test-reference.json") > /dev/null 2>&1; then
+    fail 'A nonexistent public MSTest evidence FQN was accepted.'
+fi
+
+prepare_fixture smoke-mirror-only
+rm "$FIXTURE_STATE/smoke-ledger.json" "$FIXTURE_EVIDENCE/smoke.json" "$FIXTURE_STATE/smoke-commit.json"
+expect_rejected 'A mirror-only smoke prerequisite was accepted.' \
+  deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+[[ -f "$FIXTURE_STATE/smoke-manifest.json" && ! -e "$FIXTURE_STATE/acceptance-ledger.json" ]] ||
+  fail 'Mirror-only smoke rejection mutated prerequisite or acceptance state.'
+close_fixture
+
+for entry in ledger manifest evidence commit; do
+    prepare_fixture "smoke-tamper-$entry"
+    case "$entry" in
+      ledger) path="$FIXTURE_STATE/smoke-ledger.json"; jq_filter='.phaseStatus="running"' ;;
+      manifest) path="$FIXTURE_STATE/smoke-manifest.json"; jq_filter='.targets=[]' ;;
+      evidence) path="$FIXTURE_EVIDENCE/smoke.json"; jq_filter='.targets=[]' ;;
+      commit) path="$FIXTURE_STATE/smoke-commit.json"; jq_filter='.ledgerSha256="0000000000000000000000000000000000000000000000000000000000000000"' ;;
+    esac
+    jq "$jq_filter" "$path" > "$TEMP_DIR/smoke-tampered-$entry"
+    chmod 600 "$TEMP_DIR/smoke-tampered-$entry"
+    mv "$TEMP_DIR/smoke-tampered-$entry" "$path"
+    digest="$(sha256sum "$path")"
+    expect_rejected "Tampered smoke $entry was accepted." \
+      deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+    [[ "$(sha256sum "$path")" == "$digest" && ! -e "$FIXTURE_STATE/acceptance-ledger.json" ]] ||
+      fail "Tampered smoke $entry rejection mutated state."
+    close_fixture
+done
+
+for kind in symlink hardlink; do
+    for entry in ledger manifest evidence commit; do
+        prepare_fixture "smoke-$kind-$entry"
+        case "$entry" in
+          ledger) path="$FIXTURE_STATE/smoke-ledger.json" ;;
+          manifest) path="$FIXTURE_STATE/smoke-manifest.json" ;;
+          evidence) path="$FIXTURE_EVIDENCE/smoke.json" ;;
+          commit) path="$FIXTURE_STATE/smoke-commit.json" ;;
+        esac
+        target="$TEMP_DIR/smoke-$kind-$entry-target"
+        cp "$path" "$target"
+        chmod 600 "$target"
+        rm "$path"
+        if [[ "$kind" == symlink ]]; then ln -s "$target" "$path"; else ln "$target" "$path"; fi
+        expect_rejected "Unsafe smoke $kind $entry was accepted." \
+          deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+        [[ ! -e "$FIXTURE_STATE/acceptance-ledger.json" ]] || fail "Unsafe smoke $kind $entry created acceptance state."
+        if [[ "$kind" == symlink ]]; then [[ -L "$path" ]] || fail "Rejected smoke $entry symlink was changed."
+        else [[ "$(stat -c '%h' "$path")" == 2 ]] || fail "Rejected smoke $entry hardlink was changed."; fi
+        close_fixture
+    done
+done
+
+prepare_fixture inventory-hash-drift
+cp "$inventory" "$TEMP_DIR/inventory-before-drift.json"
+jq '.environment="changed-live-inventory"' "$inventory" > "$TEMP_DIR/inventory-changed.json"
+chmod 600 "$TEMP_DIR/inventory-changed.json"
+mv "$TEMP_DIR/inventory-changed.json" "$inventory"
+expect_rejected 'Changed live inventory was accepted with its old hash.' \
+  deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+grep -Fq 'stage=acceptance-init check=inventory status=failed reason=hash-mismatch' "$TEMP_DIR/rejection.log" ||
+  fail 'Inventory drift did not report hash mismatch.'
+[[ ! -e "$FIXTURE_STATE/acceptance-ledger.json" && ! -e "$FIXTURE_EVIDENCE/acceptance-index.json" ]] ||
+  fail 'Inventory hash rejection changed acceptance state.'
+cp "$TEMP_DIR/inventory-before-drift.json" "$inventory"
+chmod 600 "$inventory"
+close_fixture
+
+inventory_snapshot="$(jq -S -c . "$inventory")"
+campaign_snapshot="$(jq -c . "$campaign")"
+workloads_snapshot="$(jq -c . "$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json")"
+campaign_snapshot_hash="$(printf '%s\n' "$(jq -S -c . <<< "$campaign_snapshot")" | sha256sum)"; campaign_snapshot_hash="${campaign_snapshot_hash%% *}"
+workloads_snapshot_hash="$(printf '%s\n' "$(jq -S -c . <<< "$workloads_snapshot")" | sha256sum)"; workloads_snapshot_hash="${workloads_snapshot_hash%% *}"
+jq '.logicHost.expectedHostName="mutated-after-snapshot"' "$inventory" > "$TEMP_DIR/inventory-after-snapshot.json"
+chmod 600 "$TEMP_DIR/inventory-after-snapshot.json"
+mv "$TEMP_DIR/inventory-after-snapshot.json" "$inventory"
+snapshot_contract="$(deploy_acceptance_contract_json "$inventory_snapshot" "$campaign_snapshot" "$workloads_snapshot" \
+  "$campaign_snapshot_hash" "$workloads_snapshot_hash")"
+jq -e 'any(.topology.targets[]; .role == "logic-host" and .hostName == "logic-node") and
+  (any(.topology.targets[]; .hostName == "mutated-after-snapshot") | not)' <<< "$snapshot_contract" >/dev/null ||
+  fail 'Topology projection reread inventory after its canonical snapshot.'
+cp "$TEMP_DIR/inventory-before-drift.json" "$inventory"
+chmod 600 "$inventory"
+
+prepare_fixture dirty-initialization
+expect_rejected 'Dirty campaign initialization was accepted.' \
+  deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" dirty "$tree"
+grep -Fq 'stage=acceptance-init check=source status=failed reason=dirty-worktree-rejected' "$TEMP_DIR/rejection.log" ||
+  fail 'Dirty rejection did not use acceptance-init machine output.'
+[[ ! -e "$FIXTURE_STATE/acceptance-ledger.json" && ! -e "$FIXTURE_EVIDENCE/acceptance-index.json" ]] ||
+  fail 'Dirty initialization changed acceptance state.'
+close_fixture
+
+prepare_fixture source-status-drift
+printf 'uncommitted\n' > "$REPO_ROOT/untracked-source-drift"
+expect_rejected 'Uncommitted source-status drift was accepted.' \
+  deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+grep -Fq 'stage=acceptance-init check=source status=failed reason=committed-source-changed' "$TEMP_DIR/rejection.log" ||
+  fail 'Source-status drift did not use the committed-source rejection.'
+[[ ! -e "$FIXTURE_STATE/acceptance-ledger.json" && ! -e "$FIXTURE_EVIDENCE/acceptance-index.json" ]] ||
+  fail 'Source-status drift changed acceptance state.'
+rm "$REPO_ROOT/untracked-source-drift"
+close_fixture
+
+initialize_fixture happy
+index="$FIXTURE_EVIDENCE/acceptance-index.json"
+jq -e --arg revision "$revision" --arg tree "$tree" --argjson required "$required_ids" '
+  .schemaVersion == 2 and .sourceRevision == $revision and .sourceTree == $tree and .campaignStatus == "not-run" and
+  .phaseStatus == "passed" and (.topology.targets | length) == 3 and
+  [.classifications[].classification] == ["normal","fault","external","soak","stellarium","future-hardware"] and
+  all(.classifications[]; .status == "not-run") and ([.scenarios[].id] | sort) == ($required | sort) and
+  all(.scenarios[]; .status == "not-run" and
+    (.executionClass == "component-automated" or .executionClass == "real-campaign" or .executionClass == "separate-gate") and
+    (.sourceReference | type == "string" and length > 0) and (.evidenceSource | type == "string" and length > 0) and
+    (.artifact.relativePath | startswith("acceptance-artifacts/")) and .artifact.byteLength == null and .artifact.sha256 == null) and
+  (.workloadIdentities.profiles | keys | sort) == ["W0","W1","W2"] and
+  ([.. | objects | keys[]] | any(. == "sshHost" or . == "runtimeRoot" or . == "publicEndpoint" or
+    . == "secretSource" or . == "ownerEmail" or . == "ownerPasswordSecretReference") | not)
+' "$index" >/dev/null
+[[ "$(stat -c '%u:%h:%a' "$index")" == "$(id -u):1:600" ]] || fail 'Acceptance index is not an owner-only regular file.'
+[[ "$(stat -c '%a' "$FIXTURE_STATE")" == 700 && "$(stat -c '%a' "$FIXTURE_EVIDENCE")" == 700 ]] ||
+  fail 'Acceptance roots are not owner-only.'
+first_digest="$(sha256sum "$index")"
+deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+[[ "$(sha256sum "$index")" == "$first_digest" ]] || fail 'Completed acceptance-init resume rewrote the index.'
+expect_rejected 'Dirty campaign resume was accepted.' \
+  deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" dirty "$tree"
+[[ "$(sha256sum "$index")" == "$first_digest" ]] || fail 'Rejected dirty resume changed evidence.'
+expect_rejected 'Source-tree drift was accepted.' \
+  deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$(printf 'f%.0s' {1..40})"
+[[ "$(sha256sum "$index")" == "$first_digest" ]] || fail 'Rejected source drift changed evidence.'
+close_fixture
+
+for boundary in ledger manifest evidence commit; do
+    prepare_fixture "atomic-$boundary"
+    atomic_state="$FIXTURE_STATE"
+    atomic_evidence="$FIXTURE_EVIDENCE"
+    close_fixture
+    if run_acceptance_child "$atomic_state" "$atomic_evidence" "abrupt-after-acceptance-init-$boundary" > "$TEMP_DIR/atomic-$boundary.log" 2>&1; then
+        fail "Atomic acceptance-init $boundary failpoint unexpectedly passed."
+    fi
+    deploy_prepare_run_state "$atomic_state" "$atomic_evidence"
+    DEPLOY_MANIFEST_JSON="$(jq -c . "$DEPLOY_MANIFEST")"
+    deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+    jq -e '.phaseStatus == "passed" and .publicationGeneration == 2' "$atomic_evidence/acceptance-index.json" >/dev/null
+    close_fixture
+done
+
+for entry in ledger manifest evidence commit; do
+    prepare_fixture "symlink-$entry"
+    target="$TEMP_DIR/symlink-$entry-target"
+    printf '{}\n' > "$target"
+    chmod 600 "$target"
+    case "$entry" in
+      ledger) path="$FIXTURE_STATE/acceptance-ledger.json" ;;
+      manifest) path="$FIXTURE_STATE/acceptance-manifest.json" ;;
+      evidence) path="$FIXTURE_EVIDENCE/acceptance-index.json" ;;
+      commit) path="$FIXTURE_STATE/acceptance-commit.json" ;;
+    esac
+    ln -s "$target" "$path"
+    expect_rejected "Unsafe $entry symlink was accepted." \
+      deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+    [[ -L "$path" ]] || fail "Rejected $entry symlink was changed."
+    close_fixture
+done
+
+for entry in ledger manifest evidence commit; do
+    initialize_fixture "hardlink-$entry"
+    case "$entry" in
+      ledger) path="$FIXTURE_STATE/acceptance-ledger.json" ;;
+      manifest) path="$FIXTURE_STATE/acceptance-manifest.json" ;;
+      evidence) path="$FIXTURE_EVIDENCE/acceptance-index.json" ;;
+      commit) path="$FIXTURE_STATE/acceptance-commit.json" ;;
+    esac
+    backup="$TEMP_DIR/hardlink-$entry-copy"
+    cp "$path" "$backup"
+    chmod 600 "$backup"
+    rm "$path"
+    ln "$backup" "$path"
+    expect_rejected "Unsafe $entry hardlink was accepted." \
+      deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+    [[ "$(stat -c '%h' "$path")" == 2 ]] || fail "Rejected $entry hardlink was changed."
+    close_fixture
+done
+
+for entry in manifest evidence commit; do
+    prepare_fixture "orphan-$entry"
+    case "$entry" in
+      manifest) path="$FIXTURE_STATE/acceptance-manifest.json" ;;
+      evidence) path="$FIXTURE_EVIDENCE/acceptance-index.json" ;;
+      commit) path="$FIXTURE_STATE/acceptance-commit.json" ;;
+    esac
+    deploy_publish_json "$path" '{}'
+    digest="$(sha256sum "$path")"
+    expect_rejected "Orphan $entry was accepted." \
+      deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+    [[ "$(sha256sum "$path")" == "$digest" ]] || fail "Rejected orphan $entry was changed."
+    close_fixture
+done
+
+initialize_fixture orphan-ledger
+rm "$FIXTURE_STATE/acceptance-manifest.json" "$FIXTURE_EVIDENCE/acceptance-index.json" "$FIXTURE_STATE/acceptance-commit.json"
+ledger_digest="$(sha256sum "$FIXTURE_STATE/acceptance-ledger.json")"
+expect_rejected 'A stranded completed ledger without companions was accepted.' \
+  deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+[[ "$(sha256sum "$FIXTURE_STATE/acceptance-ledger.json")" == "$ledger_digest" ]] || fail 'Rejected stranded ledger was changed.'
+close_fixture
+
+for entry in ledger manifest evidence commit; do
+    initialize_fixture "tamper-$entry"
+    case "$entry" in
+      ledger) path="$FIXTURE_STATE/acceptance-ledger.json"; jq_filter='.campaignStatus="passed"' ;;
+      manifest) path="$FIXTURE_STATE/acceptance-manifest.json"; jq_filter='.campaignStatus="passed"' ;;
+      evidence) path="$FIXTURE_EVIDENCE/acceptance-index.json"; jq_filter='.campaignStatus="passed"' ;;
+      commit) path="$FIXTURE_STATE/acceptance-commit.json"; jq_filter='.ledgerSha256="0000000000000000000000000000000000000000000000000000000000000000"' ;;
+    esac
+    jq "$jq_filter" "$path" > "$TEMP_DIR/tampered-$entry"
+    chmod 600 "$TEMP_DIR/tampered-$entry"
+    mv "$TEMP_DIR/tampered-$entry" "$path"
+    digest="$(sha256sum "$path")"
+    expect_rejected "Tampered acceptance $entry was accepted." \
+      deploy_run_acceptance "$inventory" "$run_id" "$mode" "$inventory_hash" "$revision" clean "$tree"
+    [[ "$(sha256sum "$path")" == "$digest" ]] || fail "Rejected tampered $entry was changed."
+    close_fixture
+done
+
+prepare_fixture concurrent-lock
+if (deploy_prepare_run_state "$FIXTURE_STATE" "$FIXTURE_EVIDENCE") >/dev/null 2>&1; then
+    fail 'The shared deployment run lock allowed a concurrent acceptance-init invocation.'
+fi
+close_fixture
+
+printf 'Phase 14 acceptance-init manifest/index contract tests passed.\n'

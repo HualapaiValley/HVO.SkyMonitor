@@ -88,6 +88,10 @@ case "$ssh_host" in logic@*) host=logic ;; east@*) host=east ;; west@*) host=wes
 if [[ "${FAKE_MISSING_BASH_HOST:-}" == "$host" ]]; then /usr/bin/cat >/dev/null; exit 127; fi
 [[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
 shift 3
+# OpenSSH reconstructs the remote command and does not preserve empty arguments.
+ssh_args=()
+for arg in "$@"; do [[ -n "$arg" ]] && ssh_args+=("$arg"); done
+set -- "${ssh_args[@]}"
 prepare=false; (( $# >= 12 )) && prepare=true
 remote_args=(-s --)
 if [[ "${FAKE_CAPTURE_REMOTE_SCRIPTS:-false}" == true || "$prepare" == true ]]; then
@@ -141,7 +145,9 @@ registry_manifest() {
   printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[%s]}\n' "$descriptors"
 }
 if [[ "$1" == buildx && "$2" == ls ]]; then
-  endpoint=default; [[ "${FAKE_BUILDER_REMOTE:-false}" != true ]] || endpoint=remote-context
+  endpoint=default
+  [[ "${FAKE_BUILDER_CANONICAL_LOCAL:-false}" != true ]] || endpoint=unix:///var/run/docker.sock
+  [[ "${FAKE_BUILDER_REMOTE:-false}" != true ]] || endpoint=remote-context
   printf '{"Current":false,"Driver":"docker","Dynamic":false,"Name":"control-builder","Nodes":[{"Endpoint":"%s","Name":"control-builder0","Platforms":["linux/amd64","linux/arm64"],"Status":"running","Version":"v0.31.0"}]}\n' "$endpoint"
   exit 0
 fi
@@ -183,9 +189,13 @@ if [[ "$1" == buildx && "$2" == build ]]; then
     printf '{"architecture":"%s","os":"linux","config":{"Labels":{"org.opencontainers.image.revision":"%s","org.opencontainers.image.created":"%s","org.opencontainers.image.ref.name":"%s","io.hvoskymonitor.component":"%s","io.hvoskymonitor.dotnet-sdk":"%s","io.hvoskymonitor.source-tree":"%s"}}}' \
       "$architecture" "${FAKE_REVISION:?}" "$created" "$source_reference" "$component" "$sdk" "$tree" > "$fixture/config"
     config_digest="$(sha256sum "$fixture/config" | cut -d' ' -f1)"
-    mv "$fixture/config" "$fixture/$config_digest.json"
-    printf '[{"Config":"%s.json","RepoTags":["%s"],"Layers":[]}]\n' "$config_digest" "$repository" > "$fixture/manifest.json"
-    tar -cf "$destination" -C "$fixture" manifest.json "$config_digest.json"
+    config_path="$config_digest.json"
+    if [[ "${FAKE_BUILD_ARCHIVE_BLOB_CONFIG:-false}" == true ]]; then
+      mkdir -p "$fixture/blobs/sha256"; config_path="blobs/sha256/$config_digest"
+    fi
+    mv "$fixture/config" "$fixture/$config_path"
+    printf '[{"Config":"%s","RepoTags":["%s"],"Layers":[]}]\n' "$config_path" "$repository" > "$fixture/manifest.json"
+    tar -cf "$destination" -C "$fixture" manifest.json "$config_path"
     rm -rf "$fixture"
   fi
   exit 0
@@ -234,7 +244,10 @@ elif [[ "$3" == image && "$4" == load ]]; then
   [[ "${FAKE_IMAGE_TRANSFER_FAIL:-}" != "$context" ]] || exit 1
   config_name="$(tar -xOf "$archive" manifest.json | jq -r '.[0].Config')"
   tar -xOf "$archive" "$config_name" > "${FAKE_IMAGE_STATE:?}/$context.config"
-  printf 'sha256:%s\n' "${config_name%.json}" > "${FAKE_IMAGE_STATE:?}/$context.reference"
+  config_digest="${config_name##*/}"; config_digest="${config_digest%.json}"
+  image_id="sha256:$config_digest"
+  [[ "${FAKE_CONTAINERD_IMAGE_STORE:-false}" != true ]] || image_id="sha256:$(printf '%064d' 7)"
+  printf '%s\n' "$image_id" > "${FAKE_IMAGE_STATE:?}/$context.reference"
 elif [[ "$3" == image && "$4" == inspect ]]; then
   reference="${*: -1}"
   [[ "${FAKE_IMAGE_INSPECT_DRIFT:-}" != "$context" ]] || image_architecture=amd64
@@ -452,6 +465,7 @@ cat > "$REMOTE_BIN/curl" <<'EOF'
 #!/usr/bin/bash
 set -euo pipefail
 output= response_headers= cookie_jar= cookies= body= method=GET explicit_request=false location=false url="${*: -1}"
+url="${url//\\&/$'\x26'}"
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
@@ -459,7 +473,7 @@ for ((i=0; i<${#args[@]}; i++)); do
     --dump-header) response_headers="${args[$((i+1))]}" ;;
     --cookie-jar) cookie_jar="${args[$((i+1))]}" ;;
     --cookie) cookies="${args[$((i+1))]}" ;;
-    --data-binary) body="${args[$((i+1))]#@}" ;;
+    --data-binary) body="${args[$((i+1))]#@}"; [[ "$method" != GET ]] || method=POST ;;
     --request) method="${args[$((i+1))]}"; explicit_request=true ;;
     --data-urlencode) [[ "$method" != GET ]] || method=POST ;;
     --location) location=true ;;
@@ -486,6 +500,20 @@ if [[ "$url" == */metrics ]]; then
   printf '# TYPE camera_agent_capture_control_cycles_total counter\ncamera_agent_capture_control_cycles_total{outcome="completed"} 1\n' > "$output"
   printf '# TYPE hvo_fleet_edge_reports_total counter\nhvo_fleet_edge_reports_total{outcome="acknowledged"} 1\n' >> "$output"
   printf 200; exit 0
+fi
+if [[ "$url" == */.well-known/openid-configuration ]]; then
+  authority="${url%/.well-known/openid-configuration}"
+  issuer="$authority/"
+  [[ "${FAKE_OIDC_ISSUER_MISMATCH:-false}" != true ]] || issuer="https://wrong.example.test/"
+  token="$authority/connect/token"
+  [[ "${FAKE_OIDC_TOKEN_MISMATCH:-false}" != true ]] || token="https://wrong.example.test/connect/token"
+  if [[ "${FAKE_OIDC_MALFORMED:-false}" == true ]]; then discovery='not-json'
+  elif [[ "${FAKE_OIDC_OVERSIZED:-false}" == true ]]; then printf -v discovery '%*s' 65537 ''
+  else discovery="$(jq -cn --arg issuer "$issuer" --arg token "$token" '{issuer:$issuer,token_endpoint:$token}')"; fi
+  if [[ -n "$output" ]]; then printf '%s\n' "$discovery" > "$output"; else printf '%s\n' "$discovery"; fi
+  printf '%s' "${FAKE_OIDC_STATUS:-200}"
+  [[ "${FAKE_OIDC_OVERSIZED:-false}" != true ]] || exit 63
+  exit 0
 fi
 if [[ "$url" == */api/internal/deployment/telemetry* ]]; then
   [[ "${FAKE_TRACE_UNAVAILABLE:-false}" != true ]] || { : > "$output"; printf 503; exit 0; }
@@ -555,7 +583,8 @@ if [[ "$url" == */api/internal/deployment/continuity* ]]; then
     upper=$count; (( upper <= to )) || upper=$to
     for ((sequence=from; sequence<=upper; sequence++)); do
       printf -v capture_id '00000000-0000-0000-0000-%012d' "$sequence"
-      printf -v artifact_id '10000000-0000-0000-0000-%012d' "$sequence"
+      artifact_id=99999999-9999-9999-9999-999999999999
+      [[ ! -f "$FAKE_HTTP_STATE/$host.measure-profile" ]] || printf -v artifact_id '10000000-0000-0000-0000-%012d' "$sequence"
       window="$(jq -c --argjson sequence "$sequence" --arg capture "$capture_id" --arg artifact "$artifact_id" --arg checksum "$FAKE_RAW_ARTIFACT_SHA" \
         '. + [{captureSequence:$sequence,captureId:$capture,rawArtifactId:$artifact,rawChecksumSha256:$checksum,rawByteLength:6144,state:"committed"}]' <<< "$window")"
     done
@@ -566,7 +595,7 @@ if [[ "$url" == */api/internal/deployment/continuity* ]]; then
     fleetPendingCount:0,fleetLeasedCount:0,fleetRetryCount:0,fleetQuarantineCount:0,lastFleetAcknowledgedUtc:$acknowledged,
     durable:{rawIngressDatabaseExists:true,captureSequences:[{agentId:$device,lastSequence:$sequence}],artifactOutboxDatabaseExists:true,
       artifactOutboxMaximumRecordId:$sequence,artifactOutboxMaximumAuditId:$sequence,fleetDatabaseExists:true,
-      fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",fleetNextSequence:($sequence+1),fleetMaximumSequence:$sequence,
+      fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",fleetNextSequence:($sequence+1),fleetMaximumSequence:null,
        latestArtifacts:[
          {artifactId:"11111111-1111-1111-1111-111111111111",agentId:$device,role:"Preview",captureSequence:$sequence,
            checksumSha256:$ENV.FAKE_ARTIFACT_SHA,byteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),status:"acknowledged"},
@@ -582,6 +611,7 @@ fi
 if [[ "$url" == */api/v1/operations/summary ]]; then
   host="${FAKE_REMOTE_HOST:?}"; device="device-$host"
   measurement_samples=1; timings='[{"segment":"Module","sampleCount":1,"medianMilliseconds":1,"p95Milliseconds":1,"maximumMilliseconds":1}]'
+  [[ "${FAKE_CAPTURE_TELEMETRY_EMPTY:-false}" != true ]] || measurement_samples=0
   if [[ -f "${FAKE_HTTP_STATE:?}/$host.measurement-reset" ]]; then measurement_samples=0; timings='[]'; rm -f "$FAKE_HTTP_STATE/$host.measurement-reset"; fi
   control_state="Running"; control_version=0
   [[ ! -f "${FAKE_HTTP_STATE:?}/$host.control-state" ]] || control_state="$(<"$FAKE_HTTP_STATE/$host.control-state")"
@@ -608,7 +638,7 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   header_path=; for ((i=0; i<${#args[@]}; i++)); do [[ "${args[$i]}" != --header || "${args[$((i+1))]}" != @* ]] || header_path="${args[$((i+1))]#@}"; done
   key=; while IFS= read -r header_line; do [[ "$header_line" != 'Idempotency-Key: '* ]] || key="${header_line#Idempotency-Key: }"; done < "$header_path"
   id_count="$(grep -c '^Idempotency-Key:' "$header_path")"; token_count="$(grep -c '^RequestVerificationToken:' "$header_path")"
-  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(down-[a-z0-9-]+-[a-z0-9-]+-pause-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
+  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(down-[a-z0-9-]+-[a-z0-9-]+-pause-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+|smoke-[a-z0-9-]+-[a-z0-9-]+-(resume|pause)-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
   action="${url##*/}"; desired=Running; [[ "$action" != pause ]] || desired=Paused
   [[ "$action" != pause || "${FAKE_PAUSE_CONFLICT:-false}" != true ]] || { : > "$output"; printf 409; exit 0; }
   host="${FAKE_REMOTE_HOST:?}"
@@ -633,13 +663,33 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
       count_file="$FAKE_HTTP_STATE/$host.count"; printf '%s\n' "$(( $(<"$count_file") + 1 ))" > "$count_file"
     fi
   fi
-  jq -cn --arg state "$desired" --argjson version "$version" --argjson changed "$changed" \
+  state_value=1; [[ "$desired" != Paused ]] || state_value=3
+  jq -cn --argjson state "$state_value" --argjson version "$version" --argjson changed "$changed" \
     '{state:$state,version:$version,changed:$changed,replayed:false,requestedUtc:"2026-08-07T00:00:00Z",completedUtc:"2026-08-07T00:00:00Z"}' > "$receipt"
   cp "$receipt" "$output"
   printf 'control\t%s\t%s\t%s\t%s\tfalse\n' "$header_path" "$key" "$token_count" "$id_count" >> "${FAKE_LOG:?}"
   printf 200; exit 0
 fi
+if [[ "$url" == */api/v1/operations/schedule/ ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; active="$FAKE_HTTP_STATE/$host.schedule-active.json"
+  pending='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":1936,"heightPixels":1216,"sensorRecipeVersion":"virtual-asi174mm-electron-domain-v2"},"pipeline":{"captureInterval":"00:00:25"}},"processingSteps":[],"schedule":{}}'
+  if [[ -f "$active" ]]; then profile="$(jq -c . "$active")"; jq -cn --argjson profile "$profile" '{stateVersion:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile},pendingRevision:null}' > "$output"
+  else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; jq -cn --argjson profile "$profile" --argjson pending "$pending" '{stateVersion:2,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile},pendingRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,source:"file-draft",profile:$pending}}' > "$output"; fi
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/v1/operations/schedule/activate ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; printf '%s\n' '{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":1936,"heightPixels":1216,"sensorRecipeVersion":"virtual-asi174mm-electron-domain-v2"},"pipeline":{"captureInterval":"00:00:25"}},"processingSteps":[],"schedule":{}}' > "$FAKE_HTTP_STATE/$host.schedule-active.json"
+  jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-active.json" '{version:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile[0]}}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/v1.0/devices/*/artifacts/*/download-authorizations ]]; then
+  [[ "$method" == POST && "$body" == '{"range":null}' && -n "$cookie_jar" ]] || { : > "$output"; printf 400; exit 0; }
+  printf 'artifact-download-authorized\n' >> "$cookie_jar"
+  jq -cn '{authorizationId:"88888888-8888-8888-8888-888888888888",expiresAtUtc:"2026-08-07T00:05:00Z",contentUri:"/content"}' > "$output"
+  printf 200; exit 0
+fi
 if [[ "$url" == */api/v1.0/devices/*/artifacts/*/content ]]; then
+  [[ -n "$cookies" && -f "$cookies" ]] && grep -Fq artifact-download-authorized "$cookies" || { : > "$output"; printf 404; exit 0; }
   if [[ "${FAKE_RETRIEVAL_HASH_MISMATCH:-false}" == true ]]; then printf 'tampered-artifact-content' > "$output"
   elif [[ "$url" == */99999999-9999-9999-9999-999999999999/content ]]; then printf 'R%.0s' {1..6144} > "$output"
   else printf 'fixture-artifact-content' > "$output"; fi
@@ -708,8 +758,8 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
         --arg rawSha "$central_raw_sha" --argjson rawLength "$central_raw_length" --arg derivativeSha "$FAKE_ARTIFACT_SHA" --arg acknowledged "2026-08-07T00:01:00Z" '
         . + [{captureSequence:$sequence,captureId:$capture,artifacts:[
           {artifactId:$raw,role:"Raw",checksumSha256:$rawSha,byteLength:$rawLength,objectState:"Available",objectVerifiedAtUtc:$acknowledged,sources:[],completedDerivativeCount:1},
-          {artifactId:$derivative,role:"Preview",checksumSha256:$derivativeSha,objectState:"Available",objectVerifiedAtUtc:$acknowledged,
-           sources:[{sourceArtifactId:$raw,checksumSha256:$rawSha}],completedDerivativeCount:0}]}]' <<< "$window")"
+          {artifactId:$derivative,role:"Preview",checksumSha256:$derivativeSha,objectState:"Available",objectVerifiedAtUtc:null,
+           sources:[{artifactId:$raw,checksumSha256:$rawSha}],completedDerivativeCount:0}]}]' <<< "$window")"
     done
   fi
   printf -v acknowledged '2026-08-07T00:01:%02dZ' "$count"
@@ -717,19 +767,19 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
     devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",status:"Active",
     issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",currentRigProfileVersion:1,maximumCaptureSequence:$sequence,
     fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",maximumHeartbeatSequence:$sequence,lastHeartbeatReceivedAtUtc:$acknowledged,
-     centralFrameCount:$sequence,centralArtifactCount:($sequence*3),lineageSourceCount:$sequence,completedDerivativeCount:$sequence,
+     centralFrameCount:$sequence,centralArtifactCount:($sequence*3),lineageSourceCount:($sequence*2),completedDerivativeCount:($sequence*2),
      currentRigProfileVersion:(if $ENV.FAKE_RIG_PROFILE_MISSING == "true" then null else 1 end),
      currentRigProfileHash:(if $ENV.FAKE_RIG_PROFILE_HASH_MISMATCH == "true" then ("F"*64) else $ENV.FAKE_RIG_HASH end),
     latestArtifacts:[
-       {artifactId:"99999999-9999-9999-9999-999999999999",role:"Raw",recipeVersion:"raw-v1",width:64,height:48,pixelFormat:"Mono16",byteLength:6144,checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA,
-       objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"RawCapture",recipeSemanticVersion:"1.0.0",
-       recipeImplementationVersion:"fixture",sources:[],completedDerivativeCount:0},
-       {artifactId:"11111111-1111-1111-1111-111111111111",role:"Preview",recipeVersion:"mono16-asinh-v2",width:64,height:48,pixelFormat:"Mono16",byteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),checksumSha256:$ENV.FAKE_ARTIFACT_SHA,
-        objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"Preview",recipeSemanticVersion:"1.0.0",
-        recipeImplementationVersion:"fixture",sources:[],completedDerivativeCount:1},
-       {artifactId:"77777777-7777-7777-7777-777777777777",role:"Preview",recipeVersion:"mono16-asinh-v2",width:64,height:48,pixelFormat:"Mono16",byteLength:128,checksumSha256:("C"*64),
-        objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"CentralPreview",recipeSemanticVersion:"1.0.0",
-          recipeImplementationVersion:"fixture",sources:[{artifactId:"11111111-1111-1111-1111-111111111111",checksumSha256:$ENV.FAKE_ARTIFACT_SHA}],completedDerivativeCount:0}],captureWindow:$window,
+       {artifactId:"99999999-9999-9999-9999-999999999999",role:"Raw",recipeVersion:"raw-ingress-v1",width:64,height:48,pixelFormat:"Mono16",byteLength:6144,checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA,
+        objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"RawCapture",recipeSemanticVersion:"1.0.0",
+        recipeImplementationVersion:"fixture",sources:[],completedDerivativeCount:0},
+       {artifactId:"11111111-1111-1111-1111-111111111111",role:"Preview",recipeVersion:"central-preview-v1",width:null,height:null,pixelFormat:null,byteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),checksumSha256:$ENV.FAKE_ARTIFACT_SHA,
+        objectState:"Available",objectVerifiedAtUtc:null,captureSequence:$sequence,recipeName:"encoded-preview",recipeSemanticVersion:"1.0.0",
+        recipeImplementationVersion:"fixture",sources:[{artifactId:"99999999-9999-9999-9999-999999999999",checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA}],completedDerivativeCount:0},
+       {artifactId:"77777777-7777-7777-7777-777777777777",role:"Metadata",recipeVersion:"central-image-quality-v1",width:null,height:null,pixelFormat:null,byteLength:128,checksumSha256:("C"*64),
+        objectState:"Available",objectVerifiedAtUtc:null,captureSequence:$sequence,recipeName:"image-quality",recipeSemanticVersion:"1.0.0",
+          recipeImplementationVersion:"fixture",sources:[{artifactId:"99999999-9999-9999-9999-999999999999",checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA}],completedDerivativeCount:0}],captureWindow:$window,
     registrations:[{registrationId:"22222222-2222-2222-2222-222222222222",status:"Active",
       devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",
       issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",isAuthoritative:true}]}' > "$output"
@@ -1042,7 +1092,7 @@ jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext",
   .properties.schemaVersion.const == 6 and
   .properties.images.required == ["distributionMode","artifactRoot","tag","builder","registryImmutableTags","logicHost","cameraAgent"] and
   (.properties.sharedServices.oneOf[1]."$ref" | endswith("/infrastructureTarget")) and
-  (.properties.logicHost.allOf[1].properties.publicEndpoint.pattern | startswith("^https://")) and
+  (.properties.logicHost."$ref" | endswith("/applicationTarget")) and
   (."$defs".applicationTarget.properties.publicEndpoint.pattern | contains(":"))' "$REPO_ROOT/deploy/split-host/inventory.schema.json" >/dev/null
 canonical_workloads="$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json"
 jq -e '.schemaVersion == 1 and .profiles.W1.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json" and
@@ -1123,9 +1173,9 @@ test "$(stat -c %a "$evidence")" = 600
 grep -Fq $'docker\t--context\teast-context\tinfo' "$LOG"
 grep -Fq $'docker\t--context\teast-context\tcompose\tversion\t--short' "$LOG"
 grep -Fq $'east@example\tbash\t-s\t--\t127.0.0.1' "$LOG"
-grep -Fq $'east@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
+! grep -Fq $'east@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
 grep -Fq 'timeout 8 bash -c' "$REMOTE_LOG"
-grep -Fq 'curl --silent --show-error' "$REMOTE_LOG"
+! grep -Fq 'curl --silent --show-error' "$REMOTE_LOG"
 if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|rm|create|mkdir|install|touch)([[:space:]]|$)' "$REMOTE_LOG"; then fail 'Remote preflight script contains mutation commands.'; fi
 if grep -Fq 'fixture-secret-never-print' "$LOG" || grep -Fq 'fixture-secret-never-print' "$REMOTE_LOG" ||
    grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output"; then fail 'Logs or evidence exposed a secret.'; fi
@@ -1154,13 +1204,27 @@ FAKE_MISSING_BASH_HOST=east expect_failure 'ssh status=failed reason=tool-unavai
 jq --argjson port "$UNREACHABLE_PORT" '.serviceEndpoints[0].port=$port' "$BASE_INVENTORY" > "$INVENTORY"
 expect_failure 'test-service status=failed reason=unreachable' tcp-unreachable
 jq --argjson port "$UNREACHABLE_PORT" '.logicHost.publicEndpoint=("https://127.0.0.1:"+($port|tostring))' "$BASE_INVENTORY" > "$INVENTORY"
-expect_failure 'logic-public-authority status=failed reason=unreachable' http-unreachable
+run_deploy http-deferred >/dev/null
+jq -e '.checks[] | select(.target == "east") | select(.check == "logic-public-authority") |
+  .status == "passed" and .reason == "deferred-until-up"' "$TEMP_DIR/output/http-deferred-state/manifest.json" >/dev/null
 cp "$BASE_INVENTORY" "$INVENTORY"
 
 # Missing socket inspection and both host/Docker port conflicts fail closed.
 FAKE_MISSING_SS_HOST=east expect_failure 'ports status=failed reason=inspector-unavailable' missing-ss
 FAKE_MISSING_TIMEOUT_HOST=east expect_failure 'test-service status=failed reason=tool-unavailable' missing-timeout
-FAKE_MISSING_CURL_HOST=east expect_failure 'logic-public-authority status=failed reason=tool-unavailable' missing-curl
+for oidc_failure in issuer token malformed oversized status; do
+  (
+    case "$oidc_failure" in
+      issuer) export FAKE_OIDC_ISSUER_MISMATCH=true ;;
+      token) export FAKE_OIDC_TOKEN_MISMATCH=true ;;
+      malformed) export FAKE_OIDC_MALFORMED=true ;;
+      oversized) export FAKE_OIDC_OVERSIZED=true ;;
+      status) export FAKE_OIDC_STATUS=302 ;;
+    esac
+    source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/transport.sh"
+    if deploy_transport_oidc_ready east@example "https://public.example.test:$HTTP_PORT"; then exit 91; fi
+  )
+done
 FAKE_PORT_CONFLICT_HOST=east expect_failure 'ports status=failed reason=conflict' host-port-conflict
 FAKE_DOCKER_PORT_CONFLICT="$EAST_PORT" expect_failure 'containers status=failed reason=port-conflict' docker-port-conflict
 
@@ -1189,8 +1253,8 @@ expect_failure 'unsafe-lock-entry' lock-hardlink; test "$(<"$TEMP_DIR/hardlink-t
 jq '.logicHost.publicEndpoint="http://127.0.0.1"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' missing-public-port
 : > "$LOG"
 jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$BASE_INVENTORY" > "$INVENTORY"
-expect_failure 'schema-or-value-invalid' isolated-logic-http
-test ! -s "$LOG" || fail 'Isolated LogicHost HTTP rejection contacted transport.'
+run_deploy isolated-logic-http >/dev/null
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/isolated-logic-http-state/manifest.json" >/dev/null
 jq '.logicHost.internalEndpoint="http://127.0.0.1:12345"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' internal-port-mismatch
 jq '.logicHost.runtimeRoot="/srv/../private"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' traversal
 jq '.logicHost.extra="rejected"' "$BASE_INVENTORY" > "$INVENTORY"; expect_failure 'schema-or-value-invalid' unknown
@@ -1260,11 +1324,27 @@ cp "$BASE_INVENTORY" "$INVENTORY"
 # Persistent mode requires a production catalog and HTTPS on LogicHost, every CameraAgent, and shared services.
 jq '(.logicHost.publicEndpoint, .cameraAgents[].publicEndpoint) |= sub("^http:";"https:") |
   .logicHost.trustedProxyAddresses=["127.0.0.1"] | (.cameraAgents[].trustedProxyAddresses)=["127.0.0.1"]' "$BASE_INVENTORY" > "$TEMP_DIR/persistent-base.json"
-jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-logic-http schema-or-value-invalid
+jq '.logicHost.publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-logic-http
 jq '.cameraAgents[0].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-east-http
 jq '.cameraAgents[1].publicEndpoint |= sub("^https:";"http:")' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-west-http
 jq '.logicHost.trustedProxyAddresses=[]' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-proxy-missing
 jq '.catalog.kind="fixture"' "$TEMP_DIR/persistent-base.json" > "$INVENTORY"; expect_persistent_invalid persistent-fixture-catalog
+jq '.catalog.kind="production" | .deployment.catalog.allowFixture=false | .deployment.services.smtp.kind="production"' \
+  "$TEMP_DIR/persistent-base.json" > "$TEMP_DIR/persistent-connectivity.json"
+cp "$TEMP_DIR/persistent-connectivity.json" "$INVENTORY"
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode preflight persistent-connectivity-valid persistent >/dev/null
+jq --argjson port "$UNREACHABLE_PORT" '.logicHost.publicEndpoint=("https://127.0.0.1:"+($port|tostring))' \
+  "$TEMP_DIR/persistent-connectivity.json" > "$INVENTORY"
+if run_deploy_mode preflight persistent-authority-unreachable persistent > "$TEMP_DIR/persistent-authority-unreachable.log" 2>&1; then
+  fail 'Persistent preflight accepted an unreachable public authority.'
+fi
+grep -Fq 'logic-public-authority status=failed reason=unreachable' "$TEMP_DIR/persistent-authority-unreachable.log"
+cp "$TEMP_DIR/persistent-connectivity.json" "$INVENTORY"
+if FAKE_MISSING_CURL_HOST=east FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode preflight persistent-authority-no-curl persistent \
+  > "$TEMP_DIR/persistent-authority-no-curl.log" 2>&1; then
+  fail 'Persistent preflight accepted a CameraAgent host without curl.'
+fi
+grep -Fq 'logic-public-authority status=failed reason=tool-unavailable' "$TEMP_DIR/persistent-authority-no-curl.log"
 
 # A successful run followed by a transport failure publishes failed, not stale passed, evidence.
 cp "$BASE_INVENTORY" "$INVENTORY"; run_deploy stale-evidence >/dev/null
@@ -1414,6 +1494,12 @@ run_prepare_preflight images-wrong-builder isolated
 run_deploy_mode prepare images-wrong-builder isolated >/dev/null
 if FAKE_BUILDER_REMOTE=true run_deploy_mode images images-wrong-builder isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Remote buildx builder passed.'; fi
 grep -Fq 'mismatch-or-remote' "$TEMP_DIR/images-failure.log"
+
+write_prepare_case images-canonical-local-builder isolated
+run_prepare_preflight images-canonical-local-builder isolated
+run_deploy_mode prepare images-canonical-local-builder isolated >/dev/null
+FAKE_BUILDER_CANONICAL_LOCAL=true FAKE_BUILD_ARCHIVE_BLOB_CONFIG=true FAKE_CONTAINERD_IMAGE_STORE=true \
+  run_deploy_mode images images-canonical-local-builder isolated >/dev/null
 
 write_prepare_case images-target-wrong-daemon isolated
 run_prepare_preflight images-target-wrong-daemon isolated
@@ -1814,7 +1900,13 @@ test -f "$logic_config/runtime-secrets/ConnectionStrings__skymonitordb"
 test ! -e "$logic_config/initializer-secrets/ConnectionStrings__skymonitordb"
 test "$(<"$logic_config/initializer-secrets/Catalog__Root")" = /app/catalog
 test "$(<"$logic_config/runtime-secrets/Catalog__Root")" = /app/catalog
+test "$(<"$logic_config/initializer-secrets/Deployment__Mode")" = isolated
+test "$(<"$logic_config/runtime-secrets/Deployment__Mode")" = isolated
 test "$(<"$logic_config/initializer-secrets/Catalog__RequiredPackageKind")" = Fixture
+test "$(<"$logic_config/initializer-secrets/DatabaseSeed__ApiKeys__0__UserEmail")" = split-host-owner@hvo.local
+test "$(<"$logic_config/initializer-secrets/DatabaseSeed__ApiKeys__0__AccessLevel")" = ReadWrite
+test -f "$logic_config/initializer-secrets/DatabaseSeed__ApiKeys__0__RawKey"
+test ! -e "$logic_config/runtime-secrets/DatabaseSeed__ApiKeys__0__RawKey"
 grep -Fq "HVO_CATALOG_ROOT=$TEMP_DIR/catalog-install" "$TEMP_DIR/output/$deploy_case-state/up-rendered/logic.env"
 test ! -e "$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case/secrets/ConnectionStrings__skymonitordb"
 east_config="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case"
@@ -1828,6 +1920,8 @@ test -s "$east_config/private/owner-password"
 test ! -e "$east_config/cameraagent.json"
 if grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output/$deploy_case-evidence"; then fail 'Deployment evidence exposed a secret.'; fi
 grep -Fq $'compose\t--project-name\thvo-deploy-up-logic' "$LOG"
+grep -Fq $'east@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
+grep -Fq $'west@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
 
 # Registry publication is a hard barrier for every bootstrap credential destination.
 bootstrap_state="$TEMP_DIR/output/$deploy_case-state"
@@ -2003,7 +2097,7 @@ for credential in \
   "$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers"; do
   test ! -e "$credential"
 done
-FAKE_SLOW_FIRST_AGENT=true run_deploy_mode smoke "$deploy_case" isolated >/dev/null
+FAKE_SLOW_FIRST_AGENT=true FAKE_CAPTURE_TELEMETRY_EMPTY=true run_deploy_mode smoke "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and .workload.kind == "W0" and (.targets | length) == 2 and all(.targets[];
   .status == "passed" and .captureSequence.localAfter > .captureSequence.localBefore and
   .captureSequence.centralAfter > .captureSequence.centralBefore and all(.checks[]; . == true))' \
@@ -2011,7 +2105,7 @@ jq -e '.phaseStatus == "passed" and .workload.kind == "W0" and (.targets | lengt
 exercise_phase_cleanup_recovery smoke "$deploy_case"
 valid_central="$TEMP_DIR/output/$deploy_case-state/smoke-private/east-current-central.json"
 initial_central_file="$TEMP_DIR/output/$deploy_case-state/smoke-private/east-initial-central.json"
-expected_recipes="$(jq -c '[.. | objects | .recipeVersion? // empty] | unique' "$REPO_ROOT/deploy/split-host/workloads/w0-virtual-mono16.json")"
+expected_recipes='["central-image-quality-v1","central-preview-v1"]'
 for artifact_failure in checksum recipe object dimensions format lineage derivative provenance; do
   case "$artifact_failure" in
     checksum) jq '.latestArtifacts[1].checksumSha256="invalid"' "$valid_central" ;;
@@ -2036,7 +2130,7 @@ for artifact_failure in checksum recipe object dimensions format lineage derivat
 done
 proof_fixture="$(
   source "$REPO_ROOT/scripts/deploy/smoke.sh"
-  deploy_smoke_select_checksum_proof "$valid_central" "$TEMP_DIR/output/$deploy_case-state/smoke-private/east-current-continuity.json" \
+  deploy_smoke_select_checksum_proof "$valid_central" "$TEMP_DIR/output/$deploy_case-state/smoke-private/east-proof-continuity.json" \
     "$(jq -r '.maximumCaptureSequence // 0' "$initial_central_file")"
 )"
 test "$(jq -r '.artifactId' <<< "$proof_fixture")" = 99999999-9999-9999-9999-999999999999
