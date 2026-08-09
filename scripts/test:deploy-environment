@@ -670,6 +670,23 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   printf 'control\t%s\t%s\t%s\t%s\tfalse\n' "$header_path" "$key" "$token_count" "$id_count" >> "${FAKE_LOG:?}"
   printf 200; exit 0
 fi
+if [[ "$url" == */api/v1/operations/schedule/ ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; active="$FAKE_HTTP_STATE/$host.schedule-active.json"
+  if [[ -f "$active" ]]; then profile="$(jq -c . "$active")"
+  else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; fi
+  jq -cn --argjson profile "$profile" '{stateVersion:1,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile}}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/v1/operations/schedule/stage ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; jq '.profile' "$body" > "$FAKE_HTTP_STATE/$host.schedule-pending.json"
+  jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-pending.json" '{version:2,pendingRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile[0]}}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/v1/operations/schedule/activate ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; cp "$FAKE_HTTP_STATE/$host.schedule-pending.json" "$FAKE_HTTP_STATE/$host.schedule-active.json"
+  jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-active.json" '{version:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile[0]}}' > "$output"
+  printf 200; exit 0
+fi
 if [[ "$url" == */api/v1.0/devices/*/artifacts/*/download-authorizations ]]; then
   [[ "$method" == POST && "$body" == '{"range":null}' && -n "$cookie_jar" ]] || { : > "$output"; printf 400; exit 0; }
   printf 'artifact-download-authorized\n' >> "$cookie_jar"

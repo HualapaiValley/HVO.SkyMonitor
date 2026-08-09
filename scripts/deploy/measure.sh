@@ -186,6 +186,66 @@ deploy_measure_capture_control() {
     deploy_transport_forget_private_path "$request_headers" || return 1
 }
 
+deploy_measure_activate_profile() {
+    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" rendered="$6" workload="$7" run_id="$8"
+    local name endpoint state status stage_body stage_headers stage_response pending version activate_body activate_headers activate_response
+    name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
+    state="$private_root/$name-schedule-state.json"
+    status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
+      "$target_remote/schedule-state.json" "$state")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-read-failed; return 1; }
+    if jq -e --slurpfile rendered "$rendered" '
+      .activeRevision.profile.module.type == $rendered[0].module.type and
+      .activeRevision.profile.rig == $rendered[0].rig and
+      .activeRevision.profile.processingSteps == ($rendered[0].processingSteps // $rendered[0].pipeline.steps // [])' "$state" >/dev/null; then
+        return 0
+    fi
+
+    stage_body="$render_root/$name-$workload-schedule-stage.json"; stage_headers="$target_remote/$workload-schedule-stage-control.headers"
+    jq --slurpfile rendered "$rendered" --arg workload "$workload" '
+      .activeRevision as $active |
+      {profile:($active.profile |
+          .module=$rendered[0].module |
+          .rig=$rendered[0].rig |
+          .processingSteps=($rendered[0].processingSteps // $rendered[0].pipeline.steps // [])),
+       basisRevisionId:$active.revisionId,expectedVersion:.stateVersion,reason:("canonical " + $workload + " measurement")}' \
+      "$state" > "$stage_body" || return 1
+    deploy_bootstrap_stage_json "$target" "$stage_body" "$target_remote/$workload-schedule-stage.json" || return 1
+    deploy_bootstrap_register_private_remote "$target" "$stage_headers" || return 1
+    deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$stage_headers" \
+      "deploy-measure-$run_id-$name-${workload,,}-schedule-stage" || return 1
+    stage_response="$private_root/$name-$workload-schedule-stage.json"
+    status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/schedule/stage" \
+      "$target_remote/$workload-schedule-stage.json" "$stage_headers" "$cookies" \
+      "$target_remote/$workload-schedule-stage-response.json" "$stage_response")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-stage-failed; return 1; }
+    pending="$(jq -er '.pendingRevision.revisionId' "$stage_response")" || return 1
+    version="$(jq -er '.version | numbers' "$stage_response")" || return 1
+
+    activate_body="$render_root/$name-$workload-schedule-activate.json"; activate_headers="$target_remote/$workload-schedule-activate-control.headers"
+    jq -cn --arg revision "$pending" --arg workload "$workload" --argjson version "$version" \
+      '{revisionId:$revision,expectedVersion:$version,reason:("canonical " + $workload + " measurement")}' > "$activate_body" || return 1
+    deploy_bootstrap_stage_json "$target" "$activate_body" "$target_remote/$workload-schedule-activate.json" || return 1
+    deploy_bootstrap_register_private_remote "$target" "$activate_headers" || return 1
+    deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$activate_headers" \
+      "deploy-measure-$run_id-$name-${workload,,}-schedule-activate" || return 1
+    activate_response="$private_root/$name-$workload-schedule-activate.json"
+    status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/schedule/activate" \
+      "$target_remote/$workload-schedule-activate.json" "$activate_headers" "$cookies" \
+      "$target_remote/$workload-schedule-activate-response.json" "$activate_response")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-activate-failed; return 1; }
+    jq -e --slurpfile rendered "$rendered" '
+      .activeRevision.profile.module.type == $rendered[0].module.type and
+      .activeRevision.profile.rig == $rendered[0].rig and
+      .activeRevision.profile.processingSteps == ($rendered[0].processingSteps // $rendered[0].pipeline.steps // [])' \
+      "$activate_response" >/dev/null || { deploy_fail measure "$name" schedule-activation-mismatch; return 1; }
+    deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" \
+      "$target_remote/$workload-schedule-stage.json" "$stage_headers" \
+      "$target_remote/$workload-schedule-activate.json" "$activate_headers" || return 1
+    deploy_transport_forget_private_path "$stage_headers" || return 1
+    deploy_transport_forget_private_path "$activate_headers" || return 1
+}
+
 deploy_measure_execute_exact_count() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" device="$6" run_id="$7" label="$8" start="$9" count="${10}" deadline="${11}"
     local expected current name
@@ -364,6 +424,8 @@ deploy_run_measure() {
               .deviceId == $device and (.activeConfigurationSha256|ascii_downcase) == ($sha|ascii_downcase)' "$private_root/$name-profile-identity.json" >/dev/null ||
               { deploy_fail measure "$name" resumed-profile-state-mismatch; return 1; }
         fi
+        deploy_measure_activate_profile "$target" "$target_remote" "$private_root" "$render_root" "$cookies" \
+          "$render_root/$name-$selected_workload-camera-module.json" "$selected_workload" "$run_id" || return 1
         warmup_requested="$(jq -r '.warmupOperations' <<< "$profile")"; measured_requested="$(jq -r '.measuredOperations' <<< "$profile")"
         deadline=$(( $(date +%s) + duration ))
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .failureCleanup.status' <<< "$DEPLOY_MEASURE_JSON")" == capture-may-be-running ]]; then
