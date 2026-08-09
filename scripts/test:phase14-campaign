@@ -111,7 +111,7 @@ for invalid_facts in \
     fi
 done
 previous=0
-for call in capture-pause-initial-pause wait-baseline logic-stop-logichost capture-exact-count logic-start-logichost wait-outage private-cleanup runtime-passed acceptance-record; do
+for call in capture-pause-campaign-initial-pause wait-baseline logic-stop-logichost capture-exact-count logic-start-logichost wait-outage private-cleanup runtime-passed acceptance-record; do
     current="$(grep -n -m1 "^${call}$" "$CALL_LOG" | cut -d: -f1)"
     [[ -n "$current" && "$current" -gt "$previous" ]] || fail "Campaign call order is invalid at $call."
     previous="$current"
@@ -138,7 +138,7 @@ if deploy_run_acceptance_campaign "$inventory" "$run_id" "$mode" "$hash" "$revis
     fail 'Injected exact-count campaign failure unexpectedly passed.'
 fi
 deploy_acceptance_campaign_mark_failed 1 >/dev/null 2>&1 || true
-grep -q '^capture-pause-failure-pause$' "$CALL_LOG" || fail 'Campaign failure did not attempt an authenticated safety pause.'
+grep -q '^capture-pause-campaign-failure-pause$' "$CALL_LOG" || fail 'Campaign failure did not attempt an authenticated safety pause.'
 grep -q '^logic-start-logichost$' "$CALL_LOG" || fail 'Campaign failure did not restore LogicHost.'
 jq -e '.phaseStatus == "failed" and .logicState == "restored"' "$state/acceptance-campaign-logichost-network-outage/ledger.json" >/dev/null
 

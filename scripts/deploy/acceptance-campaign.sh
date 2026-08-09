@@ -43,7 +43,7 @@ deploy_acceptance_campaign_control_cleanup() {
     trap - ERR
     if [[ -n "$target" && -n "${DEPLOY_CAMPAIGN_TARGET_REMOTE:-}" && -n "${DEPLOY_CAMPAIGN_COOKIES:-}" ]]; then
         deploy_measure_capture_control "$target" "$DEPLOY_CAMPAIGN_TARGET_REMOTE" "$DEPLOY_CAMPAIGN_PRIVATE_ROOT" \
-          "$DEPLOY_CAMPAIGN_RENDER_ROOT" "$DEPLOY_CAMPAIGN_COOKIES" pause "$DEPLOY_CAMPAIGN_RUN_ID" failure-pause Paused true >/dev/null 2>&1 || true
+          "$DEPLOY_CAMPAIGN_RENDER_ROOT" "$DEPLOY_CAMPAIGN_COOKIES" pause "$DEPLOY_CAMPAIGN_RUN_ID" campaign-failure-pause Paused true >/dev/null 2>&1 || true
     fi
     if [[ -n "$logic" && "${DEPLOY_CAMPAIGN_LOGIC_STOPPED:-false}" == true ]]; then
         if deploy_up_compose_mutation "$logic" "$(jq -r '.dockerContext' <<< "$logic")" "$DEPLOY_CAMPAIGN_LOGIC_PROJECT" \
@@ -186,7 +186,7 @@ deploy_run_acceptance_campaign() {
        scenarioId:$scenario,workload:"W2",outageCaptureCount:10,captureIntervalSeconds:25,logicState:"running",
        phaseStatus:"running",startedAt:$now,updatedAt:$now,targets:[{target:$target,deviceId:$device,profile:$profile,controlAttempts:[]}]}')"
     deploy_acceptance_campaign_runtime_publish || return 1
-    deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" initial-pause Paused || return 1
+    deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" campaign-initial-pause Paused || return 1
     start_sequence="$(deploy_measure_read_sequence "$target" "$target_remote" "$private_root" "$cookies" outage-start "$device")" || return 1
     expected_baseline="$(jq -er '.targets[0].measured.endSequence | numbers' "$state_dir/measure-ledger.json")" || return 1
     [[ "$start_sequence" == "$expected_baseline" ]] || { deploy_fail acceptance-campaign baseline capture-contamination; return 1; }
@@ -205,7 +205,7 @@ deploy_run_acceptance_campaign() {
     deploy_up_compose_mutation "$logic" "$logic_context" "$logic_project" "$logic_env" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" stop logichost || return 1
     DEPLOY_MEASURE_JSON="$(jq -c --arg now "$outage_started" '.logicState="stopped" | .outageStartedAt=$now | .updatedAt=$now' <<< "$DEPLOY_MEASURE_JSON")"
     deploy_acceptance_campaign_runtime_publish || return 1
-    deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$run_id" outage \
+    deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$run_id" campaign-outage \
       "$start_sequence" 10 "$deadline" "$interval" || return 1
     outage_ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; outage_seconds=$(( SECONDS - outage_started_elapsed ))
     status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/v1/operations/summary" "" "" "$cookies" \
