@@ -188,7 +188,7 @@ deploy_measure_capture_control() {
 
 deploy_measure_activate_profile() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" rendered="$6" workload="$7" run_id="$8"
-    local name endpoint state status stage_body stage_headers stage_response pending version activate_body activate_headers activate_response
+    local name endpoint state status pending version activate_body activate_headers activate_response
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     state="$private_root/$name-schedule-state.json"
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
@@ -196,31 +196,21 @@ deploy_measure_activate_profile() {
     [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-read-failed; return 1; }
     if jq -e --slurpfile rendered "$rendered" '
       .activeRevision.profile.module.type == $rendered[0].module.type and
-      .activeRevision.profile.rig == $rendered[0].rig and
-      .activeRevision.profile.processingSteps == ($rendered[0].processingSteps // $rendered[0].pipeline.steps // [])' "$state" >/dev/null; then
+      .activeRevision.profile.rig.sensor.widthPixels == $rendered[0].rig.sensor.widthPixels and
+      .activeRevision.profile.rig.sensor.heightPixels == $rendered[0].rig.sensor.heightPixels and
+      .activeRevision.profile.rig.sensor.sensorRecipeVersion == $rendered[0].rig.sensor.sensorRecipeVersion and
+      .activeRevision.profile.rig.pipeline.captureInterval == $rendered[0].rig.pipeline.captureInterval' "$state" >/dev/null; then
         return 0
     fi
-
-    stage_body="$render_root/$name-$workload-schedule-stage.json"; stage_headers="$target_remote/$workload-schedule-stage-control.headers"
-    jq --slurpfile rendered "$rendered" --arg workload "$workload" '
-      .activeRevision as $active |
-      {profile:($active.profile |
-          .module=$rendered[0].module |
-          .rig=$rendered[0].rig |
-          .processingSteps=($rendered[0].processingSteps // $rendered[0].pipeline.steps // [])),
-       basisRevisionId:$active.revisionId,expectedVersion:.stateVersion,reason:("canonical " + $workload + " measurement")}' \
-      "$state" > "$stage_body" || return 1
-    deploy_bootstrap_stage_json "$target" "$stage_body" "$target_remote/$workload-schedule-stage.json" || return 1
-    deploy_bootstrap_register_private_remote "$target" "$stage_headers" || return 1
-    deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$stage_headers" \
-      "deploy-measure-$run_id-$name-${workload,,}-schedule-stage" || return 1
-    stage_response="$private_root/$name-$workload-schedule-stage.json"
-    status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/schedule/stage" \
-      "$target_remote/$workload-schedule-stage.json" "$stage_headers" "$cookies" \
-      "$target_remote/$workload-schedule-stage-response.json" "$stage_response")" || return 1
-    [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-stage-failed; return 1; }
-    pending="$(jq -er '.pendingRevision.revisionId' "$stage_response")" || return 1
-    version="$(jq -er '.version | numbers' "$stage_response")" || return 1
+    pending="$(jq -er --slurpfile rendered "$rendered" '
+      .pendingRevision | select(.source == "file-draft" and
+        .profile.module.type == $rendered[0].module.type and
+        .profile.rig.sensor.widthPixels == $rendered[0].rig.sensor.widthPixels and
+        .profile.rig.sensor.heightPixels == $rendered[0].rig.sensor.heightPixels and
+        .profile.rig.sensor.sensorRecipeVersion == $rendered[0].rig.sensor.sensorRecipeVersion and
+        .profile.rig.pipeline.captureInterval == $rendered[0].rig.pipeline.captureInterval) | .revisionId' "$state")" ||
+      { deploy_fail measure "$name" canonical-schedule-draft-missing; return 1; }
+    version="$(jq -er '.stateVersion | numbers' "$state")" || return 1
 
     activate_body="$render_root/$name-$workload-schedule-activate.json"; activate_headers="$target_remote/$workload-schedule-activate-control.headers"
     jq -cn --arg revision "$pending" --arg workload "$workload" --argjson version "$version" \
@@ -236,13 +226,13 @@ deploy_measure_activate_profile() {
     [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-activate-failed; return 1; }
     jq -e --slurpfile rendered "$rendered" '
       .activeRevision.profile.module.type == $rendered[0].module.type and
-      .activeRevision.profile.rig == $rendered[0].rig and
-      .activeRevision.profile.processingSteps == ($rendered[0].processingSteps // $rendered[0].pipeline.steps // [])' \
+      .activeRevision.profile.rig.sensor.widthPixels == $rendered[0].rig.sensor.widthPixels and
+      .activeRevision.profile.rig.sensor.heightPixels == $rendered[0].rig.sensor.heightPixels and
+      .activeRevision.profile.rig.sensor.sensorRecipeVersion == $rendered[0].rig.sensor.sensorRecipeVersion and
+      .activeRevision.profile.rig.pipeline.captureInterval == $rendered[0].rig.pipeline.captureInterval' \
       "$activate_response" >/dev/null || { deploy_fail measure "$name" schedule-activation-mismatch; return 1; }
     deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" \
-      "$target_remote/$workload-schedule-stage.json" "$stage_headers" \
       "$target_remote/$workload-schedule-activate.json" "$activate_headers" || return 1
-    deploy_transport_forget_private_path "$stage_headers" || return 1
     deploy_transport_forget_private_path "$activate_headers" || return 1
 }
 

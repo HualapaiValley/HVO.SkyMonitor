@@ -672,18 +672,13 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
 fi
 if [[ "$url" == */api/v1/operations/schedule/ ]]; then
   host="${FAKE_REMOTE_HOST:?}"; active="$FAKE_HTTP_STATE/$host.schedule-active.json"
-  if [[ -f "$active" ]]; then profile="$(jq -c . "$active")"
-  else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; fi
-  jq -cn --argjson profile "$profile" '{stateVersion:1,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile}}' > "$output"
-  printf 200; exit 0
-fi
-if [[ "$url" == */api/v1/operations/schedule/stage ]]; then
-  host="${FAKE_REMOTE_HOST:?}"; jq '.profile' "$body" > "$FAKE_HTTP_STATE/$host.schedule-pending.json"
-  jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-pending.json" '{version:2,pendingRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile[0]}}' > "$output"
+  pending='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":1936,"heightPixels":1216,"sensorRecipeVersion":"virtual-asi174mm-electron-domain-v2"},"pipeline":{"captureInterval":"00:00:25"}},"processingSteps":[],"schedule":{}}'
+  if [[ -f "$active" ]]; then profile="$(jq -c . "$active")"; jq -cn --argjson profile "$profile" '{stateVersion:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile},pendingRevision:null}' > "$output"
+  else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; jq -cn --argjson profile "$profile" --argjson pending "$pending" '{stateVersion:2,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile},pendingRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,source:"file-draft",profile:$pending}}' > "$output"; fi
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1/operations/schedule/activate ]]; then
-  host="${FAKE_REMOTE_HOST:?}"; cp "$FAKE_HTTP_STATE/$host.schedule-pending.json" "$FAKE_HTTP_STATE/$host.schedule-active.json"
+  host="${FAKE_REMOTE_HOST:?}"; printf '%s\n' '{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":1936,"heightPixels":1216,"sensorRecipeVersion":"virtual-asi174mm-electron-domain-v2"},"pipeline":{"captureInterval":"00:00:25"}},"processingSteps":[],"schedule":{}}' > "$FAKE_HTTP_STATE/$host.schedule-active.json"
   jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-active.json" '{version:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile[0]}}' > "$output"
   printf 200; exit 0
 fi
