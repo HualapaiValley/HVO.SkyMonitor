@@ -759,7 +759,7 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
         . + [{captureSequence:$sequence,captureId:$capture,artifacts:[
           {artifactId:$raw,role:"Raw",checksumSha256:$rawSha,byteLength:$rawLength,objectState:"Available",objectVerifiedAtUtc:$acknowledged,sources:[],completedDerivativeCount:1},
           {artifactId:$derivative,role:"Preview",checksumSha256:$derivativeSha,objectState:"Available",objectVerifiedAtUtc:null,
-           sources:[{sourceArtifactId:$raw,checksumSha256:$rawSha}],completedDerivativeCount:0}]}]' <<< "$window")"
+           sources:[{artifactId:$raw,checksumSha256:$rawSha}],completedDerivativeCount:0}]}]' <<< "$window")"
     done
   fi
   printf -v acknowledged '2026-08-07T00:01:%02dZ' "$count"
