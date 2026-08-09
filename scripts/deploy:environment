@@ -66,7 +66,7 @@ if [[ "$phase" == measure ]]; then [[ "$workload" == W1 || "$workload" == W2 ]] 
 
 # Target selection and credentials must come only from the validated inventory contract.
 for ambient_name in ${!DEPLOY_@} ${!SMOKETEST_@}; do
-    [[ "$ambient_name" == DEPLOY_TEST_FAILPOINT ]] || unset "$ambient_name"
+    [[ "$ambient_name" == DEPLOY_TEST_FAILPOINT || "$ambient_name" == DEPLOY_TEST_POLL_SECONDS ]] || unset "$ambient_name"
 done
 unset DOCKER_HOST DOCKER_CONTEXT SSH_HOST SSH_CONFIG 2>/dev/null || true
 unset ambient_name
