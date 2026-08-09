@@ -110,8 +110,9 @@ deploy_run_prepare() {
     done < <(jq -c '.targets[]' <<< "$DEPLOY_PREPARE_LEDGER_JSON")
 
     DEPLOY_PREPARE_MANIFEST_JSON="$(jq -cn --arg run "$run_id" --arg mode "$mode" --arg hash "$inventory_hash" --arg revision "$revision" --arg now "$now" \
+      --arg started "$(jq -r '.startedAt' <<< "$DEPLOY_PREPARE_LEDGER_JSON")" \
       --argjson targets "$(jq '.targets' <<< "$DEPLOY_PREPARE_LEDGER_JSON")" \
-      '{schemaVersion:1,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,phaseStatus:"running",startedAt:$now,updatedAt:$now,targets:$targets}' )"
+      '{schemaVersion:1,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,phaseStatus:"running",startedAt:$started,updatedAt:$now,targets:$targets}' )"
     deploy_publish_json "$DEPLOY_PREPARE_MANIFEST" "$DEPLOY_PREPARE_MANIFEST_JSON" || deploy_fail prepare manifest publication-failed || return 1
     [[ "${DEPLOY_TEST_FAILPOINT:-}" != after-prepare-running-manifest ]] || exit 75
     if [[ -e "$DEPLOY_PREPARE_EVIDENCE" || -L "$DEPLOY_PREPARE_EVIDENCE" ]]; then
