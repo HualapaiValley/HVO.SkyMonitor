@@ -132,8 +132,8 @@ deploy_measure_read_sequence() {
 }
 
 deploy_measure_capture_control() {
-    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" action="$6" run_id="$7" boundary="$8" desired="$9" force="${10:-false}"
-    local name endpoint body base_headers request_headers status key attempt latest latest_status current_state current_version result_state result_version desired_value
+    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" action="$6" run_id="$7" boundary="$8" desired="$9" force="${10:-false}" not_before="${11:-0}"
+    local name endpoint body base_headers request_headers status key attempt latest latest_status current_state current_version result_state result_version desired_value wait
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/summary" "" "" "$cookies" \
       "$target_remote/$boundary-control-state.json" "$private_root/$name-$boundary-control-state.json")" || return 1
@@ -168,6 +168,7 @@ deploy_measure_capture_control() {
     deploy_bootstrap_stage_json "$target" "$body" "$target_remote/$boundary-$attempt.json" || return 1
     deploy_bootstrap_register_private_remote "$target" "$request_headers" || return 1
     deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$base_headers" "$request_headers" "$key" || return 1
+    wait=$(( not_before - $(date +%s) )); (( wait <= 0 )) || sleep "$wait"
     status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/capture/$action" "$target_remote/$boundary-$attempt.json" \
       "$request_headers" "$cookies" "$target_remote/$boundary-$attempt-response.json" "$private_root/$name-$boundary-$attempt-response.json")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail measure "$name" "$action-control-failed"; return 1; }
@@ -238,7 +239,7 @@ deploy_measure_activate_profile() {
 
 deploy_measure_execute_exact_count() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" device="$6" run_id="$7" label="$8" start="$9" count="${10}" deadline="${11}" interval="${12}"
-    local expected current name remaining delay previous
+    local expected current name remaining delay previous pause_at
     name="$(jq -r '.name' <<< "$target")"; expected=$(( start + count ))
     current="$(deploy_measure_read_sequence "$target" "$target_remote" "$private_root" "$cookies" "$label-recovery-boundary" "$device")" || return 1
     (( current <= expected )) || { deploy_fail measure "$name" "$label-boundary-overshot"; return 1; }
@@ -250,9 +251,8 @@ deploy_measure_execute_exact_count() {
         while (( current < expected && $(date +%s) <= deadline )); do
             previous="$current"; remaining=$(( expected - current )); delay=$(( remaining * interval - interval / 2 )); (( delay >= 1 )) || delay=1
             deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" resume "$run_id" "$label-resume" Running || return 1
-            (( $(date +%s) + delay <= deadline )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
-            sleep "$delay"
-            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" "$label-pause" Paused || return 1
+            pause_at=$(( $(date +%s) + delay )); (( pause_at <= deadline )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
+            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" "$label-pause" Paused false "$pause_at" || return 1
             current="$(deploy_measure_read_sequence "$target" "$target_remote" "$private_root" "$cookies" "$label-boundary" "$device")" || return 1
             (( current <= expected )) || { deploy_fail measure "$name" "$label-boundary-overshot"; return 1; }
             (( current > previous )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
