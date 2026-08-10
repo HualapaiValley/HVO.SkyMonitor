@@ -70,6 +70,9 @@ write_source_evidence() {
 
 deploy_acceptance_component_execute_test() {
     local evidence_dir="$1" trx_dir="$2"
+    if [[ -e /proc/$$/fd/201 ]]; then
+        (exec 201>&-; [[ ! -e /proc/$BASHPID/fd/201 ]]) || fail 'Component child retained the deployment lock descriptor.'
+    fi
     printf 'execute\n' >> "$EXECUTION_LOG"
     install -d -m 700 "$evidence_dir/../build"; printf 'isolated-build\n' > "$evidence_dir/../build/output"
     write_source_evidence "$evidence_dir/dependency-outages.json"
