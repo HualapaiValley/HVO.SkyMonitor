@@ -36,16 +36,19 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/measure.sh"
 # shellcheck source=scripts/deploy/acceptance.sh
 . "$SCRIPT_DIR/deploy/acceptance.sh"
+# shellcheck source=scripts/deploy/acceptance-campaign.sh
+. "$SCRIPT_DIR/deploy/acceptance-campaign.sh"
 
 usage() {
-    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
+    printf '       acceptance-record requires --scenario and --artifact; acceptance-run requires --scenario and forbids --artifact.\n' >&2
     exit 2
 }
 
 phase="${1:-}"
-[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == acceptance-init || "$phase" == down ]] || usage
+[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == acceptance-init || "$phase" == acceptance-record || "$phase" == acceptance-run || "$phase" == down ]] || usage
 shift
-inventory="" mode="" run_id="" state_root="" evidence_root="" down_policy="" confirm="" workload=""
+inventory="" mode="" run_id="" state_root="" evidence_root="" down_policy="" confirm="" workload="" scenario="" artifact=""
 while (( $# > 0 )); do
     case "$1" in
         --inventory) (( $# >= 2 )) || usage; inventory="$2"; shift 2 ;;
@@ -57,12 +60,20 @@ while (( $# > 0 )); do
         --delete-state) [[ -z "$down_policy" ]] || usage; down_policy=delete; shift ;;
         --confirm) (( $# >= 2 )) || usage; confirm="$2"; shift 2 ;;
         --workload) (( $# >= 2 )) || usage; workload="$2"; shift 2 ;;
+        --scenario) (( $# >= 2 )) || usage; scenario="$2"; shift 2 ;;
+        --artifact) (( $# >= 2 )) || usage; artifact="$2"; shift 2 ;;
         *) usage ;;
     esac
 done
 [[ -n "$inventory" && ( "$mode" == isolated || "$mode" == persistent ) ]] || usage
 if [[ "$phase" == down ]]; then [[ -n "$down_policy" ]] || usage; else [[ -z "$down_policy" && -z "$confirm" ]] || usage; fi
 if [[ "$phase" == measure ]]; then [[ "$workload" == W1 || "$workload" == W2 ]] || usage; else [[ -z "$workload" ]] || usage; fi
+if [[ "$phase" == acceptance-record || "$phase" == acceptance-run ]]; then
+    deploy_is_safe_name "$scenario" || usage
+    if [[ "$phase" == acceptance-record ]]; then [[ -n "$artifact" ]] || usage; else [[ -z "$artifact" ]] || usage; fi
+else
+    [[ -z "$scenario" && -z "$artifact" ]] || usage
+fi
 
 # Target selection and credentials must come only from the validated inventory contract.
 for ambient_name in ${!DEPLOY_@} ${!SMOKETEST_@}; do
@@ -72,9 +83,9 @@ unset DOCKER_HOST DOCKER_CONTEXT SSH_HOST SSH_CONFIG 2>/dev/null || true
 unset ambient_name
 
 deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install flock ssh timeout date grep cut awk wc || exit 1
-[[ "$phase" == prepare || "$phase" == catalog || "$phase" == acceptance-init ]] || deploy_require_commands docker || exit 1
+[[ "$phase" == prepare || "$phase" == catalog || "$phase" == acceptance-init || "$phase" == acceptance-record ]] || deploy_require_commands docker || exit 1
 [[ "$phase" != images ]] || deploy_require_commands tar mv rm || exit 1
-[[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
+[[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke && "$phase" != acceptance-run ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
 deploy_validate_inventory "$inventory" "$mode"
 deploy_validate_secret_references "$inventory"
@@ -223,6 +234,28 @@ if [[ "$phase" == acceptance-init ]]; then
         exit 1
     fi
     deploy_status acceptance-init complete passed campaign-index-initialized
+    exit 0
+fi
+
+if [[ "$phase" == acceptance-record ]]; then
+    [[ ! -L "$artifact" ]] || deploy_fail validate artifact artifact-symlink-rejected
+    artifact="$(realpath -e -- "$artifact" 2>/dev/null)" || deploy_fail validate artifact artifact-not-found
+    if ! deploy_run_acceptance_record "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$source_tree" "$scenario" "$artifact"; then
+        exit 1
+    fi
+    deploy_status acceptance-record "$scenario" passed artifact-recorded
+    exit 0
+fi
+
+if [[ "$phase" == acceptance-run ]]; then
+    trap 'deploy_acceptance_campaign_mark_failed $?' ERR
+    trap 'deploy_acceptance_campaign_mark_failed 130; exit 130' INT TERM
+    if ! deploy_run_acceptance_campaign "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$source_tree" "$scenario"; then
+        deploy_acceptance_campaign_mark_failed 1
+        exit 1
+    fi
+    trap - ERR INT TERM
+    deploy_status acceptance-run "$scenario" passed converged
     exit 0
 fi
 

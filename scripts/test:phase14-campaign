@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$SCRIPT_DIR/deploy/common.sh"
+. "$SCRIPT_DIR/deploy/run-state.sh"
+. "$SCRIPT_DIR/deploy/catalog.sh"
+. "$SCRIPT_DIR/deploy/acceptance.sh"
+. "$SCRIPT_DIR/deploy/acceptance-campaign.sh"
+
+TEMP_DIR="$(mktemp -d -t hvo-campaign-test.XXXXXX)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+CALL_LOG="$TEMP_DIR/calls.log"
+state="$TEMP_DIR/state"; evidence="$TEMP_DIR/evidence"
+install -d -m 700 "$state" "$evidence"
+DEPLOY_MANIFEST="$state/manifest.json"; DEPLOY_EVIDENCE="$evidence/preflight.json"
+DEPLOY_PRIVATE_UPLOAD_REGISTRY="$state/private-upload-registry.json"
+printf '[]\n' > "$DEPLOY_PRIVATE_UPLOAD_REGISTRY"; chmod 600 "$DEPLOY_PRIVATE_UPLOAD_REGISTRY"
+run_id=phase14-campaign; mode=isolated; hash="$(printf 'a%.0s' {1..64})"; revision="$(printf 'b%.0s' {1..40})"; tree="$(printf 'c%.0s' {1..40})"
+inventory="$TEMP_DIR/inventory.json"
+jq -n --arg revision "$revision" '{source:{revision:$revision},logicHost:{name:"logic",runtimeRoot:"/runtime/logic",sshHost:"logic",
+  dockerContext:"logic",internalEndpoint:"http://127.0.0.1:15174",publicEndpoint:"http://logic:15174"},
+  cameraAgents:[{name:"east",runtimeRoot:"/runtime/east",sshHost:"east",dockerContext:"east",internalEndpoint:"http://127.0.0.1:15130"}],
+  deployment:{resources:{project:"phase14-campaign"}}}' > "$inventory"
+chmod 600 "$inventory"
+jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" \
+  '{schemaVersion:1,runId:$run,mode:$mode,inventorySha256:$hash,source:{revision:$revision,worktreeState:"clean"},targets:[],phaseStatus:"passed"}' > "$DEPLOY_MANIFEST"
+chmod 600 "$DEPLOY_MANIFEST"
+jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" \
+  '{schemaVersion:1,publicationGeneration:2,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,workload:"W2",phaseStatus:"passed",
+    targets:[{target:"east",deviceId:"east-device",status:"measured",profile:{configSha256:"config"},controlAttempts:[],warmupCompleted:5,
+      measuredCompleted:30,measuredStart:6,measured:{startSequence:6,endSequence:36,count:30,drained:true,correctness:true,
+        captures:[range(7;37) | {captureSequence:.,captureId:("baseline-capture-" + (.|tostring)),rawArtifactId:("baseline-raw-" + (.|tostring)),
+          rawChecksumSha256:("e" * 64),rawByteLength:12879360}]}}]}' \
+  > "$state/measure-ledger.json"
+cp "$state/measure-ledger.json" "$state/measure-manifest.json"; chmod 600 "$state/measure-ledger.json" "$state/measure-manifest.json"
+
+scenario="$(jq -c '.scenarios[] | select(.id == "logichost-network-outage")' "$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json")"
+jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg tree "$tree" --argjson scenario "$scenario" '
+  {schemaVersion:2,publicationGeneration:2,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,sourceTree:$tree,
+   phaseStatus:"passed",campaignStatus:"not-run",startedAt:"2026-08-09T00:00:00Z",updatedAt:"2026-08-09T00:00:00Z",
+   classifications:[],scenarios:[{id:$scenario.id,classification:$scenario.classification,executionClass:$scenario.executionClass,
+     evidenceSource:$scenario.evidenceSource,workloads:$scenario.workloads,status:"not-run",artifact:{relativePath:$scenario.artifactPath,byteLength:null,sha256:null}}]}' \
+  > "$state/acceptance-ledger.json"
+chmod 600 "$state/acceptance-ledger.json"
+
+deploy_run_acceptance() { return 0; }
+deploy_require_passed_phase() { return 0; }
+deploy_require_no_orphan_phase_files() { return 0; }
+deploy_require_phase_files_match() { return 0; }
+deploy_transport_remote_directories() { [[ "${FAIL_REMOTE_SETUP:-false}" != true ]]; }
+deploy_bootstrap_central_headers() { return 0; }
+deploy_bootstrap_owner_session() { return 0; }
+deploy_measure_capture_control() { printf 'capture-%s-%s\n' "$6" "$8" >> "$CALL_LOG"; }
+deploy_measure_read_sequence() { printf '36\n'; }
+deploy_measure_execute_exact_count() { printf 'capture-exact-count\n' >> "$CALL_LOG"; [[ "${FAIL_EXACT:-false}" != true ]]; }
+deploy_up_compose_mutation() { printf 'logic-%s-%s\n' "$6" "$7" >> "$CALL_LOG"; }
+deploy_transport_http_ready() { return 0; }
+deploy_transport_oidc_ready() { return 0; }
+deploy_bootstrap_cleanup_private_remote() { printf 'private-cleanup\n' >> "$CALL_LOG"; }
+deploy_acceptance_campaign_runtime_publish() {
+    deploy_phase_publish acceptance-campaign DEPLOY_MEASURE_JSON "$DEPLOY_MEASURE_LEDGER" "$DEPLOY_MEASURE_MANIFEST" \
+      "$DEPLOY_MEASURE_EVIDENCE" "$DEPLOY_MEASURE_COMMIT"
+    [[ "$(jq -r '.phaseStatus' <<< "$DEPLOY_MEASURE_JSON")" != passed ]] || printf 'runtime-passed\n' >> "$CALL_LOG"
+}
+deploy_bootstrap_request() {
+    local output="$8"
+    jq -n '{rawIngress:{value:{pendingCount:0}},captureLanes:{value:{pendingCount:0}},captureProcessing:{value:{pendingCount:0}},
+      artifactOutbox:{value:{pendingCount:10,pendingBytes:128793600,quarantineCount:0,terminalCount:0}}}' > "$output"
+    chmod 600 "$output"
+    printf '200\n'
+}
+deploy_measure_wait_capture_set() {
+    printf 'wait-%s\n' "$9" >> "$CALL_LOG"
+    if [[ "$9" == baseline ]]; then
+        jq -c '.targets[0].measured' "$state/measure-ledger.json"
+    else
+        jq -cn '{startSequence:36,endSequence:46,count:10,drained:true,correctness:true,
+          captures:[range(37;47) | {captureSequence:.,captureId:("00000000-0000-0000-0000-" + ((100000000000 + .)|tostring)),
+            rawArtifactId:("00000000-0000-0000-0000-" + ((200000000000 + .)|tostring)),
+            rawChecksumSha256:("d" * 64),rawByteLength:12879360}]}'
+    fi
+}
+deploy_run_acceptance_record() {
+    local artifact_input="$9" ledger scenario
+    ledger="$(jq -c . "$state/acceptance-ledger.json")"; scenario="$(jq -c '.scenarios[0]' <<< "$ledger")"
+    deploy_acceptance_validate_artifact_json "$artifact_input" "$ledger" "$scenario"
+    cp "$artifact_input" "$evidence/recorded.json"
+    printf 'acceptance-record\n' >> "$CALL_LOG"
+}
+
+deploy_run_acceptance_campaign "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" logichost-network-outage
+jq -e '.scenarioId == "logichost-network-outage" and .outcome == "passed" and .workloads == ["W2"] and
+  (.outputs | length) == 10 and (.measurements[] | select(.id == "outage-raw-bytes") | .value) == 128793600 and
+  all(.assertions[]; .passed)' "$evidence/recorded.json" >/dev/null
+jq -e '.phaseStatus == "passed" and .logicState == "restored" and .facts.count == 10 and .drainRate > 0.04' \
+  "$state/acceptance-campaign-logichost-network-outage/ledger.json" >/dev/null
+valid_facts="$(jq -c '.facts' "$state/acceptance-campaign-logichost-network-outage/ledger.json")"
+for invalid_facts in \
+  "$(jq -c '.correctness=false' <<< "$valid_facts")" \
+  "$(jq -c '.count=9' <<< "$valid_facts")" \
+  "$(jq -c '.captures[1].captureId=.captures[0].captureId' <<< "$valid_facts")" \
+  "$(jq -c '.captures[1].captureSequence=.captures[0].captureSequence' <<< "$valid_facts")"; do
+    if deploy_acceptance_campaign_build_artifact "$(jq -c . "$state/acceptance-ledger.json")" "$scenario" "$invalid_facts" \
+      2026-08-09T00:00:00Z 2026-08-09T00:05:00Z 250 1 10 128793600 10 >/dev/null 2>&1; then
+        fail 'Invalid capture facts produced a passing campaign artifact.'
+    fi
+done
+previous=0
+for call in capture-pause-campaign-initial-pause wait-baseline logic-stop-logichost capture-exact-count logic-start-logichost wait-outage private-cleanup runtime-passed acceptance-record; do
+    current="$(grep -n -m1 "^${call}$" "$CALL_LOG" | cut -d: -f1)"
+    [[ -n "$current" && "$current" -gt "$previous" ]] || fail "Campaign call order is invalid at $call."
+    previous="$current"
+done
+
+logic_mutations_before="$(grep -c '^logic-' "$CALL_LOG")"
+FAIL_RECORD=true
+deploy_run_acceptance_record() { printf 'acceptance-record-failed\n' >> "$CALL_LOG"; return 1; }
+if deploy_run_acceptance_campaign "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" logichost-network-outage; then
+    fail 'Injected recorder retry failure unexpectedly passed.'
+fi
+deploy_acceptance_campaign_mark_failed 1 >/dev/null 2>&1 || true
+jq -e '.phaseStatus == "passed" and .logicState == "restored"' "$state/acceptance-campaign-logichost-network-outage/ledger.json" >/dev/null
+[[ "$(grep -c '^logic-' "$CALL_LOG")" == "$logic_mutations_before" ]] || fail 'Recorder retry repeated the outage mutation.'
+
+unsafe_target="$TEMP_DIR/unsafe-directory-target"; install -d -m 700 "$unsafe_target"; ln -s "$unsafe_target" "$TEMP_DIR/unsafe-directory"
+if deploy_acceptance_campaign_prepare_directory "$TEMP_DIR/unsafe-directory" >/dev/null 2>&1; then
+    fail 'Symlinked campaign runtime directory was accepted.'
+fi
+
+rm -rf "$state/acceptance-campaign-logichost-network-outage"; rm -f "$evidence/recorded.json"; : > "$CALL_LOG"
+FAIL_EXACT=true
+if deploy_run_acceptance_campaign "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" logichost-network-outage; then
+    fail 'Injected exact-count campaign failure unexpectedly passed.'
+fi
+deploy_acceptance_campaign_mark_failed 1 >/dev/null 2>&1 || true
+grep -q '^capture-pause-campaign-failure-pause$' "$CALL_LOG" || fail 'Campaign failure did not attempt an authenticated safety pause.'
+grep -q '^logic-start-logichost$' "$CALL_LOG" || fail 'Campaign failure did not restore LogicHost.'
+jq -e '.phaseStatus == "failed" and .logicState == "restored"' "$state/acceptance-campaign-logichost-network-outage/ledger.json" >/dev/null
+
+: > "$CALL_LOG"
+DEPLOY_MEASURE_JSON="$(jq -c '.phaseStatus="running" | .logicState="stopped" | del(.completedAt)' "$state/acceptance-campaign-logichost-network-outage/ledger.json")"
+deploy_acceptance_campaign_runtime_publish
+FAIL_EXACT=false; FAIL_REMOTE_SETUP=true
+if deploy_run_acceptance_campaign "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" logichost-network-outage; then
+    fail 'Interrupted stopped campaign passed after remote setup failure.'
+fi
+deploy_acceptance_campaign_mark_failed 1 >/dev/null 2>&1 || true
+grep -q '^logic-start-logichost$' "$CALL_LOG" || fail 'Stopped campaign recovery did not restore LogicHost after remote setup failure.'
+jq -e '.phaseStatus == "failed" and .logicState == "restored"' "$state/acceptance-campaign-logichost-network-outage/ledger.json" >/dev/null
+
+printf 'Phase 14 LogicHost outage campaign contract passed.\n'

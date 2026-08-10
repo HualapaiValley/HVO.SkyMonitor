@@ -188,15 +188,15 @@ deploy_transport_initialize_private_upload_registry() {
           def targets: ([$inventory.logicHost] + $inventory.cameraAgents + (if $inventory.sharedServices then [$inventory.sharedServices] else [] end));
           type == "array" and length <= 256 and all(.[]; . as $entry |
             (keys | sort) == (["phase","kind","target","path"] | sort) and
-            (.phase | test("^(up|bootstrap|smoke|measure|down)$")) and
+            (.phase | test("^(up|bootstrap|smoke|measure|acceptance-run|down)$")) and
             (if .kind == "upload-temp" then
               any(targets[]; . == $entry.target) and
               ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/uploads/") and
-                (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))
+                (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))
              elif .kind == "remote-private" then
                any(targets[]; . == $entry.target) and ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/")) and
                (($entry.path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
-                ($entry.path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")))
+                ($entry.path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")))
              elif .kind == "local-private" then
                any(targets[]; . == $entry.target) and ($entry.path | startswith(($registry | sub("/private-upload-registry[.]json$"; "")) + "/")) and
                ($entry.path | test("/(central[.]headers|[A-Za-z0-9._-]+-(owner-password|antiforgery[.]headers|antiforgery[.]json|envelope[.]json|bootstrap-request[.]json))$")) and
@@ -235,7 +235,7 @@ deploy_transport_register_remote_private() {
     local target="$1" path="$2" updated
     jq -e --arg path "$path" '.runtimeRoot as $root | ($path | startswith($root + "/.hvo-deploy/")) and
       (($path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
-       ($path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")))' \
+       ($path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")))' \
       <<< "$target" >/dev/null || return 1
     updated="$(jq -c --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" --arg path "$path" --argjson target "$target" '
       if any(.[]; .path == $path and .phase == $phase and .kind == "remote-private" and .target == $target) then .
@@ -312,7 +312,7 @@ deploy_transport_cleanup_private_upload() {
     target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
     jq -e --arg path "$temporary" '.runtimeRoot as $root |
       ($path | startswith($root + "/.hvo-deploy/uploads/") and
-        (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))' \
+        (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))' \
       <<< "$target" >/dev/null || return 1
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$temporary" 2>/dev/null <<'REMOTE'
 set -euo pipefail
