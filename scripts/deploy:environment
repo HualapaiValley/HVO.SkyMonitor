@@ -40,7 +40,8 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/acceptance-campaign.sh"
 
 usage() {
-    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id> --artifact <absolute-json-path>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
+    printf '       acceptance-record requires --scenario and --artifact; acceptance-run requires --scenario and forbids --artifact.\n' >&2
     exit 2
 }
 
