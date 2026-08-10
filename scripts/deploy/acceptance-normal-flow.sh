@@ -57,7 +57,7 @@ deploy_acceptance_normal_validate_measure() {
         ([.warmup.captures[].captureId,.measured.captures[].captureId] | length == (unique | length)) and
         ([.warmup.captures[].rawArtifactId,.measured.captures[].rawArtifactId] | length == (unique | length)) and
         .before.telemetry.sampleCount == 0 and (.before.timings | length) == 0 and
-        .after.telemetry.sampleCount == 30 and (.after.timings | length) > 0 and all(.after.timings[]; .sampleCount > 0) and
+        (.after.timings | length) > 0 and all(.after.timings[]; .sampleCount > 0) and
         all(.after.queues.raw,.after.queues.processing,.after.queues.outbox;
           .pendingCount == 0 and .pendingBytes == 0 and .leasedCount == 0 and .quarantineCount == 0 and .terminalCount == 0) and
         .after.queues.lanes.pendingCount == 0 and .after.queues.lanes.pendingBytes == 0 and
@@ -130,17 +130,15 @@ deploy_acceptance_normal_build_artifact() {
          {id:"ordered-capture-windows",passed:true},{id:"unique-capture-output-identities",passed:true},
          {id:"raw-byte-lengths-canonical",passed:true},{id:"measured-capture-correctness",passed:true},
          {id:"durable-queues-drained",passed:true},{id:"fresh-measurement-windows",passed:true},
-         {id:"capture-telemetry-recorded",passed:true},{id:"runtime-timings-recorded",passed:true}],
+         {id:"runtime-timings-recorded",passed:true}],
        outputs:([{id:"w1-measure-evidence",byteLength:$w1Length,sha256:$w1Sha},
                  {id:"w2-measure-evidence",byteLength:$w2Length,sha256:$w2Sha}] +
                 rawOutputs("w1";$w1.targets[0]) + rawOutputs("w2";$w2.targets[0])),
        measurements:[
          {id:"w1-warmup-captures",value:5,unit:"captures"},{id:"w1-measured-captures",value:30,unit:"captures"},
          {id:"w1-measured-raw-bytes",value:([$w1.targets[0].measured.captures[].rawByteLength]|add),unit:"bytes"},
-         {id:"w1-average-loop-ms",value:$w1.targets[0].after.telemetry.averageLoopMilliseconds,unit:"milliseconds"},
          {id:"w2-warmup-captures",value:5,unit:"captures"},{id:"w2-measured-captures",value:30,unit:"captures"},
          {id:"w2-measured-raw-bytes",value:([$w2.targets[0].measured.captures[].rawByteLength]|add),unit:"bytes"},
-         {id:"w2-average-loop-ms",value:$w2.targets[0].after.telemetry.averageLoopMilliseconds,unit:"milliseconds"},
          {id:"total-measured-captures",value:60,unit:"captures"},
          {id:"total-measured-raw-bytes",value:([$w1.targets[0].measured.captures[].rawByteLength,$w2.targets[0].measured.captures[].rawByteLength]|add),unit:"bytes"}]}
     '

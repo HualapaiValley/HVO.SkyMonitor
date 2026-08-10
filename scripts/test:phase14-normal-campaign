@@ -68,6 +68,10 @@ if deploy_acceptance_normal_validate_measure <(jq '.targets[0].profile.sourceSha
   "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
     fail 'Normal campaign accepted a substituted W1 profile identity.'
 fi
+if deploy_acceptance_normal_validate_measure <(jq '.targets[0].after.timings=[]' "$w1") \
+  "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
+    fail 'Normal campaign accepted missing runtime timings.'
+fi
 
 scenario="$(jq -c '.scenarios[] | select(.id == "normal-flow")' "$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json")"
 jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg tree "$tree" --argjson scenario "$scenario" \

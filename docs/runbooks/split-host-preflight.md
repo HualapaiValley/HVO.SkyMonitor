@@ -706,9 +706,10 @@ workload.
 The immutable `normal-flow` artifact binds both supporting evidence digests,
 the 60 measured Raw output lengths/checksums, exact warm-up/measured counts,
 the retained measured-window correctness result, drained queues, and capture
-timing telemetry. The current retained measure contract does not independently
+runtime timings. The current retained measure contract does not independently
 expose central object/derivative details, or establish W1/W2
-content-retrieval hashes, trace/log/cardinality review, host resource peaks, or
+capture-telemetry aggregates, content-retrieval hashes, trace/log/cardinality
+review, host resource peaks, or
 the complete window/cloud/transient/UI path, so this command does not claim
 those checks or full `GATE-P14`.
 
