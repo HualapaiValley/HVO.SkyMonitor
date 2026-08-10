@@ -44,6 +44,18 @@ if dotnet run --project "$SOURCE_REPO_ROOT/scripts/acceptance-trx/HVO.SkyMonitor
     fail 'The TRX verifier accepted multiple result files.'
 fi
 
+lock_bin="$TEMP_DIR/lock-bin"; install -d -m 700 "$lock_bin"
+cat > "$lock_bin/dotnet" <<'SHIM'
+#!/usr/bin/env bash
+[[ ! -e /proc/$$/fd/201 && -z "${HVO_EVIDENCE_TRIAL+x}" && -z "${HVO_ISSUE_107_DEPENDENCY+x}" ]]
+SHIM
+chmod 700 "$lock_bin/dotnet"
+exec 201> "$TEMP_DIR/child-lock"
+HVO_EVIDENCE_TRIAL=7 HVO_ISSUE_107_DEPENDENCY=SqlServer PATH="$lock_bin:$PATH" \
+  deploy_acceptance_component_execute_test "$TEMP_DIR/child-evidence" "$TEMP_DIR/child-trx" "$revision"
+PATH="$lock_bin:$PATH" deploy_acceptance_component_verify_trx "$TEMP_DIR/child-trx"
+exec 201>&-
+
 write_source_evidence() {
     local destination="$1" dependency
     jq -n --arg revision "$revision" '
@@ -70,9 +82,6 @@ write_source_evidence() {
 
 deploy_acceptance_component_execute_test() {
     local evidence_dir="$1" trx_dir="$2"
-    if [[ -e /proc/$$/fd/201 ]]; then
-        (exec 201>&-; [[ ! -e /proc/$BASHPID/fd/201 ]]) || fail 'Component child retained the deployment lock descriptor.'
-    fi
     printf 'execute\n' >> "$EXECUTION_LOG"
     install -d -m 700 "$evidence_dir/../build"; printf 'isolated-build\n' > "$evidence_dir/../build/output"
     write_source_evidence "$evidence_dir/dependency-outages.json"

@@ -95,7 +95,7 @@ deploy_acceptance_component_verify_trx() {
 
 deploy_acceptance_component_execute_test() {
     local evidence_dir="$1" trx_dir="$2" revision="$3"
-    (exec 201>&-; env -u HVO_ISSUE_107_DEPENDENCY HVO_EVIDENCE_REVISION="$revision" HVO_EVIDENCE_REPOSITORY_ROOT="$REPO_ROOT" \
+    (exec 201>&-; env -u HVO_ISSUE_107_DEPENDENCY -u HVO_EVIDENCE_TRIAL HVO_EVIDENCE_REVISION="$revision" HVO_EVIDENCE_REPOSITORY_ROOT="$REPO_ROOT" \
       HVO_ISSUE_107_EVIDENCE_ROOT="$evidence_dir" \
       timeout --signal=TERM --kill-after=30s 600s dotnet test "$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj" \
         --configuration Release --artifacts-path "$evidence_dir/../build" \

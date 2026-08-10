@@ -203,8 +203,9 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
             {
                 using var operation = await ExerciseDependencyAsync(client, scenario.Dependency).ConfigureAwait(false);
                 last = await ReadHealthAsync(client, scenario.HealthCheck).ConfigureAwait(false);
-                if (operation.IsSuccessStatusCode && last.CheckStatus == "Healthy")
+                if (operation.IsSuccessStatusCode && last.HttpStatus == HttpStatusCode.OK && last.CheckStatus == "Healthy")
                 {
+                    last.HttpStatus.Should().Be(HttpStatusCode.OK);
                     await AssertSuccessfulOperationAsync(operation, scenario.Dependency).ConfigureAwait(false);
                     return last;
                 }
