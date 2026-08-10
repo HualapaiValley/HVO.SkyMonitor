@@ -82,13 +82,25 @@ deploy_measure_publish() {
       "$DEPLOY_MEASURE_EVIDENCE" "$DEPLOY_MEASURE_COMMIT"
 }
 
+deploy_measure_prepare_directory() {
+    local path="$1"
+    if [[ -e "$path" || -L "$path" ]]; then
+        [[ -d "$path" && ! -L "$path" && "$(stat -c '%u:%a' -- "$path" 2>/dev/null)" == "$(id -u):700" ]] ||
+          { deploy_fail measure directory unsafe; return 1; }
+    else
+        install -d -m 700 -- "$path" 2>/dev/null || { deploy_fail measure directory create-failed; return 1; }
+    fi
+}
+
 deploy_measure_validate_candidate() {
     local path="$1" run_id="$2" mode="$3" hash="$4" revision="$5" selected="$6" inventory="$7"
-    jq -e --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg selected "$selected" --argjson inventory "$(jq -c . "$inventory")" '
+    local execution_run_id="${8:-$run_id}"
+    jq -e --arg run "$run_id" --arg executionRun "$execution_run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg selected "$selected" --argjson inventory "$(jq -c . "$inventory")" '
       .schemaVersion == 1 and .runId == $run and .mode == $mode and .inventorySha256 == $hash and .sourceRevision == $revision and
+      (($executionRun == $run and (has("executionRunId") | not)) or ($executionRun != $run and .executionRunId == $executionRun)) and
       (.publicationGeneration | numbers) >= 1 and .executionMode == "canonical" and .canonicalWorkloadConfigured == true and .workload == $selected and
       (.phaseStatus == "running" or .phaseStatus == "failed" or .phaseStatus == "passed") and
-      ((keys - ["completedAt","elapsedSeconds"] | sort) == (["schemaVersion","publicationGeneration","runId","mode","inventorySha256","sourceRevision","executionMode","canonicalWorkloadConfigured","workload","phaseStatus","startedAt","updatedAt","targets"] | sort)) and
+      ((keys - ["completedAt","elapsedSeconds","executionRunId"] | sort) == (["schemaVersion","publicationGeneration","runId","mode","inventorySha256","sourceRevision","executionMode","canonicalWorkloadConfigured","workload","phaseStatus","startedAt","updatedAt","targets"] | sort)) and
       (.targets | type == "array" and length == ([.[].target] | unique | length) and all(.[];
         .target as $target | ([ $inventory.cameraAgents[].name ] | index($target) != null) and
         (keys | sort) == (["target","deviceId","status","profile","controlAttempts","warmupStart","measuredStart","warmupCompleted","measuredCompleted","warmup","measured","before","after","failureCleanup"] | sort) and
@@ -279,7 +291,7 @@ deploy_measure_failure_pause_all() {
     while IFS= read -r entry; do
         name="$(jq -r '.target' <<< "$entry")"
         target="$(jq -c --arg name "$name" '.cameraAgents[] | select(.name == $name)' "$DEPLOY_MEASURE_INVENTORY")"
-        target_root="$(jq -r '.runtimeRoot' <<< "$target")"; target_remote="$target_root/.hvo-deploy/measure-$(jq -r '.runId' <<< "$DEPLOY_MEASURE_JSON")"
+        target_root="$(jq -r '.runtimeRoot' <<< "$target")"; target_remote="$target_root/.hvo-deploy/measure-$(jq -r '.executionRunId // .runId' <<< "$DEPLOY_MEASURE_JSON")"
         deploy_transport_remote_directories "$(jq -r '.sshHost' <<< "$target")" "$target_remote" >/dev/null 2>&1 || { failed=true; continue; }
         response="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-failure-antiforgery.json"
         if ! deploy_bootstrap_owner_session "$DEPLOY_MEASURE_INVENTORY" "$target" "$DEPLOY_MEASURE_RENDER_ROOT" "$target_remote" "$response" >/dev/null 2>&1; then
@@ -289,7 +301,7 @@ deploy_measure_failure_pause_all() {
         fi
         cookies="$target_remote/owner.cookies"
         if deploy_measure_capture_control "$target" "$target_remote" "$DEPLOY_MEASURE_PRIVATE_ROOT" "$DEPLOY_MEASURE_RENDER_ROOT" "$cookies" pause \
-          "$(jq -r '.runId' <<< "$DEPLOY_MEASURE_JSON")" failure-pause Paused true >/dev/null 2>&1; then
+          "$(jq -r '.executionRunId // .runId' <<< "$DEPLOY_MEASURE_JSON")" failure-pause Paused true >/dev/null 2>&1; then
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" '.targets |= map(if .target == $target then .failureCleanup.status="completed" else . end)' <<< "$DEPLOY_MEASURE_JSON")"
         else
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" '.targets |= map(if .target == $target then .failureCleanup.status="capture-may-be-running" else . end)' <<< "$DEPLOY_MEASURE_JSON")"
@@ -356,7 +368,7 @@ deploy_measure_wait_capture_set() {
 
 deploy_run_measure() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6" selected_workload="$7"
-    local state_dir evidence_dir render_root private_root now started_seconds ended_seconds duration deadline target name target_root target_remote response cookies
+    local scope="${8:-}" state_dir evidence_dir measure_root support_evidence render_root private_root execution_run_id now started_seconds ended_seconds duration deadline target name target_root target_remote response cookies
     local device profile warmup_requested measured_requested warmup_start warmup_completed measured_start before after measured_completed status reset_status interval_value interval_hours interval_minutes interval_seconds capture_interval_seconds
     local logic logic_root logic_remote central_headers warmup measured
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/bootstrap-manifest.json" measure "$run_id" "$mode" "$hash" "$revision" || return 1
@@ -367,28 +379,44 @@ deploy_run_measure() {
     DEPLOY_IMAGES_PREFLIGHT_JSON="$(jq -c . "$DEPLOY_MANIFEST")"
     deploy_transport_reconcile_private_uploads strict || { deploy_fail measure private-upload-registry cleanup-failed; return 1; }
     jq -e 'length == 0' "$DEPLOY_PRIVATE_UPLOAD_REGISTRY" >/dev/null || { deploy_fail measure private-upload-registry not-empty; return 1; }
-    state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"; render_root="$state_dir/measure-rendered"; private_root="$state_dir/measure-private"
-    install -d -m 700 "$render_root" "$private_root"
-    DEPLOY_MEASURE_MANIFEST="$state_dir/measure-manifest.json"; DEPLOY_MEASURE_LEDGER="$state_dir/measure-ledger.json"; DEPLOY_MEASURE_EVIDENCE="$evidence_dir/measure.json"
-    DEPLOY_MEASURE_COMMIT="$state_dir/measure-commit.json"
+    state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"; execution_run_id="$run_id"
+    if [[ -n "$scope" ]]; then
+        [[ "$scope" == "normal-flow-$selected_workload" ]] || { deploy_fail measure scope unsupported; return 1; }
+        measure_root="$state_dir/acceptance-campaign-normal-flow/$selected_workload"
+        support_evidence="$evidence_dir/acceptance-support"
+        deploy_measure_prepare_directory "$state_dir/acceptance-campaign-normal-flow" || return 1
+        deploy_measure_prepare_directory "$measure_root" || return 1
+        deploy_measure_prepare_directory "$support_evidence" || return 1
+        render_root="$measure_root/rendered"; private_root="$measure_root/private"; execution_run_id="$run_id-${selected_workload,,}"
+        DEPLOY_MEASURE_MANIFEST="$measure_root/measure-manifest.json"; DEPLOY_MEASURE_LEDGER="$measure_root/measure-ledger.json"
+        DEPLOY_MEASURE_EVIDENCE="$support_evidence/normal-flow-$selected_workload.json"; DEPLOY_MEASURE_COMMIT="$measure_root/measure-commit.json"
+    else
+        measure_root="$state_dir"; render_root="$state_dir/measure-rendered"; private_root="$state_dir/measure-private"
+        DEPLOY_MEASURE_MANIFEST="$state_dir/measure-manifest.json"; DEPLOY_MEASURE_LEDGER="$state_dir/measure-ledger.json"
+        DEPLOY_MEASURE_EVIDENCE="$evidence_dir/measure.json"; DEPLOY_MEASURE_COMMIT="$state_dir/measure-commit.json"
+    fi
+    deploy_measure_prepare_directory "$render_root" || return 1
+    deploy_measure_prepare_directory "$private_root" || return 1
     DEPLOY_MEASURE_INVENTORY="$inventory"; DEPLOY_MEASURE_RENDER_ROOT="$render_root"; DEPLOY_MEASURE_PRIVATE_ROOT="$private_root"
     deploy_require_no_orphan_phase_files "$DEPLOY_MEASURE_LEDGER" "$DEPLOY_MEASURE_MANIFEST" "$DEPLOY_MEASURE_EVIDENCE" "$DEPLOY_MEASURE_COMMIT" || return 1
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; duration="${DEPLOY_TEST_MEASURE_DURATION_SECONDS:-$(jq -r '.deployment.workload.durationSeconds' "$inventory")}"; started_seconds="$(date +%s)"
     if [[ -e "$DEPLOY_MEASURE_LEDGER" || -L "$DEPLOY_MEASURE_LEDGER" ]]; then
         deploy_require_phase_files_match "$DEPLOY_MEASURE_LEDGER" "$DEPLOY_MEASURE_MANIFEST" "$DEPLOY_MEASURE_EVIDENCE" "$DEPLOY_MEASURE_COMMIT" \
-          deploy_measure_validate_candidate "$run_id" "$mode" "$hash" "$revision" "$selected_workload" "$inventory" || return 1
+          deploy_measure_validate_candidate "$run_id" "$mode" "$hash" "$revision" "$selected_workload" "$inventory" "$execution_run_id" || return 1
         DEPLOY_MEASURE_JSON="$(jq -c --arg now "$now" '.phaseStatus="running" | .updatedAt=$now | del(.completedAt)' "$DEPLOY_MEASURE_LEDGER")"
     else
-        DEPLOY_MEASURE_JSON="$(jq -cn --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg now "$now" --arg selected "$selected_workload" \
-          '{schemaVersion:1,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,executionMode:"canonical",
-            canonicalWorkloadConfigured:true,workload:$selected,phaseStatus:"running",startedAt:$now,updatedAt:$now,targets:[]}')"
+        DEPLOY_MEASURE_JSON="$(jq -cn --arg run "$run_id" --arg executionRun "$execution_run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg now "$now" --arg selected "$selected_workload" '
+          {schemaVersion:1,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,executionMode:"canonical",
+           canonicalWorkloadConfigured:true,workload:$selected,phaseStatus:"running",startedAt:$now,updatedAt:$now,targets:[]} |
+          if $executionRun == $run then . else .executionRunId=$executionRun end')"
     fi
+    [[ -z "$scope" ]] || DEPLOY_NORMAL_MEASURE_ACTIVE=true
     deploy_measure_publish
-    logic="$(jq -c '.logicHost' "$inventory")"; logic_root="$(jq -r '.runtimeRoot' <<< "$logic")"; logic_remote="$logic_root/.hvo-deploy/measure-$run_id"
+    logic="$(jq -c '.logicHost' "$inventory")"; logic_root="$(jq -r '.runtimeRoot' <<< "$logic")"; logic_remote="$logic_root/.hvo-deploy/measure-$execution_run_id"
     deploy_transport_remote_directories "$(jq -r '.sshHost' <<< "$logic")" "$logic_remote" || return 1
     central_headers="$logic_remote/owner.headers"; deploy_bootstrap_central_headers "$inventory" "$logic" "$render_root" "$central_headers" || return 1
     while IFS= read -r target; do
-        name="$(jq -r '.name' <<< "$target")"; target_root="$(jq -r '.runtimeRoot' <<< "$target")"; target_remote="$target_root/.hvo-deploy/measure-$run_id"
+        name="$(jq -r '.name' <<< "$target")"; target_root="$(jq -r '.runtimeRoot' <<< "$target")"; target_remote="$target_root/.hvo-deploy/measure-$execution_run_id"
         deploy_transport_remote_directories "$(jq -r '.sshHost' <<< "$target")" "$target_remote" || return 1
         response="$private_root/$name-antiforgery.json"; deploy_bootstrap_owner_session "$inventory" "$target" "$render_root" "$target_remote" "$response" || return 1
         cookies="$target_remote/owner.cookies"
@@ -429,7 +457,7 @@ deploy_run_measure() {
               { deploy_fail measure "$name" resumed-profile-state-mismatch; return 1; }
         fi
         deploy_measure_activate_profile "$target" "$target_remote" "$private_root" "$render_root" "$cookies" \
-          "$render_root/$name-$selected_workload-camera-module.json" "$selected_workload" "$run_id" || return 1
+          "$render_root/$name-$selected_workload-camera-module.json" "$selected_workload" "$execution_run_id" || return 1
         interval_value="$(jq -er '.rig.pipeline.captureInterval | select(test("^[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?$"))' "$render_root/$name-$selected_workload-camera-module.json")" || return 1
         IFS=: read -r interval_hours interval_minutes interval_seconds <<< "$interval_value"; interval_seconds="${interval_seconds%%.*}"
         capture_interval_seconds=$(( 10#$interval_hours * 3600 + 10#$interval_minutes * 60 + 10#$interval_seconds ))
@@ -437,12 +465,12 @@ deploy_run_measure() {
         warmup_requested="$(jq -r '.warmupOperations' <<< "$profile")"; measured_requested="$(jq -r '.measuredOperations' <<< "$profile")"
         deadline=$(( $(date +%s) + duration ))
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .failureCleanup.status' <<< "$DEPLOY_MEASURE_JSON")" == capture-may-be-running ]]; then
-            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" failure-pause Paused true || return 1
+            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$execution_run_id" failure-pause Paused true || return 1
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" '.targets |= map(if .target == $target then .failureCleanup.status="completed" else . end)' <<< "$DEPLOY_MEASURE_JSON")"
             deploy_measure_publish || return 1
         fi
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .status' <<< "$DEPLOY_MEASURE_JSON")" == measured ]]; then
-            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" completed-reconcile-pause Paused || return 1
+            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$execution_run_id" completed-reconcile-pause Paused || return 1
             measured_start="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .measuredStart' <<< "$DEPLOY_MEASURE_JSON")"
             measured="$(deploy_measure_wait_capture_set "$target" "$logic" "$target_remote" "$logic_remote" "$private_root" "$cookies" "$central_headers" "$device" measured "$measured_start" "$measured_requested" "$deadline")" || return 1
             [[ "$(jq -S -c . <<< "$measured")" == "$(jq -S -c --arg target "$name" '.targets[] | select(.target == $target) | .measured' <<< "$DEPLOY_MEASURE_JSON")" ]] ||
@@ -451,14 +479,14 @@ deploy_run_measure() {
         fi
         warmup_start="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .warmupStart // empty' <<< "$DEPLOY_MEASURE_JSON")"
         if [[ -z "$warmup_start" ]]; then
-            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" initial-pause Paused || return 1
+            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$execution_run_id" initial-pause Paused || return 1
             warmup_start="$(deploy_measure_read_sequence "$target" "$target_remote" "$private_root" "$cookies" warmup-start "$device")" ||
               { deploy_fail measure "$name" warmup-start-invalid; return 1; }
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --argjson start "$warmup_start" '.targets |= map(if .target == $target then .warmupStart=$start else . end)' <<< "$DEPLOY_MEASURE_JSON")"
             deploy_measure_publish || return 1
         fi
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .warmup == null' <<< "$DEPLOY_MEASURE_JSON")" == true ]]; then
-            deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$run_id" warmup "$warmup_start" "$warmup_requested" "$deadline" "$capture_interval_seconds" || return 1
+            deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$execution_run_id" warmup "$warmup_start" "$warmup_requested" "$deadline" "$capture_interval_seconds" || return 1
             warmup="$(deploy_measure_wait_capture_set "$target" "$logic" "$target_remote" "$logic_remote" "$private_root" "$cookies" "$central_headers" "$device" warmup "$warmup_start" "$warmup_requested" "$deadline")" || return 1
             warmup_completed="$(jq -r '.count' <<< "$warmup")"
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --argjson facts "$warmup" --argjson count "$warmup_completed" '.targets |= map(if .target == $target then .warmup=$facts | .warmupCompleted=$count else . end)' <<< "$DEPLOY_MEASURE_JSON")"
@@ -484,7 +512,7 @@ deploy_run_measure() {
             measured_start="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .measuredStart' <<< "$DEPLOY_MEASURE_JSON")"
         fi
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .measured == null' <<< "$DEPLOY_MEASURE_JSON")" == true ]]; then
-            deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$run_id" measured "$measured_start" "$measured_requested" "$deadline" "$capture_interval_seconds" || return 1
+            deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$execution_run_id" measured "$measured_start" "$measured_requested" "$deadline" "$capture_interval_seconds" || return 1
             measured="$(deploy_measure_wait_capture_set "$target" "$logic" "$target_remote" "$logic_remote" "$private_root" "$cookies" "$central_headers" "$device" measured "$measured_start" "$measured_requested" "$deadline")" || return 1
             measured_completed="$(jq -r '.count' <<< "$measured")"
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --argjson facts "$measured" --argjson count "$measured_completed" '.targets |= map(if .target == $target then .measured=$facts | .measuredCompleted=$count else . end)' <<< "$DEPLOY_MEASURE_JSON")"
