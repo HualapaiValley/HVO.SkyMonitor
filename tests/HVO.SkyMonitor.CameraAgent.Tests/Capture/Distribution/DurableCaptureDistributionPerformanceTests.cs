@@ -1096,6 +1096,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 ConfigFilePath = CanonicalProfilePath,
                 RawIngressRoot = "performance-only",
                 AgentId = "agent-95-performance",
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
                 Observatory = new ObservatoryLocation(35.5599378, -113.9119818, 520, "America/Phoenix")
             }),
             new EvidenceLogger<FileCameraAgentConfigurationLoader>(null));

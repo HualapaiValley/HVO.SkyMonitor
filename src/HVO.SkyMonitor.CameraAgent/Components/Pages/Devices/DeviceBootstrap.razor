@@ -11,8 +11,7 @@
     <div class="d-flex flex-column flex-lg-row align-items-lg-center gap-3 mb-4">
         <div>
             <h1 class="h3 mb-1">Device Bootstrap</h1>
-            <p class="text-muted mb-0">Generate a Device ID + verification code and import envelopes issued by
-                LogicHost.</p>
+            <p class="text-muted mb-0">Pair this CameraAgent with LogicHost without editing capture configuration.</p>
         </div>
         <div class="ms-lg-auto d-flex gap-2">
             <button type="button" class="btn btn-outline-secondary" disabled="@IsBusy" @onclick="ReloadAsync">
@@ -53,6 +52,45 @@
         </div>
     }
 
+    @if (!string.IsNullOrWhiteSpace(CopyStatus))
+    {
+        <div class="alert alert-secondary py-2" role="status">@CopyStatus</div>
+    }
+
+    @if (!IsCentralIntegrationDisabled)
+    {
+        <section class="pairing-guide mb-4" aria-labelledby="pairing-guide-title">
+            <div class="d-flex flex-column flex-lg-row gap-3 align-items-lg-end mb-3">
+                <div>
+                    <div class="eyebrow">Cross-host pairing</div>
+                    <h2 id="pairing-guide-title" class="h4 mb-1">One secure handoff, four checkpoints</h2>
+                    <p class="text-muted mb-0">You are signed in here with the <strong>CameraAgent local owner account</strong>. LogicHost uses a separate <strong>observatory owner account</strong>.</p>
+                </div>
+                <a class="btn btn-primary ms-lg-auto" href="@LogicHostRegistrationUri" target="_blank" rel="noopener noreferrer">
+                    Open LogicHost registration <i class="bi bi-box-arrow-up-right ms-1"></i>
+                </a>
+            </div>
+            <ol class="pairing-steps list-unstyled mb-0">
+                <li class="pairing-step complete">
+                    <span class="step-marker">1</span>
+                    <div><strong>Collect local identity</strong><span>Copy the Device ID and one-time verification code below.</span></div>
+                </li>
+                <li class="pairing-step @(Secrets is null ? "current" : "complete")" aria-current="@(Secrets is null ? "step" : null)">
+                    <span class="step-marker">2</span>
+                    <div><strong>Verify on LogicHost</strong><span>Sign in there as an observatory owner, select the observatory, and issue an envelope.</span></div>
+                </li>
+                <li class="pairing-step @(Secrets is null ? null : "complete")">
+                    <span class="step-marker">3</span>
+                    <div><strong>Return the envelope</strong><span>Paste the short-lived envelope on this page. It is never placed in a URL.</span></div>
+                </li>
+                <li class="pairing-step @(IsCaptureIdentityAligned && IsHeartbeatReady && IsUploadReady ? "complete" : null)">
+                    <span class="step-marker">4</span>
+                    <div><strong>Confirm readiness</strong><span>Identity, heartbeat, and artifact delivery are checked below.</span></div>
+                </li>
+            </ol>
+        </section>
+    }
+
     <div class="row g-4">
         <div class="col-12 col-lg-5">
             <div class="card h-100">
@@ -74,15 +112,19 @@
                     else
                     {
                         <dl class="row small mb-0">
-                            <dt class="col-sm-4">Device Id</dt>
-                            <dd class="col-sm-8 mono">@Identity.DeviceId</dd>
+                            <dt class="col-sm-4">Device ID</dt>
+                            <dd class="col-sm-8">
+                                <div class="copy-value"><span class="mono">@Identity.DeviceId</span><button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CopyDeviceIdAsync" aria-label="Copy Device ID"><i class="bi bi-clipboard"></i></button></div>
+                            </dd>
                             <dt class="col-sm-4">Verification Code</dt>
-                            <dd class="col-sm-8 mono">@Identity.VerificationCode</dd>
+                            <dd class="col-sm-8">
+                                <div class="copy-value"><span class="mono">@Identity.VerificationCode</span><button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CopyVerificationCodeAsync" aria-label="Copy verification code"><i class="bi bi-clipboard"></i></button></div>
+                            </dd>
                             <dt class="col-sm-4">Created</dt>
                             <dd class="col-sm-8">@FormatTimestamp(Identity.CreatedUtc)</dd>
                         </dl>
                         <p class="text-muted small mt-3 mb-0">
-                            Provide the Device Id and verification code to LogicHost to start registration.
+                            Copy both values into LogicHost. A pending registration for this same device can be verified again. Revoke an active registration before pairing the device again.
                         </p>
                     }
                 </div>
@@ -161,4 +203,33 @@
             </div>
         </div>
     </div>
+
+    @if (!IsCentralIntegrationDisabled)
+    {
+        <section class="card readiness-card mt-4" aria-labelledby="readiness-title">
+            <div class="card-header d-flex flex-column flex-md-row gap-2 align-items-md-center">
+                <div>
+                    <div class="eyebrow">Final checkpoint</div>
+                    <h2 id="readiness-title" class="h5 mb-0">Pairing readiness</h2>
+                </div>
+                <span class="badge ms-md-auto @(IsCaptureIdentityAligned && IsHeartbeatReady && IsUploadReady ? "bg-success-subtle text-success" : "bg-warning-subtle text-warning")">
+                    @(IsCaptureIdentityAligned && IsHeartbeatReady && IsUploadReady ? "Ready" : "Waiting")
+                </span>
+            </div>
+            <div class="card-body readiness-grid">
+                <div class="readiness-item">
+                    <i class="bi @(IsCaptureIdentityAligned ? "bi-check-circle-fill text-success" : "bi-exclamation-circle text-warning")"></i>
+                    <div><strong>Capture identity</strong><span>@(IsCaptureIdentityAligned ? $"Aligned as {CaptureAgentId}" : "Capture and provisioned device identities do not match.")</span></div>
+                </div>
+                <div class="readiness-item">
+                    <i class="bi @(IsHeartbeatReady ? "bi-check-circle-fill text-success" : "bi-clock text-warning")"></i>
+                    <div><strong>LogicHost heartbeat</strong><span>@(IsHeartbeatReady ? $"Acknowledged {FormatTimestamp(Heartbeat.LastAcknowledgedUtc!.Value)}" : Secrets is null ? "Complete bootstrap first." : "Waiting for the first acknowledgement.")</span></div>
+                </div>
+                <div class="readiness-item">
+                    <i class="bi @(IsUploadReady ? "bi-check-circle-fill text-success" : "bi-clock text-warning")"></i>
+                    <div><strong>Local upload queue</strong><span>@(!HostOptions.Value.CaptureDistribution.UploadEnabled ? "Upload is disabled in CameraAgent settings." : IsUploadReady ? $"Healthy; {Outbox.PendingCount} pending, {Outbox.RetryCount} retrying." : Secrets is null ? "Complete bootstrap first." : $"{Outbox.Availability}; {Outbox.RetryCount} retrying, {Outbox.QuarantineCount} quarantined.")</span></div>
+                </div>
+            </div>
+        </section>
+    }
 </div>

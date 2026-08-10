@@ -10,3 +10,98 @@
 .device-bootstrap .envelope-input {
     font-family: var(--bs-font-monospace);
 }
+
+.device-bootstrap .eyebrow {
+    color: var(--bs-info);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.device-bootstrap .pairing-guide {
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius-lg);
+    background: linear-gradient(135deg, rgba(var(--bs-info-rgb), 0.08), transparent 58%);
+    padding: 1.25rem;
+}
+
+.device-bootstrap .pairing-steps {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.device-bootstrap .pairing-step,
+.device-bootstrap .readiness-item {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.device-bootstrap .pairing-step {
+    border-top: 2px solid var(--bs-border-color);
+    padding-top: 0.8rem;
+}
+
+.device-bootstrap .pairing-step.current {
+    border-color: var(--bs-info);
+}
+
+.device-bootstrap .pairing-step.complete {
+    border-color: var(--bs-success);
+}
+
+.device-bootstrap .step-marker {
+    align-items: center;
+    background: var(--bs-secondary-bg);
+    border-radius: 50%;
+    display: inline-flex;
+    flex: 0 0 1.75rem;
+    height: 1.75rem;
+    justify-content: center;
+    font-weight: 700;
+}
+
+.device-bootstrap .pairing-step.complete .step-marker {
+    background: rgba(var(--bs-success-rgb), 0.18);
+    color: var(--bs-success);
+}
+
+.device-bootstrap .pairing-step span:not(.step-marker),
+.device-bootstrap .readiness-item span {
+    color: var(--bs-secondary-color);
+    display: block;
+    font-size: 0.875rem;
+    margin-top: 0.2rem;
+}
+
+.device-bootstrap .copy-value {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+    justify-content: space-between;
+}
+
+.device-bootstrap .copy-value .mono,
+.device-bootstrap .readiness-item div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.device-bootstrap .readiness-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.device-bootstrap .readiness-item i {
+    font-size: 1.15rem;
+    margin-top: 0.1rem;
+}
+
+@media (max-width: 991.98px) {
+    .device-bootstrap .pairing-steps,
+    .device-bootstrap .readiness-grid {
+        grid-template-columns: 1fr;
+    }
+}

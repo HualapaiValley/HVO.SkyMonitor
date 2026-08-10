@@ -42,6 +42,7 @@ public static class SkyMonitorClientServiceExtensions
         services.AddOptions<SkyMonitorClientOptions>()
             .Configure(configureOptions)
             .Validate(static options => options.TryResolveBaseUri(out _), "SkyMonitor:BaseUrl must be a valid absolute URI.")
+            .Validate(static options => options.TryResolvePublicBaseUri(out _), "SkyMonitor:PublicBaseUrl must be a valid absolute URI.")
             .ValidateOnStart();
 
         services.AddTransient<CentralIdentityDelegatingHandler>();
@@ -64,6 +65,7 @@ public static class SkyMonitorClientServiceExtensions
         services.AddOptions<SkyMonitorClientOptions>()
             .Bind(configuration.GetSection(SkyMonitorClientOptions.SectionName))
             .Validate(static options => options.TryResolveBaseUri(out _), "SkyMonitor:BaseUrl must be a valid absolute URI.")
+            .Validate(static options => options.TryResolvePublicBaseUri(out _), "SkyMonitor:PublicBaseUrl must be a valid absolute URI.")
             .ValidateOnStart();
     }
 }

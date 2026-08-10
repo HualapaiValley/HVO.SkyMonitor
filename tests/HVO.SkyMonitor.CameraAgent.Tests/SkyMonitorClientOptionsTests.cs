@@ -35,4 +35,19 @@ public class SkyMonitorClientOptionsTests
         Assert.IsFalse(success);
         Assert.IsNull(uri);
     }
+
+    [TestMethod]
+    public void PublicBaseUriIsRequiredAndDoesNotFallBackToTransportUrl()
+    {
+        var options = new SkyMonitorClientOptions
+        {
+            BaseUrl = new Uri("http://logichost:8080", UriKind.Absolute)
+        };
+
+        Assert.IsFalse(options.TryResolvePublicBaseUri(out var missing));
+        Assert.IsNull(missing);
+
+        options.PublicBaseUrl = new Uri("https://logic.example", UriKind.Absolute);
+        Assert.AreEqual("https://logic.example/", options.ResolvePublicBaseUri().ToString());
+    }
 }

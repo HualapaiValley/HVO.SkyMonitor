@@ -543,6 +543,7 @@ public sealed class RawCaptureIngressPerformanceTests
                 ConfigFilePath = CanonicalProfilePath,
                 RawIngressRoot = "performance-only",
                 AgentId = "agent-94-performance",
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
                 Observatory = new ObservatoryLocation(35.5599378, -113.9119818, 520, "America/Phoenix")
             }),
             NullLogger<FileCameraAgentConfigurationLoader>.Instance);

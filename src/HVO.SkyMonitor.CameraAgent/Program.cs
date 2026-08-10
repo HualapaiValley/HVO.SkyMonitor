@@ -7,6 +7,7 @@ using Asp.Versioning;
 using HVO.SkyMonitor.Common.Infrastructure.Diagnostics;
 using HVO.SkyMonitor.Common.Infrastructure.Filters;
 using HVO.SkyMonitor.Common.Identity;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
@@ -111,9 +112,10 @@ public class Program
             .ValidateOnStart();
         builder.Services.AddSingleton<IDeviceIdentityStore, DeviceIdentityStore>();
         builder.Services.AddSingleton<IDeviceSecretStore, DeviceSecretStore>();
+        builder.Services.AddSingleton<ICaptureAgentIdentityProvider, ProvisionedCaptureAgentIdentityProvider>();
         builder.Services.AddSingleton<IDeviceRigProfileSeeder, DeviceRigProfileSeeder>();
         builder.Services.AddHostedService<DeviceRigProfileSynchronizationService>();
-        builder.Services.AddScoped<DeviceBootstrapWorkflow>();
+        builder.Services.AddScoped<IDeviceBootstrapWorkflow, DeviceBootstrapWorkflow>();
 
         ApplyLocalIdentityPasswordFile(builder.Configuration);
         var localIdentitySection = builder.Configuration.GetSection("LocalIdentity");

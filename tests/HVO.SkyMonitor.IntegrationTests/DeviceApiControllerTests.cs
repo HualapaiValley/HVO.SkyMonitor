@@ -312,6 +312,19 @@ public sealed class DeviceApiControllerTests
             CancellationToken.None).ConfigureAwait(false);
         active.Id.Should().Be(registration.Id);
 
+        Func<Task> pairActiveAgain = () => registrationService.CreatePendingAsync(new DeviceRegistrationCreateRequest(
+            deviceId,
+            "NEWCODE",
+            observatory.Id,
+            "Lifecycle device",
+            ownerId,
+            "Integration test",
+            null,
+            "SelfAttested",
+            null));
+        await pairActiveAgain.Should().ThrowAsync<DeviceRegistrationException>()
+            .WithMessage("*already active*").ConfigureAwait(false);
+
         Func<Task> replay = () => bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
             deviceId,
             envelope.Envelope,

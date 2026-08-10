@@ -17,8 +17,10 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Configuration;
 public sealed class FileCameraAgentConfigurationLoader(
     IOptions<CameraAgentHostOptions> options,
     ILogger<FileCameraAgentConfigurationLoader> logger,
-    IDeploymentLocationStore? deploymentLocationStore = null) : ICameraAgentConfigurationLoader
+    IDeploymentLocationStore? deploymentLocationStore = null,
+    ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null) : ICameraAgentConfigurationLoader
 {
+    private const string SampleAgentId = "replace-with-registered-device-id";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -56,7 +58,34 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException("Camera agent configuration is invalid.");
         }
 
-        var agentId = string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId;
+        var configuredAgentId = string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId;
+        var agentId = configuredAgentId;
+        if (_options.CentralIntegration.Mode == CentralIntegrationMode.Enabled)
+        {
+            if (captureAgentIdentityProvider is null)
+            {
+                throw new InvalidOperationException(
+                    "Central integration requires a persistent CameraAgent device identity provider.");
+            }
+
+            var provisionedAgentId = await captureAgentIdentityProvider.GetAgentIdAsync(cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(provisionedAgentId))
+            {
+                throw new InvalidOperationException(
+                    "The persistent CameraAgent device identity does not contain a valid device identifier.");
+            }
+
+            if (string.IsNullOrWhiteSpace(configuredAgentId) ||
+                string.Equals(configuredAgentId, SampleAgentId, StringComparison.Ordinal))
+            {
+                agentId = provisionedAgentId;
+            }
+            else if (!string.Equals(configuredAgentId, provisionedAgentId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Configured AgentId does not match the persistent CameraAgent device identity.");
+            }
+        }
         var locationSeed = new DeploymentLocationSeed(
             _options.DeploymentLocation.LocationId,
             _options.DeploymentLocation.Source,

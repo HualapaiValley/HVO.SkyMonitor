@@ -148,6 +148,7 @@ public sealed class Asi676VirtualProfilePerformanceTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, fileName),
             AgentId = "asi676-performance-test",
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

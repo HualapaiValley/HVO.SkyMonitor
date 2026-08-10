@@ -60,19 +60,16 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         await _hostFixture.SeedActiveDeviceAsync("cameraagent-integration-test").ConfigureAwait(false);
         _storageRoot = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-integration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_storageRoot);
-        if (_hybridTransientMode)
-        {
-            var provisioningRoot = Path.Combine(_storageRoot, "provisioning");
-            Directory.CreateDirectory(provisioningRoot);
-            await File.WriteAllTextAsync(
-                Path.Combine(provisioningRoot, "device-identity.json"),
-                JsonSerializer.Serialize(new
-                {
-                    deviceId = "cameraagent-integration-test",
-                    verificationCode = "INTEG2TEST",
-                    createdUtc = DateTimeOffset.UtcNow
-                })).ConfigureAwait(false);
-        }
+        var provisioningRoot = Path.Combine(_storageRoot, "provisioning");
+        Directory.CreateDirectory(provisioningRoot);
+        await File.WriteAllTextAsync(
+            Path.Combine(provisioningRoot, "device-identity.json"),
+            JsonSerializer.Serialize(new
+            {
+                deviceId = "cameraagent-integration-test",
+                verificationCode = "INTEG2TEST",
+                createdUtc = DateTimeOffset.UtcNow
+            })).ConfigureAwait(false);
         _catalogFixture = CatalogFixtureInstallation.Create(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite"));
         _configurationPath = Path.Combine(_storageRoot, "cameraagent.integration.json");

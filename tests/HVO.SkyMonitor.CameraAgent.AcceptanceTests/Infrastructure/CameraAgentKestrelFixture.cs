@@ -118,6 +118,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["CameraAgent:RawIngressReserveBytes"] = "0",
             ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
             ["CameraAgent:EnvironmentalDelivery:Enabled"] = "false",
+            ["CameraAgent:CentralIntegration:Mode"] = "Disabled",
             ["CameraAgent:TransientDetection:Mode"] = "Off",
             ["DeviceProvisioning:StateDirectory"] = Path.Combine(root, "provisioning"),
             ["CentralIdentity:ServiceUrl"] = "http://127.0.0.1:1/",
