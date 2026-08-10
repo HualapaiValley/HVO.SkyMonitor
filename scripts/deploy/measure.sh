@@ -249,6 +249,16 @@ deploy_measure_activate_profile() {
     deploy_transport_forget_private_path "$activate_headers" || return 1
 }
 
+deploy_measure_pause_delay() {
+    local remaining="$1" interval="$2"
+    (( remaining >= 1 && interval >= 1 )) || return 1
+    if (( remaining == 1 )); then
+        (( interval / 2 >= 1 )) && printf '%s\n' "$(( interval / 2 ))" || printf '1\n'
+    else
+        printf '%s\n' "$(( (remaining - 1) * interval ))"
+    fi
+}
+
 deploy_measure_execute_exact_count() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" device="$6" run_id="$7" label="$8" start="$9" count="${10}" deadline="${11}" interval="${12}"
     local expected current name remaining delay previous pause_at
@@ -261,13 +271,18 @@ deploy_measure_execute_exact_count() {
     fi
     if [[ "${DEPLOY_TEST_POLL_SECONDS:-1}" != 0 ]]; then
         while (( current < expected && $(date +%s) <= deadline )); do
-            previous="$current"; remaining=$(( expected - current )); delay=$(( remaining * interval - interval / 2 )); (( delay >= 1 )) || delay=1
+            previous="$current"; remaining=$(( expected - current ))
+            # Leave a full cadence for a loaded agent to process the pause before another capture starts.
+            delay="$(deploy_measure_pause_delay "$remaining" "$interval")" || return 1
+            (( delay >= 1 )) || delay=1
             deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" resume "$run_id" "$label-resume" Running || return 1
             pause_at=$(( $(date +%s) + delay )); (( pause_at <= deadline )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
             deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" "$label-pause" Paused false "$pause_at" || return 1
             current="$(deploy_measure_read_sequence "$target" "$target_remote" "$private_root" "$cookies" "$label-boundary" "$device")" || return 1
             (( current <= expected )) || { deploy_fail measure "$name" "$label-boundary-overshot"; return 1; }
-            (( current > previous )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
+            (( $(date +%s) <= deadline )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
+            # A conservative final pause can precede the next start; retry until progress or deadline.
+            (( current >= previous )) || return 1
         done
         (( current == expected )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
         return 0

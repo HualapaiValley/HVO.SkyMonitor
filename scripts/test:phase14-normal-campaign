@@ -20,6 +20,26 @@ DEPLOY_MANIFEST="$state/manifest.json"; DEPLOY_EVIDENCE="$evidence/preflight.jso
 run_id=phase14-normal; mode=isolated; hash="$(printf 'a%.0s' {1..64})"; revision="$(printf 'b%.0s' {1..40})"; tree="$(printf 'c%.0s' {1..40})"
 inventory="$TEMP_DIR/inventory.json"
 jq -n --arg revision "$revision" '{source:{revision:$revision},cameraAgents:[{name:"east",runtimeRoot:"/runtime/east",sshHost:"east"}]}' > "$inventory"; chmod 600 "$inventory"
+[[ "$(deploy_measure_pause_delay 5 25)" == 100 && "$(deploy_measure_pause_delay 2 25)" == 25 && "$(deploy_measure_pause_delay 1 25)" == 12 ]] ||
+  fail 'Exact-count pause delay did not retain a full cadence margin.'
+(
+  sequence_file="$TEMP_DIR/exact-sequence"; pause_file="$TEMP_DIR/exact-pauses"; printf '0\n' > "$sequence_file"; printf '0\n' > "$pause_file"
+  date() { printf '100\n'; }
+  deploy_measure_read_sequence() { local sequence; sequence="$(< "$sequence_file")"; printf '%s\n' "$sequence"; }
+  deploy_measure_capture_control() {
+      local pauses
+      if [[ "$6" == pause ]]; then
+          pauses="$(< "$pause_file")"; pauses=$(( pauses + 1 )); printf '%s\n' "$pauses" > "$pause_file"
+          (( pauses < 2 )) || printf '1\n' > "$sequence_file"
+      fi
+  }
+  deploy_measure_execute_exact_count '{"name":"east"}' /remote "$TEMP_DIR" "$TEMP_DIR" /cookies device run measured 0 1 1000 25 ||
+    fail 'Exact-count control did not tolerate a conservative no-progress pause.'
+  printf '2\n' > "$sequence_file"; printf '0\n' > "$pause_file"
+  if deploy_measure_execute_exact_count '{"name":"east"}' /remote "$TEMP_DIR" "$TEMP_DIR" /cookies device run measured 0 1 1000 25 >/dev/null 2>&1; then
+      fail 'Exact-count control accepted an overshot final boundary.'
+  fi
+)
 
 make_measure() {
     local workload="$1" start="$2" width="$3" height="$4" format="$5" bytes="$6" identity="$7" destination="$8"
