@@ -713,6 +713,56 @@ campaign exercises the normative “LogicHost or network outage” row only. It 
 not satisfy the separate generic `network-failure` or `logichost-host-failure`
 scenario.
 
+## Import LogicHost Dependency Evidence
+
+Use the bounded component importer only for the fixed `logichost-dependencies`
+family and only from the clean exact inventory revision and tree:
+
+```bash
+dotnet build tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj \
+  --configuration Release -warnaserror
+./scripts/deploy:environment acceptance-component \
+  --inventory /absolute/path/inventory.yml \
+  --mode isolated \
+  --run-id observatory-preflight-01 \
+  --component logichost-dependencies
+```
+
+The command accepts no scenario, artifact, workload, alternate component, test
+name, or source-evidence option. It runs exactly the Manual
+`LogicHostDependencyOutageAcceptanceTests.Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound`
+test against SQL Server, Redis, MinIO, and SMTP Testcontainers. The test emits
+strict v2 evidence bound by `EvidenceSourceIdentity` to the requested current
+revision, clean tree, Release test/LogicHost/TestSupport assemblies, and explicit
+healthy-operation, outage-operation, and recovered-operation assertions. The
+evidence contains no payloads, file paths, service addresses, response bodies,
+exception text, or credentials.
+
+Before recording anything, the importer requires exactly one passing TRX for
+that fully qualified test and exactly four evidence entries. It sanitizes only
+`minio-failure`, `sql-failure`, `redis-failure`, and `smtp-failure` into the
+existing acceptance artifact schema. Source evidence, TRX, sanitized artifacts,
+and their lengths/SHA-256 values are committed as one owner-only, atomically
+renamed bundle beneath
+`state/acceptance-component-logichost-dependencies/bundle`. The bundle manifest
+is itself digest-bound by `bundle-commit.json`.
+
+Recording occurs only after the complete bundle validates, in fixed MinIO, SQL
+Server, Redis, SMTP order. An interrupted invocation can reuse a valid committed
+bundle without rerunning the test; unsafe, malformed, context-mismatched, or
+digest-tampered bundles fail closed and are never rebuilt in place. Source HEAD,
+tree, and cleanliness are checked before execution, before bundle publication,
+before recording, and after recording. The command records immutable artifacts
+using `not-run -> recording -> recorded`; it does not promote a scenario or
+classification to `passed` and does not claim `GATE-P14` or split-host dependency
+fault coverage.
+
+Run the importer contract without service containers with:
+
+```bash
+./scripts/test:phase14-component
+```
+
 ## Stop Or Delete
 
 Preserve all state:
