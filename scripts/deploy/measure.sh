@@ -282,7 +282,7 @@ deploy_measure_execute_exact_count() {
             (( current <= expected )) || { deploy_fail measure "$name" "$label-boundary-overshot"; return 1; }
             (( $(date +%s) <= deadline )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
             # A conservative final pause can precede the next start; retry until progress or deadline.
-            (( current >= previous )) || return 1
+            (( current >= previous )) || { deploy_fail measure "$name" "$label-boundary-regressed"; return 1; }
         done
         (( current == expected )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
         return 0

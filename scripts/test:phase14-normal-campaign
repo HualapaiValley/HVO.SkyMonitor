@@ -39,6 +39,14 @@ jq -n --arg revision "$revision" '{source:{revision:$revision},cameraAgents:[{na
   if deploy_measure_execute_exact_count '{"name":"east"}' /remote "$TEMP_DIR" "$TEMP_DIR" /cookies device run measured 0 1 1000 25 >/dev/null 2>&1; then
       fail 'Exact-count control accepted an overshot final boundary.'
   fi
+  printf '1\n' > "$sequence_file"
+  deploy_measure_capture_control() { [[ "$6" != pause ]] || printf '0\n' > "$sequence_file"; }
+  if deploy_measure_execute_exact_count '{"name":"east"}' /remote "$TEMP_DIR" "$TEMP_DIR" /cookies device run measured 1 1 1000 25 \
+    > /dev/null 2> "$TEMP_DIR/regressed.log"; then
+      fail 'Exact-count control accepted a regressed sequence.'
+  fi
+  [[ "$(< "$TEMP_DIR/regressed.log")" == *'reason=measured-boundary-regressed'* ]] ||
+    fail 'Regressed sequence did not report the standard failure reason.'
 )
 
 make_measure() {
