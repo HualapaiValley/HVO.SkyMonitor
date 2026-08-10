@@ -173,6 +173,7 @@ public sealed class VirtualSkyCameraModuleTests
         {
             ConfigFilePath = path,
             AgentId = "canonical-profile-test",
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
 
@@ -1691,6 +1692,7 @@ public sealed class VirtualSkyCameraModuleTests
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, fileName),
             AgentId = "canonical-profile-test",
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

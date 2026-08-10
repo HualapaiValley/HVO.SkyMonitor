@@ -61,6 +61,27 @@ public sealed class FileCameraAgentConfigurationLoaderIdentityTests
             exception.Message);
     }
 
+    [TestMethod]
+    public async Task CentralIntegrationRejectsMissingPersistentIdentityProvider()
+    {
+        var loader = new FileCameraAgentConfigurationLoader(
+            Options.Create(new CameraAgentHostOptions
+            {
+                ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
+                AgentId = "configured-agent",
+                Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC"),
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+            }),
+            NullLogger<FileCameraAgentConfigurationLoader>.Instance);
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(
+            "Central integration requires a persistent CameraAgent device identity provider.",
+            exception.Message);
+    }
+
     private static FileCameraAgentConfigurationLoader CreateLoader(
         string? agentId,
         CentralIntegrationMode mode,

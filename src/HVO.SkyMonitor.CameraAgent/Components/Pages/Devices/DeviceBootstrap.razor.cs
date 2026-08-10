@@ -10,7 +10,6 @@ using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Configuration;
-using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.Fleet.Contracts;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.Logging;
@@ -58,9 +57,6 @@ public sealed partial class DeviceBootstrap : ComponentBase
 
     [Inject]
     internal IOptions<SkyMonitorClientOptions> SkyMonitorOptions { get; set; } = default!;
-
-    [Inject]
-    internal IOptions<CentralIdentityOptions> CentralIdentityOptions { get; set; } = default!;
 
     [Inject]
     internal IJSRuntime JsRuntime { get; set; } = default!;
@@ -161,9 +157,7 @@ public sealed partial class DeviceBootstrap : ComponentBase
         }
     }
 
-    private Uri LogicHostRegistrationUri => new(
-        CentralIdentityOptions.Value.InteractiveClient?.PublicAuthority ?? SkyMonitorOptions.Value.ResolveBaseUri(),
-        "/devices/register");
+    private Uri LogicHostRegistrationUri => new(SkyMonitorOptions.Value.ResolvePublicBaseUri(), "/devices/register");
 
     private bool IsCaptureIdentityAligned =>
         Identity is not null && string.Equals(CaptureAgentId, Identity.DeviceId, StringComparison.Ordinal);

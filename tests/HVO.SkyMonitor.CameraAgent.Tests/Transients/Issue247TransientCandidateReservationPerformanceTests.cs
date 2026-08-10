@@ -1573,6 +1573,7 @@ public sealed partial class Issue247TransientCandidateReservationPerformanceTest
                 ConfigFilePath = Path.Combine(root, "src", "HVO.SkyMonitor.CameraAgent", ProfileName),
                 RawIngressRoot = "issue-247-test-only",
                 AgentId = "agent",
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
                 Observatory = new ObservatoryLocation(35.5599378, -113.9119818, 520, "America/Phoenix")
             }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

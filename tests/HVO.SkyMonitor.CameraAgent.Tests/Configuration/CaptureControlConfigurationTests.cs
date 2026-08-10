@@ -314,6 +314,7 @@ public sealed class CaptureControlConfigurationTests
                 {
                     ConfigFilePath = path,
                     AgentId = "configuration-test",
+                    CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
                     Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC")
                 }),
                 NullLogger<FileCameraAgentConfigurationLoader>.Instance,

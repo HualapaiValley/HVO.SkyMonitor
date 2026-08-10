@@ -203,6 +203,7 @@ deploy_up_stage_target() {
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CaptureDistribution__UploadEnabled false || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CentralIntegration__Mode Enabled || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" SkyMonitor__BaseUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$secrets_root" SkyMonitor__PublicBaseUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__Root /app/catalog || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__RequiredPackageKind "$(deploy_up_catalog_required_kind "$inventory")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" ReverseProxy__Enabled "$(jq -r '(.trustedProxyAddresses | length) > 0' <<< "$target")" || return 1

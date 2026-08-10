@@ -65,6 +65,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:?OTEL_EXPORTER_OTLP_PROTOCOL must be set}
       SkyMonitor__BaseUrl: ${CAMERA_AGENT_LOGIC_BASEURL:-http://logichost:8080}
+      SkyMonitor__PublicBaseUrl: ${CAMERA_AGENT_PUBLIC_LOGIC_BASEURL:-http://localhost:5174}
       CentralIdentity__ServiceUrl: ${CAMERA_AGENT_IDENTITY_URL:-http://logichost:8080}
       CentralIdentity__InteractiveClient__PublicAuthority: ${CAMERA_AGENT_IDENTITY_PUBLIC_URL:-http://localhost:5174}
       LocalIdentity__DatabasePath: ${CAMERA_AGENT_IDENTITY_DB_PATH:-/app/App_Data/identity/cameraagent_identity.db}

@@ -477,6 +477,7 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "virtual-asi676mc.full.json"),
             AgentId = "issue-208-asi676",
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.347, -113.878, 1000, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         var loaded = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

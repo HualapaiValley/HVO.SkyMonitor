@@ -3119,6 +3119,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
         {
             ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.standalone-w6.json"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
             Observatory = new ObservatoryLocation(35.5599378, -113.9119818, 520, "America/Phoenix"),
             DeploymentLocation = new DeploymentLocationOptions
             {
@@ -3690,7 +3691,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var loader = new FileCameraAgentConfigurationLoader(
             Options.Create(new CameraAgentHostOptions
             {
-                ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.standalone-w6.json")
+                ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.standalone-w6.json"),
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
             }),
             NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         var configured = await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);

@@ -34,6 +34,7 @@ if [[ "$*" == *"HVO.SkyMonitor.CameraAgent"* ]]; then
     export Catalog__RequiredPackageKind="Production"
     export CameraAgent__RawIngressRoot="$runtime_data_root/agent"
     export SkyMonitor__BaseUrl="${CAMERA_AGENT_PUBLIC_LOGIC_BASEURL:-http://localhost:${LOGIC_HOST_HTTP_PORT:-5174}}"
+    export SkyMonitor__PublicBaseUrl="$SkyMonitor__BaseUrl"
     export CentralIdentity__ServiceUrl="$SkyMonitor__BaseUrl"
 fi
 

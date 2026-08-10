@@ -8,7 +8,6 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Components.Pages.Devices;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Services;
-using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.Fleet.Contracts;
 using System.Net;
 using Microsoft.Extensions.DependencyInjection;
@@ -159,14 +158,11 @@ public sealed class DeviceBootstrapTests
         context.Services.AddSingleton<FleetHeartbeatState>();
         context.Services.AddSingleton<ArtifactOutboxState>();
         context.Services.AddSingleton<IOptions<SkyMonitorClientOptions>>(
-            Options.Create(new SkyMonitorClientOptions { BaseUrl = new Uri("https://logic.example/") }));
-        context.Services.AddSingleton<IOptions<CentralIdentityOptions>>(Options.Create(new CentralIdentityOptions
-        {
-            InteractiveClient = new InteractiveClientOptions
+            Options.Create(new SkyMonitorClientOptions
             {
-                PublicAuthority = new Uri("https://logic.example/")
-            }
-        }));
+                BaseUrl = new Uri("http://logichost:8080/"),
+                PublicBaseUrl = new Uri("https://logic.example/")
+            }));
         context.Services.AddSingleton(NullLogger<DeviceBootstrap>.Instance);
         return context;
     }

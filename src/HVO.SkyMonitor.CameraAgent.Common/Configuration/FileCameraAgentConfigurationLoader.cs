@@ -60,8 +60,14 @@ public sealed class FileCameraAgentConfigurationLoader(
 
         var configuredAgentId = string.IsNullOrWhiteSpace(_options.AgentId) ? document.AgentId : _options.AgentId;
         var agentId = configuredAgentId;
-        if (_options.CentralIntegration.Mode == CentralIntegrationMode.Enabled && captureAgentIdentityProvider is not null)
+        if (_options.CentralIntegration.Mode == CentralIntegrationMode.Enabled)
         {
+            if (captureAgentIdentityProvider is null)
+            {
+                throw new InvalidOperationException(
+                    "Central integration requires a persistent CameraAgent device identity provider.");
+            }
+
             var provisionedAgentId = await captureAgentIdentityProvider.GetAgentIdAsync(cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(provisionedAgentId))
             {
