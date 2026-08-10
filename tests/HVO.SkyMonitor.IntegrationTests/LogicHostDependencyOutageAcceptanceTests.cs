@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -29,6 +30,13 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
     [Timeout(480_000)]
     public async Task Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound()
     {
+        var evidenceRoot = Environment.GetEnvironmentVariable("HVO_ISSUE_107_EVIDENCE_ROOT");
+        var source = string.IsNullOrWhiteSpace(evidenceRoot)
+            ? null
+            : await EvidenceSourceIdentity.CaptureAsync(
+                FindRepositoryRoot(),
+                typeof(LogicHostDependencyOutageAcceptanceTests),
+                typeof(CacheDiagnosticsRequest)).ConfigureAwait(false);
         await using var fixture = await LogicHostUiKestrelFixture.CreateAsync().ConfigureAwait(false);
         using var client = new HttpClient { BaseAddress = fixture.BaseAddress };
         var token = await HttpHelpers.GetClientCredentialsTokenAsync(
@@ -49,11 +57,13 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
 
         foreach (var scenario in scenarios)
         {
+            var scenarioStarted = DateTimeOffset.UtcNow;
             var initial = await WaitForHealthStatusAsync(client, scenario.HealthCheck, "Healthy", TimeSpan.FromSeconds(30))
                 .ConfigureAwait(false);
+            initial.HttpStatus.Should().Be(HttpStatusCode.OK);
             using (var successfulOperation = await ExerciseDependencyAsync(client, scenario.Dependency).ConfigureAwait(false))
             {
-                successfulOperation.IsSuccessStatusCode.Should().BeTrue(scenario.Dependency.ToString());
+                await AssertSuccessfulOperationAsync(successfulOperation, scenario.Dependency).ConfigureAwait(false);
             }
 
             var container = AssemblyHooks.Fixture.GetDependencyContainer(scenario.Dependency);
@@ -65,7 +75,10 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                 if (scenario.Dependency == IntegrationDependency.SqlServer) SqlConnection.ClearAllPools();
                 var unavailable = await ObserveUnavailableHealthEndpointAsync(client, scenario.HealthCheck)
                     .ConfigureAwait(false);
+                (unavailable.HttpStatus is null or HttpStatusCode.ServiceUnavailable).Should().BeTrue();
+                unavailable.CheckStatus.Should().NotBe("Healthy");
                 HttpResponseMessage? failedOperation = null;
+                var outageOperationFailed = false;
                 try
                 {
                     failedOperation = await ExerciseDependencyAsync(client, scenario.Dependency).ConfigureAwait(false);
@@ -80,13 +93,16 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                     {
                         failedOperation.IsSuccessStatusCode.Should().BeFalse(scenario.Dependency.ToString());
                     }
+                    outageOperationFailed = true;
                 }
                 catch (OperationCanceledException)
                 {
                     // A paused dependency can hold its request until the bounded client timeout.
+                    outageOperationFailed = true;
                 }
                 catch (HttpRequestException)
                 {
+                    outageOperationFailed = true;
                 }
                 finally
                 {
@@ -111,13 +127,18 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                 recoveryElapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(60));
                 evidence.Add(new(
                     scenario.Dependency.ToString(),
-                    initial.OverallStatus,
+                    FormatTimestamp(scenarioStarted),
+                    FormatTimestamp(DateTimeOffset.UtcNow),
+                    initial.CheckStatus,
                     unavailable.CheckStatus,
                     recovered.CheckStatus,
+                    InitialOperationPassed: true,
+                    OutageOperationFailed: outageOperationFailed,
+                    RecoveryOperationPassed: true,
                     Math.Max(15_000, Stopwatch.GetElapsedTime(outageStarted).TotalMilliseconds - recoveryElapsed.TotalMilliseconds),
                     recoveryElapsed.TotalMilliseconds,
-                    (int)unavailable.HttpStatus,
-                    (int)recovered.HttpStatus));
+                    unavailable.HttpStatus is null ? null : (int)unavailable.HttpStatus.Value,
+                    (int)recovered.HttpStatus!.Value));
             }
             finally
             {
@@ -134,7 +155,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
             }
         }
 
-        await WriteEvidenceAsync(evidence).ConfigureAwait(false);
+        await WriteEvidenceAsync(evidenceRoot, source, evidence).ConfigureAwait(false);
     }
 
     private static Task DisruptAsync(DotNet.Testcontainers.Containers.IContainer container, IntegrationDependency dependency)
@@ -164,7 +185,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
         }
         catch (OperationCanceledException)
         {
-            return new(HttpStatusCode.ServiceUnavailable, "Unavailable", "Unavailable");
+            return new(null, "Unavailable", "Unavailable");
         }
     }
 
@@ -182,7 +203,11 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
             {
                 using var operation = await ExerciseDependencyAsync(client, scenario.Dependency).ConfigureAwait(false);
                 last = await ReadHealthAsync(client, scenario.HealthCheck).ConfigureAwait(false);
-                if (operation.IsSuccessStatusCode && last.CheckStatus == "Healthy") return last;
+                if (operation.IsSuccessStatusCode && last.CheckStatus == "Healthy")
+                {
+                    await AssertSuccessfulOperationAsync(operation, scenario.Dependency).ConfigureAwait(false);
+                    return last;
+                }
             }
             catch (OperationCanceledException)
             {
@@ -232,6 +257,41 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
         };
     }
 
+    private static async Task AssertSuccessfulOperationAsync(HttpResponseMessage response, IntegrationDependency dependency)
+    {
+        response.IsSuccessStatusCode.Should().BeTrue($"{dependency} returned HTTP {(int)response.StatusCode}");
+        switch (dependency)
+        {
+            case IntegrationDependency.SqlServer:
+                (await response.Content.ReadAsStringAsync().ConfigureAwait(false)).Should()
+                    .Contain("Published observatories").And.NotContain("We hit a snag");
+                break;
+            case IntegrationDependency.Redis:
+                var cache = await response.Content.ReadFromJsonAsync<CacheDiagnosticsResponse>().ConfigureAwait(false);
+                cache.Should().NotBeNull();
+                cache!.CacheHit.Should().BeTrue();
+                cache.Key.Should().Be("diagnostics:i107-outage");
+                cache.WrittenValue.Should().Be("bounded");
+                cache.RetrievedValue.Should().Be("bounded");
+                break;
+            case IntegrationDependency.Minio:
+                var storage = await response.Content.ReadFromJsonAsync<StorageDiagnosticsResponse>().ConfigureAwait(false);
+                storage.Should().NotBeNull();
+                storage!.ObjectName.Should().Be("diagnostics/i107-outage.txt");
+                storage.Content.Should().Be("bounded");
+                break;
+            case IntegrationDependency.Smtp:
+                var email = await response.Content.ReadFromJsonAsync<EmailDiagnosticsResponse>().ConfigureAwait(false);
+                email.Should().NotBeNull();
+                email!.Recipient.Should().Be(TestEmail.AdminRecipient);
+                email.Subject.Should().Be("I107 dependency recovery");
+                email.Sent.Should().BeTrue();
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(dependency));
+        }
+    }
+
     private static async Task<HealthSnapshot> WaitForHealthStatusAsync(
         HttpClient client,
         string checkName,
@@ -273,30 +333,63 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
             check.GetProperty("status").GetString() ?? "Unknown");
     }
 
-    private static async Task WriteEvidenceAsync(IReadOnlyList<DependencyOutageEvidence> dependencies)
+    private static async Task WriteEvidenceAsync(
+        string? root,
+        EvidenceSourceSnapshot? source,
+        IReadOnlyList<DependencyOutageEvidence> dependencies)
     {
-        var root = Environment.GetEnvironmentVariable("HVO_ISSUE_107_EVIDENCE_ROOT");
         if (string.IsNullOrWhiteSpace(root)) return;
+        source.Should().NotBeNull();
         Directory.CreateDirectory(root);
-        await File.WriteAllTextAsync(
+        await EvidenceSourceIdentity.WriteJsonAsync(
             Path.Combine(root, "dependency-outages.json"),
-            JsonSerializer.Serialize(new
+            new
             {
-                Schema = "hvo-logichost-ui-107-dependency-outages-v1",
-                Revision = Environment.GetEnvironmentVariable("HVO_ISSUE_107_REVISION") ?? "development",
-                Dependencies = dependencies
-            }, EvidenceJsonOptions)).ConfigureAwait(false);
+                Schema = "hvo-logichost-dependency-outages-v2",
+                Source = source,
+                Dependencies = dependencies.OrderBy(static dependency => dependency.Dependency switch
+                {
+                    nameof(IntegrationDependency.Minio) => 0,
+                    nameof(IntegrationDependency.SqlServer) => 1,
+                    nameof(IntegrationDependency.Redis) => 2,
+                    nameof(IntegrationDependency.Smtp) => 3,
+                    _ => throw new InvalidOperationException("Unexpected dependency evidence.")
+                })
+            },
+            EvidenceJsonOptions).ConfigureAwait(false);
+    }
+
+    private static string FormatTimestamp(DateTimeOffset value)
+        => value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+
+    private static string FindRepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(Environment.CurrentDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "global.json")) &&
+                (Directory.Exists(Path.Combine(directory.FullName, ".git")) ||
+                 File.Exists(Path.Combine(directory.FullName, ".git"))))
+            {
+                return directory.FullName;
+            }
+        }
+        throw new InvalidOperationException("Could not locate the repository root.");
     }
 
     private sealed record DependencyScenario(IntegrationDependency Dependency, string HealthCheck);
-    private sealed record HealthSnapshot(HttpStatusCode HttpStatus, string OverallStatus, string CheckStatus);
+    private sealed record HealthSnapshot(HttpStatusCode? HttpStatus, string OverallStatus, string CheckStatus);
     private sealed record DependencyOutageEvidence(
         string Dependency,
-        string InitialOverallStatus,
+        string StartedAt,
+        string CompletedAt,
+        string InitialHealthStatus,
         string OutageStatus,
         string RecoveryStatus,
+        bool InitialOperationPassed,
+        bool OutageOperationFailed,
+        bool RecoveryOperationPassed,
         double OutageMilliseconds,
         double RecoveryMilliseconds,
-        int OutageHealthHttpStatus,
+        int? OutageHealthHttpStatus,
         int RecoveryHealthHttpStatus);
 }

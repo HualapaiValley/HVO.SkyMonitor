@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$SCRIPT_DIR/deploy/common.sh"
+. "$SCRIPT_DIR/deploy/run-state.sh"
+. "$SCRIPT_DIR/deploy/acceptance.sh"
+. "$SCRIPT_DIR/deploy/acceptance-component.sh"
+
+TEMP_DIR="$(mktemp -d -t hvo-component-test.XXXXXX)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+trap 'printf "Phase 14 component contract failed near line %s.\n" "$LINENO" >&2' ERR
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+REPO_ROOT="$TEMP_DIR/repository"
+install -d -m 700 "$REPO_ROOT"
+git -C "$REPO_ROOT" init --quiet
+git -C "$REPO_ROOT" config user.email phase14-component@example.invalid
+git -C "$REPO_ROOT" config user.name "Phase 14 Component Contract"
+printf 'fixture\n' > "$REPO_ROOT/source.txt"
+git -C "$REPO_ROOT" add source.txt
+git -C "$REPO_ROOT" commit --quiet -m fixture
+revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+tree="$(git -C "$REPO_ROOT" rev-parse "${revision}^{tree}")"
+run_id=phase14-component; mode=isolated; hash="$(printf 'a%.0s' {1..64})"
+inventory="$TEMP_DIR/inventory.json"; printf '{}\n' > "$inventory"; chmod 600 "$inventory"
+CALL_LOG="$TEMP_DIR/calls.log"; EXECUTION_LOG="$TEMP_DIR/executions.log"
+FIXTURE_STATE=""; FIXTURE_EVIDENCE=""
+FAKE_EVIDENCE_MODE=valid; FAIL_TRX=false
+
+trx_fixture="$TEMP_DIR/trx-fixture"; install -d -m 700 "$trx_fixture"
+printf '%s\n' \
+  '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">' \
+  '  <Results><UnitTestResult testId="00000000-0000-0000-0000-000000000001" testName="Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound" outcome="Passed" /></Results>' \
+  '  <TestDefinitions><UnitTest id="00000000-0000-0000-0000-000000000001" name="Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound"><TestMethod className="HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests" name="Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound" /></UnitTest></TestDefinitions>' \
+  '  <ResultSummary outcome="Completed"><Counters total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="0" completed="0" /></ResultSummary>' \
+  '</TestRun>' > "$trx_fixture/component.trx"
+dotnet run --project "$SOURCE_REPO_ROOT/scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj" --configuration Release -- "$trx_fixture"
+cp "$trx_fixture/component.trx" "$trx_fixture/second.trx"
+if dotnet run --project "$SOURCE_REPO_ROOT/scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj" --configuration Release -- "$trx_fixture" >/dev/null 2>&1; then
+    fail 'The TRX verifier accepted multiple result files.'
+fi
+
+write_source_evidence() {
+    local destination="$1" dependency
+    jq -n --arg revision "$revision" '
+      {Schema:"hvo-logichost-dependency-outages-v2",Source:{RequestedRevision:$revision,Head:$revision,Branch:"fixture",
+       Dirty:false,DirtyDiffSha256:("A" * 64),OutputDirectoryName:$revision,
+       RunId:"run-20260810T010203004-123-0123456789abcdef0123456789abcdef",Trial:null,
+       Claimability:"clean-source-attributed-review-required",Assemblies:[
+         {Name:"HVO.SkyMonitor.IntegrationTests",Sha256:("B"*64),ModuleVersionId:"00000000-0000-0000-0000-000000000001",
+          Configuration:"Release",InformationalVersion:("1.0+"+$revision),SourceSha256:("C"*64),AssemblyWrittenUtc:"2026-08-10T01:00:00Z",LatestSourceWriteUtc:"2026-08-10T00:59:00Z"},
+         {Name:"HVO.SkyMonitor.LogicHost",Sha256:("D"*64),ModuleVersionId:"00000000-0000-0000-0000-000000000002",
+          Configuration:"Release",InformationalVersion:("1.0+"+$revision),SourceSha256:("E"*64),AssemblyWrittenUtc:"2026-08-10T01:00:00Z",LatestSourceWriteUtc:"2026-08-10T00:59:00Z"},
+         {Name:"HVO.SkyMonitor.TestSupport",Sha256:("F"*64),ModuleVersionId:"00000000-0000-0000-0000-000000000003",
+          Configuration:"Release",InformationalVersion:("1.0+"+$revision),SourceSha256:("A"*64),AssemblyWrittenUtc:"2026-08-10T01:00:00Z",LatestSourceWriteUtc:"2026-08-10T00:59:00Z"}]},
+       Dependencies:["Minio","SqlServer","Redis","Smtp"] | map({Dependency:.,StartedAt:"2026-08-10T01:00:00Z",
+         CompletedAt:"2026-08-10T01:01:00Z",InitialHealthStatus:"Healthy",OutageStatus:"Unhealthy",RecoveryStatus:"Healthy",
+         InitialOperationPassed:true,OutageOperationFailed:true,RecoveryOperationPassed:true,OutageMilliseconds:15000,
+          RecoveryMilliseconds:1000,OutageHealthHttpStatus:null,RecoveryHealthHttpStatus:200})}' > "$destination"
+    if [[ "$FAKE_EVIDENCE_MODE" == malformed ]]; then
+        jq '.Dependencies=[]' "$destination" > "$destination.tmp"; mv "$destination.tmp" "$destination"
+    elif [[ "$FAKE_EVIDENCE_MODE" == subset ]]; then
+        jq '.Dependencies=.Dependencies[:1]' "$destination" > "$destination.tmp"; mv "$destination.tmp" "$destination"
+    fi
+}
+
+deploy_acceptance_component_execute_test() {
+    local evidence_dir="$1" trx_dir="$2"
+    printf 'execute\n' >> "$EXECUTION_LOG"
+    install -d -m 700 "$evidence_dir/../build"; printf 'isolated-build\n' > "$evidence_dir/../build/output"
+    write_source_evidence "$evidence_dir/dependency-outages.json"
+    printf 'passing-trx\n' > "$trx_dir/component.trx"
+}
+
+deploy_acceptance_component_verify_trx() {
+    local directory="$1"
+    [[ "$FAIL_TRX" == false && -f "$directory/component.trx" && "$(< "$directory/component.trx")" == passing-trx ]]
+}
+
+deploy_run_acceptance() { return 0; }
+deploy_run_acceptance_record() {
+    local scenario_id="$8" artifact="$9" ledger scenario
+    ledger="$(jq -c . "$FIXTURE_STATE/acceptance-ledger.json")"
+    scenario="$(jq -c --arg id "$scenario_id" '.scenarios[] | select(.id == $id)' <<< "$ledger")"
+    deploy_acceptance_validate_artifact_json "$artifact" "$ledger" "$scenario"
+    printf '%s\n' "$scenario_id" >> "$CALL_LOG"
+}
+
+prepare_fixture() {
+    local label="$1" scenario
+    FIXTURE_STATE="$TEMP_DIR/$label/state"; FIXTURE_EVIDENCE="$TEMP_DIR/$label/evidence"
+    install -d -m 700 "$FIXTURE_STATE" "$FIXTURE_EVIDENCE"
+    DEPLOY_MANIFEST="$FIXTURE_STATE/manifest.json"; DEPLOY_EVIDENCE="$FIXTURE_EVIDENCE/preflight.json"
+    printf '{}\n' > "$DEPLOY_MANIFEST"; chmod 600 "$DEPLOY_MANIFEST"
+    jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg tree "$tree" \
+      --slurpfile campaign "$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json" '
+      {schemaVersion:2,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,sourceTree:$tree,
+       scenarios:[$campaign[0].scenarios[] | select(.id == "minio-failure" or .id == "sql-failure" or .id == "redis-failure" or .id == "smtp-failure") |
+         {id,classification,executionClass,evidenceSource,workloads,status:"not-run",artifact:{relativePath:.artifactPath,byteLength:null,sha256:null}}]}' \
+      > "$FIXTURE_STATE/acceptance-ledger.json"
+    chmod 600 "$FIXTURE_STATE/acceptance-ledger.json"
+    : > "$CALL_LOG"; : > "$EXECUTION_LOG"
+    FAKE_EVIDENCE_MODE=valid; FAIL_TRX=false
+}
+
+expect_rejected() {
+    local message="$1"; shift
+    if "$@" > "$TEMP_DIR/rejection.log" 2>&1; then fail "$message"; fi
+}
+
+run_component() {
+    deploy_run_acceptance_component "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" logichost-dependencies
+}
+
+prepare_fixture success
+run_component
+bundle="$FIXTURE_STATE/acceptance-component-logichost-dependencies/bundle"
+[[ "$(stat -c '%u:%a' "$bundle")" == "$(id -u):700" && "$(stat -c '%u:%h:%a' "$bundle/bundle.json")" == "$(id -u):1:600" ]] ||
+  fail 'The committed bundle is not private.'
+[[ "$(< "$CALL_LOG")" == $'minio-failure\nsql-failure\nredis-failure\nsmtp-failure' ]] || fail 'Recorder order is not fixed.'
+jq -e 'all(.scenarios[]; .status == "not-run")' "$FIXTURE_STATE/acceptance-ledger.json" >/dev/null || fail 'Importer promoted a scenario.'
+bundle_digest="$(sha256sum "$bundle/bundle.json")"
+: > "$CALL_LOG"
+run_component
+[[ "$(wc -l < "$EXECUTION_LOG")" == 1 && "$(sha256sum "$bundle/bundle.json")" == "$bundle_digest" ]] ||
+  fail 'Resume reran the test or rewrote the committed bundle.'
+[[ "$(wc -l < "$CALL_LOG")" == 4 ]] || fail 'Resume did not replay idempotent recording.'
+
+prepare_fixture malformed-evidence
+FAKE_EVIDENCE_MODE=malformed
+expect_rejected 'Malformed source evidence was imported.' run_component
+[[ ! -s "$CALL_LOG" && ! -e "$FIXTURE_STATE/acceptance-component-logichost-dependencies/bundle" ]] ||
+  fail 'Malformed evidence recorded a scenario or published a bundle.'
+
+prepare_fixture subset-evidence
+FAKE_EVIDENCE_MODE=subset
+expect_rejected 'A partial dependency evidence set was imported.' run_component
+[[ ! -s "$CALL_LOG" ]] || fail 'Partial source evidence reached the recorder.'
+
+prepare_fixture incomplete-bundle
+FAIL_TRX=true
+expect_rejected 'A failing TRX verification was imported.' run_component
+[[ ! -s "$CALL_LOG" && ! -e "$FIXTURE_STATE/acceptance-component-logichost-dependencies/bundle" ]] ||
+  fail 'A recorder call occurred before the bundle was complete.'
+
+prepare_fixture tampered-bundle
+run_component
+bundle="$FIXTURE_STATE/acceptance-component-logichost-dependencies/bundle"
+: > "$CALL_LOG"
+jq '.measurements[0].value=16000' "$bundle/artifacts/minio-failure.json" > "$TEMP_DIR/tampered-artifact"
+chmod 600 "$TEMP_DIR/tampered-artifact"; mv "$TEMP_DIR/tampered-artifact" "$bundle/artifacts/minio-failure.json"
+expect_rejected 'A digest-tampered bundle was reused.' run_component
+[[ ! -s "$CALL_LOG" ]] || fail 'A tampered bundle reached the recorder.'
+
+prepare_fixture malformed-bundle
+run_component
+bundle="$FIXTURE_STATE/acceptance-component-logichost-dependencies/bundle"
+: > "$CALL_LOG"
+printf '{}\n' > "$bundle/bundle-commit.json"; chmod 600 "$bundle/bundle-commit.json"
+expect_rejected 'A malformed committed bundle was reused.' run_component
+[[ ! -s "$CALL_LOG" ]] || fail 'A malformed bundle reached the recorder.'
+
+prepare_fixture unsafe-bundle
+run_component
+bundle="$FIXTURE_STATE/acceptance-component-logichost-dependencies/bundle"
+: > "$CALL_LOG"; chmod 755 "$bundle"
+expect_rejected 'An unsafe committed bundle was reused.' run_component
+[[ ! -s "$CALL_LOG" ]] || fail 'An unsafe bundle reached the recorder.'
+
+prepare_fixture revision-mismatch
+wrong_revision="$(printf 'f%.0s' {1..40})"
+expect_rejected 'A source revision mismatch was accepted.' \
+  deploy_run_acceptance_component "$inventory" "$run_id" "$mode" "$hash" "$wrong_revision" clean "$tree" logichost-dependencies
+[[ ! -s "$EXECUTION_LOG" && ! -s "$CALL_LOG" ]] || fail 'Revision mismatch executed or recorded evidence.'
+
+prepare_fixture unsupported
+expect_rejected 'An arbitrary component family was accepted.' \
+  deploy_run_acceptance_component "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" arbitrary-component
+[[ ! -s "$EXECUTION_LOG" && ! -s "$CALL_LOG" ]] || fail 'Unsupported component executed or recorded evidence.'
+
+if "$SOURCE_REPO_ROOT/scripts/deploy:environment" acceptance-component --inventory /missing --mode isolated \
+  --component arbitrary-component > "$TEMP_DIR/options.log" 2>&1; then
+    fail 'Command routing accepted an arbitrary component option.'
+fi
+
+printf 'Phase 14 component-evidence import contract passed.\n'
