@@ -12,6 +12,11 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
+internal interface IDeviceBootstrapWorkflow
+{
+    Task<DeviceSecrets> BootstrapAsync(string envelope, CancellationToken cancellationToken = default);
+}
+
 internal sealed class DeviceBootstrapWorkflow(
     IHttpClientFactory httpClientFactory,
     IDeviceIdentityStore identityStore,
@@ -19,7 +24,7 @@ internal sealed class DeviceBootstrapWorkflow(
     IDeviceRigProfileSeeder rigProfileSeeder,
     IDeploymentLocationStore deploymentLocationStore,
     IOptions<CameraAgentHostOptions> options,
-    ILogger<DeviceBootstrapWorkflow> logger)
+    ILogger<DeviceBootstrapWorkflow> logger) : IDeviceBootstrapWorkflow
 {
     public async Task<DeviceSecrets> BootstrapAsync(string envelope, CancellationToken cancellationToken = default)
     {

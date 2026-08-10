@@ -104,10 +104,12 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
         IQueryable<DeviceRegistration> registrationQuery = isRelational
             ? dbContext.DeviceRegistrations.FromSqlInterpolated($"""
                 SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK)
-                WHERE [DeviceId] = {request.DeviceId} AND [Status] = {nameof(DeviceRegistrationStatus.Pending)}
+                WHERE [DeviceId] = {request.DeviceId}
+                  AND [Status] IN ({nameof(DeviceRegistrationStatus.Pending)}, {nameof(DeviceRegistrationStatus.Active)})
                 """)
             : dbContext.DeviceRegistrations.Where(registration =>
-                registration.DeviceId == request.DeviceId && registration.Status == DeviceRegistrationStatus.Pending);
+                registration.DeviceId == request.DeviceId &&
+                (registration.Status == DeviceRegistrationStatus.Pending || registration.Status == DeviceRegistrationStatus.Active));
         var existingRegistrations = await registrationQuery
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -118,7 +120,15 @@ internal sealed class DeviceRegistrationService(ApplicationDbContext dbContext, 
                 DeviceRegistrationException.NotFoundReasonCode);
         }
 
-        var existing = existingRegistrations.FirstOrDefault();
+        if (existingRegistrations.Any(registration => registration.Status == DeviceRegistrationStatus.Active))
+        {
+            throw new DeviceRegistrationException(
+                "This device is already active. Revoke its existing registration before pairing it again.",
+                "registration-active");
+        }
+
+        var existing = existingRegistrations.FirstOrDefault(registration =>
+            registration.Status == DeviceRegistrationStatus.Pending);
 
         if (existing is not null)
         {

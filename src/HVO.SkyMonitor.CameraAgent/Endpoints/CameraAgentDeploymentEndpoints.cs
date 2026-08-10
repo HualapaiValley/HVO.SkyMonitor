@@ -86,7 +86,7 @@ internal static class CameraAgentDeploymentEndpoints
         IAntiforgery antiforgery,
         IDeviceIdentityStore identityStore,
         IDeviceSecretStore secretStore,
-        DeviceBootstrapWorkflow bootstrapWorkflow,
+        IDeviceBootstrapWorkflow bootstrapWorkflow,
         CancellationToken cancellationToken)
     {
         if (!await ValidateAntiforgeryAsync(context, antiforgery).ConfigureAwait(false)) return Results.BadRequest();

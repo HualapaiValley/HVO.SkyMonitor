@@ -132,6 +132,43 @@ public sealed class DeviceRegistrationServiceTests
     }
 
     [TestMethod]
+    public async Task CreatePendingAsync_WithActiveRegistration_RequiresRevocation()
+    {
+        await using var context = CreateContext();
+        var observatory = new Observatory
+        {
+            OwnerUserId = "owner-1",
+            Name = "Active Ridge",
+            LatitudeDegrees = 19.7,
+            LongitudeDegrees = -155.1,
+            ElevationMeters = 1200,
+            TimeZoneId = "Pacific/Honolulu",
+            IsActive = true
+        };
+        AddObservatory(context, observatory);
+        context.DeviceRegistrations.Add(new DeviceRegistration
+        {
+            DeviceId = "active-camera",
+            ObservatoryId = observatory.Id,
+            FriendlyName = "Active Camera",
+            OwnerUserId = "owner-1",
+            Status = DeviceRegistrationStatus.Active,
+            VerificationCodeHash = "ORIGINAL",
+            IssuedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-10),
+            ActivatedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-5)
+        });
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var service = new DeviceRegistrationService(context, TimeProvider.System);
+
+        Func<Task> act = () => service.CreatePendingAsync(new DeviceRegistrationCreateRequest(
+            "active-camera", "new-code", observatory.Id, "New Name", "owner-1", "Owner One", null, "Portal", null));
+
+        var exception = await act.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
+        exception.Which.Message.Should().Contain("Revoke");
+        (await context.DeviceRegistrations.CountAsync().ConfigureAwait(false)).Should().Be(1);
+    }
+
+    [TestMethod]
     public async Task CreatePendingAsync_WithForeignOwnerPendingRegistration_RejectsWithoutChanges()
     {
         await using var context = CreateContext();

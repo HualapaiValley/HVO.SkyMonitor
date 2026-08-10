@@ -23,6 +23,14 @@
         </div>
     </div>
 
+    <div class="handoff-banner mb-4" role="note">
+        <i class="bi bi-signpost-split"></i>
+        <div>
+            <strong>LogicHost observatory owner step</strong>
+            <span>This is a separate account from the CameraAgent local owner. Copy the Device ID and verification code from CameraAgent, complete all three steps here, then return the envelope to that CameraAgent.</span>
+        </div>
+    </div>
+
     @if (IsLoading)
     {
         <div class="text-muted">
@@ -62,6 +70,7 @@
                     <div class="card-body">
                         <h2 class="h5 mb-3">Step 1 · Verify the device</h2>
                         <p class="text-muted">Collect the pairing code from the CameraAgent UI. Verification keeps existing pending registrations for the same device up to date.</p>
+                        <p class="small border-start border-info border-3 ps-3">A pending registration for this device and observatory is safely refreshed. An active registration must be revoked before this Device ID can be paired again.</p>
 
                         @if (!string.IsNullOrEmpty(SubmitError))
                         {
@@ -235,7 +244,7 @@
                                         Dismiss
                                     </button>
                                 </div>
-                                <p class="text-muted small mt-3 mb-0">Provide the envelope to the operator immediately. Anyone with access can bootstrap the device until it expires.</p>
+                                <p class="text-muted small mt-3 mb-0">Return to the CameraAgent pairing page and paste this envelope before it expires. Anyone with access can bootstrap the device until then; do not place it in a URL or message log.</p>
                             </div>
                         }
                     </div>
