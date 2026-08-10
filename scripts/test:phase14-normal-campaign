@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$SCRIPT_DIR/deploy/common.sh"
+. "$SCRIPT_DIR/deploy/run-state.sh"
+. "$SCRIPT_DIR/deploy/measure.sh"
+. "$SCRIPT_DIR/deploy/acceptance.sh"
+. "$SCRIPT_DIR/deploy/acceptance-normal-flow.sh"
+
+TEMP_DIR="$(mktemp -d -t hvo-normal-campaign-test.XXXXXX)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+state="$TEMP_DIR/state"; evidence="$TEMP_DIR/evidence"; install -d -m 700 "$state" "$evidence" "$evidence/acceptance-support"
+# shellcheck disable=SC2034 # Consumed by sourced deployment helpers.
+DEPLOY_MANIFEST="$state/manifest.json"; DEPLOY_EVIDENCE="$evidence/preflight.json"
+run_id=phase14-normal; mode=isolated; hash="$(printf 'a%.0s' {1..64})"; revision="$(printf 'b%.0s' {1..40})"; tree="$(printf 'c%.0s' {1..40})"
+inventory="$TEMP_DIR/inventory.json"
+jq -n --arg revision "$revision" '{source:{revision:$revision},cameraAgents:[{name:"east",runtimeRoot:"/runtime/east",sshHost:"east"}]}' > "$inventory"; chmod 600 "$inventory"
+[[ "$(deploy_measure_pause_delay 5 25)" == 100 && "$(deploy_measure_pause_delay 2 25)" == 25 && "$(deploy_measure_pause_delay 1 25)" == 12 ]] ||
+  fail 'Exact-count pause delay did not retain a full cadence margin.'
+(
+  sequence_file="$TEMP_DIR/exact-sequence"; pause_file="$TEMP_DIR/exact-pauses"; printf '0\n' > "$sequence_file"; printf '0\n' > "$pause_file"
+  date() { printf '100\n'; }
+  deploy_measure_read_sequence() { local sequence; sequence="$(< "$sequence_file")"; printf '%s\n' "$sequence"; }
+  deploy_measure_capture_control() {
+      local pauses
+      if [[ "$6" == pause ]]; then
+          pauses="$(< "$pause_file")"; pauses=$(( pauses + 1 )); printf '%s\n' "$pauses" > "$pause_file"
+          (( pauses < 2 )) || printf '1\n' > "$sequence_file"
+      fi
+  }
+  deploy_measure_execute_exact_count '{"name":"east"}' /remote "$TEMP_DIR" "$TEMP_DIR" /cookies device run measured 0 1 1000 25 ||
+    fail 'Exact-count control did not tolerate a conservative no-progress pause.'
+  printf '2\n' > "$sequence_file"; printf '0\n' > "$pause_file"
+  if deploy_measure_execute_exact_count '{"name":"east"}' /remote "$TEMP_DIR" "$TEMP_DIR" /cookies device run measured 0 1 1000 25 >/dev/null 2>&1; then
+      fail 'Exact-count control accepted an overshot final boundary.'
+  fi
+  printf '1\n' > "$sequence_file"
+  deploy_measure_capture_control() { [[ "$6" != pause ]] || printf '0\n' > "$sequence_file"; }
+  if deploy_measure_execute_exact_count '{"name":"east"}' /remote "$TEMP_DIR" "$TEMP_DIR" /cookies device run measured 1 1 1000 25 \
+    > /dev/null 2> "$TEMP_DIR/regressed.log"; then
+      fail 'Exact-count control accepted a regressed sequence.'
+  fi
+  [[ "$(< "$TEMP_DIR/regressed.log")" == *'reason=measured-boundary-regressed'* ]] ||
+    fail 'Regressed sequence did not report the standard failure reason.'
+)
+
+make_measure() {
+    local workload="$1" start="$2" width="$3" height="$4" format="$5" bytes="$6" identity="$7" destination="$8"
+    jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg workload "$workload" \
+      --arg executionRun "$run_id-${workload,,}" --arg format "$format" --arg identity "$identity" --argjson start "$start" \
+      --argjson width "$width" --argjson height "$height" --argjson bytes "$bytes" \
+      --argjson canonical "$(jq -c --arg workload "$workload" '.profiles[$workload]' "$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json")" '
+      def capture($sequence; $kind):
+        {captureSequence:$sequence,
+         captureId:("00000000-0000-0000-" + $identity + "-" + ((100000000000 + ($kind * 1000) + $sequence) | tostring)),
+         rawArtifactId:("00000000-0000-0000-" + $identity + "-" + ((200000000000 + ($kind * 1000) + $sequence) | tostring)),
+         rawChecksumSha256:(if $workload == "W1" then "d" * 64 else "e" * 64 end),rawByteLength:$bytes};
+      def emptyQueues:
+        {raw:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
+         processing:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
+         outbox:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
+         lanes:{pendingCount:0,pendingBytes:0,leasedCount:0,quarantineCount:0,lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,leasedCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null}]}};
+      {schemaVersion:1,publicationGeneration:3,runId:$run,executionRunId:$executionRun,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,
+       executionMode:"canonical",canonicalWorkloadConfigured:true,workload:$workload,phaseStatus:"passed",
+       startedAt:"2026-08-10T00:00:00Z",updatedAt:"2026-08-10T00:10:00Z",completedAt:"2026-08-10T00:10:00Z",elapsedSeconds:600,
+       targets:[{target:"east",deviceId:"east-device",status:"measured",
+         profile:($canonical + {workload:$workload,configSha256:("4"*64)}),controlAttempts:[],warmupStart:$start,measuredStart:($start+5),
+         warmupCompleted:5,measuredCompleted:30,
+         warmup:{startSequence:$start,endSequence:($start+5),count:5,captures:[range($start+1;$start+6)|capture(.;1)],drained:true,correctness:true},
+         measured:{startSequence:($start+5),endSequence:($start+35),count:30,captures:[range($start+6;$start+36)|capture(.;2)],drained:true,correctness:true},
+         before:{telemetry:{sampleCount:0},timings:[],queues:emptyQueues},
+         after:{telemetry:{sampleCount:30,averageLoopMilliseconds:25},timings:[{segment:"capture",sampleCount:30,medianMilliseconds:20,p95Milliseconds:25,maximumMilliseconds:30}],queues:emptyQueues},
+         failureCleanup:{status:"not-required"}}]}' > "$destination"
+    chmod 600 "$destination"
+}
+
+install -d -m 700 "$state/acceptance-campaign-normal-flow/W1" "$state/acceptance-campaign-normal-flow/W2"
+chmod 700 "$state/acceptance-campaign-normal-flow"
+w1="$state/acceptance-campaign-normal-flow/W1/measure-ledger.json"; w2="$state/acceptance-campaign-normal-flow/W2/measure-ledger.json"
+make_measure W1 0 1936 1216 Mono16 4708352 0001 "$w1"
+make_measure W2 35 3096 2080 BayerRggb16 12879360 0002 "$w2"
+cp "$w1" "$evidence/acceptance-support/normal-flow-W1.json"; cp "$w2" "$evidence/acceptance-support/normal-flow-W2.json"
+
+expected_w1="$(jq -c '.profiles.W1' "$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json")"
+deploy_acceptance_normal_validate_measure "$w1" "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1"
+invalid="$TEMP_DIR/invalid.json"; jq '.targets[0].measuredCompleted=29' "$w1" > "$invalid"
+if deploy_acceptance_normal_validate_measure "$invalid" "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
+    fail 'Normal campaign accepted an incomplete W1 measurement.'
+fi
+if deploy_acceptance_normal_validate_measure <(jq '.targets[0].profile.sourceSha256=("9"*64)' "$w1") \
+  "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
+    fail 'Normal campaign accepted a substituted W1 profile identity.'
+fi
+if deploy_acceptance_normal_validate_measure <(jq '.targets[0].after.timings=[]' "$w1") \
+  "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
+    fail 'Normal campaign accepted missing runtime timings.'
+fi
+
+scenario="$(jq -c '.scenarios[] | select(.id == "normal-flow")' "$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json")"
+jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg tree "$tree" --argjson scenario "$scenario" \
+  --argjson profiles "$(jq -c '.profiles' "$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json")" '
+  {schemaVersion:2,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,sourceTree:$tree,
+   workloadIdentities:{profiles:$profiles},
+   scenarios:[{id:$scenario.id,classification:$scenario.classification,executionClass:$scenario.executionClass,evidenceSource:$scenario.evidenceSource,
+     workloads:$scenario.workloads,status:"not-run",artifact:{relativePath:$scenario.artifactPath,byteLength:null,sha256:null}}]}' > "$state/acceptance-ledger.json"
+chmod 600 "$state/acceptance-ledger.json"
+artifact="$TEMP_DIR/normal-flow.json"
+deploy_acceptance_normal_build_artifact "$(jq -c . "$state/acceptance-ledger.json")" "$scenario" "$w1" "$w2" \
+  "$evidence/acceptance-support/normal-flow-W1.json" "$evidence/acceptance-support/normal-flow-W2.json" > "$artifact"
+chmod 600 "$artifact"
+deploy_acceptance_validate_artifact_json "$artifact" "$(jq -c . "$state/acceptance-ledger.json")" "$scenario" || fail 'Normal artifact is invalid.'
+jq -e '.workloads == ["W1","W2"] and (.outputs|length) == 62 and
+  (.measurements[]|select(.id=="total-measured-raw-bytes")|.value) == 527631360 and all(.assertions[];.passed)' "$artifact" >/dev/null
+
+jq '.targets[0].warmupStart=36' "$w2" > "$invalid"
+if deploy_acceptance_normal_build_artifact "$(jq -c . "$state/acceptance-ledger.json")" "$scenario" "$w1" "$invalid" \
+  "$evidence/acceptance-support/normal-flow-W1.json" "$evidence/acceptance-support/normal-flow-W2.json" >/dev/null 2>&1; then
+    fail 'Normal campaign accepted a W1/W2 continuity gap.'
+fi
+
+CALL_LOG="$TEMP_DIR/calls.log"
+deploy_run_acceptance() { return 0; }
+deploy_acceptance_verify_source_snapshot() { return 0; }
+deploy_acceptance_normal_run_measure() { printf '%s\n' "$8" >> "$CALL_LOG"; }
+deploy_run_acceptance_record() { printf 'record\n' >> "$CALL_LOG"; cp "$9" "$TEMP_DIR/recorded.json"; }
+deploy_run_acceptance_normal "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" normal-flow
+[[ "$(printf '%s\n' W1 W2 record)" == "$(cat "$CALL_LOG")" ]] || fail 'Normal campaign execution order is invalid.'
+cmp -s "$artifact" "$TEMP_DIR/recorded.json" || fail 'Normal campaign did not record the deterministic artifact.'
+
+: > "$CALL_LOG"
+. "$SCRIPT_DIR/deploy/acceptance-normal-flow.sh"
+deploy_require_phase_files_match() { return 0; }
+deploy_run_measure() { printf 'resume-%s\n' "$7" >> "$CALL_LOG"; }
+deploy_acceptance_normal_require_measure() { printf 'validate-%s\n' "$7" >> "$CALL_LOG"; }
+jq '.phaseStatus="failed"' "$w1" > "$TEMP_DIR/partial.json"; mv "$TEMP_DIR/partial.json" "$w1"; chmod 600 "$w1"
+deploy_acceptance_normal_run_measure "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" W1 "$state" "$evidence"
+[[ "$(printf '%s\n' resume-W1 validate-W1)" == "$(cat "$CALL_LOG")" ]] || fail "Interrupted W1 did not resume and validate: $(tr '\n' ',' < "$CALL_LOG")"
+: > "$CALL_LOG"; jq '.phaseStatus="passed"' "$w1" > "$TEMP_DIR/passed.json"; mv "$TEMP_DIR/passed.json" "$w1"; chmod 600 "$w1"
+deploy_acceptance_normal_run_measure "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" W1 "$state" "$evidence"
+[[ "$(printf '%s\n' validate-W1)" == "$(cat "$CALL_LOG")" ]] || fail 'Committed W1 was unnecessarily rerun.'
+
+. "$SCRIPT_DIR/deploy/acceptance-normal-flow.sh"
+early_state="$TEMP_DIR/early-state"; early_evidence="$TEMP_DIR/early-evidence"; install -d -m 700 "$early_state" "$early_evidence"
+before_sha="$(sha256sum "$w1")"; before_sha="${before_sha%% *}"
+deploy_acceptance_verify_source_snapshot() { return 0; }
+deploy_run_measure() { return 1; }
+if deploy_acceptance_normal_run_measure "$inventory" "$run_id" "$mode" "$hash" "$revision" clean "$tree" W2 "$early_state" "$early_evidence"; then
+    fail 'Injected early W2 failure unexpectedly passed.'
+fi
+after_sha="$(sha256sum "$w1")"; after_sha="${after_sha%% *}"
+[[ "$before_sha" == "$after_sha" ]] || fail 'Early W2 failure mutated completed W1 evidence.'
+
+: > "$CALL_LOG"
+DEPLOY_MEASURE_INVENTORY="$inventory"; DEPLOY_MEASURE_RENDER_ROOT="$TEMP_DIR/render"; DEPLOY_MEASURE_PRIVATE_ROOT="$TEMP_DIR/private"
+install -d -m 700 "$DEPLOY_MEASURE_RENDER_ROOT" "$DEPLOY_MEASURE_PRIVATE_ROOT"
+DEPLOY_MEASURE_JSON='{"runId":"phase14-normal","executionRunId":"phase14-normal-w2","targets":[{"target":"east","failureCleanup":{"status":"not-required"}}]}'
+deploy_transport_remote_directories() { return 0; }
+deploy_bootstrap_owner_session() { return 0; }
+deploy_measure_capture_control() { printf 'cleanup-%s\n' "$7" >> "$CALL_LOG"; }
+deploy_measure_failure_pause_all
+[[ "$(cat "$CALL_LOG")" == cleanup-phase14-normal-w2 ]] || fail 'Failure cleanup used the unscoped measurement identity.'
+
+unsafe_state="$TEMP_DIR/unsafe-state"; install -d -m 700 "$unsafe_state" "$unsafe_state/target"
+ln -s "$unsafe_state/target" "$unsafe_state/acceptance-campaign-normal-flow"
+if deploy_acceptance_normal_validate_measure_directories "$unsafe_state" "$evidence" W1 >/dev/null 2>&1; then
+    fail 'Normal campaign accepted a symlinked evidence directory.'
+fi
+
+printf 'Phase 14 normal-flow campaign contract passed.\n'

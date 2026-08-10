@@ -38,6 +38,8 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/acceptance.sh"
 # shellcheck source=scripts/deploy/acceptance-campaign.sh
 . "$SCRIPT_DIR/deploy/acceptance-campaign.sh"
+# shellcheck source=scripts/deploy/acceptance-normal-flow.sh
+. "$SCRIPT_DIR/deploy/acceptance-normal-flow.sh"
 # shellcheck source=scripts/deploy/acceptance-component.sh
 . "$SCRIPT_DIR/deploy/acceptance-component.sh"
 
@@ -257,11 +259,22 @@ if [[ "$phase" == acceptance-record ]]; then
 fi
 
 if [[ "$phase" == acceptance-run ]]; then
-    trap 'deploy_acceptance_campaign_mark_failed $?' ERR
-    trap 'deploy_acceptance_campaign_mark_failed 130; exit 130' INT TERM
-    if ! deploy_run_acceptance_campaign "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$source_tree" "$scenario"; then
-        deploy_acceptance_campaign_mark_failed 1
-        exit 1
+    if [[ "$scenario" == normal-flow ]]; then
+        trap 'deploy_acceptance_normal_mark_failed $?' ERR
+        trap 'deploy_acceptance_normal_mark_failed 130; exit 130' INT TERM
+        if ! deploy_run_acceptance_normal "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$source_tree" "$scenario"; then
+            deploy_acceptance_normal_mark_failed 1
+            exit 1
+        fi
+    elif [[ "$scenario" == logichost-network-outage ]]; then
+        trap 'deploy_acceptance_campaign_mark_failed $?' ERR
+        trap 'deploy_acceptance_campaign_mark_failed 130; exit 130' INT TERM
+        if ! deploy_run_acceptance_campaign "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$source_tree" "$scenario"; then
+            deploy_acceptance_campaign_mark_failed 1
+            exit 1
+        fi
+    else
+        deploy_fail acceptance-run scenario unsupported
     fi
     trap - ERR INT TERM
     deploy_status acceptance-run "$scenario" passed converged

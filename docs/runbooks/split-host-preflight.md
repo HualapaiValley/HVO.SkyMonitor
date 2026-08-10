@@ -637,6 +637,7 @@ Run the focused contract test with:
 ```bash
 ./scripts/test:phase14-acceptance
 ./scripts/test:phase14-campaign
+./scripts/test:phase14-normal-campaign
 ```
 
 The campaign contract uses stateful fake transport boundaries to validate
@@ -681,6 +682,36 @@ sufficient, mark a scenario or classification passed, or claim `GATE-P14`.
 `normal-flow` requires the exact ordered W1/W2 binding.
 `logichost-network-outage` requires W2 and remains distinct from the separate
 `logichost-host-failure` and `network-failure` scenarios.
+
+Execute the normative normal-flow campaign after bootstrap, smoke, and
+`acceptance-init` have passed:
+
+```bash
+./scripts/deploy:environment acceptance-run \
+  --inventory /absolute/path/inventory.yml \
+  --mode isolated \
+  --run-id observatory-preflight-01 \
+  --scenario normal-flow
+```
+
+This fixed command requires one CameraAgent and executes canonical W1 followed
+by canonical W2. Each workload retains a separate committed measure quartet
+beneath `state/acceptance-campaign-normal-flow/<workload>` and a sanitized
+supporting mirror beneath `evidence/acceptance-support`. W2 must begin its
+warm-up at the exact W1 measured end sequence, so unrelated captures fail the
+campaign rather than being silently included. Completed workload evidence is
+validated and reused on resume; it is never rerun to make room for the next
+workload.
+
+The immutable `normal-flow` artifact binds both supporting evidence digests,
+the 60 measured Raw output lengths/checksums, exact warm-up/measured counts,
+the retained measured-window correctness result, drained queues, and capture
+runtime timings. The current retained measure contract does not independently
+expose central object/derivative details, or establish W1/W2
+capture-telemetry aggregates, content-retrieval hashes, trace/log/cardinality
+review, host resource peaks, or
+the complete window/cloud/transient/UI path, so this command does not claim
+those checks or full `GATE-P14`.
 
 Execute the scoped normative LogicHost outage only after the same run has passed
 canonical W2 measurement and `acceptance-init`:
