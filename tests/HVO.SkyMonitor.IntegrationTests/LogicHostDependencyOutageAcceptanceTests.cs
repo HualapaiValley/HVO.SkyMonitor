@@ -364,6 +364,17 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
 
     private static string FindRepositoryRoot()
     {
+        var configured = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REPOSITORY_ROOT");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var fullPath = Path.GetFullPath(configured);
+            if (File.Exists(Path.Combine(fullPath, "global.json")) &&
+                (Directory.Exists(Path.Combine(fullPath, ".git")) || File.Exists(Path.Combine(fullPath, ".git"))))
+            {
+                return fullPath;
+            }
+            throw new InvalidOperationException("The configured evidence repository root is invalid.");
+        }
         for (var directory = new DirectoryInfo(Environment.CurrentDirectory); directory is not null; directory = directory.Parent)
         {
             if (File.Exists(Path.Combine(directory.FullName, "global.json")) &&
