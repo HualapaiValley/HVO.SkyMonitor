@@ -391,6 +391,9 @@ validator. Every target is identity-correlated around mutation. The remote
 installer preserves the canonical `current`/`previous` behavior and verifies the
 active database. Resume accepts only an exact private ledger and re-verifies
 completed targets rather than trusting a prior installed flag.
+The catalog is built once on its documented canonical `linux/amd64` builder; this
+phase transfers and installs that same approved bundle on every target, including
+ARM64 CameraAgents. It never copies or executes the catalog builder remotely.
 The remote bundle directory is created explicitly before `scp`; a fresh prepared
 host is part of the contract test. Failed catalog runs atomically publish failed
 ledger, manifest, and evidence with all completed targets retained for resume.

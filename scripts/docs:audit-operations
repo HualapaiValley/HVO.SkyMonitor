@@ -15,6 +15,8 @@ readonly DOCS=(
     docs/runbooks/local-dev.md
     docs/runbooks/smoke-test.md
     docs/runbooks/split-host-preflight.md
+    docs/catalog/production-install.md
+    docs/catalog/hyg-v42.md
 )
 
 forbidden_command='^[[:space:]]*(\$[[:space:]]+)?(pg_dump|psql|kubectl|az[[:space:]]+keyvault|redis-cli[^#]*(FLUSHDB|FLUSHALL)|docker[^#]*[[:space:]]env([[:space:]]|$))'
@@ -35,6 +37,11 @@ fi
 
 if grep -En 'MINIO_ROOT_(USER|PASSWORD)' docs/runbooks/local-dev.md; then
     printf 'Local application troubleshooting must use the scoped MinIO account.\n' >&2
+    exit 1
+fi
+
+if grep -En 'build-hyg-v42|bundle-hyg-v42' docs/runbooks/split-host-preflight.md scripts/deploy/catalog.sh; then
+    printf 'Split-host catalog deployment must install the approved bundle, not rebuild it.\n' >&2
     exit 1
 fi
 
@@ -63,6 +70,13 @@ require_source_reference 'skymonitor-diagnostics' deploy/hvo-docker/minio/skymon
 require_source_reference 'skymonitor-artifacts' deploy/hvo-docker/minio/skymonitor-policy.json
 require_source_reference 'DeviceProvisioning__StateDirectory: /app/data/provisioning' docker-compose.apps.yml
 require_source_reference 'DeviceBootstrap__CentralIdentity__ClientCredentials__ClientSecret' docker-compose.apps.yml
+# shellcheck disable=SC2016 # Backticks are literal Markdown.
+require_source_reference 'canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on' docs/catalog/production-install.md
+require_source_reference 'ARM64 operators must install the' docs/catalog/production-install.md
+require_source_reference 'It never copies or executes the catalog builder remotely.' docs/runbooks/split-host-preflight.md
+# shellcheck disable=SC2016 # The deployment source must retain this literal shell expression.
+require_source_reference 'deploy_transport_copy "$bundle/."' scripts/deploy/catalog.sh
+require_source_reference 'deploy_transport_catalog_install' scripts/deploy/catalog.sh
 
 for document in "${DOCS[@]}"; do
     while IFS= read -r target; do
