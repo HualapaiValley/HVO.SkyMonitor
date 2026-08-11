@@ -39,7 +39,7 @@
             </form>
             @if (_commandMessage is not null)
             {
-                <div class="command-result @(_commandMessageIsError ? "error" : "success")" role="@(_commandMessageIsError ? "alert" : "status")" aria-live="polite"><strong>@_commandMessage</strong>
+                <div class="command-result @(_commandMessageIsError ? "error" : "success")" role="@(_commandMessageIsError ? "alert" : "status")" aria-live="@(_commandMessageIsError ? "assertive" : "polite")"><strong>@_commandMessage</strong>
                     @if (_commandResult is not null)
                     {
                         <dl><div><dt>Source</dt><dd>@_commandResult.Receipt.SourceId</dd></div><div><dt>Outcome</dt><dd>@OperationsPage.SplitWords(_commandResult.Receipt.Disposition.ToString())</dd></div><div><dt>Disposition reason</dt><dd>@_commandResult.Receipt.Reason</dd></div><div><dt>Observation</dt><dd>@(_commandResult.Receipt.ObservationId?.ToString() ?? "No observation committed")</dd></div><div><dt>Started</dt><dd>@_commandResult.Receipt.StartedUtc.ToString("u")</dd></div><div><dt>Completed</dt><dd>@_commandResult.Receipt.CompletedUtc.ToString("u")</dd></div></dl>

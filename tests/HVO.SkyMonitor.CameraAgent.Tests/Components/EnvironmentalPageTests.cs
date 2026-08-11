@@ -381,6 +381,17 @@ public sealed class EnvironmentalPageTests
             StringAssert.Contains(cut.Markup, "observation was committed", StringComparison.OrdinalIgnoreCase);
             StringAssert.Contains(cut.Markup, "receipt is durable", StringComparison.OrdinalIgnoreCase);
         });
+
+        cut.Find("#environment-reason").Change("   ");
+        cut.Find("form").Submit();
+        cut.WaitForAssertion(() =>
+        {
+            var result = cut.Find(".command-result");
+            StringAssert.Contains(result.TextContent, "1 to 128 characters", StringComparison.Ordinal);
+            Assert.IsFalse(result.TextContent.Contains("receipt is durable", StringComparison.OrdinalIgnoreCase));
+            Assert.AreEqual("alert", result.GetAttribute("role"));
+            Assert.AreEqual("assertive", result.GetAttribute("aria-live"));
+        });
     }
 
     private static TestEnvironmentalUiService CreateOnDemandService() => new()

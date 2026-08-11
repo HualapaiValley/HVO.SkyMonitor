@@ -84,6 +84,7 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
         if (_selectedSourceId is null || reason.Length is < 1 or > 128 || reason.Any(char.IsControl))
         {
             _commandResult = null;
+            _commandRefreshWarning = null;
             _commandMessageIsError = true;
             _commandMessage = "Select an on-demand source and enter a reason of 1 to 128 characters.";
             return;
