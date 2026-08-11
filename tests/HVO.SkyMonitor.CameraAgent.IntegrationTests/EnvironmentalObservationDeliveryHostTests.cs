@@ -17,21 +17,38 @@ public sealed class EnvironmentalObservationDeliveryHostTests
         var observationId = Guid.NewGuid();
         using var scope = AssemblyHooks.Fixture.CreateCameraAgentScope();
         var publisher = scope.ServiceProvider.GetRequiredService<IEnvironmentalObservationPublisher>();
+        using var deliveryTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var delivered = AssemblyHooks.Fixture.WaitForEnvironmentalDeliveryAsync(
+            observationId, deliveryTimeout.Token);
+        var deliveryObserved = false;
 
-        var published = await publisher.PublishAsync(CreateFact(observationId)).ConfigureAwait(false);
-
-        Assert.IsNotNull(published.Observation);
-        Assert.AreEqual(AssemblyHooks.Fixture.ObservatoryId, published.Observation.Target.SiteId);
-        Assert.AreEqual(AssemblyHooks.Fixture.DevicePublicId, published.Observation.Target.AgentId);
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
-        while (DateTimeOffset.UtcNow < deadline &&
-            await AssemblyHooks.Fixture.CountEnvironmentalObservationsAsync(observationId).ConfigureAwait(false) == 0)
+        try
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
+            var published = await publisher.PublishAsync(CreateFact(observationId)).ConfigureAwait(false);
+
+            Assert.IsNotNull(published.Observation);
+            Assert.AreEqual(AssemblyHooks.Fixture.ObservatoryId, published.Observation.Target.SiteId);
+            Assert.AreEqual(AssemblyHooks.Fixture.DevicePublicId, published.Observation.Target.AgentId);
+            await delivered.ConfigureAwait(false);
+            deliveryObserved = true;
+            Assert.AreEqual(
+                1,
+                await AssemblyHooks.Fixture.CountEnvironmentalObservationsAsync(observationId).ConfigureAwait(false));
         }
-        Assert.AreEqual(
-            1,
-            await AssemblyHooks.Fixture.CountEnvironmentalObservationsAsync(observationId).ConfigureAwait(false));
+        finally
+        {
+            if (!deliveryObserved)
+            {
+                await deliveryTimeout.CancelAsync().ConfigureAwait(false);
+                try
+                {
+                    await delivered.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (deliveryTimeout.IsCancellationRequested)
+                {
+                }
+            }
+        }
     }
 
     private static EnvironmentalObservationFactV1 CreateFact(Guid observationId)
