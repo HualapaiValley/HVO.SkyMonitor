@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -15,6 +16,8 @@ internal interface ICameraAgentEnvironmentalUiService
     ValueTask<OperatorUiResult<EnvironmentalUiStatus>> GetStatusAsync(CancellationToken cancellationToken);
     ValueTask<OperatorUiResult<EnvironmentalUiHistoryPage>> GetHistoryAsync(
         EnvironmentalObservationKind? kind, int pageSize, string? cursor, CancellationToken cancellationToken);
+    ValueTask<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>> AcquireAsync(
+        string sourceId, string idempotencyKey, string reason, CancellationToken cancellationToken);
 }
 
 internal sealed record EnvironmentalUiStatus(
@@ -30,6 +33,7 @@ internal sealed record EnvironmentalUiSource(
     string Id,
     EnvironmentalObservationKind Kind,
     bool Required,
+    bool SupportsOnDemand,
     string Freshness,
     EnvironmentalAcquisitionDisposition? LastDisposition,
     string? LastReason,
@@ -59,6 +63,7 @@ internal sealed class CameraAgentEnvironmentalUiService(
     IAuthorizationService authorizationService,
     IEnvironmentalAcquisitionStateStore stateStore,
     ILocalEnvironmentalObservationStore observationStore,
+    EnvironmentalOnDemandAcquisitionService commandService,
     IOptions<CameraAgentHostOptions> options,
     OutboxOperationsTokenService tokens,
     TimeProvider timeProvider,
@@ -89,6 +94,7 @@ internal sealed class CameraAgentEnvironmentalUiService(
                     source.Id,
                     source.Kind,
                     source.Required,
+                    source.Triggers.Contains(EnvironmentalAcquisitionTrigger.OnDemand),
                     state?.LastStaleAfterUtc is { } staleAfter ? staleAfter > now ? "Fresh" : "Stale" : "Never observed",
                     state?.LastDisposition,
                     state?.LastReason,
@@ -115,6 +121,76 @@ internal sealed class CameraAgentEnvironmentalUiService(
             logger.LogWarning(exception, "CameraAgent environmental UI status read failed.");
             return OperatorUiResult<EnvironmentalUiStatus>.Failure(
                 OperatorUiResultKind.Unavailable, "Environmental status is unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
+    public async ValueTask<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>> AcquireAsync(
+        string sourceId,
+        string idempotencyKey,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var actor = await GetAuthorizedActorAsync().ConfigureAwait(false);
+        if (actor is null)
+        {
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Unauthorized, "You are not authorized for this operation.");
+        }
+        var configured = options.Value.EnvironmentalAcquisition;
+        if (!configured.Enabled)
+        {
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Invalid, "Environmental acquisition is disabled.");
+        }
+        var source = configured.Sources.SingleOrDefault(candidate =>
+            string.Equals(candidate.Id, sourceId, StringComparison.Ordinal));
+        if (source is null)
+        {
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.NotFound, "The environmental source is not configured.");
+        }
+        if (!source.Triggers.Contains(EnvironmentalAcquisitionTrigger.OnDemand))
+        {
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Invalid, "This source does not support on-demand acquisition.");
+        }
+        if (!ValidText(idempotencyKey, 128) || !ValidText(reason, 128))
+        {
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Invalid, "The on-demand request is invalid.");
+        }
+        try
+        {
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Success(
+                await commandService.AcquireAsync(
+                    sourceId, idempotencyKey, actor, reason, cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (EnvironmentalOnDemandCommandConflictException)
+        {
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Conflict, "The idempotency key is already bound to another request.");
+        }
+        catch (EnvironmentalOnDemandCommandBusyException)
+        {
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Unavailable, "The environmental source is already acquiring an observation.");
+        }
+        catch (EnvironmentalOnDemandCommandCapacityException)
+        {
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Unavailable, "Environmental command capacity is unavailable.");
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent environmental on-demand command failed.");
+            return OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Unavailable, "The environmental request could not be completed.");
         }
     }
 
@@ -173,4 +249,21 @@ internal sealed class CameraAgentEnvironmentalUiService(
         return (await authorizationService.AuthorizeAsync(
             state.User, resource: null, CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false)).Succeeded;
     }
+
+    private async ValueTask<string?> GetAuthorizedActorAsync()
+    {
+        var state = await authenticationStateProvider.GetAuthenticationStateAsync().ConfigureAwait(false);
+        if (!(await authorizationService.AuthorizeAsync(
+                state.User, CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false)).Succeeded)
+        {
+            return null;
+        }
+        return state.User.FindFirstValue(ClaimTypes.NameIdentifier) is { Length: > 0 and <= 128 } actor
+            ? actor
+            : null;
+    }
+
+    private static bool ValidText(string value, int maximumLength)
+        => !string.IsNullOrWhiteSpace(value) && value.Length <= maximumLength &&
+            value == value.Trim() && !value.Any(char.IsControl);
 }

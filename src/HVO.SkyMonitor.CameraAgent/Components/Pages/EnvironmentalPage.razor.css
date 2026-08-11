@@ -6,6 +6,8 @@ h1, h2, p { margin: 0; }
 .summary span, .freshness { border: 1px solid rgba(255,255,255,.16); border-radius: 999px; padding: .35rem .7rem; }
 .source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: .8rem; }
 article, .state, .attempts { background: rgba(10,20,29,.76); border: 1px solid rgba(255,255,255,.11); border-radius: .8rem; padding: 1rem; }
+.command-card { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(280px,100%),1fr)); gap: 1.25rem; background: linear-gradient(135deg,rgba(15,39,48,.95),rgba(10,20,29,.8)); border: 1px solid rgba(121,217,202,.24); border-radius: .8rem; padding: 1rem; }
+.command-card > *, .command-card form { min-width: 0; }.command-card form { display: grid; gap: .45rem; }.command-actions { margin-top: .4rem; }.command-result { grid-column: 1 / -1; border-left: 3px solid #7de2b8; padding: .8rem 1rem; background: rgba(0,0,0,.18); }.command-result.error { border-left-color: #ffbf7a; }.command-result dl { margin-top: .6rem; }.command-result dd { min-width: 0; overflow-wrap: anywhere; text-align: right; }.refresh-warning { color: #ffcf91; margin-top: .6rem; }
 dl { display: grid; gap: .45rem; margin: .8rem 0 0; }
 dl div, .attempts div { display: flex; justify-content: space-between; gap: .75rem; }
 dt, small, .reason, .empty { color: rgba(236,245,247,.67); }
@@ -15,4 +17,4 @@ dt, small, .reason, .empty { color: rgba(236,245,247,.67); }
 .history small { grid-column: 1 / -1; }
 .attempts { display: grid; gap: .55rem; margin-top: .8rem; overflow-x: auto; }
 .attempts div { min-width: 620px; }
-@media (max-width: 680px) { header { align-items: flex-start; flex-direction: column; }.attempts div { min-width: 520px; } }
+@media (max-width: 680px) { header { align-items: flex-start; flex-direction: column; }.command-card { grid-template-columns: 1fr; }.attempts div { min-width: 520px; } }
