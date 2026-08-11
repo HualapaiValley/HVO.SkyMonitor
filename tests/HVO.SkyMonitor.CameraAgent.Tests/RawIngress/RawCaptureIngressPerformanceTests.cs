@@ -710,6 +710,8 @@ public sealed class RawCaptureIngressPerformanceTests
     {
         private int _injected;
 
+        public bool IsEnabled(RawIngressFaultPoint point) => point == target;
+
         public void Inject(RawIngressFaultPoint point)
         {
             if (point == target && Interlocked.Exchange(ref _injected, 1) == 0)
