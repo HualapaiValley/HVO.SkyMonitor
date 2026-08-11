@@ -39,7 +39,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     {
         ["CentralTransient:Mode"] = "Hybrid",
         ["CentralTransient:SourceRole"] = "Raw"
-    });
+    }, useEphemeralMinioStorage: true);
     private WebApplicationFactory<Program>? _agentFactory;
     private WebApplicationFactory<Program>? _agentBaseFactory;
     private Uri? _centralIdentityBaseUri;

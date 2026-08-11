@@ -43,6 +43,7 @@ public sealed class IntegrationTestFixture : IDisposable
     private const string SqlServerPassword = "SkyMonitor_test_password1!";
     private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
     private readonly bool _suppressRecurringWorkers;
+    private readonly bool _useEphemeralMinioStorage;
     private readonly int _minioHostPort = GetFreeTcpPort();
     private MsSqlContainer? _sqlServerContainer;
     private RedisContainer? _redisContainer;
@@ -93,10 +94,12 @@ public sealed class IntegrationTestFixture : IDisposable
 
     public IntegrationTestFixture(
         IReadOnlyDictionary<string, string?>? configurationOverrides = null,
-        bool suppressRecurringWorkers = false)
+        bool suppressRecurringWorkers = false,
+        bool useEphemeralMinioStorage = false)
     {
         _configurationOverrides = configurationOverrides ?? new Dictionary<string, string?>();
         _suppressRecurringWorkers = suppressRecurringWorkers;
+        _useEphemeralMinioStorage = useEphemeralMinioStorage;
     }
 
     public async Task SeedActiveDeviceAsync(string deviceId)
@@ -232,7 +235,7 @@ public sealed class IntegrationTestFixture : IDisposable
         RedisConnectionString = $"{_redisHost}:{redisPort}";
 
         // Start MinIO container
-        _minioContainer = new ContainerBuilder()
+        var minioBuilder = new ContainerBuilder()
             .WithImage(MinioImage)
             .WithPortBinding(_minioHostPort, 9000)
             .WithEnvironment(new Dictionary<string, string>
@@ -241,8 +244,12 @@ public sealed class IntegrationTestFixture : IDisposable
                 ["MINIO_ROOT_PASSWORD"] = MinioSecretKey
             })
                 .WithCommand("server", "/data", "--console-address", ":9001")
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(9000))
-            .Build();
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(9000));
+        if (_useEphemeralMinioStorage)
+        {
+            minioBuilder = minioBuilder.WithTmpfsMount("/data");
+        }
+        _minioContainer = minioBuilder.Build();
 
         await _minioContainer.StartAsync().ConfigureAwait(false);
         _minioHost = _minioContainer.Hostname;
