@@ -37,6 +37,10 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
         try
         {
             var status = await EnvironmentalService.GetStatusAsync(_lifetime.Token);
+            if (_disposed)
+            {
+                return;
+            }
             if (status.Kind == OperatorUiResultKind.Unauthorized)
             {
                 _status = null;
@@ -158,6 +162,10 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
     private async Task RefreshAfterCommandAsync()
     {
         var status = await EnvironmentalService.GetStatusAsync(_lifetime.Token);
+        if (_disposed)
+        {
+            return;
+        }
         if (status.Kind == OperatorUiResultKind.Unauthorized)
         {
             _status = null;
@@ -174,6 +182,10 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
             _commandRefreshWarning = "The receipt is durable, but environmental status could not be refreshed.";
         }
         var history = await EnvironmentalService.GetHistoryAsync(null, 50, null, _lifetime.Token);
+        if (_disposed)
+        {
+            return;
+        }
         if (history.Kind == OperatorUiResultKind.Unauthorized)
         {
             _status = null;
@@ -197,6 +209,10 @@ public sealed partial class EnvironmentalPage : ComponentBase, IAsyncDisposable
     private async Task LoadHistoryAsync(string? cursor)
     {
         var result = await EnvironmentalService.GetHistoryAsync(null, 50, cursor, _lifetime.Token);
+        if (_disposed)
+        {
+            return;
+        }
         if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
             _status = null;

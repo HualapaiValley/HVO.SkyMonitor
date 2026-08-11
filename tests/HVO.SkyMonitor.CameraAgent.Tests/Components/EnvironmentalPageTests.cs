@@ -181,6 +181,146 @@ public sealed class EnvironmentalPageTests
     }
 
     [TestMethod]
+    public void ConflictAndCapacityOutcomesRemainExplicitAndDoNotFabricateReceipts()
+    {
+        using var context = new BunitContext();
+        var calls = 0;
+        var service = CreateOnDemandService();
+        service.Acquire = (_, _, _, _) => ValueTask.FromResult(++calls == 1
+            ? OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Conflict, "The idempotency key is already bound to another request.")
+            : OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Failure(
+                OperatorUiResultKind.Unavailable, "Environmental command capacity is unavailable."));
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForElement("#environment-reason").Change("outcome verification");
+
+        cut.Find("form").Submit();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "already bound", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("Disposition reason", StringComparison.Ordinal));
+        });
+        cut.Find("form").Submit();
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "capacity is unavailable", StringComparison.Ordinal);
+            Assert.AreNotEqual(service.IdempotencyKeys[0], service.IdempotencyKeys[1]);
+            Assert.IsFalse(cut.Markup.Contains("No observation committed", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public async Task DisposalWhileCommandIsPendingAllowsSettlementWithoutRenderingOrDuplicateExecution()
+    {
+        using var context = new BunitContext();
+        var completion = new TaskCompletionSource<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = CreateOnDemandService();
+        service.Acquire = (_, _, _, _) => new ValueTask<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>>(
+            completion.Task);
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        var cut = context.Render<EnvironmentalPage>();
+        await cut.WaitForElement("#environment-reason").ChangeAsync(
+            new ChangeEventArgs { Value = "dispose verification" }).ConfigureAwait(false);
+        var submit = cut.Find("form").SubmitAsync();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.AcquireCalls));
+
+        await cut.Instance.DisposeAsync().ConfigureAwait(false);
+        completion.SetResult(OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Success(new(
+            Receipt(EnvironmentalAcquisitionDisposition.Produced, Guid.NewGuid()), Replayed: false)));
+        await submit.ConfigureAwait(false);
+
+        Assert.AreEqual(1, service.AcquireCalls);
+        Assert.IsFalse(service.LastCancellationToken.CanBeCanceled);
+    }
+
+    [TestMethod]
+    public async Task DisposalWhileStatusRefreshIsPendingDoesNotReadHistoryOrDisposedLifetime()
+    {
+        using var context = new BunitContext();
+        var refreshCompletion = new TaskCompletionSource<OperatorUiResult<EnvironmentalUiStatus>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = CreateOnDemandService();
+        service.StatusRead = _ => service.StatusCalls == 1
+            ? ValueTask.FromResult(service.Status)
+            : new ValueTask<OperatorUiResult<EnvironmentalUiStatus>>(refreshCompletion.Task);
+        service.Acquire = (_, _, _, _) => ValueTask.FromResult(
+            OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>.Success(new(
+                Receipt(EnvironmentalAcquisitionDisposition.Produced, Guid.NewGuid()), Replayed: false)));
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        var cut = context.Render<EnvironmentalPage>();
+        await cut.WaitForElement("#environment-reason").ChangeAsync(
+            new ChangeEventArgs { Value = "refresh disposal" }).ConfigureAwait(false);
+        var submit = cut.Find("form").SubmitAsync();
+        cut.WaitForAssertion(() => Assert.AreEqual(2, service.StatusCalls));
+
+        await cut.Instance.DisposeAsync().ConfigureAwait(false);
+        refreshCompletion.SetResult(service.Status);
+        await submit.ConfigureAwait(false);
+
+        Assert.AreEqual(1, service.HistoryCalls);
+        Assert.AreEqual(1, service.AcquireCalls);
+    }
+
+    [TestMethod]
+    public async Task DisposalWhileInitialStatusIsPendingDoesNotContinueIntoHistory()
+    {
+        using var context = new BunitContext();
+        var completion = new TaskCompletionSource<OperatorUiResult<EnvironmentalUiStatus>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var returned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = CreateOnDemandService();
+        service.StatusRead = async _ =>
+        {
+            var result = await completion.Task.ConfigureAwait(false);
+            returned.TrySetResult();
+            return result;
+        };
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.StatusCalls));
+
+        await cut.Instance.DisposeAsync().ConfigureAwait(false);
+        completion.SetResult(service.Status);
+        await returned.Task.ConfigureAwait(false);
+        await Task.Yield();
+
+        Assert.AreEqual(0, service.HistoryCalls);
+    }
+
+    [TestMethod]
+    public async Task DisposalWhileInitialHistoryIsPendingDoesNotApplyHistoryResult()
+    {
+        using var context = new BunitContext();
+        var completion = new TaskCompletionSource<OperatorUiResult<EnvironmentalUiHistoryPage>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var returned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = CreateOnDemandService();
+        service.HistoryRead = async (_, _) =>
+        {
+            var result = await completion.Task.ConfigureAwait(false);
+            returned.TrySetResult();
+            return result;
+        };
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(service);
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.HistoryCalls));
+
+        await cut.Instance.DisposeAsync().ConfigureAwait(false);
+        completion.SetResult(OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new(
+            [new EnvironmentalUiObservation(
+                Guid.NewGuid(), "late-source", EnvironmentalObservationKind.RainState,
+                EnvironmentalObservationUnit.Boolean, null, true, EnvironmentalObservationQuality.Good,
+                null, Epoch, Epoch)], null)));
+        await returned.Task.ConfigureAwait(false);
+        await Task.Yield();
+
+        Assert.IsFalse(cut.Markup.Contains("late-source", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void InvalidReasonDoesNotInvokeMutationService()
     {
         using var context = new BunitContext();
@@ -308,6 +448,10 @@ public sealed class EnvironmentalPageTests
                 OperatorUiResultKind.Unavailable, "Environmental status is unavailable.");
         public Func<string?, OperatorUiResult<EnvironmentalUiHistoryPage>> History { get; set; } =
             _ => OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new([], null));
+        public Func<CancellationToken, ValueTask<OperatorUiResult<EnvironmentalUiStatus>>>? StatusRead { get; set; }
+        public Func<string?, CancellationToken,
+            ValueTask<OperatorUiResult<EnvironmentalUiHistoryPage>>>? HistoryRead
+        { get; set; }
         public Func<string, string, string, CancellationToken,
             ValueTask<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>>> Acquire
         { get; set; } =
@@ -320,13 +464,14 @@ public sealed class EnvironmentalPageTests
         public string? LastReason { get; private set; }
         public int AcquireCalls { get; private set; }
         public int StatusCalls { get; private set; }
+        public int HistoryCalls { get; private set; }
         public List<string> IdempotencyKeys { get; } = [];
         public CancellationToken LastCancellationToken { get; private set; }
 
         public ValueTask<OperatorUiResult<EnvironmentalUiStatus>> GetStatusAsync(CancellationToken cancellationToken)
         {
             StatusCalls++;
-            return ValueTask.FromResult(Status);
+            return StatusRead?.Invoke(cancellationToken) ?? ValueTask.FromResult(Status);
         }
 
         public ValueTask<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>> AcquireAsync(
@@ -350,8 +495,9 @@ public sealed class EnvironmentalPageTests
             string? cursor,
             CancellationToken cancellationToken)
         {
+            HistoryCalls++;
             LastCursor = cursor;
-            return ValueTask.FromResult(History(cursor));
+            return HistoryRead?.Invoke(cursor, cancellationToken) ?? ValueTask.FromResult(History(cursor));
         }
     }
 }
