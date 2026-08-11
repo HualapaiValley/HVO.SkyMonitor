@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -99,6 +100,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["CameraAgent:TransientDetection:Mode"] = "Off",
                 ["LocalIdentity:AdminEmail"] = OwnerEmail,
                 ["LocalIdentity:AdminPassword"] = OwnerPassword,
+                ["LocalIdentity:AdminPasswordFile"] = string.Empty,
+                ["LocalIdentity:AllowMissingAdminPassword"] = "false",
                 ["LocalIdentity:DatabasePath"] = Path.Combine(root, "identity", "cameraagent_identity.db"),
                 ["LocalIdentity:CookieName"] = "CameraAgent.Standalone194.Auth",
                 ["DeviceProvisioning:StateDirectory"] = Path.Combine(root, "provisioning"),
@@ -169,6 +172,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 ["CameraAgent:DeploymentLocation:EffectiveFromUtc"] = "2025-01-01T00:00:00Z",
                 ["LocalIdentity:AdminEmail"] = OwnerEmail,
                 ["LocalIdentity:AdminPassword"] = OwnerPassword,
+                ["LocalIdentity:AdminPasswordFile"] = string.Empty,
+                ["LocalIdentity:AllowMissingAdminPassword"] = "false",
                 ["LocalIdentity:DatabasePath"] = Path.Combine(root, "identity", "cameraagent_identity.db"),
                 ["LocalIdentity:CookieName"] = "CameraAgent.Standalone171.Auth",
                 ["DeviceProvisioning:StateDirectory"] = Path.Combine(root, "provisioning"),
@@ -296,48 +301,90 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "HttpClient takes ownership of its handler and the caller owns the returned client.")]
     internal async Task<HttpClient> CreateOwnerClientAsync()
     {
+        var cookies = new CookieContainer();
         var client = new HttpClient(new HttpClientHandler
         {
             AllowAutoRedirect = true,
-            CookieContainer = new CookieContainer(),
+            CookieContainer = cookies,
             CheckCertificateRevocationList = true
         })
         {
             BaseAddress = BaseAddress
         };
-        using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
-        login.EnsureSuccessStatusCode();
-        var html = await login.Content.ReadAsStringAsync().ConfigureAwait(false);
-        var match = Regex.Match(
-            html,
-            "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
-            RegexOptions.CultureInvariant);
-        if (!match.Success)
+        var succeeded = false;
+        try
         {
-            client.Dispose();
-            throw new InvalidOperationException("The local login antiforgery token was not rendered.");
-        }
+            using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
+            login.EnsureSuccessStatusCode();
+            var html = await login.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var match = Regex.Match(
+                html,
+                "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
+                RegexOptions.CultureInvariant);
+            if (!match.Success)
+            {
+                throw new InvalidOperationException("The local login antiforgery token was not rendered.");
+            }
 
-        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
-        {
-            ["__RequestVerificationToken"] = WebUtility.HtmlDecode(match.Groups[1].Value),
-            ["Input.Email"] = OwnerEmail,
-            ["Input.Password"] = OwnerPassword,
-            ["Input.RememberMe"] = "false",
-            ["_handler"] = "login"
-        });
-        using var response = await client.PostAsync(new Uri("/Account/Login", UriKind.Relative), form).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        using var ownerCheck = await client.GetAsync(
-            new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
-        if (ownerCheck.StatusCode != HttpStatusCode.OK)
-        {
-            var body = await ownerCheck.Content.ReadAsStringAsync().ConfigureAwait(false);
-            client.Dispose();
-            throw new InvalidOperationException(
-                $"The local owner session check returned {(int)ownerCheck.StatusCode}: {body}");
+            using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] = WebUtility.HtmlDecode(match.Groups[1].Value),
+                ["Input.Email"] = OwnerEmail,
+                ["Input.Password"] = OwnerPassword,
+                ["Input.RememberMe"] = "false",
+                ["_handler"] = "login"
+            });
+            using var response = await client.PostAsync(new Uri("/Account/Login", UriKind.Relative), form).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var configuredCookieName = _overrides["LocalIdentity:CookieName"]
+                ?? throw new InvalidOperationException("The standalone fixture has no configured owner cookie name.");
+            if (cookies.GetCookies(BaseAddress)[configuredCookieName] is null)
+            {
+                var storedCookieNames = string.Join(",", cookies.GetCookies(BaseAddress).Cast<Cookie>().Select(static cookie => cookie.Name));
+                throw new InvalidOperationException(
+                    $"The local login did not issue configured cookie {configuredCookieName}; cookies={storedCookieNames}.");
+            }
+            using var ownerCheck = await client.GetAsync(
+                new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
+            if (ownerCheck.StatusCode != HttpStatusCode.OK)
+            {
+                var body = await ownerCheck.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var ownerState = await ReadOwnerStateAsync().ConfigureAwait(false);
+                var storedCookieNames = string.Join(",", cookies.GetCookies(BaseAddress).Cast<Cookie>().Select(static cookie => cookie.Name));
+                var loginDestination = response.RequestMessage?.RequestUri?.AbsolutePath ?? "unknown";
+                throw new InvalidOperationException(
+                    $"The local owner session check returned {(int)ownerCheck.StatusCode} after login destination {loginDestination}, cookies={storedCookieNames}, and {ownerState}: {body}");
+            }
+            succeeded = true;
+            return client;
         }
-        return client;
+        finally
+        {
+            if (!succeeded)
+            {
+                client.Dispose();
+            }
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort diagnostics must not replace the original HTTP authorization failure.")]
+    private async Task<string> ReadOwnerStateAsync()
+    {
+        try
+        {
+            using var scope = Services.CreateScope();
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var owner = await users.FindByEmailAsync(OwnerEmail).ConfigureAwait(false);
+            if (owner is null)
+            {
+                return "no persisted configured owner";
+            }
+            return $"persisted owner={owner.IsSiteOwner}, normalized-email-match={string.Equals(owner.NormalizedEmail, users.NormalizeEmail(OwnerEmail), StringComparison.Ordinal)}";
+        }
+        catch (Exception exception)
+        {
+            return $"owner-state-diagnostic-unavailable={exception.GetType().Name}";
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -512,6 +559,12 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment(timeProvider is null ? "Development" : "StandaloneProductionSmoke");
+            // Program captures local Identity settings before WebApplicationFactory app overrides are applied.
+            foreach (var setting in overrides.Where(static setting =>
+                         setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal)))
+            {
+                builder.UseSetting(setting.Key, setting.Value);
+            }
             builder.ConfigureAppConfiguration((_, configuration) =>
             {
                 if (environmentalSettingsPath is not null)
