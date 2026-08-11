@@ -20,16 +20,35 @@ public sealed class EnvironmentalObservationDeliveryHostTests
         using var deliveryTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var delivered = AssemblyHooks.Fixture.WaitForEnvironmentalDeliveryAsync(
             observationId, deliveryTimeout.Token);
+        var deliveryObserved = false;
 
-        var published = await publisher.PublishAsync(CreateFact(observationId)).ConfigureAwait(false);
+        try
+        {
+            var published = await publisher.PublishAsync(CreateFact(observationId)).ConfigureAwait(false);
 
-        Assert.IsNotNull(published.Observation);
-        Assert.AreEqual(AssemblyHooks.Fixture.ObservatoryId, published.Observation.Target.SiteId);
-        Assert.AreEqual(AssemblyHooks.Fixture.DevicePublicId, published.Observation.Target.AgentId);
-        await delivered.ConfigureAwait(false);
-        Assert.AreEqual(
-            1,
-            await AssemblyHooks.Fixture.CountEnvironmentalObservationsAsync(observationId).ConfigureAwait(false));
+            Assert.IsNotNull(published.Observation);
+            Assert.AreEqual(AssemblyHooks.Fixture.ObservatoryId, published.Observation.Target.SiteId);
+            Assert.AreEqual(AssemblyHooks.Fixture.DevicePublicId, published.Observation.Target.AgentId);
+            await delivered.ConfigureAwait(false);
+            deliveryObserved = true;
+            Assert.AreEqual(
+                1,
+                await AssemblyHooks.Fixture.CountEnvironmentalObservationsAsync(observationId).ConfigureAwait(false));
+        }
+        finally
+        {
+            if (!deliveryObserved)
+            {
+                await deliveryTimeout.CancelAsync().ConfigureAwait(false);
+                try
+                {
+                    await delivered.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (deliveryTimeout.IsCancellationRequested)
+                {
+                }
+            }
+        }
     }
 
     private static EnvironmentalObservationFactV1 CreateFact(Guid observationId)
