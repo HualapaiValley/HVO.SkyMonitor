@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text.Json;
@@ -13,6 +14,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.IntegrationTests;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Common.Identity;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
@@ -32,6 +34,7 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 internal sealed class CameraAgentIntegrationFixture : IDisposable
 {
     private readonly bool _hybridTransientMode;
+    private readonly EnvironmentalDeliveryCompletionTracker _environmentalDelivery = new();
     private readonly IntegrationTestFixture _hostFixture = new(new Dictionary<string, string?>
     {
         ["CentralTransient:Mode"] = "Hybrid",
@@ -146,7 +149,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                     });
 
                     services.AddHttpClient(SkyMonitorClientOptions.HttpClientName)
-                        .ConfigurePrimaryHttpMessageHandler(_ => _hostFixture.Factory.Server.CreateHandler());
+                        .ConfigurePrimaryHttpMessageHandler(_ => new EnvironmentalDeliveryTrackingHandler(
+                            _environmentalDelivery,
+                            _hostFixture.Factory.Server.CreateHandler()));
 
                     services.AddHttpClient(CentralAuthenticationService.TokenClientName)
                         .ConfigurePrimaryHttpMessageHandler(_ => _hostFixture.Factory.Server.CreateHandler());
@@ -274,6 +279,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     public Task<int> CountEnvironmentalObservationsAsync(Guid observationId)
         => _hostFixture.CountEnvironmentalObservationsAsync(observationId);
 
+    public Task WaitForEnvironmentalDeliveryAsync(Guid observationId, CancellationToken cancellationToken)
+        => _environmentalDelivery.WaitAsync(observationId, cancellationToken);
+
     public void Dispose()
     {
         _agentFactory?.Dispose();
@@ -283,6 +291,54 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         if (_storageRoot is not null && Directory.Exists(_storageRoot))
         {
             Directory.Delete(_storageRoot, recursive: true);
+        }
+    }
+
+    private sealed class EnvironmentalDeliveryCompletionTracker
+    {
+        private readonly ConcurrentDictionary<Guid, TaskCompletionSource> _pending = new();
+
+        public async Task WaitAsync(Guid observationId, CancellationToken cancellationToken)
+        {
+            var completion = _pending.GetOrAdd(
+                observationId,
+                static _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+            try
+            {
+                await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _pending.TryRemove(new KeyValuePair<Guid, TaskCompletionSource>(observationId, completion));
+            }
+        }
+
+        public void Complete(Guid observationId)
+            => _pending.GetOrAdd(
+                observationId,
+                static _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+    }
+
+    private sealed class EnvironmentalDeliveryTrackingHandler(
+        EnvironmentalDeliveryCompletionTracker tracker,
+        HttpMessageHandler innerHandler) : DelegatingHandler(innerHandler)
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Guid? observationId = null;
+            if (request.RequestUri?.AbsolutePath == "/api/device/environmental-observations" && request.Content is not null)
+            {
+                var body = await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                observationId = EnvironmentalObservationDeliveryJson.ParseEnvelope(body).Value?.Observation.ObservationId;
+            }
+            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (observationId is { } completed && response.IsSuccessStatusCode)
+            {
+                tracker.Complete(completed);
+            }
+            return response;
         }
     }
 

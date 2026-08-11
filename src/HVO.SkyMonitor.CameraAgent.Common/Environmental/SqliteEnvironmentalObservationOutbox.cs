@@ -2694,7 +2694,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         }
         if (status == "acknowledged")
         {
-            return new ProjectionResult(EnvironmentalObservationProjectionDisposition.Acknowledged, null, null);
+            return new ProjectionResult(EnvironmentalObservationProjectionDisposition.Acknowledged, observation, null);
         }
         if (status == "staged")
         {

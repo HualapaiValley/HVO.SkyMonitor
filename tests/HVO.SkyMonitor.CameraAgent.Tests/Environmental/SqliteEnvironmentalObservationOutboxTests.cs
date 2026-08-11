@@ -280,6 +280,41 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
     }
 
     [TestMethod]
+    public async Task AcknowledgedProjectionReplayReturnsTheFrozenDeliveryObservation()
+    {
+        var time = new MutableTimeProvider(Epoch);
+        using var outbox = new SqliteEnvironmentalObservationOutbox(time);
+        var fact = CreateFact(Guid.NewGuid());
+        var target = new EnvironmentalObservationResolvedTarget(
+            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            "rig-original");
+        await outbox.CommitLocalAsync(_root!, fact, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, await outbox.AssignUnprojectedAsync(
+            _root!, target, 10, CancellationToken.None).ConfigureAwait(false));
+        var lease = await outbox.ClaimAsync(
+            _root!, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        var acknowledgement = new FaithfulCentralReceiver(time).Ingest(lease.Record.Observation);
+        await outbox.AcknowledgeAsync(_root!, lease, acknowledgement, CancellationToken.None).ConfigureAwait(false);
+        var replayTarget = new EnvironmentalObservationResolvedTarget(Guid.NewGuid(), Guid.NewGuid(), "rig-changed");
+
+        var replay = await outbox.CommitLocalAsync(
+            _root!, fact, replayTarget, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(LocalEnvironmentalObservationCommitDisposition.Duplicate, replay.Disposition);
+        Assert.AreEqual(EnvironmentalObservationProjectionDisposition.Acknowledged, replay.ProjectionDisposition);
+        Assert.IsNotNull(replay.DeliveryObservation);
+        Assert.AreEqual(target.ObservatoryId, replay.DeliveryObservation.Target.SiteId);
+        Assert.AreEqual(target.DevicePublicId, replay.DeliveryObservation.Target.AgentId);
+        Assert.AreEqual(target.RigId, replay.DeliveryObservation.Target.RigId);
+        Assert.AreEqual(fact.ObservationId, replay.DeliveryObservation.ObservationId);
+        Assert.AreEqual(0, (await outbox.GetSnapshotAsync(_root!, CancellationToken.None).ConfigureAwait(false)).StoredCount);
+        Assert.IsNull(await outbox.ClaimAsync(
+            _root!, "worker-2", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task LocalJournalRejectsConflictsAndCorruptCommittedDuplicates()
     {
         using var store = new SqliteEnvironmentalObservationOutbox();
