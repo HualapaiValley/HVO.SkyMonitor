@@ -314,9 +314,12 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         }
 
         public void Complete(Guid observationId)
-            => _pending.GetOrAdd(
-                observationId,
-                static _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+        {
+            if (_pending.TryRemove(observationId, out var completion))
+            {
+                completion.TrySetResult();
+            }
+        }
     }
 
     private sealed class EnvironmentalDeliveryTrackingHandler(
