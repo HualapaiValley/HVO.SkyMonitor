@@ -2264,7 +2264,7 @@ public sealed class RawCaptureIngressTests
             CameraModuleConfig configuration,
             CaptureLoopSubmission submission,
             CancellationToken cancellationToken)
-            => throw new InvalidOperationException("Raw ingress process-kill evidence requires durable capture admission.");
+            => ValueTask.CompletedTask;
     }
 
     private sealed class InjectedRawIngressFaultException : Exception

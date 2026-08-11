@@ -246,6 +246,18 @@
       "artifactPath": "acceptance-artifacts/bounded-shutdown.json"
     },
     {
+      "id": "raw-boundary-payload-partially-written",
+      "title": "Raw ingress payload partially written",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:raw-ingress:PayloadPartiallyWritten",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.RawIngress.RawCaptureIngressTests.ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce;case=PayloadPartiallyWritten",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/raw-boundary-payload-partially-written.json"
+    },
+    {
       "id": "raw-boundary-payload-written",
       "title": "Raw ingress payload write completed",
       "classification": "fault",
