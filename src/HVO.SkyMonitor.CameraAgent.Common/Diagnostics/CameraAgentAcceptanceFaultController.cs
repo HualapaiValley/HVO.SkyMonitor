@@ -21,6 +21,21 @@ internal sealed class CameraAgentAcceptanceFaultController(string controlRoot) :
     private readonly FileSystemStorageCapacityProvider _capacity = new();
     private readonly object _gate = new();
 
+    public bool IsEnabled(RawIngressFaultPoint point)
+    {
+        lock (_gate)
+        {
+            var armPath = Path.Combine(_controlRoot, "arm.json");
+            if (!File.Exists(armPath))
+            {
+                return false;
+            }
+            var arm = JsonSerializer.Deserialize<FaultArm>(File.ReadAllBytes(armPath), JsonOptions)
+                ?? throw new InvalidDataException("Acceptance fault arm is invalid.");
+            return string.Equals(arm.Boundary, $"raw.{point}", StringComparison.Ordinal) && arm.NodeId is null;
+        }
+    }
+
     public void Inject(RawIngressFaultPoint point) => Inject($"raw.{point}", null);
 
     public void Inject(CalibrationPublicationFaultPoint point, string relativePath)

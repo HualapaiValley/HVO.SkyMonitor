@@ -5,6 +5,7 @@ internal enum RawIngressFaultPoint
     AfterMigrationTransactionBegan,
     BeforeMigrationCommit,
     ValidationCompleted,
+    PayloadPartiallyWritten,
     PayloadWritten,
     PayloadFlushed,
     PayloadPublished,
@@ -25,6 +26,8 @@ internal enum RawIngressFaultPoint
 
 internal interface IRawIngressFaultInjector
 {
+    bool IsEnabled(RawIngressFaultPoint point) => false;
+
     void Inject(RawIngressFaultPoint point);
 }
 
@@ -45,6 +48,8 @@ internal interface IRawIngressWakeupReporter
 
 internal sealed class NullRawIngressFaultInjector : IRawIngressFaultInjector
 {
+    public bool IsEnabled(RawIngressFaultPoint point) => false;
+
     public void Inject(RawIngressFaultPoint point)
     {
     }

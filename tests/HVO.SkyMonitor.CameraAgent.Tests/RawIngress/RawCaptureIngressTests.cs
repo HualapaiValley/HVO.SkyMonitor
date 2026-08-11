@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -1735,8 +1736,10 @@ public sealed class RawCaptureIngressTests
     [TestMethod]
     public async Task ProcessKill_AtRawCommitBoundaries_RestartConvergesOnce()
     {
+        byte[] payload = [10, 20, 30, 40];
         foreach (var point in new[]
                  {
+                      RawIngressFaultPoint.PayloadPartiallyWritten,
                       RawIngressFaultPoint.PayloadWritten,
                       RawIngressFaultPoint.PayloadFlushed,
                       RawIngressFaultPoint.PayloadPublished,
@@ -1754,16 +1757,48 @@ public sealed class RawCaptureIngressTests
                     crash.Output,
                     $"Injected raw ingress process termination at {point}.",
                     point.ToString());
+                Assert.IsFalse(File.Exists(GetNotificationMarker(root)), point.ToString());
+                var temporaryFiles = Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).ToArray();
+                var publishedPayloads = Directory.EnumerateFiles(
+                    Path.Combine(root, "frames"), "*.bin", SearchOption.AllDirectories).ToArray();
+                var publishedSidecars = Directory.EnumerateFiles(
+                    Path.Combine(root, "frames"), "*.json", SearchOption.AllDirectories).ToArray();
+                long preRestartJournalRows;
+                using (var crashedJournal = await OpenJournalAsync(root).ConfigureAwait(false))
+                {
+                    preRestartJournalRows = await ScalarLongAsync(
+                        crashedJournal, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false);
+                }
+                var expected = GetExpectedBoundaryState(point);
+                Assert.AreEqual(expected.TemporaryFiles, temporaryFiles.Length, point.ToString());
+                Assert.AreEqual(expected.PublishedPayloads, publishedPayloads.Length, point.ToString());
+                Assert.AreEqual(expected.PublishedSidecars, publishedSidecars.Length, point.ToString());
+                Assert.AreEqual(expected.JournalRows, preRestartJournalRows, point.ToString());
+                if (point == RawIngressFaultPoint.PayloadPartiallyWritten)
+                {
+                    Assert.HasCount(1, temporaryFiles);
+                    var partial = await File.ReadAllBytesAsync(temporaryFiles[0]).ConfigureAwait(false);
+                    Assert.AreEqual(2, partial.Length);
+                    CollectionAssert.AreEqual(payload[..partial.Length], partial);
+                    Assert.IsEmpty(publishedPayloads);
+                    Assert.IsEmpty(publishedSidecars);
+                    Assert.AreEqual(0L, preRestartJournalRows);
+                }
+                if (point == RawIngressFaultPoint.AfterJournalCommit)
+                {
+                    Assert.AreEqual(1L, preRestartJournalRows);
+                }
                 var state = new RawIngressState(TimeProvider.System);
                 using var restarted = CreateIngress(root, state);
                 var receipt = await restarted.AcceptAsync(
                     CreateConfiguration(),
-                    CreateSubmission(Timestamp(10), [10, 10, 10, 10]),
+                    CreateSubmission(Timestamp(10), payload),
                     CancellationToken.None).ConfigureAwait(false);
 
                 Assert.IsNotNull(receipt, point.ToString());
+                Assert.AreEqual(expected.RecoveryOutcome, receipt.Outcome, point.ToString());
                 CollectionAssert.AreEqual(
-                    new byte[] { 10, 10, 10, 10 },
+                    payload,
                     await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false),
                     point.ToString());
                 Assert.IsEmpty(
@@ -1773,9 +1808,15 @@ public sealed class RawCaptureIngressTests
                     2,
                     Directory.EnumerateFiles(Path.Combine(root, "frames"), "*", SearchOption.AllDirectories).ToArray(),
                     point.ToString());
+                long postRestartJournalRows;
                 using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
-                Assert.AreEqual(1L, await ScalarLongAsync(
-                    connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false), point.ToString());
+                postRestartJournalRows = await ScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false);
+                Assert.AreEqual(1L, postRestartJournalRows, point.ToString());
+                var recoveredManifestSha256 = Convert.ToHexString(SHA256.HashData(
+                    await File.ReadAllBytesAsync(
+                        Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false)));
+                Assert.AreEqual(receipt.CommittedManifestSha256, recoveredManifestSha256, point.ToString());
             }
             finally
             {
@@ -1820,9 +1861,12 @@ public sealed class RawCaptureIngressTests
             root,
             new RawIngressState(TimeProvider.System),
             new ProcessKillFaultInjector(point));
-        await ingress.AcceptAsync(
+        var context = new CaptureHostContext(
             CreateConfiguration(),
-            CreateSubmission(Timestamp(10), [10, 10, 10, 10]),
+            ingress,
+            new MarkerCaptureDistributor(GetNotificationMarker(root)));
+        await context.PublishAsync(
+            CreateSubmission(Timestamp(10), [10, 20, 30, 40]),
             CancellationToken.None).ConfigureAwait(false);
         Assert.Fail("The injected process-kill boundary was not reached.");
     }
@@ -2067,7 +2111,7 @@ public sealed class RawCaptureIngressTests
         startInfo.ArgumentList.Add("test");
         startInfo.ArgumentList.Add(typeof(RawCaptureIngressTests).Assembly.Location);
         startInfo.ArgumentList.Add("--filter");
-        startInfo.ArgumentList.Add($"FullyQualifiedName~{nameof(RawIngressCrashChild)}");
+        startInfo.ArgumentList.Add($"FullyQualifiedName={typeof(RawCaptureIngressTests).FullName}.{nameof(RawIngressCrashChild)}");
         startInfo.Environment["HVO_RAW_INGRESS_CRASH_ROOT"] = root;
         startInfo.Environment["HVO_RAW_INGRESS_CRASH_POINT"] = point.ToString();
         startInfo.Environment["HVO_RAW_INGRESS_CRASH_HANG"] = hang ? "true" : "false";
@@ -2093,6 +2137,20 @@ public sealed class RawCaptureIngressTests
             await standardOutput.ConfigureAwait(false),
             await standardError.ConfigureAwait(false)));
     }
+
+    private static (int TemporaryFiles, int PublishedPayloads, int PublishedSidecars, long JournalRows, RawIngressOutcome RecoveryOutcome)
+        GetExpectedBoundaryState(RawIngressFaultPoint point)
+        => point switch
+        {
+            RawIngressFaultPoint.PayloadPartiallyWritten or
+            RawIngressFaultPoint.PayloadWritten or
+            RawIngressFaultPoint.PayloadFlushed => (1, 0, 0, 0, RawIngressOutcome.Committed),
+            RawIngressFaultPoint.PayloadPublished => (0, 1, 0, 0, RawIngressOutcome.Committed),
+            RawIngressFaultPoint.BeforeJournalTransactionCommit => (0, 1, 1, 0, RawIngressOutcome.Existing),
+            RawIngressFaultPoint.AfterJournalCommit or
+            RawIngressFaultPoint.BeforeWakeUpNotification => (0, 1, 1, 1, RawIngressOutcome.Existing),
+            _ => throw new ArgumentOutOfRangeException(nameof(point), point, "Unexpected raw ingress fault point.")
+        };
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Tests pass only fixed SQL assertions.")]
     private static async Task<long> ScalarLongAsync(SqliteConnection connection, string sql)
@@ -2120,6 +2178,9 @@ public sealed class RawCaptureIngressTests
 
     private static DateTimeOffset Timestamp(int hour)
         => new(2026, 7, 14, hour, 0, 0, TimeSpan.Zero);
+
+    private static string GetNotificationMarker(string root)
+        => Path.Combine(root, "capture-distributor-notified");
 
     private static string CreateRoot()
         => Path.Combine(Path.GetTempPath(), "hvo-raw-ingress-tests", Guid.NewGuid().ToString("N"));
@@ -2163,6 +2224,8 @@ public sealed class RawCaptureIngressTests
 
         public DateTimeOffset? PayloadPublishedUtc { get; private set; }
 
+        public bool IsEnabled(RawIngressFaultPoint point) => point == target;
+
         public void Inject(RawIngressFaultPoint point)
         {
             if (point == RawIngressFaultPoint.PayloadPublished && PayloadPublishedUtc is null)
@@ -2178,6 +2241,8 @@ public sealed class RawCaptureIngressTests
 
     private sealed class ProcessKillFaultInjector(RawIngressFaultPoint target) : IRawIngressFaultInjector
     {
+        public bool IsEnabled(RawIngressFaultPoint point) => point == target;
+
         public void Inject(RawIngressFaultPoint point)
         {
             if (point == target)
@@ -2188,6 +2253,18 @@ public sealed class RawCaptureIngressTests
                 Environment.FailFast(message);
             }
         }
+    }
+
+    private sealed class MarkerCaptureDistributor(string markerPath) : ICaptureDistributor
+    {
+        public void NotifyCommittedCapture()
+            => File.WriteAllText(markerPath, "notified");
+
+        public ValueTask ProcessEphemeralAsync(
+            CameraModuleConfig configuration,
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
     }
 
     private sealed class InjectedRawIngressFaultException : Exception

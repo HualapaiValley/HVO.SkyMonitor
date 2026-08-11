@@ -51,6 +51,7 @@ internal sealed class RawIngressFileStore(
         => await PublishAsync(
             paths.PayloadAbsolutePath,
             payload,
+            RawIngressFaultPoint.PayloadPartiallyWritten,
             RawIngressFaultPoint.PayloadWritten,
             RawIngressFaultPoint.PayloadFlushed,
             RawIngressFaultPoint.PayloadPublished,
@@ -64,6 +65,7 @@ internal sealed class RawIngressFileStore(
         => await PublishAsync(
             paths.SidecarAbsolutePath,
             sidecar,
+            null,
             RawIngressFaultPoint.SidecarWritten,
             RawIngressFaultPoint.SidecarFlushed,
             RawIngressFaultPoint.SidecarPublished,
@@ -243,6 +245,7 @@ internal sealed class RawIngressFileStore(
     private async Task PublishAsync(
         string finalPath,
         ReadOnlyMemory<byte> content,
+        RawIngressFaultPoint? partiallyWritten,
         RawIngressFaultPoint written,
         RawIngressFaultPoint flushed,
         RawIngressFaultPoint published,
@@ -268,7 +271,21 @@ internal sealed class RawIngressFileStore(
                 64 * 1024,
                 FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough))
             {
-                await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
+                // RawCaptureIngress serializes acceptance while holding the root's exclusive process lock.
+                if (partiallyWritten is { } partialPoint && content.Length > 1 && _faultInjector.IsEnabled(partialPoint))
+                {
+                    var prefixLength = Math.Min(64 * 1024, Math.Max(1, content.Length / 2));
+                    await stream.WriteAsync(content[..prefixLength], cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
+                    stream.Flush(flushToDisk: true);
+#pragma warning restore CA1849
+                    _faultInjector.Inject(partialPoint);
+                    await stream.WriteAsync(content[prefixLength..], cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
+                }
                 _faultInjector.Inject(written);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
 #pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.

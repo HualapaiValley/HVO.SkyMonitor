@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Diagnostics;
 
@@ -19,6 +20,20 @@ public sealed class CameraAgentAcceptanceFaultControllerTests
             const string relativePath = "calibration/bias.fit";
             File.WriteAllText(
                 Path.Combine(root, "arm.json"),
+                """
+                {
+                  "operationId": "raw-partial",
+                  "boundary": "raw.PayloadPartiallyWritten",
+                  "action": "throw"
+                }
+                """);
+            var controller = new CameraAgentAcceptanceFaultController(root);
+
+            Assert.IsTrue(controller.IsEnabled(RawIngressFaultPoint.PayloadPartiallyWritten));
+            Assert.IsFalse(controller.IsEnabled(RawIngressFaultPoint.PayloadWritten));
+
+            File.WriteAllText(
+                Path.Combine(root, "arm.json"),
                 $$"""
                 {
                   "operationId": "{{operationId}}",
@@ -27,7 +42,6 @@ public sealed class CameraAgentAcceptanceFaultControllerTests
                   "nodeId": "{{relativePath}}"
                 }
                 """);
-            var controller = new CameraAgentAcceptanceFaultController(root);
 
             Assert.ThrowsExactly<IOException>(() => controller.Inject(
                 CalibrationPublicationFaultPoint.BeforePayloadWrite,
