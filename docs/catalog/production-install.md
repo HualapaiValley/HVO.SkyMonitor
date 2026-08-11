@@ -1,9 +1,9 @@
 # Production Catalog Build and Installation
 
-The HYG production catalog is an operator-built, host-local deployment artifact.
-Application startup and normal installation never fetch catalog data. The same
-verified bundle can be copied to LogicHost and every CameraAgent and installed
-without network access.
+The HYG production catalog is an operator-built-once deployment artifact.
+Application startup and normal installation never fetch or rebuild catalog data.
+The same verified bundle is copied to LogicHost and every CameraAgent, including
+ARM64 targets, and installed without network access.
 
 ## Prerequisites
 
@@ -14,6 +14,19 @@ validator. Installation also requires `flock`, `realpath`, and `sync`. None of
 these HYG scripts requires `jq` or Python.
 
 ## Build a Bundle
+
+The canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on
+`linux/amd64`, using this repository's reviewed build scripts and exactly
+`sqlite3 3.45.1`. The pinned input hashes, preprocessing version, schema version,
+serializer version, database length, and database SHA-256 remain the package
+authority. A changed environment that does not reproduce those values fails
+closed and requires a reviewed package revision.
+
+Build the production bundle once in that canonical environment. Deployment
+targets do not run the builder. In particular, ARM64 operators must install the
+approved bundle as described below rather than rebuild it locally. The current
+package is platform-neutral at read time; byte-for-byte build reproducibility
+across architectures is neither required nor claimed.
 
 For an offline build, supply the pinned compressed source explicitly:
 
@@ -115,7 +128,8 @@ the database object contains only `relativePath`, `sha256`, `length`, and
 
 ## Install and Roll Back
 
-Normal installation consumes a local bundle and has no network code path:
+Normal installation on every supported architecture consumes a local approved
+bundle and has no network or build code path:
 
 ```bash
 ./scripts/catalog:install install \

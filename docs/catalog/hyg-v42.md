@@ -22,6 +22,8 @@ atomically. See [Production Catalog Build and Installation](production-install.m
 - Preprocessing version: `3`
 - SQLite schema/user version: `2`
 - SQLite serializer: `sqlite3 3.45.1`
+- Canonical builder: Ubuntu 24.04 on `linux/amd64`; build once and distribute the
+  approved immutable bundle to every deployment architecture
 - Generated SQLite SHA-256:
   `b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2`
 - Compressed input length: `13,636,976` bytes
@@ -30,10 +32,12 @@ atomically. See [Production Catalog Build and Installation](production-install.m
 - Expected post-Sol-exclusion rows: `119,625`
 
 The scripts validate all three hashes and byte lengths and fail closed. Updating
-source, preprocessing SQL, SQLite serialization behavior, or schema requires a
-reviewed checksum update. The build requires the pinned SQLite serializer;
-SQLite library changes can legitimately alter serialization and must not be
-accepted without review.
+source, preprocessing SQL, SQLite serialization behavior, builder architecture,
+or schema requires a reviewed checksum update. The build requires the canonical
+`linux/amd64` environment and pinned SQLite serializer. SQLite library or
+architecture changes can legitimately alter serialization and must not be
+accepted without review. ARM64 hosts consume the approved bundle; they do not
+rebuild it.
 
 The retained HYG license and attribution notices are
 [`hyg-v42-license.md`](hyg-v42-license.md) and

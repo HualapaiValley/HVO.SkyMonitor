@@ -1817,6 +1817,9 @@ if grep -R -Eq 'logic-machine|east-machine|west-machine' "$TEMP_DIR/output"/*-ev
 fi
 
 # Catalog and up execute against fake remote hosts without trusting prior phase state.
+if grep -Eq 'build-hyg-v42|bundle-hyg-v42' "$REPO_ROOT/scripts/deploy/catalog.sh"; then
+  fail 'Catalog deployment invokes a production catalog builder.'
+fi
 deploy_case=deploy-up
 bundle="$TEMP_DIR/catalog-bundle"
 install_root="$TEMP_DIR/catalog-install"
@@ -1911,7 +1914,11 @@ jq -e 'length == 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry
 run_deploy_mode up "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and ([.targets[].target] | unique | length) == 3 and
   ([.resources[].kind] | sort) == ["existing-services","logic-initializer"]' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null
-jq -e '.phaseStatus == "passed" and (.targets | length) == 3 and all(.targets[]; .status == "installed")' \
+jq -e --slurpfile preflight "$TEMP_DIR/output/$deploy_case-state/manifest.json" '
+  . as $catalog |
+  ($preflight[0].targets | map(select(.architecture == "arm64") | .name)) as $arm64 |
+  .phaseStatus == "passed" and (.targets | length) == 3 and all(.targets[]; .status == "installed") and
+  ($arm64 | length) > 0 and all($arm64[]; . as $name | any($catalog.targets[]; .target == $name and .status == "installed"))' \
   "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" >/dev/null
 logic_config="$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/up-$deploy_case"
 test -f "$logic_config/initializer-secrets/ConnectionStrings__skymonitordb-migrations"
