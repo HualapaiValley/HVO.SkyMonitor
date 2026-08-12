@@ -78,6 +78,7 @@ phase14_source_run_test() {
 
 phase14_source_run_standard_test() (
     local repo="$1" project="$2" fqn="$3" raw="$4" evidence_root="$5"
+    local auxiliary_evidence='' test_status=0
     if [[ -n "${DOTNET_TEST_FILTER+x}" ]]; then
         phase14_source_fail collection ambient-test-filter
         return 1
@@ -93,10 +94,24 @@ phase14_source_run_standard_test() (
       HVO_PHASE14_EVIDENCE_ROOT="$evidence_root" HVO_PHASE14_SOURCE_REVISION="$PHASE14_PRODUCT_REVISION" \
       HVO_PHASE14_SOURCE_TREE="$PHASE14_PRODUCT_TREE"
     if [[ "$fqn" == HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence ]]; then
+        auxiliary_evidence="$repo/TestResults/issue-170/$PHASE14_HARNESS_REVISION/trial-01/logichost-ingest-performance.json"
+        if [[ -e "$auxiliary_evidence" || -L "$auxiliary_evidence" ]]; then
+            phase14_source_fail collection auxiliary-evidence-preexisting
+            return 1
+        fi
         export HVO_EVIDENCE_REVISION="$PHASE14_HARNESS_REVISION" \
           HVO_EVIDENCE_PRODUCTION_REVISION="$PHASE14_HARNESS_REVISION" HVO_EVIDENCE_TRIAL=1 DOTNET_gcServer=1
     fi
-    phase14_source_run_test "$repo" "$project" "$fqn" "$raw"
+    phase14_source_run_test "$repo" "$project" "$fqn" "$raw" || test_status=$?
+    if [[ -n "$auxiliary_evidence" && ( -e "$auxiliary_evidence" || -L "$auxiliary_evidence" ) ]]; then
+        if ! phase14_source_safe_file "$auxiliary_evidence" ||
+            ! phase14_source_no_symlink_path "$repo" "$auxiliary_evidence"; then
+            phase14_source_fail collection unsafe-auxiliary-evidence
+            return 1
+        fi
+        rm -f -- "$auxiliary_evidence" || return 1
+    fi
+    ((test_status == 0))
 )
 
 phase14_source_run_issue211() {

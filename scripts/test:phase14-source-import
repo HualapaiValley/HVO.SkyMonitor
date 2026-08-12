@@ -98,7 +98,7 @@ phase14_source_resolve_target() {
     esac
 }
 phase14_source_run_test() {
-    local repo="$1" project="$2" fqn="$3" raw="$4" family method
+    local repo="$1" project="$2" fqn="$3" raw="$4" family method auxiliary_evidence
     # shellcheck disable=SC2031 # The collector intentionally invokes this overridable stub in an environment-setting subshell.
     [[ "$repo" == "$REPO_ROOT" && "${HVO_PHASE14_EVIDENCE_ALLOWED_ROOT:-}" == "${raw%%/private-results/*}/input" &&
        "${HVO_PHASE14_SOURCE_REVISION:-}" == "$product_revision" && "${HVO_PHASE14_SOURCE_TREE:-}" == "$product_tree" &&
@@ -115,6 +115,11 @@ phase14_source_run_test() {
         [[ "${HVO_EVIDENCE_REVISION:-}" == "$harness_revision" &&
            "${HVO_EVIDENCE_PRODUCTION_REVISION:-}" == "$harness_revision" && "${HVO_EVIDENCE_TRIAL:-}" == 1 &&
            "${DOTNET_gcServer:-}" == 1 ]] || return 1
+        auxiliary_evidence="$repo/TestResults/issue-170/$harness_revision/trial-01/logichost-ingest-performance.json"
+        [[ ! -e "$auxiliary_evidence" && ! -L "$auxiliary_evidence" ]] || return 1
+        install -d -m 700 "$(dirname "$auxiliary_evidence")"
+        printf '{"auxiliary":true}\n' > "$auxiliary_evidence"
+        chmod 600 "$auxiliary_evidence"
     else
         [[ -z "${HVO_EVIDENCE_REVISION+x}" && -z "${HVO_EVIDENCE_PRODUCTION_REVISION+x}" &&
            -z "${HVO_EVIDENCE_TRIAL+x}" ]] || return 1
@@ -187,6 +192,8 @@ jq -e '.trialResults == [{id:"method",relativePath:"trial-results/method.trx",by
 [[ "$(find "$COLLECT_OUTPUT/source-import" -name source-bundle.json -exec jq -r '.testAssemblyBuildRevision' {} \; | sort -u)" == "$harness_revision" ]] ||
   fail 'Collector-created assembly provenance was not imported.'
 [[ "$(grep -rl 'private raw trx\|acceptance raw trx' "$COLLECT_OUTPUT/source-import" | wc -l)" == 0 ]] || fail 'Raw collector TRX entered publication.'
+[[ ! -e "$REPO_ROOT/TestResults/issue-170/$harness_revision/trial-01/logichost-ingest-performance.json" ]] ||
+  fail 'Collector retained auxiliary issue-170 evidence.'
 [[ "$(find "$COLLECT_OUTPUT" -maxdepth 1 -name '.source-collection.stage.*' | wc -l)" == 0 ]] || fail 'Collection stage was not cleaned.'
 FILTERED_OUTPUT="$TEMP_DIR/filtered-collection"; install -d -m 700 "$FILTERED_OUTPUT"
 export DOTNET_TEST_FILTER=ambient
@@ -197,6 +204,18 @@ unset DOTNET_TEST_FILTER
 collection_lines="$(wc -l < "$COLLECTION_LOG")"
 phase14_source_collect "$REPO_ROOT" "$COLLECT_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
 [[ "$(wc -l < "$COLLECTION_LOG")" == "$collection_lines" ]] || fail 'Resume performed collection.'
+REPEAT_OUTPUT="$TEMP_DIR/repeated-collection"; install -d -m 700 "$REPEAT_OUTPUT"
+phase14_source_collect "$REPO_ROOT" "$REPEAT_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
+[[ ! -e "$REPO_ROOT/TestResults/issue-170/$harness_revision/trial-01/logichost-ingest-performance.json" ]] ||
+  fail 'Repeated collection retained auxiliary issue-170 evidence.'
+[[ -e "$REPEAT_OUTPUT/source-import/source-import-index.json" ]] || fail 'Repeated collection did not publish.'
+PREEXISTING_OUTPUT="$TEMP_DIR/preexisting-auxiliary"; install -d -m 700 "$PREEXISTING_OUTPUT"
+auxiliary_evidence="$REPO_ROOT/TestResults/issue-170/$harness_revision/trial-01/logichost-ingest-performance.json"
+install -d -m 700 "$(dirname "$auxiliary_evidence")"; printf '{"preexisting":true}\n' > "$auxiliary_evidence"; chmod 600 "$auxiliary_evidence"
+expect_rejected 'Collector overwrote pre-existing auxiliary issue-170 evidence.' phase14_source_collect \
+  "$REPO_ROOT" "$PREEXISTING_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
+[[ "$(jq -r '.preexisting' "$auxiliary_evidence")" == true ]] || fail 'Collector changed pre-existing auxiliary issue-170 evidence.'
+rm -f -- "$auxiliary_evidence"
 tampered_trial_output="$TEMP_DIR/tampered-trial-output"; install -d -m 700 "$tampered_trial_output"
 cp -a "$COLLECT_OUTPUT/source-import" "$tampered_trial_output/source-import"
 printf 'tamper\n' >> "$(find "$tampered_trial_output/source-import/methods/cameraagent-acceptance" -path '*/trial-results/trial-3.trx')"
