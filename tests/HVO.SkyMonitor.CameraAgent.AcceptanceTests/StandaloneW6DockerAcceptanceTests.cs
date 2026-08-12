@@ -149,7 +149,14 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         var browserErrors = new List<string>();
         page.PageError += (_, error) => browserErrors.Add(error);
-        await page.RouteAsync("**/cdn.jsdelivr.net/**", route => route.AbortAsync()).ConfigureAwait(false);
+        await page.RouteAsync("**/cdn.jsdelivr.net/**", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200,
+            ContentType = route.Request.Url.EndsWith(".js", StringComparison.OrdinalIgnoreCase)
+                ? "application/javascript"
+                : "text/css",
+            Body = string.Empty
+        })).ConfigureAwait(false);
         await BrowserLoginAsync(page, password).ConfigureAwait(false);
 
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
