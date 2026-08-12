@@ -92,6 +92,10 @@ phase14_source_run_standard_test() (
     export HVO_PHASE14_EVIDENCE_ALLOWED_ROOT="$PHASE14_COLLECTION_ALLOWED_ROOT" \
       HVO_PHASE14_EVIDENCE_ROOT="$evidence_root" HVO_PHASE14_SOURCE_REVISION="$PHASE14_PRODUCT_REVISION" \
       HVO_PHASE14_SOURCE_TREE="$PHASE14_PRODUCT_TREE"
+    if [[ "$fqn" == HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence ]]; then
+        export HVO_EVIDENCE_REVISION="$PHASE14_HARNESS_REVISION" \
+          HVO_EVIDENCE_PRODUCTION_REVISION="$PHASE14_HARNESS_REVISION" HVO_EVIDENCE_TRIAL=1
+    fi
     phase14_source_run_test "$repo" "$project" "$fqn" "$raw"
 )
 
@@ -228,7 +232,8 @@ phase14_source_collect() (
     input="$collection/input"; private_results="$collection/private-results"
     install -d -m 700 "$input" "$private_results"
     PHASE14_COLLECTION_ALLOWED_ROOT="$input"
-    export PHASE14_COLLECTION_ALLOWED_ROOT
+    PHASE14_HARNESS_REVISION="$harness_revision"
+    export PHASE14_COLLECTION_ALLOWED_ROOT PHASE14_HARNESS_REVISION
 
     while IFS=$'\t' read -r family project; do
         phase14_source_validate_repository "$repo" "$contract" "$harness_revision" || return 1

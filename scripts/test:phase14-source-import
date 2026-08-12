@@ -104,7 +104,6 @@ phase14_source_run_test() {
        "${HVO_PHASE14_SOURCE_REVISION:-}" == "$product_revision" && "${HVO_PHASE14_SOURCE_TREE:-}" == "$product_tree" &&
        "${PHASE14_INFRASTRUCTURE_SENTINEL:-}" == inherited &&
        -z "${HVO_DERIVATIVE_PERF_SMOKE+x}" && -z "${HVO_DERIVATIVE_P5_DIAGNOSTIC_TRIAL+x}" &&
-       -z "${HVO_EVIDENCE_REVISION+x}" && -z "${HVO_EVIDENCE_TRIAL+x}" &&
        -z "${HVO_ISSUE_107_DEPENDENCY+x}" && -z "${HVO_ISSUE_107_EVIDENCE_ROOT+x}" &&
        -z "${HVO_EVIDENCE_REPOSITORY_ROOT+x}" && -z "${HVO_RAW_INGRESS_CRASH_ROOT+x}" &&
        -z "${HVO_RAW_INGRESS_CRASH_POINT+x}" && -z "${HVO_RAW_INGRESS_CRASH_HANG+x}" &&
@@ -112,6 +111,13 @@ phase14_source_run_test() {
        -z "${HVO_ISSUE_248_SMOKE+x}" && -z "${HVO_ISSUE_248_CENSORED_SMOKE+x}" &&
        -z "${HVO_ISSUE_248_AGGREGATE_ONLY+x}" && -z "${HVO_ISSUE_250_EVIDENCE+x}" &&
        -z "${VSTEST_TESTCASE_FILTER+x}" ]] || return 1
+    if [[ "$fqn" == HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence ]]; then
+        [[ "${HVO_EVIDENCE_REVISION:-}" == "$harness_revision" &&
+           "${HVO_EVIDENCE_PRODUCTION_REVISION:-}" == "$harness_revision" && "${HVO_EVIDENCE_TRIAL:-}" == 1 ]] || return 1
+    else
+        [[ -z "${HVO_EVIDENCE_REVISION+x}" && -z "${HVO_EVIDENCE_PRODUCTION_REVISION+x}" &&
+           -z "${HVO_EVIDENCE_TRIAL+x}" ]] || return 1
+    fi
     [[ "${PHASE14_TEST_FAIL:-false}" != true ]] || return 1
     family="${raw#*/private-results/}"; family="${family%%/*}"
     # shellcheck disable=SC2031 # See the controlled collector subshell above.
