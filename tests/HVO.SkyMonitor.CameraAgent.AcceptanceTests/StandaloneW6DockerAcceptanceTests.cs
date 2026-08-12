@@ -746,7 +746,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await page.GetByLabel("Email").FillAsync("standalone-owner@cameraagent.test").ConfigureAwait(false);
         await page.GetByLabel("Password").FillAsync(password).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForURLAsync(url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
+        await page.WaitForURLAsync(
+            url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase),
+            new PageWaitForURLOptions { WaitUntil = WaitUntilState.Commit }).ConfigureAwait(false);
     }
 
     private static async Task SetCaptureStateAsync(IPage page, bool pause)
