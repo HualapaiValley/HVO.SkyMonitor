@@ -79,6 +79,7 @@ phase14_source_run_test() {
 phase14_source_run_standard_test() (
     local repo="$1" project="$2" fqn="$3" raw="$4" evidence_root="$5"
     local auxiliary_evidence='' test_status=0
+    umask 077
     if [[ -n "${DOTNET_TEST_FILTER+x}" ]]; then
         phase14_source_fail collection ambient-test-filter
         return 1
