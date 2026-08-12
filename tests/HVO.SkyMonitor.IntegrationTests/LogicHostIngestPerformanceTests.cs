@@ -23,6 +23,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Data.SqlClient;
 using Minio;
 using Minio.DataModel.Args;
 
@@ -761,27 +762,34 @@ public sealed partial class LogicHostIngestPerformanceTests
         var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(60);
         while (DateTimeOffset.UtcNow < timeoutAt)
         {
-            await using var scope = services.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var completed = await db.CentralArtifacts.AsNoTracking().CountAsync(artifact =>
-                ids.Contains(artifact.ArtifactId)
-                && artifact.ObjectState == CentralArtifactObjectState.Available
-                && artifact.ReconstructionState == CentralReconstructionState.Complete).ConfigureAwait(false);
-            if (completed == ids.Length)
+            try
             {
-                var scheduled = await db.CentralDerivativeJobs.AsNoTracking()
-                    .Where(job => ids.Contains(job.SourceArtifact!.ArtifactId))
-                    .Select(job => job.SourceArtifact!.ArtifactId)
-                    .Distinct()
-                    .CountAsync().ConfigureAwait(false);
-                var cycleCompleted = await db.CentralRecoveryCheckpoints.AsNoTracking().AnyAsync(checkpoint =>
-                    checkpoint.Id == CentralRecoveryCheckpoint.SingletonId
-                    && checkpoint.LeaseToken == null
-                    && checkpoint.LastCycleAtUtc >= startedAtUtc).ConfigureAwait(false);
-                if (scheduled == ids.Length && cycleCompleted)
+                await using var scope = services.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var completed = await db.CentralArtifacts.AsNoTracking().CountAsync(artifact =>
+                    ids.Contains(artifact.ArtifactId)
+                    && artifact.ObjectState == CentralArtifactObjectState.Available
+                    && artifact.ReconstructionState == CentralReconstructionState.Complete).ConfigureAwait(false);
+                if (completed == ids.Length)
                 {
-                    return;
+                    var scheduled = await db.CentralDerivativeJobs.AsNoTracking()
+                        .Where(job => ids.Contains(job.SourceArtifact!.ArtifactId))
+                        .Select(job => job.SourceArtifact!.ArtifactId)
+                        .Distinct()
+                        .CountAsync().ConfigureAwait(false);
+                    var cycleCompleted = await db.CentralRecoveryCheckpoints.AsNoTracking().AnyAsync(checkpoint =>
+                        checkpoint.Id == CentralRecoveryCheckpoint.SingletonId
+                        && checkpoint.LeaseToken == null
+                        && checkpoint.LastCycleAtUtc >= startedAtUtc).ConfigureAwait(false);
+                    if (scheduled == ids.Length && cycleCompleted)
+                    {
+                        return;
+                    }
                 }
+            }
+            catch (SqlException exception) when (exception.Number == 1205)
+            {
+                // The recovery worker may deadlock this observer query while committing the same rows.
             }
             await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
         }
