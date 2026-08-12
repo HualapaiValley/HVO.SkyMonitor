@@ -117,11 +117,15 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         _agentFactory = _agentBaseFactory.WithWebHostBuilder(builder =>
             {
                 builder.UseEnvironment("Development");
-                builder.ConfigureAppConfiguration((_, config) =>
+                var overrides = BuildConfigurationOverrides();
+                // Program captures local Identity settings before WebApplicationFactory app overrides are applied.
+                foreach (var setting in overrides.Where(static setting =>
+                             setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal)))
                 {
-                    var overrides = BuildConfigurationOverrides();
-                    config.AddInMemoryCollection(overrides!);
-                });
+                    builder.UseSetting(setting.Key, setting.Value);
+                }
+                builder.ConfigureAppConfiguration((_, config) =>
+                    config.AddInMemoryCollection(overrides!));
                 builder.ConfigureTestServices(services =>
                 {
                     services.AddAuthentication(options =>
@@ -357,7 +361,10 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["CentralIdentity:ClientCredentials:ClientSecret"] = TestClients.SystemCameraAgent.ClientSecret,
             ["LocalIdentity:AdminEmail"] = "owner@cameraagent.integration",
             ["LocalIdentity:AdminPassword"] = "IntegrationOwner!123",
+            ["LocalIdentity:AdminPasswordFile"] = string.Empty,
+            ["LocalIdentity:AllowMissingAdminPassword"] = "false",
             ["LocalIdentity:DatabasePath"] = Path.Combine(_storageRoot!, "cameraagent_identity.db"),
+            ["LocalIdentity:CookieName"] = "CameraAgent.Integration.Auth",
             ["SkyMonitor:BaseUrl"] = apiBase,
             ["Catalog:Root"] = _catalogFixture?.Root,
             ["Catalog:RequiredPackageKind"] = "Fixture",

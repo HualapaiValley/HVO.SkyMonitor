@@ -110,7 +110,10 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         {
             ["LocalIdentity:AdminEmail"] = OwnerEmail,
             ["LocalIdentity:AdminPassword"] = OwnerPassword,
+            ["LocalIdentity:AdminPasswordFile"] = string.Empty,
+            ["LocalIdentity:AllowMissingAdminPassword"] = "false",
             ["LocalIdentity:DatabasePath"] = Path.Combine(root, "identity", "cameraagent_identity.db"),
+            ["LocalIdentity:CookieName"] = "CameraAgent.Browser106.Auth",
             ["Catalog:Root"] = catalog.Root,
             ["Catalog:RequiredPackageKind"] = "Fixture",
             ["CameraAgent:ConfigFilePath"] = configPath,
@@ -236,29 +239,40 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         {
             BaseAddress = BaseAddress
         };
-        using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
-        login.EnsureSuccessStatusCode();
-        var html = await login.Content.ReadAsStringAsync().ConfigureAwait(false);
-        var match = Regex.Match(
-            html,
-            "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
-            RegexOptions.CultureInvariant);
-        if (!match.Success)
+        var succeeded = false;
+        try
         {
-            client.Dispose();
-            throw new InvalidOperationException("The local login antiforgery token was not rendered.");
+            using var login = await client.GetAsync(new Uri("/Account/Login", UriKind.Relative)).ConfigureAwait(false);
+            login.EnsureSuccessStatusCode();
+            var html = await login.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var match = Regex.Match(
+                html,
+                "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
+                RegexOptions.CultureInvariant);
+            if (!match.Success)
+            {
+                throw new InvalidOperationException("The local login antiforgery token was not rendered.");
+            }
+            using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] = WebUtility.HtmlDecode(match.Groups[1].Value),
+                ["Input.Email"] = OwnerEmail,
+                ["Input.Password"] = OwnerPassword,
+                ["Input.RememberMe"] = "false",
+                ["_handler"] = "login"
+            });
+            using var response = await client.PostAsync(new Uri("/Account/Login", UriKind.Relative), form).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            succeeded = true;
+            return client;
         }
-        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        finally
         {
-            ["__RequestVerificationToken"] = WebUtility.HtmlDecode(match.Groups[1].Value),
-            ["Input.Email"] = OwnerEmail,
-            ["Input.Password"] = OwnerPassword,
-            ["Input.RememberMe"] = "false",
-            ["_handler"] = "login"
-        });
-        using var response = await client.PostAsync(new Uri("/Account/Login", UriKind.Relative), form).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        return client;
+            if (!succeeded)
+            {
+                client.Dispose();
+            }
+        }
     }
 
     private static async Task SeedNonOwnerAsync(IServiceProvider services)
@@ -322,6 +336,12 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            // Program captures local Identity settings before WebApplicationFactory app overrides are applied.
+            foreach (var setting in overrides.Where(static setting =>
+                         setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal)))
+            {
+                builder.UseSetting(setting.Key, setting.Value);
+            }
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(overrides));
             builder.ConfigureServices(services =>
