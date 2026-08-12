@@ -502,11 +502,13 @@ public sealed partial class LogicHostIngestPerformanceTests
         using var resources = new ResourceSampler();
         protocolCounter.Start();
         var recoveryStarted = Stopwatch.GetTimestamp();
+        var recoveryStartedAtUtc = DateTimeOffset.UtcNow;
         var recoveryObjectProtocol = new ObjectProtocolFaultHandler { InnerHandler = new SocketsHttpHandler() };
         using (var recoveryFactory = CreateObjectFaultFactory(fixture, recoveryObjectProtocol, startWorker: true))
         {
             _ = recoveryFactory.Services;
-            await WaitForArtifactsAsync(recoveryFactory.Services, measured).ConfigureAwait(false);
+            await WaitForRecoveryCycleAsync(
+                recoveryFactory.Services, measured, recoveryStartedAtUtc).ConfigureAwait(false);
         }
         var recoveryElapsed = Stopwatch.GetElapsedTime(recoveryStarted);
         var protocols = protocolCounter.Stop();
@@ -750,7 +752,10 @@ public sealed partial class LogicHostIngestPerformanceTests
             rows.Count(static row => row.ReconstructionState == CentralReconstructionState.Quarantined));
     }
 
-    private static async Task WaitForArtifactsAsync(IServiceProvider services, IReadOnlyList<ExpectedUpload> uploads)
+    private static async Task WaitForRecoveryCycleAsync(
+        IServiceProvider services,
+        IReadOnlyList<ExpectedUpload> uploads,
+        DateTimeOffset startedAtUtc)
     {
         var ids = uploads.Select(static upload => upload.Manifest.Descriptor.Artifact.ArtifactId).ToArray();
         var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(60);
@@ -764,11 +769,23 @@ public sealed partial class LogicHostIngestPerformanceTests
                 && artifact.ReconstructionState == CentralReconstructionState.Complete).ConfigureAwait(false);
             if (completed == ids.Length)
             {
-                return;
+                var scheduled = await db.CentralDerivativeJobs.AsNoTracking()
+                    .Where(job => ids.Contains(job.SourceArtifact!.ArtifactId))
+                    .Select(job => job.SourceArtifact!.ArtifactId)
+                    .Distinct()
+                    .CountAsync().ConfigureAwait(false);
+                var cycleCompleted = await db.CentralRecoveryCheckpoints.AsNoTracking().AnyAsync(checkpoint =>
+                    checkpoint.Id == CentralRecoveryCheckpoint.SingletonId
+                    && checkpoint.LeaseToken == null
+                    && checkpoint.LastCycleAtUtc >= startedAtUtc).ConfigureAwait(false);
+                if (scheduled == ids.Length && cycleCompleted)
+                {
+                    return;
+                }
             }
             await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
         }
-        Assert.Fail("The fresh production reconciliation worker did not converge all 30 pending artifacts.");
+        Assert.Fail("The fresh production reconciliation worker did not complete a cycle that converged all 30 pending artifacts and scheduled their derivative jobs.");
     }
 
     private static async Task AssertSequencesPersistedAsync(IReadOnlyList<ExpectedUpload> uploads)
