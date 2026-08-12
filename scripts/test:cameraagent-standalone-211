@@ -157,14 +157,16 @@ assert_no_owned_acceptance_resources() {
     fi
 }
 
-git_common_directory="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
-container_workspace="$(dirname "$git_common_directory")"
 host_workspace=""
 if docker inspect "$(hostname)" >/dev/null 2>&1; then
-    host_workspace="$(docker inspect "$(hostname)" --format '{{json .Mounts}}' |
-        jq -er --arg destination "$container_workspace" '
-          [.[] | select(.Destination == $destination and .Type == "bind") | .Source] |
-          if length <= 1 then .[0] // "" else error("multiple workspace bind mounts matched") end')"
+    read -r _ host_workspace < <(
+        docker inspect "$(hostname)" --format '{{json .Mounts}}' |
+            jq -er --arg repository "$REPO_ROOT" '
+              [.[] | select(.Type == "bind") | . as $mount |
+                select($repository == $mount.Destination or
+                  ($repository | startswith($mount.Destination + "/")))] |
+              sort_by(.Destination | length) | last as $mount |
+              [$mount.Destination, ($mount.Source + ($repository | ltrimstr($mount.Destination)))] | @tsv')
 fi
 if [[ -n "$host_workspace" ]]; then
     readonly BIND_HOST_ROOT="$host_workspace/data/agent/issue-211"
@@ -222,6 +224,16 @@ for image in "$HVO_OTEL_COLLECTOR_IMAGE" "$CENTRAL_DENY_IMAGE"; do
         DOCKER_CONFIG="$collector_config" docker pull "$image"
     fi
 done
+bind_probe="hvo-issue-211-bind-probe-$(openssl rand -hex 24)"
+printf '%s\n' "$bind_probe" > "$(dirname "$BIND_LOCAL_ROOT")/.issue-211-bind-probe"
+if ! docker run --rm --entrypoint /bin/sh \
+    --mount "type=bind,source=$(dirname "$BIND_HOST_ROOT"),target=/probe,readonly" \
+    "$CENTRAL_DENY_IMAGE" -c 'test "$(cat /probe/.issue-211-bind-probe)" = "$1"' -- "$bind_probe" 8>&-; then
+    rm -f -- "$(dirname "$BIND_LOCAL_ROOT")/.issue-211-bind-probe"
+    printf 'Docker daemon bind-root round-trip failed.\n' >&2
+    exit 2
+fi
+rm -f -- "$(dirname "$BIND_LOCAL_ROOT")/.issue-211-bind-probe"
 
 image_iid_file="$RESULTS/cameraagent-image-id"
 assert_worktree_unchanged
