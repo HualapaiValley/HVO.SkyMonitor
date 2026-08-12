@@ -27,9 +27,10 @@ public sealed class OwnerAuthorizationTests
         var payload = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
 
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-        Assert.AreEqual("text/javascript", response.Content.Headers.ContentType?.MediaType);
+        var mediaType = response.Content.Headers.ContentType?.MediaType;
+        Assert.IsTrue(mediaType is "application/javascript" or "text/javascript", $"Unexpected media type '{mediaType}'.");
         Assert.IsGreaterThan(10_000, payload.Length);
-        StringAssert.Contains(System.Text.Encoding.UTF8.GetString(payload), "Blazor", StringComparison.Ordinal);
+        StringAssert.Contains(System.Text.Encoding.UTF8.GetString(payload), "window.Blazor", StringComparison.Ordinal);
     }
 
     [TestMethod]

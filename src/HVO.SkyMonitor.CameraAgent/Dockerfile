@@ -37,7 +37,7 @@ RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csp
 WORKDIR /src/src/HVO.SkyMonitor.CameraAgent
 RUN dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o /app/publish \
     && test "$(wc -c < /app/publish/wwwroot/_framework/blazor.web.js)" -gt 10000 \
-    && grep -q Blazor /app/publish/wwwroot/_framework/blazor.web.js
+    && grep -q 'window.Blazor' /app/publish/wwwroot/_framework/blazor.web.js
 
 # Stage 2: Runtime
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
