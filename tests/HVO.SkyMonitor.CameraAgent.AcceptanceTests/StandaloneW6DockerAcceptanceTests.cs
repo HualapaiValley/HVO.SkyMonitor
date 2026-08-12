@@ -149,14 +149,15 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         var browserErrors = new List<string>();
         page.PageError += (_, error) => browserErrors.Add(error);
-        await page.RouteAsync("**/cdn.jsdelivr.net/**", route => route.FulfillAsync(new RouteFulfillOptions
+        page.Console += (_, message) =>
         {
-            Status = 200,
-            ContentType = route.Request.Url.EndsWith(".js", StringComparison.OrdinalIgnoreCase)
-                ? "application/javascript"
-                : "text/css",
-            Body = string.Empty
-        })).ConfigureAwait(false);
+            if (message.Type == "error")
+            {
+                browserErrors.Add(message.Text);
+            }
+        };
+        page.RequestFailed += (_, request) => browserErrors.Add(
+            $"Request failed: {new Uri(request.Url).AbsolutePath} ({request.Failure})");
         await BrowserLoginAsync(page, password).ConfigureAwait(false);
 
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
@@ -770,7 +771,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
             return;
         }
         var confirmation = page.Locator("dialog.confirmation");
-        await OpenDialogAsync(action, confirmation).ConfigureAwait(false);
+        try
+        {
+            await OpenDialogAsync(action, confirmation).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            var scripts = await page.Locator("script[src]").EvaluateAllAsync<string[]>(
+                "elements => elements.map(element => element.src)").ConfigureAwait(false);
+            Assert.Fail($"The capture confirmation dialog did not open. Scripts: {string.Join(", ", scripts)}.");
+        }
         await page.GetByRole(AriaRole.Button, new() { Name = pause ? "Confirm pause capture" : "Confirm resume capture" })
             .ClickAsync().ConfigureAwait(false);
         await page.Locator(".receipt[role='status']").WaitForAsync().ConfigureAwait(false);
