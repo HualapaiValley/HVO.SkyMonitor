@@ -754,6 +754,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await page.GotoAsync("/operations").ConfigureAwait(false);
         var action = page.Locator("#capture-action");
         await action.WaitForAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => window.Blazor !== undefined").ConfigureAwait(false);
+        await page.WaitForTimeoutAsync(1_000).ConfigureAwait(false);
         var expected = pause ? "Review pause" : "Review resume";
         if (!string.Equals((await action.InnerTextAsync().ConfigureAwait(false)).Trim(), expected, StringComparison.Ordinal))
         {
