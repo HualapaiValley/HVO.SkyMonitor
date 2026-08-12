@@ -779,7 +779,17 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             var scripts = await page.Locator("script[src]").EvaluateAllAsync<string[]>(
                 "elements => elements.map(element => element.src)").ConfigureAwait(false);
-            Assert.Fail($"The capture confirmation dialog did not open. Scripts: {string.Join(", ", scripts)}.");
+            var browserState = await page.EvaluateAsync<string>("""
+                () => JSON.stringify({
+                  readyState: document.readyState,
+                  blazor: typeof window.Blazor,
+                  resources: performance.getEntriesByType('resource')
+                    .filter(entry => entry.name.includes('blazor') || entry.name.includes('bootstrap'))
+                    .map(entry => ({ name: new URL(entry.name).pathname, duration: entry.duration, bytes: entry.transferSize }))
+                })
+                """).ConfigureAwait(false);
+            Assert.Fail($"The capture confirmation dialog did not open. Scripts: {string.Join(", ", scripts)}. " +
+                $"Browser state: {browserState}");
         }
         await page.GetByRole(AriaRole.Button, new() { Name = pause ? "Confirm pause capture" : "Confirm resume capture" })
             .ClickAsync().ConfigureAwait(false);
