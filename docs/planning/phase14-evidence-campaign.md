@@ -18,7 +18,8 @@ product or database behavior, and performs no optimization.
 ## Inventory Reconciliation
 
 The schema-v2 runtime inventory contains 111 distinct rows, not 110. Commit
-`a2e61a1` added `raw-boundary-payload-partially-written` as literal process-kill
+`a2e61a1bbff5decf454151ddae9eef72934d6113` added
+`raw-boundary-payload-partially-written` as literal process-kill
 coverage. It is not interchangeable with `raw-boundary-payload-written` and must
 not be dropped or merged.
 

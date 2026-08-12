@@ -10,7 +10,7 @@
     "schemaVersion": 2,
     "scenarioCount": 111,
     "canonicalSha256": "b4050d01fc91b0a1833eeb89cb794f672981bbe52a624de2fd438dbcbd5ceb32",
-    "reconciliation": "The 111th row, raw-boundary-payload-partially-written, was added by a2e61a1 and remains distinct from payload-written."
+    "reconciliation": "The 111th row, raw-boundary-payload-partially-written, was added by a2e61a1bbff5decf454151ddae9eef72934d6113 and remains distinct from payload-written."
   },
   "gateDisposition": {
     "kind": "post-milestone-non-gating",
