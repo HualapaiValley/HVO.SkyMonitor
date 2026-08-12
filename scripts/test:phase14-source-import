@@ -113,7 +113,8 @@ phase14_source_run_test() {
        -z "${VSTEST_TESTCASE_FILTER+x}" ]] || return 1
     if [[ "$fqn" == HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence ]]; then
         [[ "${HVO_EVIDENCE_REVISION:-}" == "$harness_revision" &&
-           "${HVO_EVIDENCE_PRODUCTION_REVISION:-}" == "$harness_revision" && "${HVO_EVIDENCE_TRIAL:-}" == 1 ]] || return 1
+           "${HVO_EVIDENCE_PRODUCTION_REVISION:-}" == "$harness_revision" && "${HVO_EVIDENCE_TRIAL:-}" == 1 &&
+           "${DOTNET_gcServer:-}" == 1 ]] || return 1
     else
         [[ -z "${HVO_EVIDENCE_REVISION+x}" && -z "${HVO_EVIDENCE_PRODUCTION_REVISION+x}" &&
            -z "${HVO_EVIDENCE_TRIAL+x}" ]] || return 1

@@ -94,7 +94,7 @@ phase14_source_run_standard_test() (
       HVO_PHASE14_SOURCE_TREE="$PHASE14_PRODUCT_TREE"
     if [[ "$fqn" == HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence ]]; then
         export HVO_EVIDENCE_REVISION="$PHASE14_HARNESS_REVISION" \
-          HVO_EVIDENCE_PRODUCTION_REVISION="$PHASE14_HARNESS_REVISION" HVO_EVIDENCE_TRIAL=1
+          HVO_EVIDENCE_PRODUCTION_REVISION="$PHASE14_HARNESS_REVISION" HVO_EVIDENCE_TRIAL=1 DOTNET_gcServer=1
     fi
     phase14_source_run_test "$repo" "$project" "$fqn" "$raw"
 )
