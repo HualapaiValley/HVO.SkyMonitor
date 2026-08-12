@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "contract": "phase-14-deferred-evidence",
   "issues": {
     "definition": 318,
@@ -93,11 +93,48 @@
     }
   ],
   "sourceEvidenceContract": {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "requiredSourceRevision": "2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5",
     "requiredSourceTree": "a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe",
-    "revisionPolicy": "exact-definition-pinned-clean-source",
-    "caseSelectorPolicy": "A ;case= selector must identify one strict source-evidence entry. Method-level TRX success alone is inadmissible.",
+    "revisionPolicy": "exact-definition-pinned-product-source-with-reviewed-clean-descendant-evidence-harness",
+    "evidenceHarnessPolicy": {
+      "relationship": "clean-descendant-of-required-source-revision",
+      "revisionBinding": "execution-head",
+      "treeBinding": "execution-head-tree",
+      "allowedChangedPaths": [
+        ".github/workflows/ci.yml",
+        "deploy/split-host/acceptance/phase14-evidence-contract.json",
+        "docs/planning/phase14-evidence-campaign.md",
+        "docs/planning/requirements-crosswalk.md",
+        "docs/project-plan.md",
+        "docs/runbooks/split-host-preflight.md",
+        "scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj",
+        "scripts/acceptance-trx/Program.cs",
+        "scripts/deploy/acceptance-source-family.sh",
+        "scripts/phase14:source-import",
+        "scripts/test:cameraagent-standalone-211",
+        "scripts/test:phase14-acceptance",
+        "scripts/test:phase14-component",
+        "scripts/test:phase14-source-import",
+        "src/HVO.SkyMonitor.TestSupport/Phase14ScenarioEvidence.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/StandaloneW6DockerAcceptanceTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Calibration/Issue208LegacyAndW0FaultRetainedEvidenceTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Calibration/VirtualCalibrationAcquisitionCoordinatorTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Distribution/DurableCaptureDistributionTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/RawIngress/RawCaptureIngressTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/Transients/Issue247TransientCandidateReservationCorrectionTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/Transients/SqliteTransientCandidateJournalTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/Transients/TransientWorkerRuntimeTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/Upload/SqliteArtifactOutboxTests.cs",
+        "tests/HVO.SkyMonitor.IntegrationTests/CentralDerivativeWindowIntegrationTests.cs",
+        "tests/HVO.SkyMonitor.IntegrationTests/LogicHostDependencyOutageAcceptanceTests.cs",
+        "tests/HVO.SkyMonitor.IntegrationTests/LogicHostDerivativeWorkerPerformanceTests.cs",
+        "tests/HVO.SkyMonitor.IntegrationTests/LogicHostIngestPerformanceTests.cs",
+        "tests/HVO.SkyMonitor.Tests/Phase14ScenarioEvidenceTests.cs"
+      ],
+      "productPathChangesRejected": true
+    },
+    "caseSelectorPolicy": "A ;case= selector must exactly equal the caseSelector retained by every contributing fragment. Method-level TRX success alone is inadmissible. Multiple observations for one selector are aggregated only when assertion and measurement schemas are deeply equal, with an explicit observation-count measurement.",
     "requiredEntryFields": [
       "scenarioId",
       "evidenceSource",
@@ -112,6 +149,8 @@
       "schemaVersion",
       "requestedSourceRevision",
       "requestedSourceTree",
+      "evidenceHarnessRevision",
+      "evidenceHarnessTree",
       "cleanSource",
       "testAssemblyRelativePath",
       "testAssemblySha256",
@@ -120,6 +159,7 @@
       "trxRelativePath",
       "trxByteLength",
       "trxSha256",
+      "trialResults",
       "sourceEvidenceRelativePath",
       "sourceEvidenceByteLength",
       "sourceEvidenceSha256",
@@ -137,13 +177,19 @@
         "sha256Field": "trxSha256"
       },
       {
+        "relativePathField": "trialResults[].relativePath",
+        "byteLengthField": "trialResults[].byteLength",
+        "sha256Field": "trialResults[].sha256"
+      },
+      {
         "relativePathField": "sourceEvidenceRelativePath",
         "byteLengthField": "sourceEvidenceByteLength",
         "sha256Field": "sourceEvidenceSha256"
       }
     ],
     "sourceEvidenceProjectionPolicy": "sourceEvidenceByteLength and sourceEvidenceSha256 bind the exact bytes at sourceEvidenceRelativePath; parsing those bytes as schema-v1 JSON must produce an entries array deeply equal to bundle entries.",
-    "testAssemblyProvenancePolicy": "Standard source-family commands rebuild with NoIncremental=true from the clean pinned revision. testAssemblyBuildRevision and testAssemblyBuildTree must equal the pinned revision/tree, and testAssemblySha256 binds the rebuilt bytes at testAssemblyRelativePath. The issue-211 harness independently builds after capturing and continuously checking the same clean worktree fingerprint.",
+    "trialResultsPolicy": "trialResults is required and contains exact objects with id, relativePath, byteLength, and sha256. Standard methods bind one method result at trial-results/method.trx. CameraAgent acceptance binds exactly trial-1 through trial-5 at trial-results/trial-1.trx through trial-results/trial-5.trx; result.trx remains the canonical sanitized TRX and is byte-identical to trial-1.trx.",
+    "testAssemblyProvenancePolicy": "Standard source-family commands rebuild with NoIncremental=true from the clean reviewed evidence harness. The harness must be a descendant of the pinned product revision and every changed path must be allowlisted test, evidence-import, contract, or documentation support. testAssemblyBuildRevision and testAssemblyBuildTree must equal evidenceHarnessRevision/evidenceHarnessTree, and testAssemblySha256 binds the rebuilt bytes at testAssemblyRelativePath. Scenario entries remain bound to the pinned product revision/tree. The issue-211 harness independently builds after capturing and continuously checking the same clean worktree fingerprint.",
     "revisionBindings": [
       {
         "actual": "requestedSourceRevision",
@@ -154,12 +200,20 @@
         "expected": "requiredSourceTree"
       },
       {
+        "actual": "evidenceHarnessRevision",
+        "expected": "clean reviewed execution HEAD descended from requiredSourceRevision"
+      },
+      {
+        "actual": "evidenceHarnessTree",
+        "expected": "evidenceHarnessRevision tree"
+      },
+      {
         "actual": "testAssemblyBuildRevision",
-        "expected": "requiredSourceRevision"
+        "expected": "evidenceHarnessRevision"
       },
       {
         "actual": "testAssemblyBuildTree",
-        "expected": "requiredSourceTree"
+        "expected": "evidenceHarnessTree"
       },
       {
         "actual": "entries[].sourceRevision",
@@ -203,7 +257,9 @@
       "Every entry source revision and tree equal the requested campaign revision and tree.",
       "Every assertion is explicit and passed; loop execution inferred from method success is rejected.",
       "Every bundle relative path is safe and identifies the exact external bytes bound by its declared length when present and SHA-256; no digest binds its containing bundle.",
-      "TRX and source evidence are immutable, length-bound, SHA-256-bound, sanitized inputs."
+      "TRX, every trialResults file, and source evidence are immutable, length-bound, SHA-256-bound, sanitized inputs.",
+      "The importer owns clean nonincremental builds, exact-FQN execution, immediate TRX sanitization, assembly capture, and provenance generation; operator-assembled retained inputs are not a production interface.",
+      "The committed source-import index binds every method source bundle by relative path, byte length, and SHA-256, and each method bundle binds its assembly, every sanitized trial result, canonical sanitized TRX, and source-evidence bytes."
     ]
   },
   "workloads": [

@@ -190,7 +190,7 @@ validate_evidence_contract() {
           (($rule.evidenceSourcePrefix? // "") != "" and ($scenario.evidenceSource | startswith($rule.evidenceSourcePrefix))) or
           (($rule.scenarioIds? // []) | index($scenario.id) != null)) | $rule];
       . as $root |
-      .schemaVersion == 1 and .contract == "phase-14-deferred-evidence" and
+      .schemaVersion == 2 and .contract == "phase-14-deferred-evidence" and
       (keys | sort) == (["schemaVersion","contract","issues","inventory","gateDisposition","dispositionSummary",
         "dispositionRules","sourceFamilies","sourceEvidenceContract","workloads","deferredWorkloads","artifactContract",
         "campaignIndexContract","statusContract","followUpFamilies"] | sort) and
@@ -239,30 +239,44 @@ validate_evidence_contract() {
       all($campaign.scenarios[] | select(.evidenceSource | startswith("test:")); . as $scenario |
         ([$root.sourceFamilies[] as $sourceFamily |
           select($scenario.evidenceSource | startswith($sourceFamily.evidenceSourcePrefix)) | $sourceFamily] | length) == 1) and
-      .sourceEvidenceContract.schemaVersion == 1 and
+      .sourceEvidenceContract.schemaVersion == 2 and
       .sourceEvidenceContract.requiredSourceRevision == "2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5" and
       .sourceEvidenceContract.requiredSourceTree == "a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe" and
-      .sourceEvidenceContract.revisionPolicy == "exact-definition-pinned-clean-source" and
-      (.sourceEvidenceContract.caseSelectorPolicy | contains("TRX") and contains("source-evidence")) and
+      (.sourceEvidenceContract.revisionPolicy | contains("pinned-product-source") and contains("evidence-harness")) and
+      .sourceEvidenceContract.evidenceHarnessPolicy.relationship == "clean-descendant-of-required-source-revision" and
+      .sourceEvidenceContract.evidenceHarnessPolicy.revisionBinding == "execution-head" and
+      .sourceEvidenceContract.evidenceHarnessPolicy.treeBinding == "execution-head-tree" and
+      .sourceEvidenceContract.evidenceHarnessPolicy.productPathChangesRejected == true and
+      (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | length > 0 and length == (unique | length)) and
+      (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | index("scripts/deploy/acceptance-source-family.sh") != null) and
+      (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | index("scripts/test:cameraagent-standalone-211") != null) and
+      (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | index("src/HVO.SkyMonitor.LogicHost/Program.cs") == null) and
+      (.sourceEvidenceContract.caseSelectorPolicy | contains("exactly equal") and contains("TRX") and contains("observation-count")) and
       [.sourceEvidenceContract.requiredEntryFields[]] ==
         ["scenarioId","evidenceSource","sourceRevision","sourceTree","outcome","assertions","outputs","measurements"] and
       [.sourceEvidenceContract.requiredBundleFields[]] ==
-        ["schemaVersion","requestedSourceRevision","requestedSourceTree","cleanSource","testAssemblyRelativePath",
-         "testAssemblySha256","testAssemblyBuildRevision","testAssemblyBuildTree","trxRelativePath","trxByteLength","trxSha256","sourceEvidenceRelativePath",
+        ["schemaVersion","requestedSourceRevision","requestedSourceTree","evidenceHarnessRevision","evidenceHarnessTree","cleanSource","testAssemblyRelativePath",
+          "testAssemblySha256","testAssemblyBuildRevision","testAssemblyBuildTree","trxRelativePath","trxByteLength","trxSha256","trialResults","sourceEvidenceRelativePath",
          "sourceEvidenceByteLength","sourceEvidenceSha256","entries"] and
       .sourceEvidenceContract.bundleByteBindings ==
         [{relativePathField:"testAssemblyRelativePath",byteLengthField:null,sha256Field:"testAssemblySha256"},
-         {relativePathField:"trxRelativePath",byteLengthField:"trxByteLength",sha256Field:"trxSha256"},
-         {relativePathField:"sourceEvidenceRelativePath",byteLengthField:"sourceEvidenceByteLength",sha256Field:"sourceEvidenceSha256"}] and
+          {relativePathField:"trxRelativePath",byteLengthField:"trxByteLength",sha256Field:"trxSha256"},
+          {relativePathField:"trialResults[].relativePath",byteLengthField:"trialResults[].byteLength",sha256Field:"trialResults[].sha256"},
+          {relativePathField:"sourceEvidenceRelativePath",byteLengthField:"sourceEvidenceByteLength",sha256Field:"sourceEvidenceSha256"}] and
       (.sourceEvidenceContract.sourceEvidenceProjectionPolicy |
         contains("sourceEvidenceRelativePath") and contains("exact bytes") and contains("deeply equal")) and
+      (.sourceEvidenceContract.trialResultsPolicy |
+        contains("trialResults is required") and contains("trial-1 through trial-5") and contains("byte-identical")) and
       (.sourceEvidenceContract.testAssemblyProvenancePolicy |
-        contains("NoIncremental=true") and contains("testAssemblyBuildRevision") and contains("testAssemblySha256")) and
+        contains("NoIncremental=true") and contains("evidenceHarnessRevision") and contains("testAssemblyBuildRevision") and
+        contains("testAssemblySha256") and contains("Scenario entries remain bound")) and
       .sourceEvidenceContract.revisionBindings ==
         [{actual:"requestedSourceRevision",expected:"requiredSourceRevision"},
          {actual:"requestedSourceTree",expected:"requiredSourceTree"},
-         {actual:"testAssemblyBuildRevision",expected:"requiredSourceRevision"},
-         {actual:"testAssemblyBuildTree",expected:"requiredSourceTree"},
+         {actual:"evidenceHarnessRevision",expected:"clean reviewed execution HEAD descended from requiredSourceRevision"},
+         {actual:"evidenceHarnessTree",expected:"evidenceHarnessRevision tree"},
+         {actual:"testAssemblyBuildRevision",expected:"evidenceHarnessRevision"},
+         {actual:"testAssemblyBuildTree",expected:"evidenceHarnessTree"},
          {actual:"entries[].sourceRevision",expected:"requestedSourceRevision"},
          {actual:"entries[].sourceTree",expected:"requestedSourceTree"}] and
       .sourceEvidenceContract.redactionPolicy.id == "phase14-source-redaction-v1" and
@@ -273,7 +287,7 @@ validate_evidence_contract() {
       ([.sourceEvidenceContract.redactionPolicy.allowedTransformations[]] | sort) ==
         (["replace-host-with-role","replace-path-with-relative-id","retain-count-duration-and-sha256","retain-enum-reason-code"] | sort) and
       (.sourceEvidenceContract.redactionPolicy.validation | contains("secret fingerprints") and contains("before hashing or publication")) and
-      (.sourceEvidenceContract.rules | length) == 5 and
+      (.sourceEvidenceContract.rules | length) == 7 and
       all(.sourceEvidenceContract.rules[]; type == "string" and length > 0) and
       ([.workloads[].id] | length) == ([.workloads[].id] | unique | length) and
       ([.workloads[].scenarioId] | sort) == ([.dispositionRules[] | select(.disposition == "real-campaign") | .scenarioIds[]] | sort) and
@@ -457,6 +471,10 @@ jq '.sourceEvidenceContract.bundleByteBindings[2].relativePathField="entries"' "
   > "$TEMP_DIR/ambiguous-source-bytes.json"
 expect_rejected 'A source bundle digest without an external relative byte path was accepted.' \
   validate_evidence_contract "$TEMP_DIR/ambiguous-source-bytes.json" "$campaign"
+jq 'del(.sourceEvidenceContract.requiredBundleFields[] | select(. == "trialResults"))' "$evidence_contract" \
+  > "$TEMP_DIR/unbound-trial-results.json"
+expect_rejected 'A source contract without required trialResults was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/unbound-trial-results.json" "$campaign"
 jq '.sourceFamilies[0].commandTemplate |= sub(" -p:NoIncremental=true"; " --no-build")' \
   "$evidence_contract" > "$TEMP_DIR/stale-source-assembly.json"
 expect_rejected 'A source-family command that could reuse a stale assembly was accepted.' \

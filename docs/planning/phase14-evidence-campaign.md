@@ -41,11 +41,14 @@ source-family imports until an admissible artifact exists.
 ## Source Families
 
 The contract maps every `test:` reference to exactly one project family. It pins
-source execution to clean main revision
+product behavior to main revision
 `2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5` and tree
-`a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe`; later importers cannot substitute a
-newer revision. Standard test families run each unique fully qualified method
-once at that revision in Release configuration. The CameraAgent acceptance family
+`a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe`; later importers cannot substitute
+newer product behavior. Evidence executes from a separately reviewed clean
+descendant harness revision/tree whose complete diff is confined to the exact
+test, recorder, importer, contract, CI, and documentation allowlist. Standard
+test families run each unique fully qualified method once from that harness in
+Release configuration. The CameraAgent acceptance family
 uses the complete five-trial `scripts/test:cameraagent-standalone-211` harness and
 its pinned catalog and collector inputs. There are 25 unique methods across the
 103 rows:
@@ -57,17 +60,30 @@ its pinned catalog and collector inputs. There are 25 unique methods across the
 | `logichost-integration` | `tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj` | 22 | 6 |
 
 A test citation or passing method-level TRX alone cannot become `passed`. Many
-methods exercise several fault points inside one loop, so `;case=` identifies a
-strict source-evidence entry, never a TRX data row. Import requires one explicit
+methods exercise several fault points inside one loop, so `;case=` must exactly
+match each fragment's retained selector and never identifies a TRX data row.
+Import requires one explicit
 passed entry per scenario, the versioned sanitizer and admissibility validator
 named by the contract, exact requested revision/tree binding, immutable TRX and
 source-evidence inputs, and verified lengths and SHA-256 values. Each digest
 binds bytes at an explicit safe relative path. The separately hashed source
 evidence file must parse to the exact `entries` array embedded in the bundle, so
 no digest is self-referential or ambiguous. Standard imports rebuild with
-`NoIncremental=true` after checking the pinned clean revision/tree and retain
-that build provenance with the assembly digest; the issue-211 harness performs
-its own build while continuously checking the same captured worktree fingerprint.
+`NoIncremental=true` after checking the clean reviewed harness revision/tree and
+retain that build provenance with the assembly digest. Scenario evidence remains
+bound to the pinned product revision/tree. The issue-211 harness performs its own
+build while continuously checking the same captured worktree fingerprint.
+Every method bundle also requires an exact `trialResults` array. Standard methods
+retain one `method` result at `trial-results/method.trx`. The acceptance method
+retains all five sanitized results at `trial-results/trial-1.trx` through
+`trial-results/trial-5.trx`; its compatibility `result.trx` is byte-identical to
+trial 1. The recorder prefixes the three semantic publication observations in
+every trial, while the bounded expensive restart, pressure, and shutdown
+observations remain in reviewed trial 1, producing 18 independently validated
+fragments.
+Multiple observations for one selector are accepted only when their assertion
+and measurement schemas agree; the artifact then retains an explicit
+`observation-count` measurement.
 
 The versioned redaction policy rejects credential-related fields, exception or
 response bodies, absolute paths, service authorities, raw logs/payloads, control
@@ -166,6 +182,7 @@ Run:
 ```bash
 ./scripts/test:phase14-acceptance
 ./scripts/test:phase14-component
+./scripts/test:phase14-source-import
 ./scripts/test:phase14-campaign
 ./scripts/test:phase14-normal-campaign
 ```

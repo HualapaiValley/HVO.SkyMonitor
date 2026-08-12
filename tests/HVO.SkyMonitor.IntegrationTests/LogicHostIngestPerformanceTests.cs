@@ -181,6 +181,75 @@ public sealed partial class LogicHostIngestPerformanceTests
             || parameter.ParameterType == typeof(Memory<byte>)
             || parameter.ParameterType == typeof(ReadOnlyMemory<byte>)) == true;
         Assert.IsFalse(locationBindingCanAccessPayload);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "out-of-order-upload",
+            $"out-of-order-{Guid.NewGuid():N}",
+            "out-of-order",
+            ["uploads-accepted", "capture-sequences-persisted", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-uploads", outOfOrder.MeasuredOperations, "count"),
+                new Phase14EvidenceMeasurement("elapsed-duration", (long)Math.Round(outOfOrder.ElapsedMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "duplicate-delivery",
+            $"duplicate-{Guid.NewGuid():N}",
+            "duplicate",
+            ["duplicate-uploads-accepted", "duplicate-identities-remained-idempotent", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-uploads", duplicate.MeasuredOperations, "count"),
+                new Phase14EvidenceMeasurement("elapsed-duration", (long)Math.Round(duplicate.ElapsedMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "corrupt-delivery",
+            $"corrupt-{Guid.NewGuid():N}",
+            "corrupt",
+            ["corrupt-payloads-rejected", "valid-retries-accepted", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-transitions", corrupt.MeasuredTransitions, "count"),
+                new Phase14EvidenceMeasurement("transition-duration", (long)Math.Round(corrupt.TotalTransitionMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "central-ingest-object-publication",
+            $"object-publication-{Guid.NewGuid():N}",
+            "object-store-fault",
+            ["object-publication-fault-observed", "valid-retries-published-objects", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-transitions", objectStoreFault.MeasuredTransitions, "count"),
+                new Phase14EvidenceMeasurement("transition-duration", (long)Math.Round(objectStoreFault.TotalTransitionMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "central-ingest-finalization-commit",
+            $"finalization-commit-{Guid.NewGuid():N}",
+            "sql-commit-fault",
+            ["sql-commit-fault-observed", "durable-intents-recovered", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-transitions", sqlStoreFault.MeasuredTransitions, "count"),
+                new Phase14EvidenceMeasurement("transition-duration", (long)Math.Round(sqlStoreFault.TotalTransitionMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        var restartObservationId = $"restart-reconciliation-{Guid.NewGuid():N}";
+        var restartAssertions = new[]
+        {
+            "pending-intents-survived-host-restart",
+            "published-objects-reconciled",
+            "zero-final-backlog"
+        };
+        var restartMeasurements = new[]
+        {
+            new Phase14EvidenceMeasurement("pending-intents", restart.MeasuredPendingIntents, "count"),
+            new Phase14EvidenceMeasurement("recovery-duration", (long)Math.Round(restart.RecoveryLatencyMilliseconds), "milliseconds")
+        };
+        await Phase14ScenarioEvidence.RecordAsync(
+            "central-ingest-intent-commit",
+            $"{restartObservationId}-intent",
+            "restart-reconciliation",
+            restartAssertions,
+            restartMeasurements).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "logichost-host-failure",
+            $"{restartObservationId}-host",
+            "restart-reconciliation",
+            restartAssertions,
+            restartMeasurements).ConfigureAwait(false);
         var command = evidenceRun.CreateTestCommand(
             "LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence");
         var evidence = new

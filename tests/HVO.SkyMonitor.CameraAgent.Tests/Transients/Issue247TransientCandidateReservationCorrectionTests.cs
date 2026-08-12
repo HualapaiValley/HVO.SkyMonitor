@@ -5,6 +5,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
@@ -175,6 +176,21 @@ public sealed class Issue247TransientCandidateReservationCorrectionTests
         {
             Assert.IsTrue(File.Exists(fixture.ResolvePayload(source)));
             Assert.IsTrue(File.Exists(Path.ChangeExtension(fixture.ResolvePayload(source), ".json")));
+        }
+        var scenarioId = faultPoint switch
+        {
+            TransientCandidateFaultPoint.BeforeReservationValidation => "transient-candidate-reservation-before-validation",
+            TransientCandidateFaultPoint.AfterReservationValidation => "transient-candidate-reservation-after-validation",
+            _ => null
+        };
+        if (scenarioId is not null)
+        {
+            await Phase14ScenarioEvidence.RecordAsync(
+                scenarioId,
+                $"fault-point-{faultPoint}",
+                faultPoint.ToString(),
+                ["reservation-fault-observed", "fresh-reconstruction-converged", "candidate-identity-preserved", "source-holds-preserved"])
+                .ConfigureAwait(false);
         }
     }
 

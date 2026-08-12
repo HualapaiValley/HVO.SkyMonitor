@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=scripts/deploy/common.sh
+. "$SCRIPT_DIR/deploy/common.sh"
+# shellcheck source=scripts/deploy/acceptance-source-family.sh
+. "$SCRIPT_DIR/deploy/acceptance-source-family.sh"
+
+usage() {
+    printf '%s\n' 'usage: scripts/phase14:source-import --output-root ABS_PRIVATE --harness-revision 40hex --catalog-root ABS --collector-image IMAGE@sha256:64hex' >&2
+    exit 2
+}
+
+output_root=''
+harness_revision=''
+catalog_root=''
+collector_image=''
+while (( $# )); do
+    case "$1" in
+      --output-root) [[ $# -ge 2 ]] || usage; output_root="$2"; shift 2 ;;
+      --harness-revision) [[ $# -ge 2 ]] || usage; harness_revision="$2"; shift 2 ;;
+      --catalog-root) [[ $# -ge 2 ]] || usage; catalog_root="$2"; shift 2 ;;
+      --collector-image) [[ $# -ge 2 ]] || usage; collector_image="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+done
+[[ -n "$output_root" && -n "$harness_revision" && -n "$catalog_root" && -n "$collector_image" ]] || usage
+
+phase14_source_collect "$REPO_ROOT" "$output_root" "$harness_revision" "$catalog_root" "$collector_image" \
+  "$REPO_ROOT/deploy/split-host/acceptance/phase14-evidence-contract.json" \
+  "$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json"

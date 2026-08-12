@@ -1,0 +1,372 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=scripts/deploy/common.sh
+. "$SCRIPT_DIR/deploy/common.sh"
+# shellcheck source=scripts/deploy/acceptance-source-family.sh
+. "$SCRIPT_DIR/deploy/acceptance-source-family.sh"
+
+TEMP_DIR="$(mktemp -d -t hvo-phase14-source-import.XXXXXX)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+trap 'printf "Phase 14 source-import contract failed near line %s.\n" "$LINENO" >&2' ERR
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+expect_rejected() { local message="$1"; shift; if "$@" >"$TEMP_DIR/rejection.log" 2>&1; then fail "$message"; fi; }
+
+REPO_ROOT="$TEMP_DIR/repository"
+install -d -m 700 "$REPO_ROOT/deploy/split-host/acceptance" "$REPO_ROOT/docs/planning"
+install -d -m 700 \
+  "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0" \
+  "$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0" \
+  "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0"
+cp "$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-evidence-contract.json" "$REPO_ROOT/deploy/split-host/acceptance/phase14-evidence-contract.json"
+cp "$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json" "$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json"
+printf 'product\n' > "$REPO_ROOT/product.txt"
+printf 'cameraagent assembly\n' > "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Tests.dll"
+printf 'logichost assembly\n' > "$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0/HVO.SkyMonitor.IntegrationTests.dll"
+printf 'acceptance assembly\n' > "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll"
+git -C "$REPO_ROOT" init --quiet
+git -C "$REPO_ROOT" config user.email phase14-source@example.invalid
+git -C "$REPO_ROOT" config user.name 'Phase 14 Source Import Contract'
+git -C "$REPO_ROOT" add --all
+git -C "$REPO_ROOT" add -f \
+  tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Tests.dll \
+  tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0/HVO.SkyMonitor.IntegrationTests.dll \
+  tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll
+git -C "$REPO_ROOT" commit --quiet -m product
+product_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+product_tree="$(git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')"
+contract="$REPO_ROOT/deploy/split-host/acceptance/phase14-evidence-contract.json"
+inventory="$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json"
+jq --arg revision "$product_revision" --arg tree "$product_tree" '
+  .sourceEvidenceContract.requiredSourceRevision=$revision |
+  .sourceEvidenceContract.requiredSourceTree=$tree |
+  .sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths=[
+    "deploy/split-host/acceptance/phase14-evidence-contract.json","docs/planning/phase14-evidence-campaign.md"]
+' "$contract" > "$contract.tmp" && mv "$contract.tmp" "$contract"
+printf 'harness\n' > "$REPO_ROOT/docs/planning/phase14-evidence-campaign.md"
+git -C "$REPO_ROOT" add --all && git -C "$REPO_ROOT" commit --quiet -m harness
+harness_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+harness_tree="$(git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')"
+
+# Keep the importer test independent of the .NET toolchain; acceptance-trx has its own focused tests.
+phase14_source_sanitize_trx() {
+    local results="$2" fqn="$3" output="$4"
+    if [[ -n "${COLLECTION_LOG:-}" ]]; then printf 'sanitize\t%s\t%s\n' "$results" "$fqn" >> "$COLLECTION_LOG"; fi
+    printf '<TestRun sanitized="true"/>\n' > "$output"
+    chmod 600 "$output"
+}
+
+INPUT="$TEMP_DIR/input"
+OUTPUT="$TEMP_DIR/output"
+install -d -m 700 "$INPUT" "$OUTPUT"
+map="$(jq -c --slurpfile inventory "$inventory" '[.sourceFamilies[] as $family | [$inventory[0].scenarios[] |
+  select(.evidenceSource | startswith($family.evidenceSourcePrefix)) |
+  {family:$family.id,scenarioId:.id,fqn:(.evidenceSource | sub("^test:";"") | split(";case=")[0]),
+   selector:(if (.evidenceSource | contains(";case=")) then (.evidenceSource | sub("^[^;]*;case=";"")) else null end)}]] | add' "$contract")"
+
+COLLECTION_LOG="$TEMP_DIR/collection.log"
+export COLLECTION_LOG
+phase14_test_write_fragments() {
+    local family="$1" fqn="$2" method="$3" prefix="${4:-}" scenario selector observation observation_hash
+    while IFS=$'\t' read -r scenario selector; do
+        observation="${prefix:+$prefix-}$scenario-collected"; observation_hash="$(printf '%s' "$observation" | sha256sum)"; observation_hash="${observation_hash%% *}"
+        jq -S -n --arg scenario "$scenario" --arg selector "$selector" --arg observation "$observation" \
+          --arg revision "$product_revision" --arg tree "$product_tree" '
+          {schemaVersion:1,scenarioId:$scenario,caseSelector:(if $selector == "" then null else $selector end),observationId:$observation,
+           sourceRevision:$revision,sourceTree:$tree,assertions:[{id:"collected",passed:true}],measurements:[]}' \
+          > "$method/fragments/$scenario--$observation_hash.json"
+        chmod 600 "$method/fragments/$scenario--$observation_hash.json"
+    done < <(jq -r --arg family "$family" --arg fqn "$fqn" '.[] | select(.family == $family and .fqn == $fqn) |
+      [.scenarioId,(.selector // "")] | @tsv' <<< "$map")
+}
+phase14_source_run_build() {
+    local repo="$1" project="$2"
+    [[ "$repo" == "$REPO_ROOT" ]] || return 1
+    printf 'build\t%s\n' "$project" >> "$COLLECTION_LOG"
+}
+phase14_source_resolve_target() {
+    local repo="$1" project="$2"
+    case "$project" in
+      *CameraAgent.Tests*) printf '%s\n' "$repo/tests/HVO.SkyMonitor.CameraAgent.Tests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Tests.dll" ;;
+      *IntegrationTests*) printf '%s\n' "$repo/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0/HVO.SkyMonitor.IntegrationTests.dll" ;;
+      *AcceptanceTests*) printf '%s\n' "$repo/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll" ;;
+      *) return 1 ;;
+    esac
+}
+phase14_source_run_test() {
+    local repo="$1" project="$2" fqn="$3" raw="$4" family method
+    # shellcheck disable=SC2031 # The collector intentionally invokes this overridable stub in an environment-setting subshell.
+    [[ "$repo" == "$REPO_ROOT" && "${HVO_PHASE14_EVIDENCE_ALLOWED_ROOT:-}" == "${raw%%/private-results/*}/input" &&
+       "${HVO_PHASE14_SOURCE_REVISION:-}" == "$product_revision" && "${HVO_PHASE14_SOURCE_TREE:-}" == "$product_tree" &&
+       "${PHASE14_INFRASTRUCTURE_SENTINEL:-}" == inherited &&
+       -z "${HVO_DERIVATIVE_PERF_SMOKE+x}" && -z "${HVO_DERIVATIVE_P5_DIAGNOSTIC_TRIAL+x}" &&
+       -z "${HVO_EVIDENCE_REVISION+x}" && -z "${HVO_EVIDENCE_TRIAL+x}" &&
+       -z "${HVO_ISSUE_107_DEPENDENCY+x}" && -z "${HVO_ISSUE_107_EVIDENCE_ROOT+x}" &&
+       -z "${HVO_EVIDENCE_REPOSITORY_ROOT+x}" && -z "${HVO_RAW_INGRESS_CRASH_ROOT+x}" &&
+       -z "${HVO_RAW_INGRESS_CRASH_POINT+x}" && -z "${HVO_RAW_INGRESS_CRASH_HANG+x}" &&
+       -z "${HVO_ISSUE_246_RETENTION_EVIDENCE+x}" && -z "${HVO_ISSUE_248_BASELINE_EVIDENCE+x}" &&
+       -z "${HVO_ISSUE_248_SMOKE+x}" && -z "${HVO_ISSUE_248_CENSORED_SMOKE+x}" &&
+       -z "${HVO_ISSUE_248_AGGREGATE_ONLY+x}" && -z "${HVO_ISSUE_250_EVIDENCE+x}" &&
+       -z "${VSTEST_TESTCASE_FILTER+x}" ]] || return 1
+    [[ "${PHASE14_TEST_FAIL:-false}" != true ]] || return 1
+    family="${raw#*/private-results/}"; family="${family%%/*}"
+    # shellcheck disable=SC2031 # See the controlled collector subshell above.
+    method="${HVO_PHASE14_EVIDENCE_ROOT:?}"
+    printf 'test\t%s\tFullyQualifiedName=%s\n' "$project" "$fqn" >> "$COLLECTION_LOG"
+    printf 'private raw trx\n' > "$raw/result.trx"; chmod 600 "$raw/result.trx"
+    phase14_test_write_fragments "$family" "$fqn" "$method"
+}
+phase14_source_run_issue211() {
+    local repo="$1" catalog="$2" image="$3" private_results="$4" method="$5" trial acceptance_fqn scenario selector observation observation_hash
+    [[ "$repo" == "$REPO_ROOT" && "$catalog" == "$CATALOG" && "$image" == "$COLLECTOR_IMAGE" ]] || return 1
+    printf 'issue211\t%s\t%s\n' "$catalog" "$image" >> "$COLLECTION_LOG"
+    acceptance_fqn="$(jq -r '[.[] | select(.family == "cameraagent-acceptance") | .fqn] | unique[0]' <<< "$map")"
+    for trial in 1 2 3 4 5; do
+        while IFS=$'\t' read -r scenario selector; do
+            if [[ "$trial" == 1 || "$scenario" == raw-boundary-sidecar-directory-sync ||
+                  "$scenario" == processing-output-before-node-commit ||
+                  "$scenario" == transient-runtime-candidate-journal-after-commit ]]; then
+                observation="trial-$trial-$scenario-collected"
+                observation_hash="$(printf '%s' "$observation" | sha256sum)"; observation_hash="${observation_hash%% *}"
+                jq -S -n --arg scenario "$scenario" --arg selector "$selector" --arg observation "$observation" \
+                  --arg revision "$product_revision" --arg tree "$product_tree" '
+                  {schemaVersion:1,scenarioId:$scenario,caseSelector:(if $selector == "" then null else $selector end),observationId:$observation,
+                   sourceRevision:$revision,sourceTree:$tree,assertions:[{id:"collected",passed:true}],measurements:[]}' \
+                  > "$method/fragments/$scenario--$observation_hash.json"
+                chmod 600 "$method/fragments/$scenario--$observation_hash.json"
+            fi
+        done < <(jq -r --arg fqn "$acceptance_fqn" '.[] | select(.family == "cameraagent-acceptance" and .fqn == $fqn) |
+          [.scenarioId,(.selector // "")] | @tsv' <<< "$map")
+        [[ "${PHASE14_TEST_MISSING_FIFTH:-false}" != true || "$trial" != 5 ]] || continue
+        install -d -m 700 "$private_results/phase14-trx/trial-$trial"
+        printf 'acceptance raw trx\n' > "$private_results/phase14-trx/trial-$trial/result.trx"
+        chmod 600 "$private_results/phase14-trx/trial-$trial/result.trx"
+    done
+}
+
+COLLECT_OUTPUT="$TEMP_DIR/collected-output"; CATALOG="$TEMP_DIR/catalog"
+COLLECTOR_IMAGE="collector.invalid/otel@sha256:$(printf 'a%.0s' {1..64})"
+install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG"
+export HVO_DERIVATIVE_PERF_SMOKE=1 HVO_DERIVATIVE_P5_DIAGNOSTIC_TRIAL=1 \
+  HVO_EVIDENCE_REVISION=ambient HVO_EVIDENCE_TRIAL=1 HVO_ISSUE_107_DEPENDENCY=Redis \
+  HVO_ISSUE_107_EVIDENCE_ROOT=/ambient HVO_EVIDENCE_REPOSITORY_ROOT=/ambient \
+  HVO_RAW_INGRESS_CRASH_ROOT=/ambient HVO_RAW_INGRESS_CRASH_POINT=1 HVO_RAW_INGRESS_CRASH_HANG=true \
+  HVO_ISSUE_246_RETENTION_EVIDENCE=1 HVO_ISSUE_248_BASELINE_EVIDENCE=1 HVO_ISSUE_248_SMOKE=1 \
+  HVO_ISSUE_248_CENSORED_SMOKE=1 HVO_ISSUE_248_AGGREGATE_ONLY=1 HVO_ISSUE_250_EVIDENCE=1 \
+  VSTEST_TESTCASE_FILTER=ambient PHASE14_INFRASTRUCTURE_SENTINEL=inherited
+phase14_source_collect "$REPO_ROOT" "$COLLECT_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
+[[ "$(grep -c '^build' "$COLLECTION_LOG")" == 2 ]] || fail 'Collector did not build exactly two standard projects.'
+[[ "$(grep -c '^test' "$COLLECTION_LOG")" == 24 ]] || fail 'Collector did not execute exactly 24 standard methods.'
+[[ "$(sed -n '1p' "$COLLECTION_LOG")" == build$'\t'tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj ]] ||
+  fail 'Collector did not build before standard executions.'
+[[ "$(grep -n '^build' "$COLLECTION_LOG" | sed -n '2p' | cut -d: -f1)" -lt "$(grep -n '^test' "$COLLECTION_LOG" | sed -n '19p' | cut -d: -f1)" ]] ||
+  fail 'Second project was not built before its executions.'
+while IFS= read -r expected_fqn; do
+    [[ "$(grep -F -c $'\tFullyQualifiedName='"$expected_fqn" "$COLLECTION_LOG")" == 1 ]] || fail 'Collector filter was not exact.'
+done < <(jq -r '[.[] | select(.family != "cameraagent-acceptance") | .fqn] | unique[]' <<< "$map")
+[[ "$(grep -c '^issue211' "$COLLECTION_LOG")" == 1 ]] || fail 'Acceptance wrapper invocation count is wrong.'
+[[ "$(grep '^sanitize' "$COLLECTION_LOG" | grep -c '/phase14-trx/trial-[1-5]')" == 5 ]] || fail 'Acceptance trials were not all sanitized.'
+acceptance_bundle="$(find "$COLLECT_OUTPUT/source-import/methods/cameraagent-acceptance" -name source-bundle.json)"
+jq -e '.trialResults | length == 5 and [.[].id] == ["trial-1","trial-2","trial-3","trial-4","trial-5"]' \
+  "$acceptance_bundle" >/dev/null || fail 'Published acceptance bundle did not retain five trial results.'
+standard_bundle="$(find "$COLLECT_OUTPUT/source-import/methods" -path '*/cameraagent-tests/*/source-bundle.json' | sort | sed -n '1p')"
+jq -e '.trialResults == [{id:"method",relativePath:"trial-results/method.trx",byteLength:.trxByteLength,sha256:.trxSha256}]' \
+  "$standard_bundle" >/dev/null || fail 'Published standard bundle did not retain one method trial result.'
+[[ "$(find "$COLLECT_OUTPUT/source-import" -name assembly-provenance.json | wc -l)" == 0 ]] || fail 'Private provenance leaked as a separate file.'
+[[ "$(find "$COLLECT_OUTPUT/source-import" -name source-bundle.json -exec jq -r '.testAssemblyBuildRevision' {} \; | sort -u)" == "$harness_revision" ]] ||
+  fail 'Collector-created assembly provenance was not imported.'
+[[ "$(grep -rl 'private raw trx\|acceptance raw trx' "$COLLECT_OUTPUT/source-import" | wc -l)" == 0 ]] || fail 'Raw collector TRX entered publication.'
+[[ "$(find "$COLLECT_OUTPUT" -maxdepth 1 -name '.source-collection.stage.*' | wc -l)" == 0 ]] || fail 'Collection stage was not cleaned.'
+FILTERED_OUTPUT="$TEMP_DIR/filtered-collection"; install -d -m 700 "$FILTERED_OUTPUT"
+export DOTNET_TEST_FILTER=ambient
+expect_rejected 'An ambient dotnet test filter was accepted.' phase14_source_collect \
+  "$REPO_ROOT" "$FILTERED_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
+unset DOTNET_TEST_FILTER
+[[ "$(find "$FILTERED_OUTPUT" -mindepth 1 | wc -l)" == 0 ]] || fail 'Rejected filtered collection was not cleaned.'
+collection_lines="$(wc -l < "$COLLECTION_LOG")"
+phase14_source_collect "$REPO_ROOT" "$COLLECT_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
+[[ "$(wc -l < "$COLLECTION_LOG")" == "$collection_lines" ]] || fail 'Resume performed collection.'
+tampered_trial_output="$TEMP_DIR/tampered-trial-output"; install -d -m 700 "$tampered_trial_output"
+cp -a "$COLLECT_OUTPUT/source-import" "$tampered_trial_output/source-import"
+printf 'tamper\n' >> "$(find "$tampered_trial_output/source-import/methods/cameraagent-acceptance" -path '*/trial-results/trial-3.trx')"
+expect_rejected 'A tampered retained acceptance trial was accepted on resume.' phase14_source_collect \
+  "$REPO_ROOT" "$tampered_trial_output" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
+MISSING_TRIAL_OUTPUT="$TEMP_DIR/missing-trial-collection"; install -d -m 700 "$MISSING_TRIAL_OUTPUT"
+export PHASE14_TEST_MISSING_FIFTH=true
+expect_rejected 'Collection accepted a missing fifth acceptance trial.' phase14_source_collect \
+  "$REPO_ROOT" "$MISSING_TRIAL_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
+unset PHASE14_TEST_MISSING_FIFTH
+FAILED_OUTPUT="$TEMP_DIR/failed-collection"; install -d -m 700 "$FAILED_OUTPUT"
+export PHASE14_TEST_FAIL=true
+expect_rejected 'A failed collection was accepted.' phase14_source_collect \
+  "$REPO_ROOT" "$FAILED_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
+unset PHASE14_TEST_FAIL
+[[ ! -e "$FAILED_OUTPUT/source-import" ]] || fail 'Failed collection published output.'
+[[ "$(find "$FAILED_OUTPUT" -mindepth 1 | wc -l)" == 0 ]] || fail 'Failed collection stage was not cleaned.'
+
+while IFS=$'\t' read -r family fqn; do
+    method_id="$(phase14_source_method_id "$fqn")"
+    method="$INPUT/$family/$method_id"
+    install -d -m 700 "$INPUT/$family" "$method" "$method/results" "$method/fragments"
+    [[ "$family" != cameraagent-acceptance ]] || install -d -m 700 "$method/trial-results"
+    printf 'raw private trx\n' > "$method/results/raw.trx"
+    printf 'assembly:%s\n' "$fqn" > "$method/test-assembly.dll"
+    chmod 600 "$method/results/raw.trx" "$method/test-assembly.dll"
+    assembly_sha="$(phase14_source_hash "$method/test-assembly.dll")"
+    jq -S -n --arg revision "$harness_revision" --arg tree "$harness_tree" --arg sha "$assembly_sha" \
+      '{schemaVersion:1,buildRevision:$revision,buildTree:$tree,assemblySha256:$sha}' > "$method/assembly-provenance.json"
+    chmod 600 "$method/assembly-provenance.json"
+    while IFS=$'\t' read -r scenario selector; do
+        observations=(fixture)
+        if [[ "$family" == cameraagent-acceptance ]]; then
+            case "$scenario" in
+              raw-boundary-sidecar-directory-sync|processing-output-before-node-commit|transient-runtime-candidate-journal-after-commit)
+                observations=(trial-1 trial-2 trial-3 trial-4 trial-5) ;;
+              *) observations=(trial-1) ;;
+            esac
+        fi
+        for observation_prefix in "${observations[@]}"; do
+        observation="$observation_prefix-$scenario-fixture"; observation_hash="$(printf '%s' "$observation" | sha256sum)"; observation_hash="${observation_hash%% *}"
+        jq -S -n --arg scenario "$scenario" --arg selector "$selector" --arg observation "$observation" \
+          --arg revision "$product_revision" --arg tree "$product_tree" '
+          {schemaVersion:1,scenarioId:$scenario,caseSelector:(if $selector == "" then null else $selector end),observationId:$observation,sourceRevision:$revision,sourceTree:$tree,
+           assertions:[{id:"explicit-convergence",passed:true}],measurements:[{id:"attempt-count",value:1,unit:"count"}]}' \
+          > "$method/fragments/$scenario--$observation_hash.json"
+        chmod 600 "$method/fragments/$scenario--$observation_hash.json"
+        done
+    done < <(jq -r --arg family "$family" --arg fqn "$fqn" '.[] | select(.family == $family and .fqn == $fqn) | [.scenarioId,(.selector // "")] | @tsv' <<< "$map")
+    if [[ "$family" == cameraagent-acceptance ]]; then
+        for trial in 1 2 3 4 5; do
+            printf '<TestRun sanitized="true"/>\n' > "$method/trial-results/trial-$trial.trx"
+            chmod 600 "$method/trial-results/trial-$trial.trx"
+        done
+        cp "$method/trial-results/trial-1.trx" "$method/results/raw.trx"
+    fi
+done < <(jq -r '[.[] | [.family,.fqn]] | unique[] | @tsv' <<< "$map")
+
+first_family="$(jq -r '.[0].family' <<< "$map")"; first_fqn="$(jq -r '.[0].fqn' <<< "$map")"
+first_method="$INPUT/$first_family/$(phase14_source_method_id "$first_fqn")"
+first_fragment="$(printf '%s\n' "$first_method"/fragments/* | sort | sed -n '1p')"
+first_scenario="$(jq -r '.scenarioId' "$first_fragment")"; first_selector="$(jq -r '.caseSelector // ""' "$first_fragment")"
+second_observation="$first_scenario-second"; second_hash="$(printf '%s' "$second_observation" | sha256sum)"; second_hash="${second_hash%% *}"
+jq --arg observation "$second_observation" '.observationId=$observation' "$first_fragment" > "$first_method/fragments/$first_scenario--$second_hash.json"
+chmod 600 "$first_method/fragments/$first_scenario--$second_hash.json"
+
+phase14_source_import "$REPO_ROOT" "$INPUT" "$OUTPUT" "$harness_revision" "$contract" "$inventory"
+publication="$OUTPUT/source-import"
+jq -e '.status == "recorded" and .campaignStatus == "not-run" and (.entries | length) == 103 and
+  ([.entries[].scenarioId] | length == (unique | length)) and (.methodBundles | length) == 25 and
+  all(.entries[]; .status == "recorded")' \
+  "$publication/source-import-index.json" >/dev/null || fail 'Positive import counts or statuses are wrong.'
+first_artifact="$(jq -r --arg scenario "$first_scenario" '.entries[] | select(.scenarioId == $scenario) | .artifactRelativePath' "$publication/source-import-index.json")"
+jq -e '.measurements | any(.id == "observation-count" and .value == 2 and .unit == "count")' "$publication/$first_artifact" >/dev/null ||
+  fail 'Multiple observations were not aggregated.'
+[[ "$(find "$publication/methods" -name source-bundle.json | wc -l)" == 25 ]] || fail 'Positive import method count is wrong.'
+[[ "$(find "$publication" -type f -name '*.trx' | wc -l)" == 54 ]] || fail 'Sanitized TRX count is wrong.'
+[[ "$(grep -rl 'raw private trx' "$publication" | wc -l)" == 0 ]] || fail 'Raw TRX was retained.'
+before="$(phase14_source_hash "$publication/source-import-index.json")"
+phase14_source_import "$REPO_ROOT" "$INPUT" "$OUTPUT" "$harness_revision" "$contract" "$inventory"
+[[ "$(phase14_source_hash "$publication/source-import-index.json")" == "$before" ]] || fail 'Immutable resume rewrote the index.'
+
+fragment_copy="$TEMP_DIR/fragment.json"; cp "$first_fragment" "$fragment_copy"; chmod 600 "$fragment_copy"
+
+jq '.assertions[0].passed=false' "$fragment_copy" > "$TEMP_DIR/failed.json"; chmod 600 "$TEMP_DIR/failed.json"
+expect_rejected 'A failed assertion was accepted.' phase14_source_validate_fragment \
+  "$TEMP_DIR/failed.json" "$first_scenario" "$first_selector" "$product_revision" "$product_tree"
+expect_rejected 'A source revision mismatch was accepted.' phase14_source_validate_fragment \
+  "$fragment_copy" "$first_scenario" "$first_selector" "$(printf 'f%.0s' {1..40})" "$product_tree"
+jq '.password="prohibited"' "$fragment_copy" > "$TEMP_DIR/prohibited-field.json"; chmod 600 "$TEMP_DIR/prohibited-field.json"
+expect_rejected 'A prohibited field was accepted.' phase14_source_validate_fragment \
+  "$TEMP_DIR/prohibited-field.json" "$first_scenario" "$first_selector" "$product_revision" "$product_tree"
+jq '.measurements[0].id="https://private.example/value"' "$fragment_copy" > "$TEMP_DIR/prohibited-content.json"; chmod 600 "$TEMP_DIR/prohibited-content.json"
+expect_rejected 'A URI authority was accepted.' phase14_source_validate_fragment \
+  "$TEMP_DIR/prohibited-content.json" "$first_scenario" "$first_selector" "$product_revision" "$product_tree"
+jq '.observationId="/private/operator/path"' "$fragment_copy" > "$TEMP_DIR/absolute-path.json"; chmod 600 "$TEMP_DIR/absolute-path.json"
+expect_rejected 'An absolute path was accepted.' phase14_source_validate_fragment \
+  "$TEMP_DIR/absolute-path.json" "$first_scenario" "$first_selector" "$product_revision" "$product_tree"
+
+mutate_input() { local label="$1"; cp -a "$INPUT" "$TEMP_DIR/$label"; chmod 700 "$TEMP_DIR/$label"; printf '%s\n' "$TEMP_DIR/$label"; }
+missing="$(mutate_input missing)"; rm "${first_method/$INPUT/$missing}/fragments/$first_scenario"--*.json
+expect_rejected 'A missing case fragment despite passing TRX was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$missing" "$TEMP_DIR/out-missing" "$harness_revision" "$contract" "$inventory"
+incompatible="$(mutate_input incompatible)"; incompatible_fragment="$(printf '%s\n' "${first_method/$INPUT/$incompatible}/fragments/$first_scenario"--*.json | sort | sed -n '2p')"
+jq '.measurements[0].value=2' "$incompatible_fragment" > "$TEMP_DIR/i" && mv "$TEMP_DIR/i" "$incompatible_fragment"; chmod 600 "$incompatible_fragment"
+expect_rejected 'Incompatible multiple observations were accepted.' phase14_source_import \
+  "$REPO_ROOT" "$incompatible" "$TEMP_DIR/out-incompatible" "$harness_revision" "$contract" "$inventory"
+wrong_selector="$(mutate_input wrong-selector)"; wrong_fragment="$(printf '%s\n' "${first_method/$INPUT/$wrong_selector}/fragments/$first_scenario"--*.json | sort | sed -n '1p')"
+jq '.caseSelector="wrong-selector"' "$wrong_fragment" > "$TEMP_DIR/w" && mv "$TEMP_DIR/w" "$wrong_fragment"; chmod 600 "$wrong_fragment"
+expect_rejected 'A wrong case selector was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$wrong_selector" "$TEMP_DIR/out-selector" "$harness_revision" "$contract" "$inventory"
+swapped_selector="$(mutate_input swapped-selector)"; swapped_fragment="$(printf '%s\n' "${first_method/$INPUT/$swapped_selector}/fragments/$first_scenario"--*.json | sort | sed -n '1p')"
+other_selector="$(jq -r --arg selector "$first_selector" '[.[] | .selector // "" | select(. != $selector and . != "")][0]' <<< "$map")"
+jq --arg selector "$other_selector" '.caseSelector=$selector' "$swapped_fragment" > "$TEMP_DIR/s" && mv "$TEMP_DIR/s" "$swapped_fragment"; chmod 600 "$swapped_fragment"
+expect_rejected 'A selector swapped from another inventory row was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$swapped_selector" "$TEMP_DIR/out-swapped-selector" "$harness_revision" "$contract" "$inventory"
+unexpected="$(mutate_input unexpected)"; cp "$fragment_copy" "${first_method/$INPUT/$unexpected}/fragments/unexpected--fixture.json"
+jq '.scenarioId="unexpected" | .observationId="unexpected-fixture"' "${first_method/$INPUT/$unexpected}/fragments/unexpected--fixture.json" > "$TEMP_DIR/u" && mv "$TEMP_DIR/u" "${first_method/$INPUT/$unexpected}/fragments/unexpected--fixture.json"; chmod 600 "${first_method/$INPUT/$unexpected}/fragments/unexpected--fixture.json"
+expect_rejected 'An unexpected fragment was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$unexpected" "$TEMP_DIR/out-unexpected" "$harness_revision" "$contract" "$inventory"
+bad_assembly="$(mutate_input bad-assembly)"; printf 'tamper\n' >> "${first_method/$INPUT/$bad_assembly}/test-assembly.dll"
+expect_rejected 'Wrong assembly hash/build provenance was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$bad_assembly" "$TEMP_DIR/out-assembly" "$harness_revision" "$contract" "$inventory"
+
+unsafe_mode="$(mutate_input unsafe-mode)"; chmod 644 "${first_method/$INPUT/$unsafe_mode}/test-assembly.dll"
+expect_rejected 'An unsafe input mode was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$unsafe_mode" "$TEMP_DIR/out-mode" "$harness_revision" "$contract" "$inventory"
+unsafe_link="$(mutate_input unsafe-link)"; ln -s "$fragment_copy" "${first_method/$INPUT/$unsafe_link}/fragments/link.json"
+expect_rejected 'A symlink was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$unsafe_link" "$TEMP_DIR/out-link" "$harness_revision" "$contract" "$inventory"
+unsafe_hardlink="$(mutate_input unsafe-hardlink)"; ln "${first_method/$INPUT/$unsafe_hardlink}/test-assembly.dll" "$TEMP_DIR/hardlink"
+expect_rejected 'A hardlinked input was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$unsafe_hardlink" "$TEMP_DIR/out-hardlink" "$harness_revision" "$contract" "$inventory"
+
+tampered="$TEMP_DIR/tampered-publication"; install -d -m 700 "$tampered"; cp -a "$publication" "$tampered/source-import"
+artifact="$tampered/source-import/$first_artifact"; printf ' ' >> "$artifact"
+expect_rejected 'Digest tampering was accepted on resume.' phase14_source_import \
+  "$REPO_ROOT" "$INPUT" "$tampered" "$harness_revision" "$contract" "$inventory"
+incomplete="$TEMP_DIR/incomplete-publication"; install -d -m 700 "$incomplete/source-import"; printf '{}\n' > "$incomplete/source-import/source-import-index.json"; chmod 600 "$incomplete/source-import/source-import-index.json"
+expect_rejected 'An incomplete staged publication was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$INPUT" "$incomplete" "$harness_revision" "$contract" "$inventory"
+coordinated="$TEMP_DIR/coordinated-publication"; install -d -m 700 "$coordinated"; cp -a "$publication" "$coordinated/source-import"
+bundle_relative="$(jq -r '.methodBundles[0].relativePath' "$coordinated/source-import/source-import-index.json")"; bundle="$coordinated/source-import/$bundle_relative"; evidence="$(dirname "$bundle")/source-evidence.json"
+jq '.entries[0].measurements[0].value += 1' "$evidence" > "$TEMP_DIR/e" && mv "$TEMP_DIR/e" "$evidence"; chmod 600 "$evidence"
+evidence_length="$(stat -c %s "$evidence")"; evidence_sha="$(phase14_source_hash "$evidence")"
+jq --argjson length "$evidence_length" --arg sha "$evidence_sha" --slurpfile evidence "$evidence" \
+  '.sourceEvidenceByteLength=$length | .sourceEvidenceSha256=$sha | .entries=$evidence[0].entries' "$bundle" > "$TEMP_DIR/b" && mv "$TEMP_DIR/b" "$bundle"; chmod 600 "$bundle"
+expect_rejected 'Coordinated bundle and source-evidence tampering without an index change was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$INPUT" "$coordinated" "$harness_revision" "$contract" "$inventory"
+unexpected_directory="$TEMP_DIR/unexpected-directory"; install -d -m 700 "$unexpected_directory"; cp -a "$publication" "$unexpected_directory/source-import"; install -d -m 700 "$unexpected_directory/source-import/unexpected"
+expect_rejected 'An unexpected publication directory was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$INPUT" "$unexpected_directory" "$harness_revision" "$contract" "$inventory"
+
+stale_inventory="$TEMP_DIR/stale-inventory.json"; stale_contract="$TEMP_DIR/stale-contract.json"
+jq '.scenarios[0].title += " stale"' "$inventory" > "$stale_inventory"
+stale_hash="$(jq -S -c . "$stale_inventory" | sha256sum)"; stale_hash="${stale_hash%% *}"
+jq --arg hash "$stale_hash" '.inventory.canonicalSha256=$hash' "$contract" > "$stale_contract"
+expect_rejected 'A stale resume inventory was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$INPUT" "$OUTPUT" "$harness_revision" "$stale_contract" "$stale_inventory"
+printf 'new harness\n' >> "$REPO_ROOT/docs/planning/phase14-evidence-campaign.md"; git -C "$REPO_ROOT" add --all; git -C "$REPO_ROOT" commit --quiet -m newer-harness
+new_harness_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+expect_rejected 'A stale resume harness identity was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$INPUT" "$OUTPUT" "$new_harness_revision" "$contract" "$inventory"
+git -C "$REPO_ROOT" switch --quiet --detach "$harness_revision"
+
+git -C "$REPO_ROOT" status --porcelain >/dev/null
+printf 'dirty\n' >> "$REPO_ROOT/docs/planning/phase14-evidence-campaign.md"
+expect_rejected 'A dirty harness was accepted.' phase14_source_validate_repository "$REPO_ROOT" "$contract" "$harness_revision"
+git -C "$REPO_ROOT" restore docs/planning/phase14-evidence-campaign.md
+printf 'product change\n' > "$REPO_ROOT/product.txt"; git -C "$REPO_ROOT" add product.txt; git -C "$REPO_ROOT" commit --quiet -m disallowed
+disallowed_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+expect_rejected 'A disallowed changed path was accepted.' phase14_source_validate_repository "$REPO_ROOT" "$contract" "$disallowed_revision"
+git -C "$REPO_ROOT" switch --quiet --detach "$harness_revision"
+git -C "$REPO_ROOT" switch --quiet --orphan unrelated
+git -C "$REPO_ROOT" rm -rf --quiet --ignore-unmatch .
+printf 'unrelated\n' > "$REPO_ROOT/unrelated.txt"; git -C "$REPO_ROOT" add unrelated.txt; git -C "$REPO_ROOT" commit --quiet -m unrelated
+unrelated_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+expect_rejected 'A non-descendant harness was accepted.' phase14_source_validate_repository "$REPO_ROOT" "$contract" "$unrelated_revision"
+
+printf 'Phase 14 retained source-output import contract passed.\n'

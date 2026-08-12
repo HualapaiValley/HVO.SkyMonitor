@@ -4,6 +4,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Upload;
@@ -66,6 +67,12 @@ public sealed class SqliteArtifactOutboxTests
         Assert.IsTrue(await reader.ReadAsync(CancellationToken.None).ConfigureAwait(false));
         Assert.AreEqual("wal", reader.GetString(0));
         Assert.AreEqual(1L, reader.GetInt64(1));
+        await Phase14ScenarioEvidence.RecordAsync(
+            "outbox-enqueue-commit",
+            "canonical-duplicate-and-conflict",
+            null,
+            ["canonical-duplicate-idempotent", "identity-conflict-quarantined", "conflict-audited", "quarantined-record-not-claimable"])
+            .ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -130,6 +137,18 @@ public sealed class SqliteArtifactOutboxTests
         Assert.AreEqual(1, snapshot.AcknowledgedCount);
         Assert.AreEqual(0, snapshot.HeldCount);
         Assert.IsEmpty(await restarted.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false));
+        await Phase14ScenarioEvidence.RecordAsync(
+            "outbox-retry-commit",
+            "retry-deadline-and-reopen",
+            null,
+            ["retry-deadline-persisted", "retry-attempt-incremented", "stale-lease-fenced"])
+            .ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "outbox-acknowledgement-commit",
+            "acknowledgement-idempotency-and-conflict",
+            null,
+            ["acknowledgement-idempotent", "acknowledgement-conflict-rejected", "retention-hold-released"])
+            .ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -156,6 +175,12 @@ public sealed class SqliteArtifactOutboxTests
         await Assert.ThrowsExactlyAsync<ArtifactOutboxLeaseLostException>(async () =>
             await outbox.RetryAsync(
                 root.Path, first, clock.GetUtcNow(), "late-result", CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "outbox-claim-commit",
+            "expired-lease-reclaim",
+            null,
+            ["oldest-record-claimed-first", "expired-lease-reclaimed", "attempt-count-incremented", "old-owner-fenced"])
+            .ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -195,6 +220,12 @@ public sealed class SqliteArtifactOutboxTests
             audit.Select(static entry => entry.Action).ToArray());
         Assert.AreEqual("operator-b", audit[^1].Actor);
         Assert.AreEqual("approved-disposition", audit[^1].Reason);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "outbox-quarantine-commit",
+            "quarantine-replay-abandon",
+            null,
+            ["quarantine-retained-hold", "replay-audited", "terminal-abandon-released-hold", "resolution-history-preserved"])
+            .ConfigureAwait(false);
     }
 
     [TestMethod]

@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
+using HVO.SkyMonitor.TestSupport;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
@@ -407,6 +408,12 @@ public sealed class DurableCaptureDistributionTests
         Assert.AreEqual(2L, await ScalarLongAsync(
             connection,
             "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'secondary' AND state = 'pending';").ConfigureAwait(false));
+        await Phase14ScenarioEvidence.RecordAsync(
+            "optional-lane-backlog",
+            "secondary-blocked-standard-and-upload-drained",
+            null,
+            ["optional-lane-remained-pending", "standard-lane-drained", "upload-lane-drained", "leased-work-released-on-shutdown"])
+            .ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -876,6 +883,12 @@ public sealed class DurableCaptureDistributionTests
             using var connection = await OpenAsync(commitFixture.Root).ConfigureAwait(false);
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                "capture-lane-work-rows-commit",
+                "fault-point-AfterWorkRowsInserted",
+                "AfterWorkRowsInserted",
+                ["commit-fault-observed", "raw-capture-converged-once", "lane-work-converged-once"])
+                .ConfigureAwait(false);
         }
 
         using var claimFixture = CreateFixture(
@@ -888,6 +901,12 @@ public sealed class DurableCaptureDistributionTests
         var reclaimed = await claimFixture.ClaimAsync("standard").ConfigureAwait(false);
         Assert.IsNotNull(reclaimed);
         await claimFixture.Store.CompleteAsync(reclaimed, CancellationToken.None).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "capture-lane-claim-commit",
+            "fault-point-AfterClaimCommitted",
+            "AfterClaimCommitted",
+            ["claim-fault-observed", "expired-lease-reclaimed", "reclaimed-work-completed"])
+            .ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -902,6 +921,14 @@ public sealed class DurableCaptureDistributionTests
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
                 await fixture.Store.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             await fixture.Store.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+            await Phase14ScenarioEvidence.RecordAsync(
+                point == CaptureLaneFaultPoint.BeforeCompletionCommit
+                    ? "capture-lane-completion-before-commit"
+                    : "capture-lane-completion-after-commit",
+                $"fault-point-{point}",
+                point.ToString(),
+                ["completion-fault-observed", "completion-retry-succeeded", "committed-transition-preserved"])
+                .ConfigureAwait(false);
         }
 
         using (var retryFixture = CreateFixture(
@@ -917,6 +944,12 @@ public sealed class DurableCaptureDistributionTests
             using var connection = await OpenAsync(retryFixture.Root).ConfigureAwait(false);
             Assert.AreEqual("retry_wait", await ScalarStringAsync(
                 connection, "SELECT state FROM capture_lane_work;").ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                "capture-lane-retry-commit",
+                "fault-point-AfterRetryCommit",
+                "AfterRetryCommit",
+                ["retry-fault-observed", "retry-transition-committed"])
+                .ConfigureAwait(false);
         }
 
         using (var quarantineFixture = CreateFixture(
@@ -932,6 +965,12 @@ public sealed class DurableCaptureDistributionTests
             using var connection = await OpenAsync(quarantineFixture.Root).ConfigureAwait(false);
             Assert.AreEqual("quarantined", await ScalarStringAsync(
                 connection, "SELECT state FROM capture_lane_work;").ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                "capture-lane-quarantine-commit",
+                "fault-point-AfterQuarantineCommit",
+                "AfterQuarantineCommit",
+                ["quarantine-fault-observed", "quarantine-transition-committed"])
+                .ConfigureAwait(false);
         }
     }
 
@@ -956,6 +995,12 @@ public sealed class DurableCaptureDistributionTests
                 "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'standard' AND state = 'completed';",
                 1).ConfigureAwait(false);
             await service.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            await Phase14ScenarioEvidence.RecordAsync(
+                point == CaptureLaneFaultPoint.BeforeHandler ? "lease-crash-before-work" : "lease-crash-after-work",
+                $"fault-point-{point}",
+                point.ToString(),
+                ["handler-fault-observed", "lease-released", "live-worker-recovered", "work-completed-once"])
+                .ConfigureAwait(false);
         }
     }
 
