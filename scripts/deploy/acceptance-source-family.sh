@@ -105,16 +105,16 @@ phase14_source_run_standard_test() (
     fi
     phase14_source_run_test "$repo" "$project" "$fqn" "$raw" || test_status=$?
     if [[ -n "$auxiliary_evidence" && ( -e "$auxiliary_evidence" || -L "$auxiliary_evidence" ) ]]; then
-        local auxiliary_timeout=$((SECONDS + 5))
-        while ((SECONDS < auxiliary_timeout)) &&
-            { ! phase14_source_safe_file "$auxiliary_evidence" ||
-              ! phase14_source_no_symlink_path "$repo" "$auxiliary_evidence"; }; do
-            sleep 0.05
-        done
-        if ! phase14_source_safe_file "$auxiliary_evidence" || ! phase14_source_no_symlink_path "$repo" "$auxiliary_evidence"; then
+        local auxiliary_metadata
+        auxiliary_metadata="$(stat -c '%u:%h:%a:%s' -- "$auxiliary_evidence" 2>/dev/null)" || return 1
+        if [[ ! -f "$auxiliary_evidence" || -L "$auxiliary_evidence" ||
+            ! "$auxiliary_metadata" =~ ^$(id -u):1:(600|644):[1-9][0-9]*$ ]] ||
+            ! phase14_source_no_symlink_path "$repo" "$auxiliary_evidence"; then
             phase14_source_fail collection unsafe-auxiliary-evidence
             return 1
         fi
+        chmod 600 -- "$auxiliary_evidence" || return 1
+        phase14_source_safe_file "$auxiliary_evidence" || return 1
         rm -f -- "$auxiliary_evidence" || return 1
     fi
     ((test_status == 0))
