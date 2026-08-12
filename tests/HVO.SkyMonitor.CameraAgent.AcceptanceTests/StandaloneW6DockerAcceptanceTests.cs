@@ -149,8 +149,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         var browserErrors = new List<string>();
         page.PageError += (_, error) => browserErrors.Add(error);
-        await page.RouteAsync("http://cdn.jsdelivr.net/**", route => route.AbortAsync()).ConfigureAwait(false);
-        await page.RouteAsync("https://cdn.jsdelivr.net/**", route => route.AbortAsync()).ConfigureAwait(false);
+        await page.RouteAsync("**/cdn.jsdelivr.net/**", route => route.AbortAsync()).ConfigureAwait(false);
         await BrowserLoginAsync(page, password).ConfigureAwait(false);
 
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
@@ -758,8 +757,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await page.GotoAsync("/operations").ConfigureAwait(false);
         var action = page.Locator("#capture-action");
         await action.WaitForAsync().ConfigureAwait(false);
-        await page.WaitForFunctionAsync("() => window.Blazor !== undefined").ConfigureAwait(false);
-        await page.WaitForTimeoutAsync(1_000).ConfigureAwait(false);
         var expected = pause ? "Review pause" : "Review resume";
         if (!string.Equals((await action.InnerTextAsync().ConfigureAwait(false)).Trim(), expected, StringComparison.Ordinal))
         {
