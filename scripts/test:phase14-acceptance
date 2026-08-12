@@ -180,7 +180,8 @@ validate_evidence_contract() {
     actual_hash="${actual_hash%% *}"
     [[ "$actual_hash" == "$declared_hash" ]] || return 1
     campaign_json="$(jq -c . "$manifest" 2>/dev/null)" || return 1
-    jq -e --argjson campaign "$campaign_json" '
+    jq -e --argjson campaign "$campaign_json" \
+      --rawfile issue211Script "$SOURCE_REPO_ROOT/scripts/test:cameraagent-standalone-211" '
       def safe: type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$");
       def safe_path: type == "string" and test("^[A-Za-z0-9._/-]+$") and startswith("/") == false and
         contains("../") == false and contains("//") == false;
@@ -250,6 +251,7 @@ validate_evidence_contract() {
       (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | length > 0 and length == (unique | length)) and
       (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | index("scripts/deploy/acceptance-source-family.sh") != null) and
       (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | index("scripts/test:cameraagent-standalone-211") != null) and
+      ($issue211Script | contains("$source == \"HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.StandardCaptureLaneHandler\"")) and
       (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | index("src/HVO.SkyMonitor.LogicHost/Program.cs") == null) and
       (.sourceEvidenceContract.caseSelectorPolicy | contains("exactly equal") and contains("TRX") and contains("observation-count")) and
       [.sourceEvidenceContract.requiredEntryFields[]] ==

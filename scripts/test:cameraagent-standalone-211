@@ -604,7 +604,7 @@ EOF
             ($trial == "mono8-control" and $body == "Capture lane \"standard\" scheduled retry attempt 1 because \"handler-failure\""))
          elif $event_id == 2067 then
            $trial == "mono8-control" and
-           $source == "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingPersistence" and
+           $source == "HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.StandardCaptureLaneHandler" and
            $body == "Capture processing node \"annotation\" requested retry because \"environment.association-pending\""
          else false end;
       def application_metric_dimensions: [metric_points[] |
