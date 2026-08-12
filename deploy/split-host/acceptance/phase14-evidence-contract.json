@@ -1,0 +1,538 @@
+{
+  "schemaVersion": 1,
+  "contract": "phase-14-deferred-evidence",
+  "issues": {
+    "definition": 318,
+    "parent": 305
+  },
+  "inventory": {
+    "relativePath": "deploy/split-host/acceptance/phase14-scenarios.json",
+    "schemaVersion": 2,
+    "scenarioCount": 111,
+    "canonicalSha256": "b4050d01fc91b0a1833eeb89cb794f672981bbe52a624de2fd438dbcbd5ceb32",
+    "reconciliation": "The 111th row, raw-boundary-payload-partially-written, was added by a2e61a1bbff5decf454151ddae9eef72934d6113 and remains distinct from payload-written."
+  },
+  "gateDisposition": {
+    "kind": "post-milestone-non-gating",
+    "closedMilestoneIssue": 89,
+    "phaseGate": "GATE-P14",
+    "completionRequirement": "DONE-007",
+    "statement": "This contract organizes deferred evidence and does not reopen or claim the closed virtual-first milestone, GATE-P14, or DONE-007."
+  },
+  "dispositionSummary": {
+    "accepted-current-head": 0,
+    "source-family-import": 103,
+    "real-campaign": 2,
+    "deferred": 2,
+    "excluded": 4
+  },
+  "dispositionRules": [
+    {
+      "disposition": "source-family-import",
+      "evidenceSourcePrefix": "test:"
+    },
+    {
+      "disposition": "real-campaign",
+      "scenarioIds": [
+        "normal-flow",
+        "logichost-network-outage"
+      ]
+    },
+    {
+      "disposition": "deferred",
+      "reasonCode": "unsupported-campaign-harness",
+      "scenarioIds": [
+        "permanent-upload-rejection",
+        "network-failure"
+      ]
+    },
+    {
+      "disposition": "excluded",
+      "reasonCode": "separate-non-phase14-gate",
+      "scenarioIds": [
+        "external-system-validation",
+        "accelerated-soak",
+        "stellarium-validation",
+        "future-hardware-acceptance"
+      ]
+    }
+  ],
+  "sourceFamilies": [
+    {
+      "id": "cameraagent-tests",
+      "evidenceSourcePrefix": "test:HVO.SkyMonitor.CameraAgent.Tests.",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "scenarioCount": 75,
+      "uniqueMethodCount": 18,
+      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5\" && test \"$(git rev-parse HEAD^{tree})\" = \"a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --no-restore -p:NoIncremental=true --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5/cameraagent-tests/{method-id} --logger \"trx;LogFileName=result.trx\"",
+      "input": "One clean-revision TRX and one strict scenario-evidence entry per mapped scenario; case selectors address source evidence, never a TRX data row.",
+      "sanitizer": "phase14-trx-sanitizer-v1",
+      "admissibilityValidator": "phase14-source-import-v1"
+    },
+    {
+      "id": "cameraagent-acceptance",
+      "evidenceSourcePrefix": "test:HVO.SkyMonitor.CameraAgent.AcceptanceTests.",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj",
+      "scenarioCount": 6,
+      "uniqueMethodCount": 1,
+      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5\" && test \"$(git rev-parse HEAD^{tree})\" = \"a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe\" && test -z \"$(git status --porcelain)\" && HVO_CATALOG_PERF_ROOT={installed-catalog-root} HVO_OTEL_COLLECTOR_IMAGE={collector-image-at-reviewed-digest} HVO_ISSUE_211_TRIAL_COUNT=5 ./scripts/test:cameraagent-standalone-211",
+      "input": "The complete issue-211 five-trial retained bundle; each mapped selector must resolve to a strict scenario-evidence entry rather than the method-level TRX alone.",
+      "sanitizer": "phase14-trx-sanitizer-v1",
+      "admissibilityValidator": "phase14-source-import-v1"
+    },
+    {
+      "id": "logichost-integration",
+      "evidenceSourcePrefix": "test:HVO.SkyMonitor.IntegrationTests.",
+      "project": "tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj",
+      "scenarioCount": 22,
+      "uniqueMethodCount": 6,
+      "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5\" && test \"$(git rev-parse HEAD^{tree})\" = \"a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --configuration Release --no-restore -p:NoIncremental=true --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5/logichost-integration/{method-id} --logger \"trx;LogFileName=result.trx\"",
+      "input": "One clean-revision TRX and one strict scenario-evidence entry per mapped scenario; case selectors address source evidence, never a TRX data row.",
+      "sanitizer": "phase14-trx-sanitizer-v1",
+      "admissibilityValidator": "phase14-source-import-v1"
+    }
+  ],
+  "sourceEvidenceContract": {
+    "schemaVersion": 1,
+    "requiredSourceRevision": "2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5",
+    "requiredSourceTree": "a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe",
+    "revisionPolicy": "exact-definition-pinned-clean-source",
+    "caseSelectorPolicy": "A ;case= selector must identify one strict source-evidence entry. Method-level TRX success alone is inadmissible.",
+    "requiredEntryFields": [
+      "scenarioId",
+      "evidenceSource",
+      "sourceRevision",
+      "sourceTree",
+      "outcome",
+      "assertions",
+      "outputs",
+      "measurements"
+    ],
+    "requiredBundleFields": [
+      "schemaVersion",
+      "requestedSourceRevision",
+      "requestedSourceTree",
+      "cleanSource",
+      "testAssemblyRelativePath",
+      "testAssemblySha256",
+      "testAssemblyBuildRevision",
+      "testAssemblyBuildTree",
+      "trxRelativePath",
+      "trxByteLength",
+      "trxSha256",
+      "sourceEvidenceRelativePath",
+      "sourceEvidenceByteLength",
+      "sourceEvidenceSha256",
+      "entries"
+    ],
+    "bundleByteBindings": [
+      {
+        "relativePathField": "testAssemblyRelativePath",
+        "byteLengthField": null,
+        "sha256Field": "testAssemblySha256"
+      },
+      {
+        "relativePathField": "trxRelativePath",
+        "byteLengthField": "trxByteLength",
+        "sha256Field": "trxSha256"
+      },
+      {
+        "relativePathField": "sourceEvidenceRelativePath",
+        "byteLengthField": "sourceEvidenceByteLength",
+        "sha256Field": "sourceEvidenceSha256"
+      }
+    ],
+    "sourceEvidenceProjectionPolicy": "sourceEvidenceByteLength and sourceEvidenceSha256 bind the exact bytes at sourceEvidenceRelativePath; parsing those bytes as schema-v1 JSON must produce an entries array deeply equal to bundle entries.",
+    "testAssemblyProvenancePolicy": "Standard source-family commands rebuild with NoIncremental=true from the clean pinned revision. testAssemblyBuildRevision and testAssemblyBuildTree must equal the pinned revision/tree, and testAssemblySha256 binds the rebuilt bytes at testAssemblyRelativePath. The issue-211 harness independently builds after capturing and continuously checking the same clean worktree fingerprint.",
+    "revisionBindings": [
+      {
+        "actual": "requestedSourceRevision",
+        "expected": "requiredSourceRevision"
+      },
+      {
+        "actual": "requestedSourceTree",
+        "expected": "requiredSourceTree"
+      },
+      {
+        "actual": "testAssemblyBuildRevision",
+        "expected": "requiredSourceRevision"
+      },
+      {
+        "actual": "testAssemblyBuildTree",
+        "expected": "requiredSourceTree"
+      },
+      {
+        "actual": "entries[].sourceRevision",
+        "expected": "requestedSourceRevision"
+      },
+      {
+        "actual": "entries[].sourceTree",
+        "expected": "requestedSourceTree"
+      }
+    ],
+    "redactionPolicy": {
+      "id": "phase14-source-redaction-v1",
+      "prohibitedFields": [
+        "password",
+        "secret",
+        "token",
+        "cookie",
+        "authorization",
+        "connectionString",
+        "exception",
+        "stackTrace",
+        "responseBody"
+      ],
+      "prohibitedContent": [
+        "absolute-path",
+        "service-authority",
+        "credential-value",
+        "raw-log",
+        "raw-payload"
+      ],
+      "allowedTransformations": [
+        "replace-host-with-role",
+        "replace-path-with-relative-id",
+        "retain-count-duration-and-sha256",
+        "retain-enum-reason-code"
+      ],
+      "validation": "Reject recursively matched prohibited field names, control characters, absolute paths, URI authorities, and values matching registered secret fingerprints before hashing or publication."
+    },
+    "rules": [
+      "Every requested scenario appears exactly once.",
+      "Every entry source revision and tree equal the requested campaign revision and tree.",
+      "Every assertion is explicit and passed; loop execution inferred from method success is rejected.",
+      "Every bundle relative path is safe and identifies the exact external bytes bound by its declared length when present and SHA-256; no digest binds its containing bundle.",
+      "TRX and source evidence are immutable, length-bound, SHA-256-bound, sanitized inputs."
+    ]
+  },
+  "workloads": [
+    {
+      "id": "normal-flow-v1",
+      "scenarioId": "normal-flow",
+      "followUpFamily": "real-fault-campaigns",
+      "executable": true,
+      "commandTemplate": "./scripts/deploy:environment acceptance-run --inventory {inventory} --mode isolated --run-id {run-id} --scenario normal-flow",
+      "topology": {
+        "logicHosts": 1,
+        "cameraAgents": 1,
+        "sharedServiceHosts": 1
+      },
+      "profiles": [
+        "W1",
+        "W2"
+      ],
+      "fixture": "deploy/split-host/workloads/canonical-workloads.json",
+      "seed": 2025,
+      "warmupOperationsPerProfile": 5,
+      "measuredOperationsPerProfile": 30,
+      "totalMeasuredOperations": 60,
+      "arrivalRateCapturesPerSecond": 0.04,
+      "initialBacklogCount": 0,
+      "faultDurationSeconds": {
+        "notApplicable": true,
+        "reason": "Normal flow injects no outage."
+      },
+      "concurrency": 1,
+      "repetitions": 1,
+      "measuredStages": [
+        "capture",
+        "local-drain",
+        "central-convergence",
+        "retrieval"
+      ],
+      "correctness": [
+        "exact-sequence-and-capture-id-set",
+        "raw-checksum-and-byte-length",
+        "artifact-and-lineage-convergence",
+        "empty-terminal-and-quarantine-state"
+      ],
+      "evidenceRecord": {
+        "revision": "Baseline/candidate revision, branch, source tree, and clean-state disposition are required.",
+        "environment": ["os","architecture","cpu","memory","storage","sdk-runtime","release-configuration","container-mode","service-versions"],
+        "workload": ["workload-id","dimensions","formats","frame-count","recipe","concurrency","total-bytes","fixture-seed-version"],
+        "method": ["command","warm-up","repetitions","sampling-interval","counters-tools"],
+        "io": ["filesystem","sqlite","sql-server","minio","network","transaction-checkpoint-fsync-batching"],
+        "cpu": ["process-time","operation-time","hot-paths","complexity"],
+        "memory": ["allocated-bytes","allocation-rate","loh","working-set","peak-temporary","retained-buffers","queue-window-size"],
+        "latency": ["median","p95-from-at-least-30-operations","bounded-worst-case"],
+        "throughput": ["captures-per-second","artifacts-per-second","bytes-per-second"],
+        "backlog": ["count","bytes","oldest-age","drain-rate","recovery-duration"],
+        "correctness": ["checksums","identities","lineage","state-convergence","failure-behavior"],
+        "result": ["baseline","candidate","absolute-and-percent-change","noise-interpretation","accepted-regressions","residual-risk"]
+      }
+    },
+    {
+      "id": "logichost-network-outage-v1",
+      "scenarioId": "logichost-network-outage",
+      "followUpFamily": "real-fault-campaigns",
+      "executable": true,
+      "commandTemplate": "./scripts/deploy:environment acceptance-run --inventory {inventory} --mode isolated --run-id {run-id} --scenario logichost-network-outage",
+      "topology": {
+        "logicHosts": 1,
+        "cameraAgents": 1,
+        "sharedServiceHosts": 1
+      },
+      "profiles": [
+        "W2"
+      ],
+      "fixture": "deploy/split-host/workloads/canonical-workloads.json",
+      "seed": 2025,
+      "warmupOperationsPerProfile": 5,
+      "measuredOperationsPerProfile": 30,
+      "outageCaptureCount": 10,
+      "arrivalRateCapturesPerSecond": 0.04,
+      "initialBacklogCount": 0,
+      "faultDurationSeconds": 250,
+      "recoveryBudgetSeconds": 900,
+      "concurrency": 1,
+      "repetitions": 1,
+      "measuredStages": [
+        "baseline-convergence",
+        "logichost-outage",
+        "outbox-backlog",
+        "logichost-recovery",
+        "backlog-drain"
+      ],
+      "correctness": [
+        "exact-ten-capture-outage-set",
+        "raw-checksum-and-byte-length",
+        "zero-terminal-and-quarantine-state",
+        "drain-rate-greater-than-arrival-rate"
+      ],
+      "evidenceRecord": {
+        "revision": "Baseline/candidate revision, branch, source tree, and clean-state disposition are required.",
+        "environment": ["os","architecture","cpu","memory","storage","sdk-runtime","release-configuration","container-mode","service-versions"],
+        "workload": ["workload-id","dimensions","formats","frame-count","recipe","concurrency","total-bytes","fixture-seed-version"],
+        "method": ["command","warm-up","repetitions","sampling-interval","counters-tools"],
+        "io": ["filesystem","sqlite","sql-server","minio","network","transaction-checkpoint-fsync-batching"],
+        "cpu": ["process-time","operation-time","hot-paths","complexity"],
+        "memory": ["allocated-bytes","allocation-rate","loh","working-set","peak-temporary","retained-buffers","queue-window-size"],
+        "latency": ["median","p95-from-at-least-30-operations","bounded-worst-case"],
+        "throughput": ["captures-per-second","artifacts-per-second","bytes-per-second"],
+        "backlog": ["count","bytes","oldest-age","drain-rate","recovery-duration"],
+        "correctness": ["checksums","identities","lineage","state-convergence","failure-behavior"],
+        "result": ["baseline","candidate","absolute-and-percent-change","noise-interpretation","accepted-regressions","residual-risk"]
+      }
+    }
+  ],
+  "deferredWorkloads": [
+    {
+      "scenarioId": "permanent-upload-rejection",
+      "plannedWorkload": "permanent-upload-rejection-v1",
+      "executable": false,
+      "reasonCode": "unsupported-campaign-harness",
+      "followUpFamily": "real-fault-campaigns"
+    },
+    {
+      "scenarioId": "network-failure",
+      "plannedWorkload": "network-failure-v1",
+      "executable": false,
+      "reasonCode": "unsupported-campaign-harness",
+      "followUpFamily": "real-fault-campaigns"
+    }
+  ],
+  "artifactContract": {
+    "schemaVersion": 1,
+    "runtimeArtifactSchemaVersion": 1,
+    "maximumByteLength": 262144,
+    "hashAlgorithm": "SHA-256",
+    "relativePathTemplate": "acceptance-artifacts/{scenario-id}.json",
+    "runtimeArtifactBindings": [
+      "sourceRevision",
+      "sourceTree",
+      "inventorySha256",
+      "scenarioId",
+      "evidenceSource"
+    ],
+    "indexMetadataBindings": [
+      "sanitizer",
+      "admissibilityValidator",
+      "artifactSchemaVersion",
+      "artifactByteLength",
+      "artifactSha256"
+    ],
+    "metadataLocation": "campaign-index-entry",
+    "promotionRejects": [
+      "missing",
+      "stale-revision",
+      "unhashed",
+      "unsanitized",
+      "incompatible-schema",
+      "digest-mismatch",
+      "tampered"
+    ],
+    "immutableAfterRecorded": true
+  },
+  "campaignIndexContract": {
+    "schemaVersion": 1,
+    "publicationGenerationMinimum": 1,
+    "indexRelativePathTemplate": "phase14-evidence/generations/{publication-generation}/campaign-index.json",
+    "commitRelativePathTemplate": "phase14-evidence/generations/{publication-generation}/campaign-index-commit.json",
+    "latestPointerRelativePath": "phase14-evidence/latest-generation.json",
+    "latestPointerPolicy": "The pointer is the only replaceable file. It is published last and binds publicationGeneration plus the generation-scoped index and commit relative paths and SHA-256 values. Every referenced generation remains immutable.",
+    "latestPointerSchemaVersion": 1,
+    "requiredLatestPointerFields": [
+      "schemaVersion",
+      "publicationGeneration",
+      "indexRelativePath",
+      "indexByteLength",
+      "indexSha256",
+      "commitRelativePath",
+      "commitByteLength",
+      "commitSha256"
+    ],
+    "latestPointerBindings": [
+      {
+        "relativePathField": "indexRelativePath",
+        "byteLengthField": "indexByteLength",
+        "sha256Field": "indexSha256",
+        "pathTemplate": "phase14-evidence/generations/{publication-generation}/campaign-index.json"
+      },
+      {
+        "relativePathField": "commitRelativePath",
+        "byteLengthField": "commitByteLength",
+        "sha256Field": "commitSha256",
+        "pathTemplate": "phase14-evidence/generations/{publication-generation}/campaign-index-commit.json"
+      }
+    ],
+    "latestPointerSafety": {
+      "fileType": "regular",
+      "owner": "current-operator",
+      "mode": "0600",
+      "relativePathPolicy": "safe-canonical-generation-scoped",
+      "publicationGeneration": "positive-integer",
+      "byteLengths": "positive-integers",
+      "digests": "lowercase-sha256",
+      "publication": "atomic-replace-after-generation-validation"
+    },
+    "requiredCommitFields": [
+      "schemaVersion",
+      "publicationGeneration",
+      "indexByteLength",
+      "indexSha256"
+    ],
+    "sourceRevisionPolicy": "Each scenario independently binds the revision/tree that produced its evidence. source-family-import rows must equal sourceEvidenceContract.requiredSourceRevision/requiredSourceTree. real-campaign rows bind the clean execution revision/tree selected and retained by issue 320 after its harness is reviewed. Deferred and excluded rows have no artifact source revision. acceptanceRevision and acceptanceTree identify aggregator code separately.",
+    "requiredRootFields": [
+      "schemaVersion",
+      "publicationGeneration",
+      "definitionContractSha256",
+      "inventorySha256",
+      "acceptanceRevision",
+      "acceptanceTree",
+      "campaignStatus",
+      "dispositionCounts",
+      "scenarios"
+    ],
+    "requiredScenarioFields": [
+      "scenarioId",
+      "disposition",
+      "status",
+      "artifactRelativePath",
+      "artifactSchemaVersion",
+      "artifactByteLength",
+      "artifactSha256",
+      "sanitizer",
+      "admissibilityValidator",
+      "sourceRevision",
+      "sourceTree"
+    ],
+    "revisionBindings": [
+      {
+        "actual": "scenarios[disposition=source-family-import].sourceRevision",
+        "expected": "sourceEvidenceContract.requiredSourceRevision"
+      },
+      {
+        "actual": "scenarios[disposition=source-family-import].sourceTree",
+        "expected": "sourceEvidenceContract.requiredSourceTree"
+      },
+      {
+        "actual": "scenarios[disposition=real-campaign].sourceRevision/sourceTree",
+        "expected": "corresponding runtime artifact sourceRevision/sourceTree retained by issue 320"
+      },
+      {
+        "actual": "scenarios[disposition=source-family-import|real-campaign].sourceRevision/sourceTree",
+        "expected": "corresponding runtime artifact sourceRevision/sourceTree"
+      },
+      {
+        "actual": "acceptanceRevision",
+        "expected": "acceptanceRevision"
+      },
+      {
+        "actual": "acceptanceTree",
+        "expected": "acceptanceTree"
+      }
+    ],
+    "transitions": [
+      "not-run->recorded",
+      "recorded->passed"
+    ],
+    "resumePolicy": "A committed generation is immutable. Resume validates the owner-only commit envelope against the canonical index byte length and SHA-256, then validates every artifact length/digest before publishing generation plus one.",
+    "completionPolicy": "campaign-complete requires every source-family-import and real-campaign row passed; deferred and excluded rows remain separately counted and are never reported as executed."
+  },
+  "statusContract": [
+    {
+      "status": "not-run",
+      "meaning": "No admissible artifact has been evaluated."
+    },
+    {
+      "status": "recorded",
+      "meaning": "An immutable artifact exists and its declared length and digest match."
+    },
+    {
+      "status": "passed",
+      "meaning": "A recorded artifact passed its disposition-specific admissibility policy."
+    },
+    {
+      "status": "deferred",
+      "meaning": "The scenario remains planned under issue 305 but has no executable admissible path."
+    },
+    {
+      "status": "excluded",
+      "meaning": "The scenario belongs to a separately labeled non-Phase-14 gate."
+    },
+    {
+      "status": "campaign-complete",
+      "meaning": "Every non-deferred and non-excluded scenario passed; deferred and excluded counts remain separately reported."
+    },
+    {
+      "status": "parent-complete",
+      "meaning": "All issue 305 import, execution, aggregation, and optimization dispositions are closed; issue 318 alone cannot produce this state."
+    }
+  ],
+  "followUpFamilies": [
+    {
+      "id": "source-family-import",
+      "issue": 319,
+      "dependsOn": [
+        318
+      ],
+      "owns": "Sanitized revision-bound TRX import and one immutable artifact per test-backed scenario."
+    },
+    {
+      "id": "real-fault-campaigns",
+      "issue": 320,
+      "dependsOn": [
+        318
+      ],
+      "owns": "Execution and immutable artifacts for supported normal-flow and logichost-network-outage, plus harness support and execution for deferred permanent-upload-rejection and network-failure."
+    },
+    {
+      "id": "campaign-aggregation",
+      "issue": 321,
+      "dependsOn": [
+        319,
+        320
+      ],
+      "owns": "Admissibility review, immutable campaign index, telemetry/resource summary, and residual-risk disposition."
+    },
+    {
+      "id": "measured-optimization",
+      "issue": 322,
+      "dependsOn": [
+        321
+      ],
+      "owns": "Measured regression analysis and separately justified optimization issues; no speculative product changes."
+    }
+  ]
+}
