@@ -324,6 +324,7 @@ public class Program
         );
 
         app.UseStaticFiles();
+        app.MapStaticAssets();
 
         app.UseRouting();
 

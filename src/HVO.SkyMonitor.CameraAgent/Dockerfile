@@ -24,15 +24,20 @@ COPY src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csp
 COPY src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/
 COPY src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj src/HVO.SkyMonitor.CameraAgent/
 
-# Restore dependencies
+# Restore project dependencies into a source-independent cache layer.
 RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 
 # Copy source code
 COPY src/ src/
 
+# Restore again after Razor sources are present so implicit framework assets are discovered.
+RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
+
 # Build and publish
 WORKDIR /src/src/HVO.SkyMonitor.CameraAgent
-RUN dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o /app/publish
+RUN dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o /app/publish \
+    && test "$(wc -c < /app/publish/wwwroot/_framework/blazor.web.js)" -gt 10000 \
+    && grep -q 'window.Blazor' /app/publish/wwwroot/_framework/blazor.web.js
 
 # Stage 2: Runtime
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

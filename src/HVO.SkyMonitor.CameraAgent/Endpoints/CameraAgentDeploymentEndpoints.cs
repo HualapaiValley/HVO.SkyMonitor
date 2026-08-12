@@ -22,6 +22,7 @@ internal static class CameraAgentDeploymentEndpoints
     {
         var deployment = endpoints.MapGroup("/api/internal/deployment")
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1);
+        deployment.MapPost("/session", static () => Results.NotFound()).AllowAnonymous();
         deployment.MapGet("/antiforgery", GetAntiforgeryToken);
         deployment.MapPost("/identity", GetOrCreateIdentityAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1);

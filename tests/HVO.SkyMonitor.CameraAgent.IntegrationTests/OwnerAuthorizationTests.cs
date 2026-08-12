@@ -19,6 +19,21 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 public sealed class OwnerAuthorizationTests
 {
     [TestMethod]
+    public async Task BlazorFrameworkAssetIsServedWithoutAuthenticationAsync()
+    {
+        using var client = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        using var response = await client.GetAsync(
+            new Uri("/_framework/blazor.web.js", UriKind.Relative)).ConfigureAwait(false);
+        var payload = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var mediaType = response.Content.Headers.ContentType?.MediaType;
+        Assert.IsTrue(mediaType is "application/javascript" or "text/javascript", $"Unexpected media type '{mediaType}'.");
+        Assert.IsGreaterThan(10_000, payload.Length);
+        StringAssert.Contains(System.Text.Encoding.UTF8.GetString(payload), "window.Blazor", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task OperationsPoliciesAuthorizeOnlyConfiguredOwnerAsync()
     {
         using var scope = AssemblyHooks.Fixture.CreateCameraAgentScope();
