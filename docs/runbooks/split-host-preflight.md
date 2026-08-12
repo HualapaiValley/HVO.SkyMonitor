@@ -635,6 +635,22 @@ orphan, and tamper rejection for the four phase files. They also reject
 mirror-only, tampered, and unsafe smoke quartets and verify inventory hash drift
 cannot create acceptance files or alter topology projected from a prior snapshot.
 
+The runtime inventory now has 111 rows. The separate definition-only contract at
+`deploy/split-host/acceptance/phase14-evidence-contract.json` binds that count and
+the canonical inventory digest without changing runtime ledger compatibility. It
+maps 103 test-backed rows to future source-family import, the two supported
+campaigns to executable manifests, two unsupported campaigns to explicit
+deferment, and four separately labeled gates to exclusion. See
+`docs/planning/phase14-evidence-campaign.md` for workload values, artifact
+admissibility, status meanings, and follow-up ownership. Definition states never
+promote `not-run` or `recorded` runtime rows to `passed`.
+
+The deferred source contract does not treat `;case=` as a TRX data-row selector.
+Several cited methods run fault cases inside one method body, so later import
+requires a strict scenario-evidence entry for every selector in addition to the
+method-level TRX. Sanitizer and admissibility identities live in the separate
+campaign-index envelope; the existing runtime artifact schema remains unchanged.
+
 Run the focused contract test with:
 
 ```bash

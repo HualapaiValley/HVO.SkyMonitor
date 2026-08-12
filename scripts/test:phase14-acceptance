@@ -173,6 +173,202 @@ audit_test_references() {
       jq -r '[.scenarios[].evidenceSource | select(startswith("test:"))] | unique[]' "$manifest")
 }
 
+validate_evidence_contract() {
+    local contract="$1" manifest="$2" declared_hash actual_hash campaign_json
+    declared_hash="$(jq -er '.inventory.canonicalSha256' "$contract" 2>/dev/null)" || return 1
+    actual_hash="$(jq -S -c . "$manifest" 2>/dev/null | sha256sum)" || return 1
+    actual_hash="${actual_hash%% *}"
+    [[ "$actual_hash" == "$declared_hash" ]] || return 1
+    campaign_json="$(jq -c . "$manifest" 2>/dev/null)" || return 1
+    jq -e --argjson campaign "$campaign_json" '
+      def safe: type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$");
+      def safe_path: type == "string" and test("^[A-Za-z0-9._/-]+$") and startswith("/") == false and
+        contains("../") == false and contains("//") == false;
+      def digest: type == "string" and test("^[0-9a-f]{64}$");
+      def matches($definition; $scenario):
+        [$definition.dispositionRules[] as $rule | select(
+          (($rule.evidenceSourcePrefix? // "") != "" and ($scenario.evidenceSource | startswith($rule.evidenceSourcePrefix))) or
+          (($rule.scenarioIds? // []) | index($scenario.id) != null)) | $rule];
+      . as $root |
+      .schemaVersion == 1 and .contract == "phase-14-deferred-evidence" and
+      (keys | sort) == (["schemaVersion","contract","issues","inventory","gateDisposition","dispositionSummary",
+        "dispositionRules","sourceFamilies","sourceEvidenceContract","workloads","deferredWorkloads","artifactContract",
+        "campaignIndexContract","statusContract","followUpFamilies"] | sort) and
+      .issues == {definition:318,parent:305} and
+      .inventory.relativePath == "deploy/split-host/acceptance/phase14-scenarios.json" and
+      .inventory.schemaVersion == $campaign.schemaVersion and .inventory.scenarioCount == 111 and
+      (.inventory.canonicalSha256 | digest) and (.inventory.reconciliation | contains("raw-boundary-payload-partially-written")) and
+      ($campaign.scenarios | length) == .inventory.scenarioCount and
+      .gateDisposition.kind == "post-milestone-non-gating" and .gateDisposition.closedMilestoneIssue == 89 and
+      .gateDisposition.phaseGate == "GATE-P14" and .gateDisposition.completionRequirement == "DONE-007" and
+      ([.dispositionRules[].disposition] | sort) == ["deferred","excluded","real-campaign","source-family-import"] and
+      all($campaign.scenarios[]; (matches($root; .) | length) == 1) and
+      .dispositionSummary == {
+        "accepted-current-head":0,
+        "source-family-import":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "source-family-import")] | length),
+        "real-campaign":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "real-campaign")] | length),
+        "deferred":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "deferred")] | length),
+        "excluded":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "excluded")] | length)
+      } and ([.dispositionSummary[]] | add) == 111 and
+      ([.sourceFamilies[].id] | length) == ([.sourceFamilies[].id] | unique | length) and
+      all(.sourceFamilies[]; . as $family |
+        ($family.id | safe) and ($family.project | safe_path) and ($family.project | endswith(".csproj")) and
+        ($family.evidenceSourcePrefix | startswith("test:HVO.SkyMonitor.")) and
+        ($family.commandTemplate | contains("2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5")) and
+        ($family.commandTemplate | contains("a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe")) and
+        ($family.commandTemplate | contains("git status --porcelain")) and
+        (if $family.id == "cameraagent-acceptance" then
+          ($family.commandTemplate | contains("./scripts/test:cameraagent-standalone-211")) and
+          ($family.commandTemplate | contains("HVO_ISSUE_211_TRIAL_COUNT=5"))
+        else
+          ($family.commandTemplate | contains($family.project)) and
+          ($family.commandTemplate | contains("--configuration Release")) and
+          ($family.commandTemplate | contains("-p:NoIncremental=true")) and
+          ($family.commandTemplate | contains("--no-build") | not) and
+          ($family.commandTemplate | contains("FullyQualifiedName={fully-qualified-name}")) and
+          ($family.commandTemplate | contains("--results-directory TestResults/phase14-source/2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5/" + $family.id + "/{method-id}")) and
+          ($family.commandTemplate | contains("--logger \"trx;LogFileName=result.trx\""))
+        end) and
+        ($family.input | contains("scenario-evidence")) and ($family.input | contains("TRX") or contains("trx")) and
+        ($family.sanitizer | test("-v[0-9]+$")) and ($family.admissibilityValidator | test("-v[0-9]+$")) and
+        $family.scenarioCount == ([$campaign.scenarios[] | select(.evidenceSource | startswith($family.evidenceSourcePrefix))] | length) and
+        $family.uniqueMethodCount == ([$campaign.scenarios[] | select(.evidenceSource | startswith($family.evidenceSourcePrefix)) |
+          .evidenceSource | sub("^test:"; "") | split(";case=")[0]] | unique | length)) and
+      all($campaign.scenarios[] | select(.evidenceSource | startswith("test:")); . as $scenario |
+        ([$root.sourceFamilies[] as $sourceFamily |
+          select($scenario.evidenceSource | startswith($sourceFamily.evidenceSourcePrefix)) | $sourceFamily] | length) == 1) and
+      .sourceEvidenceContract.schemaVersion == 1 and
+      .sourceEvidenceContract.requiredSourceRevision == "2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5" and
+      .sourceEvidenceContract.requiredSourceTree == "a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe" and
+      .sourceEvidenceContract.revisionPolicy == "exact-definition-pinned-clean-source" and
+      (.sourceEvidenceContract.caseSelectorPolicy | contains("TRX") and contains("source-evidence")) and
+      [.sourceEvidenceContract.requiredEntryFields[]] ==
+        ["scenarioId","evidenceSource","sourceRevision","sourceTree","outcome","assertions","outputs","measurements"] and
+      [.sourceEvidenceContract.requiredBundleFields[]] ==
+        ["schemaVersion","requestedSourceRevision","requestedSourceTree","cleanSource","testAssemblyRelativePath",
+         "testAssemblySha256","testAssemblyBuildRevision","testAssemblyBuildTree","trxRelativePath","trxByteLength","trxSha256","sourceEvidenceRelativePath",
+         "sourceEvidenceByteLength","sourceEvidenceSha256","entries"] and
+      .sourceEvidenceContract.bundleByteBindings ==
+        [{relativePathField:"testAssemblyRelativePath",byteLengthField:null,sha256Field:"testAssemblySha256"},
+         {relativePathField:"trxRelativePath",byteLengthField:"trxByteLength",sha256Field:"trxSha256"},
+         {relativePathField:"sourceEvidenceRelativePath",byteLengthField:"sourceEvidenceByteLength",sha256Field:"sourceEvidenceSha256"}] and
+      (.sourceEvidenceContract.sourceEvidenceProjectionPolicy |
+        contains("sourceEvidenceRelativePath") and contains("exact bytes") and contains("deeply equal")) and
+      (.sourceEvidenceContract.testAssemblyProvenancePolicy |
+        contains("NoIncremental=true") and contains("testAssemblyBuildRevision") and contains("testAssemblySha256")) and
+      .sourceEvidenceContract.revisionBindings ==
+        [{actual:"requestedSourceRevision",expected:"requiredSourceRevision"},
+         {actual:"requestedSourceTree",expected:"requiredSourceTree"},
+         {actual:"testAssemblyBuildRevision",expected:"requiredSourceRevision"},
+         {actual:"testAssemblyBuildTree",expected:"requiredSourceTree"},
+         {actual:"entries[].sourceRevision",expected:"requestedSourceRevision"},
+         {actual:"entries[].sourceTree",expected:"requestedSourceTree"}] and
+      .sourceEvidenceContract.redactionPolicy.id == "phase14-source-redaction-v1" and
+      ([.sourceEvidenceContract.redactionPolicy.prohibitedFields[]] | sort) ==
+        (["password","secret","token","cookie","authorization","connectionString","exception","stackTrace","responseBody"] | sort) and
+      ([.sourceEvidenceContract.redactionPolicy.prohibitedContent[]] | sort) ==
+        (["absolute-path","service-authority","credential-value","raw-log","raw-payload"] | sort) and
+      ([.sourceEvidenceContract.redactionPolicy.allowedTransformations[]] | sort) ==
+        (["replace-host-with-role","replace-path-with-relative-id","retain-count-duration-and-sha256","retain-enum-reason-code"] | sort) and
+      (.sourceEvidenceContract.redactionPolicy.validation | contains("secret fingerprints") and contains("before hashing or publication")) and
+      (.sourceEvidenceContract.rules | length) == 5 and
+      all(.sourceEvidenceContract.rules[]; type == "string" and length > 0) and
+      ([.workloads[].id] | length) == ([.workloads[].id] | unique | length) and
+      ([.workloads[].scenarioId] | sort) == ([.dispositionRules[] | select(.disposition == "real-campaign") | .scenarioIds[]] | sort) and
+      all(.workloads[]; . as $workload |
+        (.id | safe) and .followUpFamily == "real-fault-campaigns" and
+        .executable == true and (.commandTemplate | contains("acceptance-run")) and
+        (.commandTemplate | contains("--scenario " + $workload.scenarioId)) and
+        .topology == {logicHosts:1,cameraAgents:1,sharedServiceHosts:1} and
+        (.profiles | length > 0 and all(.[]; . == "W1" or . == "W2")) and
+        .fixture == "deploy/split-host/workloads/canonical-workloads.json" and .seed == 2025 and
+        (.warmupOperationsPerProfile | numbers) >= 0 and (.measuredOperationsPerProfile | numbers) > 0 and
+        (.arrivalRateCapturesPerSecond | numbers) > 0 and (.initialBacklogCount | numbers) >= 0 and
+        (.concurrency | numbers) == 1 and (.repetitions | numbers) >= 1 and
+        (.measuredStages | length > 0 and length == (unique | length)) and
+        (.correctness | length > 0 and length == (unique | length)) and
+        (.evidenceRecord | keys | sort) ==
+          (["revision","environment","workload","method","io","cpu","memory","latency","throughput","backlog","correctness","result"] | sort) and
+        (.evidenceRecord.revision | type == "string" and length > 0) and
+        all(.evidenceRecord | to_entries[] | select(.key != "revision");
+          (.value | type == "array" and length > 0 and length == (unique | length))) and
+        (if .scenarioId == "normal-flow" then
+          .profiles == ["W1","W2"] and .totalMeasuredOperations == 60 and
+          .faultDurationSeconds.notApplicable == true and (.faultDurationSeconds.reason | length) > 0
+        else
+          .scenarioId == "logichost-network-outage" and .profiles == ["W2"] and .outageCaptureCount == 10 and
+          .faultDurationSeconds == 250 and .recoveryBudgetSeconds == 900
+        end)) and
+      ([.deferredWorkloads[].scenarioId] | sort) == ([.dispositionRules[] | select(.disposition == "deferred") | .scenarioIds[]] | sort) and
+      all(.deferredWorkloads[]; .executable == false and .reasonCode == "unsupported-campaign-harness" and
+        .followUpFamily == "real-fault-campaigns" and (.plannedWorkload | safe)) and
+      .artifactContract.schemaVersion == 1 and .artifactContract.runtimeArtifactSchemaVersion == 1 and
+      .artifactContract.maximumByteLength == 262144 and
+      .artifactContract.hashAlgorithm == "SHA-256" and .artifactContract.immutableAfterRecorded == true and
+      (.artifactContract.relativePathTemplate | startswith("acceptance-artifacts/")) and
+      .artifactContract.metadataLocation == "campaign-index-entry" and
+      [.artifactContract.runtimeArtifactBindings[]] ==
+        ["sourceRevision","sourceTree","inventorySha256","scenarioId","evidenceSource"] and
+      [.artifactContract.indexMetadataBindings[]] ==
+        ["sanitizer","admissibilityValidator","artifactSchemaVersion","artifactByteLength","artifactSha256"] and
+      ([.artifactContract.promotionRejects[]] | sort) ==
+        (["missing","stale-revision","unhashed","unsanitized","incompatible-schema","digest-mismatch","tampered"] | sort) and
+      .campaignIndexContract.schemaVersion == 1 and .campaignIndexContract.publicationGenerationMinimum == 1 and
+      .campaignIndexContract.indexRelativePathTemplate ==
+        "phase14-evidence/generations/{publication-generation}/campaign-index.json" and
+      .campaignIndexContract.commitRelativePathTemplate ==
+        "phase14-evidence/generations/{publication-generation}/campaign-index-commit.json" and
+      .campaignIndexContract.latestPointerRelativePath == "phase14-evidence/latest-generation.json" and
+      .campaignIndexContract.latestPointerSchemaVersion == 1 and
+      .campaignIndexContract.requiredLatestPointerFields ==
+        ["schemaVersion","publicationGeneration","indexRelativePath","indexByteLength","indexSha256",
+         "commitRelativePath","commitByteLength","commitSha256"] and
+      .campaignIndexContract.latestPointerBindings ==
+        [{relativePathField:"indexRelativePath",byteLengthField:"indexByteLength",sha256Field:"indexSha256",
+          pathTemplate:"phase14-evidence/generations/{publication-generation}/campaign-index.json"},
+         {relativePathField:"commitRelativePath",byteLengthField:"commitByteLength",sha256Field:"commitSha256",
+          pathTemplate:"phase14-evidence/generations/{publication-generation}/campaign-index-commit.json"}] and
+      (.campaignIndexContract.latestPointerPolicy |
+        contains("only replaceable file") and contains("published last") and contains("generation remains immutable")) and
+      .campaignIndexContract.latestPointerSafety ==
+        {fileType:"regular",owner:"current-operator",mode:"0600",
+         relativePathPolicy:"safe-canonical-generation-scoped",publicationGeneration:"positive-integer",
+         byteLengths:"positive-integers",digests:"lowercase-sha256",
+         publication:"atomic-replace-after-generation-validation"} and
+      .campaignIndexContract.requiredCommitFields == ["schemaVersion","publicationGeneration","indexByteLength","indexSha256"] and
+      (.campaignIndexContract.sourceRevisionPolicy |
+        contains("source-family-import") and contains("real-campaign") and contains("acceptanceRevision")) and
+      [.campaignIndexContract.requiredRootFields[]] ==
+        ["schemaVersion","publicationGeneration","definitionContractSha256","inventorySha256","acceptanceRevision",
+         "acceptanceTree","campaignStatus","dispositionCounts","scenarios"] and
+      [.campaignIndexContract.requiredScenarioFields[]] ==
+        ["scenarioId","disposition","status","artifactRelativePath","artifactSchemaVersion","artifactByteLength","artifactSha256",
+         "sanitizer","admissibilityValidator","sourceRevision","sourceTree"] and
+      .campaignIndexContract.revisionBindings ==
+        [{actual:"scenarios[disposition=source-family-import].sourceRevision",expected:"sourceEvidenceContract.requiredSourceRevision"},
+         {actual:"scenarios[disposition=source-family-import].sourceTree",expected:"sourceEvidenceContract.requiredSourceTree"},
+         {actual:"scenarios[disposition=real-campaign].sourceRevision/sourceTree",expected:"corresponding runtime artifact sourceRevision/sourceTree retained by issue 320"},
+         {actual:"scenarios[disposition=source-family-import|real-campaign].sourceRevision/sourceTree",expected:"corresponding runtime artifact sourceRevision/sourceTree"},
+         {actual:"acceptanceRevision",expected:"acceptanceRevision"},
+         {actual:"acceptanceTree",expected:"acceptanceTree"}] and
+      .campaignIndexContract.transitions == ["not-run->recorded","recorded->passed"] and
+      (.campaignIndexContract.resumePolicy | contains("immutable") and contains("commit envelope") and contains("SHA-256")) and
+      (.campaignIndexContract.completionPolicy | contains("deferred") and contains("excluded") and contains("never reported as executed")) and
+      [.statusContract[].status] == ["not-run","recorded","passed","deferred","excluded","campaign-complete","parent-complete"] and
+      all(.statusContract[]; (.meaning | type == "string" and length > 0)) and
+      [.followUpFamilies[] | {id,issue,dependsOn}] ==
+        [{id:"source-family-import",issue:319,dependsOn:[318]},
+         {id:"real-fault-campaigns",issue:320,dependsOn:[318]},
+         {id:"campaign-aggregation",issue:321,dependsOn:[319,320]},
+         {id:"measured-optimization",issue:322,dependsOn:[321]}] and
+      (.followUpFamilies[] | select(.id == "real-fault-campaigns") | .owns |
+        contains("normal-flow") and contains("logichost-network-outage") and
+        contains("permanent-upload-rejection") and contains("network-failure")) and
+      all(.followUpFamilies[]; (.owns | type == "string" and length > 0) and
+        (.dependsOn | length > 0 and all(.[]; type == "number" and floor == .)))
+    ' "$contract" >/dev/null
+}
+
 enum_values_json() {
     local file="$1" enum="$2"
     perl -0777 -e '
@@ -197,8 +393,10 @@ assert_enum_coverage() {
 
 required_ids="$(deploy_acceptance_required_ids)"
 campaign="$REPO_ROOT/deploy/split-host/acceptance/phase14-scenarios.json"
+evidence_contract="$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-evidence-contract.json"
 deploy_acceptance_validate_repository_manifest "$campaign"
 audit_test_references "$campaign"
+validate_evidence_contract "$evidence_contract" "$campaign"
 assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawIngressFaults.cs" \
   RawIngressFaultPoint 'boundary:raw-ingress:' '[]'
 assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Transients/TransientCandidateFaults.cs" \
@@ -228,6 +426,57 @@ jq '(.scenarios[] | select(.evidenceSource | startswith("test:")) | .evidenceSou
 if (audit_test_references "$TEMP_DIR/missing-test-reference.json") > /dev/null 2>&1; then
     fail 'A nonexistent public MSTest evidence FQN was accepted.'
 fi
+jq '.inventory.scenarioCount=110' "$evidence_contract" > "$TEMP_DIR/stale-contract-count.json"
+expect_rejected 'A stale 110-scenario evidence contract was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/stale-contract-count.json" "$campaign"
+jq '.inventory.canonicalSha256=("0" * 64)' "$evidence_contract" > "$TEMP_DIR/stale-contract-hash.json"
+expect_rejected 'An evidence contract with a stale inventory digest was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/stale-contract-hash.json" "$campaign"
+jq '(.dispositionRules[] | select(.disposition == "deferred") | .scenarioIds) -= ["network-failure"]' \
+  "$evidence_contract" > "$TEMP_DIR/unmapped-contract-scenario.json"
+expect_rejected 'An evidence contract with an unmapped scenario was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/unmapped-contract-scenario.json" "$campaign"
+jq '.sourceFamilies[0].sanitizer=""' "$evidence_contract" > "$TEMP_DIR/unsanitized-contract-source.json"
+expect_rejected 'An evidence source without a versioned sanitizer was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/unsanitized-contract-source.json" "$campaign"
+jq '.sourceEvidenceContract.caseSelectorPolicy="Method TRX success is enough."' "$evidence_contract" \
+  > "$TEMP_DIR/trx-only-contract-source.json"
+expect_rejected 'A TRX-only internal case selector was accepted as scenario evidence.' \
+  validate_evidence_contract "$TEMP_DIR/trx-only-contract-source.json" "$campaign"
+jq '.sourceEvidenceContract.requiredSourceRevision=("0" * 40)' "$evidence_contract" \
+  > "$TEMP_DIR/unpinned-source-revision.json"
+expect_rejected 'A source evidence contract not pinned to the reviewed revision was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/unpinned-source-revision.json" "$campaign"
+jq '.sourceEvidenceContract.bundleByteBindings[2].relativePathField="entries"' "$evidence_contract" \
+  > "$TEMP_DIR/ambiguous-source-bytes.json"
+expect_rejected 'A source bundle digest without an external relative byte path was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/ambiguous-source-bytes.json" "$campaign"
+jq '.sourceFamilies[0].commandTemplate |= sub(" -p:NoIncremental=true"; " --no-build")' \
+  "$evidence_contract" > "$TEMP_DIR/stale-source-assembly.json"
+expect_rejected 'A source-family command that could reuse a stale assembly was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/stale-source-assembly.json" "$campaign"
+jq '.deferredWorkloads[0].executable=true' "$evidence_contract" > "$TEMP_DIR/executable-unsupported-campaign.json"
+expect_rejected 'An unsupported deferred campaign was advertised as executable.' \
+  validate_evidence_contract "$TEMP_DIR/executable-unsupported-campaign.json" "$campaign"
+jq 'del(.campaignIndexContract.requiredScenarioFields[-1])' "$evidence_contract" > "$TEMP_DIR/unbound-index-source-tree.json"
+expect_rejected 'A campaign index without exact source-tree binding was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/unbound-index-source-tree.json" "$campaign"
+jq '.campaignIndexContract.revisionBindings[0].expected="anyRevision"' "$evidence_contract" \
+  > "$TEMP_DIR/stale-revision-policy.json"
+expect_rejected 'A campaign index that did not bind evidence to the requested revision was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/stale-revision-policy.json" "$campaign"
+jq 'del(.campaignIndexContract.requiredLatestPointerFields[-1])' "$evidence_contract" \
+  > "$TEMP_DIR/unbound-latest-pointer.json"
+expect_rejected 'A latest-generation pointer without a commit digest binding was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/unbound-latest-pointer.json" "$campaign"
+jq '.campaignIndexContract.latestPointerSafety.mode="0644"' "$evidence_contract" \
+  > "$TEMP_DIR/unsafe-latest-pointer.json"
+expect_rejected 'A latest-generation pointer with unsafe permissions was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/unsafe-latest-pointer.json" "$campaign"
+jq '(.followUpFamilies[] | select(.id == "campaign-aggregation") | .dependsOn)=[318]' \
+  "$evidence_contract" > "$TEMP_DIR/incorrect-follow-up-dependency.json"
+expect_rejected 'An incorrect follow-up dependency graph was accepted.' \
+  validate_evidence_contract "$TEMP_DIR/incorrect-follow-up-dependency.json" "$campaign"
 
 prepare_fixture smoke-mirror-only
 rm "$FIXTURE_STATE/smoke-ledger.json" "$FIXTURE_EVIDENCE/smoke.json" "$FIXTURE_STATE/smoke-commit.json"

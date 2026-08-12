@@ -986,6 +986,12 @@ Exit gate `GATE-P14`:
 - Logs, metrics, traces, health, coverage, output evidence, and performance have
   no unexplained failure or regression.
 
+The virtual-first milestone closure is historical. Post-milestone issue #305 and
+its campaign-definition child #318 organize deferred exhaustive evidence and
+measured optimization; they do not reopen or claim `GATE-P14`. The bounded
+definition and current disposition are recorded in
+`docs/planning/phase14-evidence-campaign.md`.
+
 ## 23. Dependency Order
 
 ```text
@@ -1087,6 +1093,10 @@ The milestone is complete when:
 - `DONE-007`: Output checksums, numerical invariants, migrations, logs, telemetry, health,
   coverage, and performance evidence are reviewed and green.
 - `DONE-008`: No physical camera module or hardware acceptance is required.
+
+Issues #305 and #318 retain deferred exhaustive evidence after milestone closure.
+They do not retroactively reopen or claim `DONE-007`; any discovered correctness
+defect returns through a separate functional issue.
 
 At that point the architecture is ready for a separately planned physical-camera
 adapter without redesigning acquisition ownership, local processing, central
