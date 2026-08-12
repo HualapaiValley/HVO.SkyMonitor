@@ -149,15 +149,6 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         var browserErrors = new List<string>();
         page.PageError += (_, error) => browserErrors.Add(error);
-        page.Console += (_, message) =>
-        {
-            if (message.Type == "error")
-            {
-                browserErrors.Add(message.Text);
-            }
-        };
-        page.RequestFailed += (_, request) => browserErrors.Add(
-            $"Request failed: {new Uri(request.Url).AbsolutePath} ({request.Failure})");
         await BrowserLoginAsync(page, password).ConfigureAwait(false);
 
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
@@ -771,26 +762,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             return;
         }
         var confirmation = page.Locator("dialog.confirmation");
-        try
-        {
-            await OpenDialogAsync(action, confirmation).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            var scripts = await page.Locator("script[src]").EvaluateAllAsync<string[]>(
-                "elements => elements.map(element => element.src)").ConfigureAwait(false);
-            var browserState = await page.EvaluateAsync<string>("""
-                () => JSON.stringify({
-                  readyState: document.readyState,
-                  blazor: typeof window.Blazor,
-                  resources: performance.getEntriesByType('resource')
-                    .filter(entry => entry.name.includes('blazor') || entry.name.includes('bootstrap'))
-                    .map(entry => ({ name: new URL(entry.name).pathname, duration: entry.duration, bytes: entry.transferSize }))
-                })
-                """).ConfigureAwait(false);
-            Assert.Fail($"The capture confirmation dialog did not open. Scripts: {string.Join(", ", scripts)}. " +
-                $"Browser state: {browserState}");
-        }
+        await OpenDialogAsync(action, confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = pause ? "Confirm pause capture" : "Confirm resume capture" })
             .ClickAsync().ConfigureAwait(false);
         await page.Locator(".receipt[role='status']").WaitForAsync().ConfigureAwait(false);

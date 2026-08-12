@@ -216,8 +216,8 @@ validate_evidence_contract() {
       all(.sourceFamilies[]; . as $family |
         ($family.id | safe) and ($family.project | safe_path) and ($family.project | endswith(".csproj")) and
         ($family.evidenceSourcePrefix | startswith("test:HVO.SkyMonitor.")) and
-        ($family.commandTemplate | contains("2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5")) and
-        ($family.commandTemplate | contains("a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe")) and
+        ($family.commandTemplate | contains("ee117c1e8cf3e04998825d366da663e16c2b95ed")) and
+        ($family.commandTemplate | contains("17a0ad69452d710c82847f9a515022de05ebfaa5")) and
         ($family.commandTemplate | contains("git status --porcelain")) and
         (if $family.id == "cameraagent-acceptance" then
           ($family.commandTemplate | contains("./scripts/test:cameraagent-standalone-211")) and
@@ -228,7 +228,7 @@ validate_evidence_contract() {
           ($family.commandTemplate | contains("-p:NoIncremental=true")) and
           ($family.commandTemplate | contains("--no-build") | not) and
           ($family.commandTemplate | contains("FullyQualifiedName={fully-qualified-name}")) and
-          ($family.commandTemplate | contains("--results-directory TestResults/phase14-source/2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5/" + $family.id + "/{method-id}")) and
+          ($family.commandTemplate | contains("--results-directory TestResults/phase14-source/ee117c1e8cf3e04998825d366da663e16c2b95ed/" + $family.id + "/{method-id}")) and
           ($family.commandTemplate | contains("--logger \"trx;LogFileName=result.trx\""))
         end) and
         ($family.input | contains("scenario-evidence")) and ($family.input | contains("TRX") or contains("trx")) and
@@ -240,8 +240,8 @@ validate_evidence_contract() {
         ([$root.sourceFamilies[] as $sourceFamily |
           select($scenario.evidenceSource | startswith($sourceFamily.evidenceSourcePrefix)) | $sourceFamily] | length) == 1) and
       .sourceEvidenceContract.schemaVersion == 2 and
-      .sourceEvidenceContract.requiredSourceRevision == "2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5" and
-      .sourceEvidenceContract.requiredSourceTree == "a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe" and
+      .sourceEvidenceContract.requiredSourceRevision == "ee117c1e8cf3e04998825d366da663e16c2b95ed" and
+      .sourceEvidenceContract.requiredSourceTree == "17a0ad69452d710c82847f9a515022de05ebfaa5" and
       (.sourceEvidenceContract.revisionPolicy | contains("pinned-product-source") and contains("evidence-harness")) and
       .sourceEvidenceContract.evidenceHarnessPolicy.relationship == "clean-descendant-of-required-source-revision" and
       .sourceEvidenceContract.evidenceHarnessPolicy.revisionBinding == "execution-head" and

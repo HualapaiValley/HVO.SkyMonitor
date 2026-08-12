@@ -42,8 +42,8 @@ source-family imports until an admissible artifact exists.
 
 The contract maps every `test:` reference to exactly one project family. It pins
 product behavior to main revision
-`2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5` and tree
-`a0a0bdfe259f22c2cacabfd5e5b73938ad6b3ffe`; later importers cannot substitute
+`ee117c1e8cf3e04998825d366da663e16c2b95ed` and tree
+`17a0ad69452d710c82847f9a515022de05ebfaa5`; later importers cannot substitute
 newer product behavior. Evidence executes from a separately reviewed clean
 descendant harness revision/tree whose complete diff is confined to the exact
 test, recorder, importer, contract, CI, and documentation allowlist. Standard

@@ -669,7 +669,8 @@ scenario.
 
 Run the source importer only from the exact clean reviewed evidence-harness
 revision. The contract keeps product source provenance pinned to
-`2c4ca26bd80e57cf9deb9aab17ac2aa8c9f4bcb5` and its tree; the harness must be a
+`ee117c1e8cf3e04998825d366da663e16c2b95ed` and tree
+`17a0ad69452d710c82847f9a515022de05ebfaa5`; the harness must be a
 clean descendant whose complete changed-path set is allowlisted. After the
 harness commit has been reviewed, set its full commit SHA and run:
 
