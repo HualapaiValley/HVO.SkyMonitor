@@ -54,24 +54,41 @@ var results = root.Descendants(ns + "UnitTestResult").ToArray();
 var definitions = root.Descendants(ns + "UnitTest").ToArray();
 var summaries = root.Elements(ns + "ResultSummary").ToArray();
 var counterElements = summaries.Length == 1 ? summaries[0].Elements(ns + "Counters").ToArray() : [];
-if (results.Length != 1 || definitions.Length != 1 || summaries.Length != 1 || counterElements.Length != 1 ||
+var allowDataRows = args.Length >= 2;
+if (results.Length is < 1 or > 256 || definitions.Length != results.Length || (!allowDataRows && results.Length != 1) ||
+    summaries.Length != 1 || counterElements.Length != 1 ||
     summaries[0].Attribute("outcome")?.Value != "Completed")
 {
-    return Fail("TRX must describe exactly one completed test");
+    return Fail("TRX must describe one completed method execution");
 }
 
-var result = results[0];
-var definition = definitions[0];
-var testMethods = definition.Descendants(ns + "TestMethod").ToArray();
-var declaredName = testMethods.Length == 1
-    ? $"{testMethods[0].Attribute("className")?.Value}.{testMethods[0].Attribute("name")?.Value}"
-    : null;
-if (result.Attribute("testName")?.Value != expectedMethod || definition.Attribute("name")?.Value != expectedMethod ||
-    declaredName != expectedTest ||
-    result.Attribute("outcome")?.Value != "Passed" ||
-    result.Attribute("testId")?.Value != definition.Attribute("id")?.Value)
+var definitionIds = definitions.Select(definition => definition.Attribute("id")?.Value).ToArray();
+var resultIds = results.Select(result => result.Attribute("testId")?.Value).ToArray();
+if (definitionIds.Any(static id => id is null) || definitionIds.Distinct(StringComparer.Ordinal).Count() != definitions.Length ||
+    resultIds.Any(static id => id is null) || resultIds.Distinct(StringComparer.Ordinal).Count() != results.Length)
 {
     return Fail("TRX test identity or outcome is invalid");
+}
+var definitionsById = definitions.ToDictionary(definition => definition.Attribute("id")!.Value, StringComparer.Ordinal);
+foreach (var result in results)
+{
+    var testId = result.Attribute("testId")?.Value;
+    if (testId is null || !definitionsById.TryGetValue(testId, out var definition))
+    {
+        return Fail("TRX test identity or outcome is invalid");
+    }
+    var testMethods = definition.Descendants(ns + "TestMethod").ToArray();
+    var declaredName = testMethods.Length == 1
+        ? $"{testMethods[0].Attribute("className")?.Value}.{testMethods[0].Attribute("name")?.Value}"
+        : null;
+    var resultName = result.Attribute("testName")?.Value;
+    var definitionName = definition.Attribute("name")?.Value;
+    if ((resultName != expectedMethod && !(allowDataRows && resultName?.StartsWith($"{expectedMethod} (", StringComparison.Ordinal) == true)) ||
+        (definitionName != expectedMethod && !(allowDataRows && definitionName?.StartsWith($"{expectedMethod} (", StringComparison.Ordinal) == true)) ||
+        declaredName != expectedTest || result.Attribute("outcome")?.Value != "Passed")
+    {
+        return Fail("TRX test identity or outcome is invalid");
+    }
 }
 
 var counters = counterElements[0];
@@ -81,10 +98,10 @@ foreach (var attribute in counters.Attributes())
     {
         return Fail("TRX counters are invalid");
     }
-    var expected = attribute.Name.LocalName is "total" or "executed" or "passed" ? 1 : 0;
+    var expected = attribute.Name.LocalName is "total" or "executed" or "passed" ? results.Length : 0;
     if (value != expected)
     {
-        return Fail("TRX does not contain exactly one passing test");
+        return Fail("TRX does not contain only passing method results");
     }
 }
 
