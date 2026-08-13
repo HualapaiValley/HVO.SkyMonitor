@@ -587,8 +587,8 @@ EOF
          elif $event_id == 103 then
            $source == "Microsoft.Extensions.Diagnostics.HealthChecks.DefaultHealthCheckService" and
            ($body == "[REDACTED]" or
-             (($body | test("^Health check \"(calibration-library|capture-processing|environmental-acquisition|raw-ingress)\" with status Degraded ")) and
-              ($body | test("Calibration is required but no bundle is active|active calibration bundle has not completed startup validation|Calibration acquisition or reconciliation requires attention|Capture processing has retryable graph work|Environmental acquisition has stale, missing, or failed sources|Raw ingress is accepting with reconciliation or pressure findings"))))
+              (($body | test("^Health check \"(calibration-library|capture-admission|capture-processing|environmental-acquisition|raw-ingress)\" with status Degraded ")) and
+               ($body | test("Calibration is required but no bundle is active|active calibration bundle has not completed startup validation|Calibration acquisition or reconciliation requires attention|Capture admission has not initialized|Capture processing has retryable graph work|Environmental acquisition has stale, missing, or failed sources|Raw ingress is accepting with reconciliation or pressure findings"))))
          elif $event_id == 2029 then
            $strict and $body == "[REDACTED]" and
            $source == "HVO.SkyMonitor.CameraAgent.Common.Background.RetentionBackgroundService"
