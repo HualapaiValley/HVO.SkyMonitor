@@ -553,6 +553,7 @@ EOF
     cp "$trial_result/evidence/process.csv" "$trial_result/evidence/runtime/process.csv"
     jq -n \
         --argjson strict "$calibration_required" \
+        --argjson phase14 "$collect_phase14" \
         --arg trial "$trial" \
         --slurpfile traces "$trial_result/evidence/runtime/traces.jsonl" \
         --slurpfile metrics "$trial_result/evidence/runtime/metrics.json" \
@@ -595,12 +596,12 @@ EOF
            $source == "HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureIngress" and
            ($body | test("^Raw ingress SQLite operation \"(checkpoint|commit)\" completed with result \"success\"$"))
          elif $event_id == 2013 then
-           $trial == "trial-1" and
+           ($trial == "trial-1" or $phase14) and
            $source == "HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.StandardCaptureLaneHandler" and
            ($body | startswith("Capture processing step \"weather-overlay\" failed"))
          elif $event_id == 2055 then
            $source == "HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureIngress" and
-           (($trial == "trial-1" and ($body | test("^Capture lane \"standard\" scheduled retry attempt [23] because \"handler-failure\"$"))) or
+           (((($trial == "trial-1") or $phase14) and ($body | test("^Capture lane \"standard\" scheduled retry attempt [23] because \"handler-failure\"$"))) or
             ($trial == "mono8-control" and $body == "Capture lane \"standard\" scheduled retry attempt 1 because \"handler-failure\""))
          elif $event_id == 2067 then
            $trial == "mono8-control" and
@@ -781,8 +782,8 @@ EOF
            {eventId: 103, disposition: "Only allowlisted transient Degraded health states are accepted during injected faults and startup convergence."},
            {eventId: 2029, disposition: "W6 explicitly injects one bounded disk-pressure transition."},
            {eventId: 2048, disposition: "Fault/restart checks explicitly exercise successful SQLite commit and checkpoint boundaries."},
-           {eventId: 2013, disposition: "Trial 1 explicitly injects the optional weather-overlay failure."},
-           {eventId: 2055, disposition: "Trial 1 and Mono8 explicitly inject bounded standard-lane retries."},
+           {eventId: 2013, disposition: "Trial 1 and Phase 14 evidence trials explicitly inject the optional weather-overlay failure."},
+           {eventId: 2055, disposition: "Trial 1, Phase 14 evidence trials, and Mono8 explicitly inject bounded standard-lane retries."},
            {eventId: 2067, disposition: "Mono8 explicitly exercises bounded annotation retry while environment association converges."}
          ],
          unexpectedWarnings: [$log_records[] | select(.severityNumber >= 13) |

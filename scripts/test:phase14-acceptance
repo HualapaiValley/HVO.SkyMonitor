@@ -252,6 +252,7 @@ validate_evidence_contract() {
       (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | index("scripts/deploy/acceptance-source-family.sh") != null) and
       (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | index("scripts/test:cameraagent-standalone-211") != null) and
       ($issue211Script | contains("$source == \"HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.StandardCaptureLaneHandler\"")) and
+      ($issue211Script | contains("($trial == \"trial-1\" or $phase14)")) and
       (.sourceEvidenceContract.evidenceHarnessPolicy.allowedChangedPaths | index("src/HVO.SkyMonitor.LogicHost/Program.cs") == null) and
       (.sourceEvidenceContract.caseSelectorPolicy | contains("exactly equal") and contains("TRX") and contains("observation-count")) and
       [.sourceEvidenceContract.requiredEntryFields[]] ==
