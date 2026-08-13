@@ -113,6 +113,7 @@
         "scripts/deploy/acceptance-source-family.sh",
         "scripts/phase14:source-import",
         "scripts/test:cameraagent-standalone-211",
+        "scripts/test-categories/Program.cs",
         "scripts/test:phase14-acceptance",
         "scripts/test:phase14-component",
         "scripts/test:phase14-source-import",
