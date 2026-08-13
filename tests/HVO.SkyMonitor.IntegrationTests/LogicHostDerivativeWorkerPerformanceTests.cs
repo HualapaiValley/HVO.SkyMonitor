@@ -1006,10 +1006,17 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                if (!await HasBacklogAsync(initialJobIds, cancellationToken).ConfigureAwait(false))
+                try
                 {
-                    drained.TrySetResult(Stopwatch.GetElapsedTime(recoveryStarted).TotalMilliseconds);
-                    return;
+                    if (!await HasBacklogAsync(initialJobIds, cancellationToken).ConfigureAwait(false))
+                    {
+                        drained.TrySetResult(Stopwatch.GetElapsedTime(recoveryStarted).TotalMilliseconds);
+                        return;
+                    }
+                }
+                catch (SqlException exception) when (exception.Number == 1205)
+                {
+                    // The worker may deadlock this observer query while transitioning the same jobs.
                 }
                 await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
             }
