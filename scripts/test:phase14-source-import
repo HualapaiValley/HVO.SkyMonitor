@@ -84,8 +84,8 @@ phase14_test_write_fragments() {
       [.scenarioId,(.selector // "")] | @tsv' <<< "$map")
 }
 phase14_source_run_build() {
-    local repo="$1" project="$2"
-    [[ "$repo" == "$REPO_ROOT" ]] || return 1
+    local repo="$1" project="$2" path_map="$3"
+    [[ "$repo" == "$REPO_ROOT" && "$path_map" == "$REPO_ROOT=hvo-source" ]] || return 1
     printf 'build\t%s\n' "$project" >> "$COLLECTION_LOG"
 }
 phase14_source_resolve_target() {
@@ -133,8 +133,9 @@ phase14_source_run_test() {
     phase14_test_write_fragments "$family" "$fqn" "$method"
 }
 phase14_source_run_issue211() {
-    local repo="$1" catalog="$2" image="$3" private_results="$4" method="$5" trial acceptance_fqn scenario selector observation observation_hash
-    [[ "$repo" == "$REPO_ROOT" && "$catalog" == "$CATALOG" && "$image" == "$COLLECTOR_IMAGE" ]] || return 1
+    local repo="$1" catalog="$2" image="$3" private_results="$4" method="$5" path_map="$6" assembly_sha_file="$7" trial acceptance_fqn scenario selector observation observation_hash
+    [[ "$repo" == "$REPO_ROOT" && "$catalog" == "$CATALOG" && "$image" == "$COLLECTOR_IMAGE" &&
+       "$path_map" == "$REPO_ROOT=hvo-source" ]] || return 1
     printf 'issue211\t%s\t%s\n' "$catalog" "$image" >> "$COLLECTION_LOG"
     acceptance_fqn="$(jq -r '[.[] | select(.family == "cameraagent-acceptance") | .fqn] | unique[0]' <<< "$map")"
     for trial in 1 2 3 4 5; do
@@ -158,11 +159,27 @@ phase14_source_run_issue211() {
         printf 'acceptance raw trx\n' > "$private_results/phase14-trx/trial-$trial/result.trx"
         chmod 600 "$private_results/phase14-trx/trial-$trial/result.trx"
     done
+    if [[ "${PHASE14_TEST_MUTATE_CATALOG_AFTER_ACCEPTANCE:-false}" == true ]]; then
+        printf 'mutated\n' >> "$(readlink -e -- "$catalog/current")/manifest.json"
+    fi
+    phase14_source_hash "$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll" > "$assembly_sha_file"
+    chmod 600 "$assembly_sha_file"
 }
 
 COLLECT_OUTPUT="$TEMP_DIR/collected-output"; CATALOG="$TEMP_DIR/catalog"
 COLLECTOR_IMAGE="collector.invalid/otel@sha256:$(printf 'a%.0s' {1..64})"
-install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG"
+install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG" "$CATALOG/versions" "$CATALOG/versions/catalog-v1"
+install -m 600 /dev/null "$CATALOG/.install.lock"
+printf 'catalog\n' > "$CATALOG/versions/catalog-v1/catalog.sqlite"
+catalog_sha="$(phase14_source_hash "$CATALOG/versions/catalog-v1/catalog.sqlite")"
+jq -S -n --arg sha "$catalog_sha" --argjson length "$(stat -c %s "$CATALOG/versions/catalog-v1/catalog.sqlite")" \
+  '{manifestVersion:1,package:{kind:"production",version:"catalog-v1"},database:{relativePath:"catalog.sqlite",sha256:$sha,length:$length}}' \
+  > "$CATALOG/versions/catalog-v1/manifest.json"
+chmod 400 "$CATALOG/versions/catalog-v1/catalog.sqlite" "$CATALOG/versions/catalog-v1/manifest.json"
+ln -s versions/catalog-v1 "$CATALOG/current"
+PHASE14_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
+PHASE14_ACCEPTANCE_INPUTS="$(phase14_source_catalog_identity "$CATALOG")"
+export PHASE14_ACCEPTANCE_INPUTS
 export HVO_DERIVATIVE_PERF_SMOKE=1 HVO_DERIVATIVE_P5_DIAGNOSTIC_TRIAL=1 \
   HVO_EVIDENCE_REVISION=ambient HVO_EVIDENCE_TRIAL=1 HVO_ISSUE_107_DEPENDENCY=Redis \
   HVO_ISSUE_107_EVIDENCE_ROOT=/ambient HVO_EVIDENCE_REPOSITORY_ROOT=/ambient \
@@ -185,6 +202,9 @@ done < <(jq -r '[.[] | select(.family != "cameraagent-acceptance") | .fqn] | uni
 acceptance_bundle="$(find "$COLLECT_OUTPUT/source-import/methods/cameraagent-acceptance" -name source-bundle.json)"
 jq -e '.trialResults | length == 5 and [.[].id] == ["trial-1","trial-2","trial-3","trial-4","trial-5"]' \
   "$acceptance_bundle" >/dev/null || fail 'Published acceptance bundle did not retain five trial results.'
+jq -e --arg image "$COLLECTOR_IMAGE" --arg sha "$catalog_sha" \
+  '.acceptanceInputs.collectorImage == $image and .acceptanceInputs.catalogDatabaseSha256 == $sha' \
+  "$acceptance_bundle" >/dev/null || fail 'Published acceptance inputs were not provenance-bound.'
 standard_bundle="$(find "$COLLECT_OUTPUT/source-import/methods" -path '*/cameraagent-tests/*/source-bundle.json' | sort | sed -n '1p')"
 jq -e '.trialResults == [{id:"method",relativePath:"trial-results/method.trx",byteLength:.trxByteLength,sha256:.trxSha256}]' \
   "$standard_bundle" >/dev/null || fail 'Published standard bundle did not retain one method trial result.'
@@ -209,6 +229,14 @@ phase14_source_collect "$REPO_ROOT" "$REPEAT_OUTPUT" "$harness_revision" "$CATAL
 [[ ! -e "$REPO_ROOT/TestResults/issue-170/$harness_revision/trial-01/logichost-ingest-performance.json" ]] ||
   fail 'Repeated collection retained auxiliary issue-170 evidence.'
 [[ -e "$REPEAT_OUTPUT/source-import/source-import-index.json" ]] || fail 'Repeated collection did not publish.'
+MUTATED_CATALOG_OUTPUT="$TEMP_DIR/mutated-catalog"; install -d -m 700 "$MUTATED_CATALOG_OUTPUT"
+cp -a "$CATALOG" "$TEMP_DIR/mutable-catalog"; chmod 600 "$TEMP_DIR/mutable-catalog/versions/catalog-v1/manifest.json"
+CATALOG="$TEMP_DIR/mutable-catalog"
+export PHASE14_TEST_MUTATE_CATALOG_AFTER_ACCEPTANCE=true
+expect_rejected 'A catalog identity change during acceptance was accepted.' phase14_source_collect \
+  "$REPO_ROOT" "$MUTATED_CATALOG_OUTPUT" "$harness_revision" "$CATALOG" "$COLLECTOR_IMAGE" "$contract" "$inventory"
+unset PHASE14_TEST_MUTATE_CATALOG_AFTER_ACCEPTANCE
+CATALOG="$TEMP_DIR/catalog"
 PREEXISTING_OUTPUT="$TEMP_DIR/preexisting-auxiliary"; install -d -m 700 "$PREEXISTING_OUTPUT"
 auxiliary_evidence="$REPO_ROOT/TestResults/issue-170/$harness_revision/trial-01/logichost-ingest-performance.json"
 install -d -m 700 "$(dirname "$auxiliary_evidence")"; printf '{"preexisting":true}\n' > "$auxiliary_evidence"; chmod 600 "$auxiliary_evidence"
@@ -339,6 +367,14 @@ expect_rejected 'An unexpected fragment was accepted.' phase14_source_import \
 bad_assembly="$(mutate_input bad-assembly)"; printf 'tamper\n' >> "${first_method/$INPUT/$bad_assembly}/test-assembly.dll"
 expect_rejected 'Wrong assembly hash/build provenance was accepted.' phase14_source_import \
   "$REPO_ROOT" "$bad_assembly" "$TEMP_DIR/out-assembly" "$harness_revision" "$contract" "$inventory"
+private_path_assembly="$(mutate_input private-path-assembly)"; private_assembly="${first_method/$INPUT/$private_path_assembly}/test-assembly.dll"
+printf '%s/private.cs\n' "$REPO_ROOT" >> "$private_assembly"
+private_sha="$(phase14_source_hash "$private_assembly")"
+jq --arg sha "$private_sha" '.assemblySha256=$sha' "$(dirname "$private_assembly")/assembly-provenance.json" > "$TEMP_DIR/private-provenance" &&
+  mv "$TEMP_DIR/private-provenance" "$(dirname "$private_assembly")/assembly-provenance.json"
+chmod 600 "$(dirname "$private_assembly")/assembly-provenance.json"
+expect_rejected 'An assembly containing the canonical repository path was accepted.' phase14_source_import \
+  "$REPO_ROOT" "$private_path_assembly" "$TEMP_DIR/out-private-assembly" "$harness_revision" "$contract" "$inventory"
 
 unsafe_mode="$(mutate_input unsafe-mode)"; chmod 644 "${first_method/$INPUT/$unsafe_mode}/test-assembly.dll"
 expect_rejected 'An unsafe input mode was accepted.' phase14_source_import \
@@ -365,6 +401,16 @@ jq --argjson length "$evidence_length" --arg sha "$evidence_sha" --slurpfile evi
   '.sourceEvidenceByteLength=$length | .sourceEvidenceSha256=$sha | .entries=$evidence[0].entries' "$bundle" > "$TEMP_DIR/b" && mv "$TEMP_DIR/b" "$bundle"; chmod 600 "$bundle"
 expect_rejected 'Coordinated bundle and source-evidence tampering without an index change was accepted.' phase14_source_import \
   "$REPO_ROOT" "$INPUT" "$coordinated" "$harness_revision" "$contract" "$inventory"
+wrong_inputs="$TEMP_DIR/wrong-input-publication"; install -d -m 700 "$wrong_inputs"; cp -a "$publication" "$wrong_inputs/source-import"
+wrong_index="$wrong_inputs/source-import/source-import-index.json"
+jq '.acceptanceInputs.collectorImage="collector.invalid/other@sha256:" + ("b" * 64)' "$wrong_index" > "$TEMP_DIR/wrong-index" &&
+  mv "$TEMP_DIR/wrong-index" "$wrong_index"; chmod 600 "$wrong_index"
+wrong_length="$(stat -c %s "$wrong_index")"; wrong_sha="$(phase14_source_hash "$wrong_index")"
+jq -S -n --argjson length "$wrong_length" --arg sha "$wrong_sha" \
+  '{schemaVersion:1,indexByteLength:$length,indexSha256:$sha}' > "$wrong_inputs/source-import/source-import-commit.json"
+chmod 600 "$wrong_inputs/source-import/source-import-commit.json"
+expect_rejected 'A coordinated rewrite of pinned acceptance inputs was accepted on resume.' phase14_source_import \
+  "$REPO_ROOT" "$INPUT" "$wrong_inputs" "$harness_revision" "$contract" "$inventory"
 unexpected_directory="$TEMP_DIR/unexpected-directory"; install -d -m 700 "$unexpected_directory"; cp -a "$publication" "$unexpected_directory/source-import"; install -d -m 700 "$unexpected_directory/source-import/unexpected"
 expect_rejected 'An unexpected publication directory was accepted.' phase14_source_import \
   "$REPO_ROOT" "$INPUT" "$unexpected_directory" "$harness_revision" "$contract" "$inventory"

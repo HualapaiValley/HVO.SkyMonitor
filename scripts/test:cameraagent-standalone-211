@@ -76,6 +76,10 @@ prepare_private_root() {
     fi
 }
 
+if [[ -n "${HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE:-}" ]]; then
+    prepare_private_root "$(dirname "$HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE")" 'HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE parent'
+fi
+
 results_base="${HVO_ISSUE_211_RESULTS_BASE-$DEFAULT_RESULTS_BASE}"
 if [[ -n "${HVO_ISSUE_211_RESULTS_BASE+x}" ]]; then
     prepare_private_root "$results_base" 'HVO_ISSUE_211_RESULTS_BASE'
@@ -242,8 +246,14 @@ assert_worktree_unchanged
 readonly CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
 [[ "$CAMERA_AGENT_IMAGE" == sha256:* ]] || { printf 'CameraAgent image is not content addressed.\n' >&2; exit 1; }
 assert_worktree_unchanged
-dotnet build "$PROJECT" --no-restore --no-incremental --configuration Release -warnaserror 8>&-
+path_map=()
+if [[ -n "${HVO_PHASE14_BUILD_PATH_MAP:-}" ]]; then
+    path_map=(-p:PathMap="$HVO_PHASE14_BUILD_PATH_MAP")
+fi
+dotnet build "$PROJECT" --no-restore --no-incremental --configuration Release -warnaserror "${path_map[@]}" 8>&-
 assert_worktree_unchanged
+readonly TEST_ASSEMBLY="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll"
+readonly TEST_ASSEMBLY_SHA256="$(sha256sum "$TEST_ASSEMBLY" | cut -d' ' -f1)"
 
 active_project=""
 active_env=""
@@ -1297,6 +1307,14 @@ jq -s \
 ' "$run_inventory" > "$RESULTS/run-manifest.json"
 rm -f "$run_inventory"
 assert_worktree_unchanged
+[[ "$(sha256sum "$TEST_ASSEMBLY" | cut -d' ' -f1)" == "$TEST_ASSEMBLY_SHA256" ]] || {
+    printf 'Acceptance test assembly changed after the no-build trials.\n' >&2
+    exit 1
+}
+if [[ -n "${HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE:-}" ]]; then
+    printf '%s\n' "$TEST_ASSEMBLY_SHA256" > "$HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE"
+    chmod 600 "$HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE"
+fi
 assert_no_owned_acceptance_resources
 final_root_scan_status=0
 rg --text --hidden --ignore-case \

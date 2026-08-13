@@ -259,7 +259,7 @@ validate_evidence_contract() {
       [.sourceEvidenceContract.requiredEntryFields[]] ==
         ["scenarioId","evidenceSource","sourceRevision","sourceTree","outcome","assertions","outputs","measurements"] and
       [.sourceEvidenceContract.requiredBundleFields[]] ==
-        ["schemaVersion","requestedSourceRevision","requestedSourceTree","evidenceHarnessRevision","evidenceHarnessTree","cleanSource","testAssemblyRelativePath",
+        ["schemaVersion","requestedSourceRevision","requestedSourceTree","evidenceHarnessRevision","evidenceHarnessTree","acceptanceInputs","cleanSource","testAssemblyRelativePath",
           "testAssemblySha256","testAssemblyBuildRevision","testAssemblyBuildTree","trxRelativePath","trxByteLength","trxSha256","trialResults","sourceEvidenceRelativePath",
          "sourceEvidenceByteLength","sourceEvidenceSha256","entries"] and
       .sourceEvidenceContract.bundleByteBindings ==
@@ -273,7 +273,9 @@ validate_evidence_contract() {
         contains("trialResults is required") and contains("trial-1 through trial-5") and contains("byte-identical")) and
       (.sourceEvidenceContract.testAssemblyProvenancePolicy |
         contains("NoIncremental=true") and contains("evidenceHarnessRevision") and contains("testAssemblyBuildRevision") and
-        contains("testAssemblySha256") and contains("Scenario entries remain bound")) and
+        contains("testAssemblySha256") and contains("PathMap") and contains("canonical repository path") and contains("Scenario entries remain bound")) and
+      (.sourceEvidenceContract.acceptanceInputPolicy |
+        contains("collector image") and contains("catalog manifest") and contains("database SHA-256") and contains("non-acceptance bundles use null")) and
       .sourceEvidenceContract.revisionBindings ==
         [{actual:"requestedSourceRevision",expected:"requiredSourceRevision"},
          {actual:"requestedSourceTree",expected:"requiredSourceTree"},

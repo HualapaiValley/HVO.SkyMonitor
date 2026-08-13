@@ -44,6 +44,13 @@ phase14_source_safe_file() {
     [[ "$metadata" =~ ^$(id -u):1:(400|600):[1-9][0-9]*$ ]]
 }
 
+phase14_source_safe_catalog_file() {
+    local metadata
+    [[ -f "$1" && ! -L "$1" ]] || return 1
+    metadata="$(stat -c '%u:%h:%a:%s' -- "$1" 2>/dev/null)" || return 1
+    [[ "$metadata" =~ ^$(id -u):1:(400|444|600):[1-9][0-9]*$ ]]
+}
+
 phase14_source_hash() {
     local digest
     digest="$(sha256sum -- "$1")" || return 1
@@ -61,8 +68,9 @@ phase14_source_sanitize_trx() {
 }
 
 phase14_source_run_build() {
-    local repo="$1" project="$2"
-    dotnet build "$repo/$project" --configuration Release --no-restore --no-incremental -warnaserror
+    local repo="$1" project="$2" path_map="$3"
+    dotnet build "$repo/$project" --configuration Release --no-restore --no-incremental -warnaserror \
+      -p:PathMap="$path_map"
 }
 
 phase14_source_resolve_target() {
@@ -121,14 +129,42 @@ phase14_source_run_standard_test() (
 )
 
 phase14_source_run_issue211() {
-    local repo="$1" catalog="$2" image="$3" private_results="$4" evidence_method_root="$5"
+    local repo="$1" catalog="$2" image="$3" private_results="$4" evidence_method_root="$5" path_map="$6" assembly_sha_file="$7"
     local retained="$private_results/issue-211" trx_root="$private_results/phase14-trx"
     install -d -m 700 "$retained" "$trx_root"
     HVO_CATALOG_PERF_ROOT="$catalog" HVO_OTEL_COLLECTOR_IMAGE="$image" HVO_ISSUE_211_TRIAL_COUNT=5 \
+      HVO_PHASE14_BUILD_PATH_MAP="$path_map" \
+      HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE="$assembly_sha_file" \
       HVO_ISSUE_211_RESULTS_BASE="$retained" HVO_PHASE14_TRX_ROOT="$trx_root" \
       HVO_PHASE14_EVIDENCE_ALLOWED_ROOT="$PHASE14_COLLECTION_ALLOWED_ROOT" \
       HVO_PHASE14_EVIDENCE_ROOT="$evidence_method_root" HVO_PHASE14_SOURCE_REVISION="$PHASE14_PRODUCT_REVISION" \
       HVO_PHASE14_SOURCE_TREE="$PHASE14_PRODUCT_TREE" "$repo/scripts/test:cameraagent-standalone-211" >/dev/null
+}
+
+phase14_source_catalog_identity() {
+    local root="$1" current resolved manifest database relative expected_sha expected_length actual_sha actual_length
+    current="$root/current"
+    [[ -L "$current" ]] || return 1
+    resolved="$(readlink -e -- "$current" 2>/dev/null)" || return 1
+    [[ "$resolved" == "$root/versions/"* ]] || return 1
+    phase14_source_no_symlink_path "$root/versions" "$resolved" || return 1
+    manifest="$resolved/manifest.json"
+    phase14_source_no_symlink_path "$root/versions" "$manifest" && phase14_source_safe_catalog_file "$manifest" || return 1
+    jq -e '.manifestVersion == 1 and .package.kind == "production" and
+      (.database.relativePath | type == "string" and test("^[A-Za-z0-9._/-]+$") and (startswith("/") | not)) and
+      (.database.sha256 | test("^[0-9a-f]{64}$")) and
+      (.database.length | numbers) > 0 and (.database.length | floor) == .database.length' "$manifest" >/dev/null || return 1
+    relative="$(jq -r '.database.relativePath' "$manifest")"
+    phase14_source_safe_relative_path "$relative" || return 1
+    database="$resolved/$relative"
+    phase14_source_no_symlink_path "$root/versions" "$database" && phase14_source_safe_catalog_file "$database" || return 1
+    expected_sha="$(jq -r '.database.sha256' "$manifest")"; expected_length="$(jq -r '.database.length' "$manifest")"
+    actual_sha="$(phase14_source_hash "$database")"; actual_length="$(stat -c %s -- "$database")"
+    [[ "$actual_sha" == "$expected_sha" && "$actual_length" == "$expected_length" ]] || return 1
+    jq -cn --arg collectorImage "$PHASE14_COLLECTOR_IMAGE" --arg manifestSha256 "$(phase14_source_hash "$manifest")" \
+      --arg databaseSha256 "$actual_sha" --argjson databaseByteLength "$actual_length" \
+      '{collectorImage:$collectorImage,catalogManifestSha256:$manifestSha256,
+        catalogDatabaseSha256:$databaseSha256,catalogDatabaseByteLength:$databaseByteLength}'
 }
 
 phase14_source_validate_contract() {
@@ -221,13 +257,15 @@ phase14_source_validate_target() {
 phase14_source_collect() (
     local repo="$1" output_root="$2" harness_revision="$3" catalog_root="$4" collector_image="$5" contract="$6" inventory="$7"
     local final="$output_root/source-import" collection input private_results method_map inventory_hash family project fqn method_id method raw target
-    local acceptance_entries acceptance_family acceptance_fqn fragments trial sanitized first_sanitized assembly
-    deploy_require_commands git jq sha256sum stat readlink dotnet cmp || return 1
+    local acceptance_entries acceptance_family acceptance_fqn fragments trial sanitized first_sanitized assembly acceptance_inputs after_inputs target_sha tested_assembly_sha_file tested_assembly_sha
+    local catalog_lock catalog_lock_metadata catalog_lock_fd
+    deploy_require_commands git jq sha256sum stat readlink dotnet cmp flock || return 1
     if ! deploy_is_safe_absolute_path "$output_root" || ! deploy_is_safe_absolute_path "$catalog_root"; then
         phase14_source_fail options absolute-roots-required
         return 1
     fi
     [[ "$collector_image" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] || { phase14_source_fail options invalid-collector-image; return 1; }
+    PHASE14_COLLECTOR_IMAGE="$collector_image"
     if ! phase14_source_no_symlink_ancestors "$output_root" || ! phase14_source_no_symlink_ancestors "$catalog_root"; then
         phase14_source_fail options symlink-root-ancestor
         return 1
@@ -241,8 +279,9 @@ phase14_source_collect() (
     method_map="$(phase14_source_method_map "$contract" "$inventory")" || return 1
     inventory_hash="$(jq -S -c . "$inventory" | sha256sum)"; inventory_hash="${inventory_hash%% *}"
     if [[ -e "$final" || -L "$final" ]]; then
+        acceptance_inputs="$(phase14_source_catalog_identity "$catalog_root")" || { phase14_source_fail catalog-root invalid-catalog; return 1; }
         phase14_source_validate_publication "$final" "$contract" "$inventory" "$inventory_hash" "$PHASE14_PRODUCT_REVISION" \
-          "$PHASE14_PRODUCT_TREE" "$harness_revision" "$PHASE14_HARNESS_TREE" "$method_map" ||
+          "$PHASE14_PRODUCT_TREE" "$harness_revision" "$PHASE14_HARNESS_TREE" "$method_map" "$acceptance_inputs" ||
           { phase14_source_fail resume tampered-publication; return 1; }
         return 0
     fi
@@ -258,16 +297,18 @@ phase14_source_collect() (
 
     while IFS=$'\t' read -r family project; do
         phase14_source_validate_repository "$repo" "$contract" "$harness_revision" || return 1
-        phase14_source_run_build "$repo" "$project" || return 1
+        phase14_source_run_build "$repo" "$project" "$repo=hvo-source" || return 1
         phase14_source_validate_repository "$repo" "$contract" "$harness_revision" || return 1
         target="$(phase14_source_resolve_target "$repo" "$project")" || return 1
         phase14_source_validate_target "$repo" "$project" "$target" || { phase14_source_fail collection invalid-target; return 1; }
         while IFS= read -r fqn; do
             method_id="$(phase14_source_method_id "$fqn")"; method="$input/$family/$method_id"; raw="$private_results/$family/$method_id"
             install -d -m 700 "$input/$family" "$method" "$method/results" "$method/fragments" "$private_results/$family" "$raw"
+            target_sha="$(phase14_source_hash "$target")" || return 1
             phase14_source_validate_repository "$repo" "$contract" "$harness_revision" || return 1
             phase14_source_run_standard_test "$repo" "$project" "$fqn" "$raw" "$method" || return 1
             phase14_source_validate_repository "$repo" "$contract" "$harness_revision" || return 1
+            [[ "$(phase14_source_hash "$target")" == "$target_sha" ]] || { phase14_source_fail collection tested-assembly-changed; return 1; }
             phase14_source_sanitize_trx "$repo" "$raw" "$fqn" "$method/results/result.trx" || return 1
             rm -rf -- "$raw"
             install -m 600 "$target" "$method/test-assembly.dll"
@@ -282,10 +323,22 @@ phase14_source_collect() (
     project="$(jq -r '.[0].project' <<< "$acceptance_entries")"; method_id="$(phase14_source_method_id "$acceptance_fqn")"
     method="$input/$acceptance_family/$method_id"; fragments="$method/fragments"
     install -d -m 700 "$input/$acceptance_family" "$method" "$method/results" "$method/trial-results" "$fragments"
+    catalog_lock="$catalog_root/.install.lock"
+    [[ -f "$catalog_lock" && ! -L "$catalog_lock" ]] || { phase14_source_fail catalog-root unsafe-lock; return 1; }
+    catalog_lock_metadata="$(stat -c '%u:%h:%a' -- "$catalog_lock" 2>/dev/null)" || return 1
+    [[ "$catalog_lock_metadata" == "$(id -u):1:600" ]] || { phase14_source_fail catalog-root unsafe-lock; return 1; }
+    exec {catalog_lock_fd}>> "$catalog_lock" || return 1
+    flock -x "$catalog_lock_fd" || return 1
+    [[ "$(stat -Lc '%d:%i' -- "$catalog_lock")" == "$(stat -Lc '%d:%i' -- "/dev/fd/$catalog_lock_fd")" ]] ||
+      { phase14_source_fail catalog-root changed-lock; return 1; }
+    acceptance_inputs="$(phase14_source_catalog_identity "$catalog_root")" || { phase14_source_fail catalog-root invalid-catalog; return 1; }
+    tested_assembly_sha_file="$private_results/test-assembly.sha256"
     phase14_source_validate_repository "$repo" "$contract" "$harness_revision" || return 1
     (unset HVO_ISSUE_107_DEPENDENCY HVO_EVIDENCE_TRIAL VSTEST_TESTCASE_FILTER; \
-      phase14_source_run_issue211 "$repo" "$catalog_root" "$collector_image" "$private_results" "$method") || return 1
+      phase14_source_run_issue211 "$repo" "$catalog_root" "$collector_image" "$private_results" "$method" "$repo=hvo-source" "$tested_assembly_sha_file") || return 1
     phase14_source_validate_repository "$repo" "$contract" "$harness_revision" || return 1
+    after_inputs="$(phase14_source_catalog_identity "$catalog_root")" || { phase14_source_fail catalog-root invalid-catalog; return 1; }
+    [[ "$after_inputs" == "$acceptance_inputs" ]] || { phase14_source_fail catalog-root changed-during-acceptance; return 1; }
     shopt -s nullglob dotglob
     local acceptance_fragments=("$fragments"/*) trial_directories=("$private_results/phase14-trx"/*)
     shopt -u nullglob dotglob
@@ -301,14 +354,21 @@ phase14_source_collect() (
         rm -rf -- "$raw"
     done
     install -m 600 "$first_sanitized" "$method/results/result.trx"
-    rm -rf -- "$private_results"
+    phase14_source_safe_file "$tested_assembly_sha_file" || { phase14_source_fail collection missing-tested-assembly-digest; return 1; }
+    tested_assembly_sha="$(<"$tested_assembly_sha_file")"
+    [[ "$tested_assembly_sha" =~ ^[0-9a-f]{64}$ ]] || { phase14_source_fail collection invalid-tested-assembly-digest; return 1; }
     target="$(phase14_source_resolve_target "$repo" "$project")" || return 1
     phase14_source_validate_target "$repo" "$project" "$target" || { phase14_source_fail collection invalid-target; return 1; }
+    [[ "$(phase14_source_hash "$target")" == "$tested_assembly_sha" ]] || { phase14_source_fail collection tested-assembly-changed; return 1; }
     install -m 600 "$target" "$method/test-assembly.dll"
+    [[ "$(phase14_source_hash "$method/test-assembly.dll")" == "$tested_assembly_sha" ]] || return 1
+    rm -rf -- "$private_results"
     phase14_source_write_provenance "$method/test-assembly.dll" "$method/assembly-provenance.json" \
       "$harness_revision" "$PHASE14_HARNESS_TREE" || return 1
     PHASE14_SOURCE_COLLECTION_ROOT="$input" phase14_source_import \
-      "$repo" "$input" "$output_root" "$harness_revision" "$contract" "$inventory" || return 1
+      "$repo" "$input" "$output_root" "$harness_revision" "$contract" "$inventory" "$acceptance_inputs" || return 1
+    flock -u "$catalog_lock_fd"
+    exec {catalog_lock_fd}>&-
     rm -rf -- "$collection"
     trap - EXIT
 )
@@ -399,7 +459,7 @@ phase14_source_validate_input_method() {
 phase14_source_validate_publication() {
     local root="$1" contract="$2" inventory="$3" expected_inventory="$4" product_revision="$5" product_tree="$6"
     local harness_revision="$7" harness_tree="$8" method_map="$9" index commit path length digest bundle base scenario
-    local family method_id expected actual entry
+    local family method_id expected actual entry expected_acceptance_inputs="${10}"
     index="$root/source-import-index.json"; commit="$root/source-import-commit.json"
     phase14_source_safe_directory "$root" && phase14_source_no_symlink_path "$root" "$root" &&
       phase14_source_safe_file "$index" && phase14_source_safe_file "$commit" || return 1
@@ -409,10 +469,16 @@ phase14_source_validate_publication() {
       .schemaVersion == 1 and .indexByteLength == $length and .indexSha256 == $digest
     ' "$commit" >/dev/null || return 1
     jq -e --arg inventory "$expected_inventory" --arg harnessRevision "$harness_revision" --arg harnessTree "$harness_tree" \
-      --arg productRevision "$product_revision" --arg productTree "$product_tree" --argjson mappings "$method_map" '
-      (keys | sort) == (["schemaVersion","status","campaignStatus","evidenceHarnessRevision","evidenceHarnessTree","inventorySha256","entries","methodBundles"] | sort) and
+      --arg productRevision "$product_revision" --arg productTree "$product_tree" --argjson mappings "$method_map" \
+      --argjson acceptanceInputs "$expected_acceptance_inputs" '
+        (keys | sort) == (["schemaVersion","status","campaignStatus","evidenceHarnessRevision","evidenceHarnessTree","inventorySha256","acceptanceInputs","entries","methodBundles"] | sort) and
       .schemaVersion == 1 and .status == "recorded" and .campaignStatus == "not-run" and
-      .evidenceHarnessRevision == $harnessRevision and .evidenceHarnessTree == $harnessTree and .inventorySha256 == $inventory and
+       .evidenceHarnessRevision == $harnessRevision and .evidenceHarnessTree == $harnessTree and .inventorySha256 == $inventory and
+       .acceptanceInputs == $acceptanceInputs and
+       (.acceptanceInputs | keys | sort) == (["collectorImage","catalogManifestSha256","catalogDatabaseSha256","catalogDatabaseByteLength"] | sort) and
+       (.acceptanceInputs.collectorImage | test("^[^[:space:]@]+@sha256:[0-9a-f]{64}$")) and
+       all(.acceptanceInputs.catalogManifestSha256,.acceptanceInputs.catalogDatabaseSha256; test("^[0-9a-f]{64}$")) and
+       (.acceptanceInputs.catalogDatabaseByteLength | numbers) > 0 and
       (.entries | length == 103 and length == ([.[].scenarioId] | unique | length)) and
       ([.entries[].scenarioId] | sort) == ([$mappings[].scenarioId] | sort) and
       (.methodBundles | length == 25 and length == ([.[].relativePath] | unique | length)) and
@@ -456,14 +522,15 @@ phase14_source_validate_publication() {
         family="${path#methods/}"; family="${family%%/*}"; method_id="${path#methods/"$family"/}"; method_id="${method_id%%/*}"
         jq -e --arg family "$family" --arg methodId "$method_id" --arg productRevision "$product_revision" \
           --arg productTree "$product_tree" --arg harnessRevision "$harness_revision" --arg harnessTree "$harness_tree" \
-          --argjson mappings "$method_map" '
+          --argjson mappings "$method_map" --slurpfile index "$index" '
           . as $bundle |
-          (keys | sort) == (["schemaVersion","requestedSourceRevision","requestedSourceTree","evidenceHarnessRevision","evidenceHarnessTree",
+          (keys | sort) == (["schemaVersion","requestedSourceRevision","requestedSourceTree","evidenceHarnessRevision","evidenceHarnessTree","acceptanceInputs",
             "cleanSource","testAssemblyRelativePath","testAssemblySha256","testAssemblyBuildRevision","testAssemblyBuildTree",
             "trxRelativePath","trxByteLength","trxSha256","trialResults","sourceEvidenceRelativePath","sourceEvidenceByteLength","sourceEvidenceSha256","entries"] | sort) and
-          .schemaVersion == 2 and .cleanSource == true and .requestedSourceRevision == $productRevision and
+           .schemaVersion == 2 and .cleanSource == true and .requestedSourceRevision == $productRevision and
           .requestedSourceTree == $productTree and .evidenceHarnessRevision == $harnessRevision and .evidenceHarnessTree == $harnessTree and
-          .testAssemblyBuildRevision == $harnessRevision and .testAssemblyBuildTree == $harnessTree and
+           .testAssemblyBuildRevision == $harnessRevision and .testAssemblyBuildTree == $harnessTree and
+           .acceptanceInputs == (if $family == "cameraagent-acceptance" then $index[0].acceptanceInputs else null end) and
            .testAssemblyRelativePath == "test-assembly.dll" and .trxRelativePath == "result.trx" and
            (.trialResults | type == "array" and length == (if $family == "cameraagent-acceptance" then 5 else 1 end) and
              (keys | sort) == (if $family == "cameraagent-acceptance" then [0,1,2,3,4] else [0] end) and
@@ -480,7 +547,7 @@ phase14_source_validate_publication() {
             (keys | sort) == (["scenarioId","evidenceSource","sourceRevision","sourceTree","outcome","assertions","outputs","measurements"] | sort) and
             .evidenceSource == $mapping.evidenceSource and .sourceRevision == $productRevision and .sourceTree == $productTree and
             .outcome == "passed" and all(.assertions[]; .passed) and .outputs == [])
-        ' "$bundle" "$base/source-evidence.json" >/dev/null || return 1
+         ' "$bundle" "$base/source-evidence.json" >/dev/null || return 1
         while IFS=$'\t' read -r path length digest; do
             phase14_source_safe_relative_path "$path" && phase14_source_safe_file "$base/$path" && phase14_source_no_symlink_path "$root" "$base/$path" &&
               [[ "$length" == null || "$(stat -c %s -- "$base/$path")" == "$length" ]] &&
@@ -537,6 +604,7 @@ phase14_source_import() {
     local scenario selector fragment source_file trx_file bundle_file artifact_file relative artifact_length artifact_sha assembly_sha
     local source_length source_sha trx_length trx_sha inventory_hash index_entries='[]' method_entries actual_count bundle_entries='[]'
     local fragment_data observation_ids trial_results trial_source trial_path trial_length trial_sha
+    local acceptance_inputs="${7:-${PHASE14_ACCEPTANCE_INPUTS:-}}"
     deploy_require_commands git jq sha256sum stat readlink dotnet || return 1
     if ! deploy_is_safe_absolute_path "$input_root" || ! deploy_is_safe_absolute_path "$output_root"; then
         phase14_source_fail options absolute-roots-required
@@ -557,11 +625,16 @@ phase14_source_import() {
     deploy_validate_output_root "$output_root" output-root || return 1
     phase14_source_validate_contract "$contract" "$inventory" || return 1
     phase14_source_validate_repository "$repo" "$contract" "$harness_revision" || return 1
+    jq -e '(keys | sort) == (["collectorImage","catalogManifestSha256","catalogDatabaseSha256","catalogDatabaseByteLength"] | sort) and
+      (.collectorImage | test("^[^[:space:]@]+@sha256:[0-9a-f]{64}$")) and
+      all(.catalogManifestSha256,.catalogDatabaseSha256; test("^[0-9a-f]{64}$")) and
+      (.catalogDatabaseByteLength | numbers) > 0' <<< "$acceptance_inputs" >/dev/null ||
+      { phase14_source_fail input invalid-acceptance-inputs; return 1; }
     inventory_hash="$(jq -S -c . "$inventory" | sha256sum)"; inventory_hash="${inventory_hash%% *}"
     method_map="$(phase14_source_method_map "$contract" "$inventory")" || return 1
     if [[ -e "$final" || -L "$final" ]]; then
         phase14_source_validate_publication "$final" "$contract" "$inventory" "$inventory_hash" "$PHASE14_PRODUCT_REVISION" \
-          "$PHASE14_PRODUCT_TREE" "$harness_revision" "$PHASE14_HARNESS_TREE" "$method_map" ||
+          "$PHASE14_PRODUCT_TREE" "$harness_revision" "$PHASE14_HARNESS_TREE" "$method_map" "$acceptance_inputs" ||
           { phase14_source_fail resume tampered-publication; return 1; }
         return 0
     fi
@@ -595,6 +668,10 @@ phase14_source_import() {
         fragment_dir="$input_method/fragments"; assembly="$input_method/test-assembly.dll"; provenance="$input_method/assembly-provenance.json"
         phase14_source_validate_input_method "$input_method" "$fragment_dir" "$assembly" "$provenance" "$family" || return 1
         assembly_sha="$(phase14_source_hash "$assembly")" || return 1
+        if LC_ALL=C grep -F -a -q -- "$repo/" "$assembly"; then
+            phase14_source_fail input assembly-contains-repository-path
+            return 1
+        fi
         jq -e --arg revision "$harness_revision" --arg tree "$PHASE14_HARNESS_TREE" --arg sha "$assembly_sha" '
           (keys | sort) == (["schemaVersion","buildRevision","buildTree","assemblySha256"] | sort) and
           .schemaVersion == 1 and .buildRevision == $revision and .buildTree == $tree and .assemblySha256 == $sha
@@ -675,9 +752,10 @@ phase14_source_import() {
         jq -S -n --arg requestedRevision "$PHASE14_PRODUCT_REVISION" --arg requestedTree "$PHASE14_PRODUCT_TREE" \
           --arg harnessRevision "$harness_revision" --arg harnessTree "$PHASE14_HARNESS_TREE" --arg assemblySha "$assembly_sha" \
           --argjson trxLength "$trx_length" --arg trxSha "$trx_sha" --argjson trialResults "$trial_results" \
-          --argjson sourceLength "$source_length" --arg sourceSha "$source_sha" \
+          --argjson sourceLength "$source_length" --arg sourceSha "$source_sha" --argjson acceptanceInputs "$acceptance_inputs" --arg family "$family" \
           --slurpfile evidence "$source_file" '{schemaVersion:2,requestedSourceRevision:$requestedRevision,requestedSourceTree:$requestedTree,
             evidenceHarnessRevision:$harnessRevision,evidenceHarnessTree:$harnessTree,cleanSource:true,
+            acceptanceInputs:(if $family == "cameraagent-acceptance" then $acceptanceInputs else null end),
             testAssemblyRelativePath:"test-assembly.dll",testAssemblySha256:$assemblySha,
              testAssemblyBuildRevision:$harnessRevision,testAssemblyBuildTree:$harnessTree,
              trxRelativePath:"result.trx",trxByteLength:$trxLength,trxSha256:$trxSha,
@@ -711,15 +789,16 @@ phase14_source_import() {
     done < <(jq -r '[.[] | [.family,.fqn]] | unique[] | @tsv' <<< "$method_map")
     [[ "$(jq 'length' <<< "$index_entries")" == 103 ]] || return 1
     jq -S -n --arg revision "$harness_revision" --arg tree "$PHASE14_HARNESS_TREE" --arg inventory "$inventory_hash" \
+      --argjson acceptanceInputs "$acceptance_inputs" \
       --argjson entries "$(jq 'sort_by(.scenarioId)' <<< "$index_entries")" --argjson bundles "$(jq 'sort_by(.relativePath)' <<< "$bundle_entries")" \
       '{schemaVersion:1,status:"recorded",campaignStatus:"not-run",evidenceHarnessRevision:$revision,evidenceHarnessTree:$tree,
-        inventorySha256:$inventory,entries:$entries,methodBundles:$bundles}' > "$stage/source-import-index.json"; chmod 600 "$stage/source-import-index.json"
+        inventorySha256:$inventory,acceptanceInputs:$acceptanceInputs,entries:$entries,methodBundles:$bundles}' > "$stage/source-import-index.json"; chmod 600 "$stage/source-import-index.json"
     local index_length index_sha
     index_length="$(stat -c %s "$stage/source-import-index.json")"; index_sha="$(phase14_source_hash "$stage/source-import-index.json")"
     jq -S -n --argjson length "$index_length" --arg sha "$index_sha" \
       '{schemaVersion:1,indexByteLength:$length,indexSha256:$sha}' > "$stage/source-import-commit.json"; chmod 600 "$stage/source-import-commit.json"
     phase14_source_validate_publication "$stage" "$contract" "$inventory" "$inventory_hash" "$PHASE14_PRODUCT_REVISION" \
-      "$PHASE14_PRODUCT_TREE" "$harness_revision" "$PHASE14_HARNESS_TREE" "$method_map" ||
+      "$PHASE14_PRODUCT_TREE" "$harness_revision" "$PHASE14_HARNESS_TREE" "$method_map" "$acceptance_inputs" ||
       { phase14_source_fail publication staged-validation-failed; return 1; }
     [[ "${PHASE14_SOURCE_IMPORT_FAILPOINT:-}" != before-publish ]] || { phase14_source_fail publication injected-failure; return 1; }
     mv -T -- "$stage" "$final" || return 1

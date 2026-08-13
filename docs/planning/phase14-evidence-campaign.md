@@ -50,7 +50,11 @@ test, recorder, importer, contract, CI, and documentation allowlist. Standard
 test families run each unique fully qualified method once from that harness in
 Release configuration. The CameraAgent acceptance family
 uses the complete five-trial `scripts/test:cameraagent-standalone-211` harness and
-its pinned catalog and collector inputs. There are 25 unique methods across the
+its pinned catalog and collector inputs. The index and acceptance bundle bind
+the reviewed collector digest and validated production catalog manifest/database
+digests and length. Retained test assemblies use a deterministic relative source
+path map and are rejected if they contain the canonical repository path. There
+are 25 unique methods across the
 103 rows:
 
 | Family | Project | Rows | Unique methods |
