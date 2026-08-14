@@ -21,6 +21,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -277,11 +278,19 @@ public sealed class StandaloneW6DockerAcceptanceTests
         GracefulShutdownEvidence? gracefulShutdown = null;
         CalibrationUiEvidence? calibrationUi = null;
         IReadOnlyList<SemanticFaultEvidence>? semanticFaults = null;
-        if (string.Equals(Environment.GetEnvironmentVariable("HVO_ISSUE_211_TRIAL"), "trial-1", StringComparison.Ordinal))
+        var isFirstTrial = string.Equals(
+            Environment.GetEnvironmentVariable("HVO_ISSUE_211_TRIAL"), "trial-1", StringComparison.Ordinal);
+        if (isFirstTrial)
         {
             optionalQuality = await AssertOptionalQualityDisableAsync(session, page, runtimeRoot).ConfigureAwait(false);
+        }
+        if (isFirstTrial || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HVO_PHASE14_EVIDENCE_ROOT")))
+        {
             semanticFaults = await AssertSemanticFaultsAsync(
                 baseUri, container, runtimeRoot, page, session).ConfigureAwait(false);
+        }
+        if (isFirstTrial)
+        {
             pressureDrain = await AssertPressureAndDrainAsync(
                 runtimeRoot, clearReferencePath, measuredCaptures[0].CaptureId, page, session).ConfigureAwait(false);
             restart = await AssertDurableRestartAsync(
@@ -737,7 +746,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await page.GetByLabel("Email").FillAsync("standalone-owner@cameraagent.test").ConfigureAwait(false);
         await page.GetByLabel("Password").FillAsync(password).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
-        await page.WaitForURLAsync(url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
+        await page.WaitForURLAsync(
+            url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase),
+            new PageWaitForURLOptions { WaitUntil = WaitUntilState.Commit }).ConfigureAwait(false);
     }
 
     private static async Task SetCaptureStateAsync(IPage page, bool pause)
@@ -1388,6 +1399,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
                     item => item.Manifest.Descriptor.Artifact.ChecksumSha256);
             CollectionAssert.AreEquivalent(interruptedChecksums, recovered);
             Assert.IsLessThanOrEqualTo(TimeSpan.FromMinutes(3), restart.Elapsed);
+            await Phase14ScenarioEvidence.RecordAsync(
+                "cameraagent-host-failure",
+                "durable-restart",
+                "AssertDurableRestartAsync",
+                [
+                    "interrupted raw work remained durable across process termination",
+                    "recovered artifacts retained their checksums",
+                    "recovery produced no duplicate logical outputs",
+                    "restart recovery completed within three minutes"
+                ]).ConfigureAwait(false);
             return new RestartEvidence(before, after, restart.Elapsed.TotalMilliseconds, interruptedChecksums.Count);
         }
         finally
@@ -1473,6 +1494,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 item => item.Manifest.Descriptor.Artifact.ChecksumSha256);
         CollectionAssert.AreEquivalent(interrupted, recovered);
         Assert.IsLessThanOrEqualTo(TimeSpan.FromMinutes(3), recovery.Elapsed);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "bounded-shutdown",
+            operationId,
+            "AssertBoundedShutdownAsync",
+            [
+                "container shutdown completed within the configured drain bound plus five seconds",
+                "unfinished durable work remained discoverable after shutdown",
+                "interrupted artifacts recovered without checksum changes or duplicate logical outputs",
+                "restart recovery completed within three minutes"
+            ]).ConfigureAwait(false);
         return new GracefulShutdownEvidence(
             configuredDrainSeconds,
             shutdown.Elapsed.TotalMilliseconds,
@@ -1675,6 +1706,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 observation.State.AvailableBytes == recoveredAvailableBytes,
             TimeSpan.FromMinutes(2)).ConfigureAwait(false);
         var recoveredHealth = await WaitForHealthyAsync(session, TimeSpan.FromMinutes(1)).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "disk-pressure",
+            operationId,
+            "AssertPressureAndDrainAsync",
+            [
+                "disk pressure was detected and reported degraded within sixty seconds",
+                "retained raw and reference artifacts remained checksum-stable under pressure",
+                "six queued captures drained within three minutes at no less than 0.2 captures per second",
+                "drain completed without duplicate logical outputs and healthy storage observations resumed"
+            ]).ConfigureAwait(false);
         return new PressureDrainEvidence(
             initial.CaptureCount,
             initial.RawBytes,
@@ -1870,6 +1911,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
             await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false))));
         Assert.AreEqual(manifestSha256, Convert.ToHexString(SHA256.HashData(
             await File.ReadAllBytesAsync(interrupted.Path).ConfigureAwait(false))));
+        await Phase14ScenarioEvidence.RecordAsync(
+            "raw-boundary-sidecar-directory-sync",
+            operationId,
+            "AssertRawPublicationKillBoundaryAsync",
+            [
+                "raw payload and sidecar were durable at the sidecar directory sync boundary",
+                "restart reconciliation committed the raw capture without quarantine",
+                "payload and sidecar checksums were unchanged after recovery",
+                "recovery completed within three minutes with no duplicate logical outputs"
+            ]).ConfigureAwait(false);
         return new SemanticFaultEvidence(
             operationId,
             boundary,
@@ -1929,6 +1980,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
             WHERE capture_id = '{before.CaptureId:N}' AND node_id = 'sky-annotation' AND status = 'Completed';
             """));
         Assert.AreEqual(0, ReadDurableSnapshot(runtimeRoot).DuplicateLogicalOutputs);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "processing-output-before-node-commit",
+            operationId,
+            "AssertAnnotationPublicationKillBoundaryAsync",
+            [
+                "annotation output was published before its processing node commit",
+                "restart preserved the published output identity and checksums",
+                "recovery committed exactly one logical annotation output and completed node",
+                "recovery completed within three minutes with no duplicate logical outputs"
+            ]).ConfigureAwait(false);
         return new SemanticFaultEvidence(
             operationId,
             boundary,
@@ -1965,6 +2026,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsLessThanOrEqualTo(TimeSpan.FromMinutes(3), recovery.Elapsed);
         var after = ReadTransientCandidateBoundary(runtimeRoot, requireFinal: true, before.CandidateId);
         AssertTransientCandidateRecovery(before, after);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "transient-runtime-candidate-journal-after-commit",
+            operationId,
+            "AssertTransientCandidateKillBoundaryAsync",
+            [
+                "transient candidate journal commit was durable before process termination",
+                "restart converged the same candidate to its final state",
+                "candidate recovery preserved the asserted identity and provenance",
+                "recovery completed within three minutes"
+            ]).ConfigureAwait(false);
         return new SemanticFaultEvidence(
             operationId,
             boundary,

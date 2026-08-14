@@ -23,6 +23,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Data.SqlClient;
 using Minio;
 using Minio.DataModel.Args;
 
@@ -181,6 +182,75 @@ public sealed partial class LogicHostIngestPerformanceTests
             || parameter.ParameterType == typeof(Memory<byte>)
             || parameter.ParameterType == typeof(ReadOnlyMemory<byte>)) == true;
         Assert.IsFalse(locationBindingCanAccessPayload);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "out-of-order-upload",
+            $"out-of-order-{Guid.NewGuid():N}",
+            "out-of-order",
+            ["uploads-accepted", "capture-sequences-persisted", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-uploads", outOfOrder.MeasuredOperations, "count"),
+                new Phase14EvidenceMeasurement("elapsed-duration", (long)Math.Round(outOfOrder.ElapsedMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "duplicate-delivery",
+            $"duplicate-{Guid.NewGuid():N}",
+            "duplicate",
+            ["duplicate-uploads-accepted", "duplicate-identities-remained-idempotent", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-uploads", duplicate.MeasuredOperations, "count"),
+                new Phase14EvidenceMeasurement("elapsed-duration", (long)Math.Round(duplicate.ElapsedMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "corrupt-delivery",
+            $"corrupt-{Guid.NewGuid():N}",
+            "corrupt",
+            ["corrupt-payloads-rejected", "valid-retries-accepted", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-transitions", corrupt.MeasuredTransitions, "count"),
+                new Phase14EvidenceMeasurement("transition-duration", (long)Math.Round(corrupt.TotalTransitionMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "central-ingest-object-publication",
+            $"object-publication-{Guid.NewGuid():N}",
+            "object-store-fault",
+            ["object-publication-fault-observed", "valid-retries-published-objects", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-transitions", objectStoreFault.MeasuredTransitions, "count"),
+                new Phase14EvidenceMeasurement("transition-duration", (long)Math.Round(objectStoreFault.TotalTransitionMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "central-ingest-finalization-commit",
+            $"finalization-commit-{Guid.NewGuid():N}",
+            "sql-commit-fault",
+            ["sql-commit-fault-observed", "durable-intents-recovered", "zero-final-backlog"],
+            [
+                new Phase14EvidenceMeasurement("measured-transitions", sqlStoreFault.MeasuredTransitions, "count"),
+                new Phase14EvidenceMeasurement("transition-duration", (long)Math.Round(sqlStoreFault.TotalTransitionMilliseconds), "milliseconds")
+            ]).ConfigureAwait(false);
+        var restartObservationId = $"restart-reconciliation-{Guid.NewGuid():N}";
+        var restartAssertions = new[]
+        {
+            "pending-intents-survived-host-restart",
+            "published-objects-reconciled",
+            "zero-final-backlog"
+        };
+        var restartMeasurements = new[]
+        {
+            new Phase14EvidenceMeasurement("pending-intents", restart.MeasuredPendingIntents, "count"),
+            new Phase14EvidenceMeasurement("recovery-duration", (long)Math.Round(restart.RecoveryLatencyMilliseconds), "milliseconds")
+        };
+        await Phase14ScenarioEvidence.RecordAsync(
+            "central-ingest-intent-commit",
+            $"{restartObservationId}-intent",
+            "restart-reconciliation",
+            restartAssertions,
+            restartMeasurements).ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "logichost-host-failure",
+            $"{restartObservationId}-host",
+            "restart-reconciliation",
+            restartAssertions,
+            restartMeasurements).ConfigureAwait(false);
         var command = evidenceRun.CreateTestCommand(
             "LogicHostIngestPerformanceTests.NativeManifestV2Ingest_W1W2AndW4_RecordsPerformanceEvidence");
         var evidence = new
@@ -433,11 +503,13 @@ public sealed partial class LogicHostIngestPerformanceTests
         using var resources = new ResourceSampler();
         protocolCounter.Start();
         var recoveryStarted = Stopwatch.GetTimestamp();
+        var recoveryStartedAtUtc = DateTimeOffset.UtcNow;
         var recoveryObjectProtocol = new ObjectProtocolFaultHandler { InnerHandler = new SocketsHttpHandler() };
         using (var recoveryFactory = CreateObjectFaultFactory(fixture, recoveryObjectProtocol, startWorker: true))
         {
             _ = recoveryFactory.Services;
-            await WaitForArtifactsAsync(recoveryFactory.Services, measured).ConfigureAwait(false);
+            await WaitForRecoveryCycleAsync(
+                recoveryFactory.Services, measured, recoveryStartedAtUtc).ConfigureAwait(false);
         }
         var recoveryElapsed = Stopwatch.GetElapsedTime(recoveryStarted);
         var protocols = protocolCounter.Stop();
@@ -681,25 +753,47 @@ public sealed partial class LogicHostIngestPerformanceTests
             rows.Count(static row => row.ReconstructionState == CentralReconstructionState.Quarantined));
     }
 
-    private static async Task WaitForArtifactsAsync(IServiceProvider services, IReadOnlyList<ExpectedUpload> uploads)
+    private static async Task WaitForRecoveryCycleAsync(
+        IServiceProvider services,
+        IReadOnlyList<ExpectedUpload> uploads,
+        DateTimeOffset startedAtUtc)
     {
         var ids = uploads.Select(static upload => upload.Manifest.Descriptor.Artifact.ArtifactId).ToArray();
         var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(60);
         while (DateTimeOffset.UtcNow < timeoutAt)
         {
-            await using var scope = services.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var completed = await db.CentralArtifacts.AsNoTracking().CountAsync(artifact =>
-                ids.Contains(artifact.ArtifactId)
-                && artifact.ObjectState == CentralArtifactObjectState.Available
-                && artifact.ReconstructionState == CentralReconstructionState.Complete).ConfigureAwait(false);
-            if (completed == ids.Length)
+            try
             {
-                return;
+                await using var scope = services.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var completed = await db.CentralArtifacts.AsNoTracking().CountAsync(artifact =>
+                    ids.Contains(artifact.ArtifactId)
+                    && artifact.ObjectState == CentralArtifactObjectState.Available
+                    && artifact.ReconstructionState == CentralReconstructionState.Complete).ConfigureAwait(false);
+                if (completed == ids.Length)
+                {
+                    var scheduled = await db.CentralDerivativeJobs.AsNoTracking()
+                        .Where(job => ids.Contains(job.SourceArtifact!.ArtifactId))
+                        .Select(job => job.SourceArtifact!.ArtifactId)
+                        .Distinct()
+                        .CountAsync().ConfigureAwait(false);
+                    var cycleCompleted = await db.CentralRecoveryCheckpoints.AsNoTracking().AnyAsync(checkpoint =>
+                        checkpoint.Id == CentralRecoveryCheckpoint.SingletonId
+                        && checkpoint.LeaseToken == null
+                        && checkpoint.LastCycleAtUtc >= startedAtUtc).ConfigureAwait(false);
+                    if (scheduled == ids.Length && cycleCompleted)
+                    {
+                        return;
+                    }
+                }
+            }
+            catch (SqlException exception) when (exception.Number == 1205)
+            {
+                // The recovery worker may deadlock this observer query while committing the same rows.
             }
             await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
         }
-        Assert.Fail("The fresh production reconciliation worker did not converge all 30 pending artifacts.");
+        Assert.Fail("The fresh production reconciliation worker did not complete a cycle that converged all 30 pending artifacts and scheduled their derivative jobs.");
     }
 
     private static async Task AssertSequencesPersistedAsync(IReadOnlyList<ExpectedUpload> uploads)

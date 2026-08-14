@@ -646,8 +646,8 @@ admissibility, status meanings, and follow-up ownership. Definition states never
 promote `not-run` or `recorded` runtime rows to `passed`.
 
 The deferred source contract does not treat `;case=` as a TRX data-row selector.
-Several cited methods run fault cases inside one method body, so later import
-requires a strict scenario-evidence entry for every selector in addition to the
+Several cited methods run fault cases inside one method body, so source import
+requires every fragment to bind the exact inventory selector in addition to the
 method-level TRX. Sanitizer and admissibility identities live in the separate
 campaign-index envelope; the existing runtime artifact schema remains unchanged.
 
@@ -657,12 +657,70 @@ Run the focused contract test with:
 ./scripts/test:phase14-acceptance
 ./scripts/test:phase14-campaign
 ./scripts/test:phase14-normal-campaign
+./scripts/test:phase14-source-import
 ```
 
 The campaign contract uses stateful fake transport boundaries to validate
 orchestration and sanitized artifact shape. It is not a substitute for the real
 split-host outage execution and retained evidence required before recording the
 scenario.
+
+## Import Test-Backed Source Evidence
+
+Run the source importer only from the exact clean reviewed evidence-harness
+revision. The contract keeps product source provenance pinned to
+`ee117c1e8cf3e04998825d366da663e16c2b95ed` and tree
+`17a0ad69452d710c82847f9a515022de05ebfaa5`; the harness must be a
+clean descendant whose complete changed-path set is allowlisted. After the
+harness commit has been reviewed, set its full commit SHA and run:
+
+```bash
+./scripts/phase14:source-import \
+  --output-root /absolute/private/phase14-source \
+  --harness-revision <reviewed-harness-commit> \
+  --catalog-root /absolute/installed/production-catalog \
+  --collector-image <reviewed-collector-image>@sha256:<digest>
+```
+
+The output root must already be an owner-only mode-`0700` directory. The command
+does not accept operator-supplied assemblies, TRX files, fragments, projects,
+test names, selectors, product revisions, or product trees. It builds each
+standard project once in nonincremental Release mode, resolves the actual MSBuild
+target assembly, runs each of 24 standard methods by exact FQN with private
+recorder roots, and sanitizes raw TRX immediately. It runs the fixed issue-211
+five-trial W6 harness for the sole CameraAgent acceptance method using the
+reviewed catalog and digest-pinned collector image. Raw harness output remains
+private scratch and is deleted before publication.
+
+Every `;case=` value must exactly equal the fragment's retained selector. A
+passing method TRX cannot replace a missing fragment. When one scenario has
+multiple data-row or boundary observations, their assertion and measurement
+schemas must be identical; the imported evidence records their count. The
+importer generates assembly provenance itself, publishes 25 method bundles and
+103 runtime-compatible scenario artifacts atomically beneath
+`source-import/`, and binds every bundle, assembly, sanitized TRX,
+source-evidence file, and artifact by byte length where applicable and SHA-256.
+Each source bundle requires `trialResults`. Standard methods retain one
+`trial-results/method.trx`; the acceptance method retains all five owner-only
+sanitized files as `trial-results/trial-1.trx` through `trial-results/trial-5.trx`.
+Its `result.trx` remains byte-identical to trial 1. Three semantic publication
+scenarios emit once per prefixed trial; the bounded expensive restart, pressure,
+and shutdown scenarios remain in trial 1. Collection therefore requires exactly
+18 fragments and fails closed if any required trial result or trial-prefixed
+observation is missing or digest-mismatched.
+
+An existing valid publication is revalidated and reused without rebuilding.
+Tampering, stale inventory or harness identity, unsafe paths/modes/links,
+selector mismatch, incomplete observations, or changed bundle bytes fail closed
+without overwrite. The index status is `recorded` and campaign status remains
+`not-run`; #319 does not perform #321 admissibility, publish campaign completion,
+or claim `GATE-P14`.
+
+Run the Docker-free collector/importer contract with:
+
+```bash
+./scripts/test:phase14-source-import
+```
 
 ## Record Phase 14 Scenario Evidence
 

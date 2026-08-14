@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
@@ -695,6 +696,31 @@ public sealed class RawCaptureIngressTests
                 using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
                 Assert.AreEqual(1L, await ScalarLongAsync(
                     connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false), point.ToString());
+                var scenarioId = point switch
+                {
+                    RawIngressFaultPoint.AfterMigrationTransactionBegan => "raw-boundary-migration-transaction-began",
+                    RawIngressFaultPoint.BeforeMigrationCommit => "raw-boundary-before-migration-commit",
+                    RawIngressFaultPoint.ValidationCompleted => "raw-boundary-validation-completed",
+                    RawIngressFaultPoint.PayloadDirectorySynced => "raw-boundary-payload-directory-sync",
+                    RawIngressFaultPoint.SidecarWritten => "raw-boundary-sidecar-written",
+                    RawIngressFaultPoint.SidecarFlushed => "raw-boundary-sidecar-flushed",
+                    RawIngressFaultPoint.SidecarPublished => "raw-boundary-sidecar-published",
+                    RawIngressFaultPoint.BeforeJournalCommit => "raw-boundary-before-journal-transaction",
+                    RawIngressFaultPoint.AfterJournalTransactionBegan => "raw-boundary-journal-transaction-began",
+                    RawIngressFaultPoint.AfterJournalRowInserted => "raw-boundary-journal-row-inserted",
+                    RawIngressFaultPoint.BeforeIndexProjection => "raw-boundary-before-index-projection",
+                    RawIngressFaultPoint.AfterIndexProjection => "raw-boundary-after-index-projection",
+                    _ => null
+                };
+                if (scenarioId is not null)
+                {
+                    await Phase14ScenarioEvidence.RecordAsync(
+                        scenarioId,
+                        $"fault-point-{point}",
+                        point.ToString(),
+                        ["fault-observed", "retry-converged-once", "payload-and-sidecar-published", "manifest-valid"])
+                        .ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -1817,6 +1843,39 @@ public sealed class RawCaptureIngressTests
                     await File.ReadAllBytesAsync(
                         Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false)));
                 Assert.AreEqual(receipt.CommittedManifestSha256, recoveredManifestSha256, point.ToString());
+                var scenarioId = point switch
+                {
+                    RawIngressFaultPoint.PayloadPartiallyWritten => "raw-boundary-payload-partially-written",
+                    RawIngressFaultPoint.PayloadWritten => "raw-boundary-payload-written",
+                    RawIngressFaultPoint.PayloadFlushed => "raw-boundary-payload-flushed",
+                    RawIngressFaultPoint.PayloadPublished => "raw-boundary-payload-published",
+                    RawIngressFaultPoint.BeforeJournalTransactionCommit => "raw-boundary-before-journal-commit",
+                    RawIngressFaultPoint.AfterJournalCommit => "raw-boundary-after-journal-commit",
+                    RawIngressFaultPoint.BeforeWakeUpNotification => "raw-boundary-before-wakeup",
+                    _ => throw new InvalidOperationException($"Unmapped raw ingress process-kill boundary {point}.")
+                };
+                await Phase14ScenarioEvidence.RecordAsync(
+                    scenarioId,
+                    $"fault-point-{point}",
+                    point.ToString(),
+                    ["process-termination-observed", "boundary-state-matched", "restart-converged-once", "manifest-checksum-matched"])
+                    .ConfigureAwait(false);
+                var aliasScenarioId = point switch
+                {
+                    RawIngressFaultPoint.PayloadPartiallyWritten => "raw-payload-write-crash",
+                    RawIngressFaultPoint.PayloadPublished => "payload-published-before-journal-crash",
+                    RawIngressFaultPoint.AfterJournalCommit => "journal-committed-before-wakeup-crash",
+                    _ => null
+                };
+                if (aliasScenarioId is not null)
+                {
+                    await Phase14ScenarioEvidence.RecordAsync(
+                        aliasScenarioId,
+                        $"fault-point-{point}",
+                        null,
+                        ["process-termination-observed", "durable-boundary-state-matched", "restart-converged-once"])
+                        .ConfigureAwait(false);
+                }
             }
             finally
             {

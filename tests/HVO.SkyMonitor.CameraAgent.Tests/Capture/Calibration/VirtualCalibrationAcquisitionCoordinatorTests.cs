@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
@@ -373,6 +374,12 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             Assert.AreEqual(resumed.Plan.JobId, replay.Plan.JobId);
             Assert.AreEqual(resumed.PlanIdentitySha256, replay.PlanIdentitySha256);
             Assert.HasCount(1, await restarted.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                "calibration-before-profile-write",
+                "fault-point-BeforeProfileWrite",
+                "BeforeProfileWrite",
+                ["profile-write-fault-observed", "pending-job-resumed", "source-files-unchanged", "exact-replay-stable"])
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -403,6 +410,12 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             using var connection = await OpenAsync(root).ConfigureAwait(false);
             Assert.AreEqual(1L, await ScalarLongAsync(
                 connection, "SELECT COUNT(*) FROM calibration_acquisition_jobs;").ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                "calibration-before-manifest-write",
+                "fault-point-BeforeManifestWrite",
+                "BeforeManifestWrite",
+                ["manifest-write-fault-observed", "one-nonterminal-job-enforced", "conflicting-command-rejected"])
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -552,6 +565,12 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             Assert.AreEqual(CalibrationAcquisitionStates.Published, resumed?.State);
             Assert.AreEqual(0, resumed?.AttemptCount);
             Assert.HasCount(1, await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                "calibration-before-payload-write",
+                "fault-point-BeforePayloadWrite",
+                "BeforePayloadWrite",
+                ["preplanning-cancellation-left-no-job", "payload-write-fault-left-resumable-job", "resume-published-one-bundle"])
+                .ConfigureAwait(false);
         }
         finally
         {

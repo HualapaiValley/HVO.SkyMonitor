@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -780,6 +781,33 @@ public sealed class TransientWorkerRuntimeTests
                     await ScalarAsync(connection, "SELECT COUNT(DISTINCT raw_capture_row_id) FROM transient_candidate_sources;").ConfigureAwait(false),
                     await ScalarAsync(connection, "SELECT COUNT(*) FROM raw_captures WHERE retention_hold = 1;").ConfigureAwait(false));
             }
+            var scenarioId = point switch
+            {
+                TransientRuntimeFaultPoint.BeforeIdentityBatchCommit => "transient-runtime-identity-before-commit",
+                TransientRuntimeFaultPoint.AfterIdentityBatchCommit => "transient-runtime-identity-after-commit",
+                TransientRuntimeFaultPoint.BeforeCausalExtractionCommit => "transient-runtime-causal-before-commit",
+                TransientRuntimeFaultPoint.AfterCausalExtractionCommit => "transient-runtime-causal-after-commit",
+                TransientRuntimeFaultPoint.BeforeObservationExtractionCommit => "transient-runtime-observation-before-commit",
+                TransientRuntimeFaultPoint.AfterObservationExtractionCommit => "transient-runtime-observation-after-commit",
+                TransientRuntimeFaultPoint.BeforeAssessmentCommit => "transient-runtime-assessment-before-commit",
+                TransientRuntimeFaultPoint.AfterAssessmentCommit => "transient-runtime-assessment-after-commit",
+                TransientRuntimeFaultPoint.AfterFinalizationJournalCommit => "transient-runtime-finalization-after-commit",
+                TransientRuntimeFaultPoint.AfterHandoffJournalCommit => "transient-runtime-handoff-after-commit",
+                TransientRuntimeFaultPoint.BeforeRuntimeCompletionCommit => "transient-runtime-completion-before-commit",
+                TransientRuntimeFaultPoint.AfterRuntimeCompletionCommit => "transient-runtime-completion-after-commit",
+                TransientRuntimeFaultPoint.BeforeRetirementCommit => "transient-runtime-retirement-before-commit",
+                TransientRuntimeFaultPoint.AfterRetirementCommit => "transient-runtime-retirement-after-commit",
+                _ => null
+            };
+            if (scenarioId is not null)
+            {
+                await Phase14ScenarioEvidence.RecordAsync(
+                    scenarioId,
+                    $"fault-point-{point}-mode-{mode}-expected-phase-{expectedPhase}",
+                    point.ToString(),
+                    ["runtime-fault-observed", "restart-converged-one-candidate", "runtime-identity-stable", "durable-backlog-consistent"])
+                    .ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -865,6 +893,14 @@ public sealed class TransientWorkerRuntimeTests
             Assert.AreEqual(0L, backlog.ActiveCount);
             Assert.AreEqual(0L, backlog.HeldSourceBytes);
             Assert.IsNull(backlog.OldestCreatedUtc);
+            await Phase14ScenarioEvidence.RecordAsync(
+                point == TransientRuntimeFaultPoint.BeforeFrameHistoryCommit
+                    ? "transient-runtime-frame-history-before-commit"
+                    : "transient-runtime-frame-history-after-commit",
+                $"fault-point-{point}-expected-succeeded-{expectedSucceeded}",
+                point.ToString(),
+                ["frame-history-fault-observed", "causal-result-preserved", "restart-drained-frames", "source-holds-released"])
+                .ConfigureAwait(false);
         }
         finally
         {

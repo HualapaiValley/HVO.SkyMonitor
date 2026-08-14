@@ -32,17 +32,83 @@ FIXTURE_STATE=""; FIXTURE_EVIDENCE=""
 FAKE_EVIDENCE_MODE=valid; FAIL_TRX=false
 
 trx_fixture="$TEMP_DIR/trx-fixture"; install -d -m 700 "$trx_fixture"
+trx_verifier=(dotnet run --project "$SOURCE_REPO_ROOT/scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj" --configuration Release --)
 printf '%s\n' \
   '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">' \
   '  <Results><UnitTestResult testId="00000000-0000-0000-0000-000000000001" testName="Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound" outcome="Passed" /></Results>' \
   '  <TestDefinitions><UnitTest id="00000000-0000-0000-0000-000000000001" name="Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound"><TestMethod className="HVO.SkyMonitor.IntegrationTests.LogicHostDependencyOutageAcceptanceTests" name="Issue107_DependenciesDegradeWithoutFabricatedDataAndRecoverWithinBound" /></UnitTest></TestDefinitions>' \
   '  <ResultSummary outcome="Completed"><Counters total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="0" completed="0" /></ResultSummary>' \
   '</TestRun>' > "$trx_fixture/component.trx"
-dotnet run --project "$SOURCE_REPO_ROOT/scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj" --configuration Release -- "$trx_fixture"
+"${trx_verifier[@]}" "$trx_fixture"
 cp "$trx_fixture/component.trx" "$trx_fixture/second.trx"
-if dotnet run --project "$SOURCE_REPO_ROOT/scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj" --configuration Release -- "$trx_fixture" >/dev/null 2>&1; then
+if "${trx_verifier[@]}" "$trx_fixture" >/dev/null 2>&1; then
     fail 'The TRX verifier accepted multiple result files.'
 fi
+rm "$trx_fixture/second.trx"
+
+generalized_fqn=Example.Product.Tests.PublicAcceptanceTests.Expected_Public_Method
+generalized_fixture="$TEMP_DIR/generalized-trx"; install -d -m 700 "$generalized_fixture"
+printf '%s\n' \
+  '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010" name="private-run-name">' \
+  '  <Times creation="2026-08-12T01:02:03Z" />' \
+  '  <Results><UnitTestResult testId="private-source-id" testName="Expected_Public_Method" outcome="Passed" computerName="private-host" duration="00:00:01"><Output><StdOut>private-output</StdOut><ErrorInfo><Message>private-error</Message></ErrorInfo></Output><ResultFiles><ResultFile path="/private/source/path" /></ResultFiles></UnitTestResult></Results>' \
+  '  <TestDefinitions><UnitTest id="private-source-id" name="Expected_Public_Method" storage="/private/test.dll"><TestMethod className="Example.Product.Tests.PublicAcceptanceTests" name="Expected_Public_Method" codeBase="/private/test.dll" /></UnitTest></TestDefinitions>' \
+  '  <ResultSummary outcome="Completed"><Counters total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="0" completed="0" /><Output><StdOut>private-summary</StdOut></Output></ResultSummary>' \
+  '</TestRun>' > "$generalized_fixture/source.trx"
+sanitized_dir="$TEMP_DIR/sanitized"; install -d -m 700 "$sanitized_dir"
+sanitized_trx="$sanitized_dir/result.trx"
+"${trx_verifier[@]}" "$generalized_fixture" "$generalized_fqn" "$sanitized_trx"
+[[ "$(stat -c '%u:%h:%a:%s' "$sanitized_trx")" == "$(id -u):1:600:"* ]] || fail 'The sanitized TRX is not a private regular file.'
+[[ "$(stat -c '%s' "$sanitized_trx")" -le 4096 ]] || fail 'The sanitized TRX is not bounded.'
+sanitized_contents="$(< "$sanitized_trx")"
+for forbidden in private Times Output StdOut ErrorInfo ResultFiles ResultFile computerName duration storage codeBase completed; do
+    [[ "$sanitized_contents" != *"$forbidden"* ]] || fail "The sanitized TRX retained forbidden source data."
+done
+"${trx_verifier[@]}" "$sanitized_dir" "$generalized_fqn"
+
+expect_trx_rejected() {
+    local message="$1"; shift
+    if "${trx_verifier[@]}" "$@" > "$TEMP_DIR/trx-rejection.log" 2>&1; then fail "$message"; fi
+}
+
+expect_trx_rejected 'The TRX verifier accepted a relative output path.' "$generalized_fixture" "$generalized_fqn" relative.trx
+for invalid_fqn in Example Example..Method Example.Class.'Method()' Example.Class.'Method;case=x' '.Example.Class.Method' 'Example.Class.Method '; do
+    expect_trx_rejected 'The TRX verifier accepted invalid FQN syntax.' "$generalized_fixture" "$invalid_fqn"
+done
+expect_trx_rejected 'The generalized TRX verifier accepted the wrong identity.' \
+  "$generalized_fixture" Example.Product.Tests.PublicAcceptanceTests.OtherMethod
+
+dtd_fixture="$TEMP_DIR/dtd-trx"; install -d -m 700 "$dtd_fixture"
+printf '%s\n' '<!DOCTYPE TestRun [<!ENTITY secret "value">]>' \
+  '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">&secret;</TestRun>' > "$dtd_fixture/result.trx"
+expect_trx_rejected 'The TRX verifier accepted a DTD.' "$dtd_fixture" "$generalized_fqn"
+
+cardinality_fixture="$TEMP_DIR/cardinality-trx"; install -d -m 700 "$cardinality_fixture"
+cp "$generalized_fixture/source.trx" "$cardinality_fixture/result.trx"
+perl -0777 -pi -e 's#</Results>#<UnitTestResult testId="other" testName="Expected_Public_Method" outcome="Passed" /></Results>#' "$cardinality_fixture/result.trx"
+expect_trx_rejected 'The TRX verifier accepted multiple test results.' "$cardinality_fixture" "$generalized_fqn"
+
+datarow_fixture="$TEMP_DIR/datarow-trx"; install -d -m 700 "$datarow_fixture"
+printf '%s\n' \
+  '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">' \
+  '  <Results><UnitTestResult testId="row-1" testName="Expected_Public_Method (1)" outcome="Passed" /><UnitTestResult testId="row-2" testName="Expected_Public_Method (2)" outcome="Passed" /></Results>' \
+  '  <TestDefinitions><UnitTest id="row-1" name="Expected_Public_Method (1)"><TestMethod className="Example.Product.Tests.PublicAcceptanceTests" name="Expected_Public_Method" /></UnitTest><UnitTest id="row-2" name="Expected_Public_Method (2)"><TestMethod className="Example.Product.Tests.PublicAcceptanceTests" name="Expected_Public_Method" /></UnitTest></TestDefinitions>' \
+  '  <ResultSummary outcome="Completed"><Counters total="2" executed="2" passed="2" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" notExecuted="0" /></ResultSummary>' \
+  '</TestRun>' > "$datarow_fixture/result.trx"
+"${trx_verifier[@]}" "$datarow_fixture" "$generalized_fqn" "$sanitized_dir/datarow.trx"
+perl -0777 -pi -e 's/testId="row-2" testName="Expected_Public_Method \(2\)" outcome="Passed"/testId="row-2" testName="Expected_Public_Method (2)" outcome="Failed"/' "$datarow_fixture/result.trx"
+expect_trx_rejected 'The generalized TRX verifier accepted a failed data row.' "$datarow_fixture" "$generalized_fqn"
+
+oversized_fixture="$TEMP_DIR/oversized-trx"; install -d -m 700 "$oversized_fixture"
+cp "$generalized_fixture/source.trx" "$oversized_fixture/result.trx"
+dd if=/dev/zero bs=1048576 count=9 status=none | tr '\0' x >> "$oversized_fixture/result.trx"
+expect_trx_rejected 'The TRX verifier accepted oversized XML.' "$oversized_fixture" "$generalized_fqn"
+
+unsafe_output_parent="$TEMP_DIR/unsafe-output-parent"
+ln -s "$sanitized_dir" "$unsafe_output_parent"
+expect_trx_rejected 'The TRX verifier wrote through an unsafe output directory.' \
+  "$generalized_fixture" "$generalized_fqn" "$unsafe_output_parent/unsafe.trx"
+[[ ! -e "$sanitized_dir/unsafe.trx" ]] || fail 'The TRX verifier published through an unsafe output directory.'
 
 lock_bin="$TEMP_DIR/lock-bin"; install -d -m 700 "$lock_bin"
 cat > "$lock_bin/dotnet" <<'SHIM'

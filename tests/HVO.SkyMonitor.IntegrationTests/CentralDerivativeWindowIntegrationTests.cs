@@ -3,6 +3,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -405,6 +406,15 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 partial.Count(item => item.ObjectState == CentralArtifactObjectState.Available).Should().Be(1);
                 partial.Count(item => item.ObjectState == CentralArtifactObjectState.Pending).Should().Be(4);
                 partial.Should().OnlyContain(item => item.CommittedAtUtc == null);
+                await Phase14ScenarioEvidence.RecordAsync(
+                    "central-window-output-object-publication",
+                    $"{scenario}-canonical-copy-fault",
+                    "FailCanonicalCopyHandler",
+                    ["canonical-copy-fault-observed", "one-output-object-published", "four-output-objects-remained-pending", "no-output-intents-committed"],
+                    [
+                        new Phase14EvidenceMeasurement("published-output-objects", 1, "count"),
+                        new Phase14EvidenceMeasurement("pending-output-objects", 4, "count")
+                    ]).ConfigureAwait(false);
             }
 
             var commitFault = new ThrowBeforeCommitInterceptor(6);
@@ -437,6 +447,15 @@ public sealed class CentralDerivativeWindowIntegrationTests
                     && item.CommittedAtUtc == null);
                 (await db.CentralTransientDerivatives.CountAsync(item =>
                     item.CentralDerivativeJobId == derivativeLease.JobId).ConfigureAwait(false)).Should().Be(0);
+                await Phase14ScenarioEvidence.RecordAsync(
+                    "central-window-output-finalization-commit",
+                    $"{scenario}-finalization-commit-fault",
+                    "ThrowBeforeCommitInterceptor",
+                    ["finalization-commit-fault-observed", "all-output-objects-verified", "no-output-intents-committed", "no-derivative-rows-committed"],
+                    [
+                        new Phase14EvidenceMeasurement("verified-output-objects", verified.Length, "count"),
+                        new Phase14EvidenceMeasurement("committed-derivatives", 0, "count")
+                    ]).ConfigureAwait(false);
             }
             await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
             {
@@ -1189,6 +1208,16 @@ public sealed class CentralDerivativeWindowIntegrationTests
             item.CentralDerivativeJobId == jobs[0]).ConfigureAwait(false)).Should().Be(5);
         (await db.CentralTransientValidationIdentitySlots.CountAsync(item =>
             item.CentralDerivativeJobId == jobs[0]).ConfigureAwait(false)).Should().Be(32);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "central-window-freeze-commit",
+            $"{scenario}-freeze",
+            null,
+            ["concurrent-scheduling-converged", "single-job-committed", "exact-window-inputs-committed", "identity-slots-committed"],
+            [
+                new Phase14EvidenceMeasurement("scheduling-contenders", contenders, "count"),
+                new Phase14EvidenceMeasurement("window-inputs", 5, "count"),
+                new Phase14EvidenceMeasurement("identity-slots", 32, "count")
+            ]).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -1708,6 +1737,15 @@ public sealed class CentralDerivativeWindowIntegrationTests
             (await retention.IsHeldAsync(sourceId, CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
             (await retention.IsHeldAsync(neighborId, CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
         }
+        await Phase14ScenarioEvidence.RecordAsync(
+            "central-window-timeout-commit",
+            $"{scenario}-timeout",
+            null,
+            ["waiting-window-survived-scope-restart", "timeout-reason-committed", "resolved-input-count-preserved", "missing-input-count-preserved", "retention-holds-released"],
+            [
+                new Phase14EvidenceMeasurement("resolved-inputs", 2, "count"),
+                new Phase14EvidenceMeasurement("missing-inputs", 3, "count")
+            ]).ConfigureAwait(false);
         await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             await scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobOperationsService>()

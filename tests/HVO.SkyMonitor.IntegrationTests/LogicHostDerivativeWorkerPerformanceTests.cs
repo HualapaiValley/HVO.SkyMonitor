@@ -13,6 +13,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -155,6 +156,41 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
 
         var p4 = await MeasureFaultRecoveryAsync(
             fixture, telemetry, w0, $"{runId}-P4", scale).ConfigureAwait(false);
+        foreach (var trial in p4.TrialEvidence)
+        {
+            var boundary = Enum.Parse<PublicationBoundary>(trial.PublicationBoundary.Boundary);
+            var scenarioIds = boundary switch
+            {
+                PublicationBoundary.IntentCommitted => new[]
+                {
+                    "worker-before-output-crash",
+                    "central-job-intent-commit"
+                },
+                PublicationBoundary.StagingWritten => ["central-job-staging-publication"],
+                PublicationBoundary.CanonicalPublished => new[]
+                {
+                    "worker-after-output-before-completion-crash",
+                    "central-job-canonical-publication"
+                },
+                PublicationBoundary.CompletionPreCommit => ["central-job-completion-before-commit"],
+                PublicationBoundary.CompletionPostCommit => ["central-job-completion-after-commit"],
+                _ => throw new ArgumentOutOfRangeException(nameof(boundary))
+            };
+            foreach (var scenarioId in scenarioIds)
+            {
+                await Phase14ScenarioEvidence.RecordAsync(
+                    scenarioId,
+                    $"{runId}-p4-{trial.Trial}-{boundary}-{scenarioId}",
+                    boundary.ToString(),
+                    boundary == PublicationBoundary.CompletionPostCommit
+                        ? ["boundary-fault-observed", "completion-commit-remained-durable", "recovery-converged", "zero-final-backlog"]
+                        : ["boundary-fault-observed", "completion-not-committed-before-restart", "recovery-converged", "zero-final-backlog"],
+                    [
+                        new Phase14EvidenceMeasurement("recovery-duration", (long)Math.Round(trial.RecoveryMilliseconds), "milliseconds"),
+                        new Phase14EvidenceMeasurement("restart-backlog", trial.RestartBacklog.Count, "count")
+                    ]).ConfigureAwait(false);
+            }
+        }
         var p5 = new List<BacklogRecoveryMeasurement>();
         foreach (var concurrency in BacklogConcurrencyLevels)
         {
@@ -970,10 +1006,17 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                if (!await HasBacklogAsync(initialJobIds, cancellationToken).ConfigureAwait(false))
+                try
                 {
-                    drained.TrySetResult(Stopwatch.GetElapsedTime(recoveryStarted).TotalMilliseconds);
-                    return;
+                    if (!await HasBacklogAsync(initialJobIds, cancellationToken).ConfigureAwait(false))
+                    {
+                        drained.TrySetResult(Stopwatch.GetElapsedTime(recoveryStarted).TotalMilliseconds);
+                        return;
+                    }
+                }
+                catch (SqlException exception) when (exception.Number == 1205)
+                {
+                    // The worker may deadlock this observer query while transitioning the same jobs.
                 }
                 await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
             }

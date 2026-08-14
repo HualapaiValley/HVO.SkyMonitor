@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -909,6 +910,12 @@ public sealed class SqliteTransientCandidateJournalTests
                 "SELECT COUNT(*) FROM transient_capture_work;").ConfigureAwait(false));
             Assert.AreEqual("pending", await fixture.ScalarStringAsync(
                 "SELECT state FROM transient_capture_work;").ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                committed ? "transient-candidate-stage-after-commit" : "transient-candidate-stage-before-commit",
+                $"fault-point-{point}",
+                point.ToString(),
+                ["stage-fault-observed", "retry-converged-one-work-row", "work-remained-pending"])
+                .ConfigureAwait(false);
             return;
         }
 
@@ -938,6 +945,12 @@ public sealed class SqliteTransientCandidateJournalTests
                 reservation, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(TransientCandidateWorkflowPhase.IdentityAllocated, recovered.Entry.Phase);
             Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM transient_candidates;").ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                committed ? "transient-candidate-reservation-after-commit" : "transient-candidate-reservation-before-commit",
+                $"fault-point-{point}",
+                point.ToString(),
+                ["reservation-fault-observed", "retry-converged-one-candidate", "identity-allocation-preserved"])
+                .ConfigureAwait(false);
             return;
         }
 
@@ -964,6 +977,12 @@ public sealed class SqliteTransientCandidateJournalTests
                 reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(TransientCandidateWorkflowPhase.CandidatePersisted, recovered.Phase);
             Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM transient_candidates;").ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                committed ? "transient-candidate-record-after-commit" : "transient-candidate-record-before-commit",
+                $"fault-point-{point}",
+                point.ToString(),
+                ["candidate-fault-observed", "retry-converged-one-candidate", "candidate-payload-durable"])
+                .ConfigureAwait(false);
             return;
         }
 
@@ -993,6 +1012,12 @@ public sealed class SqliteTransientCandidateJournalTests
             Assert.AreEqual(TransientCandidateWorkflowPhase.Finalized, recovered.Phase);
             Assert.IsTrue(recovered.SourceHoldReleased);
             Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+            await Phase14ScenarioEvidence.RecordAsync(
+                committed ? "transient-candidate-finalization-after-commit" : "transient-candidate-finalization-before-commit",
+                $"fault-point-{point}",
+                point.ToString(),
+                ["finalization-fault-observed", "retry-converged-finalized", "source-hold-released"])
+                .ConfigureAwait(false);
             return;
         }
 
@@ -1020,6 +1045,12 @@ public sealed class SqliteTransientCandidateJournalTests
                 reservation.CandidateId, reservation.EventId, submission, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(TransientCandidateWorkflowPhase.HandoffPending, recovered.Phase);
             Assert.IsFalse(recovered.SourceHoldReleased);
+            await Phase14ScenarioEvidence.RecordAsync(
+                committed ? "transient-candidate-submission-after-commit" : "transient-candidate-submission-before-commit",
+                $"fault-point-{point}",
+                point.ToString(),
+                ["submission-fault-observed", "retry-converged-handoff-pending", "source-hold-retained"])
+                .ConfigureAwait(false);
             return;
         }
 
@@ -1053,6 +1084,14 @@ public sealed class SqliteTransientCandidateJournalTests
         Assert.AreEqual(TransientCandidateWorkflowPhase.Acknowledged, acknowledged.Phase);
         Assert.IsTrue(acknowledged.SourceHoldReleased);
         Assert.AreEqual(0L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+        await Phase14ScenarioEvidence.RecordAsync(
+            acknowledgementCommitted
+                ? "transient-candidate-acknowledgement-after-commit"
+                : "transient-candidate-acknowledgement-before-commit",
+            $"fault-point-{point}",
+            point.ToString(),
+            ["acknowledgement-fault-observed", "retry-converged-acknowledged", "source-hold-released"])
+            .ConfigureAwait(false);
     }
 
     [TestMethod]

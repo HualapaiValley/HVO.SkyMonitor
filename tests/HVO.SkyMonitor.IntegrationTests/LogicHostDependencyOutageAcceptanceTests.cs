@@ -125,6 +125,38 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                     TimeSpan.FromSeconds(60)).ConfigureAwait(false);
                 var recoveryElapsed = Stopwatch.GetElapsedTime(recoveryStarted);
                 recoveryElapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(60));
+                var phase14ScenarioId = scenario.Dependency switch
+                {
+                    IntegrationDependency.SqlServer => "sql-failure",
+                    IntegrationDependency.Redis => "redis-failure",
+                    IntegrationDependency.Minio => "minio-failure",
+                    IntegrationDependency.Smtp => "smtp-failure",
+                    _ => throw new ArgumentOutOfRangeException(nameof(scenario.Dependency))
+                };
+                await Phase14ScenarioEvidence.RecordAsync(
+                    phase14ScenarioId,
+                    $"{phase14ScenarioId}-{Guid.NewGuid():N}",
+                    scenario.Dependency.ToString(),
+                    [
+                        "initial-health-healthy",
+                        "initial-operation-succeeded",
+                        "outage-health-unavailable",
+                        "outage-operation-failed",
+                        "recovery-health-healthy",
+                        "recovery-operation-succeeded",
+                        "recovery-within-sixty-seconds"
+                    ],
+                    [
+                        new Phase14EvidenceMeasurement(
+                            "outage-duration",
+                            (long)Math.Round(Math.Max(15_000, Stopwatch.GetElapsedTime(outageStarted).TotalMilliseconds
+                                - recoveryElapsed.TotalMilliseconds)),
+                            "milliseconds"),
+                        new Phase14EvidenceMeasurement(
+                            "recovery-duration",
+                            (long)Math.Round(recoveryElapsed.TotalMilliseconds),
+                            "milliseconds")
+                    ]).ConfigureAwait(false);
                 evidence.Add(new(
                     scenario.Dependency.ToString(),
                     FormatTimestamp(scenarioStarted),

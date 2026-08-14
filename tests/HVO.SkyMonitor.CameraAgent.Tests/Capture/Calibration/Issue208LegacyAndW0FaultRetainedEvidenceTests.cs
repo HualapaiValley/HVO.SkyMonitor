@@ -17,6 +17,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
@@ -453,6 +454,20 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
         Assert.AreEqual(0L, afterRestart.NonterminalJobCount);
         Assert.AreEqual(0L, afterRestart.ActivationCount);
         Assert.IsNull(afterRestart.ActiveBundleId);
+        var scenarioId = boundary.Point switch
+        {
+            CalibrationPublicationFaultPoint.AfterPayloadPublished => "calibration-payload-publication",
+            CalibrationPublicationFaultPoint.AfterManifestPublished => "calibration-manifest-publication",
+            CalibrationPublicationFaultPoint.AfterProfilePublished => "calibration-profile-publication",
+            CalibrationPublicationFaultPoint.DirectorySynced => "calibration-directory-sync",
+            _ => throw new InvalidOperationException($"Unmapped calibration publication boundary {boundary.Point}.")
+        };
+        await Phase14ScenarioEvidence.RecordAsync(
+            scenarioId,
+            $"boundary-{boundary.Ordinal:D2}-{boundary.Name}",
+            boundary.Point.ToString(),
+            ["publication-fault-observed", "partial-bundle-not-selectable", "restart-published-one-bundle", "published-files-preserved"])
+            .ConfigureAwait(false);
 
         return new W0FaultTrialEvidence(
             new W0TrialMeasurements(
@@ -631,6 +646,18 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
         Assert.AreEqual(1L, activationAfterRestart.ActivationCount);
         Assert.AreEqual(1L, activationAfterRestart.StateVersion);
         Assert.AreEqual(activationAcquisition.BundleId, activationAfterRestart.ActiveBundleId);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "calibration-sqlite-publication",
+            "fault-point-AfterSqlitePublication",
+            "AfterSqlitePublication",
+            ["sqlite-publication-fault-observed", "inactive-bundle-durable", "restart-converged-one-bundle", "partial-selection-prevented"])
+            .ConfigureAwait(false);
+        await Phase14ScenarioEvidence.RecordAsync(
+            "calibration-activation-commit",
+            "fault-point-AfterActivationCommitted",
+            "AfterActivationCommitted",
+            ["activation-fault-observed", "activation-commit-durable", "replay-preserved-version", "active-bundle-stable"])
+            .ConfigureAwait(false);
 
         var sqliteBoundary = new TerminalFaultBoundary(
             "SQLite publication",

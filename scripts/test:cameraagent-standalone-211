@@ -14,7 +14,7 @@ readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-211/compose.yml"
 readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/issue-197/otel-collector.yml"
 readonly CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6.json"
 readonly MONO_CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6-mono8.json"
-readonly RESULTS_BASE="$REPO_ROOT/TestResults/issue-211"
+readonly DEFAULT_RESULTS_BASE="$REPO_ROOT/TestResults/issue-211"
 readonly BIND_LOCAL_ROOT="$REPO_ROOT/data/agent/issue-211"
 readonly COLLECTOR_DIGEST='sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6'
 readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b'
@@ -39,11 +39,85 @@ if [[ "$TRIAL_COUNT" != 5 ]]; then
     printf 'HVO_ISSUE_211_TRIAL_COUNT must be exactly 5.\n' >&2
     exit 2
 fi
-for command in cat chmod cp curl date dirname docker dotnet flock git hostname id jq mkdir mv openssl rg rm sha256sum stat tr; do
+for command in cat chmod cp curl date dirname docker dotnet env flock git hostname id jq mkdir mv openssl realpath rg rm sha256sum stat tr; do
     command -v "$command" >/dev/null 2>&1 || { printf 'Required command is unavailable: %s\n' "$command" >&2; exit 2; }
 done
 readonly LOCAL_UID="$(id -u)"
 readonly LOCAL_GID="$(id -g)"
+
+prepare_private_root() {
+    local path="$1"
+    local label="$2"
+    local current mode
+    if [[ "$path" != /* || "$path" == / || "$path" == *//* || "$path" == */./* ||
+        "$path" == */../* || "$path" == */. || "$path" == */.. ||
+        "$(realpath -m -- "$path" 2>/dev/null)" != "$path" ]]; then
+        printf '%s must be a safe canonical absolute path: %s\n' "$label" "$path" >&2
+        return 1
+    fi
+    current="$path"
+    while [[ ! -e "$current" && ! -L "$current" ]]; do
+        current="$(dirname -- "$current")"
+    done
+    if [[ ! -d "$current" || -L "$current" || "$(stat -c '%u' -- "$current" 2>/dev/null)" != "$LOCAL_UID" ]]; then
+        printf '%s has an unsafe existing ancestor: %s\n' "$label" "$current" >&2
+        return 1
+    fi
+    mode="$(stat -c '%a' -- "$current" 2>/dev/null)" || return 1
+    if ((8#$mode != 0700)); then
+        printf '%s must exist beneath an owner-only mode 0700 directory: %s\n' "$label" "$current" >&2
+        return 1
+    fi
+    mkdir -p -- "$path"
+    chmod 700 -- "$path"
+    if [[ ! -d "$path" || -L "$path" || "$(stat -c '%u:%a' -- "$path" 2>/dev/null)" != "$LOCAL_UID:700" ]]; then
+        printf '%s must be an owner-only non-symlink directory with mode 0700: %s\n' "$label" "$path" >&2
+        return 1
+    fi
+}
+
+if [[ -n "${HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE:-}" ]]; then
+    prepare_private_root "$(dirname "$HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE")" 'HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE parent'
+fi
+
+results_base="${HVO_ISSUE_211_RESULTS_BASE-$DEFAULT_RESULTS_BASE}"
+if [[ -n "${HVO_ISSUE_211_RESULTS_BASE+x}" ]]; then
+    prepare_private_root "$results_base" 'HVO_ISSUE_211_RESULTS_BASE'
+fi
+readonly RESULTS_BASE="$results_base"
+
+phase14_variable_count=0
+for variable in HVO_PHASE14_EVIDENCE_ALLOWED_ROOT HVO_PHASE14_EVIDENCE_ROOT \
+    HVO_PHASE14_SOURCE_REVISION HVO_PHASE14_SOURCE_TREE HVO_PHASE14_TRX_ROOT; do
+    [[ -z "${!variable+x}" ]] || ((phase14_variable_count += 1))
+done
+if ((phase14_variable_count != 0 && phase14_variable_count != 5)); then
+    printf 'The five HVO_PHASE14 collector variables must be provided together.\n' >&2
+    exit 2
+fi
+PHASE14_ENABLED=false
+if ((phase14_variable_count == 5)); then
+    PHASE14_ENABLED=true
+fi
+readonly PHASE14_ENABLED
+if [[ "$PHASE14_ENABLED" == true ]]; then
+    if [[ ! "$HVO_PHASE14_SOURCE_REVISION" =~ ^[0-9A-Fa-f]{40}$ ||
+        ! "$HVO_PHASE14_SOURCE_TREE" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+        printf 'HVO_PHASE14 source revision and tree must be 40-character hexadecimal Git identities.\n' >&2
+        exit 2
+    fi
+    prepare_private_root "$HVO_PHASE14_EVIDENCE_ALLOWED_ROOT" 'HVO_PHASE14_EVIDENCE_ALLOWED_ROOT'
+    prepare_private_root "$HVO_PHASE14_EVIDENCE_ROOT" 'HVO_PHASE14_EVIDENCE_ROOT'
+    if [[ "$HVO_PHASE14_EVIDENCE_ROOT" != "$HVO_PHASE14_EVIDENCE_ALLOWED_ROOT"/* ]]; then
+        printf 'HVO_PHASE14_EVIDENCE_ROOT must be a child of HVO_PHASE14_EVIDENCE_ALLOWED_ROOT.\n' >&2
+        exit 2
+    fi
+    prepare_private_root "$HVO_PHASE14_EVIDENCE_ROOT/fragments" 'Phase 14 evidence fragments root'
+    prepare_private_root "$HVO_PHASE14_TRX_ROOT" 'HVO_PHASE14_TRX_ROOT'
+    for trial_number in {1..5}; do
+        prepare_private_root "$HVO_PHASE14_TRX_ROOT/trial-$trial_number" "Phase 14 TRX trial-$trial_number root"
+    done
+fi
 
 compute_dirty_sha256() {
     {
@@ -87,14 +161,16 @@ assert_no_owned_acceptance_resources() {
     fi
 }
 
-git_common_directory="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
-container_workspace="$(dirname "$git_common_directory")"
 host_workspace=""
 if docker inspect "$(hostname)" >/dev/null 2>&1; then
-    host_workspace="$(docker inspect "$(hostname)" --format '{{json .Mounts}}' |
-        jq -er --arg destination "$container_workspace" '
-          [.[] | select(.Destination == $destination and .Type == "bind") | .Source] |
-          if length <= 1 then .[0] // "" else error("multiple workspace bind mounts matched") end')"
+    read -r _ host_workspace < <(
+        docker inspect "$(hostname)" --format '{{json .Mounts}}' |
+            jq -er --arg repository "$REPO_ROOT" '
+              [.[] | select(.Type == "bind") | . as $mount |
+                select($repository == $mount.Destination or
+                  ($repository | startswith($mount.Destination + "/")))] |
+              sort_by(.Destination | length) | last as $mount |
+              [$mount.Destination, ($mount.Source + ($repository | ltrimstr($mount.Destination)))] | @tsv')
 fi
 if [[ -n "$host_workspace" ]]; then
     readonly BIND_HOST_ROOT="$host_workspace/data/agent/issue-211"
@@ -152,6 +228,16 @@ for image in "$HVO_OTEL_COLLECTOR_IMAGE" "$CENTRAL_DENY_IMAGE"; do
         DOCKER_CONFIG="$collector_config" docker pull "$image"
     fi
 done
+bind_probe="hvo-issue-211-bind-probe-$(openssl rand -hex 24)"
+printf '%s\n' "$bind_probe" > "$(dirname "$BIND_LOCAL_ROOT")/.issue-211-bind-probe"
+if ! docker run --rm --entrypoint /bin/sh \
+    --mount "type=bind,source=$(dirname "$BIND_HOST_ROOT"),target=/probe,readonly" \
+    "$CENTRAL_DENY_IMAGE" -c 'test "$(cat /probe/.issue-211-bind-probe)" = "$1"' -- "$bind_probe" 8>&-; then
+    rm -f -- "$(dirname "$BIND_LOCAL_ROOT")/.issue-211-bind-probe"
+    printf 'Docker daemon bind-root round-trip failed.\n' >&2
+    exit 2
+fi
+rm -f -- "$(dirname "$BIND_LOCAL_ROOT")/.issue-211-bind-probe"
 
 image_iid_file="$RESULTS/cameraagent-image-id"
 assert_worktree_unchanged
@@ -160,8 +246,14 @@ assert_worktree_unchanged
 readonly CAMERA_AGENT_IMAGE="$(<"$image_iid_file")"
 [[ "$CAMERA_AGENT_IMAGE" == sha256:* ]] || { printf 'CameraAgent image is not content addressed.\n' >&2; exit 1; }
 assert_worktree_unchanged
-dotnet build "$PROJECT" --configuration Release -warnaserror 8>&-
+path_map=()
+if [[ -n "${HVO_PHASE14_BUILD_PATH_MAP:-}" ]]; then
+    path_map=(-p:PathMap="$HVO_PHASE14_BUILD_PATH_MAP")
+fi
+dotnet build "$PROJECT" --no-restore --no-incremental --configuration Release -warnaserror "${path_map[@]}" 8>&-
 assert_worktree_unchanged
+readonly TEST_ASSEMBLY="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.AcceptanceTests.dll"
+readonly TEST_ASSEMBLY_SHA256="$(sha256sum "$TEST_ASSEMBLY" | cut -d' ' -f1)"
 
 active_project=""
 active_env=""
@@ -201,6 +293,7 @@ run_profile_trial() {
     local measured_capture_count="$8"
     local transient_mode="$9"
     local transient_required="${10}"
+    local collect_phase14="${11}"
     assert_worktree_unchanged
     local trial_result="$RESULTS/$trial"
     local trial_local="$BIND_LOCAL_ROOT/$trial"
@@ -264,6 +357,20 @@ EOF
         base_uri="http://$camera_ip:8080"
     fi
 
+    local phase14_environment=()
+    if [[ "$collect_phase14" == true ]]; then
+        phase14_environment=(
+            "HVO_PHASE14_EVIDENCE_ALLOWED_ROOT=$HVO_PHASE14_EVIDENCE_ALLOWED_ROOT"
+            "HVO_PHASE14_EVIDENCE_ROOT=$HVO_PHASE14_EVIDENCE_ROOT"
+            "HVO_PHASE14_OBSERVATION_PREFIX=$trial"
+            "HVO_PHASE14_SOURCE_REVISION=$HVO_PHASE14_SOURCE_REVISION"
+            "HVO_PHASE14_SOURCE_TREE=$HVO_PHASE14_SOURCE_TREE"
+        )
+    fi
+    env -u HVO_PHASE14_EVIDENCE_ALLOWED_ROOT -u HVO_PHASE14_EVIDENCE_ROOT \
+    -u HVO_PHASE14_OBSERVATION_PREFIX -u HVO_PHASE14_SOURCE_REVISION \
+    -u HVO_PHASE14_SOURCE_TREE -u HVO_PHASE14_TRX_ROOT \
+    "${phase14_environment[@]}" \
     HVO_ISSUE_211_TRIAL="$trial" \
     HVO_ISSUE_211_REVISION="$REVISION" \
     HVO_ISSUE_211_BRANCH="$BRANCH" \
@@ -288,11 +395,21 @@ EOF
     HVO_ISSUE_211_WARMUP_CAPTURES="$warmup_capture_count" \
     HVO_ISSUE_211_MEASURED_CAPTURES="$measured_capture_count" \
         dotnet test "$PROJECT" --no-build --configuration Release \
-        --filter "FullyQualifiedName~$test_filter" \
+        --filter "FullyQualifiedName=$test_filter" \
         --results-directory "$trial_result" \
         --logger "trx;LogFileName=$result_file" \
         --logger 'console;verbosity=normal' 8>&-
     assert_worktree_unchanged
+    if [[ "$collect_phase14" == true ]]; then
+        shopt -s nullglob
+        local raw_trx_files=("$trial_result"/*.trx)
+        if ((${#raw_trx_files[@]} != 1)) || [[ "${raw_trx_files[0]:-}" != "$trial_result/$result_file" ]]; then
+            printf 'Expected exactly one raw TRX for %s at %s.\n' "$trial" "$trial_result/$result_file" >&2
+            return 1
+        fi
+        cp -- "${raw_trx_files[0]}" "$HVO_PHASE14_TRX_ROOT/$trial/result.trx"
+        chmod 600 -- "$HVO_PHASE14_TRX_ROOT/$trial/result.trx"
+    fi
 
     local profile_evidence_file='issue-211-w6.json'
     if [[ "$calibration_required" != true ]]; then
@@ -396,6 +513,7 @@ EOF
         printf 'Unable to scan unsanitized telemetry logs for %s (rg exit %s).\n' "$trial" "$raw_log_scan_status" >&2
         return 1
     fi
+    # shellcheck disable=SC2066 # Keep secret-file scans extensible while the current profile has one file.
     for sensitive_file in "$trial_local/secrets/owner-password"; do
         raw_log_scan_status=0
         rg --text --fixed-strings --file "$sensitive_file" "$raw_logs" >/dev/null || raw_log_scan_status=$?
@@ -445,6 +563,7 @@ EOF
     cp "$trial_result/evidence/process.csv" "$trial_result/evidence/runtime/process.csv"
     jq -n \
         --argjson strict "$calibration_required" \
+        --argjson phase14 "$collect_phase14" \
         --arg trial "$trial" \
         --slurpfile traces "$trial_result/evidence/runtime/traces.jsonl" \
         --slurpfile metrics "$trial_result/evidence/runtime/metrics.json" \
@@ -478,8 +597,8 @@ EOF
          elif $event_id == 103 then
            $source == "Microsoft.Extensions.Diagnostics.HealthChecks.DefaultHealthCheckService" and
            ($body == "[REDACTED]" or
-             (($body | test("^Health check \"(calibration-library|capture-processing|environmental-acquisition|raw-ingress)\" with status Degraded ")) and
-              ($body | test("Calibration is required but no bundle is active|active calibration bundle has not completed startup validation|Calibration acquisition or reconciliation requires attention|Capture processing has retryable graph work|Environmental acquisition has stale, missing, or failed sources|Raw ingress is accepting with reconciliation or pressure findings"))))
+              (($body | test("^Health check \"(calibration-library|capture-admission|capture-processing|environmental-acquisition|raw-ingress)\" with status Degraded ")) and
+               ($body | test("Calibration is required but no bundle is active|active calibration bundle has not completed startup validation|Calibration acquisition or reconciliation requires attention|Capture admission has not initialized|Capture processing has retryable graph work|Environmental acquisition has stale, missing, or failed sources|Raw ingress is accepting with reconciliation or pressure findings"))))
          elif $event_id == 2029 then
            $strict and $body == "[REDACTED]" and
            $source == "HVO.SkyMonitor.CameraAgent.Common.Background.RetentionBackgroundService"
@@ -487,16 +606,16 @@ EOF
            $source == "HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureIngress" and
            ($body | test("^Raw ingress SQLite operation \"(checkpoint|commit)\" completed with result \"success\"$"))
          elif $event_id == 2013 then
-           $trial == "trial-1" and
+           ($trial == "trial-1" or $phase14) and
            $source == "HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.StandardCaptureLaneHandler" and
            ($body | startswith("Capture processing step \"weather-overlay\" failed"))
          elif $event_id == 2055 then
            $source == "HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureIngress" and
-           (($trial == "trial-1" and ($body | test("^Capture lane \"standard\" scheduled retry attempt [23] because \"handler-failure\"$"))) or
+           (((($trial == "trial-1") or $phase14) and ($body | test("^Capture lane \"standard\" scheduled retry attempt [23] because \"handler-failure\"$"))) or
             ($trial == "mono8-control" and $body == "Capture lane \"standard\" scheduled retry attempt 1 because \"handler-failure\""))
          elif $event_id == 2067 then
            $trial == "mono8-control" and
-           $source == "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingPersistence" and
+           $source == "HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.StandardCaptureLaneHandler" and
            $body == "Capture processing node \"annotation\" requested retry because \"environment.association-pending\""
          else false end;
       def application_metric_dimensions: [metric_points[] |
@@ -673,8 +792,8 @@ EOF
            {eventId: 103, disposition: "Only allowlisted transient Degraded health states are accepted during injected faults and startup convergence."},
            {eventId: 2029, disposition: "W6 explicitly injects one bounded disk-pressure transition."},
            {eventId: 2048, disposition: "Fault/restart checks explicitly exercise successful SQLite commit and checkpoint boundaries."},
-           {eventId: 2013, disposition: "Trial 1 explicitly injects the optional weather-overlay failure."},
-           {eventId: 2055, disposition: "Trial 1 and Mono8 explicitly inject bounded standard-lane retries."},
+           {eventId: 2013, disposition: "Trial 1 and Phase 14 evidence trials explicitly inject the optional weather-overlay failure."},
+           {eventId: 2055, disposition: "Trial 1, Phase 14 evidence trials, and Mono8 explicitly inject bounded standard-lane retries."},
            {eventId: 2067, disposition: "Mono8 explicitly exercises bounded annotation retry while environment association converges."}
          ],
          unexpectedWarnings: [$log_records[] | select(.severityNumber >= 13) |
@@ -792,6 +911,7 @@ EOF
             "$trial" "$final_trial_scan_status" >&2
         return 1
     fi
+    # shellcheck disable=SC2066 # Keep secret-file scans extensible while the current profile has one file.
     for sensitive_file in "$trial_local/secrets/owner-password"; do
         final_trial_scan_status=0
         rg --text --hidden --fixed-strings --file "$sensitive_file" \
@@ -831,12 +951,13 @@ for ((trial_number = 1; trial_number <= TRIAL_COUNT; trial_number++)); do
         "$CONFIG_TEMPLATE" \
         'cameraagent-standalone-w6-asi676mc' \
         'true' \
-        'StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync' \
+        'HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.FullCatalogAsi676StandaloneAsync' \
         'issue-211-w6.trx' \
         "$WARMUP_CAPTURE_COUNT" \
         "$MEASURED_CAPTURE_COUNT" \
         'Edge' \
-        'true'
+        'true' \
+        "$PHASE14_ENABLED"
 done
 
 run_profile_trial \
@@ -844,11 +965,12 @@ run_profile_trial \
     "$MONO_CONFIG_TEMPLATE" \
     'cameraagent-standalone-w6-asi174-mono8' \
     'false' \
-    'StandaloneW6DockerAcceptanceTests.Asi174Mono8ControlAsync' \
+    'HVO.SkyMonitor.CameraAgent.AcceptanceTests.StandaloneW6DockerAcceptanceTests.Asi174Mono8ControlAsync' \
     'issue-211-mono8.trx' \
     1 \
     5 \
     'Off' \
+    'false' \
     'false'
 
 jq -s '
@@ -1185,6 +1307,14 @@ jq -s \
 ' "$run_inventory" > "$RESULTS/run-manifest.json"
 rm -f "$run_inventory"
 assert_worktree_unchanged
+[[ "$(sha256sum "$TEST_ASSEMBLY" | cut -d' ' -f1)" == "$TEST_ASSEMBLY_SHA256" ]] || {
+    printf 'Acceptance test assembly changed after the no-build trials.\n' >&2
+    exit 1
+}
+if [[ -n "${HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE:-}" ]]; then
+    printf '%s\n' "$TEST_ASSEMBLY_SHA256" > "$HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE"
+    chmod 600 "$HVO_PHASE14_TEST_ASSEMBLY_SHA_FILE"
+fi
 assert_no_owned_acceptance_resources
 final_root_scan_status=0
 rg --text --hidden --ignore-case \
