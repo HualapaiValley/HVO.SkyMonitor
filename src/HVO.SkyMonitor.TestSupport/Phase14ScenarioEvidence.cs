@@ -79,7 +79,10 @@ public static partial class Phase14ScenarioEvidence
         }
         root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
         allowedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(allowedRoot));
-        if (!root.StartsWith(string.Concat(allowedRoot, Path.DirectorySeparatorChar), StringComparison.Ordinal))
+        var pathComparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (!root.StartsWith(string.Concat(allowedRoot, Path.DirectorySeparatorChar), pathComparison))
         {
             throw new InvalidOperationException("HVO_PHASE14_EVIDENCE_ROOT must be a child of HVO_PHASE14_EVIDENCE_ALLOWED_ROOT.");
         }
