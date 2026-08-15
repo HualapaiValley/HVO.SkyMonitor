@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.Imaging;
 
@@ -148,6 +149,8 @@ public sealed record VirtualTransientScenarioDefinition
     public int TemporalSampleCount { get; init; } = 16;
     public IReadOnlyList<VirtualTransientSkyTrack> SkyTracks { get; init; } = Array.Empty<VirtualTransientSkyTrack>();
     public IReadOnlyList<VirtualTransientSensorTrack> SensorTracks { get; init; } = Array.Empty<VirtualTransientSensorTrack>();
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualTransientRecurrenceDefinition? Recurrence { get; init; }
 
     /// <summary>Validates bounded identities, timelines, and primitive collections.</summary>
     public void Validate()
@@ -192,6 +195,8 @@ public sealed record VirtualTransientScenarioDefinition
                 $"Transient scenarios support at most {MaximumKeyframeCount} keyframes.");
         }
 
+        Recurrence?.Validate(SkyTracks.Count, keyframeCount, EpochUtc);
+
         foreach (var offset in SkyTracks.SelectMany(static track => track.Keyframes)
                      .Select(static keyframe => keyframe.OffsetSeconds)
                      .Concat(SensorTracks.SelectMany(static track => track.Keyframes)
@@ -223,24 +228,40 @@ public sealed record VirtualTransientScenarioDefinition
     public string ComputeCanonicalScenarioId()
     {
         Validate();
-        var hash = CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
-            SchemaVersion,
-            ScenarioVersion,
-            Seed,
-            EpochUtc,
-            TemporalSampleCount,
-            SkyTracks,
-            SensorTracks
-        });
+        var hash = ComputeScheduleSha256();
         return $"scn-{hash[..24]}";
     }
+
+    internal string ComputeScheduleSha256()
+        => Recurrence is null
+            ? CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                SchemaVersion,
+                ScenarioVersion,
+                Seed,
+                EpochUtc,
+                TemporalSampleCount,
+                SkyTracks,
+                SensorTracks
+            })
+            : CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                SchemaVersion,
+                ScenarioVersion,
+                Seed,
+                EpochUtc,
+                TemporalSampleCount,
+                SkyTracks,
+                SensorTracks,
+                Recurrence
+            });
 }
 
 /// <summary>Immutable validated transient scenario used by frame renderers.</summary>
 public sealed class VirtualTransientScenario
 {
     private readonly VirtualTransientScenarioDefinition _definition;
+    private readonly byte[] _scheduleHash;
 
     public VirtualTransientScenario(VirtualTransientScenarioDefinition definition)
     {
@@ -255,11 +276,68 @@ public sealed class VirtualTransientScenario
             SensorTracks = Array.AsReadOnly(definition.SensorTracks.Select(static track => track with
             {
                 Keyframes = Array.AsReadOnly(track.Keyframes.ToArray())
-            }).ToArray())
+            }).ToArray()),
+            Recurrence = definition.Recurrence is null ? null : definition.Recurrence with
+            {
+                Profiles = Array.AsReadOnly(definition.Recurrence.Profiles.Select(static profile => profile with
+                {
+                    SkyTracks = Array.AsReadOnly(profile.SkyTracks.Select(static track => track with
+                    {
+                        Keyframes = Array.AsReadOnly(track.Keyframes.ToArray())
+                    }).ToArray())
+                }).ToArray())
+            }
         };
+        _scheduleHash = Convert.FromHexString(_definition.ComputeScheduleSha256());
     }
 
     public VirtualTransientScenarioDefinition Definition => _definition;
+
+    public IReadOnlyList<VirtualTransientScheduledEvent> EnumerateEvents(DateTimeOffset startUtc, TimeSpan duration)
+    {
+        var recurrence = _definition.Recurrence;
+        if (recurrence is null)
+        {
+            return Array.Empty<VirtualTransientScheduledEvent>();
+        }
+        if (startUtc == default || startUtc.Offset != TimeSpan.Zero || duration < TimeSpan.Zero ||
+            duration > TimeSpan.FromSeconds(recurrence.MaximumLookaheadSeconds))
+        {
+            throw new ArgumentOutOfRangeException(nameof(duration));
+        }
+
+        var endUtc = startUtc + duration;
+        var low = 0;
+        var high = recurrence.EventCount;
+        while (low < high)
+        {
+            var middle = low + (high - low) / 2;
+            var candidate = VirtualTransientRecurrenceScheduler.Create(_definition, middle, _scheduleHash);
+            if (candidate.SignalEndUtc <= startUtc)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        var events = new List<VirtualTransientScheduledEvent>();
+        for (var ordinal = low; ordinal < recurrence.EventCount; ordinal++)
+        {
+            var candidate = VirtualTransientRecurrenceScheduler.Create(_definition, ordinal, _scheduleHash);
+            if (candidate.SignalStartUtc >= endUtc)
+            {
+                break;
+            }
+            if (candidate.SignalEndUtc > startUtc)
+            {
+                events.Add(candidate);
+            }
+        }
+        return events;
+    }
 }
 
 /// <summary>Transient scenario and logical exposure interval supplied to a scene renderer.</summary>
@@ -273,6 +351,11 @@ public sealed record VirtualTransientRenderContext(
         ArgumentNullException.ThrowIfNull(Scenario);
         if (IntegrationStartUtc == default || IntegrationStartUtc.Offset != TimeSpan.Zero ||
             IntegrationDuration < TimeSpan.Zero || IntegrationDuration > TimeSpan.FromHours(24))
+        {
+            throw new ArgumentOutOfRangeException(nameof(IntegrationDuration));
+        }
+        if (Scenario.Definition.Recurrence is { } recurrence &&
+            IntegrationDuration > TimeSpan.FromSeconds(recurrence.MaximumLookaheadSeconds))
         {
             throw new ArgumentOutOfRangeException(nameof(IntegrationDuration));
         }

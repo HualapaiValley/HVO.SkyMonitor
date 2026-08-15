@@ -13,6 +13,21 @@ is both the deterministic serializer and the installer's JSON/integrity
 validator. Installation also requires `flock`, `realpath`, and `sync`. None of
 these HYG scripts requires `jq` or Python.
 
+When the operating system does not package SQLite 3.45.1, install the isolated
+checksum-pinned CLI without replacing its SQLite libraries. Offline installation
+uses a previously acquired official source archive:
+
+```bash
+sudo ./scripts/catalog/install-sqlite-3.45.1.sh \
+  --source /secure-cache/sqlite-autoconf-3450100.tar.gz
+```
+
+Network acquisition is opt-in with `--fetch`. The installer verifies the exact
+source length and SHA-256, builds a static SQLite shell/library combination,
+checks its version and JSON support, installs it beneath
+`/usr/local/lib/hvo/sqlite-3.45.1`, and links `/usr/local/bin/sqlite3`. It does
+not replace the distribution's `libsqlite3` package.
+
 ## Build a Bundle
 
 The canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on

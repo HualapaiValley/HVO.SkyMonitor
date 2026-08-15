@@ -23,7 +23,9 @@ public sealed class FileCameraAgentConfigurationLoader(
     private const string SampleAgentId = "replace-with-registered-device-id";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true,
+        PropertyNameCaseInsensitive = false,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        AllowDuplicateProperties = false,
         Converters =
         {
             new JsonStringEnumConverter<CaptureCadenceMode>(allowIntegerValues: false),

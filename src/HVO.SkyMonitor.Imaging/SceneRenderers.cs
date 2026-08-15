@@ -353,6 +353,7 @@ public static class Mono16SceneRenderer
     public const string ElectronDomainAlgorithmVersion = "electron-domain-visible-scene-v2";
     public const string CloudAlgorithmSuffix = "+virtual-cloud-value-field-v1";
     public const string TransientAlgorithmSuffix = "+virtual-transient-raster-v1";
+    public const string TransientRecurrenceAlgorithmSuffix = "+virtual-transient-recurrence-grid-v1";
 
     /// <summary>Returns flux relative to a magnitude-zero source: 10^(-0.4 * magnitude).</summary>
     public static double RelativeFlux(double magnitude)
@@ -787,6 +788,10 @@ public static class Mono16SceneRenderer
         if (options.Transient is not null)
         {
             algorithmVersion += TransientAlgorithmSuffix;
+            if (options.Transient.Scenario.Definition.Recurrence is not null)
+            {
+                algorithmVersion += TransientRecurrenceAlgorithmSuffix;
+            }
         }
         return algorithmVersion;
     }

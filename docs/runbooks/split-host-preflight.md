@@ -70,6 +70,35 @@ path to a complete `CameraModuleDocument`. `up` copies that document separately,
 sets `CameraAgent:ConfigFilePath` through KeyPerFile, and stages only an
 `AdminPasswordFile` pointer plus the private password file. Appsettings-shaped
 objects are not valid module documents and are rejected before startup.
+`deployment.transient.mode` is explicit and accepts `Off` or `Hybrid`. LogicHost
+and CameraAgents start `Off` while agent provisioning gates are closed and upload
+is disabled. Bootstrap stages each agent's declared mode and required flag in the
+same configuration generation that enables upload and removes its gate. Central
+transient processing is activated only after every agent acknowledges its final
+identity, upload, rig, and transient configuration. This prevents Hybrid central
+processing from starting against an incomplete fleet.
+
+For an isolated Mailpit-backed campaign, review only known generated events with
+an explicit owner-only allowlist based on
+`deploy/split-host/transient-confirm.allowlist.example.json`:
+
+```bash
+./scripts/deploy:environment transient-confirm \
+  --inventory /absolute/path/inventory.json \
+  --mode isolated \
+  --run-id run-id \
+  --allowlist /absolute/path/transient-confirm.allowlist.json
+```
+
+The command never enumerates the review queue. It first checks every supplied
+central event ID directly against its expected synthetic agent ID, meteor/fireball
+classification, active assessment, and review state. Only after all entries pass
+does it append confirmed reviews with deterministic idempotency keys. It then
+requires the redacted review audit projection, a sent notification record, and a
+new Mailpit message correlated by recipient, timestamp, subject, and event ID.
+The resulting `transient-confirm.json` contains IDs and hashes, not credentials,
+reviewer identity, idempotency keys, recipient addresses, or message text. The
+allowlist itself must be a regular owner-owned mode `0400` or `0600` file.
 Inventory selects only workload kind, deadline, and sustained-run opt-in. The
 repository-owned `deploy/split-host/workloads/canonical-workloads.json` pins W0,
 W1, and W2 source paths, file and canonical-configuration SHA-256 identities,
@@ -303,10 +332,13 @@ repository/tag, component, and pinned .NET SDK version. The source tag must be
 exactly `rev-<source.revision>`; `latest`, embedded tags or digests, URL schemes,
 credentials, and ports in repository values are rejected.
 
-`images.builder` explicitly declares the buildx builder name, driver, sole
-`default` local endpoint, and expected local Docker daemon ID, name, OS, and architecture. The
-phase checks the builder is running, local to that endpoint, and supports every
-required platform, then passes `--builder` to every build and registry inspect.
+`images.builder` explicitly declares the buildx builder name, driver, `default`
+control endpoint, and expected local Docker daemon ID, name, OS, and
+architecture. The phase requires one unambiguous builder, all of its nodes to be
+running, the declared control endpoint to be present, and every required
+platform to be supplied by at least one node. This permits a native AMD64/ARM64
+multi-node builder without weakening control-daemon correlation. The selected
+builder is passed to every build and registry inspect.
 Ambient `DOCKER_CONTEXT` is cleared and the selected/default builder is never
 trusted. The phase does not create, alter, stop, or remove builders. LogicHost is
 built for `linux/amd64`; CameraAgent platforms are the unique `amd64` and/or
@@ -416,6 +448,11 @@ the shared-service configuration and are never mounted in application
 containers. MinIO client credentials are JSON-escaped into an owner-only client
 configuration; the provisioning container runs as the declared SSH UID/GID and
 atomically publishes its generated application credentials with mode `0600`.
+SQL Server, Redis, and MinIO run as that same declared UID/GID and retain their
+project-scoped named-volume identities, labels, and teardown checks. Each named
+volume is backed by its exact run-owned bind directory beneath
+`<shared runtimeRoot>/application/{sql,redis,minio}` rather than Docker's ambient
+data root.
 For `existing`, endpoint routes are checked without service mutation;
 controlled initialization and LogicHost dependency health then exercise the
 configured application identities.
@@ -899,7 +936,10 @@ Before parsing, the prepare ledger, manifest, and evidence must each be an
 owner-UID, mode-`0600`, single-link regular non-symlink, and the passed private
 manifest must equal the ledger. Deletion removes explicit Compose services, all
 four exact project default networks, the three exact project-named volumes, and
-marker-validated runtime roots. Mailpit is included through the `test-smtp`
+marker-validated runtime roots. The three volume objects are bind-backed by the
+run-owned shared-service directories; removing a volume object does not delete
+an arbitrary host path, and the later marker-validated runtime-root deletion
+removes the backing data. Mailpit is included through the `test-smtp`
 profile. Every mutation is journaled with an atomic intent and completion; resume
 accepts absence only after a committed ownership-validated intent/completion.
 SSH host and Docker daemon identity are re-correlated immediately before and

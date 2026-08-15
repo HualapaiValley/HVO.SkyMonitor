@@ -86,13 +86,14 @@
       "sql": { "host": "sql.example.net", "port": 1433, "database": "hvo-main", "adminUser": "sa", "adminSecretReference": "SQLSERVER_PASSWORD", "initializerUser": "HVO.LogicHost.Migrator", "initializerSecretReference": "SQL_INIT_PASSWORD", "initializerConnectionReference": "SQL_INIT_CONNECTION", "runtimeUser": "HVO.LogicHost.Runtime", "runtimeSecretReference": "SQL_RUNTIME_PASSWORD", "runtimeConnectionReference": "SQL_RUNTIME_CONNECTION" },
       "redis": { "host": "redis.example.net", "port": 6379, "prefix": "hvo-main:", "adminSecretReference": "REDIS_ADMIN_PASSWORD", "user": "hvo-main", "secretReference": "REDIS_PASSWORD" },
       "minio": { "host": "minio.example.net", "port": 9000, "useSsl": true, "artifactBucket": "hvo-main-artifacts", "diagnosticsBucket": "hvo-main-diagnostics", "rootAccessKeyReference": "MINIO_ROOT_USER", "rootSecretKeyReference": "MINIO_ROOT_PASSWORD", "accessKeyReference": "MINIO_ACCESS_KEY", "secretKeyReference": "MINIO_SECRET_KEY" },
-      "smtp": { "kind": "production", "host": "smtp.example.net", "port": 587, "usernameReference": "SMTP_USERNAME", "passwordReference": "SMTP_PASSWORD" },
+      "smtp": { "kind": "production", "host": "smtp.example.net", "ports": [587, null], "usernameReference": "SMTP_USERNAME", "passwordReference": "SMTP_PASSWORD" },
       "images": { "sqlServer": null, "redis": null, "minio": null, "minioClient": null, "mailpit": null }
     },
     "resources": { "project": "hvo-main", "sqlDatabase": "hvo-main", "redisPrefix": "hvo-main:", "artifactBucket": "hvo-main-artifacts", "diagnosticsBucket": "hvo-main-diagnostics" },
     "certificates": { "signingPath": "/home/operator/certs/signing.pfx", "encryptionPath": "/home/operator/certs/encryption.pfx", "signingPasswordReference": "OIDC_SIGNING_PASSWORD", "encryptionPasswordReference": "OIDC_ENCRYPTION_PASSWORD" },
     "automation": { "ownerApiKeySecretReference": "LOGICHOST_OWNER_API_KEY" },
     "deviceBootstrap": { "clientId": "system-camera-agent", "clientSecretReference": "CAMERA_AGENT_OAUTH_CLIENT_SECRET", "scopes": ["api.camera", "api.frames", "api.images"] },
+    "transient": { "mode": "Off" },
     "workload": { "kind": "W0", "durationSeconds": 300, "sustainedArmOptIn": false },
     "secretMappings": [
       { "reference": "SQL_RUNTIME_CONNECTION", "key": "ConnectionStrings__skymonitordb" },

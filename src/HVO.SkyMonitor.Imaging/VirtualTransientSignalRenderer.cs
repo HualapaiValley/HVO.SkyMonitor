@@ -98,16 +98,33 @@ public static class VirtualTransientSignalRenderer
         var definition = context.Scenario.Definition;
         definition.ValidateSensorBounds(layout.Width, layout.Height);
         var pixels = new Dictionary<int, VirtualTransientPixelSignal>();
+        var events = context.Scenario.EnumerateEvents(context.IntegrationStartUtc, context.IntegrationDuration);
+        var recurringGeometryCount = events.Sum(item => definition.Recurrence!.Profiles[item.ProfileIndex].SkyTracks.Count);
         var geometry = new List<VirtualTransientSignalGeometry>(
-            definition.SkyTracks.Count + definition.SensorTracks.Count);
+            definition.SkyTracks.Count + definition.SensorTracks.Count + recurringGeometryCount);
         var projector = ProjectorFactory.Create(scene.Request.Projection);
         foreach (var track in definition.SkyTracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
             geometry.Add(RenderSkyTrack(
-                track, definition, context, cloud, scene.Request.Projection, projector, layout, pixels,
+                track, track.PrimitiveId, definition.EpochUtc, 0, definition, context, cloud,
+                scene.Request.Projection, projector, layout, pixels,
                 magnitudeZeroElectronsPerSecond, minimumPsfSigmaPixels, minimumPsfRadiusPixels,
                 cancellationToken));
+        }
+        foreach (var recurringEvent in events)
+        {
+            var profile = definition.Recurrence!.Profiles[recurringEvent.ProfileIndex];
+            foreach (var track in profile.SkyTracks)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                geometry.Add(RenderSkyTrack(
+                    track, $"{recurringEvent.EventId}/{track.PrimitiveId}", recurringEvent.AnchorUtc,
+                    recurringEvent.AzimuthRotationDegrees, definition, context, cloud,
+                    scene.Request.Projection, projector, layout, pixels,
+                    magnitudeZeroElectronsPerSecond, minimumPsfSigmaPixels, minimumPsfRadiusPixels,
+                    cancellationToken));
+            }
         }
         foreach (var track in definition.SensorTracks)
         {
@@ -119,6 +136,9 @@ public static class VirtualTransientSignalRenderer
 
     private static VirtualTransientSignalGeometry RenderSkyTrack(
         VirtualTransientSkyTrack track,
+        string primitiveId,
+        DateTimeOffset timelineOriginUtc,
+        double azimuthRotationDegrees,
         VirtualTransientScenarioDefinition definition,
         VirtualTransientRenderContext context,
         VirtualCloudRenderContext? cloud,
@@ -132,19 +152,19 @@ public static class VirtualTransientSignalRenderer
         CancellationToken cancellationToken)
     {
         var overlap = ResolveOverlap(track.Keyframes[0].OffsetSeconds, track.Keyframes[^1].OffsetSeconds,
-            definition.EpochUtc, context);
+            timelineOriginUtc, context);
         if (overlap is null)
         {
-            return EmptyGeometry(track.PrimitiveId, sensorStage: false);
+            return EmptyGeometry(primitiveId, sensorStage: false);
         }
 
-        var accumulator = new GeometryAccumulator(track.PrimitiveId, sensorStage: false, layout.Width, layout.Height);
+        var accumulator = new GeometryAccumulator(primitiveId, sensorStage: false, layout.Width, layout.Height);
         var sampleSeconds = overlap.Value.Duration.TotalSeconds / definition.TemporalSampleCount;
         for (var sample = 0; sample < definition.TemporalSampleCount; sample++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var utc = Midpoint(overlap.Value.StartUtc, overlap.Value.Duration, sample, definition.TemporalSampleCount);
-            var state = ResolveSkyState(track.Keyframes, (utc - definition.EpochUtc).TotalSeconds);
+            var state = ResolveSkyState(track.Keyframes, (utc - timelineOriginUtc).TotalSeconds, azimuthRotationDegrees);
             var pixel = projector.Project(state.Direction);
             if (pixel is null)
             {
@@ -307,12 +327,16 @@ public static class VirtualTransientSignalRenderer
     private static DateTimeOffset Midpoint(DateTimeOffset start, TimeSpan duration, int sample, int sampleCount)
         => start.AddTicks(checked((long)(duration.Ticks * ((sample + 0.5) / sampleCount))));
 
-    private static SkyState ResolveSkyState(IReadOnlyList<VirtualTransientSkyKeyframe> keyframes, double offset)
+    private static SkyState ResolveSkyState(
+        IReadOnlyList<VirtualTransientSkyKeyframe> keyframes,
+        double offset,
+        double azimuthRotationDegrees)
     {
         var (lower, upper, fraction) = ResolvePair(keyframes, offset, static item => item.OffsetSeconds);
         var from = CameraBasis.FromHorizontal(new AltAzPoint(lower.AltitudeDegrees, lower.AzimuthDegrees));
         var to = CameraBasis.FromHorizontal(new AltAzPoint(upper.AltitudeDegrees, upper.AzimuthDegrees));
         var direction = CameraBasis.ToHorizontal(EnuVector.SphericalInterpolate(from, to, fraction));
+        direction = new AltAzPoint(direction.AltitudeDegrees, NormalizeAzimuth(direction.AzimuthDegrees + azimuthRotationDegrees));
         return new SkyState(
             direction,
             Lerp(lower.Magnitude, upper.Magnitude, fraction),
@@ -377,6 +401,7 @@ public static class VirtualTransientSignalRenderer
 
     private static double Lerp(double lower, double upper, double fraction) => lower + (upper - lower) * fraction;
     private static double Square(double value) => value * value;
+    private static double NormalizeAzimuth(double value) => (value % 360 + 360) % 360;
 
     private static double ResolveProjectedSigma(
         IImageProjector projector,

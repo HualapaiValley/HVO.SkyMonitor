@@ -28,11 +28,13 @@ deploy_images_validate_builder() {
     expected_arch="$(jq -r '.images.builder.expectedArchitecture' "$inventory")"
     listing="$(docker buildx ls --format '{{json .}}' 2>/dev/null)" || { deploy_fail images builder unavailable; return 1; }
     jq -se --arg builder "$builder" --arg driver "$expected_driver" --arg endpoint "$expected_endpoint" --argjson platforms "$required_platforms" '
-      [ .[] | select(.Name == $builder) ] as $matches |
-      ($matches | length) > 0 and all($matches[]; .Driver == $driver and (.Err // "") == "" and
-        (.Nodes | type == "array" and length == 1 and
-          (.[0].Endpoint == $endpoint or ($endpoint == "default" and .[0].Endpoint == "unix:///var/run/docker.sock")) and .[0].Status == "running" and
-          .[0] as $node | all($platforms[]; . as $platform | $node.Platforms | index("linux/" + $platform) != null)))' <<< "$listing" >/dev/null 2>&1 ||
+      [ .[] | select(.Name == $builder) ] | unique_by({Name,Driver,Nodes}) as $matches |
+      ($matches | length) == 1 and $matches[0] as $match |
+      $match.Driver == $driver and ($match.Err // "") == "" and
+      ($match.Nodes | type == "array" and length > 0 and
+        all(.[]; .Status == "running") and
+        any(.[]; .Endpoint == $endpoint or ($endpoint == "default" and .Endpoint == "unix:///var/run/docker.sock")) and
+        all($platforms[]; . as $platform | any($match.Nodes[]; .Platforms | index("linux/" + $platform) != null)))' <<< "$listing" >/dev/null 2>&1 ||
       { deploy_fail images builder mismatch-or-remote; return 1; }
     info="$(docker info --format '{"ID":{{json .ID}},"Name":{{json .Name}},"Architecture":{{json .Architecture}},"OSType":{{json .OSType}}}' 2>/dev/null)" ||
       { deploy_fail images builder control-daemon-unavailable; return 1; }

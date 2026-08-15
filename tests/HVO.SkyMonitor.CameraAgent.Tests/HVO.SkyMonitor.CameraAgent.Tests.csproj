@@ -70,6 +70,12 @@
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\virtual-asi676mc.full.json" Link="virtual-asi676mc.full.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\deploy\split-host\camera-modules\allsky01.virtual-asi676mc.full.json" Link="allsky01.virtual-asi676mc.full.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\deploy\split-host\camera-modules\hvo-edge-01.virtual-asi676mm.full.json" Link="hvo-edge-01.virtual-asi676mm.full.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\..\docs\validation\cameraagent-environmental-acquisition-runtime-signals.json"
           Link="Validation\cameraagent-environmental-acquisition-runtime-signals.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
