@@ -65,6 +65,13 @@ provisions those services. `deploy` requires an explicit shared-services target
 and digest references for SQL Server, Redis, MinIO, the MinIO client, and optional
 Mailpit. Mailpit is accepted only for isolated deployment.
 
+The shared-services target may be co-located with LogicHost on one physical host
+and Docker daemon. That exact pair may share expected hostname, machine identity,
+and daemon identity only when it uses distinct SSH host and Docker context aliases,
+runtime roots, names, and ports. This keeps transport selection unambiguous while
+allowing an isolated central stack on one daemon. CameraAgents and every other
+target combination remain identity-collision failures.
+
 Every CameraAgent declares an owner-password secret reference and an absolute
 path to a complete `CameraModuleDocument`. `up` copies that document separately,
 sets `CameraAgent:ConfigFilePath` through KeyPerFile, and stages only an

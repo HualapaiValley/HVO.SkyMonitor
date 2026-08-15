@@ -150,8 +150,15 @@ deploy_validate_inventory() {
     target_count="$(jq '([.logicHost.name] + [.cameraAgents[].name] + (if .sharedServices then [.sharedServices.name] else [] end)) | length' "$inventory")"
     unique_count="$(jq '([.logicHost.name] + [.cameraAgents[].name] + (if .sharedServices then [.sharedServices.name] else [] end)) | unique | length' "$inventory")"
     [[ "$target_count" == "$unique_count" ]] || deploy_fail validate inventory "duplicate-target-name" || return 1
-    collision_count="$(jq '([.logicHost] + .cameraAgents + (if .sharedServices then [.sharedServices] else [] end)) |
-      [group_by(.sshHost)[], group_by(.dockerContext)[], group_by(.expectedHostName)[], group_by(.expectedHostIdentity)[], group_by(.expectedDockerDaemonIdentity)[] | select(length > 1)] | length' "$inventory")"
+    collision_count="$(jq '
+      def allowed_colocation($logic; $shared):
+        $shared != null and length == 2 and ([.[].name] | sort) == ([$logic.name,$shared.name] | sort);
+      .logicHost as $logic | .sharedServices as $shared |
+      ([.logicHost] + .cameraAgents + (if $shared then [$shared] else [] end)) as $targets |
+      ([($targets | group_by(.sshHost)[]), ($targets | group_by(.dockerContext)[]) | select(length > 1)] +
+       [($targets | group_by(.expectedHostName)[]), ($targets | group_by(.expectedHostIdentity)[]),
+        ($targets | group_by(.expectedDockerDaemonIdentity)[]) | select(length > 1 and (allowed_colocation($logic; $shared) | not))]) |
+      length' "$inventory")"
     [[ "$collision_count" == 0 ]] || deploy_fail validate inventory "target-identity-collision" || return 1
     unknown_route="$(jq '([.logicHost.name] + [.cameraAgents[].name] + (if .sharedServices then [.sharedServices.name] else [] end)) as $names |
       [.serviceEndpoints[].fromTargets[] | select(. as $n | $names | index($n) | not)] | length' "$inventory")"

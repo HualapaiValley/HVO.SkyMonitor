@@ -1197,6 +1197,13 @@ done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentityS
     .deployment.services.images={sqlServer:("registry.example/sql@sha256:"+("a"*64)),redis:("registry.example/redis@sha256:"+("b"*64)),
       minio:("registry.example/minio@sha256:"+("c"*64)),minioClient:("registry.example/mc@sha256:"+("d"*64)),mailpit:("registry.example/mailpit@sha256:"+("e"*64))}' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
   deploy_validate_inventory "$TEMP_DIR/shared-valid.json" isolated
+  jq '.sharedServices.expectedHostName=.logicHost.expectedHostName |
+    .sharedServices.expectedHostIdentity=.logicHost.expectedHostIdentity |
+    .sharedServices.expectedDockerDaemonIdentity=.logicHost.expectedDockerDaemonIdentity' \
+    "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-colocated.json"
+  deploy_validate_inventory "$TEMP_DIR/shared-colocated.json" isolated
+  jq '.cameraAgents[0].expectedHostIdentity=.logicHost.expectedHostIdentity' "$TEMP_DIR/shared-colocated.json" > "$TEMP_DIR/shared-colocated-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-colocated-invalid.json" isolated >/dev/null 2>&1; then exit 106; fi
   jq 'del(.sharedServices.sshHost)' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
   if deploy_validate_inventory "$TEMP_DIR/shared-invalid.json" isolated >/dev/null 2>&1; then exit 91; fi
   jq '.sharedServices.ports=[1433,6379,9000,2525]' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-invalid.json"
