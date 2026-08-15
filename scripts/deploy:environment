@@ -42,17 +42,19 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/acceptance-normal-flow.sh"
 # shellcheck source=scripts/deploy/acceptance-component.sh
 . "$SCRIPT_DIR/deploy/acceptance-component.sh"
+# shellcheck source=scripts/deploy/transient-confirm.sh
+. "$SCRIPT_DIR/deploy/transient-confirm.sh"
 
 usage() {
-    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|acceptance-component|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--component <logichost-dependencies>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|acceptance-component|transient-confirm|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--component <logichost-dependencies>] [--allowlist <owner-only-json-path>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
     printf '       acceptance-record requires --scenario and --artifact; acceptance-run requires --scenario; acceptance-component requires the fixed --component.\n' >&2
     exit 2
 }
 
 phase="${1:-}"
-[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == acceptance-init || "$phase" == acceptance-record || "$phase" == acceptance-run || "$phase" == acceptance-component || "$phase" == down ]] || usage
+[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == acceptance-init || "$phase" == acceptance-record || "$phase" == acceptance-run || "$phase" == acceptance-component || "$phase" == transient-confirm || "$phase" == down ]] || usage
 shift
-inventory="" mode="" run_id="" state_root="" evidence_root="" down_policy="" confirm="" workload="" scenario="" artifact="" component=""
+inventory="" mode="" run_id="" state_root="" evidence_root="" down_policy="" confirm="" workload="" scenario="" artifact="" component="" allowlist=""
 while (( $# > 0 )); do
     case "$1" in
         --inventory) (( $# >= 2 )) || usage; inventory="$2"; shift 2 ;;
@@ -67,6 +69,7 @@ while (( $# > 0 )); do
         --scenario) (( $# >= 2 )) || usage; scenario="$2"; shift 2 ;;
         --artifact) (( $# >= 2 )) || usage; artifact="$2"; shift 2 ;;
         --component) (( $# >= 2 )) || usage; component="$2"; shift 2 ;;
+        --allowlist) (( $# >= 2 )) || usage; allowlist="$2"; shift 2 ;;
         *) usage ;;
     esac
 done
@@ -84,6 +87,7 @@ if [[ "$phase" == acceptance-component ]]; then
 else
     [[ -z "$component" ]] || usage
 fi
+if [[ "$phase" == transient-confirm ]]; then [[ -n "$allowlist" ]] || usage; else [[ -z "$allowlist" ]] || usage; fi
 
 # Target selection and credentials must come only from the validated inventory contract.
 for ambient_name in ${!DEPLOY_@} ${!SMOKETEST_@}; do
@@ -96,7 +100,7 @@ deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install
 [[ "$phase" == prepare || "$phase" == catalog || "$phase" == acceptance-init || "$phase" == acceptance-record ]] || deploy_require_commands docker || exit 1
 [[ "$phase" != acceptance-component ]] || deploy_require_commands dotnet mv rm rmdir || exit 1
 [[ "$phase" != images ]] || deploy_require_commands tar mv rm || exit 1
-[[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke && "$phase" != acceptance-run ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
+[[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke && "$phase" != acceptance-run && "$phase" != transient-confirm ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
 deploy_validate_inventory "$inventory" "$mode"
 deploy_validate_secret_references "$inventory"
@@ -289,6 +293,20 @@ if [[ "$phase" == acceptance-component ]]; then
     fi
     trap - INT TERM
     deploy_status acceptance-component "$component" passed artifacts-recorded
+    exit 0
+fi
+
+if [[ "$phase" == transient-confirm ]]; then
+    [[ ! -L "$allowlist" ]] || deploy_fail validate allowlist symlink-rejected
+    allowlist="$(realpath -e -- "$allowlist" 2>/dev/null)" || deploy_fail validate allowlist not-found
+    trap 'deploy_transient_confirm_cleanup best-effort >/dev/null 2>&1 || true' ERR
+    trap 'deploy_transient_confirm_cleanup best-effort >/dev/null 2>&1 || true; exit 130' INT TERM
+    if ! deploy_run_transient_confirm "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$allowlist"; then
+        deploy_transient_confirm_cleanup best-effort >/dev/null 2>&1 || true
+        exit 1
+    fi
+    trap - ERR INT TERM
+    deploy_status transient-confirm complete passed audited
     exit 0
 fi
 

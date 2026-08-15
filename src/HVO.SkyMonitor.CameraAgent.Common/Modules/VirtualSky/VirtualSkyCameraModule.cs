@@ -1034,7 +1034,9 @@ public sealed class VirtualSkyCameraModule(
             definition.SchemaVersion,
             definition.ScenarioId,
             definition.ScenarioVersion,
-            VirtualTransientScenarioDefinition.CurrentAlgorithmVersion,
+            definition.Recurrence is null
+                ? VirtualTransientScenarioDefinition.CurrentAlgorithmVersion
+                : $"{VirtualTransientScenarioDefinition.CurrentAlgorithmVersion}+{VirtualTransientRecurrenceDefinition.CurrentAlgorithmVersion}",
             CaptureContractJson.ComputeCanonicalJsonSha256(parameters),
             definition.Seed,
             definition.EpochUtc,

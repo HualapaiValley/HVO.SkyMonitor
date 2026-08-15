@@ -1,0 +1,174 @@
+{
+  "agentId": "replace-with-registered-device-id",
+  "module": {
+    "type": "VirtualSky",
+    "options": {
+      "seed": 33201,
+      "rigProfileVersion": "deployment-hvo-edge-01-virtual-asi676mm-full-v1",
+      "maximumMagnitude": 6.5,
+      "maximumResults": 300,
+      "magnitudeZeroElectronsPerSecond": 1000.0,
+      "bortleClass": 3,
+      "shotNoiseEnabled": true,
+      "readNoiseStandardDeviation": 0.0,
+      "catalogName": "HYG 4.2",
+      "catalogVersion": "4.2",
+      "catalogSourceUrl": "https://codeberg.org/astronexus/hyg",
+      "catalogLicense": "CC BY-SA 4.0",
+      "catalogChecksumSha256": "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2",
+      "catalogSchemaVersion": "2",
+      "transientScenario": {
+        "schemaVersion": "virtual-transient-scenario-v1",
+        "scenarioId": "production-like-recurring-331-mono",
+        "scenarioVersion": "1",
+        "seed": 33201,
+        "epochUtc": "2026-08-01T00:00:00Z",
+        "temporalSampleCount": 16,
+        "skyTracks": [],
+        "sensorTracks": [],
+        "recurrence": {
+          "schemaVersion": "virtual-transient-recurrence-v1",
+          "minimumIntervalSeconds": 3600,
+          "maximumIntervalSeconds": 7200,
+          "eventCount": 4096,
+          "maximumLookaheadSeconds": 86400,
+          "profiles": [
+            {
+              "weight": 4,
+              "skyTracks": [{
+                "primitiveId": "p-001",
+                "keyframes": [
+                  { "offsetSeconds": 0, "altitudeDegrees": 72, "azimuthDegrees": 250, "magnitude": -3, "angularWidthDegrees": 0.18 },
+                  { "offsetSeconds": 5, "altitudeDegrees": 78, "azimuthDegrees": 300, "magnitude": -2, "angularWidthDegrees": 0.12 }
+                ]
+              }]
+            },
+            {
+              "weight": 1,
+              "skyTracks": [
+                {
+                  "primitiveId": "p-101",
+                  "keyframes": [
+                    { "offsetSeconds": 0, "altitudeDegrees": 68, "azimuthDegrees": 210, "magnitude": -9, "angularWidthDegrees": 0.55 },
+                    { "offsetSeconds": 6, "altitudeDegrees": 76, "azimuthDegrees": 275, "magnitude": -6, "angularWidthDegrees": 0.3 }
+                  ]
+                },
+                {
+                  "primitiveId": "p-102",
+                  "keyframes": [
+                    { "offsetSeconds": 0, "altitudeDegrees": 68, "azimuthDegrees": 210, "magnitude": -6, "angularWidthDegrees": 0.2 },
+                    { "offsetSeconds": 6, "altitudeDegrees": 73, "azimuthDegrees": 282, "magnitude": -3, "angularWidthDegrees": 0.12 }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "constellationIds": ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"],
+      "includeConstellationEndpointStars": true,
+      "solarSystemBodies": ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
+    }
+  },
+  "rig": {
+    "sensor": {
+      "name": "VirtualAsi676MmRaw16",
+      "widthPixels": 3552,
+      "heightPixels": 3552,
+      "pixelSizeMicrons": 2.0,
+      "colorMode": "Mono",
+      "pixelFormat": "Mono16",
+      "responseMode": "Monochrome",
+      "strideBytes": 7104,
+      "byteOrder": "LittleEndian",
+      "sensorRecipeVersion": "virtual-asi676mm-mono12-in-raw16-provisional-v1",
+      "simulationResponse": {
+        "modelVersion": "zwo-asi676-12bit-published-envelope-v1",
+        "adcBitDepth": 12,
+        "minimumGainControl": 0.0,
+        "maximumGainControl": 180.0,
+        "electronsPerAduAtZeroGain": 2.5763125763125763,
+        "gainControlDivisor": 200.0,
+        "maximumFullWellElectrons": 10550.0,
+        "readNoisePoints": [
+          { "gainControl": 0.0, "readNoiseElectrons": 2.9 },
+          { "gainControl": 82.0, "readNoiseElectrons": 1.8 },
+          { "gainControl": 180.0, "readNoiseElectrons": 1.8 }
+        ],
+        "blackLevelAdu": 64.0,
+        "gainUnits": "ZWO 0.1 dB",
+        "compatibilityLabel": "ASI676 native 12-bit monochrome samples in 16-bit container",
+        "shotNoiseEnabled": true,
+        "darkNoiseEnabled": true,
+        "clampFullWellToAdcRange": true,
+        "excludeBlackLevelFromFullWellRange": true,
+        "highConversionGainControl": 180.0,
+        "highConversionReadNoiseElectrons": 0.65,
+        "calibrationStatus": "provisional-published-envelope"
+      }
+    },
+    "readout": {
+      "roi": { "x": 0, "y": 0, "width": 3552, "height": 3552 },
+      "binX": 1,
+      "binY": 1,
+      "binningAlgorithm": "IdentityV1",
+      "pixelFormat": "Mono16",
+      "sampleDepthBits": 12,
+      "containerDepthBits": 16,
+      "packing": "ByteAligned",
+      "storedCodeTransform": "RightAlignedV1",
+      "levelCodeSpace": "NativeSample",
+      "blackLevel": 64.0,
+      "whiteLevel": 4095.0,
+      "strideBytes": 7104,
+      "byteOrder": "LittleEndian"
+    },
+    "optics": {
+      "projectionModel": "EquidistantFisheye",
+      "focalLengthMillimeters": 2.5,
+      "fieldOfViewDegrees": 170.0,
+      "rollDegrees": 0.0,
+      "lensKind": "Fisheye",
+      "principalPointX": 1776.0,
+      "principalPointY": 1776.0,
+      "imageCircleRadiusPixels": 1627.5,
+      "focalLengthXPixels": 1097.0456,
+      "focalLengthYPixels": 1097.0456,
+      "horizontalFlip": false,
+      "calibrationVersion": "asi676-supplied-2p5mm-equidistant-placeholder-v1"
+    },
+    "orientation": { "boresightAltitudeDegrees": 90.0, "boresightAzimuthDegrees": 0.0, "rollAdjustmentDegrees": 0.0 },
+    "pipeline": {
+      "captureInterval": "00:00:20",
+      "cadenceMode": "MinimumStartInterval",
+      "dayExposure": "00:00:20",
+      "nightExposure": "00:00:20",
+      "dayGain": 82.0,
+      "nightGain": 82.0
+    },
+    "controlPolicy": { "exposureControl": "Disabled", "gainControl": "Disabled" },
+    "profileVersion": "deployment-hvo-edge-01-virtual-asi676mm-full-v1"
+  },
+  "pipeline": {
+    "schemaVersion": "cameraagent-capture-pipeline-v2",
+    "dependencyPolicy": "reject-enabled-dependent-v1",
+    "steps": [
+      { "id": "calibration", "type": "Calibration", "order": 10, "dependsOn": ["$raw"], "options": { "strategy": "CalibrationLibrary", "outputVariant": "pseudo-calibrated" } },
+      { "id": "calibrated-preview", "type": "CalibratedPreview", "order": 20, "dependsOn": ["calibration"], "options": { "recipeVersion": "mono16-asinh-v2", "outputVariant": "calibrated-preview", "blackPercentile": 0.5, "whitePercentile": 0.9999, "asinhStrength": 4.0 } },
+      { "id": "rolling", "type": "RollingCombination", "order": 30, "dependsOn": ["calibration"], "options": { "windowSize": 5, "outputVariant": "rolling-mean" } },
+      { "id": "combined-preview", "type": "CombinedPreview", "order": 40, "dependsOn": ["rolling"], "options": { "recipeVersion": "mono16-asinh-v2", "outputVariant": "combined-preview", "blackPercentile": 0.5, "whitePercentile": 0.9999, "asinhStrength": 4.0 } },
+      { "id": "quality", "type": "ImageQuality", "order": 50, "required": false, "dependsOn": ["calibration"], "options": { "outputVariant": "image-quality-v1" } },
+      { "id": "sky-annotation", "type": "Annotation", "order": 70, "dependsOn": ["combined-preview"], "options": { "markRadius": 6, "markerValue": 144, "drawLabels": true, "maximumLabelMagnitude": 2.5, "labelScale": 2, "drawConstellationLines": true, "constellationIds": ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"], "drawImageCircle": true, "drawCardinalDirections": true, "drawMetadataCorners": true, "recipeVersion": "projected-scene-annotation-v3", "outputVariant": "production-like-annotated" } },
+      { "id": "storage", "type": "Storage", "order": 90, "dependsOn": ["calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "sky-annotation"], "options": { "storageRoot": "/app/data/raw", "retentionDays": 1, "updateLatestFrame": true, "queueForUpload": true, "policies": [] } },
+      { "id": "telemetry", "type": "Telemetry", "order": 100, "dependsOn": ["calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "sky-annotation", "storage"] }
+    ]
+  },
+  "schedule": {
+    "schemaVersion": "capture-schedule-v1",
+    "setpointProfiles": [{ "id": "hvo-edge-01-asi676mm-continuous", "exposure": "00:00:20", "gain": 82.0, "captureInterval": "00:00:20", "cadenceMode": "MinimumStartInterval" }],
+    "weeklyWindows": [],
+    "blackouts": [],
+    "legacyAlwaysOpen": true,
+    "legacySetpointProfileId": "hvo-edge-01-asi676mm-continuous"
+  }
+}

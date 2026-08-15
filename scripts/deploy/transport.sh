@@ -188,11 +188,11 @@ deploy_transport_initialize_private_upload_registry() {
           def targets: ([$inventory.logicHost] + $inventory.cameraAgents + (if $inventory.sharedServices then [$inventory.sharedServices] else [] end));
           type == "array" and length <= 256 and all(.[]; . as $entry |
             (keys | sort) == (["phase","kind","target","path"] | sort) and
-            (.phase | test("^(up|bootstrap|smoke|measure|acceptance-run|down)$")) and
+            (.phase | test("^(up|bootstrap|smoke|measure|acceptance-run|transient-confirm|down)$")) and
             (if .kind == "upload-temp" then
               any(targets[]; . == $entry.target) and
               ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/uploads/") and
-                (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))
+              (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|transient-confirm|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))
              elif .kind == "remote-private" then
                any(targets[]; . == $entry.target) and ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/")) and
                (($entry.path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
@@ -312,7 +312,7 @@ deploy_transport_cleanup_private_upload() {
     target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
     jq -e --arg path "$temporary" '.runtimeRoot as $root |
       ($path | startswith($root + "/.hvo-deploy/uploads/") and
-        (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))' \
+        (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|transient-confirm|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))' \
       <<< "$target" >/dev/null || return 1
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$temporary" 2>/dev/null <<'REMOTE'
 set -euo pipefail
@@ -760,6 +760,23 @@ chmod 600 "$derived"
 REMOTE
 }
 
+deploy_transport_derive_review_headers() {
+    local ssh_host="$1" base_path="$2" derived_path="$3" key="$4" etag="$5"
+    [[ "$key" =~ ^[A-Za-z0-9._:-]{1,128}$ && "$etag" =~ ^\"[A-Za-z0-9_-]+\"$ ]] || return 1
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$base_path" "$derived_path" "$key" "$etag" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+base=$1; derived=$2; key=$3; etag=$4
+[[ "$base" == /* && "$derived" == /* && "$base" != "$derived" && -f "$base" && ! -L "$base" && "$(stat -c '%h:%a' "$base")" == "1:600" ]] || exit 90
+[[ ! -e "$derived" && ! -L "$derived" ]] || exit 91
+[[ "$(grep -Ec '^(Idempotency-Key|If-Match):' "$base" || true)" == 0 && "$(grep -Ec '^[A-Za-z0-9-]+: .+$' "$base" || true)" -ge 1 ]] || exit 92
+umask 077
+cp -- "$base" "$derived"
+printf 'Idempotency-Key: %s\nIf-Match: %s\n' "$key" "$etag" >> "$derived"
+chmod 600 "$derived"
+[[ "$(grep -Fxc "Idempotency-Key: $key" "$derived")" == 1 && "$(grep -Fxc "If-Match: $etag" "$derived")" == 1 ]] || exit 93
+REMOTE
+}
+
 deploy_transport_remove_private_files() {
     local ssh_host="$1"
     shift
@@ -770,6 +787,17 @@ for path in "$@"; do
   if [[ -e "$path" || -L "$path" ]]; then [[ -f "$path" && ! -L "$path" ]] || exit 91; rm -f -- "$path"; fi
   [[ ! -e "$path" && ! -L "$path" ]] || exit 92
 done
+REMOTE
+}
+
+deploy_transport_remove_campaign_directory() {
+    local ssh_host="$1" path="$2"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$path" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+path=$1
+[[ "$path" == /*/.hvo-deploy/campaign-[a-z0-9]* && "$path" != *//* && "$path" != */../* && "$path" != */./* ]] || exit 90
+if [[ -e "$path" || -L "$path" ]]; then [[ -d "$path" && ! -L "$path" ]] || exit 91; rm -rf -- "$path"; fi
+[[ ! -e "$path" && ! -L "$path" ]]
 REMOTE
 }
 

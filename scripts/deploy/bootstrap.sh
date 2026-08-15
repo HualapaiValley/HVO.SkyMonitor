@@ -445,6 +445,8 @@ deploy_run_bootstrap() {
         deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__AgentId "$device_id" || return 1
         deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__ProvisioningStartupGate__Enabled false || return 1
         deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__CaptureDistribution__UploadEnabled true || return 1
+        deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__TransientDetection__Mode "$(jq -r '.deployment.transient.mode' "$inventory")" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__TransientDetection__Required "$(jq -r '.deployment.transient.mode != "Off"' "$inventory")" || return 1
         project="$(jq -r '.deployment.resources.project' "$inventory")"; context="$(jq -r '.dockerContext' <<< "$target")"; env_file="$state_dir/up-rendered/$name.env"
         deploy_up_compose_mutation "$target" "$context" "$project-$name" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" up -d --force-recreate cameraagent || return 1
         deploy_transport_http_ready "$(jq -r '.sshHost' <<< "$target")" "$endpoint/health" || return 1
@@ -479,6 +481,18 @@ deploy_run_bootstrap() {
           '.targets = ([.targets[] | select(.target != $target)] + [{target:$target,status:"ready",continuity:$continuity}])' <<< "$DEPLOY_BOOTSTRAP_JSON")"
         deploy_bootstrap_publish
     done < <(jq -c '.cameraAgents[]' "$inventory")
+
+    # Central processing starts only after every agent acknowledges its final
+    # identity, upload, rig, and transient configuration.
+    deploy_up_stage_value "$logic" "$render_root" "$logic_root/.hvo-deploy/up-$run_id/runtime-secrets" \
+      CentralTransient__Mode "$(jq -r '.deployment.transient.mode' "$inventory")" || return 1
+    deploy_up_stage_value "$logic" "$render_root" "$logic_root/.hvo-deploy/up-$run_id/runtime-secrets" \
+      TransientPayloadRelease__Enabled "$(jq -r '.deployment.transient.mode != "Off"' "$inventory")" || return 1
+    project="$(jq -r '.deployment.resources.project' "$inventory")-logic"; context="$(jq -r '.dockerContext' <<< "$logic")"
+    env_file="$state_dir/up-rendered/$(jq -r '.name' <<< "$logic").env"
+    deploy_up_compose_mutation "$logic" "$context" "$project" "$env_file" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" \
+      up -d --force-recreate logichost || return 1
+    deploy_transport_http_ready "$(jq -r '.sshHost' <<< "$logic")" "$(jq -r '.internalEndpoint' <<< "$logic")/health" || return 1
     deploy_transport_reconcile_private_uploads strict || return 1
     deploy_bootstrap_cleanup_private_remote strict
     [[ "${DEPLOY_TEST_FAILPOINT:-}" != abrupt-after-bootstrap-cleanup ]] || exit 75

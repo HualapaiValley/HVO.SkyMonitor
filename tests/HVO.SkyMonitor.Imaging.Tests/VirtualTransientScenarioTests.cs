@@ -72,6 +72,134 @@ public sealed class VirtualTransientScenarioTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void Recurrence_ProducesRestartStableBoundedScheduleAndOpaqueIdentities()
+    {
+        var definition = CreateRecurringDefinition();
+        var first = new VirtualTransientScenario(definition);
+        var second = new VirtualTransientScenario(definition with { ScenarioId = "renamed-by-operator" });
+
+        var firstEvents = first.EnumerateEvents(Epoch, TimeSpan.FromMinutes(10));
+        var secondEvents = second.EnumerateEvents(Epoch, TimeSpan.FromMinutes(10));
+
+        CollectionAssert.AreEqual(firstEvents.ToArray(), secondEvents.ToArray());
+        Assert.HasCount(16, firstEvents);
+        Assert.IsTrue(firstEvents.All(static item => item.EventId.StartsWith("evt-", StringComparison.Ordinal)));
+        Assert.IsFalse(firstEvents.Any(static item =>
+            item.EventId.Contains("meteor", StringComparison.OrdinalIgnoreCase) ||
+            item.EventId.Contains("fireball", StringComparison.OrdinalIgnoreCase)));
+        for (var index = 1; index < firstEvents.Count; index++)
+        {
+            var interval = firstEvents[index].AnchorUtc - firstEvents[index - 1].AnchorUtc;
+            Assert.IsTrue(interval >= TimeSpan.FromSeconds(20));
+            Assert.IsTrue(interval <= TimeSpan.FromSeconds(40));
+        }
+        Assert.AreNotEqual(
+            firstEvents[0].EventId,
+            new VirtualTransientScenario(definition with { Seed = definition.Seed + 1 })
+                .EnumerateEvents(Epoch, TimeSpan.FromMinutes(10))[0].EventId);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task EnumerateEvents_AndRenderContext_AttributeInvalidArguments()
+    {
+        var scenario = new VirtualTransientScenario(CreateRecurringDefinition());
+        var start = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            scenario.EnumerateEvents(default, TimeSpan.FromMinutes(1)));
+        Assert.AreEqual("startUtc", start.ParamName);
+        var startOffset = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            scenario.EnumerateEvents(Epoch.ToOffset(TimeSpan.FromHours(-7)), TimeSpan.FromMinutes(1)));
+        Assert.AreEqual("startUtc", startOffset.ParamName);
+        var duration = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            scenario.EnumerateEvents(Epoch, TimeSpan.FromMinutes(-1)));
+        Assert.AreEqual("duration", duration.ParamName);
+        var lookahead = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            scenario.EnumerateEvents(Epoch, TimeSpan.FromMinutes(11)));
+        Assert.AreEqual("duration", lookahead.ParamName);
+
+        var scene = await SceneTestFactory.CreateEmptyAsync(32, 32, 5).ConfigureAwait(false);
+        var layout = new ImageLayout(32, 32, CameraPixelFormat.Mono16, 64);
+        var contextStart = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualTransientSignalRenderer.Render(scene, layout,
+                new VirtualTransientRenderContext(scenario, default, TimeSpan.FromSeconds(1)), 10_000, 0.6, 3));
+        Assert.AreEqual("IntegrationStartUtc", contextStart.ParamName);
+        var contextDuration = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualTransientSignalRenderer.Render(scene, layout,
+                new VirtualTransientRenderContext(scenario, Epoch, TimeSpan.FromHours(25)), 10_000, 0.6, 3));
+        Assert.AreEqual("IntegrationDuration", contextDuration.ParamName);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task SignalRenderer_RecurringPixelsAreStableAcrossRestartAndQueryOrder()
+    {
+        var definition = CreateRecurringDefinition();
+        var firstScenario = new VirtualTransientScenario(definition);
+        var target = firstScenario.EnumerateEvents(Epoch, TimeSpan.FromMinutes(10))[3];
+        var scene = await SceneTestFactory.CreateEmptyAsync(32, 32, 5).ConfigureAwait(false);
+        var layout = new ImageLayout(32, 32, CameraPixelFormat.Mono16, 64);
+
+        _ = VirtualTransientSignalRenderer.Render(
+            scene, layout, new VirtualTransientRenderContext(firstScenario, target.AnchorUtc.AddMinutes(1), TimeSpan.FromSeconds(1)),
+            10_000, 0.6, 3);
+        var first = VirtualTransientSignalRenderer.Render(
+            scene, layout, new VirtualTransientRenderContext(firstScenario, target.AnchorUtc, TimeSpan.FromSeconds(2)),
+            10_000, 0.6, 3);
+        var second = VirtualTransientSignalRenderer.Render(
+            scene, layout, new VirtualTransientRenderContext(new VirtualTransientScenario(definition), target.AnchorUtc, TimeSpan.FromSeconds(2)),
+            10_000, 0.6, 3);
+
+        CollectionAssert.AreEqual(first.Pixels.ToArray(), second.Pixels.ToArray());
+        CollectionAssert.AreEqual(first.Geometry.ToArray(), second.Geometry.ToArray());
+        Assert.IsTrue(first.ActivePixelCount > 0);
+        Assert.StartsWith("evt-", first.Geometry[0].PrimitiveId, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void Recurrence_RejectsUnboundedAndMalformedDefinitions()
+    {
+        var definition = CreateRecurringDefinition();
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => (definition with
+        {
+            Recurrence = definition.Recurrence! with { MinimumIntervalSeconds = 19 }
+        }).Validate());
+        Assert.ThrowsExactly<ArgumentException>(() => (definition with
+        {
+            Recurrence = definition.Recurrence! with
+            {
+                Profiles = [definition.Recurrence.Profiles[0] with
+                {
+                    SkyTracks = [definition.Recurrence.Profiles[0].SkyTracks[0] with
+                    {
+                        Keyframes =
+                        [
+                            definition.Recurrence.Profiles[0].SkyTracks[0].Keyframes[0] with { OffsetSeconds = 1 },
+                            definition.Recurrence.Profiles[0].SkyTracks[0].Keyframes[1]
+                        ]
+                    }]
+                }]
+            }
+        }).Validate());
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => (definition with
+        {
+            Recurrence = definition.Recurrence! with
+            {
+                MinimumIntervalSeconds = 20,
+                MaximumIntervalSeconds = 20,
+                EventCount = 100,
+                MaximumLookaheadSeconds = 604_800,
+                Profiles = [definition.Recurrence.Profiles[0] with
+                {
+                    SkyTracks = Enumerable.Range(0, 4).Select(index =>
+                        definition.Recurrence.Profiles[0].SkyTracks[0] with { PrimitiveId = $"p-{index}" }).ToArray()
+                }]
+            }
+        }).Validate());
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task SignalRenderer_ClipsExposureAndSeparatesOpticalFromSensorSignal()
     {
         var scene = await SceneTestFactory.CreateEmptyAsync(16, 16, 5).ConfigureAwait(false);
@@ -307,5 +435,83 @@ public sealed class VirtualTransientScenarioTests
                 ]
             }
         ]
+    };
+
+    private static VirtualTransientScenarioDefinition CreateRecurringDefinition() => new()
+    {
+        ScenarioId = "recurring-fixture",
+        Seed = 331,
+        EpochUtc = Epoch,
+        TemporalSampleCount = 4,
+        Recurrence = new VirtualTransientRecurrenceDefinition
+        {
+            MinimumIntervalSeconds = 20,
+            MaximumIntervalSeconds = 40,
+            EventCount = 16,
+            MaximumLookaheadSeconds = 600,
+            Profiles =
+            [
+                new VirtualTransientRecurringProfile
+                {
+                    Weight = 3,
+                    SkyTracks =
+                    [
+                        new VirtualTransientSkyTrack
+                        {
+                            PrimitiveId = "p-001",
+                            Keyframes =
+                            [
+                                new VirtualTransientSkyKeyframe
+                                {
+                                    OffsetSeconds = 0,
+                                    AltitudeDegrees = 80,
+                                    AzimuthDegrees = 340,
+                                    Magnitude = -2,
+                                    AngularWidthDegrees = 0.2
+                                },
+                                new VirtualTransientSkyKeyframe
+                                {
+                                    OffsetSeconds = 2,
+                                    AltitudeDegrees = 80,
+                                    AzimuthDegrees = 20,
+                                    Magnitude = -2,
+                                    AngularWidthDegrees = 0.2
+                                }
+                            ]
+                        }
+                    ]
+                },
+                new VirtualTransientRecurringProfile
+                {
+                    Weight = 1,
+                    SkyTracks =
+                    [
+                        new VirtualTransientSkyTrack
+                        {
+                            PrimitiveId = "p-002",
+                            Keyframes =
+                            [
+                                new VirtualTransientSkyKeyframe
+                                {
+                                    OffsetSeconds = 0,
+                                    AltitudeDegrees = 75,
+                                    AzimuthDegrees = 250,
+                                    Magnitude = -8,
+                                    AngularWidthDegrees = 0.35
+                                },
+                                new VirtualTransientSkyKeyframe
+                                {
+                                    OffsetSeconds = 3,
+                                    AltitudeDegrees = 78,
+                                    AzimuthDegrees = 290,
+                                    Magnitude = -6,
+                                    AngularWidthDegrees = 0.3
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
     };
 }

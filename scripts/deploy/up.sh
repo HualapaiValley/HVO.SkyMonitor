@@ -150,11 +150,14 @@ deploy_up_stage_target() {
             deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__Root /app/catalog || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__RequiredPackageKind "$(deploy_up_catalog_required_kind "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Smtp__Host "$(jq -r '.deployment.services.smtp.host' "$inventory")" || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" Smtp__Port "$(jq -r '.deployment.services.smtp.port' "$inventory")" || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" Smtp__Port "$(jq -r '.deployment.services.smtp.ports[0]' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__Mode ClientCredentials || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__ServiceUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__ClientCredentials__ClientId "$(jq -r '.deployment.deviceBootstrap.clientId' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Deployment__Mode "$mode" || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" CentralTransient__Mode Off || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" CentralDerivativeWorker__Enabled true || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" TransientPayloadRelease__Enabled false || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" ReverseProxy__Enabled "$(jq -r '(.trustedProxyAddresses | length) > 0' <<< "$target")" || return 1
             while IFS= read -r value; do
                 key="ReverseProxy__TrustedProxies__$(jq -r '.index' <<< "$value")"
@@ -201,6 +204,7 @@ deploy_up_stage_target() {
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__RawIngressRoot /app/data/raw || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__ProvisioningStartupGate__Enabled true || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CaptureDistribution__UploadEnabled false || return 1
+        deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__TransientDetection__Mode Off || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CentralIntegration__Mode Enabled || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" SkyMonitor__BaseUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" SkyMonitor__PublicBaseUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
@@ -319,7 +323,8 @@ deploy_run_up() {
         (umask 077; jq -r --arg config "$DEPLOY_UP_CONFIG_ROOT" --arg state "$DEPLOY_UP_STATE_ROOT" '
           ["HVO_CONFIG_ROOT="+$config,"HVO_STATE_ROOT="+$state,
            "SQLSERVER_PORT="+(.deployment.services.sql.port|tostring),"REDIS_PORT="+(.deployment.services.redis.port|tostring),
-           "MINIO_PORT="+(.deployment.services.minio.port|tostring),"SMTP_PORT="+(.deployment.services.smtp.port|tostring),
+            "MINIO_PORT="+(.deployment.services.minio.port|tostring),"SMTP_PORT="+(.deployment.services.smtp.ports[0]|tostring),
+            "MAILPIT_HTTP_PORT="+((.deployment.services.smtp.ports[1] // 0)|tostring),
            "SQLSERVER_IMAGE="+.deployment.services.images.sqlServer,"REDIS_IMAGE="+.deployment.services.images.redis,
             "MINIO_IMAGE="+.deployment.services.images.minio,"MINIO_CLIENT_IMAGE="+.deployment.services.images.minioClient,"MAILPIT_IMAGE="+(.deployment.services.images.mailpit // "unused"),
             "SQL_DATABASE="+.deployment.services.sql.database,"SQL_ADMIN_USER="+.deployment.services.sql.adminUser,
@@ -353,7 +358,8 @@ deploy_run_up() {
             target="$(jq -c '.logicHost' "$inventory")"; ssh="$(jq -r '.sshHost' <<< "$target")"
             [[ "$(deploy_transport_ssh_tcp "$ssh" "$(jq -r '.host' <<< "$endpoint")" "$(jq -r '.port' <<< "$endpoint")")" == reachable ]] ||
               { deploy_fail up existing-service unreachable; return 1; }
-        done < <(jq -c '.deployment.services | [.sql,.redis,.minio,.smtp][]' "$inventory")
+        done < <(jq -c '.deployment.services as $services |
+          [$services.sql,$services.redis,$services.minio,($services.smtp + {port:$services.smtp.ports[0]})][]' "$inventory")
         DEPLOY_UP_JSON="$(jq -c '.resources = ([.resources[] | select(.kind != "existing-services")] + [{kind:"existing-services",status:"validated"}])' <<< "$DEPLOY_UP_JSON")"
     fi
     target="$(jq -c '.logicHost' "$inventory")"; name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"

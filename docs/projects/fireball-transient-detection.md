@@ -261,6 +261,23 @@ ordinary raw and preview outputs; end-to-end tests never inject a perfect privat
 line directly into the detector buffer or expose expected labels to production
 detection code.
 
+Recurring scenarios remain finite and explicitly bounded. A versioned recurrence
+defines a UTC epoch, event count, minimum and maximum interval, maximum query
+lookahead, generic weighted optical profiles, and a seed. Events are addressed
+by ordinal through domain-separated SHA-256 inputs and integer tick arithmetic;
+no mutable cursor or generated schedule is persisted. The renderer expands only
+events overlapping the requested exposure and enforces the existing primitive
+and keyframe work limits against worst-case lookahead. The same parameters and
+capture UTC therefore produce the same opaque event identities and pixels after
+restart or out-of-order capture.
+
+Recurring profile and primitive identities must not encode meteor, fireball,
+expected classification, review outcome, or notification eligibility. Raw scene
+provenance retains only generic reconstruction parameters. Semantic expectations
+remain in private test/campaign oracles and are never copied into detector input
+or detector receipts. Issue [#331](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/331)
+owns the recurring deployment slice.
+
 Issue [#61](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/61) owns this
 work.
 
