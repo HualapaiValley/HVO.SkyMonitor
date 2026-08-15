@@ -300,8 +300,11 @@ public sealed class VirtualTransientScenario
         {
             return Array.Empty<VirtualTransientScheduledEvent>();
         }
-        if (startUtc == default || startUtc.Offset != TimeSpan.Zero || duration < TimeSpan.Zero ||
-            duration > TimeSpan.FromSeconds(recurrence.MaximumLookaheadSeconds))
+        if (startUtc == default || startUtc.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startUtc));
+        }
+        if (duration < TimeSpan.Zero || duration > TimeSpan.FromSeconds(recurrence.MaximumLookaheadSeconds))
         {
             throw new ArgumentOutOfRangeException(nameof(duration));
         }
@@ -349,8 +352,11 @@ public sealed record VirtualTransientRenderContext(
     internal void Validate()
     {
         ArgumentNullException.ThrowIfNull(Scenario);
-        if (IntegrationStartUtc == default || IntegrationStartUtc.Offset != TimeSpan.Zero ||
-            IntegrationDuration < TimeSpan.Zero || IntegrationDuration > TimeSpan.FromHours(24))
+        if (IntegrationStartUtc == default || IntegrationStartUtc.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(IntegrationStartUtc));
+        }
+        if (IntegrationDuration < TimeSpan.Zero || IntegrationDuration > TimeSpan.FromHours(24))
         {
             throw new ArgumentOutOfRangeException(nameof(IntegrationDuration));
         }

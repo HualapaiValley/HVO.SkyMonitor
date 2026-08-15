@@ -101,6 +101,36 @@ public sealed class VirtualTransientScenarioTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task EnumerateEvents_AndRenderContext_AttributeInvalidArguments()
+    {
+        var scenario = new VirtualTransientScenario(CreateRecurringDefinition());
+        var start = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            scenario.EnumerateEvents(default, TimeSpan.FromMinutes(1)));
+        Assert.AreEqual("startUtc", start.ParamName);
+        var startOffset = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            scenario.EnumerateEvents(Epoch.ToOffset(TimeSpan.FromHours(-7)), TimeSpan.FromMinutes(1)));
+        Assert.AreEqual("startUtc", startOffset.ParamName);
+        var duration = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            scenario.EnumerateEvents(Epoch, TimeSpan.FromMinutes(-1)));
+        Assert.AreEqual("duration", duration.ParamName);
+        var lookahead = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            scenario.EnumerateEvents(Epoch, TimeSpan.FromMinutes(11)));
+        Assert.AreEqual("duration", lookahead.ParamName);
+
+        var scene = await SceneTestFactory.CreateEmptyAsync(32, 32, 5).ConfigureAwait(false);
+        var layout = new ImageLayout(32, 32, CameraPixelFormat.Mono16, 64);
+        var contextStart = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualTransientSignalRenderer.Render(scene, layout,
+                new VirtualTransientRenderContext(scenario, default, TimeSpan.FromSeconds(1)), 10_000, 0.6, 3));
+        Assert.AreEqual("IntegrationStartUtc", contextStart.ParamName);
+        var contextDuration = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            VirtualTransientSignalRenderer.Render(scene, layout,
+                new VirtualTransientRenderContext(scenario, Epoch, TimeSpan.FromHours(25)), 10_000, 0.6, 3));
+        Assert.AreEqual("IntegrationDuration", contextDuration.ParamName);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task SignalRenderer_RecurringPixelsAreStableAcrossRestartAndQueryOrder()
     {
         var definition = CreateRecurringDefinition();

@@ -20,8 +20,9 @@ public sealed class DeploymentAsi676ProfileTests
     private static readonly ObservatoryLocation Location = new(35.5599378, -113.9119818, 520, "America/Phoenix");
     private static readonly JsonSerializerOptions StrictJsonOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true,
-        UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow
+        PropertyNameCaseInsensitive = false,
+        UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow,
+        AllowDuplicateProperties = false
     };
 
     [TestMethod]
