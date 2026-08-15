@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -29,7 +30,7 @@ public sealed class CaptureProcessingTelemetryTests
     [TestMethod]
     public void RecordsBoundedGraphNodeAndOutputSignals()
     {
-        var measurements = new List<(string Name, IReadOnlyList<string> Tags)>();
+        var measurements = new ConcurrentQueue<(string Name, IReadOnlyList<string> Tags)>();
         using var listener = new MeterListener
         {
             InstrumentPublished = (instrument, meterListener) =>
@@ -41,9 +42,9 @@ public sealed class CaptureProcessingTelemetryTests
             }
         };
         listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) =>
-            measurements.Add((instrument.Name, GetTagNames(tags))));
+            measurements.Enqueue((instrument.Name, GetTagNames(tags))));
         listener.SetMeasurementEventCallback<double>((instrument, _, tags, _) =>
-            measurements.Add((instrument.Name, GetTagNames(tags))));
+            measurements.Enqueue((instrument.Name, GetTagNames(tags))));
         listener.Start();
         using var telemetry = new CaptureProcessingTelemetry();
         var step = new TestStep();
@@ -73,12 +74,13 @@ public sealed class CaptureProcessingTelemetryTests
         telemetry.RecordRecovered(FrameArtifactRole.Preview, "display");
         telemetry.RecordGraph("completed", TimeSpan.FromMilliseconds(10));
 
-        var names = measurements.Select(static measurement => measurement.Name).ToHashSet(StringComparer.Ordinal);
+        var snapshot = measurements.ToArray();
+        var names = snapshot.Select(static measurement => measurement.Name).ToHashSet(StringComparer.Ordinal);
         CollectionAssert.IsSubsetOf(ExpectedInstruments, names.ToArray());
         var allowedTags = new HashSet<string>(
             ["step", "recipe", "role", "variant", "required", "outcome", "reason"],
             StringComparer.Ordinal);
-        Assert.IsTrue(measurements.SelectMany(static measurement => measurement.Tags).All(allowedTags.Contains));
+        Assert.IsTrue(snapshot.SelectMany(static measurement => measurement.Tags).All(allowedTags.Contains));
     }
 
     private static string[] GetTagNames(ReadOnlySpan<KeyValuePair<string, object?>> tags)
