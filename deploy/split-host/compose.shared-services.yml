@@ -4,6 +4,7 @@ services:
     user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"
     environment:
       ACCEPT_EULA: "Y"
+      HOME: /var/opt/mssql
     command: ["/bin/bash", "-c", "export MSSQL_SA_PASSWORD=$$(cat /run/hvo-secrets/SQLSERVER_PASSWORD); exec /opt/mssql/bin/sqlservr"]
     ports: ["${SQLSERVER_PORT:?port required}:1433"]
     volumes:

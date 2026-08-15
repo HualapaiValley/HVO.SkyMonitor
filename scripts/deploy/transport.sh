@@ -373,6 +373,19 @@ done
 REMOTE
 }
 
+deploy_transport_remote_seed_state() {
+    local ssh_host="$1"
+    shift
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+for dir in "$@"; do
+  [[ "$dir" == /* && "$dir" != / && "$dir" != *//* && "$dir" != */../* && "$dir" != */./* ]] || exit 90
+  [[ -d "$dir" && ! -L "$dir" ]] || exit 91
+  : > "$dir/.hvo-seed"
+done
+REMOTE
+}
+
 deploy_transport_catalog_install() {
     local ssh_host="$1"
     shift
