@@ -2503,6 +2503,13 @@ for service in sql redis minio; do
 done
 test "$(grep -Fc 'user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"' \
   "$REPO_ROOT/deploy/split-host/compose.shared-services.yml")" -eq 6
+sqlserver_block="$(sed -n '/^  sqlserver:/,/^  sql-provision:/p' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml")"
+grep -Fq 'user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"' <<< "$sqlserver_block"
+grep -Fq 'HOME: /var/opt/mssql' <<< "$sqlserver_block"
+grep -Fq 'dir /data' "$shared_runtime_root/.hvo-deploy/up-$deploy_services/private/redis.conf"
+for service in sql redis minio; do
+  test -f "$shared_runtime_root/application/$service/.hvo-seed"
+done
 test "$(grep -Fc 'o: bind' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml")" -eq 3
 grep -Fq '127.0.0.1:${MAILPIT_HTTP_PORT:?Mailpit HTTP port required}:8025' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"
 for service in sql redis minio; do

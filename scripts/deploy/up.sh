@@ -116,6 +116,7 @@ deploy_up_stage_target() {
       "$config_root/certificates" "$config_root/sql" "$config_root/minio" "$config_root/minio-output" "$config_root/private" "$config_root/private/mc" "$state_root" \
       "$state_root/data-protection" "$state_root/identity" "$state_root/provisioning" "$state_root/raw" "$state_root/archive" \
       "$state_root/sql" "$state_root/redis" "$state_root/minio" || return 1
+    deploy_transport_remote_seed_state "$ssh" "$state_root/sql" "$state_root/redis" "$state_root/minio" || return 1
     deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
     if [[ "$component" == logicHost ]]; then while IFS= read -r mapping; do
         reference="$(jq -r '.reference' <<< "$mapping")"; key="$(jq -r '.key' <<< "$mapping")"
@@ -300,7 +301,7 @@ deploy_run_up() {
           "$(jq -r '.deployment.services.redis.secretReference' "$inventory")" REDIS_RUNTIME_PASSWORD || { deploy_fail up services secret-stage-failed; return 1; }
         value="$(deploy_secret_value "$(jq -r '.secretSource.path' "$inventory")" "$(jq -r '.deployment.services.redis.adminSecretReference' "$inventory")")" || return 1
         value="${value//\\/\\\\}"; value="${value//\"/\\\"}"
-        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/private" redis.conf $'appendonly yes\n'"requirepass \"$value\""$'\n' || return 1
+        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/private" redis.conf $'appendonly yes\n'"requirepass \"$value\""$'\ndir /data\n' || return 1
         unset value
         deploy_transport_copy_private_file "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$ssh" "$DEPLOY_UP_CONFIG_ROOT/sql/provision.sh" || return 1
         deploy_transport_copy_private_file "$REPO_ROOT/deploy/sql/logichost-migration-role.sql" "$ssh" "$DEPLOY_UP_CONFIG_ROOT/sql/migration-role.sql" || return 1
