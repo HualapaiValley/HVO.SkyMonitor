@@ -561,6 +561,7 @@ if [[ "$url" == */api/internal/deployment/bootstrap ]]; then
   : > "${FAKE_HTTP_STATE:?}/device-$host.active"; : > "${FAKE_HTTP_STATE:?}/device-$host.active-no-evidence"
   if [[ "${DEPLOY_TEST_FAILPOINT:-}" != after-central-activation || -f "${FAKE_HTTP_STATE:?}/device-$host.recovered" ]]; then
     : > "${FAKE_HTTP_STATE:?}/$host.provisioned"; rm -f "${FAKE_HTTP_STATE:?}/device-$host.active-no-evidence"
+    printf 'Paused\n' > "${FAKE_HTTP_STATE:?}/$host.control-state"; printf '1\n' > "$FAKE_HTTP_STATE/$host.control-version"
   fi
   jq -cn --arg device "device-$host" '{deviceId:$device,devicePublicId:"33333333-3333-3333-3333-333333333333",
     observatoryId:"11111111-1111-1111-1111-111111111111",friendlyName:"Camera",issuedAtUtc:"2026-08-07T00:00:00Z",
@@ -568,7 +569,10 @@ if [[ "$url" == */api/internal/deployment/bootstrap ]]; then
   printf 200; exit 0
 fi
 if [[ "$url" == */api/internal/deployment/continuity* ]]; then
-  host="${FAKE_REMOTE_HOST:?}"; device="device-$host"; count_file="${FAKE_HTTP_STATE:?}/$host.count"; count=1
+  host="${FAKE_REMOTE_HOST:?}"; device="device-$host"; state_host="$host"
+  requested_device="${url#*/api/internal/devices/continuity/}"; requested_device="${requested_device%%\?*}"
+  [[ "$requested_device" != device-* ]] || state_host="${requested_device#device-}"
+  count_file="${FAKE_HTTP_STATE:?}/$state_host.count"; count=1
   if [[ "${FAKE_MEASURE_SEQUENCE_READ_FAIL:-}" == "$host" && -f "$FAKE_HTTP_STATE/$host.measure-running" && ! -f "$FAKE_HTTP_STATE/$host.sequence-read-failed" ]]; then
     : > "$FAKE_HTTP_STATE/$host.sequence-read-failed"; : > "$output"; printf 503; exit 0
   fi
@@ -580,7 +584,10 @@ if [[ "$url" == */api/internal/deployment/continuity* ]]; then
       [[ "$stage" != warmup ]] || increment=1
       [[ "$stage" != measured ]] || increment=10
     fi
-  else increment="${increment:-1}"; fi
+  else
+    control_state=Paused; [[ ! -f "$FAKE_HTTP_STATE/$state_host.control-state" ]] || control_state="$(<"$FAKE_HTTP_STATE/$state_host.control-state")"
+    increment=0; [[ "$control_state" != Running ]] || increment=1
+  fi
   [[ ! -f "$count_file" ]] || count=$(( $(<"$count_file") + increment )); printf '%s\n' "$count" > "$count_file"
   printf -v acknowledged '2026-08-07T00:00:%02dZ' "$count"
   active_config_sha="$(printf 'B%.0s' {1..64})"; [[ ! -f "${FAKE_HTTP_STATE:?}/$host.active-config-sha" ]] || active_config_sha="$(<"$FAKE_HTTP_STATE/$host.active-config-sha")"
@@ -630,7 +637,10 @@ if [[ "$url" == */api/v1/operations/summary ]]; then
     reads=$((reads+1)); printf '%s\n' "$reads" > "$lease_reads"
     [[ "${FAKE_DOWN_LEASED_ONLY}" != delay || "$reads" -lt 3 ]] || leased=0
   fi
-  jq -cn --arg device "$device" --argjson samples "$measurement_samples" --argjson timings "$timings" --arg controlState "$control_state" --argjson controlVersion "$control_version" --argjson leased "$leased" '
+  processing_availability=Healthy; processing_terminal=0
+  [[ "${FAKE_BOOTSTRAP_OPERATIONS_UNHEALTHY:-}" != "$host" ]] || { processing_availability=Unhealthy; processing_terminal=1; }
+  jq -cn --arg device "$device" --argjson samples "$measurement_samples" --argjson timings "$timings" --arg controlState "$control_state" --argjson controlVersion "$control_version" --argjson leased "$leased" \
+    --arg processingAvailability "$processing_availability" --argjson processingTerminal "$processing_terminal" '
     def queue:{pendingCount:0,pendingBytes:0,leasedCount:$leased,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null};
     {configuration:{value:{agentId:$device,moduleType:"VirtualSky",centralIntegration:"Enabled"}},captureControl:{value:{state:$controlState,version:$controlVersion,isInitialized:true}},
      captureTelemetry:{value:{sampleCount:$samples,latestCaptureStartedUtc:(if $samples == 0 then null else "2026-08-07T00:00:01Z" end),latestMode:(if $samples == 0 then null else "Light" end),latestExposureMilliseconds:(if $samples == 0 then null else 1 end),
@@ -639,7 +649,7 @@ if [[ "$url" == */api/v1/operations/summary ]]; then
      captureRuntime:{value:{timings:$timings}},
       rawIngress:{value:(queue + {availability:"Accepting"})},captureLanes:{value:{availability:"Healthy",lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,
          leasedCount:$leased,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]}],pendingCount:0,pendingBytes:0,leasedCount:$leased,retryCount:0,quarantineCount:0,oldestPendingUtc:null}},
-      captureProcessing:{value:(queue + {availability:"Healthy"})},artifactOutbox:{value:(queue + {availability:"Healthy"})},
+       captureProcessing:{value:(queue + {availability:$processingAvailability,terminalCount:$processingTerminal})},artifactOutbox:{value:(queue + {availability:"Healthy"})},
       transientWorker:{value:{availability:"Disabled",pendingFrames:0,pendingCandidates:0}},heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}}' > "$output"
   printf 200; exit 0
 fi
@@ -647,7 +657,7 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   header_path=; for ((i=0; i<${#args[@]}; i++)); do [[ "${args[$i]}" != --header || "${args[$((i+1))]}" != @* ]] || header_path="${args[$((i+1))]#@}"; done
   key=; while IFS= read -r header_line; do [[ "$header_line" != 'Idempotency-Key: '* ]] || key="${header_line#Idempotency-Key: }"; done < "$header_path"
   id_count="$(grep -c '^Idempotency-Key:' "$header_path")"; token_count="$(grep -c '^RequestVerificationToken:' "$header_path")"
-  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(down-[a-z0-9-]+-[a-z0-9-]+-pause-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+|smoke-[a-z0-9-]+-[a-z0-9-]+-(resume|pause)-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
+  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(bootstrap-[a-z0-9-]+-[a-z0-9-]+-resume-[0-9]+|down-[a-z0-9-]+-[a-z0-9-]+-pause-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+|smoke-[a-z0-9-]+-[a-z0-9-]+-(resume|pause)-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
   action="${url##*/}"; desired=Running; [[ "$action" != pause ]] || desired=Paused
   [[ "$action" != pause || "${FAKE_PAUSE_CONFLICT:-false}" != true ]] || { : > "$output"; printf 409; exit 0; }
   host="${FAKE_REMOTE_HOST:?}"
@@ -742,12 +752,8 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
   fi
   from="${url#*fromCaptureSequence=}"; [[ "$from" != "$url" ]] || from=0; from="${from%%&*}"
   to="${url#*toCaptureSequence=}"; [[ "$to" != "$url" ]] || to=-1; to="${to%%&*}"
-  count_file="${FAKE_HTTP_STATE:?}/$device.central-count"; count=1
-  if (( from > 0 )); then
-    agent="${device#device-}"; count="$(<"$FAKE_HTTP_STATE/$agent.count")"
-  else
-    [[ ! -f "$count_file" ]] || count=$(( $(<"$count_file") + 1 )); printf '%s\n' "$count" > "$count_file"
-  fi
+  agent="${device#device-}"; count_file="${FAKE_HTTP_STATE:?}/$agent.count"; count=0
+  [[ ! -f "$count_file" ]] || count="$(<"$count_file")"
   window='[]'
   if (( from > 0 && to >= from )); then
     upper=$count; (( upper <= to )) || upper=$to
@@ -2091,10 +2097,16 @@ for bootstrap_failpoint in after-envelope after-central-activation after-local-s
   fi
   jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_case-state/bootstrap-ledger.json" >/dev/null
 done
+if FAKE_BOOTSTRAP_OPERATIONS_UNHEALTHY=east run_deploy_mode bootstrap "$deploy_case" isolated > "$TEMP_DIR/bootstrap-operations-unhealthy.log" 2>&1; then
+  fail 'Bootstrap accepted unhealthy required processing.'
+fi
+grep -Fq 'first-fleet-acknowledgement-timeout' "$TEMP_DIR/bootstrap-operations-unhealthy.log"
 run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
 run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and (.targets | length) == 2 and all(.targets[];
-  .status == "ready" and .continuity.deviceId == .continuity.configuredAgentId and .continuity.lastFleetAcknowledgedUtc != null)' \
+  .status == "ready" and .continuity.deviceId == .continuity.configuredAgentId and .continuity.lastFleetAcknowledgedUtc != null and
+  .continuity.captureAcknowledgement.localSequenceAfter > .continuity.captureAcknowledgement.localSequenceBefore and
+  .continuity.captureAcknowledgement.centralSequenceAfter > .continuity.captureAcknowledgement.centralSequenceBefore)' \
   "$TEMP_DIR/output/$deploy_case-state/bootstrap-ledger.json" >/dev/null
 test "$(<"$east_config/secrets/CameraAgent__AgentId")" = device-east
 test "$(<"$east_config/secrets/CameraAgent__ProvisioningStartupGate__Enabled")" = false
@@ -2421,11 +2433,15 @@ for raw_mismatch in id checksum length; do
 done
 control_lines="$(grep -c '^control' "$LOG")"
 (( control_lines >= 12 )) || fail 'Measure did not issue multiple capture-control commands.'
-if grep '^control' "$LOG" | grep -Ev $'^[^\t]+\t[^\t]+-control[.]headers\t[^\t]+\t1\t1\tfalse$' >/dev/null; then
+if grep '^control' "$LOG" | grep -v $'\tdeploy-bootstrap-' | grep -Ev $'^[^\t]+\t[^\t]+-control[.]headers\t[^\t]+\t1\t1\tfalse$' >/dev/null; then
   fail 'A capture-control command did not use a fresh authenticated/antiforgery header with exactly one idempotency key.'
 fi
-if [[ "$(grep '^control' "$LOG" | cut -f2 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control header path was reused.'; fi
-if [[ "$(grep '^control' "$LOG" | cut -f3 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control idempotency key was reused.'; fi
+if grep '^control' "$LOG" | grep $'\tdeploy-bootstrap-' | grep -Ev $'^[^\t]+\t[^\t]+-control[.]headers\tdeploy-bootstrap-[a-z0-9-]+-resume-[0-9]+\t1\t1\t(false)$' >/dev/null; then
+  fail 'A bootstrap resume command did not use authenticated, antiforgery, and idempotency headers.'
+fi
+test "$(grep '^control' "$LOG" | grep -c $'\tdeploy-bootstrap-' || true)" -ge 2
+if [[ "$(grep '^control' "$LOG" | grep -v $'\tdeploy-bootstrap-' | cut -f2 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control header path was reused.'; fi
+if [[ "$(grep '^control' "$LOG" | grep -v $'\tdeploy-bootstrap-' | cut -f3 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control idempotency key was reused.'; fi
 exercise_phase_cleanup_recovery measure "$deploy_case" --workload W1
 exercise_phase_publication_recovery measure "$deploy_case" --workload W1
 exercise_phase_tampered_publication_rejection measure "$deploy_case" --workload W1
