@@ -637,7 +637,10 @@ if [[ "$url" == */api/v1/operations/summary ]]; then
     reads=$((reads+1)); printf '%s\n' "$reads" > "$lease_reads"
     [[ "${FAKE_DOWN_LEASED_ONLY}" != delay || "$reads" -lt 3 ]] || leased=0
   fi
-  jq -cn --arg device "$device" --argjson samples "$measurement_samples" --argjson timings "$timings" --arg controlState "$control_state" --argjson controlVersion "$control_version" --argjson leased "$leased" '
+  processing_availability=Healthy; processing_terminal=0
+  [[ "${FAKE_BOOTSTRAP_OPERATIONS_UNHEALTHY:-}" != "$host" ]] || { processing_availability=Unhealthy; processing_terminal=1; }
+  jq -cn --arg device "$device" --argjson samples "$measurement_samples" --argjson timings "$timings" --arg controlState "$control_state" --argjson controlVersion "$control_version" --argjson leased "$leased" \
+    --arg processingAvailability "$processing_availability" --argjson processingTerminal "$processing_terminal" '
     def queue:{pendingCount:0,pendingBytes:0,leasedCount:$leased,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null};
     {configuration:{value:{agentId:$device,moduleType:"VirtualSky",centralIntegration:"Enabled"}},captureControl:{value:{state:$controlState,version:$controlVersion,isInitialized:true}},
      captureTelemetry:{value:{sampleCount:$samples,latestCaptureStartedUtc:(if $samples == 0 then null else "2026-08-07T00:00:01Z" end),latestMode:(if $samples == 0 then null else "Light" end),latestExposureMilliseconds:(if $samples == 0 then null else 1 end),
@@ -646,7 +649,7 @@ if [[ "$url" == */api/v1/operations/summary ]]; then
      captureRuntime:{value:{timings:$timings}},
       rawIngress:{value:(queue + {availability:"Accepting"})},captureLanes:{value:{availability:"Healthy",lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,
          leasedCount:$leased,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]}],pendingCount:0,pendingBytes:0,leasedCount:$leased,retryCount:0,quarantineCount:0,oldestPendingUtc:null}},
-      captureProcessing:{value:(queue + {availability:"Healthy"})},artifactOutbox:{value:(queue + {availability:"Healthy"})},
+       captureProcessing:{value:(queue + {availability:$processingAvailability,terminalCount:$processingTerminal})},artifactOutbox:{value:(queue + {availability:"Healthy"})},
       transientWorker:{value:{availability:"Disabled",pendingFrames:0,pendingCandidates:0}},heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}}' > "$output"
   printf 200; exit 0
 fi
@@ -749,12 +752,8 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
   fi
   from="${url#*fromCaptureSequence=}"; [[ "$from" != "$url" ]] || from=0; from="${from%%&*}"
   to="${url#*toCaptureSequence=}"; [[ "$to" != "$url" ]] || to=-1; to="${to%%&*}"
-  count_file="${FAKE_HTTP_STATE:?}/$device.central-count"; count=1
-  if (( from > 0 )); then
-    agent="${device#device-}"; count="$(<"$FAKE_HTTP_STATE/$agent.count")"
-  else
-    [[ ! -f "$count_file" ]] || count=$(( $(<"$count_file") + 1 )); printf '%s\n' "$count" > "$count_file"
-  fi
+  agent="${device#device-}"; count_file="${FAKE_HTTP_STATE:?}/$agent.count"; count=0
+  [[ ! -f "$count_file" ]] || count="$(<"$count_file")"
   window='[]'
   if (( from > 0 && to >= from )); then
     upper=$count; (( upper <= to )) || upper=$to
@@ -2098,6 +2097,10 @@ for bootstrap_failpoint in after-envelope after-central-activation after-local-s
   fi
   jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_case-state/bootstrap-ledger.json" >/dev/null
 done
+if FAKE_BOOTSTRAP_OPERATIONS_UNHEALTHY=east run_deploy_mode bootstrap "$deploy_case" isolated > "$TEMP_DIR/bootstrap-operations-unhealthy.log" 2>&1; then
+  fail 'Bootstrap accepted unhealthy required processing.'
+fi
+grep -Fq 'first-fleet-acknowledgement-timeout' "$TEMP_DIR/bootstrap-operations-unhealthy.log"
 run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
 run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and (.targets | length) == 2 and all(.targets[];
