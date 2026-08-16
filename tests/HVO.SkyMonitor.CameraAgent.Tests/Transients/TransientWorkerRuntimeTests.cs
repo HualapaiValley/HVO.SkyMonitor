@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
@@ -8,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
@@ -172,6 +174,96 @@ public sealed class TransientWorkerRuntimeTests
                 Directory.Delete(root, recursive: true);
             }
         }
+    }
+
+    [TestMethod]
+    public async Task Edge_CandidateLimitCompletesFrameWithoutQuarantiningRequiredLane()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-candidate-limit", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
+            var cameraConfiguration = CreateConfiguration(width: 192, height: 192);
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
+            await StageVirtualFramesAsync(provider, cameraConfiguration, epoch, 7, candidateLimitFrame: true).ConfigureAwait(false);
+            var worker = provider.GetRequiredService<TransientWorkerService>();
+            for (var index = 0; index < 7; index++)
+            {
+                Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            }
+            var transientBacklog = (await provider.GetRequiredService<ICaptureLaneStore>()
+                .ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
+                .Single(static lane => lane.Lane == "transient");
+            var pendingCaptures = transientBacklog.PendingCaptures
+                ?? throw new AssertFailedException("Transient pending capture identities are required.");
+            CollectionAssert.AreEqual(
+                new long[] { 6, 7 },
+                pendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
+            Assert.IsTrue(pendingCaptures.All(static capture =>
+                capture.AgentId == "transient-runtime-agent"));
+            var operations = await provider.GetRequiredService<CameraAgentOperationsSummaryProvider>()
+                .GetAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(2L, operations.RawIngress.Value.PendingCount);
+            Assert.AreEqual(2L, operations.CaptureLanes.Value.PendingCount);
+            CollectionAssert.AreEqual(
+                new long[] { 6, 7 },
+                operations.CaptureLanes.Value.Lanes.Single(static lane => lane.Name == "transient")
+                    .PendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
+
+            using var connection = await OpenAsync(root).ConfigureAwait(false);
+            var reasons = await ScalarStringAsync(connection,
+                "SELECT COALESCE(group_concat(failure_reason, ','), 'none') FROM transient_worker_frames;")
+                .ConfigureAwait(false);
+            var candidateCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM transient_candidates;")
+                .ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM transient_worker_frames WHERE failure_reason = 'transient-extraction.candidate-limit' AND state = 'completed';")
+                .ConfigureAwait(false), $"{reasons}; candidates={candidateCount}");
+            Assert.AreEqual(0L, candidateCount);
+            Assert.AreEqual(0L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM transient_worker_frames WHERE state = 'quarantined';").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM transient_capture_work WHERE state = 'quarantined';").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM transient_capture_work w JOIN transient_worker_frames f USING(raw_capture_row_id) WHERE f.failure_reason = 'transient-extraction.candidate-limit' AND w.state = 'completed';")
+                .ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM raw_captures r JOIN transient_worker_frames f USING(raw_capture_row_id) WHERE f.failure_reason = 'transient-extraction.candidate-limit' AND r.retention_hold != 0;")
+                .ConfigureAwait(false));
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    public void Edge_OnlySceneContentLimitsCompleteWithoutQuarantine()
+    {
+        static TransientCandidateExtractionOutcome Outcome(string reason, string field) => new(
+            TransientCandidateExtractionStatus.LimitExceeded,
+            reason,
+            field,
+            null,
+            [],
+            0,
+            0,
+            0,
+            0);
+
+        Assert.IsTrue(TransientWorkerService.IsBoundedSceneLimit(Outcome(
+            TransientCandidateExtractionReasonCodes.CandidateLimit,
+            "options.maximumCandidates")));
+        Assert.IsTrue(TransientWorkerService.IsBoundedSceneLimit(Outcome(
+            TransientCandidateExtractionReasonCodes.CandidateLimit,
+            "descriptor")));
+        Assert.IsTrue(TransientWorkerService.IsBoundedSceneLimit(Outcome(
+            TransientCandidateExtractionReasonCodes.ResourceLimit,
+            "options.maximumForegroundPixels")));
+        Assert.IsFalse(TransientWorkerService.IsBoundedSceneLimit(Outcome(
+            TransientCandidateExtractionReasonCodes.ResourceLimit,
+            "target.input.descriptor.layout")));
     }
 
     [TestMethod]
@@ -988,7 +1080,8 @@ public sealed class TransientWorkerRuntimeTests
         ServiceProvider provider,
         CameraModuleConfig cameraConfiguration,
         DateTimeOffset epoch,
-        int frameCount = 5)
+        int frameCount = 5,
+        bool candidateLimitFrame = false)
     {
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1010,6 +1103,37 @@ public sealed class TransientWorkerRuntimeTests
                 new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null));
             var capture = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
             var frame = capture.Frame!;
+            if (candidateLimitFrame)
+            {
+                var width = cameraConfiguration.Rig.Sensor.WidthPixels;
+                var height = cameraConfiguration.Rig.Sensor.HeightPixels;
+                var strideBytes = checked(width * 2);
+                var pixels = new byte[checked(strideBytes * height)];
+                if (index == 4)
+                {
+                    for (var component = 0; component < 48; component++)
+                    {
+                        var column = component % 8;
+                        var row = component / 8;
+                        var horizontal = (column + row) % 2 == 0;
+                        for (var sample = 0; sample < 4; sample++)
+                        {
+                            var x = 32 + column * 16 + (horizontal ? sample + 1 : 3);
+                            var y = 48 + row * 16 + (horizontal ? 3 : sample + 1);
+                            BinaryPrimitives.WriteUInt16LittleEndian(
+                                new Span<byte>(pixels, y * strideBytes + x * 2, 2),
+                                10_000);
+                        }
+                    }
+                }
+                frame = frame with
+                {
+                    Width = width,
+                    Height = height,
+                    StrideBytes = strideBytes,
+                    PixelData = pixels
+                };
+            }
             var extra = new Dictionary<string, string>(frame.Metadata.Extra ?? new Dictionary<string, string>(), StringComparer.Ordinal)
             {
                 ["blackLevelAdu"] = "0",
@@ -1157,7 +1281,9 @@ public sealed class TransientWorkerRuntimeTests
 
     private static CameraModuleConfig CreateConfiguration(
         VirtualTransientScenarioDefinition? scenario = null,
-        VirtualCloudScenarioDefinition? cloudScenario = null)
+        VirtualCloudScenarioDefinition? cloudScenario = null,
+        int width = 64,
+        int height = 48)
     {
         var options = JsonSerializer.SerializeToElement(new
         {
@@ -1179,12 +1305,13 @@ public sealed class TransientWorkerRuntimeTests
             new CameraModuleDescriptor("VirtualSky", options),
             new CameraRigConfig(
                 new SensorProfile(
-                    "TransientRuntimeFixture", 64, 48, 5.86, SensorColorMode.Mono,
+                    "TransientRuntimeFixture", width, height, 5.86, SensorColorMode.Mono,
                     CameraPixelFormat.Mono16, SensorResponseMode.Monochrome,
                     SensorRecipeVersion: "transient-runtime-v1"),
                 new OpticsProfile(
                     "EquidistantFisheye", 0, 180, 0, LensKind.Fisheye,
-                    32, 24, 23, CalibrationVersion: "transient-runtime-optics-v1"),
+                    width / 2d, height / 2d, Math.Min(width, height) / 2d - 1,
+                    CalibrationVersion: "transient-runtime-optics-v1"),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
                     TimeSpan.FromSeconds(5),

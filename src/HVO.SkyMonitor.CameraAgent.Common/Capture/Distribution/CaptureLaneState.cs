@@ -15,8 +15,12 @@ public sealed record CaptureLaneBacklogSnapshot(
     long PendingBytes,
     DateTimeOffset? OldestPendingUtc,
     long LeasedCount,
+    long RetryCount,
     long QuarantineCount,
-    int PressureLevel);
+    int PressureLevel,
+    IReadOnlyList<CaptureLanePendingCaptureSnapshot> PendingCaptures);
+
+public sealed record CaptureLanePendingCaptureSnapshot(string AgentId, long CaptureSequence);
 
 public sealed record CaptureLaneSnapshot(
     CaptureLaneAvailability Availability,
@@ -25,6 +29,7 @@ public sealed record CaptureLaneSnapshot(
     long PendingCount,
     long PendingBytes,
     long LeasedCount,
+    long RetryCount,
     long QuarantineCount,
     DateTimeOffset? OldestPendingUtc,
     DateTimeOffset EvaluatedUtc);
@@ -39,6 +44,7 @@ public sealed class CaptureLaneState(
         CaptureLaneAvailability.Initializing,
         "initializing",
         [],
+        0,
         0,
         0,
         0,
@@ -94,8 +100,12 @@ public sealed class CaptureLaneState(
                 backlog.PendingBytes,
                 backlog.OldestPendingUtc,
                 backlog.LeasedCount,
+                backlog.RetryCount,
                 backlog.QuarantineCount,
-                pressure));
+                pressure,
+                backlog.PendingCaptures?.Select(static capture => new CaptureLanePendingCaptureSnapshot(
+                    capture.AgentId,
+                    capture.CaptureSequence)).ToArray() ?? []));
         }
         Volatile.Write(ref _snapshot, new CaptureLaneSnapshot(
             availability,
@@ -104,6 +114,7 @@ public sealed class CaptureLaneState(
             lanes.Sum(static lane => lane.PendingCount),
             lanes.Sum(static lane => lane.PendingBytes),
             lanes.Sum(static lane => lane.LeasedCount),
+            lanes.Sum(static lane => lane.RetryCount),
             lanes.Sum(static lane => lane.QuarantineCount),
             lanes.Where(static lane => lane.OldestPendingUtc is not null)
                 .Select(static lane => lane.OldestPendingUtc)

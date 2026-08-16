@@ -47,6 +47,29 @@ deploy_bootstrap_stage_json() {
     deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON"
 }
 
+deploy_bootstrap_normalize_response() {
+    local path="$1" normalized
+    jq -e . "$path" >/dev/null 2>&1 || return 0
+    normalized="$(umask 077; mktemp "$path.normalized.XXXXXX")" || return 1
+    jq 'def contract_key:
+        {Id:"id",Name:"name",LatitudeDegrees:"latitudeDegrees",LongitudeDegrees:"longitudeDegrees",
+         ElevationMeters:"elevationMeters",TimeZoneId:"timeZoneId",RegistrationId:"registrationId",
+         Status:"status",DeviceId:"deviceId",ObservatoryId:"observatoryId",DevicePublicId:"devicePublicId",
+         IsAuthoritative:"isAuthoritative",Registrations:"registrations",VerificationCode:"verificationCode",
+         ExpiresAtUtc:"expiresAtUtc",Envelope:"envelope",FriendlyName:"friendlyName",IsProvisioned:"isProvisioned",
+         ConfiguredAgentId:"configuredAgentId",ActiveConfigurationSha256:"activeConfigurationSha256",
+         RequestToken:"requestToken",HeaderName:"headerName",State:"state",Version:"version",Replayed:"replayed",
+         CentralFrameCount:"centralFrameCount",MaximumCaptureSequence:"maximumCaptureSequence",
+         CaptureControl:"captureControl",Value:"value",FleetAgentInstanceId:"fleetAgentInstanceId",
+         MaximumHeartbeatSequence:"maximumHeartbeatSequence",CentralArtifactCount:"centralArtifactCount",
+         LastHeartbeatReceivedAtUtc:"lastHeartbeatReceivedAtUtc"}[.] // .;
+      walk(if type == "object" then with_entries(.key |= contract_key) else . end) |
+      if type == "object" and has("registrationId") and (.status | type) == "number" then
+        .status = (["Pending","Active","Revoked"][.status] // .status)
+      else . end' "$path" > "$normalized" || { rm -f -- "$normalized"; return 1; }
+    chmod 600 "$normalized" && mv -Tf -- "$normalized" "$path" || { rm -f -- "$normalized"; return 1; }
+}
+
 deploy_bootstrap_request() {
     local target="$1" method="$2" url="$3" body="$4" headers="$5" cookies="$6" remote_output="$7" local_output="$8"
     local status ssh
@@ -55,6 +78,7 @@ deploy_bootstrap_request() {
     status="$(deploy_transport_http_private "$ssh" "$method" "$url" "$body" "$headers" "$cookies" "$remote_output")" || return 1
     deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
     deploy_transport_fetch_private_file "$ssh" "$remote_output" "$local_output" || return 1
+    deploy_bootstrap_normalize_response "$local_output" || return 1
     printf '%s\n' "$status"
 }
 
@@ -301,11 +325,13 @@ deploy_run_bootstrap() {
     status="$(deploy_bootstrap_request "$logic" GET "$(jq -r '.internalEndpoint' <<< "$logic")/api/internal/observatories" "" "$headers" "" \
       "$logic_remote/observatories.json" "$observatories")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail bootstrap observatory list-failed; return 1; }
-    matching="$(jq -c --argjson expected "$(jq -c '.observatory' "$inventory")" '[.[] | select(.name == $expected.name and .latitudeDegrees == $expected.latitudeDegrees and
-      .longitudeDegrees == $expected.longitudeDegrees and .elevationMeters == $expected.elevationMeters and .timeZoneId == $expected.timeZoneId)]' "$observatories")"
-    conflicting="$(jq -r --arg name "$(jq -r '.observatory.name' "$inventory")" '[.[] | select(.name == $name)] | length' "$observatories")"
+    matching="$(jq -c --argjson expected "$(jq -c '.observatory' "$inventory")" '[.[] | select(
+      (.name // .Name) == $expected.name and (.latitudeDegrees // .LatitudeDegrees) == $expected.latitudeDegrees and
+      (.longitudeDegrees // .LongitudeDegrees) == $expected.longitudeDegrees and
+      (.elevationMeters // .ElevationMeters) == $expected.elevationMeters and (.timeZoneId // .TimeZoneId) == $expected.timeZoneId)]' "$observatories")"
+    conflicting="$(jq -r --arg name "$(jq -r '.observatory.name' "$inventory")" '[.[] | select((.name // .Name) == $name)] | length' "$observatories")"
     if [[ "$(jq 'length' <<< "$matching")" == 1 ]]; then
-        observatory_id="$(jq -r '.[0].id' <<< "$matching")"
+        observatory_id="$(jq -r '.[0].id // .[0].Id' <<< "$matching")"
     elif [[ "$conflicting" != 0 ]]; then
         deploy_fail bootstrap observatory configured-observatory-conflict; return 1
     else
@@ -314,7 +340,7 @@ deploy_run_bootstrap() {
         status="$(deploy_bootstrap_request "$logic" POST "$(jq -r '.internalEndpoint' <<< "$logic")/api/internal/observatories" \
           "$logic_remote/observatory-request.json" "$headers" "" "$logic_remote/observatory-response.json" "$private_root/observatory-response.json")" || return 1
         [[ "$status" == 200 ]] || { deploy_fail bootstrap observatory create-failed; return 1; }
-        observatory_id="$(jq -er '.id | strings | select(test("^[0-9a-fA-F-]{36}$"))' "$private_root/observatory-response.json")" || return 1
+        observatory_id="$(jq -er '(.id // .Id) | strings | select(test("^[0-9a-fA-F-]{36}$"))' "$private_root/observatory-response.json")" || return 1
     fi
 
     while IFS= read -r target; do

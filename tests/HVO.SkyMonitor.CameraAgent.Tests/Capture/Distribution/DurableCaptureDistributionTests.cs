@@ -944,6 +944,9 @@ public sealed class DurableCaptureDistributionTests
             using var connection = await OpenAsync(retryFixture.Root).ConfigureAwait(false);
             Assert.AreEqual("retry_wait", await ScalarStringAsync(
                 connection, "SELECT state FROM capture_lane_work;").ConfigureAwait(false));
+            var backlog = (await retryFixture.Store.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
+                .Single(static item => item.Lane == "standard");
+            Assert.AreEqual(1, backlog.RetryCount);
             await Phase14ScenarioEvidence.RecordAsync(
                 "capture-lane-retry-commit",
                 "fault-point-AfterRetryCommit",

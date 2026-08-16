@@ -1,11 +1,14 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -43,6 +46,8 @@ public sealed class DeploymentAsi676ProfileTests
             Assert.AreEqual(3552, layout.Height);
             Assert.AreEqual(7104, layout.StrideBytes);
             Assert.AreEqual(25_233_408L, layout.ByteLength);
+            Assert.IsTrue(layout.Width * layout.Height <= Linear16TransientExtraction.MaximumDetectorPixels);
+            Assert.IsTrue(layout.Width * layout.Height <= Linear16TransientReconstruction.MaximumDetectorPixels);
             Assert.AreEqual(profile.Format, layout.PixelFormat);
             Assert.AreEqual(TimeSpan.FromSeconds(20), configuration.Rig.Pipeline.DayExposure);
             Assert.AreEqual(TimeSpan.FromSeconds(20), configuration.Rig.Pipeline.NightExposure);
@@ -56,7 +61,104 @@ public sealed class DeploymentAsi676ProfileTests
             Assert.AreEqual(4096, options.TransientScenario.Recurrence.EventCount);
             Assert.HasCount(2, options.TransientScenario.Recurrence.Profiles);
             options.TransientScenario.ValidateSensorBounds(layout.Width, layout.Height);
+            var module = new VirtualSkyCameraModule(
+                TimeProvider.System,
+                new InMemoryCelestialCatalog([]),
+                new ProjectedSceneStore(),
+                StandardConstellationTopology.CreateD3Celestial(),
+                new AstronomyEnginePlanetEphemeris());
+            ((ICameraModuleConfigurationPreflight)module).ValidateConfiguration(configuration);
+            if (profile.Format == CameraPixelFormat.Mono16)
+            {
+                await module.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                var capture = await module.CaptureAsync(
+                    new CaptureRequest(
+                        new DateTimeOffset(2026, 8, 15, 0, 0, 0, TimeSpan.Zero),
+                        TimeSpan.FromSeconds(20),
+                        CaptureMode.Still,
+                        new CaptureSetpoint(TimeSpan.FromSeconds(20), 82, null, null)),
+                    CancellationToken.None).ConfigureAwait(false);
+
+                Assert.IsNotNull(capture.Frame);
+                Assert.AreEqual(layout.Width, capture.Frame.Width);
+                Assert.AreEqual(layout.Height, capture.Frame.Height);
+                Assert.AreEqual(CameraPixelFormat.Mono16, capture.Frame.PixelFormat);
+                Assert.IsNotNull(capture.Frame.Metadata.Scene?.TransientScenario);
+
+                var detectorFrame = new Linear16Frame(
+                    capture.Frame.Width,
+                    capture.Frame.Height,
+                    capture.Frame.StrideBytes!.Value,
+                    capture.Frame.PixelFormat,
+                    capture.Frame.PixelData);
+                var emptyMask = Linear16MaskOperations.Empty(capture.Frame.Width, capture.Frame.Height);
+                var extractionProfile = TransientCandidateExtractionProfiles.EdgeV1;
+                var extraction = Linear16TransientExtraction.Extract(
+                    detectorFrame,
+                    detectorFrame,
+                    emptyMask,
+                    emptyMask,
+                    new Linear16TransientExtractionOptions(
+                        extractionProfile.MinimumResidualAdu,
+                        extractionProfile.MinimumComponentPixels,
+                        extractionProfile.MinimumIntegratedSignalAdu,
+                        extractionProfile.MaximumCandidates,
+                        extractionProfile.ProfileSampleCount,
+                        extractionProfile.MaximumSaturationBridgePixels,
+                        extractionProfile.MaximumForegroundPixels,
+                        extractionProfile.MaximumFragmentGapPixels,
+                        extractionProfile.MinimumFragmentAlignmentCosine));
+                Assert.IsFalse(extraction.CandidateLimitExceeded);
+                Assert.AreEqual(0, extraction.Components.Count);
+                Assert.IsTrue(extraction.BytesScanned >= layout.ByteLength * 2);
+
+                var reconstruction = Linear16TransientReconstruction.Reconstruct([
+                    new Linear16TransientReconstructionObservation(
+                        detectorFrame,
+                        detectorFrame,
+                        emptyMask,
+                        new Linear16TransientReconstructionBounds(0, 0, layout.Width, layout.Height))
+                ]);
+                Assert.AreEqual(layout.Width, reconstruction.Reconstruction.Width);
+                Assert.AreEqual(layout.Height, reconstruction.Reconstruction.Height);
+                Assert.AreEqual(0, reconstruction.EventPixelCount);
+            }
         }
+    }
+
+    [TestMethod]
+    public async Task Asi676MonoNativeReadoutRejectsSensorPlaneTransientTracks()
+    {
+        var configuration = await LoadAsync("hvo-edge-01.virtual-asi676mm.full.json").ConfigureAwait(false);
+        var options = configuration.Module.Options!.Value.Deserialize<VirtualSkyCameraModuleOptions>(StrictJsonOptions)!;
+        options.TransientScenario = options.TransientScenario! with
+        {
+            SensorTracks =
+            [
+                new VirtualTransientSensorTrack
+                {
+                    PrimitiveId = "native-readout-sensor-track",
+                    Keyframes =
+                    [
+                        new VirtualTransientSensorKeyframe { OffsetSeconds = 0, PixelX = 100, PixelY = 100 },
+                        new VirtualTransientSensorKeyframe { OffsetSeconds = 1, PixelX = 200, PixelY = 200 }
+                    ]
+                }
+            ]
+        };
+        configuration = configuration with
+        {
+            Module = configuration.Module with { Options = JsonSerializer.SerializeToElement(options, StrictJsonOptions) }
+        };
+        var module = new VirtualSkyCameraModule(
+            TimeProvider.System,
+            new InMemoryCelestialCatalog([]),
+            new ProjectedSceneStore(),
+            StandardConstellationTopology.CreateD3Celestial(),
+            new AstronomyEnginePlanetEphemeris());
+
+        Assert.ThrowsExactly<NotSupportedException>(() =>
+            ((ICameraModuleConfigurationPreflight)module).ValidateConfiguration(configuration));
     }
 
     [TestMethod]

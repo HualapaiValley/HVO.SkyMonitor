@@ -20,9 +20,10 @@ internal static class OperatorUiTestData
         var queue = new OperationsQueueState("Healthy", 0, 0, 0, 0, 0, 0, null);
         var lanes = new OperationsCaptureLanesState(
             lanePressure == 0 ? "Healthy" : "Degraded",
-            [new OperationsLaneState("standard", true, lanePressure == 0 ? 0 : 12, 4096, 0, 0, lanePressure, null)],
+            [new OperationsLaneState("standard", true, lanePressure == 0 ? 0 : 12, 4096, 0, 0, 0, lanePressure, null, [])],
             lanePressure == 0 ? 0 : 12,
             4096,
+            0,
             0,
             0,
             null);

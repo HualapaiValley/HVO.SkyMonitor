@@ -59,7 +59,7 @@ public enum Linear16TransientExtractionLimit
 public static class Linear16TransientExtraction
 {
     public const string AlgorithmVersion = "linear16-transient-components-pca-v1";
-    public const int MaximumDetectorPixels = 10_000_000;
+    public const int MaximumDetectorPixels = 16_000_000;
 
     private const byte Foreground = 1;
     private const byte Saturated = 2;

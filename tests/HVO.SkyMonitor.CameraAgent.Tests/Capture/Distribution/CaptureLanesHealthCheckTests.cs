@@ -28,12 +28,12 @@ public sealed class CaptureLanesHealthCheckTests
         });
         var state = new CaptureLaneState(TimeProvider.System, options);
         var check = new CaptureLanesHealthCheck(state);
-        state.Update([new CaptureLaneBacklog("secondary", false, 2, 8, DateTimeOffset.UtcNow, 0, 0)]);
+        state.Update([new CaptureLaneBacklog("secondary", false, 2, 8, DateTimeOffset.UtcNow, 0, 0, 0)]);
 
         var degraded = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
 
         Assert.AreEqual(HealthStatus.Degraded, degraded.Status);
-        state.Update([new CaptureLaneBacklog("standard", true, 1, 4, DateTimeOffset.UtcNow, 0, 1)]);
+        state.Update([new CaptureLaneBacklog("standard", true, 1, 4, DateTimeOffset.UtcNow, 0, 0, 1)]);
         var unhealthy = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
         Assert.AreEqual(HealthStatus.Unhealthy, unhealthy.Status);
         CollectionAssert.AreEquivalent(

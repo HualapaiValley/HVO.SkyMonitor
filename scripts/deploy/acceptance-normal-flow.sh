@@ -49,6 +49,9 @@ deploy_acceptance_normal_validate_measure() {
         .warmupCompleted == 5 and .measuredCompleted == 30 and .warmupStart == .warmup.startSequence and
         .measuredStart == .measured.startSequence and .warmup.endSequence == .measuredStart and
         .warmup.count == 5 and .measured.count == 30 and
+        all(.warmup,.measured;
+          .drained == false and .boundedTemporalTail.count == 2 and
+          .boundedTemporalTail.captureSequences == [.endSequence - 1,.endSequence]) and
         [.warmup.captures[].captureSequence] == [range(.warmup.startSequence + 1; .warmup.endSequence + 1)] and
         [.measured.captures[].captureSequence] == [range(.measured.startSequence + 1; .measured.endSequence + 1)] and
         all(.warmup.captures[],.measured.captures[];
@@ -58,11 +61,34 @@ deploy_acceptance_normal_validate_measure() {
         ([.warmup.captures[].rawArtifactId,.measured.captures[].rawArtifactId] | length == (unique | length)) and
         .before.telemetry.sampleCount == 0 and (.before.timings | length) == 0 and
         (.after.timings | length) > 0 and all(.after.timings[]; .sampleCount > 0) and
-        all(.after.queues.raw,.after.queues.processing,.after.queues.outbox;
-          .pendingCount == 0 and .pendingBytes == 0 and .leasedCount == 0 and .quarantineCount == 0 and .terminalCount == 0) and
-        .after.queues.lanes.pendingCount == 0 and .after.queues.lanes.pendingBytes == 0 and
-        .after.queues.lanes.leasedCount == 0 and .after.queues.lanes.quarantineCount == 0 and
-        all(.after.queues.lanes.lanes[]; .pendingCount == 0 and .pendingBytes == 0 and .leasedCount == 0 and .quarantineCount == 0))
+        .deviceId as $device |
+        .after.queues as $queues |
+        [$queues.lanes.lanes[] | select(.name == "transient" and .required == true)] as $transient |
+        all($queues.processing,$queues.outbox;
+          .pendingCount == 0 and .pendingBytes == 0 and .leasedCount == 0 and .retryCount == 0 and
+          .quarantineCount == 0 and .terminalCount == 0) and
+        $queues.raw.leasedCount == 0 and $queues.raw.retryCount == 0 and
+        $queues.raw.quarantineCount == 0 and $queues.raw.terminalCount == 0 and
+        $queues.lanes.leasedCount == 0 and $queues.lanes.retryCount == 0 and $queues.lanes.quarantineCount == 0 and
+        if ($transient | length) == 0 then
+          $queues.raw.pendingCount == 0 and $queues.raw.pendingBytes == 0 and
+          $queues.lanes.pendingCount == 0 and $queues.lanes.pendingBytes == 0 and
+          all($queues.lanes.lanes[];
+            .pendingCount == 0 and .pendingBytes == 0 and .leasedCount == 0 and .retryCount == 0 and
+            .quarantineCount == 0 and .pressureLevel == 0)
+        else
+          ($transient | length) == 1 and $queues.raw.pendingCount == 2 and $queues.lanes.pendingCount == 2 and
+          ($transient[0].pendingCount == 2 and $transient[0].leasedCount == 0 and $transient[0].retryCount == 0 and
+            $transient[0].quarantineCount == 0 and $transient[0].pressureLevel == 0 and
+            $transient[0].pendingCaptures == [
+              {agentId:$device,captureSequence:(.measured.endSequence - 1)},
+              {agentId:$device,captureSequence:.measured.endSequence}]) and
+          all($queues.lanes.lanes[] | select(.name != "transient");
+            .pendingCount == 0 and .pendingBytes == 0 and .leasedCount == 0 and .retryCount == 0 and
+            .quarantineCount == 0 and .pressureLevel == 0) and
+          $queues.transient.availability == "Healthy" and
+          $queues.transient.pendingFrames == 0 and $queues.transient.pendingCandidates == 0
+        end)
     ' "$path" >/dev/null 2>&1 || { deploy_fail acceptance-normal measure invalid-or-noncanonical; return 1; }
 }
 
@@ -129,7 +155,7 @@ deploy_acceptance_normal_build_artifact() {
          {id:"exact-warmup-counts",passed:true},{id:"exact-measured-counts",passed:true},
          {id:"ordered-capture-windows",passed:true},{id:"unique-capture-output-identities",passed:true},
          {id:"raw-byte-lengths-canonical",passed:true},{id:"measured-capture-correctness",passed:true},
-         {id:"durable-queues-drained",passed:true},{id:"fresh-measurement-windows",passed:true},
+          {id:"durable-queues-converged",passed:true},{id:"fresh-measurement-windows",passed:true},
          {id:"runtime-timings-recorded",passed:true}],
        outputs:([{id:"w1-measure-evidence",byteLength:$w1Length,sha256:$w1Sha},
                  {id:"w2-measure-evidence",byteLength:$w2Length,sha256:$w2Sha}] +

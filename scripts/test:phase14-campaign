@@ -33,7 +33,8 @@ chmod 600 "$DEPLOY_MANIFEST"
 jq -n --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" \
   '{schemaVersion:1,publicationGeneration:2,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,workload:"W2",phaseStatus:"passed",
     targets:[{target:"east",deviceId:"east-device",status:"measured",profile:{configSha256:"config"},controlAttempts:[],warmupCompleted:5,
-      measuredCompleted:30,measuredStart:6,measured:{startSequence:6,endSequence:36,count:30,drained:true,correctness:true,
+      measuredCompleted:30,measuredStart:6,measured:{startSequence:6,endSequence:36,count:30,drained:false,
+        boundedTemporalTail:{count:2,captureSequences:[35,36]},correctness:true,
         captures:[range(7;37) | {captureSequence:.,captureId:("baseline-capture-" + (.|tostring)),rawArtifactId:("baseline-raw-" + (.|tostring)),
           rawChecksumSha256:("e" * 64),rawByteLength:12879360}]}}]}' \
   > "$state/measure-ledger.json"
@@ -79,7 +80,7 @@ deploy_measure_wait_capture_set() {
     if [[ "$9" == baseline ]]; then
         jq -c '.targets[0].measured' "$state/measure-ledger.json"
     else
-        jq -cn '{startSequence:36,endSequence:46,count:10,drained:true,correctness:true,
+        jq -cn '{startSequence:36,endSequence:46,count:10,drained:false,boundedTemporalTail:{count:2,captureSequences:[45,46]},correctness:true,
           captures:[range(37;47) | {captureSequence:.,captureId:("00000000-0000-0000-0000-" + ((100000000000 + .)|tostring)),
             rawArtifactId:("00000000-0000-0000-0000-" + ((200000000000 + .)|tostring)),
             rawChecksumSha256:("d" * 64),rawByteLength:12879360}]}'

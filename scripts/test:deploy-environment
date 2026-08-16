@@ -2,6 +2,7 @@
 # Exercise split-host preflight with fake hosts and Docker contexts; no target is mutated.
 
 set -euo pipefail
+umask 0022
 export LC_ALL=C
 export DEPLOY_TEST_POLL_SECONDS=0
 
@@ -636,9 +637,10 @@ if [[ "$url" == */api/v1/operations/summary ]]; then
        latestGain:10,averageIntervalMilliseconds:1,averageExposureMilliseconds:1,averageProcessingMilliseconds:1,averageLoopMilliseconds:1,
        capturesPerMinute:1,dutyCycle:0.5,framesStored:1,immediateUploadCount:1}},
      captureRuntime:{value:{timings:$timings}},
-     rawIngress:{value:queue},captureLanes:{value:{availability:"Accepting",lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,
-        leasedCount:$leased,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null}],pendingCount:0,pendingBytes:0,leasedCount:$leased,quarantineCount:0,oldestPendingUtc:null}},
-     captureProcessing:{value:queue},artifactOutbox:{value:queue},heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}}' > "$output"
+      rawIngress:{value:(queue + {availability:"Accepting"})},captureLanes:{value:{availability:"Healthy",lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,
+         leasedCount:$leased,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]}],pendingCount:0,pendingBytes:0,leasedCount:$leased,retryCount:0,quarantineCount:0,oldestPendingUtc:null}},
+      captureProcessing:{value:(queue + {availability:"Healthy"})},artifactOutbox:{value:(queue + {availability:"Healthy"})},
+      transientWorker:{value:{availability:"Disabled",pendingFrames:0,pendingCandidates:0}},heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}}' > "$output"
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operations/capture/resume ]]; then
@@ -2335,6 +2337,64 @@ jq -e '.phaseStatus == "passed" and .executionMode == "canonical" and .canonical
     .profile.width == 1936 and .profile.height == 1216 and .profile.pixelFormat == "Mono16" and
     .profile.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json")' \
   "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+measure_sequence_fixture="$TEMP_DIR/measure-sequence-fixture.json"
+measure_sequence_operations="$TEMP_DIR/measure-sequence-operations.json"
+measure_sequence_private="$TEMP_DIR/measure-sequence-private"
+mkdir "$measure_sequence_private"
+printf '%s\n' '{"durable":{"rawIngressDatabaseExists":true,"captureSequences":[]}}' > "$measure_sequence_fixture"
+printf '%s\n' '{"captureLanes":{"value":{"availability":"Healthy","lanes":[{"name":"standard","required":true,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[]}]}},"rawIngress":{"value":{"availability":"Accepting","retryCount":0,"quarantineCount":0,"terminalCount":0}},"captureProcessing":{"value":{"availability":"Healthy","retryCount":0,"quarantineCount":0,"terminalCount":0}},"artifactOutbox":{"value":{"availability":"Healthy","retryCount":0,"quarantineCount":0,"terminalCount":0}}}' > "$measure_sequence_operations"
+(
+  source "$REPO_ROOT/scripts/deploy/measure.sh"
+  deploy_bootstrap_request() {
+    if [[ "$3" == */api/v1/operations/summary ]]; then cp "$measure_sequence_operations" "$8"; else cp "$measure_sequence_fixture" "$8"; fi
+    printf '200\n'
+  }
+  target='{"name":"east","internalEndpoint":"http://127.0.0.1"}'
+  test "$(deploy_measure_read_sequence "$target" /remote "$measure_sequence_private" /cookies baseline device-east)" = 0
+  printf '%s\n' '{"durable":{"rawIngressDatabaseExists":false,"captureSequences":[]}}' > "$measure_sequence_fixture"
+  if deploy_measure_read_sequence "$target" /remote "$measure_sequence_private" /cookies missing device-east >/dev/null; then exit 111; fi
+  printf '%s\n' '{"durable":{"rawIngressDatabaseExists":true,"captureSequences":[{"agentId":"device-east","lastSequence":1},{"agentId":"device-east","lastSequence":2}]}}' > "$measure_sequence_fixture"
+  if deploy_measure_read_sequence "$target" /remote "$measure_sequence_private" /cookies duplicate device-east >/dev/null; then exit 112; fi
+  printf '%s\n' '{"durable":{"rawIngressDatabaseExists":true,"captureSequences":[{"agentId":"device-east","lastSequence":-1}]}}' > "$measure_sequence_fixture"
+  if deploy_measure_read_sequence "$target" /remote "$measure_sequence_private" /cookies negative device-east >/dev/null; then exit 113; fi
+  printf '%s\n' '{"durable":{"rawIngressDatabaseExists":true,"captureSequences":[{"agentId":"device-east","lastSequence":1.5}]}}' > "$measure_sequence_fixture"
+  if deploy_measure_read_sequence "$target" /remote "$measure_sequence_private" /cookies fractional device-east >/dev/null; then exit 114; fi
+  printf '%s\n' '{"durable":{"rawIngressDatabaseExists":true,"captureSequences":[{"agentId":"device-east","lastSequence":2}]}}' > "$measure_sequence_fixture"
+  jq '.captureLanes.value.availability="Degraded" | .captureLanes.value.lanes[0].retryCount=1' "$measure_sequence_operations" > "$measure_sequence_operations.changed"
+  mv "$measure_sequence_operations.changed" "$measure_sequence_operations"
+  test "$(deploy_measure_read_sequence "$target" /remote "$measure_sequence_private" /cookies retrying device-east)" = 2
+  jq '.captureLanes.value.lanes[0].quarantineCount=1' "$measure_sequence_operations" > "$measure_sequence_operations.changed"
+  mv "$measure_sequence_operations.changed" "$measure_sequence_operations"
+  test "$(deploy_measure_unrecoverable_queue_reason "$measure_sequence_operations")" = required-lane-quarantine-standard
+  if deploy_measure_read_sequence "$target" /remote "$measure_sequence_private" /cookies quarantined device-east >/dev/null 2>&1; then exit 115; fi
+  jq '.captureLanes.value.lanes[0].quarantineCount=0 | .captureLanes.value.availability="Unhealthy"' "$measure_sequence_operations" > "$measure_sequence_operations.changed"
+  mv "$measure_sequence_operations.changed" "$measure_sequence_operations"
+  test "$(deploy_measure_unrecoverable_queue_reason "$measure_sequence_operations")" = capture-lanes-unhealthy
+  jq '.captureLanes.value.availability="Healthy" | .transientWorker.value.availability="Unavailable"' "$measure_sequence_operations" > "$measure_sequence_operations.changed"
+  mv "$measure_sequence_operations.changed" "$measure_sequence_operations"
+  test "$(deploy_measure_unrecoverable_queue_reason "$measure_sequence_operations")" = transient-worker-unavailable
+)
+measure_tail_operations="$TEMP_DIR/measure-tail-operations.json"
+printf '%s\n' '{"rawIngress":{"value":{"availability":"Accepting","pendingCount":2,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"captureLanes":{"value":{"availability":"Healthy","pendingCount":2,"leasedCount":0,"retryCount":0,"quarantineCount":0,"lanes":[{"name":"standard","required":true,"pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[]},{"name":"transient","required":true,"pendingCount":2,"leasedCount":0,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[{"agentId":"device-east","captureSequence":4},{"agentId":"device-east","captureSequence":5}]}]}},"captureProcessing":{"value":{"availability":"Healthy","pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"artifactOutbox":{"value":{"availability":"Healthy","pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"transientWorker":{"value":{"availability":"Healthy","pendingFrames":0,"pendingCandidates":0}}}' > "$measure_tail_operations"
+(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east)
+jq '.captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=3 else . end | .captureLanes.value.pendingCount=3 | .rawIngress.value.pendingCount=3' \
+  "$measure_tail_operations" > "$measure_tail_operations.changed"
+mv "$measure_tail_operations.changed" "$measure_tail_operations"
+if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
+  fail 'Measure accepted an unbounded temporal tail.'
+fi
+jq '.captureLanes.value.pendingCount=2 | .rawIngress.value.pendingCount=2 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=2 | .retryCount=2 else . end | .captureLanes.value.retryCount=2' \
+  "$measure_tail_operations" > "$measure_tail_operations.changed"
+mv "$measure_tail_operations.changed" "$measure_tail_operations"
+if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
+  fail 'Measure accepted retrying work as a temporal tail.'
+fi
+jq '.captureLanes.value.retryCount=0 | .captureLanes.value.lanes[] |= if .name == "transient" then .retryCount=0 | .pendingCaptures=[{"agentId":"device-east","captureSequence":3},{"agentId":"device-east","captureSequence":4}] else . end' \
+  "$measure_tail_operations" > "$measure_tail_operations.changed"
+mv "$measure_tail_operations.changed" "$measure_tail_operations"
+if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
+  fail 'Measure accepted stale captures as the bounded temporal tail.'
+fi
 for missing_measure_field in continuity telemetry timing queue stats; do
   cp "$TEMP_DIR/output/$deploy_case-state/measure-private/east-after-continuity.json" "$TEMP_DIR/measure-invalid-continuity.json"
   cp "$TEMP_DIR/output/$deploy_case-state/measure-private/east-after-operations.json" "$TEMP_DIR/measure-invalid-operations.json"
@@ -2515,7 +2575,24 @@ grep -Fq '127.0.0.1:${MAILPIT_HTTP_PORT:?Mailpit HTTP port required}:8025' "$REP
 for service in sql redis minio; do
   grep -Fq 'device: ${HVO_STATE_ROOT:?state root required}/'"$service" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"
 done
+normalize_fixture="$TEMP_DIR/bootstrap-pascal-response.json"
+printf '%s\n' '{"RegistrationId":"00000000-0000-0000-0000-000000000001","Status":1,"CaptureControl":{"Value":{"State":"Paused","Version":2}},"FleetAgentInstanceId":"instance-1","MaximumHeartbeatSequence":4,"CentralArtifactCount":5,"LastHeartbeatReceivedAtUtc":"2026-08-15T00:00:00Z","Metadata":{"CaseSensitiveKey":"value"}}' > "$normalize_fixture"
+chmod 600 "$normalize_fixture"
+(source "$REPO_ROOT/scripts/deploy/bootstrap.sh"; deploy_bootstrap_normalize_response "$normalize_fixture")
+jq -e '.registrationId == "00000000-0000-0000-0000-000000000001" and .status == "Active" and
+  .captureControl.value.state == "Paused" and .captureControl.value.version == 2 and
+  .fleetAgentInstanceId == "instance-1" and .maximumHeartbeatSequence == 4 and .centralArtifactCount == 5 and
+  .lastHeartbeatReceivedAtUtc == "2026-08-15T00:00:00Z" and
+  .Metadata.CaseSensitiveKey == "value"' \
+  "$normalize_fixture" >/dev/null
+printf 'hvo_capture_total 1\n' > "$normalize_fixture"
+(source "$REPO_ROOT/scripts/deploy/bootstrap.sh"; deploy_bootstrap_normalize_response "$normalize_fixture")
+grep -Fxq 'hvo_capture_total 1' "$normalize_fixture"
 grep -Fq $'SQL_PROVISION_PHASE=after\tsql-provision' "$LOG"
+runtime_login_line="$(grep -nF "IF SUSER_ID(N'\$SQL_RUNTIME_USER')" "$REPO_ROOT/deploy/split-host/provision-sql.sh" | cut -d: -f1)"
+batch_boundary_line="$(grep -nFx 'GO' "$REPO_ROOT/deploy/split-host/provision-sql.sh" | cut -d: -f1)"
+database_use_line="$(grep -nF 'USE [$SQL_DATABASE];' "$REPO_ROOT/deploy/split-host/provision-sql.sh" | cut -d: -f1)"
+test "$runtime_login_line" -lt "$batch_boundary_line" && test "$batch_boundary_line" -lt "$database_use_line"
 grep -Fq $'ssh\t-o\tBatchMode=yes\t-o\tConnectTimeout=8\t--\tshared@example' "$LOG"
 grep -Fq $'docker\t--context\tshared-context\tcompose' "$LOG"
 if grep -Fq '+@all' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"; then fail 'Redis deploy ACL grants all commands.'; fi
@@ -2523,6 +2600,14 @@ if grep -Eq 'sqlcmd[^\n]*[[:space:]]-P|redis-cli[^\n]*[[:space:]]-a|mc alias set
   "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then
   fail 'Provisioning places a credential in process arguments.'
 fi
+grep -Fq 'cp /run/hvo-mc/config.json "$config_dir/config.json"' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
+grep -Fq 'account=$(cat /run/hvo-mc/account)' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
+grep -Fq 'add local "$account" --policy "$policy"' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
+if grep -Fq -- '--config-dir /run/hvo-mc' "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then fail 'MinIO provisioning writes auxiliary state to its read-only credential mount.'; fi
+if grep -Fq '${policy_content//' "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then fail 'MinIO provisioning uses non-POSIX shell substitution.'; fi
+grep -Fq 'status=$?' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
+grep -Fq 'exit "$status"' "$REPO_ROOT/deploy/split-host/provision-minio.sh"
+if grep -Fq 'sed ' "$REPO_ROOT/deploy/split-host/provision-minio.sh"; then fail 'MinIO provisioning depends on a tool absent from the pinned client image.'; fi
 if grep -Eq 'fixture-secret-never-print|minio-root-never-print|minio-secret-never-print|east-owner-never-print|west-owner-never-print' "$LOG" ||
   grep -R -Eq 'fixture-secret-never-print|minio-root-never-print|minio-secret-never-print|east-owner-never-print|west-owner-never-print' \
     "$TEMP_DIR/output/$deploy_services-evidence" "$TEMP_DIR/output/$deploy_services-state/up-rendered"; then fail 'Deploy-mode command/evidence/rendering exposed a secret.'; fi
@@ -2569,7 +2654,16 @@ for down_failpoint in \
   jq -e '.phaseStatus == "failed" and any(.resources[]; .status == "intent" or .status == "completed")' \
     "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
 done
+read_only_state="$TEMP_DIR/remote/$deploy_services-shared/runtime/catalog-read-only"
+outside_read_only_state="$TEMP_DIR/catalog-read-only-outside"
+mkdir "$read_only_state"
+printf 'catalog\n' > "$read_only_state/manifest.json"
+printf 'preserve\n' > "$outside_read_only_state"
+ln -s "$outside_read_only_state" "$read_only_state/outside-link"
+chmod 444 "$read_only_state/manifest.json"
+chmod 555 "$read_only_state"
 run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" >/dev/null
+grep -Fxq preserve "$outside_read_only_state"
 jq -e '.phaseStatus == "passed" and .policy == "delete" and
   ([.resources[] | select(.action == "delete-network" and .status == "completed")] | length) == 4 and
   ([.resources[] | select(.action == "delete-volume" and .status == "completed")] | length) == 3 and

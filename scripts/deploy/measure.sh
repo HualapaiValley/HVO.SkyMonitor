@@ -51,10 +51,16 @@ deploy_measure_validate_snapshot() {
       (.captureLanes.value.lanes | type == "array") and
       all(.captureLanes.value.lanes[]; (.name | type == "string" and length > 0) and (.required | type == "boolean") and
         (.pendingCount | type) == "number" and .pendingCount >= 0 and (.pendingBytes | type) == "number" and .pendingBytes >= 0 and
-        (.leasedCount | type) == "number" and .leasedCount >= 0 and (.quarantineCount | type) == "number" and .quarantineCount >= 0 and
+        (.leasedCount | type) == "number" and .leasedCount >= 0 and (.retryCount | type) == "number" and .retryCount >= 0 and
+        (.quarantineCount | type) == "number" and .quarantineCount >= 0 and
         (.pressureLevel | type) == "number" and .pressureLevel >= 0 and
+        (.pendingCaptures | type) == "array" and all(.pendingCaptures[];
+          (keys | sort) == (["agentId","captureSequence"] | sort) and
+          (.agentId | type) == "string" and (.agentId | length) > 0 and
+          (.captureSequence | type) == "number" and .captureSequence >= 0 and
+          (.captureSequence | floor) == .captureSequence) and
         (.oldestPendingUtc == null or (.oldestPendingUtc | type == "string"))) and
-      all(.captureLanes.value.pendingCount,.captureLanes.value.pendingBytes,.captureLanes.value.leasedCount,
+      all(.captureLanes.value.pendingCount,.captureLanes.value.pendingBytes,.captureLanes.value.leasedCount,.captureLanes.value.retryCount,
         .captureLanes.value.quarantineCount; type == "number" and . >= 0)' "$operations" >/dev/null || return 1
     jq -e '(keys | sort) == (["blockIo","cpu","memory","memoryPercent","networkIo","pids"] | sort) and
       all(.[]; type == "string" and length > 0)' "$stats" >/dev/null
@@ -115,8 +121,14 @@ deploy_measure_validate_candidate() {
           (.status == "intent" or .status == "completed" or .status == "reconciled" or .status == "superseded"))) and
         (.failureCleanup.status == "not-required" or .failureCleanup.status == "completed" or .failureCleanup.status == "capture-may-be-running") and
         (if .status == "measured" then all(.warmup,.measured;
-          (keys | sort) == (["startSequence","endSequence","count","captures","drained","correctness"] | sort) and
-          .count == (.captures | length) and .drained == true and .correctness == true and
+          (keys | sort) == (["startSequence","endSequence","count","captures","drained","boundedTemporalTail","correctness"] | sort) and
+          .count == (.captures | length) and (.drained | type) == "boolean" and .correctness == true and
+          (.boundedTemporalTail | keys | sort) == (["count","captureSequences"] | sort) and
+          .boundedTemporalTail.count == (.boundedTemporalTail.captureSequences | length) and
+          (.drained == (.boundedTemporalTail.count == 0)) and
+          (.boundedTemporalTail.count <= 2) and
+          (.boundedTemporalTail.captureSequences ==
+            [range(.endSequence - .boundedTemporalTail.count + 1; .endSequence + 1)]) and
           ([.captures[].captureSequence] | length == (unique | length)) and
           ([.captures[].captureId] | length == (unique | length))) else true end))) and
       ([.targets[].controlAttempts[].key] | length == (unique | length)) and
@@ -130,17 +142,47 @@ deploy_measure_project_snapshot() {
       {continuity:$continuity[0].durable,telemetry:$operations[0].captureTelemetry.value,
        timings:$operations[0].captureRuntime.value.timings,queues:{raw:$operations[0].rawIngress.value,
        lanes:$operations[0].captureLanes.value,processing:$operations[0].captureProcessing.value,
-       outbox:$operations[0].artifactOutbox.value},container:$stats[0]}'
+       outbox:$operations[0].artifactOutbox.value,transient:$operations[0].transientWorker.value},container:$stats[0]}'
+}
+
+deploy_measure_unrecoverable_queue_reason() {
+    local operations="$1"
+    jq -r '(
+        [ .captureLanes.value.lanes[] | select(.required == true and .quarantineCount > 0) |
+            "required-lane-quarantine-" + .name ] +
+        [ .captureLanes.value.lanes[] | select(.required == true and .pressureLevel >= 2) |
+            "required-lane-pressure-" + .name ] +
+        (if .rawIngress.value.quarantineCount > 0 then ["raw-ingress-quarantine"] else [] end) +
+        (if .rawIngress.value.terminalCount > 0 then ["raw-ingress-terminal"] else [] end) +
+        (if .captureProcessing.value.terminalCount > 0 then ["processing-terminal"] else [] end) +
+        (if .artifactOutbox.value.quarantineCount > 0 then ["artifact-outbox-quarantine"] else [] end) +
+        (if .artifactOutbox.value.terminalCount > 0 then ["artifact-outbox-terminal"] else [] end) +
+        (if .captureLanes.value.availability == "Unhealthy" then ["capture-lanes-unhealthy"] else [] end) +
+        (if .transientWorker.value.availability == "Unavailable" then ["transient-worker-unavailable"] else [] end) +
+        (if .rawIngress.value.availability == "Unavailable" then ["raw-ingress-unavailable"] else [] end) +
+        (if .captureProcessing.value.availability == "Unavailable" then ["processing-unavailable"] else [] end) +
+        (if .artifactOutbox.value.availability == "Unavailable" then ["artifact-outbox-unavailable"] else [] end)
+      )[0] // empty' "$operations"
 }
 
 deploy_measure_read_sequence() {
-    local target="$1" target_remote="$2" private_root="$3" cookies="$4" label="$5" device="$6" status name endpoint
+    local target="$1" target_remote="$2" private_root="$3" cookies="$4" label="$5" device="$6" status name endpoint operations queue_reason
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/internal/deployment/continuity" "" "" "$cookies" \
       "$target_remote/$label-continuity.json" "$private_root/$name-$label-continuity.json")" || return 1
     [[ "$status" == 200 ]] || return 1
-    jq -er --arg device "$device" '[.durable.captureSequences[] | select(.agentId == $device) | .lastSequence] |
-      if length == 1 and (.[0] | type) == "number" then .[0] else empty end' "$private_root/$name-$label-continuity.json"
+    operations="$private_root/$name-$label-operations.json"
+    status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/summary" "" "" "$cookies" \
+      "$target_remote/$label-operations.json" "$operations")" || return 1
+    [[ "$status" == 200 ]] || return 1
+    queue_reason="$(deploy_measure_unrecoverable_queue_reason "$operations")" || return 1
+    [[ -z "$queue_reason" ]] || { deploy_fail measure "$name" "$label-$queue_reason"; return 1; }
+    jq -er --arg device "$device" '
+      [.durable.captureSequences[] | select(.agentId == $device) | .lastSequence] as $sequences |
+      if ($sequences | length) == 1 and ($sequences[0] | type) == "number" and
+          $sequences[0] >= 0 and ($sequences[0] | floor) == $sequences[0] then $sequences[0]
+      elif ($sequences | length) == 0 and .durable.rawIngressDatabaseExists == true then 0
+      else empty end' "$private_root/$name-$label-continuity.json"
 }
 
 deploy_measure_capture_control() {
@@ -326,6 +368,42 @@ deploy_measure_failure_pause_all() {
     [[ "$failed" == false ]]
 }
 
+deploy_measure_queues_converged() {
+    local operations="$1" end_sequence="$2" device="$3"
+    jq -e --argjson endSequence "$end_sequence" --arg device "$device" '
+      (if $endSequence < 2 then $endSequence else 2 end) as $tail |
+      [.captureLanes.value.lanes[] | select(.name == "transient" and .required == true)] as $transient |
+      .rawIngress.value.availability == "Accepting" and .captureLanes.value.availability == "Healthy" and
+      .captureProcessing.value.availability == "Healthy" and .artifactOutbox.value.availability == "Healthy" and
+      .rawIngress.value.leasedCount == 0 and .rawIngress.value.retryCount == 0 and
+      .rawIngress.value.quarantineCount == 0 and .rawIngress.value.terminalCount == 0 and
+      .captureLanes.value.leasedCount == 0 and .captureLanes.value.retryCount == 0 and
+      .captureLanes.value.quarantineCount == 0 and
+      .captureProcessing.value.pendingCount == 0 and .captureProcessing.value.leasedCount == 0 and
+      .captureProcessing.value.retryCount == 0 and .captureProcessing.value.quarantineCount == 0 and
+      .captureProcessing.value.terminalCount == 0 and
+      .artifactOutbox.value.pendingCount == 0 and .artifactOutbox.value.leasedCount == 0 and
+      .artifactOutbox.value.retryCount == 0 and .artifactOutbox.value.quarantineCount == 0 and
+      .artifactOutbox.value.terminalCount == 0 and
+      if ($transient | length) == 0 then
+        .rawIngress.value.pendingCount == 0 and .captureLanes.value.pendingCount == 0 and
+        all(.captureLanes.value.lanes[];
+          .pendingCount == 0 and .leasedCount == 0 and .retryCount == 0 and .quarantineCount == 0 and .pressureLevel == 0)
+      else
+        ($transient | length) == 1 and .rawIngress.value.pendingCount == $tail and
+        .captureLanes.value.pendingCount == $tail and
+        ($transient[0].pendingCount == $tail and $transient[0].leasedCount == 0 and
+          $transient[0].retryCount == 0 and $transient[0].quarantineCount == 0 and $transient[0].pressureLevel == 0) and
+        $transient[0].pendingCaptures == [range($endSequence - $tail + 1; $endSequence + 1) |
+          {agentId:$device,captureSequence:.}] and
+        all(.captureLanes.value.lanes[] | select(.name != "transient");
+          .pendingCount == 0 and .leasedCount == 0 and .retryCount == 0 and .quarantineCount == 0 and
+          .pressureLevel == 0 and (.pendingCaptures | length) == 0) and
+        .transientWorker.value.availability == "Healthy" and
+        .transientWorker.value.pendingFrames == 0 and .transientWorker.value.pendingCandidates == 0
+      end' "$operations" >/dev/null
+}
+
 deploy_measure_wait_capture_set() {
     local target="$1" central="$2" target_remote="$3" central_remote="$4" private_root="$5" cookies="$6" central_headers="$7" device="$8" label="$9" start="${10}" count="${11}" deadline="${12}"
     local name endpoint central_endpoint first last status local_file central_file operations_file current facts
@@ -364,14 +442,15 @@ deploy_measure_wait_capture_set() {
               .objectState == "Available" and
               any(.sources[]; .artifactId == $raw[0].artifactId and
                 (.checksumSha256|ascii_downcase) == ($raw[0].checksumSha256|ascii_downcase))))' "$local_file" >/dev/null &&
-          jq -e '.rawIngress.value.pendingCount == 0 and .rawIngress.value.leasedCount == 0 and
-            .captureLanes.value.pendingCount == 0 and .captureLanes.value.leasedCount == 0 and
-            .captureProcessing.value.pendingCount == 0 and .captureProcessing.value.leasedCount == 0 and
-            .artifactOutbox.value.pendingCount == 0 and .artifactOutbox.value.leasedCount == 0' "$operations_file" >/dev/null; then
-            facts="$(jq -c --argjson start "$start" --argjson end "$last" --argjson count "$count" '
+          deploy_measure_queues_converged "$operations_file" "$last" "$device"; then
+            facts="$(jq -c --argjson start "$start" --argjson end "$last" --argjson count "$count" \
+              --slurpfile operations "$operations_file" '
+              ([$operations[0].captureLanes.value.lanes[] |
+                select(.name == "transient" and .required == true)][0].pendingCaptures // []) as $tail |
               {startSequence:$start,endSequence:$end,count:$count,
                captures:[.durable.captureWindow[] | {captureSequence,captureId,rawArtifactId,
-                 rawChecksumSha256,rawByteLength}],drained:true,correctness:true}' "$local_file")" || return 1
+                 rawChecksumSha256,rawByteLength}],drained:(($tail | length) == 0),
+               boundedTemporalTail:{count:($tail | length),captureSequences:[$tail[].captureSequence]},correctness:true}' "$local_file")" || return 1
             printf '%s\n' "$facts"
             return 0
         fi
@@ -384,7 +463,7 @@ deploy_measure_wait_capture_set() {
 deploy_run_measure() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6" selected_workload="$7"
     local scope="${8:-}" state_dir evidence_dir measure_root support_evidence render_root private_root execution_run_id now started_seconds ended_seconds duration deadline target name target_root target_remote response cookies
-    local device profile warmup_requested measured_requested warmup_start warmup_completed measured_start before after measured_completed status reset_status interval_value interval_hours interval_minutes interval_seconds capture_interval_seconds
+    local device profile warmup_requested measured_requested warmup_start warmup_completed measured_start before after measured_completed measured_end status reset_status interval_value interval_hours interval_minutes interval_seconds capture_interval_seconds
     local logic logic_root logic_remote central_headers warmup measured
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/bootstrap-manifest.json" measure "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
@@ -536,6 +615,9 @@ deploy_run_measure() {
         fi
         deploy_measure_snapshot "$inventory" "$target" "$target_remote" "$private_root" "$cookies" after "$state_dir" "$device" "$(jq -r '.configSha256' <<< "$profile")" ||
           { deploy_fail measure "$name" final-snapshot-invalid; return 1; }
+        measured_end="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .measured.endSequence' <<< "$DEPLOY_MEASURE_JSON")"
+        deploy_measure_queues_converged "$private_root/$name-after-operations.json" "$measured_end" "$device" ||
+          { deploy_fail measure "$name" final-snapshot-queues-not-converged; return 1; }
         after="$(deploy_measure_project_snapshot "$private_root/$name-after-continuity.json" "$private_root/$name-after-operations.json" "$private_root/$name-after-stats.json")"
         DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --argjson after "$after" '.targets |= map(if .target == $target then .after=$after | .status="measured" else . end)' <<< "$DEPLOY_MEASURE_JSON")"
         deploy_measure_publish

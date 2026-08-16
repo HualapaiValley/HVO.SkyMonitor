@@ -30,7 +30,7 @@ public sealed record Linear16TransientReconstructionResult(
 public static class Linear16TransientReconstruction
 {
     public const string AlgorithmVersion = "linear16-transient-reconstruction-v1";
-    public const int MaximumDetectorPixels = 10_000_000;
+    public const int MaximumDetectorPixels = 16_000_000;
 
     public static Linear16TransientReconstructionResult Reconstruct(
         IReadOnlyList<Linear16TransientReconstructionObservation> observations,

@@ -18,6 +18,7 @@ internal sealed class RawCaptureIngress :
     IRawIngressPressureReporter,
     IRawIngressWakeupReporter,
     ICaptureLaneStore,
+    IOperationsQueueSnapshotRefresher,
     IDisposable
 {
     private readonly CameraAgentHostOptions _options;
@@ -819,6 +820,12 @@ internal sealed class RawCaptureIngress :
             _laneState.SetUnhealthy("lane-state-unavailable");
             throw;
         }
+    }
+
+    public async ValueTask RefreshOperationsQueueSnapshotsAsync(CancellationToken cancellationToken)
+    {
+        await RefreshHeldStateAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static string NormalizeLaneReason(string reason)

@@ -28,7 +28,7 @@ public sealed record TransientCandidateExtractionOptionsV1(
 public static class TransientCandidateExtractionProfiles
 {
     public static TransientCandidateExtractionOptionsV1 EdgeV1 { get; } = new(
-        50, 4, 500, 32, 16, 4_096, 100_000, 4, 0.9);
+        50, 4, 500, 32, 16, 4_096, 1_000_000, 4, 0.9);
 }
 
 public sealed record TransientCandidateIdentitySlot(Guid CandidateId, Guid EventId);
