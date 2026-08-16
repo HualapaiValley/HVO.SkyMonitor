@@ -2576,12 +2576,13 @@ for service in sql redis minio; do
   grep -Fq 'device: ${HVO_STATE_ROOT:?state root required}/'"$service" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"
 done
 normalize_fixture="$TEMP_DIR/bootstrap-pascal-response.json"
-printf '%s\n' '{"RegistrationId":"00000000-0000-0000-0000-000000000001","Status":1,"CaptureControl":{"Value":{"State":"Paused","Version":2}},"FleetAgentInstanceId":"instance-1","MaximumHeartbeatSequence":4,"CentralArtifactCount":5,"LastHeartbeatReceivedAtUtc":"2026-08-15T00:00:00Z","Metadata":{"CaseSensitiveKey":"value"}}' > "$normalize_fixture"
+printf '%s\n' '{"RegistrationId":"00000000-0000-0000-0000-000000000001","Status":1,"CaptureControl":{"Value":{"State":"Paused","Version":2}},"FleetAgentInstanceId":"instance-1","MaximumHeartbeatSequence":4,"CentralArtifactCount":5,"CurrentRigProfileVersion":1,"CurrentRigProfileHash":"ABC123","LastHeartbeatReceivedAtUtc":"2026-08-15T00:00:00Z","Metadata":{"CaseSensitiveKey":"value"}}' > "$normalize_fixture"
 chmod 600 "$normalize_fixture"
 (source "$REPO_ROOT/scripts/deploy/bootstrap.sh"; deploy_bootstrap_normalize_response "$normalize_fixture")
 jq -e '.registrationId == "00000000-0000-0000-0000-000000000001" and .status == "Active" and
   .captureControl.value.state == "Paused" and .captureControl.value.version == 2 and
   .fleetAgentInstanceId == "instance-1" and .maximumHeartbeatSequence == 4 and .centralArtifactCount == 5 and
+  .currentRigProfileVersion == 1 and .currentRigProfileHash == "ABC123" and
   .lastHeartbeatReceivedAtUtc == "2026-08-15T00:00:00Z" and
   .Metadata.CaseSensitiveKey == "value"' \
   "$normalize_fixture" >/dev/null

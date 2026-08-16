@@ -62,6 +62,7 @@ deploy_bootstrap_normalize_response() {
          CentralFrameCount:"centralFrameCount",MaximumCaptureSequence:"maximumCaptureSequence",
          CaptureControl:"captureControl",Value:"value",FleetAgentInstanceId:"fleetAgentInstanceId",
          MaximumHeartbeatSequence:"maximumHeartbeatSequence",CentralArtifactCount:"centralArtifactCount",
+         CurrentRigProfileVersion:"currentRigProfileVersion",CurrentRigProfileHash:"currentRigProfileHash",
          LastHeartbeatReceivedAtUtc:"lastHeartbeatReceivedAtUtc"}[.] // .;
       walk(if type == "object" then with_entries(.key |= contract_key) else . end) |
       if type == "object" and has("registrationId") and (.status | type) == "number" then
