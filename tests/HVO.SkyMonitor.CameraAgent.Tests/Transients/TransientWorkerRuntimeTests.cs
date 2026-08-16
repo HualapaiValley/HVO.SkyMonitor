@@ -187,6 +187,12 @@ public sealed class TransientWorkerRuntimeTests
             var cameraConfiguration = CreateConfiguration(width: 192, height: 192);
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
             await StageVirtualFramesAsync(provider, cameraConfiguration, epoch, 7, candidateLimitFrame: true).ConfigureAwait(false);
+            var stagedBacklog = (await provider.GetRequiredService<ICaptureLaneStore>()
+                .ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
+                .Single(static lane => lane.Lane == "transient");
+            CollectionAssert.AreEqual(
+                new long[] { 6, 7 },
+                stagedBacklog.PendingCaptures!.Select(static capture => capture.CaptureSequence).ToArray());
             var worker = provider.GetRequiredService<TransientWorkerService>();
             for (var index = 0; index < 7; index++)
             {

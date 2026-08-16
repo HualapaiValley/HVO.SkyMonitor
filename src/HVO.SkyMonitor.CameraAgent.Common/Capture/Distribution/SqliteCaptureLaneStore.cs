@@ -575,11 +575,14 @@ internal sealed class SqliteCaptureLaneStore(
         using var sequencesCommand = connection.CreateCommand();
         sequencesCommand.Transaction = transaction;
         sequencesCommand.CommandText = """
-            SELECT r.agent_id, r.capture_sequence
-            FROM transient_capture_work w
-            JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
-            WHERE w.state = 'pending'
-            ORDER BY r.capture_sequence;
+            SELECT agent_id, capture_sequence FROM (
+                SELECT r.agent_id, r.capture_sequence, r.durable_ingress_unix_ms, r.raw_capture_row_id
+                FROM transient_capture_work w
+                JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
+                WHERE w.state = 'pending'
+                ORDER BY r.durable_ingress_unix_ms DESC, r.raw_capture_row_id DESC
+                LIMIT 2)
+            ORDER BY capture_sequence;
             """;
         var pendingCaptures = new List<CaptureLanePendingCapture>();
         using var sequencesReader = await sequencesCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
