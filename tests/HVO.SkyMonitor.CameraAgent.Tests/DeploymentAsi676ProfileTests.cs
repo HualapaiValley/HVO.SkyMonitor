@@ -176,6 +176,10 @@ public sealed class DeploymentAsi676ProfileTests
 
         Assert.HasCount(8, colorPlan.EffectiveNodes);
         Assert.HasCount(8, monoPlan.EffectiveNodes);
+        Assert.AreEqual(BuiltInProcessingRecipes.LinearNormalization,
+            colorPlan.EffectiveNodes.Single(node => node.Id == "calibration").RecipeName);
+        Assert.AreEqual(BuiltInProcessingRecipes.LinearNormalization,
+            monoPlan.EffectiveNodes.Single(node => node.Id == "calibration").RecipeName);
         var colorPipeline = color.Pipeline ?? throw new AssertFailedException("Color pipeline is required.");
         var monoPipeline = mono.Pipeline ?? throw new AssertFailedException("Mono pipeline is required.");
         Assert.IsTrue(colorPipeline.Steps.All(static step => step.DependsOn is { Count: > 0 }));

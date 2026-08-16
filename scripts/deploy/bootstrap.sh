@@ -222,20 +222,46 @@ deploy_bootstrap_central_headers() {
 
 deploy_bootstrap_resume_capture() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" run_id="$6"
-    local name endpoint body request_headers status
+    local name endpoint body request_headers status current_state current_version
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
-    body="$render_root/$name-resume.json"; request_headers="$target_remote/resume-1-control.headers"
-    jq -cn '{reason:"deployment bootstrap completed"}' > "$body"
+    status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/summary" "" "" "$cookies" \
+      "$target_remote/pre-resume-operations.json" "$private_root/$name-pre-resume-operations.json")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail bootstrap "$name" pre-resume-state-failed; return 1; }
+    current_state="$(jq -er '.captureControl.value.state' "$private_root/$name-pre-resume-operations.json")" || return 1
+    current_version="$(jq -er '.captureControl.value.version | numbers | select(. >= 0 and floor == .)' "$private_root/$name-pre-resume-operations.json")" || return 1
+    [[ "$current_state" != Running ]] || return 0
+    [[ "$current_state" == Paused ]] || { deploy_fail bootstrap "$name" pre-resume-state-invalid; return 1; }
+    body="$render_root/$name-resume-$current_version.json"; request_headers="$target_remote/resume-$current_version-control.headers"
+    jq -cn --argjson version "$current_version" '{expectedVersion:$version,reason:"deployment bootstrap completed"}' > "$body"
     deploy_bootstrap_stage_json "$target" "$body" "$target_remote/resume.json" || return 1
     deploy_bootstrap_register_private_remote "$target" "$request_headers" || return 1
     deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$request_headers" \
-      "deploy-bootstrap-$run_id-$name-resume" || return 1
+      "deploy-bootstrap-$run_id-$name-resume-$current_version" || return 1
     status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/capture/resume" "$target_remote/resume.json" \
       "$request_headers" "$cookies" "$target_remote/resume-response.json" "$private_root/$name-resume-response.json")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail bootstrap "$name" resume-control-failed; return 1; }
     jq -e '.state == "Running" or .state == 1' "$private_root/$name-resume-response.json" >/dev/null || return 1
     deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" "$target_remote/resume.json" "$request_headers" || return 1
     deploy_transport_forget_private_path "$request_headers" || return 1
+}
+
+deploy_bootstrap_local_capture_sequence() {
+    local path="$1" device="$2"
+    jq -er --arg device "$device" '
+      [.durable.captureSequences[] | select(.agentId == $device) | .lastSequence] as $sequences |
+      if ($sequences | length) == 0 then -1
+      elif ($sequences | length) == 1 and ($sequences[0] | type) == "number" and
+           $sequences[0] >= 0 and ($sequences[0] | floor) == $sequences[0] then $sequences[0]
+      else empty end' "$path"
+}
+
+deploy_bootstrap_central_capture_sequence() {
+    local path="$1"
+    jq -er '
+      if .maximumCaptureSequence == null then -1
+      elif (.maximumCaptureSequence | type) == "number" and .maximumCaptureSequence >= 0 and
+           (.maximumCaptureSequence | floor) == .maximumCaptureSequence then .maximumCaptureSequence
+      else empty end' "$path"
 }
 
 deploy_stage_workload_profile() {
@@ -308,7 +334,7 @@ deploy_run_bootstrap() {
     local state_dir evidence_dir render_root private_root now logic logic_root logic_remote headers observatories observatory_id matching conflicting
     local target name target_root target_remote response status identity device_id verification_code registration_id envelope_file envelope central_status
     local cookies endpoint project context env_file continuity fleet_ack pre_local_ack pre_central_ack pre_ack_time current_local_ack current_central_ack local_before
-    local pre_local_capture pre_central_capture current_local_capture current_central_capture
+    local pre_local_capture pre_central_capture current_local_capture current_central_capture operations_ready
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/up-manifest.json" bootstrap "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
     DEPLOY_IMAGES_PREFLIGHT_JSON="$(jq -c . "$DEPLOY_MANIFEST")"
@@ -487,8 +513,8 @@ deploy_run_bootstrap() {
         pre_local_ack="$(jq -r '.durable.fleetNextSequence // -1' "$private_root/$name-pre-restart-continuity.json")"
         pre_central_ack="$(jq -r '.maximumHeartbeatSequence // -1' "$private_root/$name-pre-restart-central.json")"
         pre_ack_time="$(jq -r '.lastHeartbeatReceivedAtUtc // ""' "$private_root/$name-pre-restart-central.json")"
-        pre_local_capture="$(jq -r --arg device "$device_id" '[.durable.captureSequences[] | select(.agentId == $device) | .lastSequence] | first // -1' "$private_root/$name-pre-restart-continuity.json")"
-        pre_central_capture="$(jq -r '.maximumCaptureSequence // -1' "$private_root/$name-pre-restart-central.json")"
+        pre_local_capture="$(deploy_bootstrap_local_capture_sequence "$private_root/$name-pre-restart-continuity.json" "$device_id")" || return 1
+        pre_central_capture="$(deploy_bootstrap_central_capture_sequence "$private_root/$name-pre-restart-central.json")" || return 1
 
         deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__AgentId "$device_id" || return 1
         deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__ProvisioningStartupGate__Enabled false || return 1
@@ -509,13 +535,26 @@ deploy_run_bootstrap() {
             [[ "$status" == 200 ]] || { deploy_fail bootstrap "$name" unexpected-central-post-restart-status; return 1; }
             current_local_ack="$(jq -r '.durable.fleetNextSequence // -1' "$private_root/$name-continuity.json")"
             current_central_ack="$(jq -r '.maximumHeartbeatSequence // -1' "$private_root/$name-post-restart-central.json")"
-            current_local_capture="$(jq -r --arg device "$device_id" '[.durable.captureSequences[] | select(.agentId == $device) | .lastSequence] | first // -1' "$private_root/$name-continuity.json")"
-            current_central_capture="$(jq -r '.maximumCaptureSequence // -1' "$private_root/$name-post-restart-central.json")"
+            current_local_capture="$(deploy_bootstrap_local_capture_sequence "$private_root/$name-continuity.json" "$device_id")" || return 1
+            current_central_capture="$(deploy_bootstrap_central_capture_sequence "$private_root/$name-post-restart-central.json")" || return 1
+            status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/summary" "" "" "$cookies" \
+              "$target_remote/post-restart-operations.json" "$private_root/$name-post-restart-operations.json")" || return 1
+            [[ "$status" == 200 ]] || { deploy_fail bootstrap "$name" unexpected-local-operations-status; return 1; }
+            operations_ready=false
+            jq -e '
+              .captureControl.value.state == "Running" and
+              .rawIngress.value.availability == "Accepting" and .rawIngress.value.quarantineCount == 0 and
+              .captureLanes.value.availability == "Healthy" and .captureLanes.value.retryCount == 0 and .captureLanes.value.quarantineCount == 0 and
+              .captureProcessing.value.availability == "Healthy" and .captureProcessing.value.retryCount == 0 and
+                .captureProcessing.value.quarantineCount == 0 and .captureProcessing.value.terminalCount == 0 and
+              .artifactOutbox.value.availability == "Healthy" and .artifactOutbox.value.retryCount == 0 and
+                .artifactOutbox.value.quarantineCount == 0 and .artifactOutbox.value.terminalCount == 0' \
+              "$private_root/$name-post-restart-operations.json" >/dev/null && operations_ready=true
             if jq -e --arg device "$device_id" --arg beforeTime "$pre_ack_time" --argjson beforeLocal "$pre_local_ack" --argjson beforeCentral "$pre_central_ack" \
               --argjson currentLocal "$current_local_ack" --argjson currentCentral "$current_central_ack" '
               .deviceId == $device and .configuredAgentId == $device and .isProvisioned == true and .lastFleetAcknowledgedUtc != null and
               $currentLocal > $beforeLocal and $currentCentral > $beforeCentral' "$private_root/$name-continuity.json" >/dev/null &&
-              (( current_local_capture > pre_local_capture && current_central_capture > pre_central_capture )) &&
+              (( current_local_capture > pre_local_capture && current_central_capture > pre_central_capture )) && [[ "$operations_ready" == true ]] &&
               jq -e --arg before "$pre_ack_time" --arg expectedHash "$(jq -r '.expectedRigProfileHash' "$private_root/$name-continuity.json")" \
                 '.lastHeartbeatReceivedAtUtc != null and ($before == "" or .lastHeartbeatReceivedAtUtc > $before) and
                  (.currentRigProfileVersion | numbers) >= 1 and .currentRigProfileHash == $expectedHash' \
