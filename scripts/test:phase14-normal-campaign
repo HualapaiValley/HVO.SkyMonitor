@@ -60,21 +60,30 @@ make_measure() {
          captureId:("00000000-0000-0000-" + $identity + "-" + ((100000000000 + ($kind * 1000) + $sequence) | tostring)),
          rawArtifactId:("00000000-0000-0000-" + $identity + "-" + ((200000000000 + ($kind * 1000) + $sequence) | tostring)),
          rawChecksumSha256:(if $workload == "W1" then "d" * 64 else "e" * 64 end),rawByteLength:$bytes};
-      def emptyQueues:
-        {raw:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
-         processing:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
-         outbox:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
-         lanes:{pendingCount:0,pendingBytes:0,leasedCount:0,quarantineCount:0,lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,leasedCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null}]}};
+       def emptyQueues:
+         {raw:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
+          processing:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
+          outbox:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
+          transient:{availability:"Healthy",pendingFrames:0,pendingCandidates:0},
+          lanes:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]}]}};
+       def tailQueues($end):
+         {raw:{pendingCount:2,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:"2026-08-10T00:09:00Z"},
+          processing:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
+          outbox:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
+          transient:{availability:"Healthy",pendingFrames:0,pendingCandidates:0},
+          lanes:{pendingCount:2,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,lanes:[
+            {name:"standard",required:true,pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]},
+            {name:"transient",required:true,pendingCount:2,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:"2026-08-10T00:09:00Z",pendingCaptures:[{agentId:"east-device",captureSequence:($end-1)},{agentId:"east-device",captureSequence:$end}]}]}};
       {schemaVersion:1,publicationGeneration:3,runId:$run,executionRunId:$executionRun,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,
        executionMode:"canonical",canonicalWorkloadConfigured:true,workload:$workload,phaseStatus:"passed",
        startedAt:"2026-08-10T00:00:00Z",updatedAt:"2026-08-10T00:10:00Z",completedAt:"2026-08-10T00:10:00Z",elapsedSeconds:600,
        targets:[{target:"east",deviceId:"east-device",status:"measured",
          profile:($canonical + {workload:$workload,configSha256:("4"*64)}),controlAttempts:[],warmupStart:$start,measuredStart:($start+5),
          warmupCompleted:5,measuredCompleted:30,
-         warmup:{startSequence:$start,endSequence:($start+5),count:5,captures:[range($start+1;$start+6)|capture(.;1)],drained:true,correctness:true},
-         measured:{startSequence:($start+5),endSequence:($start+35),count:30,captures:[range($start+6;$start+36)|capture(.;2)],drained:true,correctness:true},
-         before:{telemetry:{sampleCount:0},timings:[],queues:emptyQueues},
-         after:{telemetry:{sampleCount:30,averageLoopMilliseconds:25},timings:[{segment:"capture",sampleCount:30,medianMilliseconds:20,p95Milliseconds:25,maximumMilliseconds:30}],queues:emptyQueues},
+          warmup:{startSequence:$start,endSequence:($start+5),count:5,captures:[range($start+1;$start+6)|capture(.;1)],drained:false,boundedTemporalTail:{count:2,captureSequences:[$start+4,$start+5]},correctness:true},
+          measured:{startSequence:($start+5),endSequence:($start+35),count:30,captures:[range($start+6;$start+36)|capture(.;2)],drained:false,boundedTemporalTail:{count:2,captureSequences:[$start+34,$start+35]},correctness:true},
+          before:{telemetry:{sampleCount:0},timings:[],queues:emptyQueues},
+          after:{telemetry:{sampleCount:30,averageLoopMilliseconds:25},timings:[{segment:"capture",sampleCount:30,medianMilliseconds:20,p95Milliseconds:25,maximumMilliseconds:30}],queues:tailQueues($start+35)},
          failureCleanup:{status:"not-required"}}]}' > "$destination"
     chmod 600 "$destination"
 }

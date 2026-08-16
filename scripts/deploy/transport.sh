@@ -581,8 +581,13 @@ done
 marker="$root/.hvo-deploy/ownership"
 expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
 [[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker")" == 1 && "$(<"$marker")" == "$expected" ]] || exit 93
+root_uid=$(stat -c %u "$root")
+while IFS= read -r -d '' directory; do
+  [[ "$(stat -c %u "$directory")" == "$root_uid" ]] || exit 94
+done < <(find "$root" -xdev -type d -print0)
+find "$root" -xdev -type d -exec chmod u+w -- {} +
 rm -rf --one-file-system -- "$root"
-[[ ! -e "$root" && ! -L "$root" ]] || exit 94
+[[ ! -e "$root" && ! -L "$root" ]] || exit 95
 REMOTE
 }
 

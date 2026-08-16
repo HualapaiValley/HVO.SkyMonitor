@@ -841,10 +841,11 @@ public sealed class VirtualSkyCameraModule(
              resolved!.Layout.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Mono16) ||
              resolved.Profile.BinningAlgorithm == FrameBinningAlgorithm.ChargeSumV1 ||
              resolved.Profile.Packing != FrameSamplePacking.ByteAligned ||
-             options.SyntheticCalibration is not null || options.CloudScenario is not null || options.TransientScenario is not null))
+             options.SyntheticCalibration is not null || options.CloudScenario is not null ||
+             options.TransientScenario is { SensorTracks.Count: > 0 }))
         {
             throw new NotSupportedException(
-                "VirtualSky native readout currently supports byte-aligned monochrome identity, digital-sum, and digital-average modes without scenarios or synthetic calibration.");
+                "VirtualSky native readout currently supports byte-aligned monochrome identity, digital-sum, and digital-average modes without clouds, sensor-plane transient tracks, or synthetic calibration.");
         }
         var nativeSampleDepth = rig.Sensor.SimulationResponse?.AdcBitDepth ?? options switch
         {

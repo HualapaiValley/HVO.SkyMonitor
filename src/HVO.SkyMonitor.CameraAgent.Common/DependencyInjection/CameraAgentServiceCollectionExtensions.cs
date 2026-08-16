@@ -104,6 +104,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<IOperationsQueueSnapshotRefresher>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<SqliteCaptureScheduleStore>();
         services.AddSingleton<SqliteCalibrationLibraryStore>();
         services.AddSingleton<CalibrationArtifactPublisher>();

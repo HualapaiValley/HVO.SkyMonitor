@@ -52,7 +52,7 @@ public sealed class CaptureLaneTelemetryTests
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = "raw" });
         var state = new CaptureLaneState(TimeProvider.System, options);
         state.Update([
-            new CaptureLaneBacklog("standard", true, 2, 8, DateTimeOffset.UtcNow.AddSeconds(-2), 1, 0)
+            new CaptureLaneBacklog("standard", true, 2, 8, DateTimeOffset.UtcNow.AddSeconds(-2), 1, 0, 0)
         ]);
         using var telemetry = new CaptureLaneTelemetry(state);
         var lane = new CaptureLaneDefinition("standard", true, true, true, new string('A', 64));

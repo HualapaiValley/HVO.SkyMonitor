@@ -312,6 +312,7 @@ deploy_run_up() {
         root_secret="$(deploy_secret_value "$(jq -r '.secretSource.path' "$inventory")" "$(jq -r '.deployment.services.minio.rootSecretKeyReference' "$inventory")")" || { unset root_access; return 1; }
         mc_config="$(jq -cn --arg access "$root_access" --arg secret "$root_secret" \
           '{version:"10",aliases:{local:{url:"http://minio:9000",accessKey:$access,secretKey:$secret,api:"S3v4",path:"auto"}}}')" || { unset root_access root_secret; return 1; }
+        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/private/mc" account "$root_access" || { unset root_access root_secret mc_config; return 1; }
         unset root_access root_secret
         deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/private/mc" config.json "$mc_config" || { unset mc_config; return 1; }
         unset mc_config

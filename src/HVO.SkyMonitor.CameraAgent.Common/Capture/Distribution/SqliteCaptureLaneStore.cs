@@ -478,6 +478,7 @@ internal sealed class SqliteCaptureLaneStore(
         command.CommandText = """
             SELECT COUNT(*), COALESCE(SUM(r.payload_length), 0), MIN(r.durable_ingress_unix_ms),
                    COALESCE(SUM(CASE WHEN w.state = 'leased' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN w.state = 'retry_wait' THEN 1 ELSE 0 END), 0),
                    COALESCE(SUM(CASE WHEN w.state = 'quarantined' THEN 1 ELSE 0 END), 0)
             FROM capture_lane_work w
             JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
@@ -492,7 +493,8 @@ internal sealed class SqliteCaptureLaneStore(
                 ? null
                 : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2));
         var leased = reader.GetInt64(3);
-        var quarantined = reader.GetInt64(4);
+        var retrying = reader.GetInt64(4);
+        var quarantined = reader.GetInt64(5);
         await reader.DisposeAsync().ConfigureAwait(false);
         var required = count == 0
             ? lane.Required
@@ -504,7 +506,9 @@ internal sealed class SqliteCaptureLaneStore(
             bytes,
             oldest,
             leased,
-            quarantined);
+            retrying,
+            quarantined,
+            PendingCaptures: []);
         using var pressure = connection.CreateCommand();
         pressure.Transaction = transaction;
         pressure.CommandText = "SELECT pressure_state FROM capture_lane_definitions WHERE lane_name = $lane;";
@@ -549,6 +553,7 @@ internal sealed class SqliteCaptureLaneStore(
                     UNION ALL
                     SELECT created_unix_ms FROM transient_candidates WHERE source_hold_released = 0)),
                 (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'leased'),
+                (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'retry_wait'),
                 (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'quarantined') +
                     (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'quarantined') +
                     (SELECT COUNT(*) FROM transient_candidates WHERE phase = 'quarantined') +
@@ -557,17 +562,47 @@ internal sealed class SqliteCaptureLaneStore(
             """;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        var count = reader.GetInt64(0);
+        var bytes = reader.GetInt64(1);
+        var oldest = await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)
+            ? null
+            : (DateTimeOffset?)DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2));
+        var leased = reader.GetInt64(3);
+        var retrying = reader.GetInt64(4);
+        var quarantined = reader.GetInt64(5);
+        var pressure = reader.GetInt32(6);
+        await reader.DisposeAsync().ConfigureAwait(false);
+        using var sequencesCommand = connection.CreateCommand();
+        sequencesCommand.Transaction = transaction;
+        sequencesCommand.CommandText = """
+            SELECT agent_id, capture_sequence FROM (
+                SELECT r.agent_id, r.capture_sequence, r.durable_ingress_unix_ms, r.raw_capture_row_id
+                FROM transient_capture_work w
+                JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
+                WHERE w.state = 'pending'
+                ORDER BY r.durable_ingress_unix_ms DESC, r.raw_capture_row_id DESC
+                LIMIT 2)
+            ORDER BY capture_sequence;
+            """;
+        var pendingCaptures = new List<CaptureLanePendingCapture>();
+        using var sequencesReader = await sequencesCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await sequencesReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            pendingCaptures.Add(new CaptureLanePendingCapture(
+                sequencesReader.GetString(0),
+                sequencesReader.GetInt64(1)));
+        }
         return new CaptureLaneBacklog(
             lane.Name,
             lane.Required,
-            reader.GetInt64(0),
-            reader.GetInt64(1),
-            await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)
-                ? null
-                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
-            reader.GetInt64(3),
-            reader.GetInt64(4),
-            reader.GetInt32(5));
+            count,
+            bytes,
+            oldest,
+            leased,
+            retrying,
+            quarantined,
+            pressure,
+            pendingCaptures);
     }
 
     private static async Task<bool> ReadHasRequiredAsync(

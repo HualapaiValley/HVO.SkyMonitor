@@ -68,6 +68,8 @@ internal sealed record CaptureLaneLease(
     DateTimeOffset LeaseExpiresUtc,
     CaptureLaneHandlerContext Context);
 
+internal sealed record CaptureLanePendingCapture(string AgentId, long CaptureSequence);
+
 internal sealed record CaptureLaneBacklog(
     string Lane,
     bool Required,
@@ -75,8 +77,15 @@ internal sealed record CaptureLaneBacklog(
     long PendingBytes,
     DateTimeOffset? OldestPendingUtc,
     long LeasedCount,
+    long RetryCount,
     long QuarantineCount,
-    int PressureLevel = 0);
+    int PressureLevel = 0,
+    IReadOnlyList<CaptureLanePendingCapture>? PendingCaptures = null);
+
+public interface IOperationsQueueSnapshotRefresher
+{
+    ValueTask RefreshOperationsQueueSnapshotsAsync(CancellationToken cancellationToken);
+}
 
 public interface ICaptureLaneHandler
 {

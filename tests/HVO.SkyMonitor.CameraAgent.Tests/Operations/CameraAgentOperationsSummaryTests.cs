@@ -46,8 +46,10 @@ public sealed class CameraAgentOperationsSummaryTests
         rawIngress.Set(RawIngressAvailability.Degraded, "secret-raw-reason", 7, 700, 2, 200, now.AddMinutes(-1));
         var lanes = new CaptureLaneState(timeProvider, options);
         lanes.Update([
-            new CaptureLaneBacklog("standard", true, 3, 300, now.AddMinutes(-2), 1, 0),
-            new CaptureLaneBacklog("transient", false, 4, 400, now.AddMinutes(-1), 0, 2, 1)
+            new CaptureLaneBacklog("standard", true, 3, 300, now.AddMinutes(-2), 1, 2, 0,
+                PendingCaptures: [new("agent-operations", 1), new("agent-operations", 2)]),
+            new CaptureLaneBacklog("transient", false, 4, 400, now.AddMinutes(-1), 0, 0, 2, 1,
+                PendingCaptures: [new("agent-operations", 3), new("agent-operations", 4)])
         ]);
         var processing = new CaptureProcessingState();
         processing.SetDurable(5, 2, 1, now.AddMinutes(-3));
@@ -95,10 +97,12 @@ public sealed class CameraAgentOperationsSummaryTests
         using var captureTelemetry = new CaptureControlTelemetry();
         using var coordinator = new CaptureAdmissionCoordinator(
             new NullIngress(), options, timeProvider, captureTelemetry);
+        var laneSnapshotRefresher = new RecordingLaneSnapshotRefresher();
         var provider = new CameraAgentOperationsSummaryProvider(
             timeProvider,
             coordinator,
             rawIngress,
+            laneSnapshotRefresher,
             lanes,
             processing,
             artifactOutbox,
@@ -114,9 +118,15 @@ public sealed class CameraAgentOperationsSummaryTests
 
         var summary = await provider.GetAsync(CancellationToken.None).ConfigureAwait(false);
 
+        Assert.AreEqual(1, laneSnapshotRefresher.Calls);
         Assert.AreEqual("Degraded", summary.RawIngress.Value.Availability);
         Assert.AreEqual(7L, summary.RawIngress.Value.PendingCount);
         Assert.HasCount(2, summary.CaptureLanes.Value.Lanes);
+        Assert.AreEqual(2L, summary.CaptureLanes.Value.RetryCount);
+        Assert.AreEqual(2L, summary.CaptureLanes.Value.Lanes[0].RetryCount);
+        CollectionAssert.AreEqual(
+            new long[] { 3, 4 },
+            summary.CaptureLanes.Value.Lanes[1].PendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
         Assert.AreEqual(1L, summary.CaptureProcessing.Value.TerminalCount);
         Assert.AreEqual("Unavailable", summary.ArtifactOutbox.Value.Availability);
         Assert.AreEqual("raw-ingress", summary.Storage.Value[0].Alias);
@@ -165,5 +175,16 @@ public sealed class CameraAgentOperationsSummaryTests
             CaptureLoopSubmission submission,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<RawCaptureReceipt?>(null);
+    }
+
+    private sealed class RecordingLaneSnapshotRefresher : IOperationsQueueSnapshotRefresher
+    {
+        public int Calls { get; private set; }
+
+        public ValueTask RefreshOperationsQueueSnapshotsAsync(CancellationToken cancellationToken)
+        {
+            Calls++;
+            return ValueTask.CompletedTask;
+        }
     }
 }

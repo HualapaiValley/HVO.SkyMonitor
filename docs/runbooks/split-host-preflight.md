@@ -613,6 +613,14 @@ representative hook; Tier M candidate evidence uses the inventory's canonical 5
 warm-up plus 30 measured operations fixed by the canonical manifest and the trial/regression rules in
 `docs/planning/performance-validation.md`.
 
+For a required Hybrid transient lane, queue convergence permits only the temporal
+algorithm's final two healthy history captures. Raw ingress and the transient lane
+must contain exactly that bounded tail, every other lane and queue must be empty,
+and the transient worker must be healthy and idle. The retained before/after queue
+snapshots expose this tail and its exact final capture sequences; measurement marks
+the queues converged but not fully drained. Any additional pending item, pressure, lease, retry,
+quarantine, terminal work, or active transient worker fails convergence.
+
 `bootstrap`, `smoke`, `measure`, `acceptance-init`, and `down` publish an authoritative private
 ledger with a monotonically increasing publication generation. A digest commit
 identifies the generation for which ledger, manifest, and evidence are all

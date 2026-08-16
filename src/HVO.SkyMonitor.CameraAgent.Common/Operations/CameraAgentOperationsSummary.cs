@@ -36,9 +36,13 @@ public sealed record OperationsLaneState(
     long PendingCount,
     long PendingBytes,
     long LeasedCount,
+    long RetryCount,
     long QuarantineCount,
     int PressureLevel,
-    DateTimeOffset? OldestPendingUtc);
+    DateTimeOffset? OldestPendingUtc,
+    IReadOnlyList<OperationsPendingCapture> PendingCaptures);
+
+public sealed record OperationsPendingCapture(string AgentId, long CaptureSequence);
 
 public sealed record OperationsCaptureLanesState(
     string Availability,
@@ -46,6 +50,7 @@ public sealed record OperationsCaptureLanesState(
     long PendingCount,
     long PendingBytes,
     long LeasedCount,
+    long RetryCount,
     long QuarantineCount,
     DateTimeOffset? OldestPendingUtc);
 
@@ -148,6 +153,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
     TimeProvider timeProvider,
     CaptureAdmissionCoordinator captureControl,
     RawIngressState rawIngress,
+    IOperationsQueueSnapshotRefresher operationsQueueSnapshotRefresher,
     CaptureLaneState captureLanes,
     CaptureProcessingState captureProcessing,
     ArtifactOutboxState artifactOutbox,
@@ -165,6 +171,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
 
     public async ValueTask<CameraAgentOperationsSummary> GetAsync(CancellationToken cancellationToken)
     {
+        await operationsQueueSnapshotRefresher.RefreshOperationsQueueSnapshotsAsync(cancellationToken).ConfigureAwait(false);
         var now = timeProvider.GetUtcNow().ToUniversalTime();
         var control = captureControl.Snapshot;
         var ingress = rawIngress.Snapshot;
@@ -197,8 +204,11 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 lanes.Availability.ToString(),
                 lanes.Lanes.Select(static lane => new OperationsLaneState(
                     lane.Lane, lane.Required, lane.PendingCount, lane.PendingBytes, lane.LeasedCount,
-                    lane.QuarantineCount, lane.PressureLevel, lane.OldestPendingUtc)).ToArray(),
-                lanes.PendingCount, lanes.PendingBytes, lanes.LeasedCount, lanes.QuarantineCount,
+                    lane.RetryCount, lane.QuarantineCount, lane.PressureLevel, lane.OldestPendingUtc,
+                    lane.PendingCaptures.Select(static capture => new OperationsPendingCapture(
+                        capture.AgentId,
+                        capture.CaptureSequence)).ToArray())).ToArray(),
+                lanes.PendingCount, lanes.PendingBytes, lanes.LeasedCount, lanes.RetryCount, lanes.QuarantineCount,
                 lanes.OldestPendingUtc)),
             Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsQueueState(
                 processing.Availability.ToString(), processing.PendingCount, 0, 0, processing.RetryCount,

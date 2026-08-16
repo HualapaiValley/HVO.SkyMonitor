@@ -20,7 +20,9 @@ deploy_acceptance_campaign_validate_runtime() {
         "recoverySeconds","drainRate","artifactByteLength","artifactSha256"] | length) == 0) and
       (if .phaseStatus == "passed" then .logicState == "restored" and (.baselineSequence | numbers) >= 0 and
         .expectedEnd == (.baselineSequence + 10) and .facts.startSequence == .baselineSequence and .facts.endSequence == .expectedEnd and
-        .facts.count == 10 and .facts.drained == true and .facts.correctness == true and
+        .facts.count == 10 and .facts.drained == false and .facts.correctness == true and
+        .facts.boundedTemporalTail.count == 2 and
+        .facts.boundedTemporalTail.captureSequences == [.facts.endSequence - 1,.facts.endSequence] and
         (.outagePendingCount | numbers) > 0 and (.outagePendingBytes | numbers) > 0 and (.outageSeconds | numbers) >= 0 and
         (.recoverySeconds | numbers) >= 1 and (.drainRate | numbers) > 0.04 and
         (.artifactByteLength | numbers) > 0 and (.artifactSha256 | test("^[0-9a-f]{64}$"))
@@ -71,8 +73,10 @@ deploy_acceptance_campaign_build_artifact() {
     local acceptance_ledger="$1" scenario="$2" facts="$3" started="$4" completed="$5" outage_seconds="$6" recovery_seconds="$7"
     local pending="$8" pending_bytes="$9" drain_rate="${10}" raw_bytes
     jq -e '
-      (keys | sort) == (["captures","correctness","count","drained","endSequence","startSequence"] | sort) and
-      .count == 10 and .endSequence == (.startSequence + 10) and .drained == true and .correctness == true and
+      (keys | sort) == (["captures","correctness","count","drained","boundedTemporalTail","endSequence","startSequence"] | sort) and
+      .count == 10 and .endSequence == (.startSequence + 10) and .drained == false and .correctness == true and
+      .boundedTemporalTail.count == 2 and
+      .boundedTemporalTail.captureSequences == [.endSequence - 1,.endSequence] and
       (.captures | type == "array" and length == 10) and
       all(range(0; 10); . as $index | $facts.captures[$index] as $capture |
         $capture.captureSequence == ($facts.startSequence + $index + 1) and
@@ -98,7 +102,7 @@ deploy_acceptance_campaign_build_artifact() {
          {id:"logic-restored",passed:true},
          {id:"exact-capture-window-converged",passed:true},
          {id:"raw-checksums-and-lineage-match",passed:true},
-         {id:"durable-queues-drained",passed:true},
+          {id:"durable-queues-converged",passed:true},
          {id:"drain-capacity-exceeds-arrival",passed:true}],
        outputs:[$facts.captures[] | {id:("capture-" + (.captureSequence|tostring)),byteLength:.rawByteLength,sha256:(.rawChecksumSha256|ascii_downcase)}],
        measurements:[

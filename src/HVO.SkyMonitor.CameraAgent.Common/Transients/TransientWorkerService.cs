@@ -158,6 +158,17 @@ internal sealed class TransientWorkerService(
                 Record("causal", "no-candidate", started, activity);
                 return true;
             }
+            if (IsBoundedSceneLimit(probe))
+            {
+                await CompleteFrameAsync(
+                    frame,
+                    probe.ReasonCode ?? "causal-extraction-limit-exceeded",
+                    causalSucceeded: false,
+                    cancellationToken)
+                    .ConfigureAwait(false);
+                Record("causal", "limit-exceeded", started, activity);
+                return true;
+            }
             if (probe.Status != TransientCandidateExtractionStatus.Produced)
             {
                 throw new TransientWorkerExecutionException(probe.ReasonCode ?? "causal-extraction-failed", retryable: false);
@@ -261,6 +272,14 @@ internal sealed class TransientWorkerService(
             return false;
         }
     }
+
+    internal static bool IsBoundedSceneLimit(TransientCandidateExtractionOutcome outcome)
+        => outcome.Status == TransientCandidateExtractionStatus.LimitExceeded &&
+           (string.Equals(
+                outcome.ReasonCode,
+                TransientCandidateExtractionReasonCodes.CandidateLimit,
+                StringComparison.Ordinal) ||
+            string.Equals(outcome.Field, "options.maximumForegroundPixels", StringComparison.Ordinal));
 
     internal async ValueTask<bool> ProcessCandidateAsync(CancellationToken cancellationToken)
     {
