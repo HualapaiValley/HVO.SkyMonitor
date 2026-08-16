@@ -49,6 +49,9 @@ public sealed class DeploymentAsi676ProfileTests
             Assert.IsTrue(layout.Width * layout.Height <= Linear16TransientExtraction.MaximumDetectorPixels);
             Assert.IsTrue(layout.Width * layout.Height <= Linear16TransientReconstruction.MaximumDetectorPixels);
             Assert.AreEqual(profile.Format, layout.PixelFormat);
+            var calibration = configuration.Pipeline!.Steps.Single(step => step.Type == "Calibration");
+            var calibrationOptions = calibration.Options!.Value.Deserialize<CalibrationProcessingStepOptions>(StrictJsonOptions)!;
+            Assert.AreEqual("None", calibrationOptions.Strategy);
             Assert.AreEqual(TimeSpan.FromSeconds(20), configuration.Rig.Pipeline.DayExposure);
             Assert.AreEqual(TimeSpan.FromSeconds(20), configuration.Rig.Pipeline.NightExposure);
             Assert.AreEqual(TimeSpan.FromSeconds(20), configuration.Rig.Pipeline.CaptureInterval);

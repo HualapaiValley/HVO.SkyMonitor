@@ -220,6 +220,24 @@ deploy_bootstrap_central_headers() {
     deploy_transport_forget_private_path "$local_path" || return 1
 }
 
+deploy_bootstrap_resume_capture() {
+    local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" run_id="$6"
+    local name endpoint body request_headers status
+    name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
+    body="$render_root/$name-resume.json"; request_headers="$target_remote/resume-1-control.headers"
+    jq -cn '{reason:"deployment bootstrap completed"}' > "$body"
+    deploy_bootstrap_stage_json "$target" "$body" "$target_remote/resume.json" || return 1
+    deploy_bootstrap_register_private_remote "$target" "$request_headers" || return 1
+    deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$request_headers" \
+      "deploy-bootstrap-$run_id-$name-resume" || return 1
+    status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/capture/resume" "$target_remote/resume.json" \
+      "$request_headers" "$cookies" "$target_remote/resume-response.json" "$private_root/$name-resume-response.json")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail bootstrap "$name" resume-control-failed; return 1; }
+    jq -e '.state == "Running" or .state == 1' "$private_root/$name-resume-response.json" >/dev/null || return 1
+    deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" "$target_remote/resume.json" "$request_headers" || return 1
+    deploy_transport_forget_private_path "$request_headers" || return 1
+}
+
 deploy_stage_workload_profile() {
     local inventory="$1" target="$2" workload="$3" device_id="$4" render_root="$5" state_dir="$6" run_id="$7"
     local activate="${8:-true}"
@@ -290,6 +308,7 @@ deploy_run_bootstrap() {
     local state_dir evidence_dir render_root private_root now logic logic_root logic_remote headers observatories observatory_id matching conflicting
     local target name target_root target_remote response status identity device_id verification_code registration_id envelope_file envelope central_status
     local cookies endpoint project context env_file continuity fleet_ack pre_local_ack pre_central_ack pre_ack_time current_local_ack current_central_ack local_before
+    local pre_local_capture pre_central_capture current_local_capture current_central_capture
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/up-manifest.json" bootstrap "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
     DEPLOY_IMAGES_PREFLIGHT_JSON="$(jq -c . "$DEPLOY_MANIFEST")"
@@ -468,6 +487,8 @@ deploy_run_bootstrap() {
         pre_local_ack="$(jq -r '.durable.fleetNextSequence // -1' "$private_root/$name-pre-restart-continuity.json")"
         pre_central_ack="$(jq -r '.maximumHeartbeatSequence // -1' "$private_root/$name-pre-restart-central.json")"
         pre_ack_time="$(jq -r '.lastHeartbeatReceivedAtUtc // ""' "$private_root/$name-pre-restart-central.json")"
+        pre_local_capture="$(jq -r --arg device "$device_id" '[.durable.captureSequences[] | select(.agentId == $device) | .lastSequence] | first // -1' "$private_root/$name-pre-restart-continuity.json")"
+        pre_central_capture="$(jq -r '.maximumCaptureSequence // -1' "$private_root/$name-pre-restart-central.json")"
 
         deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__AgentId "$device_id" || return 1
         deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__ProvisioningStartupGate__Enabled false || return 1
@@ -477,6 +498,7 @@ deploy_run_bootstrap() {
         project="$(jq -r '.deployment.resources.project' "$inventory")"; context="$(jq -r '.dockerContext' <<< "$target")"; env_file="$state_dir/up-rendered/$name.env"
         deploy_up_compose_mutation "$target" "$context" "$project-$name" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" up -d --force-recreate cameraagent || return 1
         deploy_transport_http_ready "$(jq -r '.sshHost' <<< "$target")" "$endpoint/health" || return 1
+        deploy_bootstrap_resume_capture "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$run_id" || return 1
         fleet_ack=""
         for _ in $(seq 1 60); do
             status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/internal/deployment/continuity" "" "" "$cookies" \
@@ -487,10 +509,13 @@ deploy_run_bootstrap() {
             [[ "$status" == 200 ]] || { deploy_fail bootstrap "$name" unexpected-central-post-restart-status; return 1; }
             current_local_ack="$(jq -r '.durable.fleetNextSequence // -1' "$private_root/$name-continuity.json")"
             current_central_ack="$(jq -r '.maximumHeartbeatSequence // -1' "$private_root/$name-post-restart-central.json")"
+            current_local_capture="$(jq -r --arg device "$device_id" '[.durable.captureSequences[] | select(.agentId == $device) | .lastSequence] | first // -1' "$private_root/$name-continuity.json")"
+            current_central_capture="$(jq -r '.maximumCaptureSequence // -1' "$private_root/$name-post-restart-central.json")"
             if jq -e --arg device "$device_id" --arg beforeTime "$pre_ack_time" --argjson beforeLocal "$pre_local_ack" --argjson beforeCentral "$pre_central_ack" \
               --argjson currentLocal "$current_local_ack" --argjson currentCentral "$current_central_ack" '
               .deviceId == $device and .configuredAgentId == $device and .isProvisioned == true and .lastFleetAcknowledgedUtc != null and
               $currentLocal > $beforeLocal and $currentCentral > $beforeCentral' "$private_root/$name-continuity.json" >/dev/null &&
+              (( current_local_capture > pre_local_capture && current_central_capture > pre_central_capture )) &&
               jq -e --arg before "$pre_ack_time" --arg expectedHash "$(jq -r '.expectedRigProfileHash' "$private_root/$name-continuity.json")" \
                 '.lastHeartbeatReceivedAtUtc != null and ($before == "" or .lastHeartbeatReceivedAtUtc > $before) and
                  (.currentRigProfileVersion | numbers) >= 1 and .currentRigProfileHash == $expectedHash' \
@@ -500,10 +525,13 @@ deploy_run_bootstrap() {
         done
         [[ "$fleet_ack" == true ]] || { deploy_fail bootstrap "$name" first-fleet-acknowledgement-timeout; return 1; }
         continuity="$(jq -c --argjson beforeLocal "$pre_local_ack" --argjson beforeCentral "$pre_central_ack" --arg beforeTime "$pre_ack_time" \
-          --argjson afterLocal "$current_local_ack" --argjson afterCentral "$current_central_ack" \
+          --argjson afterLocal "$current_local_ack" --argjson afterCentral "$current_central_ack" --argjson captureBeforeLocal "$pre_local_capture" \
+          --argjson captureAfterLocal "$current_local_capture" --argjson captureBeforeCentral "$pre_central_capture" --argjson captureAfterCentral "$current_central_capture" \
           '{deviceId,configuredAgentId,devicePublicId,observatoryId,lastFleetAcknowledgedUtc,expectedRigProfileVersion,expectedRigProfileHash,
             fleetAcknowledgement:{localSequenceBefore:$beforeLocal,localSequenceAfter:$afterLocal,centralSequenceBefore:$beforeCentral,
-              centralSequenceAfter:$afterCentral,centralReceivedAtBefore:(if $beforeTime == "" then null else $beforeTime end)}}' "$private_root/$name-continuity.json")"
+              centralSequenceAfter:$afterCentral,centralReceivedAtBefore:(if $beforeTime == "" then null else $beforeTime end)},
+            captureAcknowledgement:{localSequenceBefore:$captureBeforeLocal,localSequenceAfter:$captureAfterLocal,
+              centralSequenceBefore:$captureBeforeCentral,centralSequenceAfter:$captureAfterCentral}}' "$private_root/$name-continuity.json")"
         DEPLOY_BOOTSTRAP_JSON="$(jq -c --arg target "$name" --argjson continuity "$continuity" \
           '.targets = ([.targets[] | select(.target != $target)] + [{target:$target,status:"ready",continuity:$continuity}])' <<< "$DEPLOY_BOOTSTRAP_JSON")"
         deploy_bootstrap_publish

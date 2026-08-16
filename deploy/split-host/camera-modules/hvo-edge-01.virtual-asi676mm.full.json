@@ -153,7 +153,7 @@
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": [
-      { "id": "calibration", "type": "Calibration", "order": 10, "dependsOn": ["$raw"], "options": { "strategy": "CalibrationLibrary", "outputVariant": "pseudo-calibrated" } },
+      { "id": "calibration", "type": "Calibration", "order": 10, "dependsOn": ["$raw"], "options": { "strategy": "None", "outputVariant": "pseudo-calibrated" } },
       { "id": "calibrated-preview", "type": "CalibratedPreview", "order": 20, "dependsOn": ["calibration"], "options": { "recipeVersion": "mono16-asinh-v2", "outputVariant": "calibrated-preview", "blackPercentile": 0.5, "whitePercentile": 0.9999, "asinhStrength": 4.0 } },
       { "id": "rolling", "type": "RollingCombination", "order": 30, "dependsOn": ["calibration"], "options": { "windowSize": 5, "outputVariant": "rolling-mean" } },
       { "id": "combined-preview", "type": "CombinedPreview", "order": 40, "dependsOn": ["rolling"], "options": { "recipeVersion": "mono16-asinh-v2", "outputVariant": "combined-preview", "blackPercentile": 0.5, "whitePercentile": 0.9999, "asinhStrength": 4.0 } },

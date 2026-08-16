@@ -647,7 +647,7 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   header_path=; for ((i=0; i<${#args[@]}; i++)); do [[ "${args[$i]}" != --header || "${args[$((i+1))]}" != @* ]] || header_path="${args[$((i+1))]#@}"; done
   key=; while IFS= read -r header_line; do [[ "$header_line" != 'Idempotency-Key: '* ]] || key="${header_line#Idempotency-Key: }"; done < "$header_path"
   id_count="$(grep -c '^Idempotency-Key:' "$header_path")"; token_count="$(grep -c '^RequestVerificationToken:' "$header_path")"
-  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(down-[a-z0-9-]+-[a-z0-9-]+-pause-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+|smoke-[a-z0-9-]+-[a-z0-9-]+-(resume|pause)-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
+  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(bootstrap-[a-z0-9-]+-[a-z0-9-]+-resume|down-[a-z0-9-]+-[a-z0-9-]+-pause-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+|smoke-[a-z0-9-]+-[a-z0-9-]+-(resume|pause)-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
   action="${url##*/}"; desired=Running; [[ "$action" != pause ]] || desired=Paused
   [[ "$action" != pause || "${FAKE_PAUSE_CONFLICT:-false}" != true ]] || { : > "$output"; printf 409; exit 0; }
   host="${FAKE_REMOTE_HOST:?}"
@@ -2094,7 +2094,9 @@ done
 run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
 run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and (.targets | length) == 2 and all(.targets[];
-  .status == "ready" and .continuity.deviceId == .continuity.configuredAgentId and .continuity.lastFleetAcknowledgedUtc != null)' \
+  .status == "ready" and .continuity.deviceId == .continuity.configuredAgentId and .continuity.lastFleetAcknowledgedUtc != null and
+  .continuity.captureAcknowledgement.localSequenceAfter > .continuity.captureAcknowledgement.localSequenceBefore and
+  .continuity.captureAcknowledgement.centralSequenceAfter > .continuity.captureAcknowledgement.centralSequenceBefore)' \
   "$TEMP_DIR/output/$deploy_case-state/bootstrap-ledger.json" >/dev/null
 test "$(<"$east_config/secrets/CameraAgent__AgentId")" = device-east
 test "$(<"$east_config/secrets/CameraAgent__ProvisioningStartupGate__Enabled")" = false
@@ -2421,11 +2423,15 @@ for raw_mismatch in id checksum length; do
 done
 control_lines="$(grep -c '^control' "$LOG")"
 (( control_lines >= 12 )) || fail 'Measure did not issue multiple capture-control commands.'
-if grep '^control' "$LOG" | grep -Ev $'^[^\t]+\t[^\t]+-control[.]headers\t[^\t]+\t1\t1\tfalse$' >/dev/null; then
+if grep '^control' "$LOG" | grep -v $'\tdeploy-bootstrap-' | grep -Ev $'^[^\t]+\t[^\t]+-control[.]headers\t[^\t]+\t1\t1\tfalse$' >/dev/null; then
   fail 'A capture-control command did not use a fresh authenticated/antiforgery header with exactly one idempotency key.'
 fi
-if [[ "$(grep '^control' "$LOG" | cut -f2 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control header path was reused.'; fi
-if [[ "$(grep '^control' "$LOG" | cut -f3 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control idempotency key was reused.'; fi
+if grep '^control' "$LOG" | grep $'\tdeploy-bootstrap-' | grep -Ev $'^[^\t]+\t[^\t]+-control[.]headers\tdeploy-bootstrap-[a-z0-9-]+\t1\t1\t(true|false)$' >/dev/null; then
+  fail 'A bootstrap resume command did not use authenticated, antiforgery, and idempotency headers.'
+fi
+test "$(grep '^control' "$LOG" | grep -c $'\tdeploy-bootstrap-' || true)" -ge 2
+if [[ "$(grep '^control' "$LOG" | grep -v $'\tdeploy-bootstrap-' | cut -f2 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control header path was reused.'; fi
+if [[ "$(grep '^control' "$LOG" | grep -v $'\tdeploy-bootstrap-' | cut -f3 | sort | uniq -d | wc -l)" != 0 ]]; then fail 'Capture-control idempotency key was reused.'; fi
 exercise_phase_cleanup_recovery measure "$deploy_case" --workload W1
 exercise_phase_publication_recovery measure "$deploy_case" --workload W1
 exercise_phase_tampered_publication_rejection measure "$deploy_case" --workload W1
