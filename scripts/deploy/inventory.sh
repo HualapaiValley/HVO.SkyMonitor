@@ -10,6 +10,8 @@ deploy_validate_inventory() {
       def token: text and test("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
       def root: text and startswith("/") and . != "/" and
         (contains("//") | not) and (split("/") | any(. == "." or . == "..") | not);
+       def memory_mib: capture("^(?<value>[1-9][0-9]*)(?<unit>[MG])$") |
+         (.value | tonumber) * (if .unit == "G" then 1024 else 1 end);
        def url: text and test("^https?://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}(/[^[:space:]]*)?$") and
          (contains("@") | not);
        def ipv4: type == "string" and test("^[0-9]{1,3}(?:[.][0-9]{1,3}){3}$") and
@@ -37,7 +39,7 @@ deploy_validate_inventory() {
            (.friendlyName | text and length <= 200) and (.ownerEmail | text and length <= 254 and test("^[^@[:space:]]+@[^@[:space:]]+$")) and
            (.moduleConfigPath | root) and (.ownerPasswordSecretReference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$"));
         exact(["schemaVersion","environment","installationId","source","secretSource","observatory","logicHost","cameraAgents","sharedServices","serviceEndpoints","catalog","images","deployment"]) and
-        .schemaVersion == 6 and (.environment | name) and (.installationId | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) and
+         .schemaVersion == 7 and (.environment | name) and (.installationId | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) and
       (.source | exact(["revision","dirtyDisposition"]) and (.revision | type == "string" and test("^[0-9a-f]{40}$")) and
         (.dirtyDisposition == "require-clean" or .dirtyDisposition == "allow-dirty")) and
        (.secretSource | exact(["path","requiredReferences"]) and (.path | text) and
@@ -120,8 +122,14 @@ deploy_validate_inventory() {
            (.kind == "W0" or .sustainedArmOptIn == true)) and
         (.secretMappings | type == "array" and length > 0 and length == ([.[].key] | unique | length) and all(exact(["reference","key"]) and
           (.reference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$")) and (.key | text and test("^[A-Za-z][A-Za-z0-9]*(?:__[A-Za-z0-9][A-Za-z0-9-]*)+$")))) and
-        (.limits | exact(["cpus","memory"]) and (.cpus == null or (.cpus | type == "string" and test("^[0-9]+(?:[.][0-9]+)?$"))) and
-          (.memory == null or (.memory | type == "string" and test("^[0-9]+[MG]$"))))) and
+         (.limits | exact(["cpus","memory","sqlMemory","sqlMemoryLimitMb"]) and
+           (.cpus == null or (.cpus | type == "string" and test("^[0-9]+(?:[.][0-9]+)?$"))) and
+           (.memory == null or (.memory | type == "string" and test("^[0-9]+[MG]$"))) and
+           (.sqlMemory == null or (.sqlMemory | type == "string" and test("^(?:[1-9][0-9]{0,5}M|[1-9][0-9]{0,2}G)$"))) and
+           (.sqlMemoryLimitMb == null or (.sqlMemoryLimitMb | type == "number" and floor == . and . > 0 and . <= 1022975))) and
+         ((.services.mode == "existing") or
+           (.limits.sqlMemory != null and .limits.sqlMemoryLimitMb != null and
+             .limits.sqlMemoryLimitMb < (.limits.sqlMemory | memory_mib)))) and
       .deployment.resources.sqlDatabase == .deployment.services.sql.database and
       .deployment.resources.redisPrefix == .deployment.services.redis.prefix and
       .deployment.resources.artifactBucket == .deployment.services.minio.artifactBucket and
