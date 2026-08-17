@@ -273,6 +273,10 @@ internal sealed class CaptureProcessingPersistence(
         var payloadPath = ResolveSafePath(output.PayloadRelativePath);
         var sidecarPath = ResolveSafePath(output.SidecarRelativePath);
         var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+        if (!sidecar.AsSpan().SequenceEqual(output.EvidenceJson))
+        {
+            throw new InvalidDataException("Committed processing output sidecar differs from its durable bytes.");
+        }
         if (output.ProductManifest is not null)
         {
             return await RestoreMetadataProductAsync(
@@ -299,6 +303,7 @@ internal sealed class CaptureProcessingPersistence(
         {
             throw new InvalidDataException($"Committed processing output is not reconstructable ({reconstruction.ReasonCode}).");
         }
+        frame = frame with { Metadata = frame.Metadata with { Scene = manifest.Scene } };
         var recipe = ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe);
         if (!string.Equals(recipe.IdentitySha256, output.RecipeIdentitySha256, StringComparison.Ordinal))
         {
@@ -506,10 +511,6 @@ internal sealed class CaptureProcessingPersistence(
         byte[] sidecar,
         CancellationToken cancellationToken)
     {
-        if (!sidecar.AsSpan().SequenceEqual(output.EvidenceJson))
-        {
-            throw new InvalidDataException("Committed metadata sidecar differs from its durable bytes.");
-        }
         var manifest = DurableProcessingProductManifestJson.Parse(sidecar);
         var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
         if (payload.LongLength != manifest.ByteLength ||

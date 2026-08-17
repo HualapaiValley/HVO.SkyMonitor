@@ -3,9 +3,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -55,6 +57,73 @@ public sealed class InfrastructureCaptureProcessingStepTests
     }
 
     [TestMethod]
+    public async Task GlobalFrameUploadPolicyDoesNotApplyToDurableLayoutlessMetadata()
+    {
+        var payload = new byte[] { 0, 0, 0, 0 };
+        var manifest = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono8, 2, 2, 2, payload);
+        var receipt = new RawCaptureReceipt(
+            RawIngressOutcome.Committed,
+            manifest,
+            new StoredFrameReference(
+                "raw.bin",
+                "/tmp/camera/raw.bin",
+                manifest.Descriptor.Timing.ExposureStartedUtc,
+                FrameArtifactRole.Raw),
+            CaptureContractJson.ComputeManifestSha256(manifest));
+        var context = CreateContext(receipt);
+        var raw = context.Artifacts!.Raw;
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+            "image-quality", "1.0.0", "integer-image-statistics-v1",
+            System.Text.Json.JsonSerializer.SerializeToElement(new { })));
+        var sources = new[] { raw.ArtifactId };
+        var metadataPayload = "{}"u8.ToArray();
+        var product = new ProcessingProduct(
+            FrameArtifactRole.Metadata,
+            "image-quality-v1",
+            ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Metadata, "image-quality-v1", recipe.IdentitySha256, sources),
+            "application/json",
+            null,
+            metadataPayload,
+            ProcessingIdentity.ComputePayloadSha256(metadataPayload),
+            recipe,
+            [new ProcessingAlgorithmIdentity("image-statistics", "v1")],
+            sources,
+            raw.Frame.Metadata.Exposure,
+            CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility);
+        context.RestoreProduct(
+            "quality",
+            CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256),
+            product);
+        context.BeginNode("storage", ["quality"]);
+        var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
+        var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
+        var step = new NoOpFileStorageProcessingStep(
+            new CaptureProcessingStepMetadata("storage", "Storage", 100),
+            new NoOpFileStorageProcessingStepOptions
+            {
+                StorageRoot = "/tmp/camera",
+                QueueForUpload = true,
+                UpdateLatestFrame = false
+            },
+            Mock.Of<ILatestFrameAccessor>(),
+            storage.Object,
+            outbox.Object,
+            Options.Create(new CameraAgentHostOptions
+            {
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+            }),
+            NullLogger<NoOpFileStorageProcessingStep>.Instance);
+
+        await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+
+        storage.VerifyNoOtherCalls();
+        outbox.VerifyNoOtherCalls();
+        Assert.IsEmpty(context.ProcessingOutcomes);
+    }
+
+    [TestMethod]
     public async Task ExplicitTelemetryReportsOnlyDeclaredDependencyOutcomes()
     {
         var context = CreateContext();
@@ -82,7 +151,7 @@ public sealed class InfrastructureCaptureProcessingStepTests
         Assert.AreEqual(64, evidence[0].IdentitySha256!.Length);
     }
 
-    private static CaptureProcessingContext CreateContext()
+    private static CaptureProcessingContext CreateContext(RawCaptureReceipt? receipt = null)
     {
         var frame = CreateFrame(0);
         var baseline = ProcessingConformanceFixture.CameraConfig;
@@ -107,7 +176,8 @@ public sealed class InfrastructureCaptureProcessingStepTests
                     false),
                 frame.TimestampUtc,
                 frame.Metadata.Exposure,
-                TimeSpan.Zero));
+                TimeSpan.Zero),
+            receipt);
     }
 
     private static CameraFrame CreateFrame(byte value)

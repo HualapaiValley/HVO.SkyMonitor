@@ -53,13 +53,18 @@ public sealed class DurableCaptureProcessingTests
             DurableProcessingNode? durable;
             var restartedStep = new ProducingStep();
             var restartedNode = CreateNode(restartedStep);
+            var inspector = new RestoredFrameInspectingStep(fixture.Manifest.Scene!);
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
             using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 second = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
-                    new CaptureProcessingGraph([restartedNode]),
+                    new CaptureProcessingGraph([
+                        restartedNode,
+                        new CaptureProcessingGraphNode(
+                            "inspect", inspector, [restartedNode.Id], true, null, null, null, new string('I', 64))
+                    ]),
                     CreatePersistence(fixture.Options, store, storage, telemetry),
                     telemetry,
                     2,
@@ -74,6 +79,7 @@ public sealed class DurableCaptureProcessingTests
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, first.Outcome);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, second.Outcome);
             Assert.AreEqual(0, restartedStep.ExecutionCount);
+            Assert.IsTrue(inspector.SawExpectedScene);
             Assert.IsNotNull(durable);
             Assert.AreEqual(DurableProcessingNodeStatus.Completed, durable.Status);
             Assert.AreEqual(
@@ -1085,6 +1091,20 @@ public sealed class DurableCaptureProcessingTests
                 raw.Frame.Metadata.Exposure,
                 CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility);
             context.AddProcessingOutcome(ProcessingOutcome.Produced(Product));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RestoredFrameInspectingStep(SceneProvenance expectedScene) : ICaptureProcessingStep
+    {
+        public string Name => "inspect";
+        public int Order => 1;
+        public bool SawExpectedScene { get; private set; }
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            Assert.AreEqual(expectedScene, context.GetDependencyArtifacts().Single().Frame.Metadata.Scene);
+            SawExpectedScene = true;
             return ValueTask.CompletedTask;
         }
     }
