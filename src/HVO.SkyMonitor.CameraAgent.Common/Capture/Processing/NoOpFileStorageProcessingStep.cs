@@ -135,11 +135,6 @@ internal sealed class NoOpFileStorageProcessingStep(
             foreach (var product in selectedProducts.Where(static product =>
                          product.Role == FrameArtifactRole.Metadata && product.Layout is null))
             {
-                var policy = ResolvePolicy(product);
-                if (_centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload))
-                {
-                    throw new InvalidOperationException("Layoutless metadata products cannot be queued for central frame upload.");
-                }
                 if (metadataAlreadyStoredUnderRoot)
                 {
                     continue;
@@ -192,16 +187,6 @@ internal sealed class NoOpFileStorageProcessingStep(
             .Where(policy => policy.Variant is null || string.Equals(policy.Variant, product?.Variant, StringComparison.Ordinal))
             .Where(policy => policy.RecipeName is null || string.Equals(
                 policy.RecipeName, product?.Recipe.Descriptor.Name, StringComparison.Ordinal))
-            .OrderByDescending(static policy =>
-                (policy.Role is null ? 0 : 1) + (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
-            .FirstOrDefault();
-
-    private ArtifactStoragePolicyOptions? ResolvePolicy(ProcessingProduct product)
-        => (Options.Policies ?? [])
-            .Where(policy => policy.Role is null || policy.Role == product.Role)
-            .Where(policy => policy.Variant is null || string.Equals(policy.Variant, product.Variant, StringComparison.Ordinal))
-            .Where(policy => policy.RecipeName is null || string.Equals(
-                policy.RecipeName, product.Recipe.Descriptor.Name, StringComparison.Ordinal))
             .OrderByDescending(static policy =>
                 (policy.Role is null ? 0 : 1) + (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
             .FirstOrDefault();
