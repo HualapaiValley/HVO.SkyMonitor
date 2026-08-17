@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -167,6 +168,8 @@ internal sealed class NullTransientCandidateTransport : ITransientCandidateTrans
 
 internal sealed class TransientCandidateDeliveryService(
     ITransientCandidateJournal journal,
+    ArtifactOutboxState artifactOutboxState,
+    IArtifactOutbox artifactOutbox,
     ITransientCandidateTransport transport,
     TransientCandidateDeliveryWakeup wakeup,
     TransientCandidateDeliveryState state,
@@ -230,6 +233,39 @@ internal sealed class TransientCandidateDeliveryService(
         }
 
         var now = timeProvider.GetUtcNow();
+        var artifactOutboxSnapshot = artifactOutboxState.Snapshot;
+        var dependencyWaiting = artifactOutboxSnapshot.Availability is
+            ArtifactOutboxAvailability.Initializing or ArtifactOutboxAvailability.Unavailable;
+        var trackedArtifactIds = new HashSet<Guid>();
+        var pendingPage = dependencyWaiting
+            ? null
+            : await journal.ReadPendingDeliveryPageAsync(
+                _cursor, MaximumBatchCount, cancellationToken).ConfigureAwait(false);
+        if (pendingPage is { Entries.Count: 0 } && _cursor is not null)
+        {
+            _cursor = null;
+            pendingPage = await journal.ReadPendingDeliveryPageAsync(
+                after: null, MaximumBatchCount, cancellationToken).ConfigureAwait(false);
+        }
+        if (pendingPage is not null)
+        {
+            trackedArtifactIds.UnionWith(pendingPage.Entries.SelectMany(entry =>
+                entry.Submission!.Candidate.ContextSources.Select(source => source.Locator.Artifact.ArtifactId)));
+        }
+        var acknowledgedArtifactIds = new HashSet<Guid>();
+        foreach (var root in artifactOutboxState.Roots)
+        {
+            try
+            {
+                var acknowledged = await artifactOutbox.GetAcknowledgedArtifactIdsAsync(
+                    root, trackedArtifactIds, cancellationToken).ConfigureAwait(false);
+                acknowledgedArtifactIds.UnionWith(acknowledged);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                dependencyWaiting = true;
+            }
+        }
         var entries = new List<TransientCandidateJournalEntry>(MaximumBatchCount);
         var candidateIds = new HashSet<Guid>();
         var dueRetryIds = _retries
@@ -254,25 +290,23 @@ internal sealed class TransientCandidateDeliveryService(
             }
         }
 
-        var discoveryCount = MaximumBatchCount - entries.Count;
-        if (discoveryCount > 0)
+        if (!dependencyWaiting && pendingPage is not null)
         {
-            var page = await journal.ReadPendingDeliveryPageAsync(
-                _cursor, discoveryCount, cancellationToken).ConfigureAwait(false);
-            if (page.Entries.Count == 0 && _cursor is not null)
+            var publicationTracked = artifactOutboxState.Roots.Count > 0;
+            foreach (var entry in pendingPage.Entries.Take(MaximumBatchCount - entries.Count))
             {
-                _cursor = null;
-                page = await journal.ReadPendingDeliveryPageAsync(
-                    after: null, discoveryCount, cancellationToken).ConfigureAwait(false);
-            }
-            _cursor = page.NextCursor;
-            foreach (var entry in page.Entries)
-            {
+                if (publicationTracked && entry.Submission!.Candidate.ContextSources.Any(source =>
+                        !acknowledgedArtifactIds.Contains(source.Locator.Artifact.ArtifactId)))
+                {
+                    dependencyWaiting = true;
+                    break;
+                }
                 if (candidateIds.Add(entry.CandidateId) &&
                     (!_retries.TryGetValue(entry.CandidateId, out var retry) || retry.NextAttemptUtc <= now))
                 {
                     entries.Add(entry);
                 }
+                _cursor = new TransientCandidateDeliveryCursor(entry.CreatedUtc, entry.CandidateId);
             }
         }
 
@@ -295,7 +329,7 @@ internal sealed class TransientCandidateDeliveryService(
 
         _lastScanUtc = timeProvider.GetUtcNow();
         var aggregate = await journal.ReadDeliveryAggregateAsync(cancellationToken).ConfigureAwait(false);
-        UpdateState(aggregate);
+        UpdateState(aggregate, dependencyWaiting);
         return entries.Count;
     }
 
@@ -386,7 +420,7 @@ internal sealed class TransientCandidateDeliveryService(
         return retryDelay <= TimeSpan.Zero ? TimeSpan.Zero : retryDelay < poll ? retryDelay : poll;
     }
 
-    private void UpdateState(TransientCandidateDeliveryAggregate aggregate)
+    private void UpdateState(TransientCandidateDeliveryAggregate aggregate, bool dependencyWaiting = false)
     {
         var authenticationBlocked = _retries.Count(value =>
             value.Value.Disposition == TransientCandidateTransportDisposition.AuthenticationBlocked);
@@ -400,7 +434,9 @@ internal sealed class TransientCandidateDeliveryService(
             ? "quarantined"
             : authenticationBlocked > 0
                 ? "authentication-blocked"
-                : retrying > 0 ? "retrying" : "ready";
+                : retrying > 0
+                    ? "retrying"
+                    : dependencyWaiting ? "waiting-artifact-upload" : "ready";
         state.Set(
             availability,
             reason,

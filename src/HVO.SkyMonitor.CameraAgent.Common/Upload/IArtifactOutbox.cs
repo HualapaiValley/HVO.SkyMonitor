@@ -97,6 +97,11 @@ public interface IArtifactOutbox
         string root,
         CancellationToken cancellationToken)
         => throw new NotSupportedException("This legacy outbox does not expose typed retention holds.");
+    ValueTask<IReadOnlyList<Guid>> GetAcknowledgedArtifactIdsAsync(
+        string root,
+        IReadOnlySet<Guid> artifactIds,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This legacy outbox does not expose acknowledged artifact identities.");
     ValueTask<ArtifactOutboxSnapshot> GetSnapshotAsync(string root, CancellationToken cancellationToken)
         => throw new NotSupportedException("This legacy outbox does not expose snapshots.");
     ValueTask<bool> HasUnknownRetentionHoldsAsync(string root, CancellationToken cancellationToken)
