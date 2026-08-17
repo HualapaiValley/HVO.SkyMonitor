@@ -20,6 +20,22 @@ public sealed class CameraAgentHostOptionsTests
     }
 
     [TestMethod]
+    [DataRow(0)]
+    [DataRow(121)]
+    public void TransientDeliveryRequestTimeoutMustBeBounded(int seconds)
+    {
+        var options = new TransientDetectionOptions { DeliveryRequestTimeoutSeconds = seconds };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(results.Any(result =>
+            result.MemberNames.Contains(nameof(TransientDetectionOptions.DeliveryRequestTimeoutSeconds))));
+    }
+
+    [TestMethod]
     public void Validate_WhenCentralIntegrationModeIsInvalid_ReturnsValidationError()
     {
         var options = new CameraAgentHostOptions

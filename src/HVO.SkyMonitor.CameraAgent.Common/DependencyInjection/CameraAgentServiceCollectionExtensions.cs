@@ -124,6 +124,9 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetService<IPlanetEphemeris>(),
             () => provider.GetService<IDeploymentLocationStore>()));
         services.AddSingleton<TransientWorkerWakeup>();
+        services.AddSingleton<TransientCandidateDeliveryWakeup>();
+        services.AddSingleton<TransientCandidateDeliveryState>();
+        services.TryAddSingleton<ITransientCandidateTransport>(NullTransientCandidateTransport.Instance);
         services.AddSingleton<TransientWorkerState>();
         services.AddSingleton<TransientWorkerTelemetry>();
         services.AddSingleton<CameraModuleFactory>();
@@ -276,6 +279,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<EnvironmentalObservationDeliveryService>();
         services.AddSingleton<TransientWorkerService>();
         services.AddHostedService(provider => provider.GetRequiredService<TransientWorkerService>());
+        services.AddSingleton<TransientCandidateDeliveryService>();
+        services.AddHostedService(provider => provider.GetRequiredService<TransientCandidateDeliveryService>());
 
         return services;
     }

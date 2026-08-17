@@ -24,6 +24,7 @@ public static class SkyMonitorClientServiceExtensions
 
         return services
             .AddHttpClient(SkyMonitorClientOptions.HttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler { AllowAutoRedirect = false })
             .ConfigureHttpClient((provider, client) =>
             {
                 var options = provider.GetRequiredService<IOptionsMonitor<SkyMonitorClientOptions>>().CurrentValue;
@@ -49,6 +50,7 @@ public static class SkyMonitorClientServiceExtensions
 
         return services
             .AddHttpClient(SkyMonitorClientOptions.HttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler { AllowAutoRedirect = false })
             .ConfigureHttpClient((provider, client) =>
             {
                 var options = provider.GetRequiredService<IOptionsMonitor<SkyMonitorClientOptions>>().CurrentValue;

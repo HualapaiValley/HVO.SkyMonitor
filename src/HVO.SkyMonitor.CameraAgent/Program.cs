@@ -228,6 +228,7 @@ public class Program
         builder.Services.AddSkyMonitorApiClient(builder.Configuration);
         RegisterAcceptanceCentralAttemptRecorder(builder);
         builder.Services.AddSingleton<IFleetHeartbeatTransport, CameraAgentFleetHeartbeatTransport>();
+        builder.Services.AddSingleton<ITransientCandidateTransport, CameraAgentTransientCandidateTransport>();
         builder.Services.AddSingleton<DeploymentLocationReconciliationState>();
         builder.Services.AddHostedService<DeploymentLocationReconciliationWorker>();
         builder.Services.AddSingleton<CameraAgentEnvironmentalObservationBridge>();
@@ -273,6 +274,8 @@ public class Program
         healthChecks.AddCheck<EnvironmentalObservationDeliveryHealthCheck>("environmental-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<EnvironmentalAcquisitionHealthCheck>("environmental-acquisition", tags: ["dependency"]);
         healthChecks.AddCheck<TransientWorkerHealthCheck>("transient-worker", tags: ["dependency"]);
+        healthChecks.AddCheck<TransientCandidateDeliveryHealthCheck>(
+            "transient-candidate-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
         healthChecks.AddCheck<CalibrationLibraryHealthCheck>("calibration-library", tags: ["dependency"]);
         AddCameraModules(builder.Services);

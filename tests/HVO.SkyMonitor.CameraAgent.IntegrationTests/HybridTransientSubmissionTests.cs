@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Http.Headers;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -11,6 +12,7 @@ using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
@@ -19,6 +21,8 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class HybridTransientSubmissionTests
 {
+    private const int MaximumTemporalPendingTail = 2;
+
     [TestMethod]
     public async Task CameraAgentDurableSubmissionAcknowledgesAndRetriesAgainstOneCentralJob()
     {
@@ -26,30 +30,23 @@ public sealed class HybridTransientSubmissionTests
         await fixture.InitializeAsync().ConfigureAwait(false);
         using var scope = fixture.CreateCameraAgentScope();
         var services = scope.ServiceProvider;
-        var configured = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
-        var drainOptions = Options.Create(new CameraAgentHostOptions
-        {
-            RawIngressRoot = configured.RawIngressRoot,
-            CaptureDistribution = configured.CaptureDistribution,
-            UploadBatchSize = 10,
-            UploadPollIntervalSeconds = 1,
-            UploadRetryInitialDelaySeconds = 1,
-            UploadRetryMaximumDelaySeconds = 1
-        });
-        var drain = ActivatorUtilities.CreateInstance<ArtifactOutboxDrainService>(services, drainOptions);
-        await drain.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        var captureService = services.GetServices<IHostedService>().OfType<CameraCaptureService>().Single();
         try
         {
-            TransientCandidateJournalEntry? pending = null;
+            TransientCandidateSubmissionEnvelopeV1? submission = null;
             await WaitUntilAsync(async () =>
             {
-                pending = (await services.GetRequiredService<ITransientCandidateJournal>()
-                    .ReadResumableAsync(100, CancellationToken.None).ConfigureAwait(false))
-                    .SingleOrDefault(item => item.Phase == TransientCandidateWorkflowPhase.HandoffPending &&
-                        item.Submission is not null);
-                return pending is not null;
-            }, TimeSpan.FromSeconds(60)).ConfigureAwait(false);
-            var submission = pending!.Submission!;
+                submission = await ReadAcknowledgedSubmissionAsync(fixture.StorageRoot).ConfigureAwait(false);
+                return submission is not null;
+            }, TimeSpan.FromSeconds(90)).ConfigureAwait(false);
+            Assert.IsNotNull(submission);
+            var causalTailCompletedUtc = fixture.TransientEpochUtc.AddSeconds(3);
+            var causalTailDelay = causalTailCompletedUtc - DateTimeOffset.UtcNow;
+            if (causalTailDelay > TimeSpan.Zero)
+            {
+                await Task.Delay(causalTailDelay).ConfigureAwait(false);
+            }
+            await captureService.StopAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(3, submission.Candidate.ContextSources.Count);
             Assert.AreEqual(fixture.DeviceId, submission.Candidate.AgentId);
             var submissionBytes = await ReadSubmissionPayloadAsync(
@@ -84,22 +81,36 @@ public sealed class HybridTransientSubmissionTests
                     System.Globalization.CultureInfo.InvariantCulture) == 2;
             }, TimeSpan.FromSeconds(60)).ConfigureAwait(false);
 
-            Assert.IsFalse(pending!.SourceHoldReleased);
-            using var response = await SendAsync(
-                services, submission.Candidate.AgentId, submission.SubmissionIdentitySha256, submissionBytes)
+            var acknowledged = await journal.ReadAsync(submission.CandidateId, CancellationToken.None)
                 .ConfigureAwait(false);
-            Assert.AreEqual(HttpStatusCode.Accepted, response.StatusCode,
-                await response.Content.ReadAsStringAsync().ConfigureAwait(false));
-            var acknowledgement = TransientCandidateDeliveryJson.ParseAcknowledgement(
-                await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false)).Value;
+            Assert.IsNotNull(acknowledged);
+            Assert.AreEqual(TransientCandidateWorkflowPhase.Acknowledged, acknowledged.Phase);
+            Assert.IsTrue(acknowledged.SourceHoldReleased);
+            Assert.IsNotNull(acknowledged.AcknowledgementPayloadSha256);
+            var acknowledgement = acknowledged.Acknowledgement;
             Assert.IsNotNull(acknowledgement);
             Assert.AreEqual(TransientCandidateSubmissionDisposition.Accepted, acknowledgement.Disposition);
 
-            var acknowledged = await journal.AcknowledgeAsync(
-                submission.CandidateId, submission.EventId, acknowledgement, CancellationToken.None)
-                .ConfigureAwait(false);
-            Assert.IsTrue(acknowledged.SourceHoldReleased);
-            Assert.IsNotNull(acknowledged.AcknowledgementPayloadSha256);
+            TransientCandidateDeliveryAggregate? aggregate = null;
+            DeliverySummary? deliverySummary = null;
+            await WaitUntilAsync(async () =>
+            {
+                aggregate = await journal.ReadDeliveryAggregateAsync(CancellationToken.None).ConfigureAwait(false);
+                deliverySummary = await ReadDeliverySummaryAsync(fixture.StorageRoot).ConfigureAwait(false);
+                return aggregate.PendingCount == 0 && aggregate.QuarantinedCount == 0 &&
+                    deliverySummary.TotalSubmissions > 0 && deliverySummary.IncompleteSubmissions == 0 &&
+                    deliverySummary.HandoffPending == 0 && deliverySummary.DeliveryQuarantined == 0 &&
+                    deliverySummary.PendingWorkerFrames == 0 &&
+                    deliverySummary.PendingWorkerCandidates <= MaximumTemporalPendingTail;
+            }, TimeSpan.FromSeconds(90)).ConfigureAwait(false);
+            Assert.IsNotNull(aggregate);
+            Assert.IsNotNull(deliverySummary);
+            Assert.AreEqual(0L, aggregate.PendingCount);
+            Assert.AreEqual(0L, aggregate.QuarantinedCount);
+            Assert.AreEqual(0L, deliverySummary.IncompleteSubmissions);
+            Assert.AreEqual(0L, deliverySummary.HandoffPending);
+            Assert.AreEqual(0L, deliverySummary.DeliveryQuarantined);
+            Assert.IsLessThanOrEqualTo(MaximumTemporalPendingTail, deliverySummary.PendingWorkerCandidates);
 
             using var reopenedScope = fixture.CreateCameraAgentScope();
             var reopenedJournal = reopenedScope.ServiceProvider.GetRequiredService<ITransientCandidateJournal>();
@@ -148,8 +159,7 @@ public sealed class HybridTransientSubmissionTests
         }
         finally
         {
-            await drain.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            drain.Dispose();
+            await captureService.StopAsync(CancellationToken.None).ConfigureAwait(false);
         }
     }
 
@@ -185,6 +195,58 @@ public sealed class HybridTransientSubmissionTests
             ?? throw new InvalidDataException("The Hybrid worker did not persist submission bytes."));
     }
 
+    private static async Task<TransientCandidateSubmissionEnvelopeV1?> ReadAcknowledgedSubmissionAsync(
+        string storageRoot)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(storageRoot, "journal", "raw-ingress.db"),
+            Mode = SqliteOpenMode.ReadOnly
+        }.ToString());
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT submission_payload
+            FROM transient_candidates
+            WHERE acknowledgement_payload IS NOT NULL
+            ORDER BY updated_unix_ms
+            LIMIT 1;
+            """;
+        var payload = await command.ExecuteScalarAsync().ConfigureAwait(false) as byte[];
+        return payload is null ? null : TransientCandidateDeliveryJson.ParseSubmission(payload).Value;
+    }
+
+    private static async Task<DeliverySummary> ReadDeliverySummaryAsync(string storageRoot)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(storageRoot, "journal", "raw-ingress.db"),
+            Mode = SqliteOpenMode.ReadOnly
+        }.ToString());
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                COUNT(*) FILTER (WHERE submission_payload IS NOT NULL),
+                COUNT(*) FILTER (WHERE submission_payload IS NOT NULL AND
+                    (phase != 'acknowledged' OR acknowledgement_payload IS NULL OR source_hold_released = 0)),
+                COUNT(*) FILTER (WHERE phase = 'handoff_pending'),
+                COUNT(*) FILTER (WHERE phase = 'quarantined' AND submission_payload IS NOT NULL),
+                (SELECT COUNT(*) FROM transient_worker_frames WHERE state IN ('queued', 'retry_wait')),
+                (SELECT COUNT(*) FROM transient_worker_candidates WHERE state = 'pending')
+            FROM transient_candidates;
+            """;
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        await reader.ReadAsync().ConfigureAwait(false);
+        return new DeliverySummary(
+            reader.GetInt64(0),
+            reader.GetInt64(1),
+            reader.GetInt64(2),
+            reader.GetInt64(3),
+            reader.GetInt64(4),
+            reader.GetInt64(5));
+    }
+
     private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)
     {
         var parameter = command.CreateParameter();
@@ -206,4 +268,12 @@ public sealed class HybridTransientSubmissionTests
         }
         Assert.Fail($"Condition was not met within {timeout}.");
     }
+
+    private sealed record DeliverySummary(
+        long TotalSubmissions,
+        long IncompleteSubmissions,
+        long HandoffPending,
+        long DeliveryQuarantined,
+        long PendingWorkerFrames,
+        long PendingWorkerCandidates);
 }
