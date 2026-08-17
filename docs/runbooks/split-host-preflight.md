@@ -621,12 +621,15 @@ warm-up plus 30 measured operations fixed by the canonical manifest and the tria
 `docs/planning/performance-validation.md`.
 
 For a required Hybrid transient lane, queue convergence permits only the temporal
-algorithm's final two healthy history captures. Raw ingress and the transient lane
-must contain exactly that bounded tail, every other lane and queue must be empty,
-and the transient worker must be healthy and idle. The retained before/after queue
-snapshots expose this tail and its exact final capture sequences; measurement marks
-the queues converged but not fully drained. Any additional pending item, pressure, lease, retry,
-quarantine, terminal work, or active transient worker fails convergence.
+algorithm's final two healthy history captures. The retained capture identities must
+equal that exact tail. Durable record counts must match either the one-record-per-capture
+shape or the canonical graph fan-out shape of three raw-ingress and five transient
+records per retained capture; intermediate or excess counts fail closed. Every other
+lane and queue must be empty, and the transient worker must be healthy and idle. The
+retained before/after queue snapshots expose this tail and its exact final capture
+sequences; measurement marks the queues converged but not fully drained. Any unexpected
+pending item, pressure, lease, retry, quarantine, terminal work, or active transient
+worker fails convergence.
 
 `bootstrap`, `smoke`, `measure`, `acceptance-init`, and `down` publish an authoritative private
 ledger with a monotonically increasing publication generation. A digest commit

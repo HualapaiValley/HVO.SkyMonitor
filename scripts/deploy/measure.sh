@@ -372,6 +372,8 @@ deploy_measure_queues_converged() {
     local operations="$1" end_sequence="$2" device="$3"
     jq -e --argjson endSequence "$end_sequence" --arg device "$device" '
       (if $endSequence < 2 then $endSequence else 2 end) as $tail |
+      ($tail * 3) as $maximumRawIngressRecords |
+      ($tail * 5) as $maximumTransientRecords |
       [.captureLanes.value.lanes[] | select(.name == "transient" and .required == true)] as $transient |
       .rawIngress.value.availability == "Accepting" and .captureLanes.value.availability == "Healthy" and
       .captureProcessing.value.availability == "Healthy" and .artifactOutbox.value.availability == "Healthy" and
@@ -390,9 +392,12 @@ deploy_measure_queues_converged() {
         all(.captureLanes.value.lanes[];
           .pendingCount == 0 and .leasedCount == 0 and .retryCount == 0 and .quarantineCount == 0 and .pressureLevel == 0)
       else
-        ($transient | length) == 1 and .rawIngress.value.pendingCount == $tail and
-        .captureLanes.value.pendingCount == $tail and
-        ($transient[0].pendingCount == $tail and $transient[0].leasedCount == 0 and
+        ($transient | length) == 1 and
+        .captureLanes.value.pendingCount == $transient[0].pendingCount and
+        ((.rawIngress.value.pendingCount == $tail and $transient[0].pendingCount == $tail) or
+          (.rawIngress.value.pendingCount == $maximumRawIngressRecords and
+            $transient[0].pendingCount == $maximumTransientRecords)) and
+        ($transient[0].leasedCount == 0 and
           $transient[0].retryCount == 0 and $transient[0].quarantineCount == 0 and $transient[0].pressureLevel == 0) and
         $transient[0].pendingCaptures == [range($endSequence - $tail + 1; $endSequence + 1) |
           {agentId:$device,captureSequence:.}] and
