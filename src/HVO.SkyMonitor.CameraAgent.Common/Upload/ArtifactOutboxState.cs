@@ -60,6 +60,8 @@ public sealed class ArtifactOutboxState
         }
     }
 
+    public IReadOnlyList<string> Roots => _roots.Keys.ToArray();
+
     public void Update(string root, ArtifactOutboxSnapshot snapshot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);

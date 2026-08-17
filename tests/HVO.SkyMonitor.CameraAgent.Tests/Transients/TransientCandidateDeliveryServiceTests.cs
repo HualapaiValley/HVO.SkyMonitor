@@ -2,6 +2,7 @@ using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,7 +45,17 @@ public sealed class TransientCandidateDeliveryServiceTests
             })
             .ReturnsAsync(new TransientCandidateTransportResult(
                 TransientCandidateTransportDisposition.Acknowledged, "duplicate", acknowledgement));
-        var service = CreateService(journal.Object, transport.Object, time);
+        var outboxState = new ArtifactOutboxState();
+        var artifactOutbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
+        artifactOutbox.Setup(value => value.GetAcknowledgedArtifactIdsAsync(
+                "/archive", It.IsAny<IReadOnlySet<Guid>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+        var service = CreateService(
+            journal.Object,
+            transport.Object,
+            time,
+            artifactOutboxState: outboxState,
+            artifactOutbox: artifactOutbox.Object);
 
         Assert.AreEqual(1, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
         Assert.AreEqual(0, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
@@ -52,7 +63,64 @@ public sealed class TransientCandidateDeliveryServiceTests
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<TransientCandidateSubmissionAcknowledgementV1>(),
             It.IsAny<CancellationToken>()), Times.Never);
 
+        outboxState.Update("/archive", new ArtifactOutboxSnapshot(1, 1, time.GetUtcNow(), 1, 0, 0, 0, 0, 0));
         time.Advance(TimeSpan.FromSeconds(1));
+        Assert.AreEqual(1, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
+        journal.Verify(value => value.AcknowledgeAsync(
+            submission.CandidateId, submission.EventId, acknowledgement, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ArtifactUploadDependencyDefersFirstAttemptWithoutDegradingDelivery()
+    {
+        var submission = TransientDeliveryTestData.Submission();
+        var entry = TransientDeliveryTestData.Entry(submission);
+        var acknowledgement = TransientDeliveryTestData.Acknowledgement(submission);
+        var journal = new Mock<ITransientCandidateJournal>(MockBehavior.Strict);
+        SetupPages(journal, [entry]);
+        journal.Setup(value => value.AcknowledgeAsync(
+                submission.CandidateId, submission.EventId, acknowledgement, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(entry with
+            {
+                Phase = TransientCandidateWorkflowPhase.Acknowledged,
+                SourceHoldReleased = true,
+                Acknowledgement = acknowledgement
+            });
+        var transport = new Mock<ITransientCandidateTransport>(MockBehavior.Strict);
+        transport.Setup(value => value.SendAsync(submission, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TransientCandidateTransportResult(
+                TransientCandidateTransportDisposition.Acknowledged, "accepted", acknowledgement));
+        var outboxState = new ArtifactOutboxState();
+        var drainedSnapshot = new ArtifactOutboxSnapshot(0, 0, null, 0, 0, 0, 1, 0, 0);
+        outboxState.Update("/archive", drainedSnapshot);
+        IReadOnlyList<Guid> acknowledgedArtifactIds = [];
+        var publicationLookupUnavailable = true;
+        var artifactOutbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
+        artifactOutbox.Setup(value => value.GetAcknowledgedArtifactIdsAsync(
+                "/archive", It.IsAny<IReadOnlySet<Guid>>(), It.IsAny<CancellationToken>()))
+            .Returns(() => publicationLookupUnavailable
+                ? throw new NotSupportedException("Publication lookup is temporarily unavailable.")
+                : ValueTask.FromResult(acknowledgedArtifactIds));
+        var state = new TransientCandidateDeliveryState(TimeProvider.System);
+        var service = CreateService(
+            journal.Object,
+            transport.Object,
+            TimeProvider.System,
+            state: state,
+            artifactOutboxState: outboxState,
+            artifactOutbox: artifactOutbox.Object);
+
+        Assert.AreEqual(0, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
+        Assert.AreEqual(TransientCandidateDeliveryAvailability.Healthy, state.Snapshot.Availability);
+        Assert.AreEqual("waiting-artifact-upload", state.Snapshot.Reason);
+        transport.Verify(value => value.SendAsync(
+            It.IsAny<TransientCandidateSubmissionEnvelopeV1>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        publicationLookupUnavailable = false;
+        Assert.AreEqual(0, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
+        acknowledgedArtifactIds = submission.Candidate.ContextSources
+            .Select(source => source.Locator.Artifact.ArtifactId).ToArray();
+        outboxState.Update("/archive", drainedSnapshot);
         Assert.AreEqual(1, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
         journal.Verify(value => value.AcknowledgeAsync(
             submission.CandidateId, submission.EventId, acknowledgement, It.IsAny<CancellationToken>()), Times.Once);
@@ -389,9 +457,16 @@ public sealed class TransientCandidateDeliveryServiceTests
         TransientOperatingMode mode = TransientOperatingMode.Hybrid,
         CentralIntegrationMode centralMode = CentralIntegrationMode.Enabled,
         TransientCandidateDeliveryState? state = null,
-        TransientWorkerTelemetry? telemetry = null)
-        => new(
+        TransientWorkerTelemetry? telemetry = null,
+        ArtifactOutboxState? artifactOutboxState = null,
+        IArtifactOutbox? artifactOutbox = null)
+    {
+        artifactOutboxState ??= new ArtifactOutboxState();
+        artifactOutboxState.MarkInitialized();
+        return new(
             journal,
+            artifactOutboxState,
+            artifactOutbox ?? Mock.Of<IArtifactOutbox>(),
             transport,
             wakeup ?? new TransientCandidateDeliveryWakeup(),
             state ?? new TransientCandidateDeliveryState(timeProvider),
@@ -410,6 +485,7 @@ public sealed class TransientCandidateDeliveryServiceTests
             }),
             timeProvider,
             NullLogger<TransientCandidateDeliveryService>.Instance);
+    }
 
     private static void SetupPages(
         Mock<ITransientCandidateJournal> journal,

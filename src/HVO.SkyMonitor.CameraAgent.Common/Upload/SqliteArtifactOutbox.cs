@@ -694,6 +694,41 @@ public sealed class SqliteArtifactOutbox(
         return holds;
     }
 
+    public async ValueTask<IReadOnlyList<Guid>> GetAcknowledgedArtifactIdsAsync(
+        string root,
+        IReadOnlySet<Guid> artifactIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(artifactIds);
+        if (artifactIds.Count == 0)
+        {
+            return [];
+        }
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        var parameterNames = artifactIds.Select((artifactId, index) =>
+        {
+            var name = $"$artifact{index}";
+            command.Parameters.AddWithValue(name, artifactId.ToString("N"));
+            return name;
+        }).ToArray();
+        command.CommandText = $"""
+            SELECT DISTINCT artifact_id
+            FROM artifact_outbox_records
+            WHERE status = 'acknowledged'
+              AND artifact_id IN ({string.Join(", ", parameterNames)});
+            """;
+        var acknowledged = new List<Guid>(artifactIds.Count);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            acknowledged.Add(Guid.ParseExact(reader.GetString(0), "N"));
+        }
+        return acknowledged;
+    }
+
     public async ValueTask<ArtifactOutboxSnapshot> GetSnapshotAsync(
         string root,
         CancellationToken cancellationToken)

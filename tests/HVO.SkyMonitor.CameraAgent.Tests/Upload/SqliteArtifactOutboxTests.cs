@@ -116,6 +116,9 @@ public sealed class SqliteArtifactOutboxTests
         var delivered = ArtifactUploadClient.ResolveDelivery(secondLease.Record);
         Assert.AreEqual(ArtifactManifestV2.CurrentSchemaVersion, delivered.SchemaVersion);
         Assert.IsTrue(secondLease.Record.ManifestBytes.Span.SequenceEqual(CaptureContractJson.Serialize(manifest)));
+        var queriedArtifactIds = new HashSet<Guid> { delivered.ArtifactId, Guid.NewGuid() };
+        Assert.IsEmpty(await restarted.GetAcknowledgedArtifactIdsAsync(
+            root.Path, queriedArtifactIds, CancellationToken.None).ConfigureAwait(false));
         var acknowledgement = new ArtifactUploadAcknowledgement(
             ArtifactUploadAcknowledgement.CurrentSchemaVersion,
             delivered.IdempotencyKey,
@@ -126,6 +129,10 @@ public sealed class SqliteArtifactOutboxTests
             delivered.SchemaVersion);
         await restarted.AcknowledgeAsync(
             root.Path, secondLease, acknowledgement, CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEquivalent(
+            new[] { delivered.ArtifactId },
+            (await restarted.GetAcknowledgedArtifactIdsAsync(
+                root.Path, queriedArtifactIds, CancellationToken.None).ConfigureAwait(false)).ToArray());
         await restarted.AcknowledgeAsync(
             root.Path, secondLease, acknowledgement, CancellationToken.None).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<ArtifactOutboxConflictException>(async () =>
