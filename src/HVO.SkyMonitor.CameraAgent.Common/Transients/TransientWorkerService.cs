@@ -21,6 +21,7 @@ internal sealed class TransientWorkerService(
     ITransientCandidateJournal candidateJournal,
     TransientDetectorRuntime detector,
     TransientWorkerWakeup wakeup,
+    TransientCandidateDeliveryWakeup deliveryWakeup,
     TransientWorkerState state,
     TransientWorkerTelemetry telemetry,
     ITransientRuntimeFaultInjector faultInjector,
@@ -600,6 +601,7 @@ internal sealed class TransientWorkerService(
         };
         await candidateJournal.PersistSubmissionAsync(
             candidate.CandidateId, candidate.EventId, envelope, cancellationToken).ConfigureAwait(false);
+        deliveryWakeup.Signal();
         activity?.SetStatus(ActivityStatusCode.Ok);
     }
 

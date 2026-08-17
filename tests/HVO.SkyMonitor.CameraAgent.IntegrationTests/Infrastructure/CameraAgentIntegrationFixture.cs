@@ -78,24 +78,15 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         _configurationPath = Path.Combine(_storageRoot, "cameraagent.integration.json");
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
-        TransientEpochUtc = (_hybridTransientMode
-            ? DateTimeOffset.UtcNow.AddSeconds(2)
-            : DateTimeOffset.UtcNow.AddMinutes(-1)).ToUniversalTime();
         if (_hybridTransientMode)
         {
             template = template
-                .Replace("3600.0", "20.0", StringComparison.Ordinal)
+                .Replace("3600.0", "0.5", StringComparison.Ordinal)
                 .Replace("\"angularWidthDegrees\": 0.2", "\"angularWidthDegrees\": 2.0", StringComparison.Ordinal)
                 .Replace("\"pixelX\": 1.5,\n                \"pixelY\": 1.5", "\"pixelX\": 20.0,\n                \"pixelY\": 24.0", StringComparison.Ordinal)
                 .Replace("\"pixelX\": 20.0,\n                \"pixelY\": 24.0,\n                \"electronsPerSecond\": 1000000000.0,\n                \"sigmaPixels\": 0.25\n              }\n            ]", "\"pixelX\": 44.0,\n                \"pixelY\": 24.0,\n                \"electronsPerSecond\": 1000000000.0,\n                \"sigmaPixels\": 2.0\n              }\n            ]", StringComparison.Ordinal)
                 .Replace("\"sigmaPixels\": 0.25", "\"sigmaPixels\": 2.0", StringComparison.Ordinal);
         }
-        await File.WriteAllTextAsync(_configurationPath,
-            template
-                .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal)
-                .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(TransientEpochUtc), StringComparison.Ordinal))
-            .ConfigureAwait(false);
-
         using var hostClient = _hostFixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false
@@ -112,6 +103,15 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             var jwksJson = await hostClient.GetStringAsync(metadata.JwksUri).ConfigureAwait(false);
             _jwksDocument = new JsonWebKeySet(jwksJson);
         }
+
+        TransientEpochUtc = (_hybridTransientMode
+            ? DateTimeOffset.UtcNow.AddSeconds(10)
+            : DateTimeOffset.UtcNow.AddMinutes(-1)).ToUniversalTime();
+        await File.WriteAllTextAsync(_configurationPath,
+            template
+                .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(_storageRoot), StringComparison.Ordinal)
+                .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(TransientEpochUtc), StringComparison.Ordinal))
+            .ConfigureAwait(false);
 
         _agentBaseFactory = new WebApplicationFactory<Program>();
         _agentFactory = _agentBaseFactory.WithWebHostBuilder(builder =>
@@ -138,10 +138,13 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                             IntegrationUserAuthenticationHandler.SchemeName,
                             _ => { });
 
-                    var drainService = services.Single(descriptor =>
-                        descriptor.ServiceType == typeof(IHostedService) &&
-                        descriptor.ImplementationType == typeof(ArtifactOutboxDrainService));
-                    services.Remove(drainService);
+                    if (!_hybridTransientMode)
+                    {
+                        var drainService = services.Single(descriptor =>
+                            descriptor.ServiceType == typeof(IHostedService) &&
+                            descriptor.ImplementationType == typeof(ArtifactOutboxDrainService));
+                        services.Remove(drainService);
+                    }
 
                     services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
                     {
@@ -182,6 +185,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         {
             centralIdentity.ClientCredentials.Scopes.Add(requestedScope);
         }
+        var cameraConfiguration = await scopedProvider.GetRequiredService<ICameraAgentConfigurationLoader>()
+            .LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        await _hostFixture.SeedRigProfileAsync("cameraagent-integration-test", cameraConfiguration.Rig).ConfigureAwait(false);
         await scopedProvider.GetRequiredService<IDeviceSecretStore>().SaveAsync(new DeviceSecrets(
             activeDevice.DevicePublicId,
             activeDevice.ObservatoryId,
@@ -202,9 +208,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         var jwtOptions = scopedProvider
             .GetRequiredService<IOptionsMonitor<JwtBearerOptions>>()
             .Get(JwtBearerDefaults.AuthenticationScheme);
-        var cameraConfiguration = await scopedProvider.GetRequiredService<ICameraAgentConfigurationLoader>()
-            .LoadAsync(CancellationToken.None).ConfigureAwait(false);
-        await _hostFixture.SeedRigProfileAsync("cameraagent-integration-test", cameraConfiguration.Rig).ConfigureAwait(false);
     }
 
     /// <summary>

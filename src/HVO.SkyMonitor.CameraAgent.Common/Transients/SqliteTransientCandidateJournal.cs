@@ -75,6 +75,17 @@ public sealed record TransientCandidateBacklog(
     int MaximumOldestAgeMinutes,
     int PressureLevel);
 
+public sealed record TransientCandidateDeliveryCursor(DateTimeOffset CreatedUtc, Guid CandidateId);
+
+public sealed record TransientCandidateDeliveryPage(
+    IReadOnlyList<TransientCandidateJournalEntry> Entries,
+    TransientCandidateDeliveryCursor? NextCursor);
+
+public sealed record TransientCandidateDeliveryAggregate(
+    long PendingCount,
+    long QuarantinedCount,
+    DateTimeOffset? OldestPendingUtc);
+
 public interface ITransientCandidateJournal
 {
     ValueTask StageCaptureAsync(
@@ -93,6 +104,14 @@ public interface ITransientCandidateJournal
 
     ValueTask<IReadOnlyList<TransientCandidateJournalEntry>> ReadResumableAsync(
         int maximumCount,
+        CancellationToken cancellationToken);
+
+    ValueTask<TransientCandidateDeliveryPage> ReadPendingDeliveryPageAsync(
+        TransientCandidateDeliveryCursor? after,
+        int maximumCount,
+        CancellationToken cancellationToken);
+
+    ValueTask<TransientCandidateDeliveryAggregate> ReadDeliveryAggregateAsync(
         CancellationToken cancellationToken);
 
     ValueTask<TransientCandidateJournalEntry> PersistCandidateAsync(
@@ -117,6 +136,12 @@ public interface ITransientCandidateJournal
         Guid candidateId,
         Guid eventId,
         TransientCandidateSubmissionAcknowledgementV1 acknowledgement,
+        CancellationToken cancellationToken);
+
+    ValueTask<TransientCandidateJournalEntry> QuarantineDeliveryAsync(
+        Guid candidateId,
+        Guid eventId,
+        string reason,
         CancellationToken cancellationToken);
 
     ValueTask<TransientCandidateBacklog> ReadBacklogAsync(CancellationToken cancellationToken);
@@ -445,6 +470,101 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         }
     }
 
+    public async ValueTask<TransientCandidateDeliveryPage> ReadPendingDeliveryPageAsync(
+        TransientCandidateDeliveryCursor? after,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumCount, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumCount, 1_000);
+        var lifecycleGate = RawIngressLifecycleLock.ForRoot(_root);
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var candidateIds = new List<Guid>(maximumCount);
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = """
+                    SELECT candidate_id
+                    FROM transient_candidates
+                    WHERE source_hold_released = 0
+                      AND phase = 'handoff_pending'
+                      AND quarantine_reason IS NULL
+                      AND submission_payload IS NOT NULL
+                      AND ($after_created IS NULL OR created_unix_ms > $after_created OR
+                           (created_unix_ms = $after_created AND candidate_id > $after_candidate))
+                    ORDER BY created_unix_ms, candidate_id
+                    LIMIT $maximum;
+                    """;
+                command.Parameters.AddWithValue(
+                    "$after_created",
+                    after is null ? DBNull.Value : after.CreatedUtc.ToUnixTimeMilliseconds());
+                command.Parameters.AddWithValue(
+                    "$after_candidate",
+                    after is null ? string.Empty : after.CandidateId.ToString("N"));
+                command.Parameters.AddWithValue("$maximum", maximumCount);
+                using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    candidateIds.Add(Guid.ParseExact(reader.GetString(0), "N"));
+                }
+            }
+            var entries = new List<TransientCandidateJournalEntry>(candidateIds.Count);
+            foreach (var candidateId in candidateIds)
+            {
+                entries.Add(await ReadAsync(connection, transaction, candidateId, cancellationToken).ConfigureAwait(false)
+                    ?? throw new InvalidDataException("Pending transient delivery disappeared during read."));
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            var last = entries.LastOrDefault();
+            return new(
+                entries,
+                last is null ? after : new TransientCandidateDeliveryCursor(last.CreatedUtc, last.CandidateId));
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
+    public async ValueTask<TransientCandidateDeliveryAggregate> ReadDeliveryAggregateAsync(
+        CancellationToken cancellationToken)
+    {
+        var lifecycleGate = RawIngressLifecycleLock.ForRoot(_root);
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT
+                    COUNT(*) FILTER (WHERE phase = 'handoff_pending' AND source_hold_released = 0
+                        AND quarantine_reason IS NULL AND submission_payload IS NOT NULL),
+                    COUNT(*) FILTER (WHERE phase = 'quarantined' AND source_hold_released = 0
+                        AND submission_payload IS NOT NULL),
+                    MIN(CASE WHEN phase = 'handoff_pending' AND source_hold_released = 0
+                        AND quarantine_reason IS NULL AND submission_payload IS NOT NULL
+                        THEN created_unix_ms END)
+                FROM transient_candidates;
+                """;
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            return new(
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)
+                    ? null
+                    : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)));
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
     public ValueTask<TransientCandidateJournalEntry> PersistCandidateAsync(
         Guid candidateId,
         Guid eventId,
@@ -629,6 +749,84 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(TransientCandidateFaultPoint.AfterAcknowledgementCommit);
             return persisted with { SourceHoldReleased = true };
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
+    public async ValueTask<TransientCandidateJournalEntry> QuarantineDeliveryAsync(
+        Guid candidateId,
+        Guid eventId,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        if (_mode != TransientOperatingMode.Hybrid)
+        {
+            throw new InvalidOperationException("Only Hybrid mode has central transient delivery state.");
+        }
+        var trimmedReason = reason?.Trim();
+        var boundedReason = string.IsNullOrEmpty(trimmedReason)
+            ? "delivery-rejected"
+            : trimmedReason.Length > 128 ? trimmedReason[..128] : trimmedReason;
+        var lifecycleGate = RawIngressLifecycleLock.ForRoot(_root);
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            ArgumentOutOfRangeException.ThrowIfEqual(candidateId, Guid.Empty);
+            ArgumentOutOfRangeException.ThrowIfEqual(eventId, Guid.Empty);
+            var current = await ReadAsync(connection, transaction, candidateId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Transient candidate identity is not reserved.");
+            if (current.EventId != eventId)
+            {
+                throw new TransientCandidateIdentityConflictException(
+                    "Transient event identity does not match the pending delivery.");
+            }
+            if (current.Phase == TransientCandidateWorkflowPhase.Quarantined)
+            {
+                if (!string.Equals(current.QuarantineReason, boundedReason, StringComparison.Ordinal))
+                {
+                    throw new TransientCandidateIdentityConflictException(
+                        "Transient delivery quarantine reason conflicts with the durable terminal state.");
+                }
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return current;
+            }
+            if (current.Phase != TransientCandidateWorkflowPhase.HandoffPending ||
+                current.Submission is null || current.SourceHoldReleased)
+            {
+                throw new InvalidOperationException("Only an unreleased pending Hybrid handoff can be quarantined.");
+            }
+
+            using (var update = connection.CreateCommand())
+            {
+                update.Transaction = transaction;
+                update.CommandText = """
+                    UPDATE transient_candidates
+                    SET state = 'needs_review', phase = 'quarantined', quarantine_reason = $reason,
+                        updated_unix_ms = $now
+                    WHERE candidate_id = $candidate AND event_id = $event
+                      AND phase = 'handoff_pending' AND source_hold_released = 0;
+                    """;
+                update.Parameters.AddWithValue("$reason", boundedReason);
+                update.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+                update.Parameters.AddWithValue("$candidate", candidateId.ToString("N"));
+                update.Parameters.AddWithValue("$event", eventId.ToString("N"));
+                if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                {
+                    throw new TransientCandidateIdentityConflictException(
+                        "Transient delivery state changed before quarantine settlement.");
+                }
+            }
+            var quarantined = await ReadAsync(
+                connection, transaction, candidateId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("Quarantined transient delivery disappeared before commit.");
+            await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return quarantined;
         }
         finally
         {

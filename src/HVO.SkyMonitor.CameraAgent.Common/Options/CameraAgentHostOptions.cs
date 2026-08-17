@@ -300,6 +300,9 @@ public sealed class TransientDetectionOptions : IValidatableObject
     [Range(1, 100)]
     public int MaximumAttempts { get; init; } = 5;
 
+    [Range(1, 120)]
+    public int DeliveryRequestTimeoutSeconds { get; init; } = 30;
+
     [Range(1, 3_600)]
     public int MaximumAdjacentStartIntervalSeconds { get; init; } = 30;
 

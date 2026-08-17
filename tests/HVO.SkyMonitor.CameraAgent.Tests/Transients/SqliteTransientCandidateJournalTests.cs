@@ -513,6 +513,74 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     [TestMethod]
+    public async Task Hybrid_DeliveryPageUsesStableCursorAndRejectionQuarantineRetainsHoldAndPressure()
+    {
+        using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
+        var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
+        var first = Fixture.CreateReservation(source);
+        var second = Fixture.CreateReservation(source);
+        var notReady = Fixture.CreateReservation(source);
+        foreach (var reservation in new[] { first, second, notReady })
+        {
+            await fixture.Journal.ReserveAsync(reservation, CancellationToken.None).ConfigureAwait(false);
+            var candidate = CreateCandidate(reservation, TransientCandidateState.Provisional);
+            await fixture.Journal.PersistCandidateAsync(
+                reservation.CandidateId, reservation.EventId, candidate, CancellationToken.None).ConfigureAwait(false);
+            if (reservation != notReady)
+            {
+                await fixture.Journal.PersistSubmissionAsync(
+                    reservation.CandidateId,
+                    reservation.EventId,
+                    CreateSubmission(reservation, candidate),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        var firstPage = await fixture.Journal.ReadPendingDeliveryPageAsync(
+            after: null, maximumCount: 1, CancellationToken.None).ConfigureAwait(false);
+        var secondPage = await fixture.Journal.ReadPendingDeliveryPageAsync(
+            firstPage.NextCursor, maximumCount: 1, CancellationToken.None).ConfigureAwait(false);
+        var end = await fixture.Journal.ReadPendingDeliveryPageAsync(
+            secondPage.NextCursor, maximumCount: 1, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(1, firstPage.Entries);
+        Assert.HasCount(1, secondPage.Entries);
+        Assert.AreNotEqual(firstPage.Entries[0].CandidateId, secondPage.Entries[0].CandidateId);
+        Assert.IsEmpty(end.Entries);
+        Assert.IsTrue(new[] { first.CandidateId, second.CandidateId }.Contains(firstPage.Entries[0].CandidateId));
+        Assert.IsTrue(new[] { first.CandidateId, second.CandidateId }.Contains(secondPage.Entries[0].CandidateId));
+        var pendingAggregate = await fixture.Journal.ReadDeliveryAggregateAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(2L, pendingAggregate.PendingCount);
+        Assert.AreEqual(0L, pendingAggregate.QuarantinedCount);
+        Assert.IsNotNull(pendingAggregate.OldestPendingUtc);
+
+        var selected = firstPage.Entries[0];
+        var reason = new string('R', 160);
+        var quarantined = await fixture.Journal.QuarantineDeliveryAsync(
+            selected.CandidateId, selected.EventId, reason, CancellationToken.None).ConfigureAwait(false);
+        var retried = await fixture.Journal.QuarantineDeliveryAsync(
+            selected.CandidateId, selected.EventId, reason, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(TransientCandidateWorkflowPhase.Quarantined, quarantined.Phase);
+        Assert.AreEqual(new string('R', 128), quarantined.QuarantineReason);
+        Assert.AreEqual(quarantined.CandidateId, retried.CandidateId);
+        Assert.AreEqual(quarantined.QuarantineReason, retried.QuarantineReason);
+        Assert.IsFalse(quarantined.SourceHoldReleased);
+        Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
+        Assert.AreEqual(2L, await fixture.ScalarLongAsync(
+            "SELECT pressure_state FROM capture_lane_definitions WHERE lane_name = 'transient';").ConfigureAwait(false));
+        var quarantinedAggregate = await fixture.Journal.ReadDeliveryAggregateAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(1L, quarantinedAggregate.PendingCount);
+        Assert.AreEqual(1L, quarantinedAggregate.QuarantinedCount);
+        await Assert.ThrowsExactlyAsync<TransientCandidateIdentityConflictException>(async () =>
+            await fixture.Journal.QuarantineDeliveryAsync(
+                selected.CandidateId, selected.EventId, "different", CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task Hybrid_FinalizationAfterAcknowledgementDoesNotRearmHoldOrRegressDelivery()
     {
         using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
