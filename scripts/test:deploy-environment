@@ -900,7 +900,7 @@ write_inventory() {
     jq -n --arg revision "$REVISION" --arg secret "$SECRET_FILE" --arg root "$TEMP_DIR/remote" --arg owner "$(id -un)" \
       --arg module "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json" \
       --argjson logicPort "$HTTP_PORT" --argjson eastPort "$EAST_PORT" --argjson westPort "$WEST_PORT" '{
-      schemaVersion:6, environment:"test-observatory", installationId:"test-installation",
+      schemaVersion:7, environment:"test-observatory", installationId:"test-installation",
       source:{revision:$revision,dirtyDisposition:"allow-dirty"},
       secretSource:{path:$secret,requiredReferences:["SQL_PASSWORD","MINIO_ROOT_ACCESS","MINIO_ROOT_SECRET","OWNER_API_KEY","EAST_PASSWORD","WEST_PASSWORD","OAUTH_SECRET"]},
       observatory:{name:"Test Observatory",latitudeDegrees:19.5,longitudeDegrees:-155.5,elevationMeters:1000,timeZoneId:"Pacific/Honolulu"},
@@ -935,7 +935,8 @@ write_inventory() {
         transient:{mode:"Off"},
         workload:{kind:"W0",durationSeconds:120,sustainedArmOptIn:true},
         secretMappings:[{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb"},{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb-migrations"},
-          {reference:"SQL_PASSWORD",key:"Minio__AccessKey"},{reference:"SQL_PASSWORD",key:"Minio__SecretKey"}],limits:{cpus:null,memory:null}}
+          {reference:"SQL_PASSWORD",key:"Minio__AccessKey"},{reference:"SQL_PASSWORD",key:"Minio__SecretKey"}],
+          limits:{cpus:null,memory:null,sqlMemory:null,sqlMemoryLimitMb:null}}
     }' > "$INVENTORY"
     cp "$INVENTORY" "$BASE_INVENTORY"
 }
@@ -1125,7 +1126,9 @@ test -f "$tampered_path"
 
 # The checked-in shape reference, example, and executable jq contract stay aligned.
 jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","internalEndpoint","publicEndpoint","trustedProxyAddresses","ports"] and
-  .properties.schemaVersion.const == 6 and
+  .properties.schemaVersion.const == 7 and
+  .properties.deployment.properties.limits.required == ["cpus","memory","sqlMemory","sqlMemoryLimitMb"] and
+  .properties.deployment.allOf[0].then.properties.limits.properties.sqlMemory.type == "string" and
   .properties.images.required == ["distributionMode","artifactRoot","tag","builder","registryImmutableTags","logicHost","cameraAgent"] and
   (.properties.sharedServices.oneOf[1]."$ref" | endswith("/infrastructureTarget")) and
   (.properties.logicHost."$ref" | endswith("/applicationTarget")) and
@@ -1147,6 +1150,8 @@ done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentityS
   . "$REPO_ROOT/scripts/deploy/common.sh"
   # shellcheck source=scripts/deploy/inventory.sh
   . "$REPO_ROOT/scripts/deploy/inventory.sh"
+  # shellcheck source=scripts/deploy/preflight.sh
+  . "$REPO_ROOT/scripts/deploy/preflight.sh"
   # shellcheck source=scripts/deploy/run-state.sh
   . "$REPO_ROOT/scripts/deploy/run-state.sh"
   # shellcheck source=scripts/deploy/transient-confirm.sh
@@ -1203,8 +1208,24 @@ done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentityS
     runtimeOwner:$owner,ports:[1433,6379,9000,2525,8025]} |
     .deployment.services.mode="deploy" | .deployment.services.smtp.kind="mailpit" | .deployment.services.smtp.ports=[2525,8025] |
     .deployment.services.images={sqlServer:("registry.example/sql@sha256:"+("a"*64)),redis:("registry.example/redis@sha256:"+("b"*64)),
-      minio:("registry.example/minio@sha256:"+("c"*64)),minioClient:("registry.example/mc@sha256:"+("d"*64)),mailpit:("registry.example/mailpit@sha256:"+("e"*64))}' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
+      minio:("registry.example/minio@sha256:"+("c"*64)),minioClient:("registry.example/mc@sha256:"+("d"*64)),mailpit:("registry.example/mailpit@sha256:"+("e"*64))} |
+    .deployment.limits.sqlMemory="4G" | .deployment.limits.sqlMemoryLimitMb=3072' "$BASE_INVENTORY" > "$TEMP_DIR/shared-valid.json"
   deploy_validate_inventory "$TEMP_DIR/shared-valid.json" isolated
+  jq '.deployment.limits.sqlMemory=null' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-memory-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-memory-invalid.json" isolated >/dev/null 2>&1; then exit 107; fi
+  jq '.deployment.limits.sqlMemoryLimitMb=4096' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-memory-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-memory-invalid.json" isolated >/dev/null 2>&1; then exit 108; fi
+  jq '.deployment.limits.sqlMemory="010G"' "$TEMP_DIR/shared-valid.json" > "$TEMP_DIR/shared-memory-invalid.json"
+  if deploy_validate_inventory "$TEMP_DIR/shared-memory-invalid.json" isolated >/dev/null 2>&1; then exit 110; fi
+  test "$(deploy_memory_to_kib 4096M)" -eq 4194304
+  test "$(deploy_memory_to_kib 4G)" -eq 4194304
+  if deploy_memory_to_kib 08G >/dev/null 2>&1; then exit 111; fi
+  jq '.deployment.limits.sqlMemory="9G" | .deployment.limits.sqlMemoryLimitMb=8192' \
+    "$TEMP_DIR/shared-valid.json" > "$INVENTORY"
+  if run_deploy sql-memory-insufficient > "$TEMP_DIR/sql-memory-insufficient.log" 2>&1; then exit 109; fi
+  grep -Fq 'stage=preflight check=shared/host-capacity status=failed reason=below-sql-memory-limit' \
+    "$TEMP_DIR/sql-memory-insufficient.log"
+  cp "$BASE_INVENTORY" "$INVENTORY"
   jq '.sharedServices.expectedHostName=.logicHost.expectedHostName |
     .sharedServices.expectedHostIdentity=.logicHost.expectedHostIdentity |
     .sharedServices.expectedDockerDaemonIdentity=.logicHost.expectedDockerDaemonIdentity' \
@@ -2537,6 +2558,7 @@ jq --arg root "$TEMP_DIR/remote/$deploy_services" --arg endpoint "http://127.0.0
   .deployment.services.minio.artifactBucket="hvo-deploy-services-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-services-artifacts" |
   .deployment.services.minio.diagnosticsBucket="hvo-deploy-services-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-services-diagnostics" |
   .deployment.resources.project="hvo-deploy-services" |
+  .deployment.limits.sqlMemory="4G" | .deployment.limits.sqlMemoryLimitMb=3072 |
   .sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",expectedArchitecture:"amd64",expectedHostName:"shared-node",
     expectedHostIdentity:"shared-machine",expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:($root+"-shared/runtime"),runtimeOwner:$owner,ports:[1433,6379,9000,2525,8025]} |
   .logicHost.runtimeRoot=($root+"-logic/runtime") | .logicHost.internalEndpoint=$endpoint | .logicHost.ports=[$port] |
@@ -2572,6 +2594,9 @@ shared_runtime_root="$TEMP_DIR/remote/$deploy_services-shared/runtime"
 grep -Fxq "HVO_CONFIG_ROOT=$shared_runtime_root/.hvo-deploy/up-$deploy_services" "$shared_render_env"
 grep -Fxq "HVO_STATE_ROOT=$shared_runtime_root/application" "$shared_render_env"
 grep -Fxq 'MAILPIT_HTTP_PORT=8025' "$shared_render_env"
+grep -Fxq 'HVO_MEMORY=2G' "$shared_render_env"
+grep -Fxq 'HVO_SQL_MEMORY=4G' "$shared_render_env"
+grep -Fxq 'MSSQL_MEMORY_LIMIT_MB=3072' "$shared_render_env"
 for service in sql redis minio; do
   test -d "$shared_runtime_root/application/$service"
   jq -e --arg device "$shared_runtime_root/application/$service" '.device == $device' \
@@ -2582,6 +2607,8 @@ test "$(grep -Fc 'user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_
 sqlserver_block="$(sed -n '/^  sqlserver:/,/^  sql-provision:/p' "$REPO_ROOT/deploy/split-host/compose.shared-services.yml")"
 grep -Fq 'user: "${HVO_RUNTIME_UID:?runtime uid required}:${HVO_RUNTIME_GID:?runtime gid required}"' <<< "$sqlserver_block"
 grep -Fq 'HOME: /var/opt/mssql' <<< "$sqlserver_block"
+grep -Fq 'MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:?SQL memory ceiling required}' <<< "$sqlserver_block"
+grep -Fq 'mem_limit: ${HVO_SQL_MEMORY:?SQL container memory required}' <<< "$sqlserver_block"
 grep -Fq 'dir /data' "$shared_runtime_root/.hvo-deploy/up-$deploy_services/private/redis.conf"
 for service in sql redis minio; do
   test -f "$shared_runtime_root/application/$service/.hvo-seed"

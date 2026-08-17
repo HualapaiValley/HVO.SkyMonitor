@@ -42,7 +42,7 @@ arguments. Control characters, repeated separators, and `.` or `..` components
 are rejected. Catalog versions follow the repository's existing `4.2`,
 `hyg-v4.2-p3-s2-r1`, and fixture-style identifiers; colon is not a supported
 catalog-version separator.
-Inventory schema v6 pins the Git revision, catalog, source-revision image tag,
+Inventory schema v7 pins the Git revision, catalog, source-revision image tag,
 distribution mode, named control-host buildx builder, repositories, registry tag
 policy, and non-secret service routes. Image platforms are derived from target
 architectures rather than separately asserted. There are no ambient target or
@@ -56,12 +56,13 @@ their values. Keep the inventory owner-only too if its declared runtime roots or
 hostnames are operationally sensitive, although they are intentionally treated
 as non-secret evidence fields.
 
-Schema v6 also declares the observatory, agent friendly names, owner automation
+Schema v7 also declares the observatory, agent friendly names, owner automation
 credential reference, workload selection, service ownership, distinct SQL
 administrator/initializer/runtime users, Redis administrator/runtime identities
 and key prefix, MinIO root/runtime identities and buckets, certificate paths,
-KeyPerFile mappings, and resource limits. `existing` service mode never
-provisions those services. `deploy` requires an explicit shared-services target
+KeyPerFile mappings, and resource limits. Application memory remains independent
+from the SQL Server container and internal memory ceilings. `existing` service
+mode never provisions those services. `deploy` requires an explicit shared-services target
 and digest references for SQL Server, Redis, MinIO, the MinIO client, and optional
 Mailpit. Mailpit is accepted only for isolated deployment.
 
@@ -155,6 +156,8 @@ For every explicitly selected target, preflight checks:
   identity, Linux OS, architecture, and server version;
 - Docker Compose plugin availability and version through that same context;
 - CPU count, total memory, filesystem free space, and host clock observation;
+- for deployed shared services, enough total host memory for the declared SQL
+  container limit;
 - thermal and throttle reporting, accurately marked `unsupported` when absent;
 - lexical and component-by-component runtime-root safety without creating it;
 - listening-port and Docker container conflicts;
@@ -168,9 +171,9 @@ Remote TCP checks require Bash and `timeout`; HTTP checks require Bash and curl.
 Missing required tools are reported as bounded `tool-unavailable` failures,
 distinct from an endpoint that was actually probed and found `unreachable`.
 
-The slice records observations but intentionally defines no speculative CPU,
-memory, disk, clock, or thermal thresholds. Policy thresholds require later
-operational requirements and evidence.
+The slice otherwise records observations without speculative CPU, memory, disk,
+clock, or thermal thresholds. The SQL check enforces only the operator-declared
+container requirement needed before preflight permits service mutation.
 
 Every existing runtime-root component is checked without following symbolic
 links. An existing root owned by the SSH user and not group/world writable is
@@ -460,6 +463,10 @@ project-scoped named-volume identities, labels, and teardown checks. Each named
 volume is backed by its exact run-owned bind directory beneath
 `<shared runtimeRoot>/application/{sql,redis,minio}` rather than Docker's ambient
 data root.
+SQL Server uses the inventory's dedicated container memory limit and
+`MSSQL_MEMORY_LIMIT_MB` ceiling. The production-like W2 profile uses a `4G`
+container budget and `3072` MB internal ceiling, leaving process overhead while
+LogicHost and CameraAgents retain the independent `2G` application limit.
 For `existing`, endpoint routes are checked without service mutation;
 controlled initialization and LogicHost dependency health then exercise the
 configured application identities.

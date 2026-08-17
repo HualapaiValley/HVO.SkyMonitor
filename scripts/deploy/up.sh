@@ -333,7 +333,9 @@ deploy_run_up() {
             "SQL_INITIALIZER_USER="+.deployment.services.sql.initializerUser,"SQL_RUNTIME_USER="+.deployment.services.sql.runtimeUser,
             "REDIS_RUNTIME_USER="+.deployment.services.redis.user,"REDIS_PREFIX="+.deployment.services.redis.prefix,
              "MINIO_ARTIFACT_BUCKET="+.deployment.services.minio.artifactBucket,"MINIO_DIAGNOSTICS_BUCKET="+.deployment.services.minio.diagnosticsBucket,
-              "HVO_CPUS="+(.deployment.limits.cpus // "2"),"HVO_MEMORY="+(.deployment.limits.memory // "2G")][]' "$inventory" > "$shared_env")
+              "HVO_CPUS="+(.deployment.limits.cpus // "2"),"HVO_MEMORY="+(.deployment.limits.memory // "2G"),
+              "HVO_SQL_MEMORY="+.deployment.limits.sqlMemory,
+              "MSSQL_MEMORY_LIMIT_MB="+(.deployment.limits.sqlMemoryLimitMb|tostring)][]' "$inventory" > "$shared_env")
         printf 'HVO_RUNTIME_UID=%s\nHVO_RUNTIME_GID=%s\nHVO_RUN_ID=%s\nHVO_INVENTORY_SHA256=%s\n' \
           "$runtime_uid" "$runtime_gid" "$run_id" "$hash" >> "$shared_env"
         deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1

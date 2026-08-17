@@ -5,6 +5,7 @@ services:
     environment:
       ACCEPT_EULA: "Y"
       HOME: /var/opt/mssql
+      MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:?SQL memory ceiling required}
     command: ["/bin/bash", "-c", "export MSSQL_SA_PASSWORD=$$(cat /run/hvo-secrets/SQLSERVER_PASSWORD); exec /opt/mssql/bin/sqlservr"]
     ports: ["${SQLSERVER_PORT:?port required}:1433"]
     volumes:
@@ -17,7 +18,7 @@ services:
       timeout: 5s
       retries: 20
     cpus: ${HVO_CPUS:-2}
-    mem_limit: ${HVO_MEMORY:-2G}
+    mem_limit: ${HVO_SQL_MEMORY:?SQL container memory required}
 
   sql-provision:
     image: ${SQLSERVER_IMAGE:?digest reference required}

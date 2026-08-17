@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 6,
+  "schemaVersion": 7,
   "environment": "observatory-production",
   "installationId": "observatory-main",
   "source": {
@@ -105,6 +105,6 @@
       { "reference": "OIDC_SIGNING_PASSWORD", "key": "OpenIddictCertificates__SigningPassword" },
       { "reference": "OIDC_ENCRYPTION_PASSWORD", "key": "OpenIddictCertificates__EncryptionPassword" }
     ],
-    "limits": { "cpus": "2", "memory": "2G" }
+    "limits": { "cpus": "2", "memory": "2G", "sqlMemory": null, "sqlMemoryLimitMb": null }
   }
 }
