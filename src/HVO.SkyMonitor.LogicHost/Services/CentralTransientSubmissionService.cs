@@ -744,6 +744,7 @@ internal sealed class CentralTransientSubmissionService(
 
     private static CentralTransientSubmissionRejectionKind KindFor(string reasonCode) => reasonCode switch
     {
+        CentralTransientSubmissionReasonCodes.ModeDisabled => CentralTransientSubmissionRejectionKind.Unavailable,
         CentralTransientSubmissionReasonCodes.EvidenceMissing => CentralTransientSubmissionRejectionKind.NotFound,
         CentralTransientSubmissionReasonCodes.EvidenceUnavailable => CentralTransientSubmissionRejectionKind.Unavailable,
         CentralTransientSubmissionReasonCodes.EvidenceIntegrity => CentralTransientSubmissionRejectionKind.Integrity,

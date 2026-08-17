@@ -42,6 +42,35 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
     ];
 
     [TestMethod]
+    public async Task ModeDisabledReturnsTemporaryUnavailabilityAndAuditsReason()
+    {
+        var scenario = await CreateScenarioAsync().ConfigureAwait(false);
+        using var factory = AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["CentralTransient:Mode"] = "Off"
+                })));
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var response = await SendAsync(client, scenario.DeviceId, DeviceKey, scenario.Envelope)
+            .ConfigureAwait(false);
+
+        response.StatusCode.Should().Be((HttpStatusCode)425);
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        problem.RootElement.GetProperty("reasonCode").GetString()
+            .Should().Be(CentralTransientSubmissionReasonCodes.ModeDisabled);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var audits = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+            .CentralTransientSubmissionAudits.AsNoTracking();
+        (await audits.CountAsync(item => item.CandidateId == scenario.Envelope.CandidateId
+                && item.ReasonCode == CentralTransientSubmissionReasonCodes.ModeDisabled)
+            .ConfigureAwait(false)).Should().Be(1);
+    }
+
+    [TestMethod]
     public async Task CanonicalSubmission_ConvergesDuplicatesAndPersistsAuthoritativeEvent()
     {
         var scenario = await CreateScenarioAsync(multipleCandidates: true).ConfigureAwait(false);

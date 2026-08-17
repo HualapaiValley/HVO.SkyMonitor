@@ -92,6 +92,19 @@ public sealed class CameraAgentTransientCandidateTransportTests
     }
 
     [TestMethod]
+    public async Task CentralModeTransitionRetainsSubmissionForRetry()
+    {
+        var transport = CreateTransport(new StubHttpClientFactory(
+            new CapturingHandler(_ => new((HttpStatusCode)425))));
+
+        var result = await transport.SendAsync(
+            TransientDeliveryTestData.Submission(), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(TransientCandidateTransportDisposition.Retry, result.Disposition);
+        Assert.AreEqual("http-425", result.Reason);
+    }
+
+    [TestMethod]
     public async Task StalledRequestIsCanceledAtConfiguredDeliveryTimeout()
     {
         var handler = new StalledHandler();
