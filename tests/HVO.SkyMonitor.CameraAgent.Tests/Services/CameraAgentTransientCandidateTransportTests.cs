@@ -34,6 +34,7 @@ public sealed class CameraAgentTransientCandidateTransportTests
         Assert.AreEqual(TransientCandidateTransportDisposition.Acknowledged, accepted.Disposition);
         Assert.AreEqual(TransientCandidateTransportDisposition.Acknowledged, duplicate.Disposition);
         Assert.AreEqual(SkyMonitorClientOptions.HttpClientName, factory.LastName);
+        Assert.AreEqual(Timeout.InfiniteTimeSpan, factory.Client!.Timeout);
         Assert.AreEqual("device-1", handler.LastHeaders["X-HVO-Device-Id"]);
         Assert.AreEqual("device-key", handler.LastHeaders["X-HVO-Device-Key"]);
         Assert.AreEqual(submission.SubmissionIdentitySha256, handler.LastHeaders["Idempotency-Key"]);
@@ -167,10 +168,12 @@ public sealed class CameraAgentTransientCandidateTransportTests
     private sealed class StubHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public string? LastName { get; private set; }
+        public HttpClient? Client { get; private set; }
         public HttpClient CreateClient(string name)
         {
             LastName = name;
-            return new HttpClient(handler, disposeHandler: false) { BaseAddress = new Uri("https://central.test") };
+            Client = new HttpClient(handler, disposeHandler: false) { BaseAddress = new Uri("https://central.test") };
+            return Client;
         }
     }
 

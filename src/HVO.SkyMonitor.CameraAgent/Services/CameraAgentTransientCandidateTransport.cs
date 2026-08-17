@@ -49,6 +49,7 @@ internal sealed class CameraAgentTransientCandidateTransport(
         try
         {
             var client = httpClientFactory.CreateClient(SkyMonitorClientOptions.HttpClientName);
+            client.Timeout = Timeout.InfiniteTimeSpan;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(
                 hostOptions.Value.TransientDetection.DeliveryRequestTimeoutSeconds));
