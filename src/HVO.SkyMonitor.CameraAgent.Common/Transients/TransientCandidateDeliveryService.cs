@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Transients;
 public enum TransientCandidateTransportDisposition
 {
     Acknowledged,
+    DependencyWaiting,
     Retry,
     AuthenticationBlocked,
     Rejected
@@ -397,17 +398,32 @@ internal sealed class TransientCandidateDeliveryService(
         _retries.TryGetValue(entry.CandidateId, out var retry);
         var attempts = retry?.Attempts + 1 ?? 1;
         var delay = RetryDelay(attempts, result.RetryAfter);
-        var disposition = result.Disposition == TransientCandidateTransportDisposition.AuthenticationBlocked
-            ? TransientCandidateTransportDisposition.AuthenticationBlocked
-            : TransientCandidateTransportDisposition.Retry;
+        var disposition = result.Disposition switch
+        {
+            TransientCandidateTransportDisposition.AuthenticationBlocked =>
+                TransientCandidateTransportDisposition.AuthenticationBlocked,
+            TransientCandidateTransportDisposition.DependencyWaiting =>
+                TransientCandidateTransportDisposition.DependencyWaiting,
+            _ => TransientCandidateTransportDisposition.Retry
+        };
         _retries[entry.CandidateId] = new RetryState(attempts, outcome.CompletedUtc + delay, disposition);
         telemetry.Record(
             "delivery",
-            disposition == TransientCandidateTransportDisposition.AuthenticationBlocked
-                ? "authentication-blocked"
-                : "retry",
+            disposition switch
+            {
+                TransientCandidateTransportDisposition.AuthenticationBlocked => "authentication-blocked",
+                TransientCandidateTransportDisposition.DependencyWaiting => "dependency-wait",
+                _ => "retry"
+            },
             outcome.Duration);
-        TransientCandidateDeliveryLog.Retrying(logger, result.Reason, (long)delay.TotalMilliseconds);
+        if (disposition == TransientCandidateTransportDisposition.DependencyWaiting)
+        {
+            TransientCandidateDeliveryLog.DependencyWaiting(logger, result.Reason, (long)delay.TotalMilliseconds);
+        }
+        else
+        {
+            TransientCandidateDeliveryLog.Retrying(logger, result.Reason, (long)delay.TotalMilliseconds);
+        }
     }
 
     internal TimeSpan GetWaitDelay(DateTimeOffset now)
@@ -428,7 +444,9 @@ internal sealed class TransientCandidateDeliveryService(
     {
         var authenticationBlocked = _retries.Count(value =>
             value.Value.Disposition == TransientCandidateTransportDisposition.AuthenticationBlocked);
-        var retrying = _retries.Count - authenticationBlocked;
+        var centralWaiting = _retries.Count(value =>
+            value.Value.Disposition == TransientCandidateTransportDisposition.DependencyWaiting);
+        var retrying = _retries.Count - authenticationBlocked - centralWaiting;
         var availability = aggregate.QuarantinedCount > 0
             ? TransientCandidateDeliveryAvailability.Unhealthy
             : authenticationBlocked > 0 || retrying > 0
@@ -440,7 +458,9 @@ internal sealed class TransientCandidateDeliveryService(
                 ? "authentication-blocked"
                 : retrying > 0
                     ? "retrying"
-                    : dependencyWaiting ? "waiting-artifact-upload" : "ready";
+                    : centralWaiting > 0
+                        ? "waiting-central-evidence"
+                        : dependencyWaiting ? "waiting-artifact-upload" : "ready";
         state.Set(
             availability,
             reason,
@@ -493,4 +513,7 @@ internal static partial class TransientCandidateDeliveryLog
 
     [LoggerMessage(2523, LogLevel.Error, "Transient candidate delivery quarantined retained evidence because {Reason}")]
     internal static partial void Quarantined(ILogger logger, string reason);
+
+    [LoggerMessage(2524, LogLevel.Information, "Transient candidate delivery is waiting for central dependency {Reason}; checking again after {DelayMilliseconds} ms")]
+    internal static partial void DependencyWaiting(ILogger logger, string reason, long delayMilliseconds);
 }

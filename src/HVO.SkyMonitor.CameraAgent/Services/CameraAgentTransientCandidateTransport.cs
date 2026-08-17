@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Configuration;
@@ -16,6 +17,10 @@ internal sealed class CameraAgentTransientCandidateTransport(
     TimeProvider timeProvider) : ITransientCandidateTransport
 {
     private static readonly Uri DeliveryRoute = new("/api/device/transient-candidates", UriKind.Relative);
+    private const int MaximumProblemDetailsBytes = 4096;
+    private const string EvidenceMissingReason = "hybrid-submission.evidence-missing";
+    private const string EvidenceUnavailableReason = "hybrid-submission.evidence-unavailable";
+    private const string ModeDisabledReason = "hybrid-submission.mode-disabled";
 
     public async ValueTask<TransientCandidateTransportResult> SendAsync(
         TransientCandidateSubmissionEnvelopeV1 submission,
@@ -90,9 +95,26 @@ internal sealed class CameraAgentTransientCandidateTransport(
                     "credentials-rejected",
                     RetryAfter: TimeSpan.FromMinutes(5));
             }
-            if (response.StatusCode == HttpStatusCode.NotFound ||
-                response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
-                (int)response.StatusCode == 425 || (int)response.StatusCode >= 500)
+            if (response.StatusCode == HttpStatusCode.NotFound || (int)response.StatusCode == 425)
+            {
+                var reasonCode = await ReadReasonCodeAsync(response.Content, timeout.Token).ConfigureAwait(false);
+                var dependencyWaiting = response.StatusCode == HttpStatusCode.NotFound
+                    ? reasonCode == EvidenceMissingReason
+                    : reasonCode is EvidenceUnavailableReason or ModeDisabledReason;
+                if (dependencyWaiting)
+                {
+                    return new(
+                        TransientCandidateTransportDisposition.DependencyWaiting,
+                        reasonCode!,
+                        RetryAfter: ResolveRetryAfter(response.Headers.RetryAfter));
+                }
+                return new(
+                    TransientCandidateTransportDisposition.Retry,
+                    $"http-{(int)response.StatusCode}",
+                    RetryAfter: ResolveRetryAfter(response.Headers.RetryAfter));
+            }
+            if (response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
+                (int)response.StatusCode >= 500)
             {
                 return new(
                     TransientCandidateTransportDisposition.Retry,
@@ -135,6 +157,29 @@ internal sealed class CameraAgentTransientCandidateTransport(
             return delay > TimeSpan.Zero ? delay : null;
         }
         return null;
+    }
+
+    private static async Task<string?> ReadReasonCodeAsync(
+        HttpContent content,
+        CancellationToken cancellationToken)
+    {
+        var bytes = await ReadBoundedAsync(content, MaximumProblemDetailsBytes, cancellationToken).ConfigureAwait(false);
+        if (bytes is null)
+        {
+            return null;
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(bytes);
+            return document.RootElement.TryGetProperty("reasonCode", out var reasonCode) &&
+                reasonCode.ValueKind == JsonValueKind.String
+                    ? reasonCode.GetString()
+                    : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static async Task<byte[]?> ReadBoundedAsync(
