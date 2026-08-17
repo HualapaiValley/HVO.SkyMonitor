@@ -92,16 +92,35 @@ public sealed class CameraAgentTransientCandidateTransportTests
     }
 
     [TestMethod]
-    public async Task CentralModeTransitionRetainsSubmissionForRetry()
+    public async Task CentralDependenciesRetainSubmissionWithoutTransportFailure()
     {
+        var responses = new Queue<HttpResponseMessage>(
+            [
+                Problem(HttpStatusCode.NotFound, "hybrid-submission.evidence-missing"),
+                Problem((HttpStatusCode)425, "hybrid-submission.mode-disabled"),
+                Problem((HttpStatusCode)425, "hybrid-submission.evidence-unavailable"),
+                Problem((HttpStatusCode)425, "unexpected-reason")
+            ]);
         var transport = CreateTransport(new StubHttpClientFactory(
-            new CapturingHandler(_ => new((HttpStatusCode)425))));
+            new CapturingHandler(_ => responses.Dequeue())));
 
-        var result = await transport.SendAsync(
+        var evidence = await transport.SendAsync(
+            TransientDeliveryTestData.Submission(), CancellationToken.None).ConfigureAwait(false);
+        var mode = await transport.SendAsync(
+            TransientDeliveryTestData.Submission(), CancellationToken.None).ConfigureAwait(false);
+        var unavailable = await transport.SendAsync(
+            TransientDeliveryTestData.Submission(), CancellationToken.None).ConfigureAwait(false);
+        var unexpected = await transport.SendAsync(
             TransientDeliveryTestData.Submission(), CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(TransientCandidateTransportDisposition.Retry, result.Disposition);
-        Assert.AreEqual("http-425", result.Reason);
+        Assert.AreEqual(TransientCandidateTransportDisposition.DependencyWaiting, evidence.Disposition);
+        Assert.AreEqual("hybrid-submission.evidence-missing", evidence.Reason);
+        Assert.AreEqual(TransientCandidateTransportDisposition.DependencyWaiting, mode.Disposition);
+        Assert.AreEqual("hybrid-submission.mode-disabled", mode.Reason);
+        Assert.AreEqual(TransientCandidateTransportDisposition.DependencyWaiting, unavailable.Disposition);
+        Assert.AreEqual("hybrid-submission.evidence-unavailable", unavailable.Reason);
+        Assert.AreEqual(TransientCandidateTransportDisposition.Retry, unexpected.Disposition);
+        Assert.AreEqual("http-425", unexpected.Reason);
     }
 
     [TestMethod]
@@ -164,6 +183,11 @@ public sealed class CameraAgentTransientCandidateTransportTests
         HttpStatusCode status,
         TransientCandidateSubmissionAcknowledgementV1 acknowledgement)
         => new(status) { Content = new ByteArrayContent(TransientCandidateDeliveryJson.Serialize(acknowledgement)) };
+
+    private static HttpResponseMessage Problem(HttpStatusCode status, string reasonCode) => new(status)
+    {
+        Content = new StringContent($"{{\"reasonCode\":\"{reasonCode}\"}}")
+    };
 
     private sealed class StubIdentityStore : IDeviceIdentityStore
     {

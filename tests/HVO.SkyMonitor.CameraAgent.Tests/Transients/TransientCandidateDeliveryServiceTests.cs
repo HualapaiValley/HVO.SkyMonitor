@@ -71,6 +71,43 @@ public sealed class TransientCandidateDeliveryServiceTests
     }
 
     [TestMethod]
+    public async Task CentralDependencyWaitRemainsHealthyUntilAcknowledged()
+    {
+        var submission = TransientDeliveryTestData.Submission();
+        var entry = TransientDeliveryTestData.Entry(submission);
+        var acknowledgement = TransientDeliveryTestData.Acknowledgement(submission);
+        var journal = new Mock<ITransientCandidateJournal>(MockBehavior.Strict);
+        SetupPages(journal, [entry]);
+        journal.Setup(value => value.AcknowledgeAsync(
+                submission.CandidateId, submission.EventId, acknowledgement, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(entry with
+            {
+                Phase = TransientCandidateWorkflowPhase.Acknowledged,
+                SourceHoldReleased = true,
+                Acknowledgement = acknowledgement
+            });
+        var transport = new Mock<ITransientCandidateTransport>(MockBehavior.Strict);
+        transport.SetupSequence(value => value.SendAsync(submission, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TransientCandidateTransportResult(
+                TransientCandidateTransportDisposition.DependencyWaiting, "hybrid-submission.evidence-missing"))
+            .ReturnsAsync(new TransientCandidateTransportResult(
+                TransientCandidateTransportDisposition.Acknowledged, "accepted", acknowledgement));
+        var time = new MutableTimeProvider(DateTimeOffset.UnixEpoch);
+        var state = new TransientCandidateDeliveryState(time);
+        var service = CreateService(journal.Object, transport.Object, time, state: state);
+
+        Assert.AreEqual(1, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
+        Assert.AreEqual(TransientCandidateDeliveryAvailability.Healthy, state.Snapshot.Availability);
+        Assert.AreEqual("waiting-central-evidence", state.Snapshot.Reason);
+        Assert.AreEqual(0, state.Snapshot.RetryingCount);
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        Assert.AreEqual(1, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
+        Assert.AreEqual(TransientCandidateDeliveryAvailability.Healthy, state.Snapshot.Availability);
+        Assert.AreEqual("ready", state.Snapshot.Reason);
+    }
+
+    [TestMethod]
     public async Task ArtifactUploadDependencyDefersFirstAttemptWithoutDegradingDelivery()
     {
         var submission = TransientDeliveryTestData.Submission();
@@ -398,7 +435,7 @@ public sealed class TransientCandidateDeliveryServiceTests
         var transport = new Mock<ITransientCandidateTransport>(MockBehavior.Strict);
         transport.Setup(value => value.SendAsync(entry.Submission!, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TransientCandidateTransportResult(
-                TransientCandidateTransportDisposition.AuthenticationBlocked, "dynamic-secret-reason"));
+                TransientCandidateTransportDisposition.DependencyWaiting, "dynamic-dependency-reason"));
         var samples = new System.Collections.Concurrent.ConcurrentQueue<(string Stage, string Outcome)>();
         using var listener = new MeterListener
         {
@@ -428,10 +465,10 @@ public sealed class TransientCandidateDeliveryServiceTests
 
         _ = await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false);
 
-        Assert.IsTrue(samples.Contains(("delivery", "authentication-blocked")));
+        Assert.IsTrue(samples.Contains(("delivery", "dependency-wait")));
         Assert.IsTrue(samples.All(sample => sample.Stage == "delivery"));
         Assert.IsTrue(samples.All(sample => sample.Outcome is
-            "accepted" or "duplicate" or "retry" or "authentication-blocked" or "rejected" or "scan-failed"));
+            "accepted" or "duplicate" or "dependency-wait" or "retry" or "authentication-blocked" or "rejected" or "scan-failed"));
     }
 
     [TestMethod]
