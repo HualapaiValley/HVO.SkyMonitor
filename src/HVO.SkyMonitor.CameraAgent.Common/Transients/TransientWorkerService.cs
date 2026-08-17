@@ -521,7 +521,7 @@ internal sealed class TransientWorkerService(
         IReadOnlyList<TransientCandidateV1> probes,
         CancellationToken cancellationToken)
     {
-        var previous = frame.CaptureSequence > 1
+        var previous = _options.Mode == TransientOperatingMode.Edge && frame.CaptureSequence > 1
             ? await store.ReadAdjacentCandidatesAsync(
                 frame.AgentId, frame.CaptureSequence - 1, cancellationToken).ConfigureAwait(false)
             : [];

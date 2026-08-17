@@ -318,6 +318,14 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             }
         }
 
+        var conflictingEvent = CreateEnvelope(Reidentify(scenario.Envelope.Candidate) with
+        {
+            EventId = scenario.Envelope.EventId
+        });
+        using var conflictingEventResponse = await SendAsync(
+            client, scenario.DeviceId, DeviceKey, conflictingEvent).ConfigureAwait(false);
+        conflictingEventResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
         var spoofed = CreateEnvelope(Reidentify(scenario.Envelope.Candidate) with
         {
             AgentId = $"spoofed-{Guid.NewGuid():N}"
@@ -383,6 +391,9 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             .Should().Be(2);
         (await db.CentralTransientSubmissionAudits.CountAsync(item =>
             item.CandidateId == conflicting.CandidateId
+            && item.ReasonCode == CentralTransientSubmissionReasonCodes.IdentityConflict).ConfigureAwait(false)).Should().Be(1);
+        (await db.CentralTransientSubmissionAudits.CountAsync(item =>
+            item.CandidateId == conflictingEvent.CandidateId
             && item.ReasonCode == CentralTransientSubmissionReasonCodes.IdentityConflict).ConfigureAwait(false)).Should().Be(1);
         (await db.CentralTransientSubmissionAudits.CountAsync(item =>
             item.CandidateId == missing.CandidateId
