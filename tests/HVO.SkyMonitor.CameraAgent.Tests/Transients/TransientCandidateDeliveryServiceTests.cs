@@ -89,7 +89,7 @@ public sealed class TransientCandidateDeliveryServiceTests
         var transport = new Mock<ITransientCandidateTransport>(MockBehavior.Strict);
         transport.SetupSequence(value => value.SendAsync(submission, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TransientCandidateTransportResult(
-                TransientCandidateTransportDisposition.DependencyWaiting, "http-404"))
+                TransientCandidateTransportDisposition.DependencyWaiting, "hybrid-submission.evidence-missing"))
             .ReturnsAsync(new TransientCandidateTransportResult(
                 TransientCandidateTransportDisposition.Acknowledged, "accepted", acknowledgement));
         var time = new MutableTimeProvider(DateTimeOffset.UnixEpoch);
