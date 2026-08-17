@@ -1082,6 +1082,54 @@ public sealed class TransientWorkerRuntimeTests
         }
     }
 
+    [TestMethod]
+    public async Task Hybrid_AdjacentEventFramesReserveDistinctSubmittedEventIdentities()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-hybrid-context", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = root,
+                ["CameraAgent:TransientDetection:Mode"] = "Hybrid",
+                ["CameraAgent:TransientDetection:WorkerPollIntervalMilliseconds"] = "100",
+                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "true"
+            }).Build();
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
+            services.AddCameraAgentInfrastructure(configuration);
+            using var provider = services.BuildServiceProvider();
+            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
+            var cameraConfiguration = CreateConfiguration(CreateAdjacentFrameScenario(epoch));
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
+            await StageVirtualFramesAsync(provider, cameraConfiguration, epoch, 8).ConfigureAwait(false);
+            var worker = provider.GetRequiredService<TransientWorkerService>();
+            while (await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false))
+            {
+            }
+
+            using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await connection.OpenAsync().ConfigureAwait(false);
+            Assert.AreEqual(2L, await ScalarAsync(
+                connection, "SELECT COUNT(*) FROM transient_candidates WHERE phase = 'handoff_pending';").ConfigureAwait(false));
+            Assert.AreEqual(2L, await ScalarAsync(
+                connection, "SELECT COUNT(DISTINCT event_id) FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(2L, await ScalarAsync(
+                connection, "SELECT COUNT(DISTINCT submission_identity_sha256) FROM transient_candidates;").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(
+                connection, "SELECT COUNT(*) FROM transient_candidates WHERE quarantine_reason IS NOT NULL;").ConfigureAwait(false));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     private static async Task StageVirtualFramesAsync(
         ServiceProvider provider,
         CameraModuleConfig cameraConfiguration,
