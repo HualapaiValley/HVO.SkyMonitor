@@ -94,10 +94,13 @@ public sealed class TransientCandidateDeliveryServiceTests
         var drainedSnapshot = new ArtifactOutboxSnapshot(0, 0, null, 0, 0, 0, 1, 0, 0);
         outboxState.Update("/archive", drainedSnapshot);
         IReadOnlyList<Guid> acknowledgedArtifactIds = [];
+        var publicationLookupUnavailable = true;
         var artifactOutbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
         artifactOutbox.Setup(value => value.GetAcknowledgedArtifactIdsAsync(
                 "/archive", It.IsAny<IReadOnlySet<Guid>>(), It.IsAny<CancellationToken>()))
-            .Returns(() => ValueTask.FromResult(acknowledgedArtifactIds));
+            .Returns(() => publicationLookupUnavailable
+                ? throw new NotSupportedException("Publication lookup is temporarily unavailable.")
+                : ValueTask.FromResult(acknowledgedArtifactIds));
         var state = new TransientCandidateDeliveryState(TimeProvider.System);
         var service = CreateService(
             journal.Object,
@@ -113,6 +116,8 @@ public sealed class TransientCandidateDeliveryServiceTests
         transport.Verify(value => value.SendAsync(
             It.IsAny<TransientCandidateSubmissionEnvelopeV1>(), It.IsAny<CancellationToken>()), Times.Never);
 
+        publicationLookupUnavailable = false;
+        Assert.AreEqual(0, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
         acknowledgedArtifactIds = submission.Candidate.ContextSources
             .Select(source => source.Locator.Artifact.ArtifactId).ToArray();
         outboxState.Update("/archive", drainedSnapshot);

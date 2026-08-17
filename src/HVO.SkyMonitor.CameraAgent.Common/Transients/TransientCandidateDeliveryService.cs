@@ -261,7 +261,11 @@ internal sealed class TransientCandidateDeliveryService(
                     root, trackedArtifactIds, cancellationToken).ConfigureAwait(false);
                 acknowledgedArtifactIds.UnionWith(acknowledged);
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
             {
                 dependencyWaiting = true;
             }
