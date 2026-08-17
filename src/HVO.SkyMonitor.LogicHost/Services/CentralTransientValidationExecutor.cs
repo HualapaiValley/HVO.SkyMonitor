@@ -851,8 +851,12 @@ internal sealed partial class CentralTransientValidationExecutor(
             var ordinal = 0;
             foreach (var contextInput in contextInputs.OrderBy(item => item.Ordinal))
             {
-                var requiredJobId = contextJobs.SingleOrDefault(item =>
-                    item.SourceCentralArtifactId == contextInput.CentralArtifactId)?.Id;
+                var requiredJobId = contextJobs
+                    .Where(item => item.SourceCentralArtifactId == contextInput.CentralArtifactId)
+                    .OrderByDescending(item => item.Settled)
+                    .ThenBy(item => item.Id)
+                    .Select(item => (Guid?)item.Id)
+                    .FirstOrDefault();
                 dbContext.CentralTransientContextDependencies.Add(new CentralTransientContextDependency
                 {
                     CentralDerivativeJobId = lease.JobId,

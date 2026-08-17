@@ -121,7 +121,52 @@ public sealed class CentralDerivativeWorkerTests
 
         jobs.FailCount.Should().Be(1);
         jobs.LastRetryable.Should().BeTrue();
+        jobs.LastError.Should().Be(nameof(TestDbException));
         jobs.ClaimCount.Should().BeGreaterThanOrEqualTo(2);
+    }
+
+    [TestMethod]
+    public async Task UnexpectedFailurePersistsExceptionClassificationAsync()
+    {
+        var lease = CreateLease();
+        var jobs = new ScriptedJobService
+        {
+            Claim = (attempt, _) => Task.FromResult(attempt == 1 ? lease : null)
+        };
+        await using var harness = CreateHarness(
+            jobs,
+            _ => new ThrowingExecutor(new InvalidOperationException("invalid execution state")));
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await jobs.SecondClaim.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        jobs.FailCount.Should().Be(1);
+        jobs.LastRetryable.Should().BeFalse();
+        jobs.LastError.Should().Be("processing.execution-failed.InvalidOperationException");
+    }
+
+    [TestMethod]
+    public async Task PersistenceFailurePreservesStableReasonCodeAsync()
+    {
+        var lease = CreateLease();
+        var jobs = new ScriptedJobService
+        {
+            Claim = (attempt, _) => Task.FromResult(attempt == 1 ? lease : null)
+        };
+        await using var harness = CreateHarness(
+            jobs,
+            _ => new ThrowingExecutor(new CentralTransientPersistenceException(
+                CentralTransientPersistenceReasonCodes.InvalidIdentityBinding,
+                "invalid persistence binding")));
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await jobs.SecondClaim.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        jobs.FailCount.Should().Be(1);
+        jobs.LastRetryable.Should().BeFalse();
+        jobs.LastError.Should().Be(CentralTransientPersistenceReasonCodes.InvalidIdentityBinding);
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage(
@@ -265,6 +310,7 @@ public sealed class CentralDerivativeWorkerTests
         private int _claimCount;
         private int _failCount;
         private int _lastRetryable;
+        private string? _lastError;
 
         public Func<int, CancellationToken, Task<CentralDerivativeJobLease?>> Claim { get; init; }
             = static (_, _) => Task.FromResult<CentralDerivativeJobLease?>(null);
@@ -280,6 +326,8 @@ public sealed class CentralDerivativeWorkerTests
         public int FailCount => Volatile.Read(ref _failCount);
 
         public bool LastRetryable => Volatile.Read(ref _lastRetryable) != 0;
+
+        public string? LastError => Volatile.Read(ref _lastError);
 
         public async Task<CentralDerivativeJobLease?> ClaimNextAsync(
             string workerId,
@@ -313,6 +361,7 @@ public sealed class CentralDerivativeWorkerTests
         {
             Interlocked.Increment(ref _failCount);
             Volatile.Write(ref _lastRetryable, retryable ? 1 : 0);
+            Volatile.Write(ref _lastError, error);
             return Fail?.Invoke(retryable, cancellationToken) ?? Task.CompletedTask;
         }
 

@@ -888,6 +888,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
         await DisableOtherActiveJobsAsync(provisionalJobId).ConfigureAwait(false);
         await ExecuteClaimedTransientAsync(provisionalJobId, "convergence-provisional").ConfigureAwait(false);
 
+        Guid[] dependencyJobIds;
         await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -897,16 +898,48 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 .ToListAsync().ConfigureAwait(false);
             dependencies.Should().HaveCount(4);
             dependencies.Should().OnlyContain(item => item.RequiredCentralDerivativeJobId.HasValue);
-        }
-        Guid[] dependencyJobIds;
-        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            dependencyJobIds = await db.CentralTransientContextDependencies.AsNoTracking()
-                .Where(item => item.CentralDerivativeJobId == provisionalJobId)
-                .OrderBy(item => item.Ordinal)
-                .Select(item => item.RequiredCentralDerivativeJobId!.Value)
-                .ToArrayAsync().ConfigureAwait(false);
+            dependencyJobIds = dependencies.Select(item => item.RequiredCentralDerivativeJobId!.Value).ToArray();
+            var duplicateSource = await db.CentralTransientValidationJobs.AsNoTracking()
+                .Include(item => item.Job)
+                .SingleAsync(item => item.CentralDerivativeJobId == dependencyJobIds[0]).ConfigureAwait(false);
+            var duplicateJobId = Guid.NewGuid();
+            var now = DateTimeOffset.UtcNow;
+            db.CentralDerivativeJobs.Add(new CentralDerivativeJob
+            {
+                Id = duplicateJobId,
+                SourceCentralArtifactId = duplicateSource.Job!.SourceCentralArtifactId,
+                TargetRole = duplicateSource.Job.TargetRole,
+                TargetRecipeVersion = duplicateSource.Job.TargetRecipeVersion,
+                TargetVariant = duplicateSource.Job.TargetVariant,
+                RecipeName = duplicateSource.Job.RecipeName,
+                RecipeOptionsJson = duplicateSource.Job.RecipeOptionsJson,
+                InputSelectorJson = duplicateSource.Job.InputSelectorJson,
+                RequestedRecipeIdentitySha256 = duplicateSource.Job.RequestedRecipeIdentitySha256,
+                ExpectedRecipeIdentitySha256 = duplicateSource.Job.ExpectedRecipeIdentitySha256,
+                RequestIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                Status = CentralDerivativeJobStatus.TerminalFailure,
+                AttemptCount = 1,
+                MaxAttempts = duplicateSource.Job.MaxAttempts,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                LastFailedAtUtc = now,
+                LastError = "test.duplicate-terminal"
+            });
+            db.CentralTransientValidationJobs.Add(new CentralTransientValidationJob
+            {
+                CentralDerivativeJobId = duplicateJobId,
+                AgentId = duplicateSource.AgentId,
+                SubmissionSchemaVersion = duplicateSource.SubmissionSchemaVersion,
+                SubmissionIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
+                ExecutionOptionsJson = duplicateSource.ExecutionOptionsJson,
+                ExecutionOptionsIdentitySha256 = duplicateSource.ExecutionOptionsIdentitySha256,
+                CreatedAtUtc = now
+            });
+            var pinnedDependency = await db.CentralTransientContextDependencies.SingleAsync(item =>
+                item.CentralDerivativeJobId == provisionalJobId && item.Ordinal == dependencies[0].Ordinal)
+                .ConfigureAwait(false);
+            pinnedDependency.RequiredCentralDerivativeJobId = duplicateJobId;
+            await db.SaveChangesAsync().ConfigureAwait(false);
         }
         foreach (var dependencyJobId in dependencyJobIds)
         {
@@ -962,6 +995,11 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 scope.ServiceProvider.GetRequiredService<CentralDerivativeWorkerTelemetry>(),
                 scope.ServiceProvider.GetRequiredService<ILogger<CentralTransientRetrospectiveScheduler>>());
             await retrospective.ScheduleBatchAsync(DateTimeOffset.UtcNow, CancellationToken.None).ConfigureAwait(false);
+            (await db.CentralTransientContextDependencies.AsNoTracking()
+                .Where(item => item.CentralDerivativeJobId == provisionalJobId)
+                .OrderBy(item => item.Ordinal)
+                .Select(item => item.RequiredCentralDerivativeJobId!.Value)
+                .ToArrayAsync().ConfigureAwait(false)).Should().Equal(dependencyJobIds);
         }
 
         Guid successorJobId;

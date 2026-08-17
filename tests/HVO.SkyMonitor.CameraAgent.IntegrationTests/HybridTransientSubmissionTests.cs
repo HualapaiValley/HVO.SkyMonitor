@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
+using HVO.SkyMonitor.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -156,6 +157,33 @@ public sealed class HybridTransientSubmissionTests
             Assert.AreEqual(5, Convert.ToInt32(
                 await centralCommand.ExecuteScalarAsync().ConfigureAwait(false),
                 System.Globalization.CultureInfo.InvariantCulture));
+            var execution = await HybridTransientExecutionProbe.ExecuteAsync(
+                assertionScope.ServiceProvider.GetRequiredService<IServiceScopeFactory>(),
+                submission.SubmissionIdentitySha256,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreNotEqual("TerminalFailure", execution.Status, execution.ReasonCode);
+            if (execution.Status == "Skipped")
+            {
+                Assert.IsTrue(execution.ReasonCode is
+                    "transient-validation.hybrid-candidate-not-found" or
+                    "transient-validation.hybrid-candidate-ambiguous");
+            }
+            else
+            {
+                Assert.AreEqual("Produced", execution.Status, execution.ReasonCode);
+                Assert.IsNull(execution.ReasonCode);
+            }
+            centralCommand.CommandText = """
+                SELECT job.Status, job.LastError
+                FROM CentralDerivativeJobs AS job
+                INNER JOIN CentralTransientValidationJobs AS validation
+                    ON validation.CentralDerivativeJobId = job.Id
+                WHERE validation.SubmissionIdentitySha256 = @submission;
+                """;
+            using var outcomeReader = await centralCommand.ExecuteReaderAsync().ConfigureAwait(false);
+            Assert.IsTrue(await outcomeReader.ReadAsync().ConfigureAwait(false));
+            Assert.AreEqual("Completed", outcomeReader.GetString(0));
+            Assert.IsTrue(await outcomeReader.IsDBNullAsync(1).ConfigureAwait(false));
         }
         finally
         {
