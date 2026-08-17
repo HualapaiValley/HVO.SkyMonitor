@@ -241,19 +241,28 @@ internal sealed class CentralDerivativeJobScheduler(
                 return null;
             }
 
-            foreach (var dependency in provisional.ContextDependencies.Where(item =>
-                         item.RequiredCentralDerivativeJobId == null))
+            foreach (var dependency in provisional.ContextDependencies)
             {
                 dependency.RequiredCentralDerivativeJobId = await dbContext.CentralDerivativeJobs
                     .Where(job => job.SourceCentralArtifactId == dependency.ContextCentralArtifactId &&
                         job.RecipeName == CentralTransientRuntime.RecipeName &&
                         job.RequestedRecipeIdentitySha256 == dependency.RequestedRecipeIdentitySha256 &&
                         dbContext.CentralTransientValidationJobs.Any(validation =>
+                             validation.CentralDerivativeJobId == job.Id &&
+                             validation.ProvisionalCentralDerivativeJobId == null &&
+                             validation.ExecutionOptionsIdentitySha256 == dependency.ExecutionOptionsIdentitySha256))
+                    .Select(job => new
+                    {
+                        job.Id,
+                        Settled = dbContext.CentralTransientValidationJobs.Any(validation =>
                             validation.CentralDerivativeJobId == job.Id &&
-                            validation.ProvisionalCentralDerivativeJobId == null &&
-                            validation.ExecutionOptionsIdentitySha256 == dependency.ExecutionOptionsIdentitySha256))
+                            validation.CommittedAtUtc != null &&
+                            validation.ExtractionReceipt != null)
+                    })
+                    .OrderByDescending(job => job.Settled)
+                    .ThenBy(job => job.Id)
                     .Select(job => (Guid?)job.Id)
-                    .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                    .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
             }
             var requiredJobIds = provisional.ContextDependencies
                 .Where(item => item.RequiredCentralDerivativeJobId.HasValue)

@@ -233,9 +233,12 @@ internal sealed partial class CentralDerivativeWorker(
         }
         catch (Exception exception)
         {
+            var reasonCode = exception is CentralTransientPersistenceException persistenceException
+                ? persistenceException.ReasonCode
+                : $"processing.execution-failed.{exception.GetType().Name}";
             telemetry.RecordAttempt(lease.RecipeName, "terminal", "execution", timeProvider.GetUtcNow());
             Log.Unexpected(logger, exception, lease.JobId, lease.AttemptCount);
-            await TryFailAsync(lease, "processing.execution-failed", retryable: false, stoppingToken)
+            await TryFailAsync(lease, reasonCode, retryable: false, stoppingToken)
                 .ConfigureAwait(false);
         }
     }
