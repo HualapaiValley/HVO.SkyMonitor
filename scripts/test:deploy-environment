@@ -2414,13 +2414,13 @@ jq '.rawIngress.value.pendingCount=2 | .captureLanes.value.pendingCount=2 | .cap
   "$measure_tail_operations" > "$measure_tail_operations.changed"
 mv "$measure_tail_operations.changed" "$measure_tail_operations"
 (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east)
-jq '.captureLanes.value.pendingCount=3 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=3 else . end' \
+jq '.rawIngress.value.pendingCount=3 | .captureLanes.value.pendingCount=3 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=3 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
 mv "$measure_tail_operations.changed" "$measure_tail_operations"
 if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
   fail 'Measure accepted an intermediate record count that could hide stale work.'
 fi
-jq '.captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=11 else . end | .captureLanes.value.pendingCount=11' \
+jq '.rawIngress.value.pendingCount=6 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=11 else . end | .captureLanes.value.pendingCount=11' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
 mv "$measure_tail_operations.changed" "$measure_tail_operations"
 if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
