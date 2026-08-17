@@ -15,8 +15,16 @@ deploy_record() {
     [[ "$status" != failed ]]
 }
 
+deploy_memory_to_kib() {
+    local value="$1" amount unit
+    [[ "$value" =~ ^([1-9][0-9]*)([MG])$ ]] || return 1
+    amount="$((10#${BASH_REMATCH[1]}))"; unit="${BASH_REMATCH[2]}"
+    if [[ "$unit" == G ]]; then printf '%s\n' "$((amount * 1024 * 1024))"
+    else printf '%s\n' "$((amount * 1024))"; fi
+}
+
 deploy_preflight_target() {
-    local target="$1" name ssh_host context expected_arch expected_name expected_host expected_daemon root ports probe
+    local target="$1" minimum_memory_kib="${2:-0}" name ssh_host context expected_arch expected_name expected_host expected_daemon root ports probe
     name="$(jq -r '.name' <<< "$target")"
     ssh_host="$(jq -r '.sshHost' <<< "$target")"
     context="$(jq -r '.dockerContext' <<< "$target")"
@@ -43,7 +51,11 @@ deploy_preflight_target() {
         { deploy_record preflight "$name" ssh failed invalid-response; return 1; }
     deploy_record preflight "$name" ssh passed reachable || return 1
     [[ "$arch" == "$expected_arch" ]] || { deploy_record preflight "$name" host-architecture failed mismatch; return 1; }
-    deploy_record preflight "$name" host-capacity passed observed || return 1
+    if (( minimum_memory_kib > 0 && memory < minimum_memory_kib )); then
+        deploy_record preflight "$name" host-capacity failed below-sql-memory-limit
+        return 1
+    fi
+    deploy_record preflight "$name" host-capacity passed "$([[ "$minimum_memory_kib" -gt 0 ]] && printf meets-sql-memory-limit || printf observed)" || return 1
     control_clock="$(date +%s)"
     clock_offset=$((host_clock - control_clock))
     deploy_record preflight "$name" clock passed observed || return 1
@@ -88,9 +100,18 @@ deploy_preflight_target() {
 }
 
 deploy_run_preflight() {
-    local inventory="$1" mode="$2" old_manifest="${3:-}" target endpoint name host port route agent logic_url connectivity_status
+    local inventory="$1" mode="$2" old_manifest="${3:-}" target endpoint name host port route agent logic_url connectivity_status shared_name sql_memory_kib minimum_memory_kib
     DEPLOY_TARGETS_JSON='[]'
-    while IFS= read -r target; do deploy_preflight_target "$target" || return 1; done < <(deploy_inventory_targets "$inventory")
+    shared_name="$(jq -r '.sharedServices.name // empty' "$inventory")"
+    sql_memory_kib=0
+    if [[ "$(jq -r '.deployment.services.mode' "$inventory")" == deploy ]]; then
+        sql_memory_kib="$(deploy_memory_to_kib "$(jq -r '.deployment.limits.sqlMemory' "$inventory")")" || return 1
+    fi
+    while IFS= read -r target; do
+        minimum_memory_kib=0
+        [[ "$(jq -r '.name' <<< "$target")" != "$shared_name" ]] || minimum_memory_kib="$sql_memory_kib"
+        deploy_preflight_target "$target" "$minimum_memory_kib" || return 1
+    done < <(deploy_inventory_targets "$inventory")
 
     while IFS= read -r endpoint; do
         name="$(jq -r '.name' <<< "$endpoint")"
