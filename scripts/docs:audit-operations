@@ -75,6 +75,9 @@ require_source_reference 'DeviceBootstrap__CentralIdentity__ClientCredentials__C
 require_source_reference 'canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on' docs/catalog/production-install.md
 require_source_reference 'ARM64 operators must install the' docs/catalog/production-install.md
 require_source_reference 'It never copies or executes the catalog builder remotely.' docs/runbooks/split-host-preflight.md
+require_source_reference 'Two consecutive' docs/runbooks/split-host-preflight.md
+require_source_reference 'final reassertion' docs/runbooks/split-host-preflight.md
+require_source_reference 'deploy_capture_queues_converged' scripts/deploy/common.sh
 require_source_reference './scripts/test:deploy-environment --parallel' docs/runbooks/ci-pipeline.md
 require_source_reference 'name: Deployment Contracts' .github/workflows/ci.yml
 require_source_reference 'deployment: ${{ steps.classify.outputs.deployment }}' .github/workflows/ci.yml

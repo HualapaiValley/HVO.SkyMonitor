@@ -55,7 +55,7 @@ internal static class OperatorUiTestData
                 .2,
                 samples,
                 0)),
-            Section(new OperationsConfigurationState(true, "validated", "agent-test", "VirtualSky", centralIntegration)));
+            Section(new OperationsConfigurationState(true, "validated", "agent-test", "VirtualSky", centralIntegration, "Off")));
         return new CameraAgentOperationsView(summary, artifactQuarantine ?? [], []);
     }
 

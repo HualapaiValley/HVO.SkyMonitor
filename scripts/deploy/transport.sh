@@ -196,7 +196,8 @@ deploy_transport_initialize_private_upload_registry() {
              elif .kind == "remote-private" then
                any(targets[]; . == $entry.target) and ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/")) and
                (($entry.path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
-                ($entry.path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")))
+                 ($entry.path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")) or
+                 ($entry.path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))
              elif .kind == "local-private" then
                any(targets[]; . == $entry.target) and ($entry.path | startswith(($registry | sub("/private-upload-registry[.]json$"; "")) + "/")) and
                ($entry.path | test("/(central[.]headers|[A-Za-z0-9._-]+-(owner-password|antiforgery[.]headers|antiforgery[.]json|envelope[.]json|bootstrap-request[.]json))$")) and
@@ -235,7 +236,8 @@ deploy_transport_register_remote_private() {
     local target="$1" path="$2" updated
     jq -e --arg path "$path" '.runtimeRoot as $root | ($path | startswith($root + "/.hvo-deploy/")) and
       (($path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
-       ($path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")))' \
+        ($path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")) or
+        ($path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))' \
       <<< "$target" >/dev/null || return 1
     updated="$(jq -c --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" --arg path "$path" --argjson target "$target" '
       if any(.[]; .path == $path and .phase == $phase and .kind == "remote-private" and .target == $target) then .

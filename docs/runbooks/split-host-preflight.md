@@ -634,8 +634,12 @@ active center-capture identities across transient lane work, worker work, and un
 candidate holds, so a stale third center fails closed. Raw-ingress records range from one
 retained center row through its three-source causal window. Transient records range from
 one worker row per center through the built-in extraction profile's maximum 32 candidates
-per center. Every other lane and queue must be empty, and the transient worker must be
-healthy and idle. The retained before/after queue snapshots expose this tail and its exact
+per center. These are bounded record counts, not substitutes for record-level identities:
+they are accepted only after the pending-capture projection proves the complete active
+center identities and every other lane, the transient worker, capture processing, and
+artifact outbox prove there is no unrelated active work. Every other lane and queue must
+be empty, and the transient worker must be healthy and idle. The retained before/after
+queue snapshots expose this tail and its exact
 final capture sequences; measurement marks the queues converged but not fully drained.
 Any unexpected pending identity, excess fan-out, pressure, lease, retry, quarantine,
 terminal work, or active transient worker fails convergence.
@@ -959,12 +963,39 @@ Delete a fully isolated, orchestrator-owned stack:
   --delete-state --confirm observatory-preflight-01
 ```
 
-Exactly one policy is required. CameraAgents are paused and drained before they
-stop, LogicHost stops second, and
+Exactly one policy is required. CameraAgents are paused and reach a safe queue
+boundary before they stop, LogicHost stops second, and
 deployed shared services last; existing shared services are left running.
 The pause command carries a stable run-and-target-scoped `Idempotency-Key`; only
-an HTTP success response is accepted, and an arbitrary conflict is not treated
-as an idempotent replay. Deletion is accepted only in isolated `services.mode: deploy`, only when every
+an exact paused state and integer control version in the HTTP success response
+are accepted, and an arbitrary conflict is not treated as an idempotent replay.
+Teardown binds that receipt to the durable paused control projection, the inventory's
+exact Off or Hybrid mode, and exactly one durable capture sequence for the provisioned
+device. The device identity, nonnegative end sequence (including zero), and normalized
+active-configuration SHA-256 must remain unchanged. Two consecutive
+fresh observations must satisfy the shared queue convergence contract before
+Compose stop: Off requires an empty drain and a Disabled idle transient worker;
+Hybrid is selected from the required transient runtime lane and permits only its
+healthy idle zero-boundary state or bounded final one-or-two-capture temporal
+tail. Every summary and continuity request is cache-busted; each accepted summary must
+be newer than the preceding accepted root timestamp, bound to the current validated
+device configuration and expected transient mode, and identical in its canonical
+safety-value fingerprint. Raw ingress and capture lanes must be fresh and observed after
+the pause. Capture processing and artifact outbox must be fresh but may predate the pause
+because they refresh asynchronously or may be disabled. Capture control needs a valid
+observation timestamp and the exact receipt state/version, but an already-paused durable
+state need not refresh periodically. Hybrid requires a fresh transient worker; Off accepts
+an idle Disabled worker with a valid observation timestamp even when its initial state is
+stale. Any unsafe or non-monotonic summary resets confirmation. A newer safe summary with
+a changed fingerprint begins a new candidate pair, so A,B,B converges while continuously
+changing snapshots do not. Identity, sequence, or active configuration drift fails closed.
+A final pause uses a new idempotency key and request after those two observations and must
+return the same control version. One final cache-busted summary/continuity pair must then
+be newer, queue-safe, mode/hash stable, and fingerprint-identical before Compose stop.
+Supported orchestration assumes no malicious external
+mutation in the remaining non-atomic script-to-Compose boundary; the final reassertion
+narrows that boundary without a new application endpoint.
+Deletion is accepted only in isolated `services.mode: deploy`, only when every
 runtime root was created by the confirmed run, and only after all guards pass.
 Before parsing, the prepare ledger, manifest, and evidence must each be an
 owner-UID, mode-`0600`, single-link regular non-symlink, and the passed private
