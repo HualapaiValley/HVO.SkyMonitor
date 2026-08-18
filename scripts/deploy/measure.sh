@@ -372,53 +372,12 @@ deploy_measure_failure_pause_all() {
 }
 
 deploy_measure_queues_converged() {
-    local operations="$1" end_sequence="$2" device="$3"
-    jq -e --argjson endSequence "$end_sequence" --arg device "$device" '
-      (if $endSequence < 2 then $endSequence else 2 end) as $tail |
-      .transientWorker.value.maximumCandidates as $maximumCandidates |
-      ($tail * 3) as $maximumRawIngressRecords |
-      ($tail * (1 + $maximumCandidates)) as $maximumTransientRecords |
-      [.captureLanes.value.lanes[] | select(.name == "transient" and .required == true)] as $transient |
-      .rawIngress.value.availability == "Accepting" and .captureLanes.value.availability == "Healthy" and
-      .captureProcessing.value.availability == "Healthy" and .artifactOutbox.value.availability == "Healthy" and
-      .rawIngress.value.leasedCount == 0 and .rawIngress.value.retryCount == 0 and
-      .rawIngress.value.quarantineCount == 0 and .rawIngress.value.terminalCount == 0 and
-      .captureLanes.value.leasedCount == 0 and .captureLanes.value.retryCount == 0 and
-      .captureLanes.value.quarantineCount == 0 and
-      .captureProcessing.value.pendingCount == 0 and .captureProcessing.value.leasedCount == 0 and
-      .captureProcessing.value.retryCount == 0 and .captureProcessing.value.quarantineCount == 0 and
-      .captureProcessing.value.terminalCount == 0 and
-      .artifactOutbox.value.pendingCount == 0 and .artifactOutbox.value.leasedCount == 0 and
-      .artifactOutbox.value.retryCount == 0 and .artifactOutbox.value.quarantineCount == 0 and
-      .artifactOutbox.value.terminalCount == 0 and
-      if ($transient | length) == 0 then
-        .rawIngress.value.pendingCount == 0 and .captureLanes.value.pendingCount == 0 and
-        all(.captureLanes.value.lanes[];
-          .pendingCount == 0 and .leasedCount == 0 and .retryCount == 0 and .quarantineCount == 0 and .pressureLevel == 0)
-      else
-        ($transient | length) == 1 and
-        .captureLanes.value.pendingCount == $transient[0].pendingCount and
-        ((.rawIngress.value.pendingCount | floor) == .rawIngress.value.pendingCount and
-          .rawIngress.value.pendingCount >= $tail and
-          .rawIngress.value.pendingCount <= $maximumRawIngressRecords) and
-        (($transient[0].pendingCount | floor) == $transient[0].pendingCount and
-          $transient[0].pendingCount >= $tail and
-          $transient[0].pendingCount <= $maximumTransientRecords) and
-        ($transient[0].leasedCount == 0 and
-          $transient[0].retryCount == 0 and $transient[0].quarantineCount == 0 and $transient[0].pressureLevel == 0) and
-        $transient[0].pendingCaptures == [range($endSequence - $tail + 1; $endSequence + 1) |
-          {agentId:$device,captureSequence:.}] and
-        all(.captureLanes.value.lanes[] | select(.name != "transient");
-          .pendingCount == 0 and .leasedCount == 0 and .retryCount == 0 and .quarantineCount == 0 and
-          .pressureLevel == 0 and (.pendingCaptures | length) == 0) and
-        .transientWorker.value.availability == "Healthy" and
-        .transientWorker.value.pendingFrames == 0 and .transientWorker.value.pendingCandidates == 0
-      end' "$operations" >/dev/null
+    deploy_capture_queues_converged "$@"
 }
 
 deploy_measure_wait_capture_set() {
     local target="$1" central="$2" target_remote="$3" central_remote="$4" private_root="$5" cookies="$6" central_headers="$7" device="$8" label="$9" start="${10}" count="${11}" deadline="${12}"
-    local name endpoint central_endpoint first last status local_file central_file operations_file current facts
+    local name endpoint central_endpoint first last status local_file central_file operations_file current facts expected_mode
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"; central_endpoint="$(jq -r '.internalEndpoint' <<< "$central")"
     first=$(( start + 1 )); last=$(( start + count )); local_file="$private_root/$name-$label-local.json"
     central_file="$private_root/$name-$label-central.json"; operations_file="$private_root/$name-$label-operations.json"
@@ -431,6 +390,7 @@ deploy_measure_wait_capture_set() {
         status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/summary" "" "" "$cookies" \
           "$target_remote/$label-operations.json" "$operations_file")" || return 1
         [[ "$status" == 200 ]] || return 1
+        expected_mode="$(jq -er '.configuration.value.transientDetection | select(. == "Off" or . == "Hybrid")' "$operations_file")" || return 1
         status="$(deploy_bootstrap_request "$central" GET "$central_endpoint/api/internal/devices/continuity/$device?fromCaptureSequence=$first&toCaptureSequence=$last" "" "$central_headers" "" \
           "$central_remote/$name-$label-central.json" "$central_file")" || return 1
         [[ "$status" == 200 ]] || return 1
@@ -454,7 +414,7 @@ deploy_measure_wait_capture_set() {
               .objectState == "Available" and
               any(.sources[]; .artifactId == $raw[0].artifactId and
                 (.checksumSha256|ascii_downcase) == ($raw[0].checksumSha256|ascii_downcase))))' "$local_file" >/dev/null &&
-          deploy_measure_queues_converged "$operations_file" "$last" "$device"; then
+          deploy_measure_queues_converged "$operations_file" "$last" "$device" "$expected_mode"; then
             facts="$(jq -c --argjson start "$start" --argjson end "$last" --argjson count "$count" \
               --slurpfile operations "$operations_file" '
               ([$operations[0].captureLanes.value.lanes[] |
@@ -475,7 +435,7 @@ deploy_measure_wait_capture_set() {
 deploy_run_measure() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6" selected_workload="$7"
     local scope="${8:-}" state_dir evidence_dir measure_root support_evidence render_root private_root execution_run_id now started_seconds ended_seconds duration deadline target name target_root target_remote response cookies
-    local device profile warmup_requested measured_requested warmup_start warmup_completed measured_start before after measured_completed measured_end status reset_status interval_value interval_hours interval_minutes interval_seconds capture_interval_seconds
+    local device profile warmup_requested measured_requested warmup_start warmup_completed measured_start before after measured_completed measured_end status reset_status interval_value interval_hours interval_minutes interval_seconds capture_interval_seconds expected_mode
     local logic logic_root logic_remote central_headers warmup measured
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/bootstrap-manifest.json" measure "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
@@ -628,7 +588,8 @@ deploy_run_measure() {
         deploy_measure_snapshot "$inventory" "$target" "$target_remote" "$private_root" "$cookies" after "$state_dir" "$device" "$(jq -r '.configSha256' <<< "$profile")" ||
           { deploy_fail measure "$name" final-snapshot-invalid; return 1; }
         measured_end="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .measured.endSequence' <<< "$DEPLOY_MEASURE_JSON")"
-        deploy_measure_queues_converged "$private_root/$name-after-operations.json" "$measured_end" "$device" ||
+        expected_mode="$(jq -er '.configuration.value.transientDetection | select(. == "Off" or . == "Hybrid")' "$private_root/$name-after-operations.json")" || return 1
+        deploy_measure_queues_converged "$private_root/$name-after-operations.json" "$measured_end" "$device" "$expected_mode" ||
           { deploy_fail measure "$name" final-snapshot-queues-not-converged; return 1; }
         after="$(deploy_measure_project_snapshot "$private_root/$name-after-continuity.json" "$private_root/$name-after-operations.json" "$private_root/$name-after-stats.json")"
         DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --argjson after "$after" '.targets |= map(if .target == $target then .after=$after | .status="measured" else . end)' <<< "$DEPLOY_MEASURE_JSON")"

@@ -829,6 +829,7 @@ if [[ "$url" == */api/internal/deployment/continuity* ]]; then
   if [[ "${FAKE_MEASURE_SEQUENCE_READ_FAIL:-}" == "$host" && -f "$FAKE_HTTP_STATE/$host.measure-running" && ! -f "$FAKE_HTTP_STATE/$host.sequence-read-failed" ]]; then
     : > "$FAKE_HTTP_STATE/$host.sequence-read-failed"; : > "$output"; printf 503; exit 0
   fi
+  control_state=Paused; [[ ! -f "$FAKE_HTTP_STATE/$state_host.control-state" ]] || control_state="$(<"$FAKE_HTTP_STATE/$state_host.control-state")"
   increment="${FAKE_CONTINUITY_INCREMENT:-}"
   if [[ -z "$increment" && -f "${FAKE_HTTP_STATE:?}/$host.measure-profile" ]]; then
     increment=0
@@ -838,12 +839,31 @@ if [[ "$url" == */api/internal/deployment/continuity* ]]; then
       [[ "$stage" != measured ]] || increment=10
     fi
   else
-    control_state=Paused; [[ ! -f "$FAKE_HTTP_STATE/$state_host.control-state" ]] || control_state="$(<"$FAKE_HTTP_STATE/$state_host.control-state")"
     increment=0; [[ "$control_state" != Running ]] || increment=1
   fi
   [[ ! -f "$count_file" ]] || count=$(( $(<"$count_file") + increment )); printf '%s\n' "$count" > "$count_file"
+  configured_device="$device"; capture_sequences="$(jq -cn --arg device "$device" --argjson sequence "$count" '[{agentId:$device,lastSequence:$sequence}]')"
+  down_continuity_mode="${FAKE_DOWN_CONTINUITY_MODE:-}"
+  if [[ "$control_state" == Paused && ( -n "$down_continuity_mode" || -n "${FAKE_DOWN_CONFIG_HASH_DRIFT:-}" ) ]]; then
+    down_reads_file="$FAKE_HTTP_STATE/$host.down-continuity-reads"; down_reads=0
+    [[ ! -f "$down_reads_file" ]] || down_reads="$(<"$down_reads_file")"
+    down_reads=$((down_reads+1)); printf '%s\n' "$down_reads" > "$down_reads_file"
+    case "$down_continuity_mode" in
+      zero) count=0 ;;
+      one) count=1 ;;
+      two) count=2 ;;
+      mismatch) configured_device="other-device" ;;
+      duplicate) capture_sequences="$(jq -cn --arg device "$device" --argjson sequence "$count" '[{agentId:$device,lastSequence:$sequence},{agentId:$device,lastSequence:$sequence}]')" ;;
+      change) [[ "$down_reads" -lt 2 ]] || count=$((count+1)) ;;
+    esac
+    [[ "$down_continuity_mode" == duplicate ]] || capture_sequences="$(jq -cn --arg device "$device" --argjson sequence "$count" '[{agentId:$device,lastSequence:$sequence}]')"
+  fi
   printf -v acknowledged '2026-08-07T00:00:%02dZ' "$count"
   active_config_sha="$(printf 'B%.0s' {1..64})"; [[ ! -f "${FAKE_HTTP_STATE:?}/$host.active-config-sha" ]] || active_config_sha="$(<"$FAKE_HTTP_STATE/$host.active-config-sha")"
+  if [[ "${FAKE_DOWN_CONFIG_HASH_DRIFT:-}" == observations && "${down_reads:-0}" -ge 2 ]] ||
+     [[ "${FAKE_DOWN_CONFIG_HASH_DRIFT:-}" == final && "$url" == *downContinuity=*-final-* ]]; then
+    active_config_sha="$(printf 'C%.0s' {1..64})"
+  fi
   from="${url#*fromCaptureSequence=}"; [[ "$from" != "$url" ]] || from=0; from="${from%%&*}"
   to="${url#*toCaptureSequence=}"; [[ "$to" != "$url" ]] || to=-1; to="${to%%&*}"
   window='[]'
@@ -857,11 +877,11 @@ if [[ "$url" == */api/internal/deployment/continuity* ]]; then
         '. + [{captureSequence:$sequence,captureId:$capture,rawArtifactId:$artifact,rawChecksumSha256:$checksum,rawByteLength:6144,state:"committed"}]' <<< "$window")"
     done
   fi
-  jq -cn --arg device "$device" --argjson sequence "$count" --arg acknowledged "$acknowledged" --arg activeConfigSha "$active_config_sha" --argjson window "$window" '{deviceId:$device,configuredAgentId:$device,isProvisioned:true,
+  jq -cn --arg device "$device" --arg configured "$configured_device" --argjson sequence "$count" --arg acknowledged "$acknowledged" --arg activeConfigSha "$active_config_sha" --argjson window "$window" --argjson captureSequences "$capture_sequences" '{deviceId:$device,configuredAgentId:$configured,isProvisioned:true,
     devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",
     rawPendingCount:0,rawQuarantineCount:0,artifactPendingCount:0,artifactLeasedCount:0,artifactRetryCount:0,artifactQuarantineCount:0,
     fleetPendingCount:0,fleetLeasedCount:0,fleetRetryCount:0,fleetQuarantineCount:0,lastFleetAcknowledgedUtc:$acknowledged,
-    durable:{rawIngressDatabaseExists:true,captureSequences:[{agentId:$device,lastSequence:$sequence}],artifactOutboxDatabaseExists:true,
+    durable:{rawIngressDatabaseExists:true,captureSequences:$captureSequences,artifactOutboxDatabaseExists:true,
       artifactOutboxMaximumRecordId:$sequence,artifactOutboxMaximumAuditId:$sequence,fleetDatabaseExists:true,
       fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",fleetNextSequence:($sequence+1),fleetMaximumSequence:null,
        latestArtifacts:[
@@ -876,8 +896,19 @@ if [[ "$url" == */api/internal/deployment/measurement/reset ]]; then
   host="${FAKE_REMOTE_HOST:?}"; : > "${FAKE_HTTP_STATE:?}/$host.measurement-reset"
   jq -cn '{status:"reset"}' > "$output"; printf 200; exit 0
 fi
-if [[ "$url" == */api/v1/operations/summary ]]; then
-  host="${FAKE_REMOTE_HOST:?}"; device="device-$host"
+if [[ "$url" == */api/v1/operations/summary* ]]; then
+  host="${FAKE_REMOTE_HOST:?}"; device="device-$host"; down_tail_mode="${FAKE_DOWN_TAIL_MODE:-off}"
+  final_observation=false; [[ "$url" != *downObservation=*-final-* ]] || final_observation=true
+  summary_reads_file="$FAKE_HTTP_STATE/$host.summary-reads"; summary_reads=0
+  [[ ! -f "$summary_reads_file" ]] || summary_reads="$(<"$summary_reads_file")"
+  summary_reads=$((summary_reads+1)); printf '%s\n' "$summary_reads" > "$summary_reads_file"
+  printf -v captured_utc '2026-08-07T00:%02d:%02dZ' "$((10 + summary_reads / 60))" "$((summary_reads % 60))"
+  case "$down_tail_mode" in
+    equal-captured) captured_utc=2026-08-07T00:10:01Z ;;
+    decreasing-captured) [[ "$summary_reads" == 1 ]] && captured_utc=2026-08-07T00:10:02Z || captured_utc=2026-08-07T00:10:01Z ;;
+    pre-pause-captured) captured_utc=2026-08-06T23:59:59Z ;;
+  esac
+  if [[ "$final_observation" == true && "${FAKE_DOWN_FINAL_OBSERVATION:-}" == time ]]; then captured_utc=2026-08-07T00:10:02Z; fi
   measurement_samples=1; timings='[{"segment":"Module","sampleCount":1,"medianMilliseconds":1,"p95Milliseconds":1,"maximumMilliseconds":1}]'
   [[ "${FAKE_CAPTURE_TELEMETRY_EMPTY:-false}" != true ]] || measurement_samples=0
   if [[ -f "${FAKE_HTTP_STATE:?}/$host.measurement-reset" ]]; then measurement_samples=0; timings='[]'; rm -f "$FAKE_HTTP_STATE/$host.measurement-reset"; fi
@@ -885,32 +916,84 @@ if [[ "$url" == */api/v1/operations/summary ]]; then
   [[ ! -f "${FAKE_HTTP_STATE:?}/$host.control-state" ]] || control_state="$(<"$FAKE_HTTP_STATE/$host.control-state")"
   [[ ! -f "$FAKE_HTTP_STATE/$host.control-version" ]] || control_version="$(<"$FAKE_HTTP_STATE/$host.control-version")"
   leased=0
-  if [[ "${FAKE_DOWN_LEASED_ONLY:-none}" != none && "$control_state" == Paused ]]; then
+  if [[ "${FAKE_DOWN_LEASED_ONLY:-none}" != none && "$control_state" == Paused &&
+        ( "${FAKE_DOWN_LEASED_ONLY}" != delay-west || "$host" == west ) ]]; then
     leased=1; lease_reads="$FAKE_HTTP_STATE/$host.down-lease-reads"; reads=0; [[ ! -f "$lease_reads" ]] || reads="$(<"$lease_reads")"
     reads=$((reads+1)); printf '%s\n' "$reads" > "$lease_reads"
-    [[ "${FAKE_DOWN_LEASED_ONLY}" != delay || "$reads" -lt 3 ]] || leased=0
+    [[ ( "${FAKE_DOWN_LEASED_ONLY}" != delay && "${FAKE_DOWN_LEASED_ONLY}" != delay-west ) || "$reads" -lt 3 ]] || leased=0
+  fi
+  if [[ "${FAKE_DOWN_SAFE_THEN_UNSAFE:-false}" == true && "$control_state" == Paused ]]; then
+    unsafe_reads="$FAKE_HTTP_STATE/$host.down-unsafe-reads"; reads=0; [[ ! -f "$unsafe_reads" ]] || reads="$(<"$unsafe_reads")"
+    reads=$((reads+1)); printf '%s\n' "$reads" > "$unsafe_reads"
+    (( reads < 2 )) || leased=1
   fi
   processing_availability=Healthy; processing_terminal=0
   [[ "${FAKE_BOOTSTRAP_OPERATIONS_UNHEALTHY:-}" != "$host" ]] || { processing_availability=Unhealthy; processing_terminal=1; }
+  end_sequence=0; [[ ! -f "$FAKE_HTTP_STATE/$host.count" ]] || end_sequence="$(<"$FAKE_HTTP_STATE/$host.count")"
+  [[ "${FAKE_DOWN_CONTINUITY_MODE:-}" != one ]] || end_sequence=1
+  [[ "${FAKE_DOWN_CONTINUITY_MODE:-}" != two ]] || end_sequence=2
+  runtime_mode=Off; [[ "$down_tail_mode" == off || "$down_tail_mode" == changing-then-stable ]] || runtime_mode=Hybrid
   jq -cn --arg device "$device" --argjson samples "$measurement_samples" --argjson timings "$timings" --arg controlState "$control_state" --argjson controlVersion "$control_version" --argjson leased "$leased" \
-    --arg processingAvailability "$processing_availability" --argjson processingTerminal "$processing_terminal" '
+    --arg processingAvailability "$processing_availability" --argjson processingTerminal "$processing_terminal" --arg tailMode "$down_tail_mode" --argjson endSequence "$end_sequence" \
+    --arg capturedUtc "$captured_utc" --argjson summaryRead "$summary_reads" \
+    --arg controlFreshness "${FAKE_DOWN_CONTROL_FRESHNESS:-fresh}" --arg workerFreshness "${FAKE_DOWN_WORKER_FRESHNESS:-fresh}" \
+    --arg transientMode "${FAKE_DOWN_SUMMARY_MODE:-$runtime_mode}" --arg prePauseSections "${FAKE_DOWN_PRE_PAUSE_SECTIONS:-}" \
+    --argjson finalObservation "$final_observation" --arg finalMutation "${FAKE_DOWN_FINAL_OBSERVATION:-}" '
     def queue:{pendingCount:0,pendingBytes:0,leasedCount:$leased,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null};
-    {configuration:{value:{agentId:$device,moduleType:"VirtualSky",centralIntegration:"Enabled"}},captureControl:{value:{state:$controlState,version:$controlVersion,isInitialized:true}},
+    def section($value):{source:"fixture",observedUtc:$capturedUtc,freshness:"fresh",value:$value};
+    (if $endSequence < 2 then $endSequence else 2 end) as $tail |
+    [range($endSequence-$tail+1;$endSequence+1) | {agentId:$device,captureSequence:.}] as $identities |
+    ($tail * (1 + 32)) as $maximumTransient | ($tail * 3) as $maximumRaw |
+    ($tailMode != "off" and $tailMode != "changing-then-stable") as $hybrid |
+    (if $tailMode == "third" then [{agentId:$device,captureSequence:($endSequence-2)}] + $identities
+     elif $tailMode == "stale" then [$identities[] | .captureSequence -= 1]
+     elif $tailMode == "wrong" then [$identities[] | .agentId = "wrong-device"] else $identities end) as $pendingCaptures |
+    (if ($hybrid | not) then 0 elif $tailMode == "excess" then $maximumTransient + 1 elif $tailMode == "fractional" then 2.5 else $tail end) as $transientPending |
+    (if ($hybrid | not) then 0 elif $tailMode == "excess-raw" then $maximumRaw + 1 elif $tailMode == "fractional-raw" then 1.5
+      elif $tailMode == "changing" and ($summaryRead % 2) == 0 then $tail + 1 else $tail end) as $rawPending |
+    (if $hybrid then [{name:"transient",required:true,pendingCount:$transientPending,pendingBytes:0,leasedCount:0,
+      retryCount:(if $tailMode == "retry" then 1 else 0 end),quarantineCount:(if $tailMode == "quarantine" then 1 else 0 end),
+      pressureLevel:(if $tailMode == "pressure" then 2 else 0 end),oldestPendingUtc:null,pendingCaptures:$pendingCaptures}] else [] end) as $transientLanes |
+    (if $tailMode == "unrelated" then 1 else 0 end) as $standardPending | ($transientPending + $standardPending) as $lanePending |
+    {capturedUtc:$capturedUtc,
+     configuration:{source:"validated-configuration",observedUtc:null,freshness:"unknown",value:{isCurrent:true,validationStatus:"validated",agentId:$device,moduleType:"VirtualSky",centralIntegration:"Enabled",transientDetection:$transientMode}},
+     captureControl:section({state:$controlState,version:$controlVersion,isInitialized:true}),
      captureTelemetry:{value:{sampleCount:$samples,latestCaptureStartedUtc:(if $samples == 0 then null else "2026-08-07T00:00:01Z" end),latestMode:(if $samples == 0 then null else "Light" end),latestExposureMilliseconds:(if $samples == 0 then null else 1 end),
        latestGain:10,averageIntervalMilliseconds:1,averageExposureMilliseconds:1,averageProcessingMilliseconds:1,averageLoopMilliseconds:1,
        capturesPerMinute:1,dutyCycle:0.5,framesStored:1,immediateUploadCount:1}},
      captureRuntime:{value:{timings:$timings}},
-      rawIngress:{value:(queue + {availability:"Accepting"})},captureLanes:{value:{availability:"Healthy",lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,
-         leasedCount:$leased,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]}],pendingCount:0,pendingBytes:0,leasedCount:$leased,retryCount:0,quarantineCount:0,oldestPendingUtc:null}},
-       captureProcessing:{value:(queue + {availability:$processingAvailability,terminalCount:$processingTerminal})},artifactOutbox:{value:(queue + {availability:"Healthy"})},
-      transientWorker:{value:{availability:"Disabled",pendingFrames:0,pendingCandidates:0,maximumCandidates:32}},heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}}' > "$output"
+     rawIngress:section(queue + {availability:"Accepting",pendingCount:$rawPending}),
+     captureLanes:section({availability:"Healthy",lanes:([{name:"standard",required:true,pendingCount:$standardPending,pendingBytes:0,
+       leasedCount:$leased,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:(if $standardPending == 0 then [] else [{agentId:$device,captureSequence:$endSequence}] end)}] + $transientLanes),pendingCount:$lanePending,pendingBytes:0,leasedCount:$leased,retryCount:(if $tailMode == "retry" then 1 else 0 end),quarantineCount:(if $tailMode == "quarantine" then 1 else 0 end),oldestPendingUtc:null}),
+     captureProcessing:section(queue + {availability:$processingAvailability,terminalCount:(if $tailMode == "terminal" then 1 else $processingTerminal end)}),
+     artifactOutbox:section(queue + {availability:"Healthy"}),
+     transientWorker:section({availability:(if $hybrid then (if $tailMode == "unhealthy" then "Unavailable" else "Healthy" end) else "Disabled" end),pendingFrames:(if $tailMode == "busy" then 1 else 0 end),pendingCandidates:0,maximumCandidates:32}),
+     heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}} |
+     .captureControl.freshness=$controlFreshness |
+     .captureControl.observedUtc=(if $controlFreshness == "stale" then "2026-08-01T00:00:00Z" else $capturedUtc end) |
+     .transientWorker.freshness=$workerFreshness |
+     .transientWorker.observedUtc=(if $workerFreshness == "stale" then "2026-08-01T00:00:00Z" else $capturedUtc end) |
+     .configuration.value.centralIntegration=(if $tailMode == "changing-then-stable" and $summaryRead >= 2 then "EnabledStable" else "Enabled" end) |
+     if $prePauseSections == "raw-lane" then .rawIngress.observedUtc="2026-08-06T23:59:59Z" | .captureLanes.observedUtc="2026-08-06T23:59:59Z"
+     elif $prePauseSections == "async" then .captureProcessing.observedUtc="2026-08-06T23:59:59Z" | .artifactOutbox.observedUtc="2026-08-06T23:59:59Z"
+     else . end |
+     if $finalObservation and $finalMutation == "unsafe" then .rawIngress.value.leasedCount=1
+     elif $finalObservation and $finalMutation == "fingerprint" then .configuration.value.centralIntegration="FinalChanged"
+     else . end |
+     if $tailMode == "stale-section" then .captureLanes.freshness="stale"
+     elif $tailMode == "stale-hybrid-worker" then .transientWorker.freshness="stale"
+     elif $tailMode == "config-mismatch" then .configuration.value.agentId="wrong-device"
+     elif $tailMode == "config-not-current" then .configuration.value.isCurrent=false
+     elif $tailMode == "config-mode-missing" then del(.configuration.value.transientDetection)
+     elif $tailMode == "malformed" then .captureLanes.value.lanes={unexpected:true}
+     else . end' > "$output"
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operations/capture/resume ]]; then
   header_path=; for ((i=0; i<${#args[@]}; i++)); do [[ "${args[$i]}" != --header || "${args[$((i+1))]}" != @* ]] || header_path="${args[$((i+1))]#@}"; done
   key=; while IFS= read -r header_line; do [[ "$header_line" != 'Idempotency-Key: '* ]] || key="${header_line#Idempotency-Key: }"; done < "$header_path"
   id_count="$(grep -c '^Idempotency-Key:' "$header_path")"; token_count="$(grep -c '^RequestVerificationToken:' "$header_path")"
-  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(bootstrap-[a-z0-9-]+-[a-z0-9-]+-resume-[0-9]+|down-[a-z0-9-]+-[a-z0-9-]+-pause-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+|smoke-[a-z0-9-]+-[a-z0-9-]+-(resume|pause)-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
+  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(bootstrap-[a-z0-9-]+-[a-z0-9-]+-resume-[0-9]+|down-[a-z0-9-]+-[a-z0-9-]+-(pause|final-pause)-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+|smoke-[a-z0-9-]+-[a-z0-9-]+-(resume|pause)-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
   action="${url##*/}"; desired=Running; [[ "$action" != pause ]] || desired=Paused
   [[ "$action" != pause || "${FAKE_PAUSE_CONFLICT:-false}" != true ]] || { : > "$output"; printf 409; exit 0; }
   host="${FAKE_REMOTE_HOST:?}"
@@ -924,6 +1007,9 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   current=Running; version=0
   [[ ! -f "$FAKE_HTTP_STATE/$host.control-state" ]] || current="$(<"$FAKE_HTTP_STATE/$host.control-state")"
   [[ ! -f "$FAKE_HTTP_STATE/$host.control-version" ]] || version="$(<"$FAKE_HTTP_STATE/$host.control-version")"
+  if [[ "$key" == *-final-pause-* && "${FAKE_DOWN_FINAL_REASSERT_RACE:-false}" == true ]]; then
+    current=Running; version=$((version+1)); printf '%s\n' "$current" > "$FAKE_HTTP_STATE/$host.control-state"; printf '%s\n' "$version" > "$FAKE_HTTP_STATE/$host.control-version"
+  fi
   changed=false
   if [[ "$current" != "$desired" ]]; then changed=true; version=$((version+1)); printf '%s\n' "$desired" > "$FAKE_HTTP_STATE/$host.control-state"; printf '%s\n' "$version" > "$FAKE_HTTP_STATE/$host.control-version"; fi
   if [[ "$desired" == Running ]]; then
@@ -939,6 +1025,7 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   jq -cn --argjson state "$state_value" --argjson version "$version" --argjson changed "$changed" \
     '{state:$state,version:$version,changed:$changed,replayed:false,requestedUtc:"2026-08-07T00:00:00Z",completedUtc:"2026-08-07T00:00:00Z"}' > "$receipt"
   cp "$receipt" "$output"
+  [[ "${FAKE_DOWN_INVALID_PAUSE_RECEIPT:-false}" != true || "$desired" != Paused ]] || jq '.version="invalid"' "$receipt" > "$output"
   printf 'control\t%s\t%s\t%s\t%s\tfalse\n' "$header_path" "$key" "$token_count" "$id_count" >> "${FAKE_LOG:?}"
   printf 200; exit 0
 fi
@@ -2691,7 +2778,7 @@ mkdir "$measure_sequence_private"
 printf '%s\n' '{"durable":{"rawIngressDatabaseExists":true,"captureSequences":[]}}' > "$measure_sequence_fixture"
 printf '%s\n' '{"captureLanes":{"value":{"availability":"Healthy","lanes":[{"name":"standard","required":true,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[]}]}},"rawIngress":{"value":{"availability":"Accepting","retryCount":0,"quarantineCount":0,"terminalCount":0}},"captureProcessing":{"value":{"availability":"Healthy","retryCount":0,"quarantineCount":0,"terminalCount":0}},"artifactOutbox":{"value":{"availability":"Healthy","retryCount":0,"quarantineCount":0,"terminalCount":0}}}' > "$measure_sequence_operations"
 (
-  source "$REPO_ROOT/scripts/deploy/measure.sh"
+  source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"
   deploy_bootstrap_request() {
     if [[ "$3" == */api/v1/operations/summary ]]; then cp "$measure_sequence_operations" "$8"; else cp "$measure_sequence_fixture" "$8"; fi
     printf '200\n'
@@ -2723,44 +2810,71 @@ printf '%s\n' '{"captureLanes":{"value":{"availability":"Healthy","lanes":[{"nam
 )
 measure_tail_operations="$TEMP_DIR/measure-tail-operations.json"
 printf '%s\n' '{"rawIngress":{"value":{"availability":"Accepting","pendingCount":6,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"captureLanes":{"value":{"availability":"Healthy","pendingCount":10,"leasedCount":0,"retryCount":0,"quarantineCount":0,"lanes":[{"name":"standard","required":true,"pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[]},{"name":"transient","required":true,"pendingCount":10,"leasedCount":0,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[{"agentId":"device-east","captureSequence":4},{"agentId":"device-east","captureSequence":5}]}]}},"captureProcessing":{"value":{"availability":"Healthy","pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"artifactOutbox":{"value":{"availability":"Healthy","pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"transientWorker":{"value":{"availability":"Healthy","pendingFrames":0,"pendingCandidates":0,"maximumCandidates":32}}}' > "$measure_tail_operations"
-(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east)
+(source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east Hybrid)
+jq '.rawIngress.value.pendingCount=0 | .captureLanes.value.pendingCount=0 |
+  .captureLanes.value.lanes=[.captureLanes.value.lanes[] | select(.name != "transient")] |
+  .transientWorker.value.availability="Disabled"' "$measure_tail_operations" > "$measure_tail_operations.off"
+(source "$REPO_ROOT/scripts/deploy/common.sh"; deploy_capture_queues_converged "$measure_tail_operations.off" 5 device-east Off)
+jq '.rawIngress.value.pendingCount=1 | .captureLanes.value.pendingCount=1 |
+  .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=1 | .pendingCaptures=[{"agentId":"device-east","captureSequence":1}] else . end' \
+  "$measure_tail_operations" > "$measure_tail_operations.one"
+(source "$REPO_ROOT/scripts/deploy/common.sh"; deploy_capture_queues_converged "$measure_tail_operations.one" 1 device-east Hybrid)
+jq '.rawIngress.value.pendingCount=0 | .captureLanes.value.pendingCount=0 |
+  .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=0 | .pendingCaptures=[] else . end' \
+  "$measure_tail_operations" > "$measure_tail_operations.zero"
+(source "$REPO_ROOT/scripts/deploy/common.sh"; deploy_capture_queues_converged "$measure_tail_operations.zero" 0 device-east Hybrid)
 jq '.captureLanes.value.pendingCount=8 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=8 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east)
+(source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid)
 jq '.rawIngress.value.pendingCount=2 | .captureLanes.value.pendingCount=2 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=2 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east)
+(source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid)
 jq '.rawIngress.value.pendingCount=3 | .captureLanes.value.pendingCount=3 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=3 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east)
+(source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid)
 jq '.captureLanes.value.pendingCount=66 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=66 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east)
+(source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid)
 jq '.captureLanes.value.pendingCount=67 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=67 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
+if (source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid); then
   fail 'Measure accepted unbounded transient record fan-out.'
 fi
 jq '.rawIngress.value.pendingCount=2.5 | .captureLanes.value.pendingCount=8.5 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=8.5 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
+if (source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid); then
   fail 'Measure accepted fractional queue record counts.'
 fi
 jq '.rawIngress.value.pendingCount=7' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
+if (source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid); then
   fail 'Measure accepted unbounded raw-ingress record fan-out.'
 fi
 jq '.captureLanes.value.lanes[] |= if .name == "transient" then .retryCount=2 else . end | .captureLanes.value.retryCount=2' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
+if (source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid); then
   fail 'Measure accepted retrying work as a temporal tail.'
 fi
 jq '.captureLanes.value.lanes[] |= if .name == "transient" then .pendingCaptures=[{"agentId":"device-east","captureSequence":3},{"agentId":"device-east","captureSequence":4},{"agentId":"device-east","captureSequence":5}] else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
+if (source "$REPO_ROOT/scripts/deploy/common.sh"; source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid); then
   fail 'Measure accepted stale captures as the bounded temporal tail.'
 fi
+for unsafe_tail in wrong-identity quarantine pressure unrelated-lane busy-worker unhealthy-worker missing-field disabled-hybrid; do
+  case "$unsafe_tail" in
+    wrong-identity) jq '.captureLanes.value.lanes[] |= if .name == "transient" then .pendingCaptures[0].agentId="wrong-device" else . end' "$measure_tail_operations" > "$measure_tail_operations.changed" ;;
+    quarantine) jq '.captureLanes.value.quarantineCount=1 | .captureLanes.value.lanes[] |= if .name == "transient" then .quarantineCount=1 else . end' "$measure_tail_operations" > "$measure_tail_operations.changed" ;;
+    pressure) jq '.captureLanes.value.lanes[] |= if .name == "transient" then .pressureLevel=2 else . end' "$measure_tail_operations" > "$measure_tail_operations.changed" ;;
+    unrelated-lane) jq '.captureLanes.value.pendingCount+=1 | .captureLanes.value.lanes[] |= if .name == "standard" then .pendingCount=1 | .pendingCaptures=[{"agentId":"device-east","captureSequence":5}] else . end' "$measure_tail_operations" > "$measure_tail_operations.changed" ;;
+    busy-worker) jq '.transientWorker.value.pendingCandidates=1' "$measure_tail_operations" > "$measure_tail_operations.changed" ;;
+    unhealthy-worker) jq '.transientWorker.value.availability="Unavailable"' "$measure_tail_operations" > "$measure_tail_operations.changed" ;;
+    missing-field) jq 'del(.captureLanes.value.lanes[0].pendingCount)' "$measure_tail_operations" > "$measure_tail_operations.changed" ;;
+    disabled-hybrid) jq '.transientWorker.value.availability="Disabled"' "$measure_tail_operations" > "$measure_tail_operations.changed" ;;
+  esac
+  if (source "$REPO_ROOT/scripts/deploy/common.sh"; deploy_capture_queues_converged "$measure_tail_operations.changed" 5 device-east Hybrid); then
+    fail "Shared queue convergence accepted $unsafe_tail."
+  fi
+done
 for missing_measure_field in continuity telemetry timing queue stats; do
   cp "$TEMP_DIR/output/$deploy_case-state/measure-private/east-after-continuity.json" "$TEMP_DIR/measure-invalid-continuity.json"
   cp "$TEMP_DIR/output/$deploy_case-state/measure-private/east-after-operations.json" "$TEMP_DIR/measure-invalid-operations.json"
@@ -2807,6 +2921,32 @@ fi
 if shard_enabled existing-down; then
 if [[ "$SELECTED_SHARD" == existing-down ]]; then stage_lifecycle_bootstrap; fi
 # Teardown rejects deletion of existing services before mutation and supports an explicit preserve stop.
+down_zero_continuity="$TEMP_DIR/down-zero-continuity.json"
+printf '%s\n' '{"deviceId":"device-east","configuredAgentId":"device-east","isProvisioned":true,"activeConfigurationSha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","durable":{"rawIngressDatabaseExists":true,"captureSequences":[{"agentId":"device-east","lastSequence":0}]}}' > "$down_zero_continuity"
+test "$(source "$REPO_ROOT/scripts/deploy/down.sh"; deploy_down_read_continuity_boundary "$down_zero_continuity")" = $'device-east\t0\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+jq '.durable.captureSequences={malformed:true}' "$down_zero_continuity" > "$down_zero_continuity.malformed"
+if (source "$REPO_ROOT/scripts/deploy/down.sh"; deploy_down_read_continuity_boundary "$down_zero_continuity.malformed" >/dev/null 2>&1); then
+  fail 'Down accepted a malformed continuity sequence container.'
+fi
+assert_no_down_remote_private_artifacts() {
+  local target root artifact
+  local -a artifacts dynamic
+  shopt -s nullglob
+  while IFS= read -r target; do
+    root="$(jq -r '.runtimeRoot' <<< "$target")/.hvo-deploy/down-$deploy_case"
+    artifacts=()
+    for artifact in "$root/pause.json" "$root/pause-response.json" "$root/final-pause.json" \
+      "$root/final-pause-response.json" "$root/continuity-boundary.json"; do
+      [[ ! -e "$artifact" && ! -L "$artifact" ]] || artifacts+=("$artifact")
+    done
+    dynamic=("$root"/continuity-[0-9]*.json "$root"/summary-[0-9]*.json \
+      "$root"/pause-[0-9]*-control.headers "$root"/final-pause-[0-9]*-control.headers)
+    artifacts+=("${dynamic[@]}")
+    ((${#artifacts[@]} == 0)) || fail "Down retained remote private artifacts for $(jq -r '.name' <<< "$target"): ${artifacts[*]}"
+  done < <(jq -c '.cameraAgents[]' "$INVENTORY")
+  jq -e 'length == 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null ||
+    fail 'Down retained registered private artifacts.'
+}
 down_upload_root="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/uploads"; mkdir -p "$down_upload_root"; chmod 700 "$down_upload_root"
 down_upload="$down_upload_root/hvo-upload-down-123-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp"
 printf 'interrupted\n' > "$down_upload"; chmod 600 "$down_upload"
@@ -2831,17 +2971,107 @@ if ! grep -Fq 'unexpected-pause-status' "$TEMP_DIR/down-pause-conflict.log"; the
   while IFS= read -r diagnostic; do printf '%s\n' "$diagnostic" >&2; done < "$TEMP_DIR/down-pause-conflict.log"
   fail 'Down pause conflict did not reach the expected rejection.'
 fi
+stops_before="$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)"
+if FAKE_DOWN_INVALID_PAUSE_RECEIPT=true run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-invalid-pause.log" 2>&1; then
+  fail 'Down accepted an invalid pause receipt.'
+fi
+grep -Fq 'invalid-pause-receipt' "$TEMP_DIR/down-invalid-pause.log"
+test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail 'Invalid pause receipt stopped a Compose service.'
+for continuity_failure in mismatch duplicate change; do
+  rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads
+  if FAKE_DOWN_CONTINUITY_MODE="$continuity_failure" DEPLOY_TEST_DRAIN_ATTEMPTS=3 run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-continuity-$continuity_failure.log" 2>&1; then
+    fail "Down accepted a $continuity_failure continuity boundary."
+  fi
+  test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail "Continuity $continuity_failure stopped a Compose service."
+done
+rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads "$FAKE_HTTP_STATE"/*.summary-reads
+if FAKE_DOWN_TAIL_MODE=off FAKE_DOWN_SUMMARY_MODE=Hybrid DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 \
+  run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-mode-mismatch.log" 2>&1; then
+  fail 'Down accepted a summary transient mode that differed from inventory.'
+fi
+grep -Fq 'drain-timeout' "$TEMP_DIR/down-mode-mismatch.log"
+test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail 'Transient mode mismatch stopped a Compose service.'
+rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads "$FAKE_HTTP_STATE"/*.summary-reads
+if FAKE_DOWN_TAIL_MODE=off FAKE_DOWN_CONFIG_HASH_DRIFT=observations DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 \
+  run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-config-hash-drift.log" 2>&1; then
+  fail 'Down accepted configuration hash drift during observations.'
+fi
+grep -Fq 'continuity-boundary-changed' "$TEMP_DIR/down-config-hash-drift.log"
+test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail 'Configuration hash drift stopped a Compose service.'
+rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads "$FAKE_HTTP_STATE"/*.summary-reads
+if FAKE_DOWN_TAIL_MODE=off FAKE_DOWN_PRE_PAUSE_SECTIONS=raw-lane DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 \
+  run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-pre-pause-raw-lane.log" 2>&1; then
+  fail 'Down accepted pre-pause raw/lane observations.'
+fi
+grep -Fq 'drain-timeout' "$TEMP_DIR/down-pre-pause-raw-lane.log"
+test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail 'Pre-pause raw/lane observations stopped a Compose service.'
+for unsafe_tail in wrong stale third excess fractional excess-raw fractional-raw retry quarantine pressure unrelated busy unhealthy stale-section stale-hybrid-worker config-mismatch config-not-current config-mode-missing malformed terminal equal-captured decreasing-captured pre-pause-captured; do
+  rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads "$FAKE_HTTP_STATE"/*.summary-reads
+  if FAKE_DOWN_CONTINUITY_MODE=two FAKE_DOWN_TAIL_MODE="$unsafe_tail" DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 \
+    run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-unsafe-tail-$unsafe_tail.log" 2>&1; then
+    fail "Down accepted unsafe Hybrid tail mode $unsafe_tail."
+  fi
+  grep -Fq 'drain-timeout' "$TEMP_DIR/down-unsafe-tail-$unsafe_tail.log"
+  test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail "Unsafe Hybrid tail $unsafe_tail stopped a Compose service."
+done
+rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads "$FAKE_HTTP_STATE"/*.summary-reads
+if FAKE_DOWN_CONTINUITY_MODE=two FAKE_DOWN_TAIL_MODE=changing DEPLOY_TEST_DRAIN_ATTEMPTS=3 DEPLOY_TEST_POLL_SECONDS=0 \
+  run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-continuously-changing.log" 2>&1; then
+  fail 'Down accepted continuously changing safe observations.'
+fi
+grep -Fq 'drain-timeout' "$TEMP_DIR/down-continuously-changing.log"
+test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail 'Continuously changing safe observations stopped a Compose service.'
+assert_no_down_remote_private_artifacts
+rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads "$FAKE_HTTP_STATE"/*.summary-reads
+if FAKE_DOWN_CONTINUITY_MODE=two FAKE_DOWN_TAIL_MODE=off FAKE_DOWN_FINAL_REASSERT_RACE=true DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 \
+  run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-final-reassert-race.log" 2>&1; then
+  fail 'Down accepted a changed control version at final pause reassertion.'
+fi
+grep -Fq 'final-pause-version-mismatch' "$TEMP_DIR/down-final-reassert-race.log"
+test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail 'Final pause version race stopped a Compose service.'
+for final_failure in unsafe fingerprint time; do
+  rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads "$FAKE_HTTP_STATE"/*.summary-reads
+  if FAKE_DOWN_TAIL_MODE=off FAKE_DOWN_FINAL_OBSERVATION="$final_failure" DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 \
+    run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-final-observation-$final_failure.log" 2>&1; then
+    fail "Down accepted final $final_failure observation evidence."
+  fi
+  grep -Eq 'final-observation-(unsafe|changed)' "$TEMP_DIR/down-final-observation-$final_failure.log"
+  test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail "Final $final_failure observation stopped a Compose service."
+done
+rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads "$FAKE_HTTP_STATE"/*.summary-reads
+if FAKE_DOWN_TAIL_MODE=off FAKE_DOWN_CONFIG_HASH_DRIFT=final DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 \
+  run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-final-config-hash-drift.log" 2>&1; then
+  fail 'Down accepted configuration hash drift after final pause.'
+fi
+grep -Fq 'final-continuity-boundary-changed' "$TEMP_DIR/down-final-config-hash-drift.log"
+test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail 'Final configuration hash drift stopped a Compose service.'
+rm -f "$FAKE_HTTP_STATE"/*.down-unsafe-reads
+if FAKE_DOWN_SAFE_THEN_UNSAFE=true DEPLOY_TEST_DRAIN_ATTEMPTS=2 run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-safe-unsafe.log" 2>&1; then
+  fail 'Down accepted safe-then-unsafe observations without reconfirmation.'
+fi
+grep -Fq 'drain-timeout' "$TEMP_DIR/down-safe-unsafe.log"
+test "$(grep -Ec $'docker\t.*compose\t.*stop' "$LOG" || true)" = "$stops_before" || fail 'Safe-then-unsafe observations stopped a Compose service.'
 if FAKE_DOWN_LEASED_ONLY=fail DEPLOY_TEST_DRAIN_ATTEMPTS=2 DEPLOY_TEST_POLL_SECONDS=0 run_deploy_mode down "$deploy_case" isolated --preserve-state > "$TEMP_DIR/down-leased-failure.log" 2>&1; then
   fail 'Down stopped an agent while work remained leased.'
 fi
 grep -Fq 'drain-timeout' "$TEMP_DIR/down-leased-failure.log"
 if grep -Eq $'docker\t.*compose\t.*stop' "$LOG"; then fail 'Leased-only drain failure stopped a Compose service.'; fi
 summary_reads_before="$(grep -c '/api/v1/operations/summary' "$LOG" || true)"
-FAKE_DOWN_LEASED_ONLY=delay DEPLOY_TEST_POLL_SECONDS=0 run_deploy_mode down "$deploy_case" isolated --preserve-state >/dev/null
+rm -f "$FAKE_HTTP_STATE"/*.down-continuity-reads "$FAKE_HTTP_STATE"/*.down-lease-reads "$FAKE_HTTP_STATE"/*.summary-reads
+east_candidate_reads_before="$(grep -Ec 'downObservation=[0-9]+-[0-9]+.*deploy-up-east/runtime/.hvo-deploy/down-deploy-up/summary-' "$LOG" || true)"
+FAKE_DOWN_LEASED_ONLY=delay-west FAKE_DOWN_CONTINUITY_MODE=one FAKE_DOWN_TAIL_MODE=changing-then-stable \
+  FAKE_DOWN_CONTROL_FRESHNESS=stale FAKE_DOWN_WORKER_FRESHNESS=stale FAKE_DOWN_PRE_PAUSE_SECTIONS=async DEPLOY_TEST_POLL_SECONDS=0 \
+  run_deploy_mode down "$deploy_case" isolated --preserve-state >/dev/null
+east_candidate_reads_after="$(grep -Ec 'downObservation=[0-9]+-[0-9]+.*deploy-up-east/runtime/.hvo-deploy/down-deploy-up/summary-' "$LOG" || true)"
+(( east_candidate_reads_after == east_candidate_reads_before + 3 )) || fail 'Down did not accept safe A,B,B observations in exactly three attempts.'
 summary_reads_after="$(grep -c '/api/v1/operations/summary' "$LOG" || true)"
-(( summary_reads_after >= summary_reads_before + 3 )) || fail 'Down did not wait for leased-only work to clear.'
+(( summary_reads_after >= summary_reads_before + 4 )) || fail 'Down did not wait for leased work to clear and confirm two safe observations.'
+summary_queries="$(grep -o '/api/v1/operations/summary?downObservation=[^[:space:]]*' "$LOG" || true)"
+test "$(wc -l <<< "$summary_queries")" = "$(sort -u <<< "$summary_queries" | wc -l)" || fail 'Down reused an operations-summary observation query.'
+continuity_queries="$(grep -o '/api/internal/deployment/continuity?downContinuity=[^[:space:]]*' "$LOG" || true)"
+test "$(wc -l <<< "$continuity_queries")" = "$(sort -u <<< "$continuity_queries" | wc -l)" || fail 'Down reused a continuity observation query.'
 test ! -e "$down_upload"
-jq -e 'length == 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+assert_no_down_remote_private_artifacts
 jq -e '.phaseStatus == "passed" and .policy == "preserve" and
   ([.resources[] | select(.action == "graceful-stop" and .status == "completed")] | length) == 3 and
   ([.resources[] | select(.action == "preserve" and .resource == "existing-services" and .status == "completed")] | length) == 1' \
@@ -3016,7 +3246,9 @@ cp "$TEMP_DIR/prepare-manifest.valid" "$prepare_manifest_path"
 chmod 600 "$prepare_manifest_path"
 
 down_failpoint='after-graceful-stop-mutation-cameraagent:east'
-if DEPLOY_TEST_FAILPOINT="$down_failpoint" run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-resume.log" 2>&1; then
+export FAKE_DOWN_CONTINUITY_MODE=two FAKE_DOWN_TAIL_MODE=healthy
+if DEPLOY_TEST_FAILPOINT="$down_failpoint" \
+  run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-resume.log" 2>&1; then
   fail "Down failpoint $down_failpoint passed."
 fi
 jq -e '.phaseStatus == "failed" and any(.resources[]; .status == "intent" or .status == "completed")' \
@@ -3082,6 +3314,7 @@ if grep -Eq 'compose([^\n]*)(down[[:space:]]+-v|down[[:space:]]+--volumes)|redis
   "$REPO_ROOT/scripts/deploy/down.sh"; then fail 'Teardown contains an unscoped destructive operation.'; fi
 
 : > "$LOG"
+unset FAKE_DOWN_CONTINUITY_MODE FAKE_DOWN_TAIL_MODE
 cp "$BASE_INVENTORY" "$INVENTORY"
 if DEPLOY_TEST_FAILPOINT=after-evidence-before-passed-manifest run_deploy evidence-first-crash > "$TEMP_DIR/failure.log" 2>&1; then
     fail 'Evidence-first publication failpoint passed.'
