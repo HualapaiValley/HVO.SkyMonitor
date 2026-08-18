@@ -227,6 +227,13 @@ per-target durable cooperative locks before changing deployment state.
 ./scripts/test:deploy-environment
 ```
 
+The no-argument command remains the serial all-contract mode. CI runs nine
+isolated shards with at most eight concurrent workers; list or select them with
+`./scripts/test:deploy-environment --list-shards` and
+`./scripts/test:deploy-environment --shard NAME`. See the
+[CI pipeline runbook](ci-pipeline.md) for coordinator failure and retained-log
+behavior.
+
 The test uses fake `ssh`, `scp`, and `docker` through `PATH`. Fake SSH executes the exact
 supplied remote Bash scripts against controlled host commands, while TCP and HTTP
 checks use real Bash `/dev/tcp` and curl behavior against a temporary listener

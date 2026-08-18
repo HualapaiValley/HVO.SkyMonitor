@@ -20,10 +20,11 @@ env:
 jobs:
   changes:
     name: Change Classification
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       mode: ${{ steps.classify.outputs.mode }}
+      deployment: ${{ steps.classify.outputs.deployment }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,7 +41,7 @@ jobs:
 
   quality:
     name: Quality
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -66,19 +67,13 @@ jobs:
           printf '%s  %s\n' '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757' /tmp/actionlint.tar.gz | sha256sum --check
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint .github/workflows/*.yml
-      - name: Audit identity and security operations guidance
+      - name: Run static and lightweight contract checks
         run: |
-          bash -n .devcontainer/*.sh .devcontainer/opencode-host.conf scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/deploy:environment scripts/deploy/*.sh deploy/split-host/provision-sql.sh deploy/split-host/provision-minio.sh scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:deploy-environment scripts/phase14:source-import scripts/test:phase14-acceptance scripts/test:phase14-campaign scripts/test:phase14-normal-campaign scripts/test:phase14-component scripts/test:phase14-source-import scripts/test:opencode scripts/test:cameraagent-dual-197 scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/opencode:connect scripts/opencode:enable scripts/opencode:disable
+          bash -n .devcontainer/*.sh .devcontainer/opencode-host.conf scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/deploy:environment scripts/deploy/*.sh deploy/split-host/provision-sql.sh deploy/split-host/provision-minio.sh scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:deploy-environment scripts/test:deploy-environment-cli scripts/phase14:source-import scripts/test:phase14-acceptance scripts/test:phase14-campaign scripts/test:phase14-normal-campaign scripts/test:phase14-component scripts/test:phase14-source-import scripts/test:opencode scripts/test:cameraagent-dual-197 scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/opencode:connect scripts/opencode:enable scripts/opencode:disable
           ./scripts/docs:audit-operations
           ./scripts/test:infra
           ./scripts/test:smoke-env
-          ./scripts/test:deploy-environment
-          ./scripts/test:phase14-acceptance
-          ./scripts/test:phase14-campaign
-          ./scripts/test:phase14-normal-campaign
-          dotnet build scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj --no-restore --configuration Release -warnaserror
-          ./scripts/test:phase14-component
-          ./scripts/test:phase14-source-import
+          ./scripts/test:deploy-environment-cli
           bash ./scripts/test:opencode
           bash ./scripts/test:ci-classification
           ./scripts/catalog/smoke-test.sh
@@ -96,6 +91,49 @@ jobs:
         with:
           name: package-audit
           path: TestResults/package-audit/*.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Run Phase 14 contracts
+        run: |
+          ./scripts/test:phase14-acceptance
+          ./scripts/test:phase14-campaign
+          ./scripts/test:phase14-normal-campaign
+          dotnet build scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj --no-restore --configuration Release -warnaserror
+          ./scripts/test:phase14-component
+          ./scripts/test:phase14-source-import
+
+  deployment-contracts:
+    name: Deployment Contracts
+    needs: changes
+    if: needs.changes.outputs.deployment == 'true'
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Verify deployment contract tools
+        run: |
+          test "$(dotnet --version)" = "$(jq -r '.sdk.version' global.json)"
+          command -v bash curl docker git jq nproc setsid sha256sum sqlite3 >/dev/null
+          if (( BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1) )); then
+            printf 'Bash 5.1 or newer is required for deployment shard coordination.\n' >&2
+            exit 1
+          fi
+          ./scripts/test:deploy-environment --list-shards
+      - name: Run deployment contracts in parallel
+        run: ./scripts/test:deploy-environment --parallel
+      - name: Upload deployment contract logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: deployment-contract-logs
+          path: TestResults/deployment-contracts/
           if-no-files-found: error
           retention-days: 30
 
@@ -414,9 +452,9 @@ jobs:
   required:
     name: Required CI
     if: always()
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [changes, quality, build, unit, integration, architecture, migrations, coverage]
+    needs: [changes, quality, deployment-contracts, build, unit, integration, architecture, migrations, coverage]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -425,13 +463,15 @@ jobs:
       - name: Require every current-head gate
         env:
           MODE: ${{ needs.changes.outputs.mode }}
+          DEPLOYMENT_PLAN: ${{ needs.changes.outputs.deployment }}
           EVENT_NAME: ${{ github.event_name }}
           CLASSIFICATION: ${{ needs.changes.result }}
           QUALITY: ${{ needs.quality.result }}
+          DEPLOYMENT: ${{ needs.deployment-contracts.result }}
           BUILD: ${{ needs.build.result }}
           UNIT: ${{ needs.unit.result }}
           INTEGRATION: ${{ needs.integration.result }}
           ARCHITECTURE: ${{ needs.architecture.result }}
           MIGRATIONS: ${{ needs.migrations.result }}
           COVERAGE: ${{ needs.coverage.result }}
-        run: ./scripts/ci:require "$MODE" "$EVENT_NAME" "$CLASSIFICATION" "$QUALITY" "$BUILD" "$UNIT" "$INTEGRATION" "$ARCHITECTURE" "$MIGRATIONS" "$COVERAGE"
+        run: ./scripts/ci:require "$MODE" "$DEPLOYMENT_PLAN" "$EVENT_NAME" "$CLASSIFICATION" "$QUALITY" "$DEPLOYMENT" "$BUILD" "$UNIT" "$INTEGRATION" "$ARCHITECTURE" "$MIGRATIONS" "$COVERAGE"

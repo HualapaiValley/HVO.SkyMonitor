@@ -7,10 +7,11 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | Check | Enforced behavior |
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
-| **Quality** | Pinned local tools, formatting, vulnerability audit, and exact reviewed deprecation allowlist. |
+| **Quality** | Pinned local tools, formatting, syntax and documentation audits, lightweight contracts, Compose validation, vulnerability audit, and the exact reviewed deprecation allowlist. |
+| **Deployment Contracts** | One self-hosted job running nine isolated split-host deployment-contract shards with at most eight local child processes. Always runs for main/release pushes and deployment-relevant pull requests; otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
-| **Unit Tests** | 1755 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
-| **Integration Tests** | 527 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, forwarded-header, and host integration cases; the remaining six Integration-category cases run in Architecture & Publish. Skipped only in classified reduced mode. |
+| **Unit Tests** | 1837 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
+| **Integration Tests** | 535 SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, forwarded-header, and host integration cases; the remaining six Integration-category cases run in Architecture & Publish. Skipped only in classified reduced mode. |
 | **Architecture & Publish** | Six Integration-category repository graph/MSBuild/publish cases plus retained host publish manifests. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
 | **Coverage** | Exact source-path and branch merge of twelve expected reports, checked-in aggregate non-regression, and risk-file floors. |
@@ -18,9 +19,16 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 
 Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected twelve, preventing missing or overwritten evidence.
 
+Change Classification, Quality, and Required CI run on pinned
+`ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit Tests,
+Integration Tests, Architecture & Publish, Migrations, Coverage, and Coverage
+Badges remain on the labeled self-hosted runners. This allocation keeps the long
+deployment harness off hosted minutes, but hosted runner setup and package
+restore time still contribute to Quality duration.
+
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1755`, `Integration=533`, `Manual=75`, `Soak=1`, `External=0`, and `Hardware=1`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1837`, `Integration=541`, `Manual=75`, `Soak=1`, `External=0`, and `Hardware=1`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
@@ -39,6 +47,41 @@ dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "
 ```
 
 Use the exact per-project commands in `.github/workflows/ci.yml` when producing coverage evidence; solution-level TRX names are not collision-proof.
+
+The deployment harness defaults to the original serial all-contract mode for
+local validation:
+
+```bash
+./scripts/test:deploy-environment
+```
+
+Its closed shard inventory is `preflight`, `prepare-images`,
+`existing-catalog-up`, `bootstrap-authority`, `bootstrap-credentials`, `smoke`,
+`measure`, `existing-down`, and `deploy-services`. Inspect it with
+`./scripts/test:deploy-environment --list-shards`, or run one isolated shard with
+`./scripts/test:deploy-environment --shard NAME`. Deployment-relevant CI uses
+`./scripts/test:deploy-environment --parallel`; each child creates an independent
+temporary fixture. The coordinator defaults to the smaller of the shard count,
+`nproc`, and eight local child processes. `DEPLOY_TEST_MAX_PARALLEL=1` through
+`8` can lower that bound. Every child runs in its own session. Fail-fast and
+signal cleanup send TERM to the complete process group, wait a bounded grace
+interval, escalate surviving groups to KILL, and reap stopped leaders. Queued
+shards are marked as not started and the complete failed-shard log is printed.
+
+Every coordinator invocation creates a collision-safe directory beneath
+`TestResults/deployment-contracts/`. GitHub directories include run and attempt
+identity; local directories use a local identity, UTC timestamp, coordinator
+PID, and random suffix. Concurrent invocations never clear or share these
+directories. Each contains per-shard `.log`, `.status`, and leader PID evidence,
+and the Deployment Contracts artifact retains every invocation directory even
+when the job fails.
+
+Run the lightweight closed-CLI and injected coordinator-failure contracts
+without executing the nine full shards:
+
+```bash
+./scripts/test:deploy-environment-cli
+```
 
 Run the path-classification and aggregate-protection contract tests when changing CI orchestration or the reduced-mode allowlist:
 
@@ -89,9 +132,12 @@ Protect `main` with the stable `Required CI` check and require branches to be cu
 
 The aggregate is fail-closed for classification inputs and job results, but a workflow running from a pull request cannot be an independent trust boundary against an author who maliciously rewrites that workflow or its CI helper scripts. Independent review of `.github/workflows/**` and `scripts/ci:*` remains part of this repository's solo-maintainer protection model. Repositories accepting untrusted workflow changes require a separately trusted required workflow or mandatory reviewer policy.
 
-## Reduced Pull Request Mode
+## Pull Request Selection
 
-The workflow always triggers for pull requests. A lightweight classifier uses the pull request's base and head commits and selects reduced mode only when every changed path is an added or modified member of this allowlist:
+The workflow triggers only for pull requests targeting `main` or `release/**`,
+including the `release/deploy-331` strategy. A lightweight classifier uses the
+pull request's base and head commits and selects reduced mode only when every
+changed path is an added or modified member of this allowlist:
 
 - `docs/**`, except the production bundle inputs `docs/catalog/hyg-v42-attribution.md` and `docs/catalog/hyg-v42-license.md`
 - `.devcontainer/**`
@@ -99,14 +145,45 @@ The workflow always triggers for pull requests. A lightweight classifier uses th
 - `.github/prompts/**`
 - `README.md`, `AGENTS.md`, and `THIRD-PARTY-NOTICES.md`
 - `.github/copilot-instructions.md` and `.github/pull_request_template.md`
-- `deploy/hvo-docker/README.md` and `tools/asi-capture/README.md`
+- `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
 - `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
 - `scripts/opencode:enable`, `scripts/opencode:disable`, `scripts/opencode:connect`, `scripts/opencode:prepare-rebuild`, `scripts/opencode:remote-connect`, and `scripts/test:opencode`
 
-Reduced mode still runs **Quality** and **Required CI**. It intentionally skips Build, Unit Tests, Integration Tests, Architecture & Publish, Migrations, and Coverage. `Required CI` accepts those skipped results only when classification succeeded in reduced pull-request mode. This preserves the stable protected check while avoiding approximately 25 of the 30.4 aggregate runner-minutes observed in baseline run `29673206708`.
+Reduced mode still runs **Quality** and **Required CI**. It intentionally skips
+Build, Unit Tests, Integration Tests, Architecture & Publish, Migrations, and
+Coverage. Documentation-only reduced pull requests also skip Deployment
+Contracts. `Required CI` accepts those skipped results only when classification
+and Quality succeeded and the deployment plan is explicitly `false`.
 
-Pushes to `main` or `release/**` always use the full matrix. Deletions, renames, type changes, symlinks or other non-regular entries, empty diffs, unavailable commits, failed diffs, workflow/build/package/runtime/deployment changes, general scripts, product code, tests, migrations, production catalog bundle inputs, `.env.template`, and every unknown path also use the full matrix. Add or modify any non-allowlisted path to force full CI when extra evidence is desired.
+Deployment selection is independent from full/reduced mode. A full-mode pull
+request with ordinary application or test changes runs the existing full build
+and test matrix but skips Deployment Contracts. A deployment-relevant pull
+request runs the sharded deployment gate. The closed deployment path map is:
+
+- `.github/workflows/ci.yml`, `.dockerignore`, `.env.template`, `docker-compose.apps.yml`, and `global.json`
+- `scripts/ci:classify`, `scripts/ci:require`, and `scripts/test:ci-classification`
+- `scripts/deploy:environment` and `scripts/deploy/**`
+- `scripts/test:deploy-environment` and `scripts/test:deploy-environment-cli`
+- `scripts/catalog:*`, `scripts/catalog/**`, and `scripts/infra:operation-lock`
+- `deploy/**`
+- `tests/fixtures/catalog/hyg-v42-bright-stars.sqlite`
+- `src/HVO.SkyMonitor.CameraAgent/Dockerfile` and `src/HVO.SkyMonitor.LogicHost/Dockerfile`
+- `src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json`
+- `src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json` and `src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json`
+
+The classifier emits both `mode` and `deployment` with reasons in the step
+summary. Missing commits, failed or malformed diffs, empty change sets,
+deletions, renames, type changes, and missing or non-regular entries fail closed
+to `mode=full` and `deployment=true`. `Required CI` requires Deployment
+Contracts to be `success` exactly when deployment is `true`, and `skipped`
+exactly when it is `false`; failed, canceled, missing, or mismatched results are
+rejected in either plan.
+
+Pushes to `main` or `release/**` always use the full matrix and deployment
+contracts. The existing full/reduced scope for Build, Unit Tests, Integration
+Tests, Architecture & Publish, Migrations, and Coverage is unchanged; this work
+does not implement broader subsystem targeting.
 
 ## Failure Triage
 
@@ -115,3 +192,21 @@ Pushes to `main` or `release/**` always use the full matrix. Deletions, renames,
 - Migration failures identify the host context with pending model changes.
 - Coverage failures name exact source paths, covered/valid counts, observed rates, and required floors.
 - Integration failures retain separate project/category TRX and Cobertura evidence for 30 days.
+- Deployment failures identify the failed shard in coordinator output; inspect the retained shard log and status marker before rerunning only that shard locally.
+
+## Deployment Timing Evidence
+
+Recent pre-change Quality jobs took approximately 24-25 minutes, with the
+deployment suite accounting for approximately 19-20 minutes. The first
+four-shard implementation measured 22:51 serial and 19:38 parallel; its
+`existing-services` shard took 19:38 and therefore did not satisfy the target.
+The refined nine-shard local candidate measured 22:48 serial and a 10:08 median
+parallel time on the same 8-core, 31-GiB host, a 55.6% wall-time reduction.
+Three complete parallel runs passed in 10:07.64, 10:07.82, and 10:11.06 with
+no leaked child or listener process. User plus system
+CPU increased from 1,424.44 to 1,513.80 seconds (6.3%) because independently
+reproducible lifecycle setup is repeated; maximum reported resident set stayed
+within measurement noise at approximately 202 MiB. Record the current-head
+hosted Quality, Deployment Contracts, and total Required CI wall time here after
+protected CI executes. Pull-request deployment relevance reduces unnecessary
+runner use but is not included in the 55.6% execution-time comparison.

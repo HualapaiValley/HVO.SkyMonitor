@@ -8,6 +8,8 @@ summary_file="${GITHUB_STEP_SUMMARY:-}"
 
 mode="full"
 reason="non-pull-request events always run the full matrix"
+deployment="true"
+deployment_reason="non-pull-request events always run deployment contracts"
 path_count=0
 
 write_summary_header() {
@@ -22,13 +24,13 @@ write_summary_path() {
 
 finish() {
   if [[ -n "$summary_file" ]]; then
-    printf '\nMode: **%s**  \nReason: %s  \nPath count: %s\n' \
-      "$mode" "$reason" "$path_count" >> "$summary_file"
+    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nPath count: %s\n' \
+      "$mode" "$reason" "$deployment" "$deployment_reason" "$path_count" >> "$summary_file"
   fi
 
-  printf 'CI classification: mode=%s reason=%s paths=%s\n' \
-    "$mode" "$reason" "$path_count" >&2
-  printf 'mode=%s\n' "$mode"
+  printf 'CI classification: mode=%s deployment=%s reason=%s deployment-reason=%s paths=%s\n' \
+    "$mode" "$deployment" "$reason" "$deployment_reason" "$path_count" >&2
+  printf 'mode=%s\ndeployment=%s\n' "$mode" "$deployment"
 }
 
 is_reduced_path() {
@@ -50,7 +52,7 @@ is_reduced_path() {
     .github/copilot-instructions.md | .github/pull_request_template.md)
       return 0
       ;;
-    deploy/hvo-docker/README.md | tools/asi-capture/README.md)
+    tools/asi-capture/README.md)
       return 0
       ;;
     tests/fixtures/catalog/SOURCE.md | tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md)
@@ -64,16 +66,59 @@ is_reduced_path() {
   [[ "$path" =~ ^(src|tests)/[^/]+/README\.md$ ]]
 }
 
+is_deployment_path() {
+  local path="$1"
+
+  case "$path" in
+    .github/workflows/ci.yml | .dockerignore | .env.template | docker-compose.apps.yml | global.json)
+      return 0
+      ;;
+    scripts/ci:classify | scripts/ci:require | scripts/test:ci-classification)
+      return 0
+      ;;
+    scripts/deploy:environment | scripts/deploy/*)
+      return 0
+      ;;
+    scripts/test:deploy-environment | scripts/test:deploy-environment-cli)
+      return 0
+      ;;
+    scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
+      return 0
+      ;;
+    deploy/*)
+      return 0
+      ;;
+    tests/fixtures/catalog/hyg-v42-bright-stars.sqlite)
+      return 0
+      ;;
+    src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
+      return 0
+      ;;
+    src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json)
+      return 0
+      ;;
+    src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 if [[ "$event_name" != "pull_request" ]]; then
   finish
   exit 0
 fi
 
 reason="pull request contains only allowlisted documentation and developer-environment changes"
+deployment="false"
+deployment_reason="pull request does not change deployment-contract inputs"
 
 if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
   || ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+  deployment="true"
   reason="base or head commit is unavailable"
+  deployment_reason="base or head commit is unavailable"
   finish
   exit 0
 fi
@@ -82,7 +127,9 @@ diff_file="$(mktemp)"
 trap 'rm -f "$diff_file"' EXIT
 
 if ! git diff --name-status --no-renames -z "${base_sha}...${head_sha}" -- > "$diff_file"; then
+  deployment="true"
   reason="git diff failed"
+  deployment_reason="git diff failed"
   finish
   exit 0
 fi
@@ -93,7 +140,9 @@ write_summary_header
 while IFS= read -r -d '' status; do
   if ! IFS= read -r -d '' path; then
     mode="full"
+    deployment="true"
     reason="git diff returned malformed name-status data"
+    deployment_reason="git diff returned malformed name-status data"
     break
   fi
 
@@ -102,20 +151,34 @@ while IFS= read -r -d '' status; do
 
   if [[ "$status" != "A" && "$status" != "M" ]]; then
     mode="full"
+    deployment="true"
     reason="deleted, renamed, or type-changed paths require the full matrix"
+    deployment_reason="deleted, renamed, or type-changed paths require deployment contracts"
   elif ! tree_entry="$(git ls-tree "$head_sha" -- ":(literal)$path")" \
     || [[ "${tree_entry%% *}" != "100644" && "${tree_entry%% *}" != "100755" ]]; then
     mode="full"
+    deployment="true"
     reason="missing or non-regular paths require the full matrix"
-  elif ! is_reduced_path "$path"; then
-    mode="full"
-    reason="at least one path is outside the reduced-mode allowlist"
+    deployment_reason="missing or non-regular paths require deployment contracts"
+  else
+    if ! is_reduced_path "$path"; then
+      mode="full"
+      reason="at least one path is outside the reduced-mode allowlist"
+    fi
+    if is_deployment_path "$path"; then
+      mode="full"
+      deployment="true"
+      reason="pull request changes a deployment-contract input"
+      deployment_reason="pull request changes a deployment-contract input"
+    fi
   fi
 done < "$diff_file"
 
 if [[ "$path_count" -eq 0 ]]; then
   mode="full"
+  deployment="true"
   reason="empty change sets require the full matrix"
+  deployment_reason="empty change sets require deployment contracts"
 fi
 
 finish

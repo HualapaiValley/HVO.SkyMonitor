@@ -7,10 +7,14 @@ introduced by issue #163 and PR #164.
 
 Pull requests containing only added or modified paths from the reviewed
 documentation/developer-environment allowlist run Change Classification,
-Quality, and Required CI. Build, Unit Tests, Integration Tests, Architecture &
-Publish, Migrations, and Coverage are expected to report `skipped`. Required CI
-rejects any other result combination. Pushes and changes outside the allowlist
-always run the complete matrix.
+Quality, and Required CI. Deployment Contracts, Build, Unit Tests, Integration
+Tests, Architecture & Publish, Migrations, and Coverage are expected to report
+`skipped`. Required CI rejects any other result combination. Deployment
+selection is independent: ordinary full-mode application pull requests skip
+Deployment Contracts, deployment-relevant pull requests run them, and
+main/release pushes always run the complete matrix including deployment.
+The workflow applies to pull requests targeting `main` or `release/**`, including
+the `release/deploy-331` release strategy.
 
 The exact allowlist, exclusions, trust boundary, and local contract-test command
 are maintained in [`docs/runbooks/ci-pipeline.md`](../runbooks/ci-pipeline.md).
@@ -34,6 +38,8 @@ The proof branch changed only this allowlisted documentation path. Initial run
 at `c61f017` selected reduced mode and produced the required result matrix:
 
 - Change Classification, Quality, and Required CI succeeded.
+- This historical proof predates the split of deployment contracts from Quality
+  and their independent pull-request relevance plan.
 - Build, Unit Tests, Integration Tests, Architecture & Publish, Migrations, and
   Coverage were skipped.
 - Required CI accepted only that explicit reduced pull request combination.

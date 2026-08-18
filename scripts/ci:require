@@ -2,20 +2,43 @@
 set -euo pipefail
 
 mode="${1:-}"
-event_name="${2:-}"
-classification="${3:-}"
-quality="${4:-}"
-build="${5:-}"
-unit="${6:-}"
-integration="${7:-}"
-architecture="${8:-}"
-migrations="${9:-}"
-coverage="${10:-}"
+deployment_plan="${2:-}"
+event_name="${3:-}"
+classification="${4:-}"
+quality="${5:-}"
+deployment="${6:-}"
+build="${7:-}"
+unit="${8:-}"
+integration="${9:-}"
+architecture="${10:-}"
+migrations="${11:-}"
+coverage="${12:-}"
 
-results="classification=$classification quality=$quality build=$build unit=$unit integration=$integration architecture=$architecture migrations=$migrations coverage=$coverage"
+results="classification=$classification quality=$quality deployment-plan=$deployment_plan deployment=$deployment build=$build unit=$unit integration=$integration architecture=$architecture migrations=$migrations coverage=$coverage"
 
 if [[ "$classification" != "success" || "$quality" != "success" ]]; then
   printf 'Required gate results: mode=%s event=%s %s\n' "$mode" "$event_name" "$results" >&2
+  exit 1
+fi
+
+if [[ "$event_name" != "pull_request" && ( "$mode" != "full" || "$deployment_plan" != "true" ) ]]; then
+  printf 'Non-pull-request CI requires mode=full and deployment-plan=true: mode=%s event=%s deployment-plan=%s\n' \
+    "$mode" "$event_name" "$deployment_plan" >&2
+  exit 1
+fi
+
+case "$deployment_plan" in
+  true) expected_deployment="success" ;;
+  false) expected_deployment="skipped" ;;
+  *)
+    printf 'Unknown or missing deployment classification: deployment-plan=%s\n' "$deployment_plan" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$deployment" != "$expected_deployment" ]]; then
+  printf 'Required gate results: mode=%s event=%s expected-deployment=%s %s\n' \
+    "$mode" "$event_name" "$expected_deployment" "$results" >&2
   exit 1
 fi
 
@@ -26,6 +49,10 @@ case "$mode" in
   reduced)
     if [[ "$event_name" != "pull_request" ]]; then
       printf 'Reduced CI is valid only for pull requests: event=%s\n' "$event_name" >&2
+      exit 1
+    fi
+    if [[ "$deployment_plan" != "false" ]]; then
+      printf 'Reduced pull-request CI requires deployment-plan=false: deployment-plan=%s\n' "$deployment_plan" >&2
       exit 1
     fi
     expected="skipped"
