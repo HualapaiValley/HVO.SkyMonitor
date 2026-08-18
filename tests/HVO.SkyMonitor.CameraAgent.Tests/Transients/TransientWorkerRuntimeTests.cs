@@ -266,6 +266,10 @@ public sealed class TransientWorkerRuntimeTests
                     SET state = 'completed'
                     WHERE raw_capture_row_id IN (
                         SELECT raw_capture_row_id FROM raw_captures WHERE capture_sequence < 6);
+                    UPDATE transient_capture_work
+                    SET state = 'candidate_persisted'
+                    WHERE raw_capture_row_id IN (
+                        SELECT raw_capture_row_id FROM raw_captures WHERE capture_sequence = 6);
                     UPDATE capture_lane_work
                     SET state = 'pending'
                     WHERE lane_name = 'transient' AND capture_sequence = 5;
