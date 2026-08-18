@@ -533,13 +533,13 @@ internal sealed class SqliteCaptureLaneStore(
             SELECT
                 (SELECT COUNT(*) FROM capture_lane_work
                  WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')) +
-                    (SELECT COUNT(*) FROM transient_capture_work WHERE state IN ('pending', 'quarantined')) +
+                    (SELECT COUNT(*) FROM transient_capture_work WHERE state IN ('pending', 'candidate_persisted', 'quarantined')) +
                     (SELECT COUNT(*) FROM transient_candidates WHERE source_hold_released = 0),
                 (SELECT COALESCE(SUM(payload_length), 0) FROM raw_captures WHERE raw_capture_row_id IN (
                     SELECT raw_capture_row_id FROM capture_lane_work
                     WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                     UNION
-                    SELECT raw_capture_row_id FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
+                    SELECT raw_capture_row_id FROM transient_capture_work WHERE state IN ('pending', 'candidate_persisted', 'quarantined')
                     UNION
                     SELECT s.raw_capture_row_id
                     FROM transient_candidate_sources s
@@ -549,7 +549,7 @@ internal sealed class SqliteCaptureLaneStore(
                     SELECT created_unix_ms FROM capture_lane_work
                     WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                     UNION ALL
-                    SELECT created_unix_ms FROM transient_capture_work WHERE state IN ('pending', 'quarantined')
+                    SELECT created_unix_ms FROM transient_capture_work WHERE state IN ('pending', 'candidate_persisted', 'quarantined')
                     UNION ALL
                     SELECT created_unix_ms FROM transient_candidates WHERE source_hold_released = 0)),
                 (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'leased'),
@@ -575,14 +575,31 @@ internal sealed class SqliteCaptureLaneStore(
         using var sequencesCommand = connection.CreateCommand();
         sequencesCommand.Transaction = transaction;
         sequencesCommand.CommandText = """
+            WITH active_centers(raw_capture_row_id) AS (
+                SELECT raw_capture_row_id
+                FROM capture_lane_work
+                WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
+                UNION
+                SELECT raw_capture_row_id
+                FROM transient_capture_work
+                WHERE state IN ('pending', 'candidate_persisted', 'quarantined')
+                UNION
+                SELECT source.raw_capture_row_id
+                FROM transient_candidates candidate
+                JOIN transient_candidate_sources source ON source.candidate_id = candidate.candidate_id
+                WHERE candidate.source_hold_released = 0
+                  AND source.source_ordinal = (
+                      SELECT MAX(center_source.source_ordinal)
+                      FROM transient_candidate_sources center_source
+                      WHERE center_source.candidate_id = candidate.candidate_id)
+            )
             SELECT agent_id, capture_sequence FROM (
                 SELECT r.agent_id, r.capture_sequence, r.durable_ingress_unix_ms, r.raw_capture_row_id
-                FROM transient_capture_work w
-                JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
-                WHERE w.state = 'pending'
+                FROM active_centers active
+                JOIN raw_captures r ON r.raw_capture_row_id = active.raw_capture_row_id
                 ORDER BY r.durable_ingress_unix_ms DESC, r.raw_capture_row_id DESC
-                LIMIT 2)
-            ORDER BY capture_sequence;
+                LIMIT 3)
+            ORDER BY agent_id, capture_sequence;
             """;
         var pendingCaptures = new List<CaptureLanePendingCapture>();
         using var sequencesReader = await sequencesCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);

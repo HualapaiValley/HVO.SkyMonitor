@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Operations;
@@ -105,7 +106,8 @@ public sealed record OperationsEnvironmentalDeliveryState(
 public sealed record OperationsTransientWorkerState(
     string Availability,
     long PendingFrames,
-    long PendingCandidates);
+    long PendingCandidates,
+    int MaximumCandidates);
 
 public sealed record OperationsCaptureTelemetryState(
     int SampleCount,
@@ -266,7 +268,8 @@ public sealed class CameraAgentOperationsSummaryProvider(
                     centralDisabled ? 0 : environmental.Outbox?.OverflowCount ?? 0,
                     centralDisabled ? null : environmental.Outbox?.OldestPendingUtc)),
             Section("transient-worker-state", transient.UpdatedUtc, now, new OperationsTransientWorkerState(
-                transient.Availability.ToString(), transient.PendingFrames, transient.PendingCandidates)),
+                transient.Availability.ToString(), transient.PendingFrames, transient.PendingCandidates,
+                TransientCandidateExtractionProfiles.EdgeV1.MaximumCandidates)),
             Section("capture-telemetry-window", latest?.StartedUtc, now, new OperationsCaptureTelemetryState(
                 telemetry.Samples.Count, latest?.StartedUtc, latest?.Mode.ToString(), latest?.Exposure.TotalMilliseconds,
                 latest?.Gain, telemetry.Aggregate.AverageIntervalMilliseconds,

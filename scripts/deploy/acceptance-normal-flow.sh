@@ -77,8 +77,16 @@ deploy_acceptance_normal_validate_measure() {
             .pendingCount == 0 and .pendingBytes == 0 and .leasedCount == 0 and .retryCount == 0 and
             .quarantineCount == 0 and .pressureLevel == 0)
         else
-          ($transient | length) == 1 and $queues.raw.pendingCount == 2 and $queues.lanes.pendingCount == 2 and
-          ($transient[0].pendingCount == 2 and $transient[0].leasedCount == 0 and $transient[0].retryCount == 0 and
+          ($transient | length) == 1 and
+          ($queues.transient.maximumCandidates >= 1 and $queues.transient.maximumCandidates <= 64 and
+            ($queues.transient.maximumCandidates | floor) == $queues.transient.maximumCandidates) and
+          (($queues.raw.pendingCount | floor) == $queues.raw.pendingCount and
+            $queues.raw.pendingCount >= 2 and $queues.raw.pendingCount <= 6) and
+          $queues.lanes.pendingCount == $transient[0].pendingCount and
+          (($transient[0].pendingCount | floor) == $transient[0].pendingCount and
+            $transient[0].pendingCount >= 2 and
+            $transient[0].pendingCount <= (2 * (1 + $queues.transient.maximumCandidates)) and
+            $transient[0].leasedCount == 0 and $transient[0].retryCount == 0 and
             $transient[0].quarantineCount == 0 and $transient[0].pressureLevel == 0 and
             $transient[0].pendingCaptures == [
               {agentId:$device,captureSequence:(.measured.endSequence - 1)},
