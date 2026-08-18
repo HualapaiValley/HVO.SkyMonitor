@@ -191,15 +191,45 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
         await using (var mutationScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             var db = mutationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            futureFrameId = await db.CentralArtifacts.AsNoTracking()
+            var futureArtifact = await db.CentralArtifacts.AsNoTracking()
                 .Where(item => item.Id == scenario.CentralArtifactIds[futureIndex])
-                .Select(item => item.CentralFrameId)
+                .Select(item => new
+                {
+                    item.CentralFrameId,
+                    item.DevicePublicId,
+                    item.Role,
+                    item.RecipeVersion,
+                    item.ManifestSchemaVersion,
+                    item.MediaType,
+                    item.ByteLength,
+                    item.ChecksumSha256,
+                    item.ReceivedAtUtc
+                })
                 .SingleAsync().ConfigureAwait(false);
+            futureFrameId = futureArtifact.CentralFrameId;
             var rig = await db.CentralCaptureProfiles
                 .SingleAsync(item => item.CentralFrameId == futureFrameId && item.Kind == CentralProfileKind.Rig)
                 .ConfigureAwait(false);
             originalRigSha256 = rig.Sha256;
             rig.Sha256 = new string('A', 64);
+            var unrelatedArtifactId = Guid.NewGuid();
+            db.CentralArtifacts.Add(new CentralArtifact
+            {
+                CentralFrameId = futureFrameId,
+                ArtifactId = unrelatedArtifactId,
+                DevicePublicId = futureArtifact.DevicePublicId,
+                Role = futureArtifact.Role,
+                RecipeVersion = $"{futureArtifact.RecipeVersion}-unrelated",
+                ManifestSchemaVersion = futureArtifact.ManifestSchemaVersion,
+                MediaType = futureArtifact.MediaType,
+                ByteLength = futureArtifact.ByteLength,
+                ChecksumSha256 = futureArtifact.ChecksumSha256,
+                StorageReference = $"integration/unrelated/{unrelatedArtifactId:N}",
+                ReceivedAtUtc = futureArtifact.ReceivedAtUtc,
+                IdempotencyKey = Convert.ToHexStringLower(SHA256.HashData(unrelatedArtifactId.ToByteArray())),
+                ObjectState = CentralArtifactObjectState.Pending,
+                ReconstructionState = CentralReconstructionState.PendingReference
+            });
             await db.SaveChangesAsync().ConfigureAwait(false);
         }
         using var factory = CreateHybridFactory();

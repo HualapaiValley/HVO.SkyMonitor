@@ -505,7 +505,8 @@ internal sealed class CentralTransientSubmissionService(
                 .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
                 .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
                 .Where(item => item.DevicePublicId == devicePublicId && item.Frame!.AgentId == registration.DeviceId &&
-                    item.Frame.CaptureSequence == expectedSequence && item.Role == center.Artifact.Role)
+                    item.Frame.CaptureSequence == expectedSequence && item.Role == center.Artifact.Role &&
+                    item.RecipeVersion == center.Artifact.RecipeVersion)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
             if (candidates.Any(item => item.ObjectState != CentralArtifactObjectState.Available ||
                     item.ReconstructionState != CentralReconstructionState.Complete))
