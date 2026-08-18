@@ -52,7 +52,11 @@ body is the unmodified canonical `TransientCandidateSubmissionEnvelopeV1`, and
 must exactly equal the authenticated registration ID. LogicHost verifies the
 causal `N-2,N-1,N` evidence under that authenticated device/Agent identity,
 resolves and verifies `N+1,N+2` from Central state, freezes the resulting exact
-five-input window, and commits acceptance atomically. Validation retains the
+five-input window, and commits acceptance atomically. If an available, verified
+future frame has crossed to a different rig or processing profile, LogicHost
+instead persists and returns a terminal `Retired` settlement; CameraAgent stores
+that acknowledgement atomically and releases the impossible window's source
+holds. Missing future uploads remain retryable. Validation retains the
 full canonical centered extraction receipt for audit, but only the unique
 centered match for the submitted candidate is promoted, assessed, and persisted;
 all unrelated candidate identity slots become unused.
@@ -137,7 +141,7 @@ connected descendants of the consumer execution span. The collector also asserts
 sets, healthy-to-degraded health behavior, and absence of checksums, storage
 references, device IDs, credentials, and opaque event IDs from signal values.
 Hybrid submission records bounded `transient-submit` operation outcomes:
-`accepted`, `duplicate`, and `rejected`.
+`accepted`, `duplicate`, `retired`, and `rejected`.
 
 ## CameraAgent Isolation Scope
 

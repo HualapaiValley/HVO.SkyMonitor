@@ -181,6 +181,119 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
     }
 
     [TestMethod]
+    [DataRow(3)]
+    [DataRow(4)]
+    public async Task FutureProfileTransition_RetiresAndReplaysWithoutCreatingValidationJob(int futureIndex)
+    {
+        var scenario = await CreateScenarioAsync().ConfigureAwait(false);
+        Guid futureFrameId;
+        string originalRigSha256;
+        await using (var mutationScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = mutationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            futureFrameId = await db.CentralArtifacts.AsNoTracking()
+                .Where(item => item.Id == scenario.CentralArtifactIds[futureIndex])
+                .Select(item => item.CentralFrameId)
+                .SingleAsync().ConfigureAwait(false);
+            var rig = await db.CentralCaptureProfiles
+                .SingleAsync(item => item.CentralFrameId == futureFrameId && item.Kind == CentralProfileKind.Rig)
+                .ConfigureAwait(false);
+            originalRigSha256 = rig.Sha256;
+            rig.Sha256 = new string('A', 64);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+        }
+        using var factory = CreateHybridFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var firstResponse = await SendAsync(client, scenario.DeviceId, DeviceKey, scenario.Envelope)
+            .ConfigureAwait(false);
+        using var replayResponse = await SendAsync(client, scenario.DeviceId, DeviceKey, scenario.Envelope)
+            .ConfigureAwait(false);
+        var first = ParseAcknowledgement(await firstResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        var replay = ParseAcknowledgement(await replayResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+
+        firstResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        replayResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        first.Disposition.Should().Be(TransientCandidateSubmissionDisposition.Retired);
+        first.SchemaVersion.Should().Be(TransientCandidateSubmissionAcknowledgementV1.RetirementSchemaVersion);
+        replay.Should().Be(first);
+        await using (var restoreScope = factory.Services.CreateAsyncScope())
+        {
+            var restoreDb = restoreScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await restoreDb.CentralCaptureProfiles
+                .Where(item => item.CentralFrameId == futureFrameId && item.Kind == CentralProfileKind.Rig)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Sha256, originalRigSha256))
+                .ConfigureAwait(false);
+        }
+        var conflictingEnvelope = CreateEnvelope(scenario.Envelope.Candidate with
+        {
+            CreatedUtc = scenario.Envelope.Candidate.CreatedUtc.AddTicks(1)
+        });
+        using var conflictingResponse = await SendAsync(
+            client, scenario.DeviceId, DeviceKey, conflictingEnvelope).ConfigureAwait(false);
+        conflictingResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        await using var assertionScope = factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await assertionDb.CentralTransientValidationJobs.CountAsync(item =>
+                item.SubmissionIdentitySha256 == scenario.Envelope.SubmissionIdentitySha256)
+            .ConfigureAwait(false)).Should().Be(0);
+        var audits = await assertionDb.CentralTransientSubmissionAudits.AsNoTracking()
+            .Where(item => item.CandidateId == scenario.Envelope.CandidateId
+                && item.ReasonCode == CentralTransientSubmissionReasonCodes.ProfileTransitionRetired)
+            .ToArrayAsync().ConfigureAwait(false);
+        audits.Should().ContainSingle();
+        audits[0].RecordedAtUtc.Should().Be(first.ReceivedAtUtc);
+        (await assertionDb.CentralTransientSubmissionAudits.CountAsync(item =>
+                item.CandidateId == conflictingEnvelope.CandidateId
+                && item.ReasonCode == CentralTransientSubmissionReasonCodes.IdentityConflict)
+            .ConfigureAwait(false)).Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task PendingFutureEvidence_RemainsRetryableWithoutRetirement()
+    {
+        var scenario = await CreateScenarioAsync().ConfigureAwait(false);
+        await using (var mutationScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = mutationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await db.CentralArtifacts.Where(item => item.Id == scenario.CentralArtifactIds[3])
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.ObjectState, CentralArtifactObjectState.Pending)
+                    .SetProperty(item => item.ReconstructionState, CentralReconstructionState.PendingReference))
+                .ConfigureAwait(false);
+        }
+        using var factory = CreateHybridFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var response = await SendAsync(client, scenario.DeviceId, DeviceKey, scenario.Envelope)
+            .ConfigureAwait(false);
+        await using (var restoreScope = factory.Services.CreateAsyncScope())
+        {
+            var restoreDb = restoreScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await restoreDb.CentralArtifacts.Where(item => item.Id == scenario.CentralArtifactIds[3])
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.ObjectState, CentralArtifactObjectState.Available)
+                    .SetProperty(item => item.ReconstructionState, CentralReconstructionState.Complete))
+                .ConfigureAwait(false);
+        }
+
+        response.StatusCode.Should().Be((HttpStatusCode)425);
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        problem.RootElement.GetProperty("reasonCode").GetString()
+            .Should().Be(CentralTransientSubmissionReasonCodes.EvidenceUnavailable);
+        await using var assertionScope = factory.Services.CreateAsyncScope();
+        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await assertionDb.CentralTransientSubmissionAudits.AnyAsync(item =>
+                item.CandidateId == scenario.Envelope.CandidateId
+                && item.ReasonCode == CentralTransientSubmissionReasonCodes.ProfileTransitionRetired)
+            .ConfigureAwait(false)).Should().BeFalse();
+    }
+
+    [TestMethod]
     public async Task TwoCanonicalCandidates_PersistOnlyTheirSubmittedAuthoritativeEvents()
     {
         var scenario = await CreateScenarioAsync(multipleCandidates: true).ConfigureAwait(false);

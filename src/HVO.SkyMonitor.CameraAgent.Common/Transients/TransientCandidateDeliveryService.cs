@@ -389,7 +389,9 @@ internal sealed class TransientCandidateDeliveryService(
                 "delivery",
                 acknowledgement.Disposition == TransientCandidateSubmissionDisposition.Accepted
                     ? "accepted"
-                    : "duplicate",
+                    : acknowledgement.Disposition == TransientCandidateSubmissionDisposition.Duplicate
+                        ? "duplicate"
+                        : "retired",
                 outcome.Duration);
             TransientCandidateDeliveryLog.Acknowledged(logger, result.Reason);
             return;

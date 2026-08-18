@@ -29,7 +29,7 @@ internal interface ICentralTransientSubmissionService
 }
 
 internal sealed record CentralTransientSubmissionResult(
-    Guid CentralDerivativeJobId,
+    Guid? CentralDerivativeJobId,
     TransientCandidateSubmissionAcknowledgementV1 Acknowledgement);
 
 internal enum CentralTransientSubmissionFaultStage
@@ -151,6 +151,12 @@ internal sealed class CentralTransientSubmissionService(
         {
             return CreateDuplicate(existing, envelope);
         }
+        var retirement = await FindRetirementAsync(
+            envelope.SubmissionIdentitySha256, devicePublicId, cancellationToken).ConfigureAwait(false);
+        if (retirement is not null)
+        {
+            return CreateRetired(retirement, envelope, payloadSha256);
+        }
         if (options.Value.Mode != TransientDetectorExecutionMode.Hybrid)
         {
             await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.ModeDisabled,
@@ -243,8 +249,12 @@ internal sealed class CentralTransientSubmissionService(
                     envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
             }
         }
-        await ResolveFutureSourcesAsync(
+        var retired = await ResolveFutureSourcesAsync(
             registration, envelope, verified, payloadSha256, cancellationToken).ConfigureAwait(false);
+        if (retired is not null)
+        {
+            return retired;
+        }
         await ValidateWindowAsync(registration, envelope, verified, payloadSha256, cancellationToken)
             .ConfigureAwait(false);
 
@@ -303,16 +313,29 @@ internal sealed class CentralTransientSubmissionService(
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return CreateDuplicate(existing, envelope);
         }
+        retirement = await FindRetirementAsync(
+            envelope.SubmissionIdentitySha256, devicePublicId, cancellationToken).ConfigureAwait(false);
+        if (retirement is not null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return CreateRetired(retirement, envelope, payloadSha256);
+        }
         var conflict = await dbContext.CentralTransientValidationIdentitySlots.AsNoTracking()
             .Where(slot => slot.CandidateId == envelope.CandidateId ||
                 slot.AgentId == registration.DeviceId && slot.SubmittedEventId == envelope.EventId)
             .Select(slot => new { slot.CentralDerivativeJobId, slot.CandidateId, slot.SubmittedEventId })
             .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        if (conflict is not null)
+        var retirementConflict = await dbContext.CentralTransientSubmissionAudits.AsNoTracking().AnyAsync(audit =>
+            audit.DevicePublicId == devicePublicId
+            && audit.AgentId == registration.DeviceId
+            && audit.ReasonCode == CentralTransientSubmissionReasonCodes.ProfileTransitionRetired
+            && (audit.CandidateId == envelope.CandidateId || audit.EventId == envelope.EventId),
+            cancellationToken).ConfigureAwait(false);
+        if (conflict is not null || retirementConflict)
         {
             await AddAuditAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.IdentityConflict,
                 envelope.CandidateId, envelope.EventId, envelope.SubmissionIdentitySha256,
-                conflict.CentralDerivativeJobId, cancellationToken).ConfigureAwait(false);
+                conflict?.CentralDerivativeJobId, cancellationToken).ConfigureAwait(false);
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             telemetry.RecordOperation("transient-submit", "rejected");
@@ -445,7 +468,7 @@ internal sealed class CentralTransientSubmissionService(
         }
     }
 
-    private async Task ResolveFutureSourcesAsync(
+    private async Task<CentralTransientSubmissionResult?> ResolveFutureSourcesAsync(
         DeviceRegistration registration,
         TransientCandidateSubmissionEnvelopeV1 envelope,
         List<VerifiedSource> verified,
@@ -456,7 +479,7 @@ internal sealed class CentralTransientSubmissionService(
         {
             await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.InvalidWindow,
                 envelope, existingJobId: null, cancellationToken).ConfigureAwait(false);
-            return;
+            return null;
         }
         var center = verified[2];
         var devicePublicId = registration.DevicePublicId!.Value;
@@ -471,7 +494,7 @@ internal sealed class CentralTransientSubmissionService(
             {
                 await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.InvalidWindow,
                     envelope, existingJobId: null, cancellationToken).ConfigureAwait(false);
-                return;
+                return null;
             }
             var candidates = await dbContext.CentralArtifacts
                 .Include(item => item.Layout)
@@ -482,29 +505,37 @@ internal sealed class CentralTransientSubmissionService(
                 .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
                 .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
                 .Where(item => item.DevicePublicId == devicePublicId && item.Frame!.AgentId == registration.DeviceId &&
-                    item.Frame.CaptureSequence == expectedSequence && item.Frame.RigId == center.Artifact.Frame!.RigId &&
-                    item.Role == center.Artifact.Role)
+                    item.Frame.CaptureSequence == expectedSequence && item.Role == center.Artifact.Role)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
-            var compatible = candidates.Select(item => new
+            if (candidates.Any(item => item.ObjectState != CentralArtifactObjectState.Available ||
+                    item.ReconstructionState != CentralReconstructionState.Complete))
+            {
+                await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
+                    envelope, existingJobId: null, cancellationToken).ConfigureAwait(false);
+            }
+            var resolved = candidates.Select(item => new
             {
                 Artifact = item,
                 Descriptor = CentralReconstructionDescriptorFactory.Create(item.Frame!, item),
                 Compatibility = CentralDerivativeWindowCompatibility.CreateSnapshot(
                         CentralReconstructionDescriptorFactory.Create(item.Frame!, item))
-            })
-                .Where(item => string.Equals(item.Compatibility.Sha256, center.Compatibility.Sha256, StringComparison.Ordinal))
-                .ToArray();
-            if (compatible.Length == 0)
+            }).ToArray();
+            if (resolved.Length == 0)
             {
                 await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceMissing,
                     envelope, existingJobId: null, cancellationToken).ConfigureAwait(false);
             }
+            var compatible = resolved.Where(item => string.Equals(
+                item.Compatibility.Sha256, center.Compatibility.Sha256, StringComparison.Ordinal)).ToArray();
             if (compatible.Length != 1)
             {
-                await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceConflict,
-                    envelope, existingJobId: null, cancellationToken).ConfigureAwait(false);
+                if (compatible.Length > 1 || resolved.Length != 1)
+                {
+                    await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceConflict,
+                        envelope, existingJobId: null, cancellationToken).ConfigureAwait(false);
+                }
             }
-            var selected = compatible[0];
+            var selected = compatible.Length == 1 ? compatible[0] : resolved[0];
             if (selected.Artifact.ObjectState != CentralArtifactObjectState.Available ||
                 selected.Artifact.ReconstructionState != CentralReconstructionState.Complete)
             {
@@ -514,6 +545,35 @@ internal sealed class CentralTransientSubmissionService(
             try
             {
                 var snapshot = await objectReader.VerifyAsync(selected.Artifact, cancellationToken).ConfigureAwait(false);
+                if (compatible.Length == 0)
+                {
+                    var centerDescriptor = CentralReconstructionDescriptorFactory.Create(
+                        center.Artifact.Frame!, center.Artifact);
+                    if (HasProfileTransition(centerDescriptor, selected.Descriptor))
+                    {
+                        var holdTarget = CentralTransientPayloadHoldFence.CreateArtifactTarget(selected.Artifact);
+                        await using var objectFence = await AcquireObjectFenceAsync(
+                            registration, envelope, payloadSha256, [holdTarget], cancellationToken).ConfigureAwait(false);
+                        await objectFence.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+                        var isUsable = await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(artifact =>
+                            artifact.Id == selected.Artifact.Id
+                            && artifact.ObjectState == CentralArtifactObjectState.Available
+                            && artifact.ReconstructionState == CentralReconstructionState.Complete,
+                            cancellationToken).ConfigureAwait(false);
+                        var isCurrent = await objectReader.IsCurrentGenerationAsync(
+                            selected.Artifact, snapshot.StorageETag, cancellationToken).ConfigureAwait(false);
+                        if (!isUsable || !isCurrent)
+                        {
+                            await RejectAsync(registration, payloadSha256,
+                                CentralTransientSubmissionReasonCodes.EvidenceUnavailable,
+                                envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
+                        }
+                        return await RetireAsync(
+                            registration, envelope, payloadSha256, cancellationToken).ConfigureAwait(false);
+                    }
+                    await RejectAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.EvidenceConflict,
+                        envelope, existingJobId: null, cancellationToken).ConfigureAwait(false);
+                }
                 verified.Add(new VerifiedSource(
                     selected.Artifact,
                     snapshot,
@@ -543,6 +603,7 @@ internal sealed class CentralTransientSubmissionService(
                     envelope, existingJobId: null, CancellationToken.None).ConfigureAwait(false);
             }
         }
+        return null;
     }
 
     private async Task<CentralTransientValidationJob?> FindExistingAsync(
@@ -556,6 +617,118 @@ internal sealed class CentralTransientSubmissionService(
                 validation.SubmissionIdentitySha256 == submissionIdentitySha256
                 && validation.Job!.SourceArtifact!.DevicePublicId == devicePublicId, cancellationToken)
             .ConfigureAwait(false);
+
+    private async Task<CentralTransientSubmissionAudit?> FindRetirementAsync(
+        string submissionIdentitySha256,
+        Guid devicePublicId,
+        CancellationToken cancellationToken)
+        => await dbContext.CentralTransientSubmissionAudits.AsNoTracking()
+            .SingleOrDefaultAsync(audit =>
+                audit.DevicePublicId == devicePublicId
+                && audit.ClaimedSubmissionIdentitySha256 == submissionIdentitySha256
+                && audit.ReasonCode == CentralTransientSubmissionReasonCodes.ProfileTransitionRetired,
+                cancellationToken).ConfigureAwait(false);
+
+    private async Task<CentralTransientSubmissionResult> RetireAsync(
+        DeviceRegistration registration,
+        TransientCandidateSubmissionEnvelopeV1 envelope,
+        string payloadSha256,
+        CancellationToken cancellationToken)
+    {
+        var devicePublicId = registration.DevicePublicId!.Value;
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
+        await AcquireSubmissionLocksAsync(envelope, registration.DeviceId, cancellationToken).ConfigureAwait(false);
+
+        var existing = await FindExistingAsync(
+            envelope.SubmissionIdentitySha256, devicePublicId, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return CreateDuplicate(existing, envelope);
+        }
+        var retirement = await FindRetirementAsync(
+            envelope.SubmissionIdentitySha256, devicePublicId, cancellationToken).ConfigureAwait(false);
+        if (retirement is not null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return CreateRetired(retirement, envelope, payloadSha256);
+        }
+
+        var acceptedConflict = await dbContext.CentralTransientValidationIdentitySlots.AsNoTracking()
+            .Where(slot => slot.CandidateId == envelope.CandidateId ||
+                slot.AgentId == registration.DeviceId && slot.SubmittedEventId == envelope.EventId)
+            .Select(slot => (Guid?)slot.CentralDerivativeJobId)
+            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var retiredConflict = await dbContext.CentralTransientSubmissionAudits.AsNoTracking().AnyAsync(audit =>
+            audit.DevicePublicId == devicePublicId
+            && audit.AgentId == registration.DeviceId
+            && audit.ReasonCode == CentralTransientSubmissionReasonCodes.ProfileTransitionRetired
+            && (audit.CandidateId == envelope.CandidateId || audit.EventId == envelope.EventId),
+            cancellationToken).ConfigureAwait(false);
+        if (acceptedConflict is not null || retiredConflict)
+        {
+            await AddAuditAsync(registration, payloadSha256, CentralTransientSubmissionReasonCodes.IdentityConflict,
+                envelope.CandidateId, envelope.EventId, envelope.SubmissionIdentitySha256,
+                acceptedConflict, cancellationToken).ConfigureAwait(false);
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            telemetry.RecordOperation("transient-submit", "rejected");
+            throw new CentralTransientSubmissionRejectedException(
+                CentralTransientSubmissionReasonCodes.IdentityConflict,
+                CentralTransientSubmissionRejectionKind.Conflict);
+        }
+
+        var now = timeProvider.GetUtcNow();
+        dbContext.CentralTransientSubmissionAudits.Add(new CentralTransientSubmissionAudit
+        {
+            DevicePublicId = devicePublicId,
+            AgentId = registration.DeviceId,
+            CandidateId = envelope.CandidateId,
+            EventId = envelope.EventId,
+            ClaimedSubmissionIdentitySha256 = envelope.SubmissionIdentitySha256,
+            PayloadSha256 = payloadSha256,
+            ReasonCode = CentralTransientSubmissionReasonCodes.ProfileTransitionRetired,
+            RecordedAtUtc = now
+        });
+        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        telemetry.RecordOperation("transient-submit", "retired");
+        return new CentralTransientSubmissionResult(
+            null,
+            CreateAcknowledgement(envelope, now, TransientCandidateSubmissionDisposition.Retired));
+    }
+
+    private CentralTransientSubmissionResult CreateRetired(
+        CentralTransientSubmissionAudit retirement,
+        TransientCandidateSubmissionEnvelopeV1 envelope,
+        string payloadSha256)
+    {
+        if (!string.Equals(retirement.AgentId, envelope.Candidate.AgentId, StringComparison.Ordinal)
+            || retirement.CandidateId != envelope.CandidateId
+            || retirement.EventId != envelope.EventId
+            || !string.Equals(retirement.PayloadSha256, payloadSha256, StringComparison.Ordinal)
+            || !string.Equals(retirement.ClaimedSubmissionIdentitySha256,
+                envelope.SubmissionIdentitySha256, StringComparison.Ordinal))
+        {
+            throw new CentralTransientSubmissionRejectedException(
+                CentralTransientSubmissionReasonCodes.IdentityConflict,
+                CentralTransientSubmissionRejectionKind.Conflict);
+        }
+        telemetry.RecordOperation("transient-submit", "retired");
+        return new CentralTransientSubmissionResult(
+            null,
+            CreateAcknowledgement(
+                envelope, retirement.RecordedAtUtc, TransientCandidateSubmissionDisposition.Retired));
+    }
+
+    private static bool HasProfileTransition(ReconstructionDescriptor center, ReconstructionDescriptor future)
+        => !string.Equals(center.Capture.RigId, future.Capture.RigId, StringComparison.Ordinal)
+            || !string.Equals(center.Profiles.Rig.Sha256, future.Profiles.Rig.Sha256, StringComparison.Ordinal)
+            || !string.Equals(center.Profiles.Calibration.Sha256, future.Profiles.Calibration.Sha256, StringComparison.Ordinal)
+            || !string.Equals(center.Profiles.Mask.Sha256, future.Profiles.Mask.Sha256, StringComparison.Ordinal)
+            || !string.Equals(center.Profiles.Sensor.Sha256, future.Profiles.Sensor.Sha256, StringComparison.Ordinal)
+            || !string.Equals(center.Profiles.Processing.Sha256, future.Profiles.Processing.Sha256, StringComparison.Ordinal);
 
     private CentralTransientSubmissionResult CreateDuplicate(
         CentralTransientValidationJob validation,
@@ -735,7 +908,9 @@ internal sealed class CentralTransientSubmissionService(
         DateTimeOffset receivedAtUtc,
         TransientCandidateSubmissionDisposition disposition)
         => new(
-            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
+            disposition == TransientCandidateSubmissionDisposition.Retired
+                ? TransientCandidateSubmissionAcknowledgementV1.RetirementSchemaVersion
+                : TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
             envelope.CandidateId,
             envelope.EventId,
             envelope.SubmissionIdentitySha256,
@@ -778,6 +953,7 @@ internal static class CentralTransientSubmissionReasonCodes
     public const string EvidenceConflict = "hybrid-submission.evidence-conflict";
     public const string EvidenceIntegrity = "hybrid-submission.evidence-integrity";
     public const string EvidenceTimeout = "hybrid-submission.evidence-timeout";
+    public const string ProfileTransitionRetired = "hybrid-submission.profile-transition-retired";
     public const string IdentityConflict = "hybrid-submission.identity-conflict";
     public const string InvalidContract = "hybrid-submission.invalid-contract";
     public const string PayloadTooLarge = "hybrid-submission.payload-too-large";

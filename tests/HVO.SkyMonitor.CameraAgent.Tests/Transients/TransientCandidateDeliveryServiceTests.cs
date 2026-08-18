@@ -71,6 +71,37 @@ public sealed class TransientCandidateDeliveryServiceTests
     }
 
     [TestMethod]
+    public async Task ProfileTransitionRetirementAcknowledgesAndReleasesWithoutQuarantine()
+    {
+        var submission = TransientDeliveryTestData.Submission();
+        var entry = TransientDeliveryTestData.Entry(submission);
+        var retirement = TransientDeliveryTestData.Acknowledgement(
+            submission, TransientCandidateSubmissionDisposition.Retired);
+        var journal = new Mock<ITransientCandidateJournal>(MockBehavior.Strict);
+        SetupPages(journal, [entry]);
+        journal.Setup(value => value.AcknowledgeAsync(
+                submission.CandidateId, submission.EventId, retirement, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(entry with
+            {
+                Phase = TransientCandidateWorkflowPhase.Acknowledged,
+                SourceHoldReleased = true,
+                Acknowledgement = retirement
+            });
+        var transport = new Mock<ITransientCandidateTransport>(MockBehavior.Strict);
+        transport.Setup(value => value.SendAsync(submission, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TransientCandidateTransportResult(
+                TransientCandidateTransportDisposition.Acknowledged, "retired", retirement));
+        var service = CreateService(journal.Object, transport.Object, TimeProvider.System);
+
+        Assert.AreEqual(1, await service.DeliverBatchAsync(CancellationToken.None).ConfigureAwait(false));
+
+        journal.Verify(value => value.AcknowledgeAsync(
+            submission.CandidateId, submission.EventId, retirement, It.IsAny<CancellationToken>()), Times.Once);
+        journal.Verify(value => value.QuarantineDeliveryAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
     public async Task CentralDependencyWaitRemainsHealthyUntilAcknowledged()
     {
         var submission = TransientDeliveryTestData.Submission();
@@ -468,7 +499,8 @@ public sealed class TransientCandidateDeliveryServiceTests
         Assert.IsTrue(samples.Contains(("delivery", "dependency-wait")));
         Assert.IsTrue(samples.All(sample => sample.Stage == "delivery"));
         Assert.IsTrue(samples.All(sample => sample.Outcome is
-            "accepted" or "duplicate" or "dependency-wait" or "retry" or "authentication-blocked" or "rejected" or "scan-failed"));
+            "accepted" or "duplicate" or "retired" or "dependency-wait" or "retry" or "authentication-blocked" or
+                "rejected" or "scan-failed"));
     }
 
     [TestMethod]
