@@ -10,6 +10,245 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
+readonly DEPLOY_CONTRACT_SHARDS=(
+    preflight
+    prepare-images
+    existing-catalog-up
+    bootstrap-authority
+    bootstrap-credentials
+    smoke
+    measure
+    existing-down
+    deploy-services
+)
+
+is_deploy_contract_shard() {
+    local candidate="$1" shard
+    for shard in "${DEPLOY_CONTRACT_SHARDS[@]}"; do
+        [[ "$candidate" != "$shard" ]] || return 0
+    done
+    return 1
+}
+
+run_deploy_contract_shards() {
+    local log_base="${DEPLOY_TEST_LOG_DIR:-$REPO_ROOT/TestResults/deployment-contracts}" log_root=''
+    local started_at=$SECONDS shard pid finished_pid status failed_shard='' failed_status=0
+    local processor_count max_parallel next_index=0 invocation_prefix invocation_candidate attempt
+    local term_grace_seconds="${DEPLOY_TEST_TERM_GRACE_SECONDS:-2}"
+    local -A shard_by_pid=()
+
+    leader_stopped() {
+        local leader_pid="$1" ignored state ignored_rest
+        [[ ! -r "/proc/$leader_pid/stat" ]] && return 0
+        read -r ignored ignored state ignored_rest < "/proc/$leader_pid/stat" || return 0
+        [[ "$state" == Z ]]
+    }
+
+    wait_for_leader_stop() {
+        local leader_pid="$1" poll
+        for ((poll=0; poll<50; poll++)); do
+            leader_stopped "$leader_pid" && return 0
+            sleep 0.1
+        done
+        return 1
+    }
+
+    terminate_running_shards() {
+        local cleanup_pid cleanup_shard
+        for cleanup_pid in "${!shard_by_pid[@]}"; do
+            kill -TERM -- "-$cleanup_pid" 2>/dev/null || true
+        done
+        sleep "$term_grace_seconds"
+        for cleanup_pid in "${!shard_by_pid[@]}"; do
+            if kill -0 -- "-$cleanup_pid" 2>/dev/null; then
+                kill -KILL -- "-$cleanup_pid" 2>/dev/null || true
+            fi
+        done
+        for cleanup_pid in "${!shard_by_pid[@]}"; do
+            cleanup_shard="${shard_by_pid[$cleanup_pid]}"
+            if wait_for_leader_stop "$cleanup_pid"; then
+                wait "$cleanup_pid" 2>/dev/null || true
+            else
+                printf 'Shard process group %s did not stop after KILL.\n' "$cleanup_pid" >> "$log_root/$cleanup_shard.log"
+                disown "$cleanup_pid" 2>/dev/null || true
+            fi
+            [[ -e "$log_root/$cleanup_shard.status" ]] ||
+                printf 'terminated elapsed_seconds=%s\n' "$((SECONDS - started_at))" > "$log_root/$cleanup_shard.status"
+        done
+    }
+
+    mark_queued_shards() {
+        local queued_reason="$1" queued_index queued_shard
+        for ((queued_index=next_index; queued_index<${#DEPLOY_CONTRACT_SHARDS[@]}; queued_index++)); do
+            queued_shard="${DEPLOY_CONTRACT_SHARDS[$queued_index]}"
+            printf 'not-started elapsed_seconds=%s\n' "$((SECONDS - started_at))" > "$log_root/$queued_shard.status"
+            printf 'Shard was not started because %s.\n' "$queued_reason" > "$log_root/$queued_shard.log"
+        done
+    }
+
+    coordinator_cleanup() {
+        trap - INT TERM EXIT
+        terminate_running_shards
+        mark_queued_shards 'the coordinator stopped'
+    }
+
+    start_deploy_contract_shard() {
+        local selected_shard="$1" selected_pid
+        if [[ "${DEPLOY_TEST_COORDINATOR_FAIL_SHARD:-}" == "$selected_shard" ]]; then
+            DEPLOY_TEST_EARLY_FAIL_SHARD="$selected_shard" DEPLOY_TEST_PROCESS_RECORD_DIR="$log_root" \
+                setsid --wait "$0" --shard "$selected_shard" > "$log_root/$selected_shard.log" 2>&1 &
+        else
+            DEPLOY_TEST_PROCESS_RECORD_DIR="$log_root" setsid --wait "$0" --shard "$selected_shard" \
+                > "$log_root/$selected_shard.log" 2>&1 &
+        fi
+        selected_pid=$!
+        shard_by_pid[$selected_pid]="$selected_shard"
+        printf '%s\n' "$selected_pid" > "$log_root/$selected_shard.leader.pid"
+        printf 'Deployment contract shard %s started (pid=%s).\n' "$selected_shard" "$selected_pid"
+    }
+
+    if [[ -n "${DEPLOY_TEST_COORDINATOR_FAIL_SHARD:-}" ]] && ! is_deploy_contract_shard "$DEPLOY_TEST_COORDINATOR_FAIL_SHARD"; then
+        printf 'Unknown injected deployment contract shard: %s\n' "$DEPLOY_TEST_COORDINATOR_FAIL_SHARD" >&2
+        return 2
+    fi
+
+    if [[ -n "${DEPLOY_TEST_COORDINATOR_HANG_SHARD:-}" ]] && ! is_deploy_contract_shard "$DEPLOY_TEST_COORDINATOR_HANG_SHARD"; then
+        printf 'Unknown injected hanging deployment contract shard: %s\n' "$DEPLOY_TEST_COORDINATOR_HANG_SHARD" >&2
+        return 2
+    fi
+
+    [[ "$term_grace_seconds" =~ ^[1-9]$|^10$ ]] || {
+        printf 'DEPLOY_TEST_TERM_GRACE_SECONDS must be an integer from 1 through 10.\n' >&2
+        return 2
+    }
+
+    if [[ -n "${DEPLOY_TEST_MAX_PARALLEL:-}" ]]; then
+        [[ "$DEPLOY_TEST_MAX_PARALLEL" =~ ^[1-8]$ ]] || {
+            printf 'DEPLOY_TEST_MAX_PARALLEL must be an integer from 1 through 8.\n' >&2
+            return 2
+        }
+        max_parallel="$DEPLOY_TEST_MAX_PARALLEL"
+    else
+        processor_count="$(nproc)"
+        max_parallel="${#DEPLOY_CONTRACT_SHARDS[@]}"
+        (( max_parallel <= processor_count )) || max_parallel="$processor_count"
+        (( max_parallel <= 8 )) || max_parallel=8
+        (( max_parallel >= 1 )) || max_parallel=1
+    fi
+
+    mkdir -p "$log_base"
+    if [[ "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ && "${GITHUB_RUN_ATTEMPT:-}" =~ ^[0-9]+$ ]]; then
+        invocation_prefix="github-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
+    else
+        invocation_prefix=local
+    fi
+    for ((attempt=0; attempt<10; attempt++)); do
+        invocation_candidate="$log_base/$invocation_prefix-$(date -u +%Y%m%dT%H%M%S%N)-$$-$RANDOM"
+        if mkdir -m 700 "$invocation_candidate" 2>/dev/null; then
+            log_root="$invocation_candidate"
+            break
+        fi
+    done
+    [[ -n "$log_root" ]] || { printf 'Could not allocate a unique deployment contract log directory.\n' >&2; return 2; }
+
+    printf 'Running %s deployment contract shards with at most %s workers.\n' "${#DEPLOY_CONTRACT_SHARDS[@]}" "$max_parallel"
+    trap 'coordinator_cleanup; exit 130' INT
+    trap 'coordinator_cleanup; exit 143' TERM
+    trap coordinator_cleanup EXIT
+    while (( next_index < ${#DEPLOY_CONTRACT_SHARDS[@]} && ${#shard_by_pid[@]} < max_parallel )); do
+        start_deploy_contract_shard "${DEPLOY_CONTRACT_SHARDS[$next_index]}"
+        ((next_index+=1))
+    done
+    while (( ${#shard_by_pid[@]} > 0 )); do
+        if wait -n -p finished_pid; then status=0; else status=$?; fi
+        shard="${shard_by_pid[$finished_pid]}"
+        unset 'shard_by_pid[$finished_pid]'
+        printf '%s elapsed_seconds=%s\n' "$([[ "$status" -eq 0 ]] && printf passed || printf failed)" "$((SECONDS - started_at))" > "$log_root/$shard.status"
+        printf 'Deployment contract shard %s %s after %ss.\n' "$shard" "$([[ "$status" -eq 0 ]] && printf completed || printf failed)" "$((SECONDS - started_at))"
+        if (( status != 0 )); then
+            failed_shard="$shard"
+            failed_status=$status
+            shard_by_pid[$finished_pid]="$shard"
+            break
+        fi
+        while (( next_index < ${#DEPLOY_CONTRACT_SHARDS[@]} && ${#shard_by_pid[@]} < max_parallel )); do
+            start_deploy_contract_shard "${DEPLOY_CONTRACT_SHARDS[$next_index]}"
+            ((next_index+=1))
+        done
+    done
+
+    if [[ -n "$failed_shard" ]]; then
+        terminate_running_shards
+        mark_queued_shards 'another shard failed'
+        shard_by_pid=()
+        trap - INT TERM EXIT
+        printf '%s\n' "===== failed deployment contract shard: $failed_shard =====" >&2
+        cat "$log_root/$failed_shard.log" >&2
+        printf 'Deployment contract shards failed after %ss; logs: %s\n' "$((SECONDS - started_at))" "$log_root" >&2
+        return "$failed_status"
+    fi
+
+    trap - INT TERM EXIT
+    printf 'All deployment contract shards completed in %ss; logs: %s\n' "$((SECONDS - started_at))" "$log_root"
+}
+
+SELECTED_SHARD=all
+case "${1:-}" in
+    '')
+        (( $# == 0 )) || { printf 'Unexpected deployment contract arguments.\n' >&2; exit 2; }
+        ;;
+    --list-shards)
+        (( $# == 1 )) || { printf '%s accepts no additional arguments.\n' "$1" >&2; exit 2; }
+        printf '%s\n' "${DEPLOY_CONTRACT_SHARDS[@]}"
+        exit 0
+        ;;
+    --parallel)
+        (( $# == 1 )) || { printf '%s accepts no additional arguments.\n' "$1" >&2; exit 2; }
+        run_deploy_contract_shards
+        exit $?
+        ;;
+    --shard)
+        (( $# == 2 )) || { printf '%s requires exactly one shard name.\n' "$1" >&2; exit 2; }
+        is_deploy_contract_shard "$2" || { printf 'Unknown deployment contract shard: %s\n' "$2" >&2; exit 2; }
+        SELECTED_SHARD="$2"
+        ;;
+    *)
+        printf 'Unknown deployment contract argument: %s\n' "$1" >&2
+        exit 2
+        ;;
+esac
+readonly SELECTED_SHARD
+
+if [[ -n "${DEPLOY_TEST_EARLY_FAIL_SHARD:-}" ]]; then
+    [[ "$DEPLOY_TEST_EARLY_FAIL_SHARD" == "$SELECTED_SHARD" ]] || {
+        printf 'Invalid deployment contract early-failure request.\n' >&2
+        exit 2
+    }
+    if [[ -n "${DEPLOY_TEST_EARLY_FAIL_DELAY_SECONDS:-}" ]]; then
+        [[ "$DEPLOY_TEST_EARLY_FAIL_DELAY_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+            printf 'Invalid deployment contract early-failure delay.\n' >&2
+            exit 2
+        }
+        sleep "$DEPLOY_TEST_EARLY_FAIL_DELAY_SECONDS"
+    fi
+    printf 'Injected early failure for deployment contract shard %s.\n' "$SELECTED_SHARD" >&2
+    exit 97
+fi
+
+if [[ -n "${DEPLOY_TEST_COORDINATOR_HANG_SHARD:-}" && "$DEPLOY_TEST_COORDINATOR_HANG_SHARD" == "$SELECTED_SHARD" ]]; then
+    [[ -n "${DEPLOY_TEST_PROCESS_RECORD_DIR:-}" && -d "$DEPLOY_TEST_PROCESS_RECORD_DIR" ]] || {
+        printf 'Missing deployment contract process-record directory.\n' >&2
+        exit 2
+    }
+    bash -c 'trap "" TERM; printf "%s\n" "$BASHPID" > "${DEPLOY_TEST_PROCESS_RECORD_DIR:?}/$1.descendant.pid"; while true; do sleep 60; done' \
+        _ "$SELECTED_SHARD"
+    exit 98
+fi
+
+shard_enabled() {
+    [[ "$SELECTED_SHARD" == all || "$SELECTED_SHARD" == "$1" ]]
+}
+
 TEMP_DIR="$(mktemp -d -t hvo-deploy-test.XXXXXX)"
 readonly TEMP_DIR
 readonly BIN="$TEMP_DIR/bin"
@@ -34,7 +273,21 @@ readonly REAL_GIT
 SERVER_PID=""
 
 cleanup() {
-    [[ -z "$SERVER_PID" ]] || kill "$SERVER_PID" 2>/dev/null || true
+    if [[ -n "$SERVER_PID" ]]; then
+        local cleanup_poll ignored state ignored_rest
+        kill "$SERVER_PID" 2>/dev/null || true
+        for ((cleanup_poll=0; cleanup_poll<20; cleanup_poll++)); do
+            [[ -r "/proc/$SERVER_PID/stat" ]] || break
+            read -r ignored ignored state ignored_rest < "/proc/$SERVER_PID/stat" || break
+            [[ "$state" == Z ]] && break
+            sleep 0.1
+        done
+        if [[ -r "/proc/$SERVER_PID/stat" ]]; then
+            read -r ignored ignored state ignored_rest < "/proc/$SERVER_PID/stat" || state=''
+            [[ "$state" == Z ]] || kill -KILL "$SERVER_PID" 2>/dev/null || true
+        fi
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
     rm -rf "$TEMP_DIR"
 }
 trap cleanup EXIT
@@ -833,6 +1086,7 @@ FAKE_ARTIFACT_BYTES="$(printf 'fixture-artifact-content' | wc -c)"
 FAKE_RAW_ARTIFACT_SHA="$(printf 'R%.0s' {1..6144} | sha256sum | cut -d' ' -f1)"
 FAKE_RIG_HASH="$(printf 'A%.0s' {1..64})"
 export FAKE_ARTIFACT_SHA FAKE_ARTIFACT_BYTES FAKE_RAW_ARTIFACT_SHA FAKE_RIG_HASH
+if shard_enabled preflight; then
 legacy_login_status="$(FAKE_REMOTE_HOST=east PATH="$REMOTE_BIN" curl --silent --location --request POST \
   --output "$TEMP_DIR/legacy-login.out" --write-out '%{http_code}' --cookie-jar "$TEMP_DIR/legacy.cookies" \
   --data-urlencode 'Input.Email=owner@example.test' 'http://127.0.0.1/Account/Login')"
@@ -891,6 +1145,7 @@ rm -f "$TEMP_DIR/legacy-login.out" "$TEMP_DIR/legacy.cookies"
   if PATH="$BIN:$PATH" FAKE_DOCKER_INSPECT_OUTAGE=shared-context-volume deploy_transport_require_volume_absent shared-context absent-volume; then exit 92; fi
   if PATH="$BIN:$PATH" FAKE_DOCKER_INSPECT_OUTAGE=shared-context-network deploy_transport_require_network_absent shared-context absent-network; then exit 93; fi
 )
+fi
 
 # shellcheck disable=SC2016 # The literal shell syntax verifies secrets are never evaluated.
 printf 'SQL_PASSWORD=fixture-secret-never-print\nMINIO_ROOT_ACCESS=fixture-minio-root\nMINIO_ROOT_SECRET=fixture:/@"minio-root-never-print\nOWNER_API_KEY=owner-api-key-never-print\nEAST_PASSWORD=east-owner-never-print\nWEST_PASSWORD=west-owner-never-print\nOAUTH_SECRET=malicious-$(touch /tmp/must-not-run)-never-print\n' > "$SECRET_FILE"
@@ -1072,10 +1327,13 @@ expect_persistent_invalid() {
     grep -Fq "$expected" "$TEMP_DIR/failure.log" || fail "Persistent rejection was not bounded: $run_id"
 }
 
-bash -n "$REPO_ROOT/scripts/deploy:environment" "$REPO_ROOT/scripts/deploy/"*.sh "$REPO_ROOT/scripts/test:deploy-environment" \
-  "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$REPO_ROOT/deploy/split-host/provision-minio.sh"
+if shard_enabled preflight; then
+  bash -n "$REPO_ROOT/scripts/deploy:environment" "$REPO_ROOT/scripts/deploy/"*.sh "$REPO_ROOT/scripts/test:deploy-environment" \
+    "$REPO_ROOT/deploy/split-host/provision-sql.sh" "$REPO_ROOT/deploy/split-host/provision-minio.sh"
+fi
 write_inventory
 
+if shard_enabled preflight; then
 # A tampered registry path outside the approved upload subtree is rejected without deleting it.
 tampered_state="$TEMP_DIR/output/tampered-upload-state"; tampered_evidence="$TEMP_DIR/output/tampered-upload-evidence"
 mkdir -p "$tampered_state" "$tampered_evidence"; chmod 700 "$tampered_state" "$tampered_evidence"
@@ -1506,7 +1764,9 @@ cp "$TEMP_DIR/output/corrupt-manifest-evidence/preflight.json" "$TEMP_DIR/corrup
 printf 'not-json\n' > "$TEMP_DIR/output/corrupt-manifest-state/manifest.json"
 expect_failure 'invalid-existing-manifest' corrupt-manifest
 cmp -s "$TEMP_DIR/corrupt-manifest.evidence" "$TEMP_DIR/output/corrupt-manifest-evidence/preflight.json" || fail 'Corrupt manifest invocation changed prior evidence.'
+fi
 
+if shard_enabled prepare-images; then
 # Prepare requires the exact passed preflight and mutates only declared roots/control metadata.
 mkdir -m 700 "$TEMP_DIR/remote/prepare-logic" "$TEMP_DIR/remote/prepare-east" "$TEMP_DIR/remote/prepare-west"
 jq --arg base "$TEMP_DIR/remote" --arg owner "$(id -un)" '
@@ -1913,47 +2173,86 @@ fi
 if grep -R -Eq 'logic-machine|east-machine|west-machine' "$TEMP_DIR/output"/*-evidence/prepare.json 2>/dev/null; then
     fail 'Sanitized prepare evidence exposed machine identity.'
 fi
-
-# Catalog and up execute against fake remote hosts without trusting prior phase state.
-if grep -Eq 'build-hyg-v42|bundle-hyg-v42' "$REPO_ROOT/scripts/deploy/catalog.sh"; then
-  fail 'Catalog deployment invokes a production catalog builder.'
 fi
-deploy_case=deploy-up
-bundle="$TEMP_DIR/catalog-bundle"
-install_root="$TEMP_DIR/catalog-install"
-mkdir -m 700 "$bundle"
-cp "$REPO_ROOT/tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" "$bundle/hyg_v42.sqlite"
-catalog_sha="$(sha256sum "$bundle/hyg_v42.sqlite" | cut -d' ' -f1)"
-catalog_length="$(wc -c < "$bundle/hyg_v42.sqlite")"
-jq -n --arg sha "$catalog_sha" --argjson length "$catalog_length" '{manifestVersion:1,
-  package:{kind:"fixture",version:"fixture-v1"},catalog:{name:"HYG bright-star test fixture",version:"4.2-fixture.1"},
-  schemaVersion:"2",preprocessingVersion:"3",database:{relativePath:"hyg_v42.sqlite",sha256:$sha,length:$length,rowCount:9}}' > "$bundle/manifest.json"
-printf 'certificate-fixture\n' > "$TEMP_DIR/signing.pfx"
-printf 'certificate-fixture\n' > "$TEMP_DIR/encryption.pfx"
-chmod 600 "$TEMP_DIR/signing.pfx" "$TEMP_DIR/encryption.pfx"
-jq --arg root "$TEMP_DIR/remote/$deploy_case" --arg bundle "$bundle" --arg install "$install_root" --arg endpoint "http://127.0.0.1:$HTTP_PORT" \
-  --arg public "https://public.example.test:$HTTP_PORT" \
-  --arg signing "$TEMP_DIR/signing.pfx" --arg encryption "$TEMP_DIR/encryption.pfx" --arg sha "$catalog_sha" \
-  --argjson port "$HTTP_PORT" --argjson length "$catalog_length" '
-  .catalog={kind:"fixture",version:"fixture-v1",sha256:$sha,length:$length,rowCount:9} |
-  .deployment.catalog={bundlePath:$bundle,installRoot:$install,allowFixture:true} |
-  .deployment.services.sql.database="hvo-deploy-up" | .deployment.resources.sqlDatabase="hvo-deploy-up" |
-  .deployment.services.redis.prefix="hvo-deploy-up:" | .deployment.resources.redisPrefix="hvo-deploy-up:" |
-  .deployment.services.minio.artifactBucket="hvo-deploy-up-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-up-artifacts" |
-  .deployment.services.minio.diagnosticsBucket="hvo-deploy-up-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-up-diagnostics" |
-  .deployment.resources.project="hvo-deploy-up" |
-  .deployment.certificates.signingPath=$signing | .deployment.certificates.encryptionPath=$encryption |
-  .logicHost.runtimeRoot=($root+"-logic/runtime") | .logicHost.internalEndpoint=$endpoint | .logicHost.publicEndpoint=$public | .logicHost.trustedProxyAddresses=["127.0.0.1"] | .logicHost.ports=[$port] |
-  (.cameraAgents[0].runtimeRoot)=($root+"-east/runtime") | (.cameraAgents[0].internalEndpoint)=$endpoint | (.cameraAgents[0].publicEndpoint)=$public | (.cameraAgents[0].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[0].ports)=[$port] |
-  (.cameraAgents[1].runtimeRoot)=($root+"-west/runtime") | (.cameraAgents[1].internalEndpoint)=$endpoint | (.cameraAgents[1].publicEndpoint)=$public | (.cameraAgents[1].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[1].ports)=[$port] |
-  (.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.minio.port,.deployment.services.smtp.ports[0])=$port |
-  .serviceEndpoints=[{name:"test-service",host:"127.0.0.1",port:$port,fromTargets:["logic","east","west"]}]' \
-  "$BASE_INVENTORY" > "$INVENTORY"
-mkdir -m 700 "$TEMP_DIR/remote/$deploy_case-logic" "$TEMP_DIR/remote/$deploy_case-east" "$TEMP_DIR/remote/$deploy_case-west"
-run_deploy_mode preflight "$deploy_case" isolated >/dev/null
-run_deploy_mode prepare "$deploy_case" isolated >/dev/null
-rm -f "$FAKE_IMAGE_STATE"/*.pushed "$FAKE_IMAGE_STATE"/*.platforms "$FAKE_IMAGE_STATE"/*.labels "$FAKE_IMAGE_STATE"/*.reference "$FAKE_IMAGE_STATE"/*.config
-run_deploy_mode images "$deploy_case" isolated >/dev/null
+
+prepare_lifecycle_fixture() {
+  deploy_case=deploy-up
+  bundle="$TEMP_DIR/catalog-bundle"
+  install_root="$TEMP_DIR/catalog-install"
+  mkdir -m 700 "$bundle"
+  cp "$REPO_ROOT/tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" "$bundle/hyg_v42.sqlite"
+  catalog_sha="$(sha256sum "$bundle/hyg_v42.sqlite" | cut -d' ' -f1)"
+  catalog_length="$(wc -c < "$bundle/hyg_v42.sqlite")"
+  jq -n --arg sha "$catalog_sha" --argjson length "$catalog_length" '{manifestVersion:1,
+    package:{kind:"fixture",version:"fixture-v1"},catalog:{name:"HYG bright-star test fixture",version:"4.2-fixture.1"},
+    schemaVersion:"2",preprocessingVersion:"3",database:{relativePath:"hyg_v42.sqlite",sha256:$sha,length:$length,rowCount:9}}' > "$bundle/manifest.json"
+  printf 'certificate-fixture\n' > "$TEMP_DIR/signing.pfx"
+  printf 'certificate-fixture\n' > "$TEMP_DIR/encryption.pfx"
+  chmod 600 "$TEMP_DIR/signing.pfx" "$TEMP_DIR/encryption.pfx"
+  jq --arg root "$TEMP_DIR/remote/$deploy_case" --arg bundle "$bundle" --arg install "$install_root" --arg endpoint "http://127.0.0.1:$HTTP_PORT" \
+    --arg public "https://public.example.test:$HTTP_PORT" \
+    --arg signing "$TEMP_DIR/signing.pfx" --arg encryption "$TEMP_DIR/encryption.pfx" --arg sha "$catalog_sha" \
+    --argjson port "$HTTP_PORT" --argjson length "$catalog_length" '
+    .catalog={kind:"fixture",version:"fixture-v1",sha256:$sha,length:$length,rowCount:9} |
+    .deployment.catalog={bundlePath:$bundle,installRoot:$install,allowFixture:true} |
+    .deployment.services.sql.database="hvo-deploy-up" | .deployment.resources.sqlDatabase="hvo-deploy-up" |
+    .deployment.services.redis.prefix="hvo-deploy-up:" | .deployment.resources.redisPrefix="hvo-deploy-up:" |
+    .deployment.services.minio.artifactBucket="hvo-deploy-up-artifacts" | .deployment.resources.artifactBucket="hvo-deploy-up-artifacts" |
+    .deployment.services.minio.diagnosticsBucket="hvo-deploy-up-diagnostics" | .deployment.resources.diagnosticsBucket="hvo-deploy-up-diagnostics" |
+    .deployment.resources.project="hvo-deploy-up" |
+    .deployment.certificates.signingPath=$signing | .deployment.certificates.encryptionPath=$encryption |
+    .logicHost.runtimeRoot=($root+"-logic/runtime") | .logicHost.internalEndpoint=$endpoint | .logicHost.publicEndpoint=$public | .logicHost.trustedProxyAddresses=["127.0.0.1"] | .logicHost.ports=[$port] |
+    (.cameraAgents[0].runtimeRoot)=($root+"-east/runtime") | (.cameraAgents[0].internalEndpoint)=$endpoint | (.cameraAgents[0].publicEndpoint)=$public | (.cameraAgents[0].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[0].ports)=[$port] |
+    (.cameraAgents[1].runtimeRoot)=($root+"-west/runtime") | (.cameraAgents[1].internalEndpoint)=$endpoint | (.cameraAgents[1].publicEndpoint)=$public | (.cameraAgents[1].trustedProxyAddresses)=["127.0.0.1"] | (.cameraAgents[1].ports)=[$port] |
+    (.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.minio.port,.deployment.services.smtp.ports[0])=$port |
+    .serviceEndpoints=[{name:"test-service",host:"127.0.0.1",port:$port,fromTargets:["logic","east","west"]}]' \
+    "$BASE_INVENTORY" > "$INVENTORY"
+  mkdir -m 700 "$TEMP_DIR/remote/$deploy_case-logic" "$TEMP_DIR/remote/$deploy_case-east" "$TEMP_DIR/remote/$deploy_case-west"
+}
+
+set_lifecycle_paths() {
+  logic_config="$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/up-$deploy_case"
+  east_config="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/up-$deploy_case"
+  bootstrap_state="$TEMP_DIR/output/$deploy_case-state"
+  bootstrap_rendered="$bootstrap_state/bootstrap-rendered"
+  bootstrap_private="$bootstrap_state/bootstrap-private"
+  logic_private="$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/bootstrap-$deploy_case"
+  east_private="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/bootstrap-$deploy_case"
+}
+
+stage_lifecycle_images() {
+  prepare_lifecycle_fixture
+  run_deploy_mode preflight "$deploy_case" isolated >/dev/null
+  run_deploy_mode prepare "$deploy_case" isolated >/dev/null
+  rm -f "$FAKE_IMAGE_STATE"/*.pushed "$FAKE_IMAGE_STATE"/*.platforms "$FAKE_IMAGE_STATE"/*.labels "$FAKE_IMAGE_STATE"/*.reference "$FAKE_IMAGE_STATE"/*.config
+  run_deploy_mode images "$deploy_case" isolated >/dev/null
+}
+
+stage_lifecycle_up() {
+  stage_lifecycle_images
+  run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+  run_deploy_mode up "$deploy_case" isolated >/dev/null
+  set_lifecycle_paths
+}
+
+stage_lifecycle_bootstrap() {
+  stage_lifecycle_up
+  run_deploy_mode bootstrap "$deploy_case" isolated >/dev/null
+  set_lifecycle_paths
+}
+
+stage_lifecycle_smoke() {
+  stage_lifecycle_bootstrap
+  run_deploy_mode smoke "$deploy_case" isolated >/dev/null
+  set_lifecycle_paths
+}
+
+if shard_enabled existing-catalog-up; then
+  # Catalog and up execute against fake remote hosts without trusting prior phase state.
+  if grep -Eq 'build-hyg-v42|bundle-hyg-v42' "$REPO_ROOT/scripts/deploy/catalog.sh"; then
+    fail 'Catalog deployment invokes a production catalog builder.'
+  fi
+  stage_lifecycle_images
 
 # Fixture manifest identity and shape mismatches fail before SSH, SCP, or installation.
 cp "$bundle/manifest.json" "$TEMP_DIR/fixture-manifest.valid"
@@ -2047,7 +2346,10 @@ if grep -R -Fq 'fixture-secret-never-print' "$TEMP_DIR/output/$deploy_case-evide
 grep -Fq $'compose\t--project-name\thvo-deploy-up-logic' "$LOG"
 grep -Fq $'east@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
 grep -Fq $'west@example\tbash\t-s\t--\thttps://public.example.test:' "$LOG"
+fi
 
+if shard_enabled bootstrap-authority; then
+if [[ "$SELECTED_SHARD" == bootstrap-authority ]]; then stage_lifecycle_up; fi
 # Registry publication is a hard barrier for every bootstrap credential destination.
 bootstrap_state="$TEMP_DIR/output/$deploy_case-state"
 bootstrap_rendered="$bootstrap_state/bootstrap-rendered"
@@ -2138,6 +2440,10 @@ test "$(<"$east_config/secrets/LocalIdentity__AllowMissingAdminPassword")" = tru
 test ! -e "$TEMP_DIR/output/$deploy_case-state/bootstrap-private/east-envelope.json"
 test -f "$FAKE_HTTP_STATE/device-east.recovered"
 (( $(<"$FAKE_HTTP_STATE/envelope-count") >= 3 )) || fail 'Active recovery reused the retained pre-recovery envelope.'
+fi
+
+if shard_enabled bootstrap-credentials; then
+if [[ "$SELECTED_SHARD" == bootstrap-credentials ]]; then stage_lifecycle_bootstrap; fi
 # Every owner/central credential destination is target-bound before creation, and an interrupted run is strictly reconciled.
 bootstrap_state="$TEMP_DIR/output/$deploy_case-state"
 while IFS=$'\t' read -r credential_failpoint credential_target credential_path credential_exists; do
@@ -2228,6 +2534,10 @@ for credential in \
   "$TEMP_DIR/remote/$deploy_case-logic/runtime/.hvo-deploy/bootstrap-$deploy_case/owner.headers"; do
   test ! -e "$credential"
 done
+fi
+
+if shard_enabled smoke; then
+if [[ "$SELECTED_SHARD" == smoke ]]; then stage_lifecycle_bootstrap; fi
 FAKE_SLOW_FIRST_AGENT=true FAKE_CAPTURE_TELEMETRY_EMPTY=true run_deploy_mode smoke "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and .workload.kind == "W0" and (.targets | length) == 2 and all(.targets[];
   .status == "passed" and .captureSequence.localAfter > .captureSequence.localBefore and
@@ -2303,6 +2613,10 @@ jq -e 'all(.targets[]; .checks.artifactHashProof and .checks.traces and .checks.
 exercise_phase_publication_recovery smoke "$deploy_case"
 exercise_phase_tampered_publication_rejection smoke "$deploy_case"
 exercise_phase_orphan_rejection smoke "$deploy_case"
+fi
+
+if shard_enabled measure; then
+if [[ "$SELECTED_SHARD" == measure ]]; then stage_lifecycle_smoke; fi
 measure_cleanup="$(jq -r '.cameraAgents[] | select(.name=="east") | .runtimeRoot' "$INVENTORY")/.hvo-deploy/measure-$deploy_case/owner.cookies"
 mkdir -p "${measure_cleanup%/*}"; printf 'retained-credential\n' > "$measure_cleanup"; chmod 600 "$measure_cleanup"
 jq -cn --arg path "$measure_cleanup" --argjson target "$(jq -c '.cameraAgents[] | select(.name=="east")' "$INVENTORY")" \
@@ -2488,7 +2802,10 @@ exercise_phase_tampered_publication_rejection measure "$deploy_case" --workload 
 exercise_phase_orphan_rejection measure "$deploy_case" --workload W1
 if grep -R -Eq 'owner-api-key-never-print|east-owner-never-print|west-owner-never-print|fixture-envelope-[0-9]+-never-print|VERIFY1234' \
   "$TEMP_DIR/output/$deploy_case-evidence" "$LOG"; then fail 'Bootstrap or smoke logs/evidence exposed private provisioning material.'; fi
+fi
 
+if shard_enabled existing-down; then
+if [[ "$SELECTED_SHARD" == existing-down ]]; then stage_lifecycle_bootstrap; fi
 # Teardown rejects deletion of existing services before mutation and supports an explicit preserve stop.
 down_upload_root="$TEMP_DIR/remote/$deploy_case-east/runtime/.hvo-deploy/uploads"; mkdir -p "$down_upload_root"; chmod 700 "$down_upload_root"
 down_upload="$down_upload_root/hvo-upload-down-123-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp"
@@ -2563,7 +2880,10 @@ if run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/up-failure.log" 2>&1;
 grep -Fq 'images-authority' "$TEMP_DIR/up-failure.log"
 cp "$TEMP_DIR/images.valid.json" "$TEMP_DIR/output/$deploy_case-evidence/images.json"
 jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null
+fi
 
+if shard_enabled deploy-services; then
+if [[ "$SELECTED_SHARD" == deploy-services ]]; then prepare_lifecycle_fixture; fi
 # Deploy-mode services use the declared shared SSH/Docker target and preserve partial progress on failure.
 deploy_services=deploy-services
 jq --arg root "$TEMP_DIR/remote/$deploy_services" --arg endpoint "http://127.0.0.1:$HTTP_PORT" --arg owner "$(id -un)" --argjson port "$HTTP_PORT" '
@@ -2785,4 +3105,10 @@ test ! -e "$TEMP_DIR/output/interrupted-evidence/preflight.json"
 run_deploy interrupted >/dev/null
 
 if grep -Eq '(^|[[:space:]])(build|load|up|start|stop|down|compose[[:space:]]+up|compose[[:space:]]+down)([[:space:]]|$)' "$LOG"; then fail 'Preflight invoked deployment mutation.'; fi
-printf 'Split-host deployment contract passed.\n'
+fi
+
+if [[ "$SELECTED_SHARD" == all ]]; then
+  printf 'Split-host deployment contract passed.\n'
+else
+  printf 'Split-host deployment contract shard %s passed.\n' "$SELECTED_SHARD"
+fi
