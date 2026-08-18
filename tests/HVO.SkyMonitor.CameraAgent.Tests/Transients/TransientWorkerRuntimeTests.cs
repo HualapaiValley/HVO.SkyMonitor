@@ -245,6 +245,74 @@ public sealed class TransientWorkerRuntimeTests
     }
 
     [TestMethod]
+    public async Task Hybrid_BacklogProjectsActiveCentersAcrossDurableLayers()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-active-centers", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root);
+            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
+            var cameraConfiguration = CreateConfiguration();
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
+            await StageVirtualFramesAsync(provider, cameraConfiguration, epoch, 6).ConfigureAwait(false);
+
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            using (var command = connection.CreateCommand())
+            {
+                var candidateId = Guid.NewGuid().ToString("N");
+                var eventId = Guid.NewGuid().ToString("N");
+                command.CommandText = """
+                    UPDATE transient_capture_work
+                    SET state = 'completed'
+                    WHERE raw_capture_row_id IN (
+                        SELECT raw_capture_row_id FROM raw_captures WHERE capture_sequence < 6);
+                    UPDATE capture_lane_work
+                    SET state = 'pending'
+                    WHERE lane_name = 'transient' AND capture_sequence = 5;
+                    INSERT INTO transient_event_identities(event_id, agent_id, created_unix_ms)
+                    VALUES ($event, 'transient-runtime-agent', 1);
+                    INSERT INTO transient_candidates(
+                        candidate_id, event_id, agent_id, mode, required, reservation_identity_sha256,
+                        state, phase, source_hold_released, timeout_unix_ms, created_unix_ms, updated_unix_ms)
+                    VALUES ($candidate, $event, 'transient-runtime-agent', 'hybrid', 1, $identity,
+                        'pending', 'handoff_pending', 0, 2, 1, 1);
+                    INSERT INTO transient_candidate_sources(
+                        candidate_id, source_ordinal, evidence_id, raw_capture_row_id,
+                        source_schema, locator_schema, locator_kind, artifact_id, artifact_role,
+                        artifact_variant, recipe_identity_sha256, checksum_sha256,
+                        observation_started_utc_ticks, observation_ended_utc_ticks,
+                        timing_quality, timing_source, timing_version)
+                    SELECT $candidate, capture_sequence - 2, 'evidence-' || capture_sequence, raw_capture_row_id,
+                           'source-v1', 'locator-v1', 0, raw_artifact_id, 0,
+                           'source', $identity, payload_sha256,
+                           capture_sequence, capture_sequence, 0, 'test', '1'
+                    FROM raw_captures WHERE capture_sequence BETWEEN 2 AND 4;
+                    """;
+                command.Parameters.AddWithValue("$candidate", candidateId);
+                command.Parameters.AddWithValue("$event", eventId);
+                command.Parameters.AddWithValue("$identity", new string('A', 64));
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            var backlog = (await provider.GetRequiredService<ICaptureLaneStore>()
+                .ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
+                .Single(static lane => lane.Lane == "transient");
+            var pendingCaptures = backlog.PendingCaptures
+                ?? throw new AssertFailedException("Transient pending capture identities are required.");
+            Assert.AreEqual(3L, backlog.PendingCount);
+            CollectionAssert.AreEqual(
+                new long[] { 4, 5, 6 },
+                pendingCaptures.Select(static capture => capture.CaptureSequence).ToArray());
+            Assert.IsTrue(pendingCaptures.All(static capture =>
+                capture.AgentId == "transient-runtime-agent"));
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
     public void Edge_OnlySceneContentLimitsCompleteWithoutQuarantine()
     {
         static TransientCandidateExtractionOutcome Outcome(string reason, string field) => new(

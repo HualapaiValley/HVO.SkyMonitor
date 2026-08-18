@@ -650,7 +650,7 @@ if [[ "$url" == */api/v1/operations/summary ]]; then
       rawIngress:{value:(queue + {availability:"Accepting"})},captureLanes:{value:{availability:"Healthy",lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,
          leasedCount:$leased,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]}],pendingCount:0,pendingBytes:0,leasedCount:$leased,retryCount:0,quarantineCount:0,oldestPendingUtc:null}},
        captureProcessing:{value:(queue + {availability:$processingAvailability,terminalCount:$processingTerminal})},artifactOutbox:{value:(queue + {availability:"Healthy"})},
-      transientWorker:{value:{availability:"Disabled",pendingFrames:0,pendingCandidates:0}},heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}}' > "$output"
+      transientWorker:{value:{availability:"Disabled",pendingFrames:0,pendingCandidates:0,maximumCandidates:32}},heartbeat:{value:{lastAcknowledgedUtc:"2026-08-07T00:01:00Z"}}}' > "$output"
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operations/capture/resume ]]; then
@@ -2408,40 +2408,43 @@ printf '%s\n' '{"captureLanes":{"value":{"availability":"Healthy","lanes":[{"nam
   test "$(deploy_measure_unrecoverable_queue_reason "$measure_sequence_operations")" = transient-worker-unavailable
 )
 measure_tail_operations="$TEMP_DIR/measure-tail-operations.json"
-printf '%s\n' '{"rawIngress":{"value":{"availability":"Accepting","pendingCount":6,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"captureLanes":{"value":{"availability":"Healthy","pendingCount":10,"leasedCount":0,"retryCount":0,"quarantineCount":0,"lanes":[{"name":"standard","required":true,"pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[]},{"name":"transient","required":true,"pendingCount":10,"leasedCount":0,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[{"agentId":"device-east","captureSequence":4},{"agentId":"device-east","captureSequence":5}]}]}},"captureProcessing":{"value":{"availability":"Healthy","pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"artifactOutbox":{"value":{"availability":"Healthy","pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"transientWorker":{"value":{"availability":"Healthy","pendingFrames":0,"pendingCandidates":0}}}' > "$measure_tail_operations"
+printf '%s\n' '{"rawIngress":{"value":{"availability":"Accepting","pendingCount":6,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"captureLanes":{"value":{"availability":"Healthy","pendingCount":10,"leasedCount":0,"retryCount":0,"quarantineCount":0,"lanes":[{"name":"standard","required":true,"pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[]},{"name":"transient","required":true,"pendingCount":10,"leasedCount":0,"retryCount":0,"quarantineCount":0,"pressureLevel":0,"pendingCaptures":[{"agentId":"device-east","captureSequence":4},{"agentId":"device-east","captureSequence":5}]}]}},"captureProcessing":{"value":{"availability":"Healthy","pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"artifactOutbox":{"value":{"availability":"Healthy","pendingCount":0,"leasedCount":0,"retryCount":0,"quarantineCount":0,"terminalCount":0}},"transientWorker":{"value":{"availability":"Healthy","pendingFrames":0,"pendingCandidates":0,"maximumCandidates":32}}}' > "$measure_tail_operations"
 (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east)
+jq '.captureLanes.value.pendingCount=8 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=8 else . end' \
+  "$measure_tail_operations" > "$measure_tail_operations.changed"
+(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east)
 jq '.rawIngress.value.pendingCount=2 | .captureLanes.value.pendingCount=2 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=2 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-mv "$measure_tail_operations.changed" "$measure_tail_operations"
-(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east)
+(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east)
 jq '.rawIngress.value.pendingCount=3 | .captureLanes.value.pendingCount=3 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=3 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-mv "$measure_tail_operations.changed" "$measure_tail_operations"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
-  fail 'Measure accepted an intermediate record count that could hide stale work.'
-fi
-jq '.rawIngress.value.pendingCount=6 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=11 else . end | .captureLanes.value.pendingCount=11' \
+(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east)
+jq '.captureLanes.value.pendingCount=66 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=66 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-mv "$measure_tail_operations.changed" "$measure_tail_operations"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
+(source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east)
+jq '.captureLanes.value.pendingCount=67 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=67 else . end' \
+  "$measure_tail_operations" > "$measure_tail_operations.changed"
+if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
   fail 'Measure accepted unbounded transient record fan-out.'
 fi
-jq '.captureLanes.value.pendingCount=10 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=10 else . end | .rawIngress.value.pendingCount=7' \
+jq '.rawIngress.value.pendingCount=2.5 | .captureLanes.value.pendingCount=8.5 | .captureLanes.value.lanes[] |= if .name == "transient" then .pendingCount=8.5 else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-mv "$measure_tail_operations.changed" "$measure_tail_operations"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
+if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
+  fail 'Measure accepted fractional queue record counts.'
+fi
+jq '.rawIngress.value.pendingCount=7' \
+  "$measure_tail_operations" > "$measure_tail_operations.changed"
+if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
   fail 'Measure accepted unbounded raw-ingress record fan-out.'
 fi
-jq '.rawIngress.value.pendingCount=6 | .captureLanes.value.lanes[] |= if .name == "transient" then .retryCount=2 else . end | .captureLanes.value.retryCount=2' \
+jq '.captureLanes.value.lanes[] |= if .name == "transient" then .retryCount=2 else . end | .captureLanes.value.retryCount=2' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-mv "$measure_tail_operations.changed" "$measure_tail_operations"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
+if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
   fail 'Measure accepted retrying work as a temporal tail.'
 fi
-jq '.captureLanes.value.retryCount=0 | .captureLanes.value.lanes[] |= if .name == "transient" then .retryCount=0 | .pendingCaptures=[{"agentId":"device-east","captureSequence":3},{"agentId":"device-east","captureSequence":4}] else . end' \
+jq '.captureLanes.value.lanes[] |= if .name == "transient" then .pendingCaptures=[{"agentId":"device-east","captureSequence":3},{"agentId":"device-east","captureSequence":4},{"agentId":"device-east","captureSequence":5}] else . end' \
   "$measure_tail_operations" > "$measure_tail_operations.changed"
-mv "$measure_tail_operations.changed" "$measure_tail_operations"
-if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations" 5 device-east); then
+if (source "$REPO_ROOT/scripts/deploy/measure.sh"; deploy_measure_queues_converged "$measure_tail_operations.changed" 5 device-east); then
   fail 'Measure accepted stale captures as the bounded temporal tail.'
 fi
 for missing_measure_field in continuity telemetry timing queue stats; do

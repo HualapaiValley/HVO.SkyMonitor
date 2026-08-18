@@ -61,7 +61,10 @@ deploy_measure_validate_snapshot() {
           (.captureSequence | floor) == .captureSequence) and
         (.oldestPendingUtc == null or (.oldestPendingUtc | type == "string"))) and
       all(.captureLanes.value.pendingCount,.captureLanes.value.pendingBytes,.captureLanes.value.leasedCount,.captureLanes.value.retryCount,
-        .captureLanes.value.quarantineCount; type == "number" and . >= 0)' "$operations" >/dev/null || return 1
+        .captureLanes.value.quarantineCount; type == "number" and . >= 0 and floor == .) and
+      (.transientWorker.value.maximumCandidates | type) == "number" and
+      .transientWorker.value.maximumCandidates >= 1 and .transientWorker.value.maximumCandidates <= 64 and
+      (.transientWorker.value.maximumCandidates | floor) == .transientWorker.value.maximumCandidates' "$operations" >/dev/null || return 1
     jq -e '(keys | sort) == (["blockIo","cpu","memory","memoryPercent","networkIo","pids"] | sort) and
       all(.[]; type == "string" and length > 0)' "$stats" >/dev/null
 }
@@ -372,8 +375,9 @@ deploy_measure_queues_converged() {
     local operations="$1" end_sequence="$2" device="$3"
     jq -e --argjson endSequence "$end_sequence" --arg device "$device" '
       (if $endSequence < 2 then $endSequence else 2 end) as $tail |
+      .transientWorker.value.maximumCandidates as $maximumCandidates |
       ($tail * 3) as $maximumRawIngressRecords |
-      ($tail * 5) as $maximumTransientRecords |
+      ($tail * (1 + $maximumCandidates)) as $maximumTransientRecords |
       [.captureLanes.value.lanes[] | select(.name == "transient" and .required == true)] as $transient |
       .rawIngress.value.availability == "Accepting" and .captureLanes.value.availability == "Healthy" and
       .captureProcessing.value.availability == "Healthy" and .artifactOutbox.value.availability == "Healthy" and
@@ -394,9 +398,12 @@ deploy_measure_queues_converged() {
       else
         ($transient | length) == 1 and
         .captureLanes.value.pendingCount == $transient[0].pendingCount and
-        ((.rawIngress.value.pendingCount == $tail and $transient[0].pendingCount == $tail) or
-          (.rawIngress.value.pendingCount == $maximumRawIngressRecords and
-            $transient[0].pendingCount == $maximumTransientRecords)) and
+        ((.rawIngress.value.pendingCount | floor) == .rawIngress.value.pendingCount and
+          .rawIngress.value.pendingCount >= $tail and
+          .rawIngress.value.pendingCount <= $maximumRawIngressRecords) and
+        (($transient[0].pendingCount | floor) == $transient[0].pendingCount and
+          $transient[0].pendingCount >= $tail and
+          $transient[0].pendingCount <= $maximumTransientRecords) and
         ($transient[0].leasedCount == 0 and
           $transient[0].retryCount == 0 and $transient[0].quarantineCount == 0 and $transient[0].pressureLevel == 0) and
         $transient[0].pendingCaptures == [range($endSequence - $tail + 1; $endSequence + 1) |

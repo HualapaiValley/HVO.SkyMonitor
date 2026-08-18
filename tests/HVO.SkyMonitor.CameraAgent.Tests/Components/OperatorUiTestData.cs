@@ -40,7 +40,7 @@ internal static class OperatorUiTestData
             Section(new OperationsCaptureRuntimeState("Available", Now.AddSeconds(-1), null, null, [])),
             Section(new OperationsHeartbeatState(heartbeat, Now.AddSeconds(-2), 0, 0, 0, 0, 0, 0, 0, null)),
             Section(new OperationsEnvironmentalDeliveryState("Available", Now.AddSeconds(-2), 0, 0, 0, 0, 0, 0, 0, 0, 0, null)),
-            Section(new OperationsTransientWorkerState("Available", 0, 0)),
+            Section(new OperationsTransientWorkerState("Available", 0, 0, 32)),
             Section(new OperationsCaptureTelemetryState(
                 samples,
                 samples == 0 ? null : Now.AddSeconds(-1),

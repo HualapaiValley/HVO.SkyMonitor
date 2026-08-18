@@ -134,6 +134,7 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.AreEqual(6L, summary.Heartbeat.Value.PendingCount);
         Assert.AreEqual(8L, summary.EnvironmentalDelivery.Value.PendingCount);
         Assert.AreEqual(9L, summary.TransientWorker.Value.PendingFrames);
+        Assert.AreEqual(32, summary.TransientWorker.Value.MaximumCandidates);
         Assert.AreEqual(1, summary.CaptureTelemetry.Value.SampleCount);
         Assert.IsNotNull(summary.CaptureProcessing.ObservedUtc);
         Assert.IsNotNull(summary.ArtifactOutbox.ObservedUtc);

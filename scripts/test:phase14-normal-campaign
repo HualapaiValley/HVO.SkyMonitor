@@ -64,16 +64,16 @@ make_measure() {
          {raw:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
           processing:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
           outbox:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
-          transient:{availability:"Healthy",pendingFrames:0,pendingCandidates:0},
+           transient:{availability:"Healthy",pendingFrames:0,pendingCandidates:0,maximumCandidates:32},
           lanes:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,lanes:[{name:"standard",required:true,pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]}]}};
-       def tailQueues($end):
-         {raw:{pendingCount:2,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:"2026-08-10T00:09:00Z"},
+        def tailQueues($end):
+          {raw:{pendingCount:6,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:"2026-08-10T00:09:00Z"},
           processing:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
           outbox:{pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,terminalCount:0,oldestPendingUtc:null},
-          transient:{availability:"Healthy",pendingFrames:0,pendingCandidates:0},
-          lanes:{pendingCount:2,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,lanes:[
+           transient:{availability:"Healthy",pendingFrames:0,pendingCandidates:0,maximumCandidates:32},
+           lanes:{pendingCount:10,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,lanes:[
             {name:"standard",required:true,pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]},
-            {name:"transient",required:true,pendingCount:2,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:"2026-08-10T00:09:00Z",pendingCaptures:[{agentId:"east-device",captureSequence:($end-1)},{agentId:"east-device",captureSequence:$end}]}]}};
+             {name:"transient",required:true,pendingCount:10,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:"2026-08-10T00:09:00Z",pendingCaptures:[{agentId:"east-device",captureSequence:($end-1)},{agentId:"east-device",captureSequence:$end}]}]}};
       {schemaVersion:1,publicationGeneration:3,runId:$run,executionRunId:$executionRun,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,
        executionMode:"canonical",canonicalWorkloadConfigured:true,workload:$workload,phaseStatus:"passed",
        startedAt:"2026-08-10T00:00:00Z",updatedAt:"2026-08-10T00:10:00Z",completedAt:"2026-08-10T00:10:00Z",elapsedSeconds:600,
@@ -97,6 +97,26 @@ cp "$w1" "$evidence/acceptance-support/normal-flow-W1.json"; cp "$w2" "$evidence
 
 expected_w1="$(jq -c '.profiles.W1' "$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json")"
 deploy_acceptance_normal_validate_measure "$w1" "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1"
+valid_fanout="$TEMP_DIR/valid-fanout.json"
+jq '.targets[0].after.queues.lanes.pendingCount=8 | .targets[0].after.queues.lanes.lanes[] |= if .name == "transient" then .pendingCount=8 else . end' \
+  "$w1" > "$valid_fanout"
+deploy_acceptance_normal_validate_measure "$valid_fanout" "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1"
+if deploy_acceptance_normal_validate_measure <(jq '.targets[0].after.queues.lanes.lanes[] |= if .name == "transient" then .pendingCaptures=[{"agentId":"east-device","captureSequence":33},{"agentId":"east-device","captureSequence":34},{"agentId":"east-device","captureSequence":35}] else . end' "$w1") \
+  "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
+    fail 'Normal campaign accepted a stale third transient center.'
+fi
+if deploy_acceptance_normal_validate_measure <(jq '.targets[0].after.queues.lanes.pendingCount=67 | .targets[0].after.queues.lanes.lanes[] |= if .name == "transient" then .pendingCount=67 else . end' "$w1") \
+  "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
+    fail 'Normal campaign accepted unbounded transient fan-out.'
+fi
+if deploy_acceptance_normal_validate_measure <(jq '.targets[0].after.queues.raw.pendingCount=7' "$w1") \
+  "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
+    fail 'Normal campaign accepted unbounded raw-ingress fan-out.'
+fi
+if deploy_acceptance_normal_validate_measure <(jq '.targets[0].after.queues.raw.pendingCount=2.5 | .targets[0].after.queues.lanes.pendingCount=8.5 | .targets[0].after.queues.lanes.lanes[] |= if .name == "transient" then .pendingCount=8.5 else . end' "$w1") \
+  "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
+    fail 'Normal campaign accepted fractional queue record counts.'
+fi
 invalid="$TEMP_DIR/invalid.json"; jq '.targets[0].measuredCompleted=29' "$w1" > "$invalid"
 if deploy_acceptance_normal_validate_measure "$invalid" "$run_id" "$mode" "$hash" "$revision" W1 "$inventory" "$expected_w1" >/dev/null 2>&1; then
     fail 'Normal campaign accepted an incomplete W1 measurement.'
