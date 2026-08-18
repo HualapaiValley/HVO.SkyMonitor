@@ -119,9 +119,16 @@ public static class TransientCandidateDeliveryJson
     public static TransientContractValidationResult Validate(TransientCandidateSubmissionAcknowledgementV1 acknowledgement)
     {
         ArgumentNullException.ThrowIfNull(acknowledgement);
+        if (!Enum.IsDefined(acknowledgement.Disposition))
+        {
+            return Failure(TransientContractReasonCodes.InvalidState, "disposition");
+        }
+        var expectedSchema = acknowledgement.Disposition == TransientCandidateSubmissionDisposition.Retired
+            ? TransientCandidateSubmissionAcknowledgementV1.RetirementSchemaVersion
+            : TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion;
         if (!string.Equals(
                 acknowledgement.SchemaVersion,
-                TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
+                expectedSchema,
                 StringComparison.Ordinal))
         {
             return Failure(TransientContractReasonCodes.UnsupportedSchema, "schemaVersion");
@@ -135,9 +142,7 @@ public static class TransientCandidateDeliveryJson
         {
             return Failure(TransientContractReasonCodes.InvalidTime, "receivedAtUtc");
         }
-        return Enum.IsDefined(acknowledgement.Disposition)
-            ? Size(acknowledgement, MaximumAcknowledgementBytes)
-            : Failure(TransientContractReasonCodes.InvalidState, "disposition");
+        return Size(acknowledgement, MaximumAcknowledgementBytes);
     }
 
     public static TransientContractValidationResult Validate(TransientFinalizationReceiptV1 receipt)

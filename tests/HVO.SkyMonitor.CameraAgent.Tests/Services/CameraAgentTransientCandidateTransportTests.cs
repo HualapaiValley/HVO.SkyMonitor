@@ -15,14 +15,16 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 public sealed class CameraAgentTransientCandidateTransportTests
 {
     [TestMethod]
-    public async Task AcceptedAndDuplicateRequireExactAcknowledgementAndAuthenticatedHeaders()
+    public async Task TerminalSettlementsRequireExactAcknowledgementAndAuthenticatedHeaders()
     {
         var submission = TransientDeliveryTestData.Submission();
         var responses = new Queue<HttpResponseMessage>(
         [
             Response(HttpStatusCode.Accepted, TransientDeliveryTestData.Acknowledgement(submission)),
             Response(HttpStatusCode.OK, TransientDeliveryTestData.Acknowledgement(
-                submission, TransientCandidateSubmissionDisposition.Duplicate))
+                submission, TransientCandidateSubmissionDisposition.Duplicate)),
+            Response(HttpStatusCode.OK, TransientDeliveryTestData.Acknowledgement(
+                submission, TransientCandidateSubmissionDisposition.Retired))
         ]);
         var handler = new CapturingHandler(_ => responses.Dequeue());
         var factory = new StubHttpClientFactory(handler);
@@ -30,9 +32,13 @@ public sealed class CameraAgentTransientCandidateTransportTests
 
         var accepted = await transport.SendAsync(submission, CancellationToken.None).ConfigureAwait(false);
         var duplicate = await transport.SendAsync(submission, CancellationToken.None).ConfigureAwait(false);
+        var retired = await transport.SendAsync(submission, CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(TransientCandidateTransportDisposition.Acknowledged, accepted.Disposition);
         Assert.AreEqual(TransientCandidateTransportDisposition.Acknowledged, duplicate.Disposition);
+        Assert.AreEqual(TransientCandidateTransportDisposition.Acknowledged, retired.Disposition);
+        Assert.AreEqual("retired", retired.Reason);
+        Assert.AreEqual(TransientCandidateSubmissionDisposition.Retired, retired.Acknowledgement!.Disposition);
         Assert.AreEqual(SkyMonitorClientOptions.HttpClientName, factory.LastName);
         Assert.AreEqual(Timeout.InfiniteTimeSpan, factory.Client!.Timeout);
         Assert.AreEqual("device-1", handler.LastHeaders["X-HVO-Device-Id"]);
@@ -49,11 +55,19 @@ public sealed class CameraAgentTransientCandidateTransportTests
         var noncanonical = TransientCandidateDeliveryJson.Serialize(
             TransientDeliveryTestData.Acknowledgement(submission));
         noncanonical = [.. noncanonical, (byte)'\n'];
+        var retiredV1 = System.Text.Encoding.UTF8.GetBytes(System.Text.Encoding.UTF8.GetString(
+                TransientCandidateDeliveryJson.Serialize(TransientDeliveryTestData.Acknowledgement(
+                    submission, TransientCandidateSubmissionDisposition.Retired)))
+            .Replace(
+                TransientCandidateSubmissionAcknowledgementV1.RetirementSchemaVersion,
+                TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
+                StringComparison.Ordinal));
         var responses = new Queue<HttpResponseMessage>(
         [
             new(HttpStatusCode.Accepted) { Content = new ByteArrayContent("bad-json"u8.ToArray()) },
             Response(HttpStatusCode.Accepted, mismatch),
             Response(HttpStatusCode.OK, TransientDeliveryTestData.Acknowledgement(submission)),
+            new(HttpStatusCode.OK) { Content = new ByteArrayContent(retiredV1) },
             new(HttpStatusCode.Accepted) { Content = new ByteArrayContent(noncanonical) },
             new(HttpStatusCode.NotFound),
             new(HttpStatusCode.TooManyRequests),
@@ -61,7 +75,7 @@ public sealed class CameraAgentTransientCandidateTransportTests
         ]);
         var transport = CreateTransport(new StubHttpClientFactory(new CapturingHandler(_ => responses.Dequeue())));
 
-        for (var index = 0; index < 7; index++)
+        for (var index = 0; index < 8; index++)
         {
             var result = await transport.SendAsync(submission, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(TransientCandidateTransportDisposition.Retry, result.Disposition);

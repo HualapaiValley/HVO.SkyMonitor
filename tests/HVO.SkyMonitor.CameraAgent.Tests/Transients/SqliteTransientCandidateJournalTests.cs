@@ -472,7 +472,10 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     [TestMethod]
-    public async Task Hybrid_ReleasesHoldOnlyAfterMatchingDurableAcknowledgement()
+    [DataRow(TransientCandidateSubmissionDisposition.Accepted)]
+    [DataRow(TransientCandidateSubmissionDisposition.Retired)]
+    public async Task Hybrid_ReleasesHoldOnlyAfterMatchingDurableAcknowledgement(
+        TransientCandidateSubmissionDisposition disposition)
     {
         using var fixture = await Fixture.CreateAsync(mode: TransientOperatingMode.Hybrid).ConfigureAwait(false);
         var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
@@ -493,12 +496,14 @@ public sealed class SqliteTransientCandidateJournalTests
         Assert.AreEqual(TransientCandidateWorkflowPhase.HandoffPending, pending.Phase);
         Assert.AreEqual(1L, await fixture.ScalarLongAsync("SELECT retention_hold FROM raw_captures;").ConfigureAwait(false));
         var acknowledgement = new TransientCandidateSubmissionAcknowledgementV1(
-            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
+            disposition == TransientCandidateSubmissionDisposition.Retired
+                ? TransientCandidateSubmissionAcknowledgementV1.RetirementSchemaVersion
+                : TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
             reservation.CandidateId,
             reservation.EventId,
             submission.SubmissionIdentitySha256,
             DateTimeOffset.UtcNow,
-            TransientCandidateSubmissionDisposition.Accepted);
+            disposition);
 
         var acknowledged = await fixture.Journal.AcknowledgeAsync(
             reservation.CandidateId,

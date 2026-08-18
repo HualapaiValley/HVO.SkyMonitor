@@ -76,14 +76,18 @@ internal sealed class CameraAgentTransientCandidateTransport(
                     TransientCandidateDeliveryJson.Matches(acknowledgement, submission) &&
                     (response.StatusCode == HttpStatusCode.Accepted &&
                         acknowledgement.Disposition == TransientCandidateSubmissionDisposition.Accepted ||
-                     response.StatusCode == HttpStatusCode.OK &&
-                        acknowledgement.Disposition == TransientCandidateSubmissionDisposition.Duplicate);
+                      response.StatusCode == HttpStatusCode.OK &&
+                        acknowledgement.Disposition is TransientCandidateSubmissionDisposition.Duplicate or
+                            TransientCandidateSubmissionDisposition.Retired);
                 return validPair
                     ? new(
                         TransientCandidateTransportDisposition.Acknowledged,
-                        acknowledgement!.Disposition == TransientCandidateSubmissionDisposition.Accepted
-                            ? "accepted"
-                            : "duplicate",
+                        acknowledgement!.Disposition switch
+                        {
+                            TransientCandidateSubmissionDisposition.Accepted => "accepted",
+                            TransientCandidateSubmissionDisposition.Duplicate => "duplicate",
+                            _ => "retired"
+                        },
                         acknowledgement)
                     : new(TransientCandidateTransportDisposition.Retry, "invalid-acknowledgement");
             }

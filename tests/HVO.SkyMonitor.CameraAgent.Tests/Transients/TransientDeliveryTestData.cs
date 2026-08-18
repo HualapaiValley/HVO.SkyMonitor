@@ -66,7 +66,9 @@ internal static class TransientDeliveryTestData
         TransientCandidateSubmissionEnvelopeV1 submission,
         TransientCandidateSubmissionDisposition disposition = TransientCandidateSubmissionDisposition.Accepted)
         => new(
-            TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
+            disposition == TransientCandidateSubmissionDisposition.Retired
+                ? TransientCandidateSubmissionAcknowledgementV1.RetirementSchemaVersion
+                : TransientCandidateSubmissionAcknowledgementV1.CurrentSchemaVersion,
             submission.CandidateId,
             submission.EventId,
             submission.SubmissionIdentitySha256,

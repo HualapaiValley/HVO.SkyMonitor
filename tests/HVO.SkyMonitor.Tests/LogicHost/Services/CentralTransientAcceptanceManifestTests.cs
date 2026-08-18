@@ -122,7 +122,7 @@ public sealed class CentralTransientAcceptanceManifestTests
         submissionOperations.GetProperty("operation").EnumerateArray()
             .Select(value => value.GetString()).Should().Contain("transient-submit");
         submissionOperations.GetProperty("outcome").EnumerateArray()
-            .Select(value => value.GetString()).Should().Contain(["accepted", "duplicate", "rejected"]);
+            .Select(value => value.GetString()).Should().Contain(["accepted", "duplicate", "retired", "rejected"]);
         var expectedWindowStatuses = new[]
         {
             "waiting", "pending", "skipped", "quarantined", "terminalfailure"
