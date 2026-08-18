@@ -191,7 +191,7 @@ public sealed class TransientWorkerRuntimeTests
                 .ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
                 .Single(static lane => lane.Lane == "transient");
             CollectionAssert.AreEqual(
-                new long[] { 6, 7 },
+                new long[] { 5, 6, 7 },
                 stagedBacklog.PendingCaptures!.Select(static capture => capture.CaptureSequence).ToArray());
             var worker = provider.GetRequiredService<TransientWorkerService>();
             for (var index = 0; index < 7; index++)
