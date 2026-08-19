@@ -309,6 +309,7 @@ deploy_run_down() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6" policy="$7" confirm="$8"
     local state_dir evidence_dir prepare prepare_ledger prepare_evidence up now target name context env_file logic shared volume entry root marker helper_key
     local state_project render_root private_root remote_root result prior_status project network ssh
+    local volume_identity retained_status lock_name root_new control_new marker_new lock_status
     state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"
     prepare="$state_dir/prepare-manifest.json"; prepare_ledger="$state_dir/prepare-ledger.json"; prepare_evidence="$evidence_dir/prepare.json"; up="$state_dir/up-manifest.json"
     deploy_require_passed_phase "$prepare" down "$run_id" "$mode" "$hash" "$revision" || return 1
@@ -460,7 +461,27 @@ deploy_run_down() {
                 deploy_phase_correlate_target "$shared" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
                 continue
             fi
-            [[ -n "$prior_status" ]] || deploy_transport_validate_volume "$context" "$volume" "$run_id" "$hash" || return 1
+            if [[ -z "$prior_status" ]]; then
+                deploy_phase_correlate_target "$shared" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+                volume_identity="$(deploy_transport_classify_volume "$context" "$volume" "$run_id" "$hash")" ||
+                  { deploy_fail down "$name:$volume" identity-invalid; return 1; }
+                deploy_phase_correlate_target "$shared" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+                retained_status="$(jq -r --arg resource "$name:$volume" '.resources[]? | select(.resource == $resource and .action == "retain-volume-label-drift") | .status' <<< "$DEPLOY_DOWN_JSON")"
+                if [[ "$retained_status" == intent ]]; then
+                    deploy_down_complete_action "$name:$volume" retain-volume-label-drift || return 1
+                    retained_status=completed
+                fi
+                if [[ "$volume_identity" == absent && "$retained_status" == completed ]]; then continue; fi
+                if [[ "$volume_identity" == inventory-label-drift ]]; then
+                    if deploy_down_begin_action "$name:$volume" retain-volume-label-drift; then
+                        [[ "${DEPLOY_TEST_FAILPOINT:-}" != "after-retain-volume-label-drift-intent:$name:$volume" ]] || return 75
+                        deploy_down_complete_action "$name:$volume" retain-volume-label-drift || return 1
+                    else result=$?; [[ "$result" == 2 ]] || return 1; fi
+                    deploy_fail down "$name:$volume" inventory-label-drift-retained
+                    return 1
+                fi
+                [[ "$volume_identity" == exact ]] || { deploy_fail down "$name:$volume" ownership-unproven-absence; return 1; }
+            fi
             if deploy_down_begin_action "$name:$volume" delete-volume; then
                 deploy_phase_correlate_target "$shared" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
                 deploy_transport_remove_volume "$context" "$volume" "$run_id" "$hash" true || return 1
@@ -472,6 +493,9 @@ deploy_run_down() {
         done
         while IFS= read -r entry; do
             name="$(jq -r '.target' <<< "$entry")"; root="$(jq -r '.runtimeRoot' <<< "$entry")"; marker="$(jq -r '.markerDigest' <<< "$entry")"
+            root_new="$(jq -r '.newlyCreated.root' <<< "$entry")"; control_new="$(jq -r '.newlyCreated.controlDirectory' <<< "$entry")"
+            marker_new="$(jq -r '.newlyCreated.marker' <<< "$entry")"
+            lock_name=".hvo-deploy-prepare-$(printf 'v1\ntarget=%s\nroot=%s\n' "$name" "$root" | sha256sum | cut -c1-32).lock"
             target="$(jq -c --arg name "$name" '([.logicHost] + .cameraAgents + [.sharedServices]) | map(select(.name == $name))[0]' "$inventory")"
             prior_status="$(jq -r --arg resource "runtime-root:$name" '.resources[]? | select(.resource == $resource and .action == "delete") | .status' <<< "$DEPLOY_DOWN_JSON")"
             ssh="$(jq -r '.sshHost' <<< "$target")"
@@ -479,23 +503,40 @@ deploy_run_down() {
                 deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
                 deploy_transport_require_runtime_root_absent "$ssh" "$root" || { deploy_fail down "runtime-root:$name" completed-resource-recreated; return 1; }
                 deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+            else
+                context="$(jq -r '.dockerContext' <<< "$target")"
+                if [[ "$name" == "$(jq -r '.logicHost.name' "$inventory")" ]]; then
+                    env_file="$state_dir/up-rendered/$name.env"; helper_key=LOGICHOST_IMAGE
+                elif [[ "$name" == "$(jq -r '.sharedServices.name' "$inventory")" ]]; then
+                    env_file="$state_dir/up-rendered/shared.env"; helper_key=REDIS_IMAGE
+                else
+                    env_file="$state_dir/up-rendered/$name.env"; helper_key=CAMERAAGENT_IMAGE
+                fi
+                [[ -n "$prior_status" ]] || deploy_transport_validate_runtime_root "$(jq -r '.sshHost' <<< "$target")" "$root" "$marker" || return 1
+                if deploy_down_begin_action "runtime-root:$name" delete; then
+                    deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+                    deploy_transport_remove_runtime_root "$(jq -r '.sshHost' <<< "$target")" "$root" "$marker" true "$context" "$env_file" "$helper_key" "$target" || return 1
+                    deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+                    deploy_down_after_mutation "runtime-root:$name" delete || return 1
+                    deploy_down_complete_action "runtime-root:$name" delete || return 1
+                else result=$?; [[ "$result" == 2 ]] || return 1; fi
+            fi
+            lock_status="$(jq -r --arg resource "prepare-lock:$name" '.resources[]? | select(.resource == $resource and .action == "delete") | .status' <<< "$DEPLOY_DOWN_JSON")"
+            if [[ "$lock_status" == completed ]]; then
+                deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+                deploy_transport_require_prepare_lock_absent "$ssh" "$root" "$lock_name" ||
+                  { deploy_fail down "prepare-lock:$name" completed-resource-recreated; return 1; }
+                deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
                 continue
             fi
-            context="$(jq -r '.dockerContext' <<< "$target")"
-            if [[ "$name" == "$(jq -r '.logicHost.name' "$inventory")" ]]; then
-                env_file="$state_dir/up-rendered/$name.env"; helper_key=LOGICHOST_IMAGE
-            elif [[ "$name" == "$(jq -r '.sharedServices.name' "$inventory")" ]]; then
-                env_file="$state_dir/up-rendered/shared.env"; helper_key=REDIS_IMAGE
-            else
-                env_file="$state_dir/up-rendered/$name.env"; helper_key=CAMERAAGENT_IMAGE
-            fi
-            [[ -n "$prior_status" ]] || deploy_transport_validate_runtime_root "$(jq -r '.sshHost' <<< "$target")" "$root" "$marker" || return 1
-            if deploy_down_begin_action "runtime-root:$name" delete; then
+            if deploy_down_begin_action "prepare-lock:$name" delete; then
                 deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
-                deploy_transport_remove_runtime_root "$(jq -r '.sshHost' <<< "$target")" "$root" "$marker" true "$context" "$env_file" "$helper_key" "$target" || return 1
+                deploy_transport_remove_prepare_lock "$ssh" "$root" "$marker" "$run_id" "$lock_name" \
+                  "$root_new" "$control_new" "$marker_new" "$( [[ -n "$lock_status" ]] && printf true || printf false )" \
+                  "${DEPLOY_TEST_FAILPOINT:-none}" "$name" || return 1
                 deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
-                deploy_down_after_mutation "runtime-root:$name" delete || return 1
-                deploy_down_complete_action "runtime-root:$name" delete || return 1
+                deploy_down_after_mutation "prepare-lock:$name" delete || return 1
+                deploy_down_complete_action "prepare-lock:$name" delete || return 1
             else result=$?; [[ "$result" == 2 ]] || return 1; fi
         done < <(jq -c '.targets[]' "$prepare_ledger")
     fi
