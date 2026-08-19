@@ -85,6 +85,7 @@ require_source_reference 'does not claim inode binding' docs/runbooks/split-host
 require_source_reference 'POSIX/BusyBox-compatible syntax' docs/runbooks/split-host-preflight.md
 require_source_reference 'inventory-label-drift-retained' docs/runbooks/split-host-preflight.md
 require_source_reference 'never uses a' docs/runbooks/split-host-preflight.md
+require_source_reference 'wildcard.' docs/runbooks/split-host-preflight.md
 require_source_reference 'no intent permits partial absence' docs/runbooks/split-host-preflight.md
 require_source_reference 'deploy_capture_queues_converged' scripts/deploy/common.sh
 require_source_reference './scripts/test:deploy-environment --parallel' docs/runbooks/ci-pipeline.md
