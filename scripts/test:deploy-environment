@@ -820,6 +820,13 @@ if [[ "${2:-}" == %u && "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" 
   exit 0
 fi
 if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" &&
+      ( "$path" == */remote/deploy-services-shared || "$path" == */remote/deploy-services-shared/.hvo-deploy-prepare-* ) ]]; then
+  case "${2:-}" in
+    %u) printf '%s\n' "${FAKE_RUNTIME_UID:?}"; exit 0 ;;
+    %u:%h:%a) printf '%s:%s\n' "${FAKE_RUNTIME_UID:?}" "$(/usr/bin/stat -c '%h:%a' "$path")"; exit 0 ;;
+  esac
+fi
+if [[ "${FAKE_RUNTIME_UID_HOST:-}" == "${FAKE_REMOTE_HOST:-}" &&
       ( "$path" == */minio-output/minio-runtime.json || "$path" == */private/mc/config.json ) && "$*" == *"%u:%g:%h:%a"* ]]; then
   printf '%s:%s:1:600\n' "${FAKE_RUNTIME_UID:?}" "${FAKE_RUNTIME_GID:?}"
   exit 0
@@ -3303,6 +3310,17 @@ jq --arg root "$TEMP_DIR/remote/$deploy_services" --arg endpoint "http://127.0.0
 mkdir -m 700 "$TEMP_DIR/remote/$deploy_services-logic" "$TEMP_DIR/remote/$deploy_services-east" "$TEMP_DIR/remote/$deploy_services-west" "$TEMP_DIR/remote/$deploy_services-shared"
 run_deploy_mode preflight "$deploy_services" isolated >/dev/null
 run_deploy_mode prepare "$deploy_services" isolated >/dev/null
+logic_runtime_root="$TEMP_DIR/remote/$deploy_services-logic/runtime"
+east_runtime_root="$TEMP_DIR/remote/$deploy_services-east/runtime"
+west_runtime_root="$TEMP_DIR/remote/$deploy_services-west/runtime"
+shared_runtime_root="$TEMP_DIR/remote/$deploy_services-shared/runtime"
+logic_prepare_lock="${logic_runtime_root%/*}/.hvo-deploy-prepare-$(printf 'v1\ntarget=logic\nroot=%s\n' "$logic_runtime_root" | sha256sum | cut -c1-32).lock"
+east_prepare_lock="${east_runtime_root%/*}/.hvo-deploy-prepare-$(printf 'v1\ntarget=east\nroot=%s\n' "$east_runtime_root" | sha256sum | cut -c1-32).lock"
+west_prepare_lock="${west_runtime_root%/*}/.hvo-deploy-prepare-$(printf 'v1\ntarget=west\nroot=%s\n' "$west_runtime_root" | sha256sum | cut -c1-32).lock"
+shared_prepare_lock="${shared_runtime_root%/*}/.hvo-deploy-prepare-$(printf 'v1\ntarget=shared\nroot=%s\n' "$shared_runtime_root" | sha256sum | cut -c1-32).lock"
+for prepare_lock in "$logic_prepare_lock" "$east_prepare_lock" "$west_prepare_lock" "$shared_prepare_lock"; do
+  test -f "$prepare_lock" && test -f "$prepare_lock.state" || fail "Prepare did not create exact lock provenance: $prepare_lock"
+done
 rm -f "$FAKE_IMAGE_STATE"/*.pushed "$FAKE_IMAGE_STATE"/*.platforms "$FAKE_IMAGE_STATE"/*.labels "$FAKE_IMAGE_STATE"/*.reference "$FAKE_IMAGE_STATE"/*.config
 run_deploy_mode images "$deploy_services" isolated >/dev/null
 if FAKE_SCP_FAIL_DEST="$deploy_services-west" run_deploy_mode catalog "$deploy_services" isolated > "$TEMP_DIR/catalog-failure.log" 2>&1; then fail 'Catalog partial failure passed.'; fi
@@ -3325,7 +3343,6 @@ test "$(<"$TEMP_DIR/remote/$deploy_services-east/runtime/.hvo-deploy/up-$deploy_
 shared_render_env="$TEMP_DIR/output/$deploy_services-state/up-rendered/shared.env"
 grep -Fxq 'HVO_RUNTIME_UID=4242' "$shared_render_env"
 grep -Fxq 'HVO_RUNTIME_GID=4343' "$shared_render_env"
-shared_runtime_root="$TEMP_DIR/remote/$deploy_services-shared/runtime"
 grep -Fxq "HVO_CONFIG_ROOT=$shared_runtime_root/.hvo-deploy/up-$deploy_services" "$shared_render_env"
 grep -Fxq "HVO_STATE_ROOT=$shared_runtime_root/application" "$shared_render_env"
 grep -Fxq 'MAILPIT_HTTP_PORT=8025' "$shared_render_env"
@@ -3494,8 +3511,9 @@ if FAKE_RUNTIME_SSH_TIMEOUT_PHASE=initial FAKE_RUNTIME_SSH_TIMEOUT_MATCH=initial
   remove_runtime_contract_root "$initial_timeout_root"; then fail 'Runtime-root deletion accepted an initial SSH timeout.'; fi
 test -f "$initial_timeout_root/.hvo-deploy/ownership" && test -f "$initial_timeout_root/application/content/state" ||
   fail 'Initial SSH timeout mutated runtime-root state.'
-test "$(grep -Fc 'timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8' "$REPO_ROOT/scripts/deploy/transport.sh")" = 2
-test "$(grep -Fc -- '-o ServerAliveInterval=10 -o ServerAliveCountMax=3' "$REPO_ROOT/scripts/deploy/transport.sh")" = 2
+runtime_cleanup_functions="$(source "$REPO_ROOT/scripts/deploy/transport.sh"; declare -f deploy_transport_remove_runtime_root; declare -f deploy_transport_remove_prepare_lock)"
+test "$(grep -Fc 'timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8' <<< "$runtime_cleanup_functions")" = 3
+test "$(grep -Fc -- '-o ServerAliveInterval=10 -o ServerAliveCountMax=3' <<< "$runtime_cleanup_functions")" = 3
 grep -Fq $'ssh\t-o\tBatchMode=yes\t-o\tConnectTimeout=8\t-o\tServerAliveInterval=10\t-o\tServerAliveCountMax=3' "$LOG"
 
 # Foreign descendants, ownership drift, and mountpoints fail before mutation or helper invocation.
@@ -3694,8 +3712,73 @@ if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$d
   fail 'Down removed a Compose network with mismatched ownership labels.'
 fi
 cp "$TEMP_DIR/east-network.valid" "$east_network_state"
+
+# Same-run inventory-label drift is retained explicitly and authorizes only exact absence on retry.
+sql_volume_state="$FAKE_IMAGE_STATE/volume-shared-context-hvo-deploy-services-services_sql-data"
+cp "$sql_volume_state" "$TEMP_DIR/sql-volume.valid"
+rm "$sql_volume_state"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-volume-absent.log" 2>&1; then
+  fail 'Down accepted initially absent volume state without prior retained evidence.'
+fi
+grep -Fq 'reason=ownership-unproven-absence' "$TEMP_DIR/down-volume-absent.log"
+cp "$TEMP_DIR/sql-volume.valid" "$sql_volume_state"; chmod 600 "$sql_volume_state"
+if FAKE_DOCKER_INSPECT_OUTAGE=shared-context-volume \
+  run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-volume-inspect.log" 2>&1; then
+  fail 'Down treated a Docker volume inspection failure as absence or drift.'
+fi
+grep -Fq 'reason=identity-invalid' "$TEMP_DIR/down-volume-inspect.log"
+jq -c '.inventorySha256=null' "$sql_volume_state" > "$sql_volume_state.changed" && mv "$sql_volume_state.changed" "$sql_volume_state"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-volume-malformed.log" 2>&1; then
+  fail 'Down treated a malformed inventory label as retained drift.'
+fi
+grep -Fq 'reason=identity-invalid' "$TEMP_DIR/down-volume-malformed.log"
+cp "$TEMP_DIR/sql-volume.valid" "$sql_volume_state"; chmod 600 "$sql_volume_state"
+jq -c '.inventorySha256=("f" * 64)' "$sql_volume_state" > "$sql_volume_state.changed" && mv "$sql_volume_state.changed" "$sql_volume_state"
+if DEPLOY_TEST_FAILPOINT='after-retain-volume-label-drift-intent:sql:hvo-deploy-services-services_sql-data' \
+  run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-volume-retain-intent.log" 2>&1; then
+  fail 'Down passed after interrupted volume-drift retention intent.'
+fi
+jq -e '.phaseStatus == "failed" and any(.resources[]; .resource == "sql:hvo-deploy-services-services_sql-data" and
+  .action == "retain-volume-label-drift" and .status == "intent")' "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
+cp "$TEMP_DIR/sql-volume.valid" "$sql_volume_state"; chmod 600 "$sql_volume_state"
+if DEPLOY_TEST_FAILPOINT='after-delete-volume-mutation-sql:hvo-deploy-services-services_sql-data' \
+  run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-volume-retain-exact.log" 2>&1; then
+  fail 'Down passed the retained-intent to exact-delete interruption.'
+fi
+jq -e '.phaseStatus == "failed" and any(.resources[]; .resource == "sql:hvo-deploy-services-services_sql-data" and
+  .action == "retain-volume-label-drift" and .status == "completed") and
+  any(.resources[]; .resource == "sql:hvo-deploy-services-services_sql-data" and .action == "delete-volume" and .status == "intent")' \
+  "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
+test ! -e "$sql_volume_state" || fail 'Exact-label volume was not removed after retained-intent recovery.'
+
+redis_volume_state="$FAKE_IMAGE_STATE/volume-shared-context-hvo-deploy-services-services_redis-data"
+cp "$redis_volume_state" "$TEMP_DIR/redis-volume.valid"
+jq -c '.inventorySha256=("f" * 64)' "$redis_volume_state" > "$redis_volume_state.changed" && mv "$redis_volume_state.changed" "$redis_volume_state"
+redis_volume_removals_before="$(grep -Fc $'docker\t--context\tshared-context\tvolume\trm\thvo-deploy-services-services_redis-data' "$LOG" || true)"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-volume-drift.log" 2>&1; then
+  fail 'Down accepted a drifted run-owned volume.'
+fi
+grep -Fq 'stage=down check=redis:hvo-deploy-services-services_redis-data status=failed reason=inventory-label-drift-retained' "$TEMP_DIR/down-volume-drift.log" || {
+  /usr/bin/cat "$TEMP_DIR/down-volume-drift.log" >&2
+  fail 'Down did not emit the specific retained volume-label drift failure.'
+}
+jq -e '.phaseStatus == "failed" and any(.resources[]; .resource == "redis:hvo-deploy-services-services_redis-data" and
+  .action == "retain-volume-label-drift" and .status == "completed") and
+  (any(.resources[]; .resource == "redis:hvo-deploy-services-services_redis-data" and .action == "delete-volume") | not)' \
+  "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
+test "$(grep -Fc $'docker\t--context\tshared-context\tvolume\trm\thvo-deploy-services-services_redis-data' "$LOG" || true)" = "$redis_volume_removals_before" ||
+  fail 'Down removed a volume whose inventory label drifted.'
+test -d "$logic_runtime_root" && test -f "$logic_prepare_lock.state" || fail 'Volume drift mutated later runtime-root state.'
+jq -c '.runId="foreign-run"' "$redis_volume_state" > "$redis_volume_state.changed" && mv "$redis_volume_state.changed" "$redis_volume_state"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-volume-foreign.log" 2>&1; then
+  fail 'Down treated a foreign volume as retained label drift.'
+fi
+grep -Fq 'reason=identity-invalid' "$TEMP_DIR/down-volume-foreign.log"
+cp "$TEMP_DIR/redis-volume.valid" "$redis_volume_state"; chmod 600 "$redis_volume_state"
+jq -c '.inventorySha256=("f" * 64)' "$redis_volume_state" > "$redis_volume_state.changed" && mv "$redis_volume_state.changed" "$redis_volume_state"
+rm "$redis_volume_state"
 for down_failpoint in \
-  'after-delete-volume-mutation-sql:hvo-deploy-services-services_sql-data' \
+  'after-delete-volume-mutation-minio:hvo-deploy-services-services_minio-data' \
   'after-delete-mutation-runtime-root:logic'; do
   if DEPLOY_TEST_FAILPOINT="$down_failpoint" run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-resume.log" 2>&1; then
     fail "Down failpoint $down_failpoint passed."
@@ -3703,6 +3786,28 @@ for down_failpoint in \
   jq -e '.phaseStatus == "failed" and any(.resources[]; .status == "intent" or .status == "completed")' \
     "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
 done
+
+chmod 640 "$logic_prepare_lock"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-prepare-lock-mode.log" 2>&1; then
+  fail 'Down accepted unsafe prepare-lock metadata.'
+fi
+test -f "$logic_prepare_lock" && test -f "$logic_prepare_lock.state" || fail 'Unsafe prepare-lock metadata was mutated.'
+jq -e 'any(.resources[]; .resource == "prepare-lock:logic" and .action == "delete" and .status == "intent")' \
+  "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
+chmod 600 "$logic_prepare_lock"
+cp "$logic_prepare_lock.state" "$TEMP_DIR/logic-prepare-lock.valid-state"
+printf 'tampered\n' >> "$logic_prepare_lock.state"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-prepare-lock-state.log" 2>&1; then
+  fail 'Down accepted tampered prepare-lock state bytes.'
+fi
+test -f "$logic_prepare_lock" && test -f "$logic_prepare_lock.state" || fail 'Tampered prepare-lock state was mutated.'
+cp "$TEMP_DIR/logic-prepare-lock.valid-state" "$logic_prepare_lock.state"; chmod 600 "$logic_prepare_lock.state"
+exec 87<>"$logic_prepare_lock"; flock -n 87
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-prepare-lock-contended.log" 2>&1; then
+  fail 'Down accepted a contended prepare lock.'
+fi
+flock -u 87; exec 87>&-
+test -f "$logic_prepare_lock" && test -f "$logic_prepare_lock.state" || fail 'Contended prepare-lock state was mutated.'
 
 # Mixed-UID helper denial and a crash after helper clearing both preserve exact-marker intent for retry.
 logic_runtime_root="$TEMP_DIR/remote/$deploy_services-east/runtime"
@@ -3742,6 +3847,18 @@ fi
 test ! -e "$logic_runtime_root" || fail 'Exact-marker deletion intent did not resume after helper clearing.'
 jq -e 'any(.resources[]; .resource == "runtime-root:east" and .action == "delete" and .status == "completed")' \
   "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
+test -f "$east_prepare_lock" && test -f "$east_prepare_lock.state" || fail 'Runtime-root completion removed prepare provenance before its durable action.'
+if DEPLOY_TEST_FAILPOINT='after-delete-prepare-lock-state:east' \
+  run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-prepare-lock-partial.log" 2>&1; then
+  fail 'Down passed the partial prepare-lock cleanup failpoint.'
+fi
+test -f "$east_prepare_lock" && test ! -e "$east_prepare_lock.state" || {
+  /usr/bin/cat "$TEMP_DIR/down-prepare-lock-partial.log" >&2
+  /usr/bin/stat -c '%n %F %u:%h:%a:%s' "$east_prepare_lock" "$east_prepare_lock.state" 2>/dev/null >&2 || true
+  fail 'Prepare-lock failpoint did not leave the expected resumable partial pair.'
+}
+jq -e 'any(.resources[]; .resource == "prepare-lock:east" and .action == "delete" and .status == "intent")' \
+  "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
 : > "$FAKE_REMOTE_UID_MAP"
 read_only_state="$TEMP_DIR/remote/$deploy_services-shared/runtime/catalog-read-only"
 outside_read_only_state="$TEMP_DIR/catalog-read-only-outside"
@@ -3755,11 +3872,17 @@ run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$depl
 grep -Fxq preserve "$outside_read_only_state"
 jq -e '.phaseStatus == "passed" and .policy == "delete" and
   ([.resources[] | select(.action == "delete-network" and .status == "completed")] | length) == 4 and
-  ([.resources[] | select(.action == "delete-volume" and .status == "completed")] | length) == 3 and
-  ([.resources[] | select(.action == "delete" and .status == "completed" and (.resource | startswith("runtime-root:")))] | length) == 4' \
+  ([.resources[] | select(.action == "delete-volume" and .status == "completed")] | length) == 2 and
+  ([.resources[] | select(.action == "retain-volume-label-drift" and .status == "completed")] | length) == 2 and
+  ([.resources[] | select(.action == "delete" and .status == "completed" and (.resource | startswith("runtime-root:")))] | length) == 4 and
+  ([.resources[] | select(.action == "delete" and .status == "completed" and (.resource | startswith("prepare-lock:")))] | length) == 4' \
   "$TEMP_DIR/output/$deploy_services-state/down-ledger.json" >/dev/null
 grep -Fq -- $'--profile\ttest-smtp\t--profile\tprovision\trm\t-f' "$LOG"
 for removed in logic east west shared; do test ! -e "$TEMP_DIR/remote/$deploy_services-$removed/runtime"; done
+for prepare_lock in "$logic_prepare_lock" "$east_prepare_lock" "$west_prepare_lock" "$shared_prepare_lock"; do
+  test ! -e "$prepare_lock" && test ! -L "$prepare_lock" && test ! -e "$prepare_lock.state" && test ! -L "$prepare_lock.state" ||
+    fail "Down retained prepare provenance after deleting its exact runtime root: $prepare_lock"
+done
 for network_state in \
   network-east-context-hvo-deploy-services-east_default \
   network-west-context-hvo-deploy-services-west_default \
@@ -3785,12 +3908,23 @@ rm "$east_network_state"
 mkdir -m 700 "$TEMP_DIR/remote/$deploy_services-logic/runtime"
 if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-recreated.log" 2>&1; then fail 'Completed down accepted a recreated runtime root.'; fi
 rm -rf "$TEMP_DIR/remote/$deploy_services-logic/runtime"
+printf 'recreated\n' > "$east_prepare_lock"; chmod 600 "$east_prepare_lock"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-recreated.log" 2>&1; then fail 'Completed down accepted a recreated prepare lock.'; fi
+rm "$east_prepare_lock"
+printf 'recreated\n' > "$east_prepare_lock.state"; chmod 600 "$east_prepare_lock.state"
+if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-recreated.log" 2>&1; then fail 'Completed down accepted a recreated prepare-lock state sidecar.'; fi
+rm "$east_prepare_lock.state"
 east_container_id="$(sha256sum <<< "east-context/hvo-deploy-services-east/cameraagent" | cut -c1-64)"
 printf 'true\n' > "$FAKE_IMAGE_STATE/service-east-context-hvo-deploy-services-east-cameraagent"
 printf '{"project":"hvo-deploy-services-east","service":"cameraagent","running":true}\n' > "$FAKE_IMAGE_STATE/container-$east_container_id"
 if run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" > "$TEMP_DIR/down-recreated.log" 2>&1; then fail 'Completed down accepted a recreated running container.'; fi
 rm "$FAKE_IMAGE_STATE/service-east-context-hvo-deploy-services-east-cameraagent" "$FAKE_IMAGE_STATE/container-$east_container_id"
 run_deploy_mode down "$deploy_services" isolated --delete-state --confirm "$deploy_services" >/dev/null
+unset FAKE_RUNTIME_UID_HOST FAKE_RUNTIME_UID FAKE_RUNTIME_GID
+run_deploy_mode preflight deploy-services-next isolated >/dev/null
+run_deploy_mode prepare deploy-services-next isolated >/dev/null
+jq -e '.phaseStatus == "passed" and all(.targets[]; .creatingRunId == "deploy-services-next" and .newlyCreated.root == true)' \
+  "$TEMP_DIR/output/deploy-services-next-state/prepare-ledger.json" >/dev/null
 if grep -Eq 'compose([^\n]*)(down[[:space:]]+-v|down[[:space:]]+--volumes)|redis-cli([^\n]*)flush|mc([^\n]*)rm([^\n]*)--recursive' \
   "$REPO_ROOT/scripts/deploy/down.sh"; then fail 'Teardown contains an unscoped destructive operation.'; fi
 

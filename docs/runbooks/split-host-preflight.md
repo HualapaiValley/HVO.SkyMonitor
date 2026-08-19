@@ -1004,12 +1004,23 @@ Before parsing, the prepare ledger, manifest, and evidence must each be an
 owner-UID, mode-`0600`, single-link regular non-symlink, and the passed private
 manifest must equal the ledger. Deletion removes explicit Compose services, all
 four exact project default networks, the three exact project-named volumes, and
-marker-validated runtime roots. The three volume objects are bind-backed by the
+marker-validated runtime roots plus their matching prepare lock/state pairs. The
+three volume objects are bind-backed by the
 run-owned shared-service directories; removing a volume object does not delete
 an arbitrary host path, and the later marker-validated runtime-root deletion
 removes the backing data. Mailpit is included through the `test-smtp`
 profile. Every mutation is journaled with an atomic intent and completion; resume
 accepts absence only after a committed ownership-validated intent/completion.
+
+A volume whose run-ID label matches but whose inventory label is a different
+valid SHA-256 is never removed or relabeled. Down records the exact volume as a
+completed `retain-volume-label-drift` action, emits
+`inventory-label-drift-retained`, and fails before runtime-root deletion. That
+retained action authorizes only exact Docker absence on a later retry, allowing
+operator recovery to converge without treating a foreign, malformed, unlabeled,
+or unreachable volume as absent. If the exact expected labels are restored, the
+normal validated deletion path remains available. Wrong run identity, malformed
+labels, daemon errors, and unproven initial absence remain hard failures.
 
 Runtime-root deletion has no sudo, host privilege escalation, generic privileged
 helper, or arbitrary image path. The effective SSH UID must own the exact root,
@@ -1083,9 +1094,23 @@ runtime account that can race its owner-controlled parent between checks. Such a
 account is inside the deployment trust boundary; operators must protect that
 identity and parent from hostile concurrent mutation.
 
-Both the initial SSH filesystem inspection and final owner cleanup are bounded
-to 3600 seconds with a 30-second kill grace and SSH keepalives every 10 seconds
-with three missed replies permitted. Timeout or transport loss fails the durable
+After an exact run-created runtime root is absent, down journals a separate
+deletion for its deterministic sibling prepare lock and `.state` sidecar. It
+derives one exact lock name from the prepare-ledger target/root and never uses a
+wildcard. The runtime SSH owner must still control the non-group/world-writable
+parent. Under a nonblocking flock, cleanup requires owner-UID, single-link,
+mode-`0600` regular non-symlinks, exact lock bytes, and exact state bytes binding
+the marker digest, creating run, and all ledger creation flags. It removes state
+before lock and verifies both absent. A durable lock-delete intent permits retry
+when interruption left the exact lock but already removed its state, or when both
+are absent; no intent permits partial absence. Completed actions re-probe the
+root, lock, and sidecar as absent, so recreation fails closed. Prepare itself
+never repairs or adopts stale cross-run provenance.
+
+The initial SSH filesystem inspection, final owner cleanup, and prepare-lock
+cleanup are bounded to 3600 seconds with a 30-second kill grace and SSH
+keepalives every 10 seconds with three missed replies permitted. Timeout or
+transport loss fails the durable
 delete intent and preserves the ownership marker unless final cleanup had already
 completed and returned success.
 

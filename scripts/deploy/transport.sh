@@ -520,11 +520,21 @@ deploy_transport_remove_volume() {
     docker --context "$context" volume rm "$volume" >/dev/null 2>&1
 }
 
-deploy_transport_validate_volume() {
-    local context="$1" volume="$2" run_id="$3" inventory_hash="$4" identity
+deploy_transport_classify_volume() {
+    local context="$1" volume="$2" run_id="$3" inventory_hash="$4" identity classification
     identity="$(deploy_transport_docker_inspect_json "$context" volume "$volume" \
-      '{"runId":{{json (index .Labels "io.hvoskymonitor.run-id")}},"inventorySha256":{{json (index .Labels "io.hvoskymonitor.inventory-sha256")}}}')" || return 1
-    jq -e --arg run "$run_id" --arg hash "$inventory_hash" '.runId == $run and .inventorySha256 == $hash' <<< "$identity" >/dev/null
+      '{"runId":{{json (index .Labels "io.hvoskymonitor.run-id")}},"inventorySha256":{{json (index .Labels "io.hvoskymonitor.inventory-sha256")}}}')" || {
+        local status=$?
+        [[ "$status" == 44 ]] || return 1
+        printf 'absent\n'
+        return 0
+      }
+    classification="$(jq -er --arg run "$run_id" --arg hash "$inventory_hash" '
+      if .runId == $run and .inventorySha256 == $hash then "exact"
+      elif .runId == $run and (.inventorySha256 | type == "string" and test("^[0-9a-f]{64}$")) and .inventorySha256 != $hash
+      then "inventory-label-drift" else empty end' <<< "$identity")" || return 1
+    [[ -n "$classification" ]] || return 1
+    printf '%s\n' "$classification"
 }
 
 deploy_transport_require_volume_absent() {
@@ -808,6 +818,76 @@ if ! remaining=$(find -P "$root" -xdev -mindepth 1 ! -path "$control" ! -path "$
    "$(wc -c < "$marker")" == "$expected_bytes" && "$(<"$marker")" == "$expected" ]] || exit 104
 rm -f -- "$marker"; rmdir -- "$control"; rmdir -- "$root"
 [[ ! -e "$root" && ! -L "$root" ]]
+REMOTE
+}
+
+deploy_transport_remove_prepare_lock() {
+    local ssh_host="$1" root="$2" marker_digest="$3" run_id="$4" lock_name="$5"
+    local root_new="$6" control_new="$7" marker_new="$8" allow_partial="${9:-false}" failpoint="${10:-none}" target="${11:-}"
+    timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8 \
+      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" bash -s -- \
+      "$root" "$marker_digest" "$run_id" "$lock_name" "$root_new" "$control_new" "$marker_new" "$allow_partial" "$failpoint" "$target" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+export LC_ALL=C
+root=$1; marker_digest=$2; run_id=$3; lock_name=$4; root_new=$5; control_new=$6; marker_new=$7; allow_partial=$8; failpoint=$9; target=${10}
+[[ "$root" == /* && "$root" != / && "$root" != *//* && "$root" != */../* && "$root" != */./* ]] || exit 90
+[[ "$marker_digest" =~ ^[0-9a-f]{64}$ && "$run_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ &&
+   "$lock_name" =~ ^\.hvo-deploy-prepare-[0-9a-f]{32}\.lock$ ]] || exit 91
+[[ "$root_new" == true && ( "$control_new" == true || "$control_new" == false ) &&
+   ( "$marker_new" == true || "$marker_new" == false ) && ( "$allow_partial" == true || "$allow_partial" == false ) ]] || exit 92
+parent=${root%/*}; [[ -n "$parent" ]] || parent=/
+current=/; IFS=/ read -r -a components <<< "${parent#/}"
+for component in "${components[@]}"; do
+  [[ -n "$component" ]] || continue
+  [[ "$current" == / ]] && current="/$component" || current="$current/$component"
+  [[ -d "$current" && ! -L "$current" ]] || exit 93
+done
+runtime_uid=$(id -u); parent_mode=$(stat -c %a "$parent")
+[[ "$(stat -c %u "$parent")" == "$runtime_uid" ]] || exit 94
+(( (8#$parent_mode & 0200) != 0 && (8#$parent_mode & 0022) == 0 )) || exit 94
+[[ ! -e "$root" && ! -L "$root" ]] || exit 95
+lock_path="$parent/$lock_name"; state_path="$lock_path.state"
+if [[ ! -e "$lock_path" && ! -L "$lock_path" && ! -e "$state_path" && ! -L "$state_path" && "$allow_partial" == true ]]; then exit 0; fi
+[[ -f "$lock_path" && ! -L "$lock_path" && "$(stat -c %u:%h:%a "$lock_path")" == "$runtime_uid:1:600" ]] || exit 96
+exec 9<>"$lock_path" || exit 96
+flock -n 9 || exit 97
+lock_expected=$'HVO-DEPLOY-PREPARE-LOCK\t1\nmarker\t'"$marker_digest"
+lock_bytes=$((${#lock_expected} + 1))
+[[ "$(wc -c < "$lock_path")" == "$lock_bytes" && "$(<"$lock_path")" == "$lock_expected" ]] || exit 98
+if [[ -e "$state_path" || -L "$state_path" ]]; then
+  [[ -f "$state_path" && ! -L "$state_path" && "$(stat -c %u:%h:%a "$state_path")" == "$runtime_uid:1:600" ]] || exit 99
+  state_expected=$(printf 'HVO-DEPLOY-PREPARE-STATE\t1\nmarker\t%s\ncreatingRun\t%s\nrootNew\t%s\ncontrolNew\t%s\nmarkerNew\t%s' \
+    "$marker_digest" "$run_id" "$root_new" "$control_new" "$marker_new")
+  state_bytes=$((${#state_expected} + 1))
+  [[ "$(wc -c < "$state_path")" == "$state_bytes" && "$(<"$state_path")" == "$state_expected" ]] || exit 100
+  rm -f -- "$state_path" || exit 101
+  [[ "$failpoint" != "after-delete-prepare-lock-state:$target" ]] || exit 75
+else
+  [[ "$allow_partial" == true ]] || exit 102
+fi
+[[ ! -e "$root" && ! -L "$root" && -f "$lock_path" && ! -L "$lock_path" &&
+   "$(stat -c %u:%h:%a "$lock_path")" == "$runtime_uid:1:600" &&
+   "$(wc -c < "$lock_path")" == "$lock_bytes" && "$(<"$lock_path")" == "$lock_expected" ]] || exit 103
+rm -f -- "$lock_path" || exit 104
+[[ ! -e "$lock_path" && ! -L "$lock_path" && ! -e "$state_path" && ! -L "$state_path" ]]
+REMOTE
+}
+
+deploy_transport_require_prepare_lock_absent() {
+    local ssh_host="$1" root="$2" lock_name="$3"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$lock_name" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; lock_name=$2
+[[ "$root" == /* && "$root" != / && "$lock_name" =~ ^\.hvo-deploy-prepare-[0-9a-f]{32}\.lock$ ]] || exit 90
+parent=${root%/*}; [[ -n "$parent" ]] || parent=/
+current=/; IFS=/ read -r -a components <<< "${parent#/}"
+for component in "${components[@]}"; do
+  [[ -n "$component" ]] || continue
+  [[ "$current" == / ]] && current="/$component" || current="$current/$component"
+  [[ -d "$current" && ! -L "$current" ]] || exit 91
+done
+lock_path="$parent/$lock_name"
+[[ ! -e "$root" && ! -L "$root" && ! -e "$lock_path" && ! -L "$lock_path" && ! -e "$lock_path.state" && ! -L "$lock_path.state" ]]
 REMOTE
 }
 
