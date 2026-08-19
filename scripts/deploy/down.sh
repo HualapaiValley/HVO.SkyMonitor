@@ -307,7 +307,7 @@ deploy_down_pause_and_drain() {
 
 deploy_run_down() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6" policy="$7" confirm="$8"
-    local state_dir evidence_dir prepare prepare_ledger prepare_evidence up now target name context env_file logic shared volume entry root marker
+    local state_dir evidence_dir prepare prepare_ledger prepare_evidence up now target name context env_file logic shared volume entry root marker helper_key
     local state_project render_root private_root remote_root result prior_status project network ssh
     state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"
     prepare="$state_dir/prepare-manifest.json"; prepare_ledger="$state_dir/prepare-ledger.json"; prepare_evidence="$evidence_dir/prepare.json"; up="$state_dir/up-manifest.json"
@@ -481,10 +481,18 @@ deploy_run_down() {
                 deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
                 continue
             fi
+            context="$(jq -r '.dockerContext' <<< "$target")"
+            if [[ "$name" == "$(jq -r '.logicHost.name' "$inventory")" ]]; then
+                env_file="$state_dir/up-rendered/$name.env"; helper_key=LOGICHOST_IMAGE
+            elif [[ "$name" == "$(jq -r '.sharedServices.name' "$inventory")" ]]; then
+                env_file="$state_dir/up-rendered/shared.env"; helper_key=REDIS_IMAGE
+            else
+                env_file="$state_dir/up-rendered/$name.env"; helper_key=CAMERAAGENT_IMAGE
+            fi
             [[ -n "$prior_status" ]] || deploy_transport_validate_runtime_root "$(jq -r '.sshHost' <<< "$target")" "$root" "$marker" || return 1
             if deploy_down_begin_action "runtime-root:$name" delete; then
                 deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
-                deploy_transport_remove_runtime_root "$(jq -r '.sshHost' <<< "$target")" "$root" "$marker" true || return 1
+                deploy_transport_remove_runtime_root "$(jq -r '.sshHost' <<< "$target")" "$root" "$marker" true "$context" "$env_file" "$helper_key" "$target" || return 1
                 deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
                 deploy_down_after_mutation "runtime-root:$name" delete || return 1
                 deploy_down_complete_action "runtime-root:$name" delete || return 1
