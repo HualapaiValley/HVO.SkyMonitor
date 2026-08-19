@@ -77,6 +77,12 @@ require_source_reference 'ARM64 operators must install the' docs/catalog/product
 require_source_reference 'It never copies or executes the catalog builder remotely.' docs/runbooks/split-host-preflight.md
 require_source_reference 'Two consecutive' docs/runbooks/split-host-preflight.md
 require_source_reference 'final reassertion' docs/runbooks/split-host-preflight.md
+require_source_reference 'There is no generic privilege escalation path.' docs/runbooks/split-host-preflight.md
+require_source_reference 'including a same-device bind' docs/runbooks/split-host-preflight.md
+require_source_reference 'It removes neither marker nor root.' docs/runbooks/split-host-preflight.md
+require_source_reference '--pull never' docs/runbooks/split-host-preflight.md
+require_source_reference 'does not claim inode binding' docs/runbooks/split-host-preflight.md
+require_source_reference 'POSIX/BusyBox-compatible syntax' docs/runbooks/split-host-preflight.md
 require_source_reference 'deploy_capture_queues_converged' scripts/deploy/common.sh
 require_source_reference './scripts/test:deploy-environment --parallel' docs/runbooks/ci-pipeline.md
 require_source_reference 'name: Deployment Contracts' .github/workflows/ci.yml

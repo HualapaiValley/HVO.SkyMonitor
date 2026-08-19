@@ -471,12 +471,28 @@ deploy_transport_docker_inspect_json() {
     else
         status=$?
     fi
-    if [[ "$status" == 1 ]] && grep -Eq "^(Error: No such $kind: $name|Error response from daemon: (get $name: no such $kind|$kind $name not found))$" "$error"; then
+    if [[ "$status" == 1 ]] && { grep -Eq "^(Error: No such $kind: $name|Error response from daemon: (get $name: no such $kind|$kind $name not found))$" "$error" ||
+      grep -Fqx "Error response from daemon: No such $kind: $name" "$error"; }; then
         rm -f -- "$error"
         return 44
     fi
     rm -f -- "$error"
     return 1
+}
+
+deploy_transport_require_container_absent() {
+    local status
+    deploy_transport_docker_inspect_json "$1" container "$2" '{{json .Id}}' >/dev/null && return 1
+    status=$?
+    [[ "$status" == 44 ]]
+}
+
+deploy_transport_cleanup_helper_cid_path() {
+    local directory="$1" cidfile="$2"
+    [[ "$directory" == /tmp/hvo-runtime-helper.* && "$cidfile" == "$directory/container.cid" ]] || return 1
+    if [[ -e "$cidfile" || -L "$cidfile" ]]; then rm -f "$cidfile" || return 1; fi
+    rmdir "$directory" || return 1
+    [[ ! -e "$directory" && ! -L "$directory" ]]
 }
 
 deploy_transport_compose_logs() {
@@ -565,14 +581,52 @@ root=$1
 REMOTE
 }
 
+deploy_transport_valid_helper_repository() {
+    local repository="$1" segment
+    [[ "$repository" =~ ^[a-z0-9]([a-z0-9._-]*[a-z0-9])?/[a-z0-9]([a-z0-9._/-]*[a-z0-9])?$ ]] || return 1
+    [[ "$repository" != *//* && "$repository" != *'@'* && "$repository" != *':'* ]] || return 1
+    IFS=/ read -r -a segments <<< "$repository"
+    ((${#segments[@]} >= 2)) || return 1
+    for segment in "${segments[@]}"; do
+        [[ -n "$segment" && "$segment" != . && "$segment" != .. &&
+           "$segment" =~ ^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$ ]] || return 1
+    done
+}
+
+deploy_transport_helper_image() {
+    local env_file="$1" key="$2" line value='' count=0 mode repository digest
+    [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
+    mode="$(stat -c '%u:%h:%a' -- "$env_file" 2>/dev/null)" || return 1
+    [[ "$mode" =~ ^$(id -u):1:([46]00)$ ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" != "$key="* ]] || { value="${line#*=}"; count=$((count + 1)); }
+    done < "$env_file"
+    [[ "$count" == 1 ]] || return 1
+    if [[ "$value" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        :
+    elif [[ "$value" == *@sha256:* ]]; then
+        repository="${value%@sha256:*}"; digest="${value##*@sha256:}"
+        [[ "$value" == "$repository@sha256:$digest" && "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+        deploy_transport_valid_helper_repository "$repository" || return 1
+    else
+        return 1
+    fi
+    printf '%s\n' "$value"
+}
+
+# Revalidation prevents accidental or foreign-path deletion; the runtime owner remains trusted not to race its owner-controlled parent.
 deploy_transport_remove_runtime_root() {
-    local ssh_host="$1" root="$2" marker_digest="$3" allow_absent="${4:-false}"
-    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$marker_digest" "$allow_absent" 2>/dev/null <<'REMOTE'
+    local ssh_host="$1" root="$2" marker_digest="$3" allow_absent="${4:-false}" context="${5:-}" helper_env="${6:-}" helper_key="${7:-}" target="${8:-}"
+    local inspection runtime_uid mixed helper_image ciddir cidfile cid='' helper_status lifecycle_ok cid_valid
+    [[ "$root" != *'\'* ]] || return 1
+    inspection="$(timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8 \
+      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" bash -s -- "$root" "$marker_digest" "$allow_absent" 2>/dev/null <<'REMOTE'
 set -euo pipefail
+export LC_ALL=C
 root=$1; marker_digest=$2; allow_absent=$3
 [[ "$root" == /* && "$root" != / && "$root" != *//* && "$root" != */../* && "$root" != */./* ]] || exit 90
 [[ "$marker_digest" =~ ^[0-9a-f]{64}$ ]] || exit 91
-if [[ ! -e "$root" && ! -L "$root" && "$allow_absent" == true ]]; then exit 0; fi
+if [[ ! -e "$root" && ! -L "$root" && "$allow_absent" == true ]]; then printf 'absent\n'; exit 0; fi
 current=/
 IFS=/ read -r -a components <<< "${root#/}"
 for component in "${components[@]}"; do
@@ -580,16 +634,180 @@ for component in "${components[@]}"; do
   [[ "$current" == / ]] && current="/$component" || current="$current/$component"
   [[ -d "$current" && ! -L "$current" ]] || exit 92
 done
-marker="$root/.hvo-deploy/ownership"
+runtime_uid=$(id -u); control="$root/.hvo-deploy"; marker="$control/ownership"
 expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
-[[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker")" == 1 && "$(<"$marker")" == "$expected" ]] || exit 93
-root_uid=$(stat -c %u "$root")
-while IFS= read -r -d '' directory; do
-  [[ "$(stat -c %u "$directory")" == "$root_uid" ]] || exit 94
-done < <(find "$root" -xdev -type d -print0)
-find "$root" -xdev -type d -exec chmod u+w -- {} +
-rm -rf --one-file-system -- "$root"
-[[ ! -e "$root" && ! -L "$root" ]] || exit 95
+expected_bytes=$((${#expected} + 1))
+[[ -d "$control" && ! -L "$control" && "$(stat -c %u "$root")" == "$runtime_uid" && "$(stat -c %a "$root")" == 700 &&
+   "$(stat -c %u "$control")" == "$runtime_uid" && "$(stat -c %a "$control")" == 700 ]] || exit 93
+[[ -f "$marker" && ! -L "$marker" && "$(stat -c %u "$marker")" == "$runtime_uid" &&
+   "$(stat -c %h "$marker")" == 1 && "$(stat -c %a "$marker")" == 600 &&
+   "$(wc -c < "$marker")" == "$expected_bytes" && "$(<"$marker")" == "$expected" ]] || exit 94
+awk -v root="$root" '
+  function escaped(path, result, position, character) {
+    result=""
+    for (position=1; position<=length(path); position++) {
+      character=substr(path,position,1)
+      if (character == "\\") result=result "\\134"
+      else if (character == " ") result=result "\\040"
+      else if (character == sprintf("%c",9)) result=result "\\011"
+      else if (character == sprintf("%c",10)) result=result "\\012"
+      else result=result character
+    }
+    return result
+  }
+  BEGIN { root=escaped(root) }
+  $5 == root || index($5, root "/") == 1 { exit 42 }
+' /proc/self/mountinfo || exit 95
+mixed=false
+if foreign=$(find -P "$root" -xdev ! -user "$runtime_uid" ! -user 0 -print -quit); then
+  [[ -z "$foreign" ]] || exit 97
+  if root_owned=$(find -P "$root" -xdev -user 0 -print -quit); then
+    [[ -z "$root_owned" ]] || mixed=true
+  else
+    mixed=true
+  fi
+else
+  # Inaccessible descendants require privileged revalidation; they never authorize host deletion.
+  mixed=true
+fi
+printf '%s\t%s\n' "$runtime_uid" "$mixed"
+REMOTE
+)" || return 1
+    if [[ "$inspection" == absent ]]; then return 0; fi
+    IFS=$'\t' read -r runtime_uid mixed <<< "$inspection"
+    [[ "$runtime_uid" =~ ^[0-9]+$ && ( "$mixed" == true || "$mixed" == false ) ]] || return 1
+    if [[ "$mixed" == true ]]; then
+        [[ "$context" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || return 1
+        [[ "$root" != *','* && "$root" != *'"'* ]] || return 1
+        helper_image="$(deploy_transport_helper_image "$helper_env" "$helper_key")" || return 1
+        ciddir="$(mktemp -d /tmp/hvo-runtime-helper.XXXXXX)" || return 1
+        chmod 700 "$ciddir" || { rmdir "$ciddir"; return 1; }
+        cidfile="$ciddir/container.cid"
+        [[ -d "$ciddir" && ! -L "$ciddir" && "$(stat -c '%u:%a' "$ciddir" 2>/dev/null)" == "$(id -u):700" &&
+           ! -e "$cidfile" && ! -L "$cidfile" ]] || { rmdir "$ciddir"; return 1; }
+        if [[ -n "$target" ]] && ! deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON"; then
+            deploy_transport_cleanup_helper_cid_path "$ciddir" "$cidfile" || return 1
+            return 1
+        fi
+        if (umask 077; timeout --signal=TERM --kill-after=30s 3600 docker --context "$context" run --pull never --rm --interactive --network none --read-only \
+          --pids-limit 64 --user 0:0 --cap-drop ALL --cap-add DAC_OVERRIDE --cap-add FOWNER \
+          --security-opt no-new-privileges --cidfile "$cidfile" --mount "type=bind,source=$root,target=/runtime-root" \
+          --entrypoint /bin/sh "$helper_image" -s -- "$runtime_uid" "$marker_digest" <<'HELPER'
+set -eu
+export LC_ALL=C
+runtime_uid=$1; marker_digest=$2; root=/runtime-root; control=$root/.hvo-deploy; marker=$control/ownership
+case "$runtime_uid" in ''|*[!0-9]*) exit 90 ;; esac
+expected=$(printf 'HVO-DEPLOY-ROOT\t1\nmarker\t%s' "$marker_digest")
+expected_bytes=$((${#expected} + 1))
+[ -d "$root" ] && [ ! -L "$root" ] && [ -d "$control" ] && [ ! -L "$control" ] || exit 90
+[ "$(stat -c %u "$root")" = "$runtime_uid" ] && [ "$(stat -c %a "$root")" = 700 ] &&
+  [ "$(stat -c %u "$control")" = "$runtime_uid" ] && [ "$(stat -c %a "$control")" = 700 ] || exit 91
+[ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(stat -c %u "$marker")" = "$runtime_uid" ] &&
+  [ "$(stat -c %h "$marker")" = 1 ] && [ "$(stat -c %a "$marker")" = 600 ] &&
+  [ "$(wc -c < "$marker")" = "$expected_bytes" ] && [ "$(cat "$marker")" = "$expected" ] || exit 92
+awk -v root="$root" '
+  function escaped(path, result, position, character) {
+    result=""
+    for (position=1; position<=length(path); position++) {
+      character=substr(path,position,1)
+      if (character == "\\") result=result "\\134"
+      else if (character == " ") result=result "\\040"
+      else if (character == sprintf("%c",9)) result=result "\\011"
+      else if (character == sprintf("%c",10)) result=result "\\012"
+      else result=result character
+    }
+    return result
+  }
+  BEGIN { root=escaped(root) }
+  index($5, root "/") == 1 { exit 42 }
+' /proc/self/mountinfo || exit 93
+if ! foreign=$(find -P "$root" -xdev ! -user "$runtime_uid" ! -user 0 -print -quit); then exit 94; fi
+[ -z "$foreign" ] || exit 95
+find -P "$root" -xdev -type d -exec chmod u+rwx {} + || exit 96
+find -P "$root" -xdev -depth -mindepth 1 ! -path "$marker" ! -type d -exec rm -f {} + || exit 97
+find -P "$root" -xdev -depth -mindepth 1 ! -path "$control" -type d -exec rmdir {} \; || exit 98
+[ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(stat -c %u "$marker")" = "$runtime_uid" ] &&
+  [ "$(stat -c %h "$marker")" = 1 ] && [ "$(stat -c %a "$marker")" = 600 ] &&
+  [ "$(wc -c < "$marker")" = "$expected_bytes" ] && [ "$(cat "$marker")" = "$expected" ] || exit 99
+if ! remaining=$(find -P "$root" -xdev -mindepth 1 ! -path "$control" ! -path "$marker" -print -quit); then exit 100; fi
+[ -z "$remaining" ] || exit 101
+HELPER
+        ); then helper_status=0; else helper_status=$?; fi
+        lifecycle_ok=true; cid_valid=false
+        if [[ -f "$cidfile" && ! -L "$cidfile" && "$(stat -c '%u:%h:%a:%s' "$cidfile" 2>/dev/null)" == "$(id -u):1:600:64" ]]; then
+            cid="$(<"$cidfile")"
+            if [[ "$cid" =~ ^[0-9a-f]{64}$ ]]; then cid_valid=true; fi
+        fi
+        if [[ "$helper_status" == 0 ]]; then
+            if [[ "$cid_valid" != true ]]; then
+                lifecycle_ok=false
+            elif ! deploy_transport_require_container_absent "$context" "$cid"; then
+                docker --context "$context" container rm -f "$cid" >/dev/null 2>&1 || true
+                deploy_transport_require_container_absent "$context" "$cid" || lifecycle_ok=false
+                lifecycle_ok=false
+            fi
+        elif [[ "$cid_valid" == true ]]; then
+            docker --context "$context" container rm -f "$cid" >/dev/null 2>&1 || true
+            deploy_transport_require_container_absent "$context" "$cid" || lifecycle_ok=false
+        fi
+        deploy_transport_cleanup_helper_cid_path "$ciddir" "$cidfile" || lifecycle_ok=false
+        [[ -z "$target" ]] || deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+        [[ "$helper_status" == 0 && "$lifecycle_ok" == true ]] || return 1
+        [[ "${DEPLOY_TEST_FAILPOINT:-}" != after-mixed-runtime-helper-clear ]] || return 75
+    fi
+    timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8 \
+      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" bash -s -- \
+      "$root" "$marker_digest" "$runtime_uid" "$mixed" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+export LC_ALL=C
+root=$1; marker_digest=$2; runtime_uid=$3; mixed=$4; control="$root/.hvo-deploy"; marker="$control/ownership"
+expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
+expected_bytes=$((${#expected} + 1))
+[[ "$root" == /* && "$root" != / && "$root" != *//* && "$root" != */../* && "$root" != */./* ]] || exit 90
+current=/; IFS=/ read -r -a components <<< "${root#/}"
+for component in "${components[@]}"; do
+  [[ -n "$component" ]] || continue
+  [[ "$current" == / ]] && current="/$component" || current="$current/$component"
+  [[ -d "$current" && ! -L "$current" ]] || exit 91
+done
+[[ "$(id -u)" == "$runtime_uid" && -d "$control" && ! -L "$control" &&
+   "$(stat -c %u "$root")" == "$runtime_uid" && "$(stat -c %a "$root")" == 700 &&
+   "$(stat -c %u "$control")" == "$runtime_uid" && "$(stat -c %a "$control")" == 700 ]] || exit 92
+[[ -f "$marker" && ! -L "$marker" && "$(stat -c %u "$marker")" == "$runtime_uid" &&
+   "$(stat -c %h "$marker")" == 1 && "$(stat -c %a "$marker")" == 600 &&
+   "$(wc -c < "$marker")" == "$expected_bytes" && "$(<"$marker")" == "$expected" ]] || exit 93
+awk -v root="$root" '
+  function escaped(path, result, position, character) {
+    result=""
+    for (position=1; position<=length(path); position++) {
+      character=substr(path,position,1)
+      if (character == "\\") result=result "\\134"
+      else if (character == " ") result=result "\\040"
+      else if (character == sprintf("%c",9)) result=result "\\011"
+      else if (character == sprintf("%c",10)) result=result "\\012"
+      else result=result character
+    }
+    return result
+  }
+  BEGIN { root=escaped(root) }
+  $5 == root || index($5, root "/") == 1 { exit 42 }
+' /proc/self/mountinfo || exit 94
+if ! foreign=$(find -P "$root" -xdev ! -user "$runtime_uid" ! -user 0 -print -quit); then exit 95; fi
+[[ -z "$foreign" ]] || exit 96
+if ! root_owned=$(find -P "$root" -xdev -user 0 -print -quit); then exit 97; fi
+[[ "$mixed" == true || -z "$root_owned" ]] || exit 98
+if [[ "$mixed" == false ]]; then
+  find -P "$root" -xdev -type d -exec chmod u+rwx -- {} + || exit 99
+  find -P "$root" -xdev -depth -mindepth 1 ! -path "$marker" ! -type d -exec rm -f -- {} + || exit 100
+  find -P "$root" -xdev -depth -mindepth 1 ! -path "$control" -type d -exec rmdir -- {} + || exit 101
+fi
+if ! remaining=$(find -P "$root" -xdev -mindepth 1 ! -path "$control" ! -path "$marker" -print -quit); then exit 102; fi
+[[ -z "$remaining" ]] || exit 103
+[[ -f "$marker" && ! -L "$marker" && "$(stat -c %u "$marker")" == "$runtime_uid" &&
+   "$(stat -c %h "$marker")" == 1 && "$(stat -c %a "$marker")" == 600 &&
+   "$(wc -c < "$marker")" == "$expected_bytes" && "$(<"$marker")" == "$expected" ]] || exit 104
+rm -f -- "$marker"; rmdir -- "$control"; rmdir -- "$root"
+[[ ! -e "$root" && ! -L "$root" ]]
 REMOTE
 }
 
@@ -607,7 +825,9 @@ for component in "${components[@]}"; do
   [[ -d "$current" && ! -L "$current" ]] || exit 91
 done
 marker="$root/.hvo-deploy/ownership"; expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
-[[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker")" == 1 && "$(<"$marker")" == "$expected" ]] || exit 92
+expected_bytes=$((${#expected} + 1))
+[[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker")" == 1 &&
+   "$(wc -c < "$marker")" == "$expected_bytes" && "$(<"$marker")" == "$expected" ]] || exit 92
 REMOTE
 }
 

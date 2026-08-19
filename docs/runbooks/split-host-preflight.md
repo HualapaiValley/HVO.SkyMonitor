@@ -38,8 +38,11 @@ than trusting unrelated inventory assertions. Docker daemon architecture values
 reason and are not copied into output or evidence.
 
 Runtime roots may contain ordinary spaces and are passed only through quoted
-arguments. Control characters, repeated separators, and `.` or `..` components
-are rejected. Catalog versions follow the repository's existing `4.2`,
+arguments. Control characters, repeated separators, `.` or `..` components,
+backslash, comma, and double quote are rejected before deployment so every
+accepted root has one unambiguous Docker bind-mount and mountinfo representation.
+`moduleConfigPath` remains a generic safe absolute file path and does not inherit
+those Docker-specific delimiter restrictions. Catalog versions follow the repository's existing `4.2`,
 `hyg-v4.2-p3-s2-r1`, and fixture-style identifiers; colon is not a supported
 catalog-version separator.
 Inventory schema v7 pins the Git revision, catalog, source-revision image tag,
@@ -1007,6 +1010,85 @@ an arbitrary host path, and the later marker-validated runtime-root deletion
 removes the backing data. Mailpit is included through the `test-smtp`
 profile. Every mutation is journaled with an atomic intent and completion; resume
 accepts absence only after a committed ownership-validated intent/completion.
+
+Runtime-root deletion has no sudo, host privilege escalation, generic privileged
+helper, or arbitrary image path. The effective SSH UID must own the exact root,
+its `.hvo-deploy` control directory, and the single-link regular `ownership`
+marker. Root and control mode must remain `0700`; marker mode must remain `0600`
+and its two-line bytes, including exactly one final newline and no appended data,
+must match the prepare-ledger digest exactly. Inspection uses no symlink
+following. When the unprivileged ownership traversal succeeds, it allows only
+the runtime UID or UID 0 and rejects every reported foreign UID before mutation.
+If that traversal cannot enter a mode-`0700` UID-0 directory or otherwise fails,
+the tree is classified as mixed and delegated without host mutation; the failure
+never authorizes unprivileged deletion. The helper then performs the complete
+ownership traversal and rejects every foreign UID or metadata error before
+mutation. A mountpoint at or below
+the runtime root is also rejected before mutation, including a same-device bind
+mount. Each validation pass scans `/proc/self/mountinfo` once, encodes the actual
+root into its escaped path representation for comparison, and fails closed on
+scan errors; `-xdev` is
+not treated as mountpoint proof. The component-by-component
+ancestor checks and exact marker checks still fail closed for symlinks, special
+files, hard links, wrong content, and mode or owner drift.
+
+An entirely runtime-owned root is cleared by the unprivileged SSH user. Runtime-
+owned directories are made owner-writable without following links, all content
+except `.hvo-deploy/ownership` is removed, and the marker is revalidated before
+the marker, control directory, and root are removed last. If inspection finds a
+legitimate UID-0 descendant or cannot fully inspect an inaccessible descendant,
+deletion uses only the already identity-correlated
+target Docker daemon. The helper image is parsed without sourcing from the
+owner-only up-rendered environment: `CAMERAAGENT_IMAGE` for a CameraAgent,
+`LOGICHOST_IMAGE` for LogicHost, or `REDIS_IMAGE` for shared services. It must be
+one exact locally present immutable reference: either a registry
+`repository@sha256:<64-lowercase-hex>` reference or an archive-loaded local
+`sha256:<64-lowercase-hex>` image ID. Tags, options, whitespace, duplicate
+assignments, and malformed digests are rejected.
+
+The mixed-UID helper runs through a 3600-second execution bound with
+`--pull never`, PID limit 64, no network, a read-only helper
+root filesystem, root user, dropped capabilities except the reviewed filesystem
+override/owner capabilities, and no-new-privileges. Its `/bin/sh` script uses
+POSIX/BusyBox-compatible syntax so both the Debian ASP.NET application images and
+the Alpine Redis image can execute it. Its only host mount is the
+exact validated runtime root at fixed `/runtime-root`. Inventory and transport
+reject backslash, comma, and double quote roots before the host mountinfo scan or
+Docker mount construction. The helper
+independently revalidates root/control/
+marker ownership and modes, exact marker content and link count, descendant UIDs,
+and nested mountpoints. After making validated directories writable, depth-first
+directory removal is checked again through exact tree emptiness, including nested
+and top-level UID-0 directories. It removes neither marker nor root. Docker/SSH identity
+is re-correlated immediately before and after this helper, after which the SSH
+runtime owner revalidates and removes marker, control, and root. Helper denial,
+failure, or interruption after mixed content clearing leaves the exact marker
+and durable delete intent in place, so a corrected rerun resumes safely through
+the same validation. There is no generic privilege escalation path.
+
+Each helper run receives a fresh owner-only mode-`0700` local directory containing
+a fixed, initially nonexistent cidfile path. Docker creates that file under
+`umask 077`; only an owner-owned, single-link, mode-`0600` regular file containing
+exactly 64 lowercase hexadecimal bytes with no newline is authoritative. Success
+requires exact Docker not-found proof that `--rm` removed that full-ID helper
+before host finalization. On timeout or failure, only that valid full ID authorizes
+`docker --context <exact-target> container rm -f <exact-id>`, followed by the same
+exact not-found proof. Empty or malformed cidfiles authorize no container removal;
+the cidfile and its private directory are removed on every handled return path.
+
+This is the same owner-controlled marker trust model used by prepare. Immediate
+component and marker revalidation prevents accidental deletion and deletion of a
+foreign path, but it does not claim inode binding or resistance to a malicious
+runtime account that can race its owner-controlled parent between checks. Such an
+account is inside the deployment trust boundary; operators must protect that
+identity and parent from hostile concurrent mutation.
+
+Both the initial SSH filesystem inspection and final owner cleanup are bounded
+to 3600 seconds with a 30-second kill grace and SSH keepalives every 10 seconds
+with three missed replies permitted. Timeout or transport loss fails the durable
+delete intent and preserves the ownership marker unless final cleanup had already
+completed and returned success.
+
 SSH host and Docker daemon identity are re-correlated immediately before and
 after each mutation. Every removable network and volume carries the exact
 run-ID and inventory-SHA labels written at creation; network identity additionally
