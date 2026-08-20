@@ -118,13 +118,14 @@ run_deploy_contract_shards() {
     }
 
     report_running_shards() {
-        local report_pid report_shard output_bytes progress_age output_age output_mtime
+        local report_pid report_shard output_bytes progress_age output_age output_mtime epoch_now
         now=$SECONDS
+        epoch_now="$(date +%s)"
         for report_pid in "${!shard_by_pid[@]}"; do
             report_shard="${shard_by_pid[$report_pid]}"
             output_bytes="$(stat -c %s "$log_root/$report_shard.log" 2>/dev/null || printf 0)"
             output_mtime="$(stat -c %Y "$log_root/$report_shard.log" 2>/dev/null || printf 0)"
-            output_age=$(( $(date +%s) - output_mtime )); (( output_age >= 0 )) || output_age=0
+            output_age=$(( epoch_now - output_mtime )); (( output_age >= 0 )) || output_age=0
             progress_age=$(( now - progress_at_by_pid[$report_pid] ))
             printf 'Deployment contract status shard=%s elapsed=%ss progress_idle=%ss output_idle=%ss output_bytes=%s checkpoint=%s.\n' \
               "$report_shard" "$(( now - started_by_pid[$report_pid] ))" "$progress_age" "$output_age" "$output_bytes" \
@@ -296,7 +297,7 @@ deploy_test_checkpoint() {
     temporary="$progress_file.$BASHPID"
     printf 'sequence=%s checkpoint=%s\n' "$((sequence + 1))" "$checkpoint" > "$temporary"
     chmod 600 "$temporary"
-    mv -fT "$temporary" "$progress_file"
+    mv -fT -- "$temporary" "$progress_file"
 }
 
 if [[ -n "${DEPLOY_TEST_COORDINATOR_PROGRESS_SHARD:-}" && "$DEPLOY_TEST_COORDINATOR_PROGRESS_SHARD" == "$SELECTED_SHARD" ]]; then
