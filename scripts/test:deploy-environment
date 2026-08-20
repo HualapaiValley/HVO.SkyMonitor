@@ -484,8 +484,31 @@ if FAKE_REMOTE_HOST="$host" FAKE_REMOTE_PREPARE="$prepare" PATH="$remote_path" /
     if [[ "$width" == 1936 || "$width" == 3096 ]]; then
       : > "$FAKE_HTTP_STATE/$host.measure-profile"
       /usr/bin/cp "$2" "$FAKE_HTTP_STATE/$host.schedule-pending.json"
+      if [[ -f "$FAKE_HTTP_STATE/$host.schedule-active-revision" && "$(<"$FAKE_HTTP_STATE/$host.schedule-active-revision")" == schedule-pending-v2 ]]; then
+        printf 'schedule-pending-v3\n' > "$FAKE_HTTP_STATE/$host.schedule-pending-revision"
+      else
+        printf 'schedule-pending-v2\n' > "$FAKE_HTTP_STATE/$host.schedule-pending-revision"
+      fi
+      if [[ -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]]; then printf '4\n'; else printf '2\n'; fi > "$FAKE_HTTP_STATE/$host.schedule-state-version"
+    elif [[ "$(/usr/bin/jq -r '.rig.profileVersion // ""' "$2")" == w0-deterministic-mono16-v1 ]]; then
+      if [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]] || ! /usr/bin/cmp -s "$2" "$FAKE_HTTP_STATE/$host.schedule-active.json"; then
+        /usr/bin/cp "$2" "$FAKE_HTTP_STATE/$host.schedule-pending.json"
+        if [[ -f "$FAKE_HTTP_STATE/$host.schedule-prior.json" ]] && /usr/bin/cmp -s "$2" "$FAKE_HTTP_STATE/$host.schedule-prior.json"; then
+          /usr/bin/cp "$FAKE_HTTP_STATE/$host.schedule-prior-revision" "$FAKE_HTTP_STATE/$host.schedule-pending-revision"
+        else
+          printf 'schedule-pending-v2\n' > "$FAKE_HTTP_STATE/$host.schedule-pending-revision"
+        fi
+        : > "$FAKE_HTTP_STATE/$host.schedule-w0-draft"
+        if [[ -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]]; then printf '4\n'; else printf '2\n'; fi > "$FAKE_HTTP_STATE/$host.schedule-state-version"
+      fi
     elif [[ -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]]; then
       /usr/bin/cp "$2" "$FAKE_HTTP_STATE/$host.schedule-pending.json"
+      if [[ -f "$FAKE_HTTP_STATE/$host.schedule-prior.json" ]] && /usr/bin/cmp -s "$2" "$FAKE_HTTP_STATE/$host.schedule-prior.json"; then
+        /usr/bin/cp "$FAKE_HTTP_STATE/$host.schedule-prior-revision" "$FAKE_HTTP_STATE/$host.schedule-pending-revision"
+      else
+        printf 'schedule-pending-v4\n' > "$FAKE_HTTP_STATE/$host.schedule-pending-revision"
+      fi
+      printf '4\n' > "$FAKE_HTTP_STATE/$host.schedule-state-version"
     fi
   fi
 else exit $?; fi
@@ -1066,6 +1089,9 @@ if [[ "$url" == */api/internal/deployment/continuity* ]]; then
   requested_device="${url#*/api/internal/devices/continuity/}"; requested_device="${requested_device%%\?*}"
   [[ "$requested_device" != device-* ]] || state_host="${requested_device#device-}"
   count_file="${FAKE_HTTP_STATE:?}/$state_host.count"; count=1
+  if [[ "${FAKE_SMOKE_RUNNING_FAILURE:-}" == "$host" && -f "$FAKE_HTTP_STATE/$host.smoke-resumed" ]]; then
+    : > "$output"; printf 503; exit 0
+  fi
   if [[ "${FAKE_MEASURE_SEQUENCE_READ_FAIL:-}" == "$host" && -f "$FAKE_HTTP_STATE/$host.measure-running" && ! -f "$FAKE_HTTP_STATE/$host.sequence-read-failed" ]]; then
     : > "$FAKE_HTTP_STATE/$host.sequence-read-failed"; : > "$output"; printf 503; exit 0
   fi
@@ -1234,9 +1260,12 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   header_path=; for ((i=0; i<${#args[@]}; i++)); do [[ "${args[$i]}" != --header || "${args[$((i+1))]}" != @* ]] || header_path="${args[$((i+1))]#@}"; done
   key=; while IFS= read -r header_line; do [[ "$header_line" != 'Idempotency-Key: '* ]] || key="${header_line#Idempotency-Key: }"; done < "$header_path"
   id_count="$(grep -c '^Idempotency-Key:' "$header_path")"; token_count="$(grep -c '^RequestVerificationToken:' "$header_path")"
-  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(bootstrap-[a-z0-9-]+-[a-z0-9-]+-resume-[0-9]+|down-[a-z0-9-]+-[a-z0-9-]+-(pause|final-pause)-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+|smoke-[a-z0-9-]+-[a-z0-9-]+-(resume|pause)-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
+  [[ "$id_count" == 1 && "$token_count" == 1 && "$key" =~ ^deploy-(bootstrap-[a-z0-9-]+-[a-z0-9-]+-resume-[0-9]+|down-[a-z0-9-]+-[a-z0-9-]+-(pause|final-pause)-[0-9]+|measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+|smoke-[a-z0-9-]+-[a-z0-9-]+-(resume|initial-pause|final-pause|failure-pause)-[0-9]+)$ ]] || { : > "$output"; printf 400; exit 0; }
   action="${url##*/}"; desired=Running; [[ "$action" != pause ]] || desired=Paused
-  [[ "$action" != pause || "${FAKE_PAUSE_CONFLICT:-false}" != true ]] || { : > "$output"; printf 409; exit 0; }
+  if [[ "$action" == pause && ( "${FAKE_PAUSE_CONFLICT:-false}" == true ||
+        ( "$key" == *-failure-pause-* && "${FAKE_SMOKE_FAILURE_PAUSE_CONFLICT:-false}" == true ) ) ]]; then
+    : > "$output"; printf 409; exit 0
+  fi
   host="${FAKE_REMOTE_HOST:?}"
   if [[ ( "$key" == *-failure-pause-* || "$key" == *-restoration-pause-* ) && "${FAKE_MEASURE_FAILURE_PAUSE_FAIL:-}" == "$host" ]]; then : > "$output"; printf 503; exit 0; fi
   receipt="$FAKE_HTTP_STATE/$host.idempotency.$(printf '%s' "$key" | sha256sum | cut -c1-32).json"
@@ -1260,8 +1289,10 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   if [[ "$desired" == Running ]]; then
     stage=measured; [[ "$key" != *-warmup-resume-* ]] || stage=warmup
     printf '%s\n' "$stage" > "$FAKE_HTTP_STATE/$host.measure-stage"; : > "$FAKE_HTTP_STATE/$host.measure-running"
+    [[ "$key" != *deploy-smoke-*-resume-* ]] || : > "$FAKE_HTTP_STATE/$host.smoke-resumed"
   else
     rm -f "$FAKE_HTTP_STATE/$host.measure-running"
+    [[ "$key" != *deploy-smoke-*-final-pause-* && "$key" != *deploy-smoke-*-failure-pause-* ]] || rm -f "$FAKE_HTTP_STATE/$host.smoke-resumed"
     if [[ "$changed" == true && "${FAKE_MEASURE_EXTRA_CAPTURE:-false}" == true && -f "$FAKE_HTTP_STATE/$host.measure-profile" ]]; then
       count_file="$FAKE_HTTP_STATE/$host.count"; printf '%s\n' "$(( $(<"$count_file") + 1 ))" > "$count_file"
     fi
@@ -1276,28 +1307,58 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
 fi
 if [[ "$url" == */api/v1/operations/schedule/ ]]; then
   host="${FAKE_REMOTE_HOST:?}"; active="$FAKE_HTTP_STATE/$host.schedule-active.json"
+  printf 'schedule-read\t%s\n' "$host" >> "${FAKE_LOG:?}"
   pending=null; [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-pending.json" ]] || pending="$(jq -c . "$FAKE_HTTP_STATE/$host.schedule-pending.json")"
   pending_id=schedule-pending-v2; pending_number=2; pending_source=file-draft
-  if [[ "$pending" != null && "$(jq -r '.rig.sensor.widthPixels' <<< "$pending")" != 1936 && "$(jq -r '.rig.sensor.widthPixels' <<< "$pending")" != 3096 ]]; then pending_id=schedule-active-v1; pending_number=1; pending_source=file-bootstrap; fi
-  active_version=3; [[ "$pending_id" != schedule-active-v1 ]] || active_version=4
-  if [[ -f "$active" ]]; then profile="$(jq -c . "$active")"; jq -cn --argjson profile "$profile" --argjson pending "$pending" --arg pendingId "$pending_id" --argjson pendingNumber "$pending_number" --arg pendingSource "$pending_source" --argjson version "$active_version" '{stateVersion:$version,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile},pendingRevision:(if $pending == null then null else {revisionId:$pendingId,revisionNumber:$pendingNumber,source:$pendingSource,profile:$pending} end)}' > "$output"
-  else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; jq -cn --argjson profile "$profile" --argjson pending "$pending" '{stateVersion:(if $pending == null then 1 else 2 end),activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile},pendingRevision:(if $pending == null then null else {revisionId:"schedule-pending-v2",revisionNumber:2,source:"file-draft",profile:$pending} end)}' > "$output"; fi
+  [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-pending-revision" ]] || pending_id="$(<"$FAKE_HTTP_STATE/$host.schedule-pending-revision")"
+  pending_number="${pending_id##*-v}"
+  if [[ "$pending" != null && ! -f "$FAKE_HTTP_STATE/$host.schedule-w0-draft" && "$(jq -r '.rig.sensor.widthPixels' <<< "$pending")" != 1936 && "$(jq -r '.rig.sensor.widthPixels' <<< "$pending")" != 3096 ]]; then pending_id=schedule-active-v1; pending_number=1; pending_source=file-bootstrap; fi
+  [[ "${FAKE_SMOKE_SCHEDULE_REVISION_DRIFT:-}" != "$host" ]] || pending_id=schedule-drift-v9
+  active_version=1; [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-state-version" ]] || active_version="$(<"$FAKE_HTTP_STATE/$host.schedule-state-version")"
+  if [[ -f "$active" ]]; then active_id=schedule-pending-v2; [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-active-revision" ]] || active_id="$(<"$FAKE_HTTP_STATE/$host.schedule-active-revision")"; active_number="${active_id##*-v}"; profile="$(jq -c . "$active")"; jq -cn --argjson profile "$profile" --arg activeId "$active_id" --argjson activeNumber "$active_number" --argjson pending "$pending" --arg pendingId "$pending_id" --argjson pendingNumber "$pending_number" --arg pendingSource "$pending_source" --argjson version "$active_version" '{stateVersion:$version,activeRevision:{revisionId:$activeId,revisionNumber:$activeNumber,profile:$profile},pendingRevision:(if $pending == null then null else {revisionId:$pendingId,revisionNumber:$pendingNumber,source:$pendingSource,profile:$pending} end)}' > "$output"
+  else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; jq -cn --argjson profile "$profile" --argjson pending "$pending" --arg pendingId "$pending_id" --argjson pendingNumber "$pending_number" --arg pendingSource "$pending_source" --argjson version "$active_version" '{stateVersion:$version,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile},pendingRevision:(if $pending == null then null else {revisionId:$pendingId,revisionNumber:$pendingNumber,source:$pendingSource,profile:$pending} end)}' > "$output"; fi
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1/operations/schedule/activate ]]; then
   host="${FAKE_REMOTE_HOST:?}"; test -f "$FAKE_HTTP_STATE/$host.schedule-pending.json"
-  jq -e '.revisionId == "schedule-pending-v2" and (.expectedVersion == 2 or .expectedVersion == 3)' "$body" >/dev/null || { : > "$output"; printf 409; exit 0; }
+  printf 'schedule-activate\t%s\n' "$host" >> "${FAKE_LOG:?}"
+  [[ "${FAKE_SMOKE_SCHEDULE_VERSION_DRIFT:-}" != "$host" ]] || { : > "$output"; printf 409; exit 0; }
+  pending_revision="$(<"$FAKE_HTTP_STATE/$host.schedule-pending-revision")"; state_version="$(<"$FAKE_HTTP_STATE/$host.schedule-state-version")"
+  jq -e --arg revision "$pending_revision" --argjson version "$state_version" '.revisionId == $revision and .expectedVersion == $version' "$body" >/dev/null || { : > "$output"; printf 409; exit 0; }
+  if [[ "${FAKE_SMOKE_SCHEDULE_STALE_ACTIVE:-}" == "$host" ]]; then
+    rm -f "$FAKE_HTTP_STATE/$host.schedule-pending.json" "$FAKE_HTTP_STATE/$host.schedule-w0-draft"
+    jq -cn '{version:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:{schemaVersion:"cameraagent-local-profile-v1",module:{type:"VirtualSky",options:{}},rig:{sensor:{widthPixels:484}},processingSteps:[],schedule:{}}},pendingRevision:null}' > "$output"
+    printf 200; exit 0
+  fi
+  if [[ -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]]; then
+    cp "$FAKE_HTTP_STATE/$host.schedule-active.json" "$FAKE_HTTP_STATE/$host.schedule-prior.json"
+    cp "$FAKE_HTTP_STATE/$host.schedule-active-revision" "$FAKE_HTTP_STATE/$host.schedule-prior-revision"
+  else
+    printf '%s\n' '{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}' > "$FAKE_HTTP_STATE/$host.schedule-prior.json"
+    printf 'schedule-active-v1\n' > "$FAKE_HTTP_STATE/$host.schedule-prior-revision"
+  fi
   mv "$FAKE_HTTP_STATE/$host.schedule-pending.json" "$FAKE_HTTP_STATE/$host.schedule-active.json"
-  jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-active.json" '{version:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile[0]},pendingRevision:null}' > "$output"
+  printf '%s\n' "$pending_revision" > "$FAKE_HTTP_STATE/$host.schedule-active-revision"
+  state_version=$((state_version + 1)); printf '%s\n' "$state_version" > "$FAKE_HTTP_STATE/$host.schedule-state-version"
+  rm -f "$FAKE_HTTP_STATE/$host.schedule-pending-revision" "$FAKE_HTTP_STATE/$host.schedule-w0-draft"
+  jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-active.json" --arg revision "$pending_revision" --argjson version "$state_version" '{version:$version,activeRevision:{revisionId:$revision,revisionNumber:($revision | split("-v")[-1] | tonumber),profile:$profile[0]},pendingRevision:null}' > "$output"
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1/operations/schedule/rollback ]]; then
   host="${FAKE_REMOTE_HOST:?}"
-  jq -e '.revisionId == "schedule-active-v1" and (.expectedVersion == 3 or .expectedVersion == 4) and (.reason | type == "string" and length > 0)' "$body" >/dev/null || { : > "$output"; printf 400; exit 0; }
+  state_version="$(<"$FAKE_HTTP_STATE/$host.schedule-state-version")"; requested_revision="$(jq -er '.revisionId' "$body")"
+  jq -e --argjson version "$state_version" '.expectedVersion == $version and (.reason | type == "string" and length > 0)' "$body" >/dev/null || { : > "$output"; printf 400; exit 0; }
   [[ "${FAKE_MEASURE_ROLLBACK_CONFLICT:-false}" != true ]] || { : > "$output"; printf 409; exit 0; }
-  rm -f "$FAKE_HTTP_STATE/$host.schedule-active.json" "$FAKE_HTTP_STATE/$host.schedule-pending.json"
-  profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'
-  jq -cn --argjson profile "$profile" '{version:4,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile},pendingRevision:null}' > "$output"
+  if [[ -f "$FAKE_HTTP_STATE/$host.schedule-prior-revision" && "$(<"$FAKE_HTTP_STATE/$host.schedule-prior-revision")" == "$requested_revision" ]]; then
+    cp "$FAKE_HTTP_STATE/$host.schedule-prior.json" "$FAKE_HTTP_STATE/$host.schedule-active.json"
+  elif [[ "$requested_revision" == schedule-active-v1 ]]; then
+    rm -f "$FAKE_HTTP_STATE/$host.schedule-active.json"
+  else : > "$output"; printf 404; exit 0; fi
+  printf '%s\n' "$requested_revision" > "$FAKE_HTTP_STATE/$host.schedule-active-revision"
+  rm -f "$FAKE_HTTP_STATE/$host.schedule-pending.json" "$FAKE_HTTP_STATE/$host.schedule-pending-revision" "$FAKE_HTTP_STATE/$host.schedule-w0-draft"
+  state_version=$((state_version + 1)); printf '%s\n' "$state_version" > "$FAKE_HTTP_STATE/$host.schedule-state-version"
+  if [[ -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]]; then profile="$(jq -c . "$FAKE_HTTP_STATE/$host.schedule-active.json")"; else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; fi
+  jq -cn --argjson profile "$profile" --arg revision "$requested_revision" --argjson version "$state_version" '{version:$version,activeRevision:{revisionId:$revision,revisionNumber:($revision | split("-v")[-1] | tonumber),profile:$profile},pendingRevision:null}' > "$output"
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1.0/devices/*/artifacts/*/download-authorizations ]]; then
@@ -1353,6 +1414,10 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
   to="${url#*toCaptureSequence=}"; [[ "$to" != "$url" ]] || to=-1; to="${to%%&*}"
   agent="${device#device-}"; count_file="${FAKE_HTTP_STATE:?}/$agent.count"; count=0
   [[ ! -f "$count_file" ]] || count="$(<"$count_file")"
+  reported_count="$count"
+  if [[ "${FAKE_SMOKE_CENTRAL_INITIAL_LAG:-}" == "$agent" && "$output" == *-initial-central.json ]]; then
+    reported_count=$((count - 1)); (( reported_count >= 0 )) || reported_count=0
+  fi
   window='[]'
   if (( from > 0 && to >= from )); then
     upper=$count; (( upper <= to )) || upper=$to
@@ -1378,7 +1443,7 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
   fi
   printf -v acknowledged '2026-08-07T%02d:%02d:%02dZ' \
     "$(((60 + count) / 3600))" "$((((60 + count) / 60) % 60))" "$(((60 + count) % 60))"
-  jq -cn --arg device "$device" --argjson sequence "$count" --arg acknowledged "$acknowledged" --argjson window "$window" '{RegistrationId:"22222222-2222-2222-2222-222222222222",DeviceId:$device,
+  jq -cn --arg device "$device" --argjson sequence "$reported_count" --arg acknowledged "$acknowledged" --argjson window "$window" '{RegistrationId:"22222222-2222-2222-2222-222222222222",DeviceId:$device,
     DevicePublicId:"33333333-3333-3333-3333-333333333333",ObservatoryId:"11111111-1111-1111-1111-111111111111",Status:"Active",
     IssuedAtUtc:"2026-08-07T00:00:00Z",ExpiresAtUtc:null,ActivatedAtUtc:"2026-08-07T00:00:00Z",MaximumCaptureSequence:$sequence,
     FleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",MaximumHeartbeatSequence:$sequence,LastHeartbeatReceivedAtUtc:$acknowledged,
@@ -1614,13 +1679,41 @@ reset_measure_fixture() {
         printf '%s' "$canonical" | sha256sum | cut -d' ' -f1 > "$FAKE_HTTP_STATE/$name.active-config-sha"
         rm -rf "$root/.hvo-deploy/measure-$deploy_case"
         rm -f "$FAKE_HTTP_STATE/$name.measure-profile" "$FAKE_HTTP_STATE/$name.measure-running" \
-          "$FAKE_HTTP_STATE/$name.measure-stage" "$FAKE_HTTP_STATE/$name.schedule-active.json" "$FAKE_HTTP_STATE/$name.schedule-pending.json"
+          "$FAKE_HTTP_STATE/$name.measure-stage" "$FAKE_HTTP_STATE/$name.schedule-active.json" "$FAKE_HTTP_STATE/$name.schedule-pending.json" \
+          "$FAKE_HTTP_STATE/$name.schedule-w0-draft" "$FAKE_HTTP_STATE/$name.schedule-active-revision" \
+          "$FAKE_HTTP_STATE/$name.schedule-pending-revision" "$FAKE_HTTP_STATE/$name.schedule-state-version" \
+          "$FAKE_HTTP_STATE/$name.schedule-prior.json" "$FAKE_HTTP_STATE/$name.schedule-prior-revision"
         rm -f "$FAKE_HTTP_STATE/$name.idempotency."*.json
+        cp "$original" "$FAKE_HTTP_STATE/$name.schedule-active.json"
+        printf 'schedule-active-v1\n' > "$FAKE_HTTP_STATE/$name.schedule-active-revision"
+        printf '1\n' > "$FAKE_HTTP_STATE/$name.schedule-state-version"
         printf '1\n' > "$FAKE_HTTP_STATE/$name.count"
         printf '10\n' > "$FAKE_HTTP_STATE/$name.control-version"
     done < <(jq -c '.cameraAgents[]' "$INVENTORY")
     printf '%s\n' "$east_state" > "$FAKE_HTTP_STATE/east.control-state"
     printf '%s\n' "$west_state" > "$FAKE_HTTP_STATE/west.control-state"
+}
+
+reset_smoke_fixture() {
+    local target name root
+    grep -v -E '^(control.*deploy-smoke-|schedule-(read|activate))' "$LOG" > "$LOG.reset" || true
+    mv "$LOG.reset" "$LOG"
+    rm -rf "$TEMP_DIR/output/$deploy_case-state/smoke-rendered" "$TEMP_DIR/output/$deploy_case-state/smoke-private"
+    rm -f "$TEMP_DIR/output/$deploy_case-state/smoke-ledger.json" "$TEMP_DIR/output/$deploy_case-state/smoke-manifest.json" \
+      "$TEMP_DIR/output/$deploy_case-state/smoke-commit.json" "$TEMP_DIR/output/$deploy_case-evidence/smoke.json"
+    printf '[]\n' > "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+    chmod 600 "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+    while IFS= read -r target; do
+        name="$(jq -r '.name' <<< "$target")"; root="$(jq -r '.runtimeRoot' <<< "$target")"
+        rm -rf "$root/.hvo-deploy/smoke-$deploy_case"
+        rm -f "$FAKE_HTTP_STATE/$name.schedule-active.json" "$FAKE_HTTP_STATE/$name.schedule-pending.json" \
+          "$FAKE_HTTP_STATE/$name.schedule-w0-draft" "$FAKE_HTTP_STATE/$name.schedule-active-revision" \
+          "$FAKE_HTTP_STATE/$name.schedule-pending-revision" "$FAKE_HTTP_STATE/$name.schedule-state-version" \
+          "$FAKE_HTTP_STATE/$name.schedule-prior.json" "$FAKE_HTTP_STATE/$name.schedule-prior-revision" \
+          "$FAKE_HTTP_STATE/$name.smoke-resumed"
+        rm -f "$FAKE_HTTP_STATE/$name.idempotency."*.json
+        printf 'Paused\n' > "$FAKE_HTTP_STATE/$name.control-state"
+    done < <(jq -c '.cameraAgents[]' "$INVENTORY")
 }
 
 run_measure_signal() {
@@ -3120,9 +3213,21 @@ if shard_enabled smoke; then
 if [[ "$SELECTED_SHARD" == smoke ]]; then stage_lifecycle_bootstrap; fi
 FAKE_SLOW_FIRST_AGENT=true FAKE_CAPTURE_TELEMETRY_EMPTY=true run_deploy_mode smoke "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and .workload.kind == "W0" and (.targets | length) == 2 and all(.targets[];
-  .status == "passed" and .captureSequence.localAfter > .captureSequence.localBefore and
-  .captureSequence.centralAfter > .captureSequence.centralBefore and all(.checks[]; . == true))' \
+  .status == "passed" and .captureSequence.localAfter == (.captureSequence.localBefore + 1) and
+  .captureSequence.centralAfter == .captureSequence.localAfter and .profile.width == 64 and .profile.height == 48 and
+  .profile.pixelFormat == "Mono16" and ([.artifacts[] | select(.role == "Raw")] | length) == 1 and
+  all(.artifacts[]; if .role == "Raw" then .byteLength == 6144 else true end) and
+  all(.checks[]; . == true))' \
   "$TEMP_DIR/output/$deploy_case-state/smoke-ledger.json" >/dev/null
+test -f "$FAKE_HTTP_STATE/east.schedule-active.json"
+test ! -e "$FAKE_HTTP_STATE/east.schedule-pending.json"
+jq -e '.rig.sensor.widthPixels == 64 and .rig.sensor.heightPixels == 48 and .rig.sensor.pixelFormat == "Mono16"' \
+  "$FAKE_HTTP_STATE/east.schedule-active.json" >/dev/null
+activation_line="$(grep -n -E $'^schedule-activate\teast$' "$LOG" | cut -d: -f1)"
+initial_pause_line="$(grep -n -E $'control\t.*\tdeploy-smoke-'"$deploy_case"$'-east-initial-pause-[0-9]+\t' "$LOG" | cut -d: -f1)"
+resume_line="$(grep -n -E $'control\t.*\tdeploy-smoke-'"$deploy_case"$'-east-resume-[0-9]+\t' "$LOG" | cut -d: -f1)"
+[[ -n "$initial_pause_line" && -n "$activation_line" && -n "$resume_line" &&
+   "$initial_pause_line" -lt "$activation_line" && "$activation_line" -lt "$resume_line" ]]
 exercise_phase_cleanup_recovery smoke "$deploy_case"
 valid_central="$TEMP_DIR/output/$deploy_case-state/smoke-private/east-current-central.json"
 initial_central_file="$TEMP_DIR/output/$deploy_case-state/smoke-private/east-initial-central.json"
@@ -3141,18 +3246,18 @@ for artifact_failure in checksum recipe object dimensions format lineage derivat
   if (
     source "$REPO_ROOT/scripts/deploy/smoke.sh"
     deploy_smoke_validate_artifacts "$TEMP_DIR/smoke-$artifact_failure.json" \
-      "$(jq -r '.maximumCaptureSequence // 0' "$initial_central_file")" \
+      "$(jq -r '.maximumCaptureSequence' "$valid_central")" \
       "$(jq -r '.lineageSourceCount' "$initial_central_file")" \
       "$(jq -r '.completedDerivativeCount' "$initial_central_file")" "$expected_recipes" 64 48 Mono16 &&
     deploy_smoke_validate_derivative_provenance "$TEMP_DIR/smoke-$artifact_failure.json" \
-      "$(jq -r '.maximumCaptureSequence // 0' "$initial_central_file")" \
+      "$(jq -r '.maximumCaptureSequence' "$valid_central")" \
       "$(jq -r '.completedDerivativeCount' "$initial_central_file")"
   ); then fail "Smoke accepted invalid $artifact_failure evidence."; fi
 done
 proof_fixture="$(
   source "$REPO_ROOT/scripts/deploy/smoke.sh"
   deploy_smoke_select_checksum_proof "$valid_central" "$TEMP_DIR/output/$deploy_case-state/smoke-private/east-proof-continuity.json" \
-    "$(jq -r '.maximumCaptureSequence // 0' "$initial_central_file")"
+    "$(jq -r '.maximumCaptureSequence' "$valid_central")"
 )"
 test "$(jq -r '.artifactId' <<< "$proof_fixture")" = 99999999-9999-9999-9999-999999999999
 test "$(jq -r '.role' <<< "$proof_fixture")" = Raw
@@ -3193,6 +3298,68 @@ jq -e 'all(.targets[]; .checks.artifactHashProof and .checks.traces and .checks.
 exercise_phase_publication_recovery smoke "$deploy_case"
 exercise_phase_tampered_publication_rejection smoke "$deploy_case"
 exercise_phase_orphan_rejection smoke "$deploy_case"
+reset_smoke_fixture
+jq -S --arg device device-east '.agentId=$device | .module.options.seed=999' \
+  "$REPO_ROOT/deploy/split-host/workloads/w0-virtual-mono16.json" > "$FAKE_HTTP_STATE/east.schedule-active.json"
+printf 'schedule-active-v1\n' > "$FAKE_HTTP_STATE/east.schedule-active-revision"
+printf '1\n' > "$FAKE_HTTP_STATE/east.schedule-state-version"
+run_deploy_mode smoke "$deploy_case" isolated >/dev/null
+grep -Eq $'^schedule-activate\teast$' "$LOG"
+jq -e '.module.options.seed == 2025' "$FAKE_HTTP_STATE/east.schedule-active.json" >/dev/null
+reset_smoke_fixture
+FAKE_SMOKE_CENTRAL_INITIAL_LAG=east run_deploy_mode smoke "$deploy_case" isolated >/dev/null
+jq -e '.targets[] | select(.target == "east") |
+  .captureSequence.localAfter == (.captureSequence.localBefore + 1) and
+  .captureSequence.centralBefore == (.captureSequence.localBefore - 1) and
+  .captureSequence.centralAfter == .captureSequence.localAfter' \
+  "$TEMP_DIR/output/$deploy_case-state/smoke-ledger.json" >/dev/null
+for schedule_failure in revision-drift version-drift stale-active; do
+  reset_smoke_fixture
+  case "$schedule_failure" in
+    revision-drift)
+      if FAKE_SMOKE_SCHEDULE_REVISION_DRIFT=east run_deploy_mode smoke "$deploy_case" isolated > "$TEMP_DIR/smoke-$schedule_failure.log" 2>&1; then
+        fail 'Smoke accepted schedule revision drift.'
+      fi
+      grep -Fq 'schedule-activate-failed' "$TEMP_DIR/smoke-$schedule_failure.log"
+      ;;
+    version-drift)
+      if FAKE_SMOKE_SCHEDULE_VERSION_DRIFT=east run_deploy_mode smoke "$deploy_case" isolated > "$TEMP_DIR/smoke-$schedule_failure.log" 2>&1; then
+        fail 'Smoke accepted schedule state-version drift.'
+      fi
+      grep -Fq 'schedule-activate-failed' "$TEMP_DIR/smoke-$schedule_failure.log"
+      ;;
+    stale-active)
+      if FAKE_SMOKE_SCHEDULE_STALE_ACTIVE=east run_deploy_mode smoke "$deploy_case" isolated > "$TEMP_DIR/smoke-$schedule_failure.log" 2>&1; then
+        fail 'Smoke accepted a stale active schedule profile.'
+      fi
+      grep -Fq 'schedule-activation-mismatch' "$TEMP_DIR/smoke-$schedule_failure.log"
+      ;;
+  esac
+  test "$(<"$FAKE_HTTP_STATE/east.control-state")" = Paused
+  grep -Eq $'control\t.*\tdeploy-smoke-'"$deploy_case"$'-east-failure-pause-[0-9]+\t' "$LOG"
+  if grep -Eq $'control\t.*\tdeploy-smoke-'"$deploy_case"$'-east-resume-[0-9]+\t' "$LOG"; then
+    fail "Smoke resumed capture after $schedule_failure."
+  fi
+done
+reset_smoke_fixture
+if FAKE_SMOKE_RUNNING_FAILURE=east run_deploy_mode smoke "$deploy_case" isolated > "$TEMP_DIR/smoke-running-failure.log" 2>&1; then
+  fail 'Smoke accepted an ordinary failure while capture was running.'
+fi
+grep -Fq 'unexpected-local-continuity-status' "$TEMP_DIR/smoke-running-failure.log"
+test "$(<"$FAKE_HTTP_STATE/east.control-state")" = Paused
+east_smoke_remote="$(jq -r '.cameraAgents[] | select(.name == "east") | .runtimeRoot' "$INVENTORY")/.hvo-deploy/smoke-$deploy_case"
+test ! -e "$east_smoke_remote/owner.cookies"
+reset_smoke_fixture
+if FAKE_SMOKE_RUNNING_FAILURE=east FAKE_SMOKE_FAILURE_PAUSE_CONFLICT=true run_deploy_mode smoke "$deploy_case" isolated > "$TEMP_DIR/smoke-running-pause-failure.log" 2>&1; then
+  fail 'Smoke accepted a running-window failure whose safety Pause conflicted.'
+fi
+test "$(<"$FAKE_HTTP_STATE/east.control-state")" = Running
+test -f "$east_smoke_remote/owner.cookies"
+jq -e 'length > 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+run_deploy_mode smoke "$deploy_case" isolated >/dev/null
+test "$(<"$FAKE_HTTP_STATE/east.control-state")" = Paused
+jq -e '.phaseStatus == "passed"' "$TEMP_DIR/output/$deploy_case-state/smoke-ledger.json" >/dev/null
+jq -e 'length == 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
 fi
 
 if shard_enabled measure; then
@@ -3288,7 +3455,7 @@ if [[ -z "${DEPLOY_TEST_PROCESS_RECORD_DIR:-}" ]]; then
     "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
   test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" = "$active_before_stage"
   test "$(<"$FAKE_HTTP_STATE/east.control-state")" = Running
-  test ! -e "$FAKE_HTTP_STATE/east.schedule-active.json"
+  cmp -s "$TEMP_DIR/east-original-camera-module.json" "$FAKE_HTTP_STATE/east.schedule-active.json"
   test ! -e "$FAKE_HTTP_STATE/east.schedule-pending.json"
   jq -e 'length == 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
 
@@ -3302,7 +3469,7 @@ if [[ -z "${DEPLOY_TEST_PROCESS_RECORD_DIR:-}" ]]; then
   test "$(<"$FAKE_HTTP_STATE/east.count")" = 6
   test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" = "$active_before_stage"
   test "$(<"$FAKE_HTTP_STATE/east.control-state")" = Paused
-  test ! -e "$FAKE_HTTP_STATE/east.schedule-active.json"
+  cmp -s "$TEMP_DIR/east-original-camera-module.json" "$FAKE_HTTP_STATE/east.schedule-active.json"
   test ! -e "$FAKE_HTTP_STATE/east.schedule-pending.json"
 fi
 
@@ -3318,7 +3485,7 @@ jq -e --arg priorSha "$active_before_stage" '.phaseStatus == "passed" and .execu
     all(.warmup.captures[],.measured.captures[];
       (.rawArtifactId | test("^[0-9a-fA-F-]{36}$")) and (.rawChecksumSha256 | test("^[0-9A-Fa-f]{64}$")) and .rawByteLength == 6144) and
     ([.controlAttempts[].key] | length == (unique | length)) and
-    .priorState.scheduleRevisionId == "schedule-active-v1" and
+    (.priorState.scheduleRevisionId == "schedule-active-v1" or .priorState.scheduleRevisionId == "schedule-pending-v2") and
     (.priorState.captureState == "Running" or .priorState.captureState == "Paused") and
     .restoration.status == "pending" and .failureCleanup.status == "not-required" and
     .before.telemetry.sampleCount == 0 and (.before.timings | length) == 0 and .after.telemetry.sampleCount > 0 and
