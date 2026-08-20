@@ -33,6 +33,7 @@ public sealed class FileCameraAgentConfigurationLoader(
             new JsonStringEnumConverter<CaptureMeteringCfaSelection>(allowIntegerValues: false),
             new JsonStringEnumConverter<ExposureGainPreference>(allowIntegerValues: false),
             new JsonStringEnumConverter<SampleByteOrder>(allowIntegerValues: false),
+            new JsonStringEnumConverter<CaptureProcessingPersistenceMode>(allowIntegerValues: false),
             new JsonStringEnumConverter()
         }
     };

@@ -24,7 +24,7 @@ internal sealed record DurableProcessingOutput(
     string SidecarRelativePath,
     byte[] EvidenceJson,
     ReconstructionDescriptor? Descriptor,
-    DurableProcessingProductManifestV1? ProductManifest,
+    IDurableProcessingProductManifest? ProductManifest,
     string RecipeIdentitySha256,
     IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms,
     ProcessingCompatibilityIdentity Compatibility,
@@ -346,6 +346,48 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         foreach (var input in inputs)
         {
             await InsertInputAsync(connection, transaction, captureId, node.Id, input, cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask DeleteOutputlessNodeAsync(
+        Guid captureId,
+        string nodeId,
+        long workId,
+        string? leaseToken,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        await EnsureLeaseAsync(connection, transaction, workId, leaseToken, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DELETE FROM processing_nodes
+            WHERE capture_id = $capture_id AND node_id = $node_id
+              AND NOT EXISTS (
+                  SELECT 1 FROM processing_outputs
+                  WHERE capture_id = $capture_id AND node_id = $node_id);
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$node_id", nodeId);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        using var verify = connection.CreateCommand();
+        verify.Transaction = transaction;
+        verify.CommandText = """
+            SELECT EXISTS(
+                SELECT 1 FROM processing_nodes
+                WHERE capture_id = $capture_id AND node_id = $node_id);
+            """;
+        verify.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        verify.Parameters.AddWithValue("$node_id", nodeId);
+        if (Convert.ToInt32(await verify.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture) != 0)
+        {
+            throw new InvalidDataException("A memory-only processing node has durable outputs and cannot be cleared.");
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -1025,7 +1067,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         var algorithmsJson = await reader.GetFieldValueAsync<byte[]>(11, cancellationToken).ConfigureAwait(false);
         var compatibilityJson = await reader.GetFieldValueAsync<byte[]>(12, cancellationToken).ConfigureAwait(false);
         ReconstructionDescriptor? descriptor = null;
-        DurableProcessingProductManifestV1? productManifest = null;
+        IDurableProcessingProductManifest? productManifest = null;
         try
         {
             using var evidence = JsonDocument.Parse(descriptorJson);
@@ -1035,7 +1077,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             {
                 throw new InvalidDataException("Committed processing output descriptor is invalid.");
             }
-            if (string.Equals(schema.GetString(), DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal))
+            if (schema.GetString() is DurableProcessingProductManifestV1.CurrentSchemaVersion or
+                DurableEncodedProductManifestV2.CurrentSchemaVersion)
             {
                 productManifest = DurableProcessingProductManifestJson.Parse(descriptorJson);
             }
@@ -1068,11 +1111,14 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         var recipeIdentity = reader.GetString(10);
         var totalIntegration = TimeSpan.FromTicks(reader.GetInt64(13));
         var captureSequence = reader.GetInt64(14);
+        var sourceMatchesManifest = productManifest is null ||
+            (productManifest.ProducerStepId is { } producerStepId
+                ? string.Equals(reader.GetString(7), producerStepId, StringComparison.OrdinalIgnoreCase)
+                : string.Equals(reader.GetString(7), productManifest.Artifact.SourceId, StringComparison.Ordinal));
         if (!string.Equals(reader.GetString(5), capture.CaptureId.ToString("N"), StringComparison.Ordinal) ||
             !string.Equals(reader.GetString(6), capture.AgentId, StringComparison.Ordinal) ||
             string.IsNullOrWhiteSpace(reader.GetString(7)) ||
-            productManifest is not null && !string.Equals(
-                reader.GetString(7), productManifest.Artifact.SourceId, StringComparison.Ordinal) ||
+            !sourceMatchesManifest ||
             !string.Equals(reader.GetString(8), artifact.Role.ToString(), StringComparison.Ordinal) ||
             !string.Equals(reader.GetString(9), artifact.Variant, StringComparison.Ordinal) ||
             artifactId != artifact.ArtifactId ||

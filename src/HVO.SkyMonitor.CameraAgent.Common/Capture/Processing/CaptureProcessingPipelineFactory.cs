@@ -74,7 +74,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             step.DependsOn?.ToArray(),
             null,
             null,
-            null)).ToArray();
+            null,
+            step.Publication)).ToArray();
         var graph = CreateGraph(config);
         try
         {
@@ -89,7 +90,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 node.DeclaredDependencies ?? node.Dependencies,
                 node.RecipeName,
                 node.OutputRole,
-                node.OutputVariant)).ToArray();
+                node.OutputVariant,
+                node.Publication)).ToArray();
             var projectedDesired = desired.Select(static node => node with
             {
                 Options = RedactOptions(node.Options)
@@ -164,6 +166,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         {
             throw new InvalidOperationException("The top-level enabled field is supported only by capture pipeline v2.");
         }
+        if (!explicitV2 && configuredSteps.Any(static step => step.Publication is not null))
+        {
+            throw new InvalidOperationException("Per-step publication policy is supported only by capture pipeline v2.");
+        }
 
         if (explicitV2)
         {
@@ -195,6 +201,13 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             foreach (var stepConfig in pipelineConfig)
             {
                 var step = CreateStep(stepConfig, identifiers, explicitV2, out var effectiveConfig);
+                if (explicitV2 && effectiveConfig.Publication is not null &&
+                    step is not ICaptureProcessingGraphStep)
+                {
+                    (step as IDisposable)?.Dispose();
+                    throw new InvalidOperationException(
+                        $"Capture pipeline v2 step '{step.Name}' cannot publish because it produces no artifact.");
+                }
                 if (step is ICaptureProcessingGraphStep { Enabled: false })
                 {
                     if (explicitV2)
@@ -239,6 +252,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
 
             ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
+            ValidateStoragePolicies(configured, nodesById, explicitV2);
             var nodes = TopologicalSort(configured, nodesById, explicitV2);
             stopwatch.Stop();
             _telemetry.RecordValidation(nodes.Count, stopwatch.Elapsed);
@@ -284,6 +298,14 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 throw new InvalidOperationException(
                     $"Capture pipeline v2 step '{id}' must use the top-level enabled field, not options.enabled.");
             }
+            if (step.Publication is { } publication)
+            {
+                if (!Enum.IsDefined(publication.Persistence))
+                {
+                    throw new InvalidOperationException(
+                        $"Capture pipeline v2 step '{id}' publication persistence mode is unsupported.");
+                }
+            }
         }
 
         foreach (var (id, step) in byId.Where(static item => item.Value.Enabled != false))
@@ -308,6 +330,67 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 {
                     throw new InvalidOperationException(
                         $"Capture pipeline v2 step '{id}' depends on disabled step '{dependency}'.");
+                }
+            }
+        }
+    }
+
+    private static void ValidateStoragePolicies(
+        IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById,
+        bool explicitV2)
+    {
+        if (!explicitV2)
+        {
+            return;
+        }
+        if (configured.Any(static item =>
+                item.Config.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal) &&
+            !configured.Any(static item => item.Step is NoOpFileStorageProcessingStep))
+        {
+            throw new InvalidOperationException(
+                "Durable processing outputs require an enabled Storage step to define retention ownership.");
+        }
+        foreach (var storage in configured.Where(static item => item.Step is NoOpFileStorageProcessingStep))
+        {
+            var options = ((NoOpFileStorageProcessingStep)storage.Step).ConfiguredOptions;
+            var dependencyIds = storage.Config.DependsOn ?? [];
+            var producerDependencies = dependencyIds
+                .Where(nodesById.ContainsKey)
+                .Select(id => (Id: id, Step: nodesById[id].Step as ICaptureProcessingGraphStep))
+                .Where(static target => target.Step is not null)
+                .ToArray();
+            foreach (var policy in options.Policies ?? [])
+            {
+                var targets = producerDependencies
+                    .Where(target => policy.StepId is null || string.Equals(policy.StepId, target.Id, StringComparison.OrdinalIgnoreCase))
+                    .Where(target => policy.Role is null || policy.Role == target.Step!.OutputRole)
+                    .Where(target => policy.Variant is null || string.Equals(policy.Variant, target.Step!.OutputVariant, StringComparison.Ordinal))
+                    .Where(target => policy.RecipeName is null || string.Equals(policy.RecipeName, target.Step!.RecipeName, StringComparison.Ordinal))
+                    .ToArray();
+                if (targets.Length == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Storage policy does not select a declared producer dependency for step '{storage.Step.Name}'.");
+                }
+            }
+            foreach (var target in producerDependencies.Where(target =>
+                         target.Step!.OutputRole == FrameArtifactRole.Metadata ||
+                         nodesById[target.Id].Step is JpegEncodingCaptureProcessingStep))
+            {
+                var policy = (options.Policies ?? [])
+                    .Where(candidate => candidate.StepId is null || string.Equals(candidate.StepId, target.Id, StringComparison.OrdinalIgnoreCase))
+                    .Where(candidate => candidate.Role is null || candidate.Role == target.Step!.OutputRole)
+                    .Where(candidate => candidate.Variant is null || string.Equals(candidate.Variant, target.Step!.OutputVariant, StringComparison.Ordinal))
+                    .Where(candidate => candidate.RecipeName is null || string.Equals(candidate.RecipeName, target.Step!.RecipeName, StringComparison.Ordinal))
+                    .OrderByDescending(static candidate =>
+                        (candidate.StepId is null ? 0 : 1) + (candidate.Role is null ? 0 : 1) +
+                        (candidate.Variant is null ? 0 : 1) + (candidate.RecipeName is null ? 0 : 1))
+                    .FirstOrDefault();
+                if (policy?.QueueForUpload ?? options.QueueForUpload)
+                {
+                    throw new InvalidOperationException(
+                        $"Storage upload policy for step '{target.Id}' cannot target a layoutless metadata or JPEG product.");
                 }
             }
         }
@@ -518,23 +601,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     graphStep?.RecipeName,
                     graphStep?.OutputRole,
                     graphStep?.OutputVariant,
-                    CaptureContractJson.ComputeCanonicalJsonSha256(
-                        JsonSerializer.SerializeToElement(new
-                        {
-                            item.Config.Type,
-                            id = item.Step.Name,
-                            order = item.Step.Order,
-                            dependencies,
-                            item.Config.Required,
-                            item.Config.Options,
-                            recipe = graphStep?.RecipeName,
-                            outputRole = graphStep?.OutputRole,
-                            outputVariant = graphStep?.OutputVariant
-                        })),
+                    ComputeNodePlanSha256(item.Config, item.Step, graphStep, dependencies),
                     item.Config.Type,
                     item.Step.Order,
                     item.Config.Options,
-                    item.Config.DependsOn?.ToArray()));
+                    item.Config.DependsOn?.ToArray(),
+                    item.Config.Publication));
                 remainingDependencies.Remove(item.Step.Name);
                 foreach (var unresolved in remainingDependencies.Values)
                 {
@@ -543,6 +615,41 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
         }
         return ordered;
+    }
+
+    private static string ComputeNodePlanSha256(
+        CaptureProcessingStepConfig config,
+        ICaptureProcessingStep step,
+        ICaptureProcessingGraphStep? graphStep,
+        IReadOnlyList<string> dependencies)
+    {
+        var plan = config.Publication is null
+            ? JsonSerializer.SerializeToElement(new
+            {
+                config.Type,
+                id = step.Name,
+                order = step.Order,
+                dependencies,
+                config.Required,
+                config.Options,
+                recipe = graphStep?.RecipeName,
+                outputRole = graphStep?.OutputRole,
+                outputVariant = graphStep?.OutputVariant
+            })
+            : CaptureContractJson.SerializeToElement(new
+            {
+                config.Type,
+                id = step.Name,
+                order = step.Order,
+                dependencies,
+                config.Required,
+                config.Options,
+                recipe = graphStep?.RecipeName,
+                outputRole = graphStep?.OutputRole,
+                outputVariant = graphStep?.OutputVariant,
+                config.Publication
+            });
+        return CaptureContractJson.ComputeCanonicalJsonSha256(plan);
     }
 
     private ICaptureProcessingStep CreateStep(

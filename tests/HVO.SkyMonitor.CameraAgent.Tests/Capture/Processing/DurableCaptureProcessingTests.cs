@@ -6,11 +6,15 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Frames;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Data.Sqlite;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -18,6 +22,511 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [DoNotParallelize]
 public sealed class DurableCaptureProcessingTests
 {
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task MemoryOnlyCompletedNode_IsNotCommittedAndReexecutesAfterRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var policy = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly);
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                var step = new ProducingStep();
+                var node = CreateNode(step) with { Publication = policy };
+                using var telemetry = new CaptureProcessingTelemetry();
+                using var store = new SqliteCaptureProcessingStore(fixture.Options);
+                using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+                var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([node]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    telemetry,
+                    attempt,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+                Assert.AreEqual(1, step.ExecutionCount);
+                Assert.IsNull(await store.ReadNodeAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId,
+                    node.Id,
+                    CancellationToken.None).ConfigureAwait(false));
+            }
+            Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task DurableJpegProducts_RestoreExactlyWithMediaCorrectPathsAndNoIntermediatePayloads()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var policy = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+            var variants = new[] { "annotated-final-jpeg", "annotated-thumbnail-1024-jpeg", "annotated-thumbnail-320-jpeg" };
+            var firstSteps = variants.Select(variant => new JpegProducingStep(variant)).ToArray();
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var graph = new CaptureProcessingGraph(firstSteps.Select(step => new CaptureProcessingGraphNode(
+                    step.Name,
+                    step,
+                    [],
+                    true,
+                    step.RecipeName,
+                    step.OutputRole,
+                    step.OutputVariant,
+                    new string(step.OutputVariant[0], 64),
+                    Publication: policy)).ToArray());
+                var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item, graph, CreatePersistence(fixture.Options, store, storage, telemetry), telemetry,
+                    1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            }
+
+            var restartedSteps = variants.Select(variant => new JpegProducingStep(variant)).ToArray();
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var nodes = restartedSteps.Select(step => new CaptureProcessingGraphNode(
+                    step.Name,
+                    step,
+                    [],
+                    true,
+                    step.RecipeName,
+                    step.OutputRole,
+                    step.OutputVariant,
+                    new string(step.OutputVariant[0], 64),
+                    Publication: policy)).ToArray();
+                var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph(nodes),
+                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    telemetry,
+                    2,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+                foreach (var node in nodes)
+                {
+                    var durable = await store.ReadNodeAsync(
+                        fixture.Manifest.Descriptor.Capture.CaptureId,
+                        node.Id,
+                        CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsNotNull(durable);
+                    Assert.HasCount(1, durable.Outputs);
+                    StringAssert.EndsWith(
+                        durable.Outputs[0].PayloadRelativePath,
+                        ".jpg",
+                        StringComparison.Ordinal);
+                    var manifest = Assert.IsInstanceOfType<DurableEncodedProductManifestV2>(
+                        durable.Outputs[0].ProductManifest);
+                    Assert.AreEqual(DurableEncodedProductManifestV2.CurrentSchemaVersion, manifest.SchemaVersion);
+                    Assert.AreEqual(node.Id, manifest.ProducerStepId);
+                    var decoded = JpegImageCodec.DecodeJpeg(await File.ReadAllBytesAsync(
+                        Path.Combine(root, durable.Outputs[0].PayloadRelativePath)).ConfigureAwait(false));
+                    Assert.AreEqual(decoded.Width, manifest.EncodedWidth);
+                    Assert.AreEqual(decoded.Height, manifest.EncodedHeight);
+                    Assert.AreEqual(decoded.PixelFormat, manifest.EncodedPixelFormat);
+                }
+            }
+
+            Assert.IsTrue(restartedSteps.All(static step => step.ExecutionCount == 0));
+            Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
+            Assert.AreEqual(3, Directory.EnumerateFiles(root, "*.jpg", SearchOption.AllDirectories).Count());
+            Assert.IsFalse(Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories)
+                .Any(path => path.Contains("derived", StringComparison.Ordinal) &&
+                    !path.EndsWith(".manifest.json", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task DeploymentShapedFlow_PersistsOnlyRawFinalAndTwoThumbnailsAndQueuesOnlyRaw()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var memory = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly);
+            var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+            var configuredSteps = new[]
+            {
+                new CaptureProcessingStepConfig("Test", "annotation", DependsOn: ["$raw"], Publication: memory),
+                new CaptureProcessingStepConfig("Test", "quality", DependsOn: ["$raw"], Required: false, Publication: memory),
+                new CaptureProcessingStepConfig("JpegEncoding", "final-jpeg", DependsOn: ["annotation"], Publication: durable),
+                new CaptureProcessingStepConfig("JpegEncoding", "thumbnail-large", DependsOn: ["annotation"], Publication: durable),
+                new CaptureProcessingStepConfig("JpegEncoding", "thumbnail-small", DependsOn: ["annotation"], Publication: durable),
+                new CaptureProcessingStepConfig("Storage", "storage", DependsOn:
+                    ["annotation", "quality", "final-jpeg", "thumbnail-large", "thumbnail-small"])
+            };
+            var config = fixture.Item.Config with
+            {
+                ProcessingSteps = null,
+                Pipeline = new CapturePipelineConfig(
+                    configuredSteps,
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var item = fixture.Item with { Config = config };
+            var adapter = new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor());
+            var annotation = new PackedAnnotationProducingStep();
+            var quality = new MetadataProducingStep();
+            var jpegSteps = new[]
+            {
+                new JpegEncodingCaptureProcessingStep(
+                    new CaptureProcessingStepMetadata("final-jpeg", "JpegEncoding", 80),
+                    new JpegEncodingProcessingStepOptions
+                    {
+                        OutputVariant = "annotated-final-jpeg",
+                        JpegQuality = 90
+                    },
+                    adapter),
+                new JpegEncodingCaptureProcessingStep(
+                    new CaptureProcessingStepMetadata("thumbnail-large", "JpegEncoding", 81),
+                    new JpegEncodingProcessingStepOptions
+                    {
+                        OutputVariant = "annotated-thumbnail-1024-jpeg",
+                        JpegQuality = 85,
+                        MaximumDimension = 1024
+                    },
+                    adapter),
+                new JpegEncodingCaptureProcessingStep(
+                    new CaptureProcessingStepMetadata("thumbnail-small", "JpegEncoding", 82),
+                    new JpegEncodingProcessingStepOptions
+                    {
+                        OutputVariant = "annotated-thumbnail-320-jpeg",
+                        JpegQuality = 80,
+                        MaximumDimension = 320
+                    },
+                    adapter)
+            };
+            var frameStorage = new Mock<IFrameStorageService>(MockBehavior.Strict);
+            using var outbox = new SqliteArtifactOutbox();
+            var latest = new LatestFrameAccessor();
+            var storageStep = new NoOpFileStorageProcessingStep(
+                new CaptureProcessingStepMetadata("storage", "Storage", 90),
+                new NoOpFileStorageProcessingStepOptions
+                {
+                    StorageRoot = root,
+                    RetentionDays = 1,
+                    UpdateLatestFrame = true,
+                    QueueForUpload = false
+                },
+                latest,
+                frameStorage.Object,
+                outbox,
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = root,
+                    CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+                }),
+                NullLogger<NoOpFileStorageProcessingStep>.Instance);
+            var graph = new CaptureProcessingGraph([
+                new CaptureProcessingGraphNode(
+                    "annotation", annotation, [], true, annotation.RecipeName,
+                    annotation.OutputRole, annotation.OutputVariant, new string('A', 64), Publication: memory),
+                new CaptureProcessingGraphNode(
+                    "quality", quality, [], false, quality.RecipeName,
+                    quality.OutputRole, quality.OutputVariant, new string('Q', 64), Publication: memory),
+                .. jpegSteps.Select(step => new CaptureProcessingGraphNode(
+                    step.Name, step, ["annotation"], true, step.RecipeName,
+                    step.OutputRole, step.OutputVariant, new string(step.Name[0], 64), Publication: durable)),
+                new CaptureProcessingGraphNode(
+                    "storage", storageStep,
+                    ["annotation", "quality", "final-jpeg", "thumbnail-large", "thumbnail-small"],
+                    true, null, null, null, new string('S', 64))
+            ]);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var durableStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                item,
+                graph,
+                CreatePersistence(fixture.Options, store, durableStorage, telemetry),
+                telemetry,
+                1,
+                NullLogger.Instance,
+                CancellationToken.None).ConfigureAwait(false);
+            var upload = new UploadCaptureLaneHandler(
+                outbox,
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
+            var uploadResult = await upload.HandleAsync(new CaptureLaneHandlerContext(
+                "upload", 1, config, item.Submission, fixture.Item.RawCapture!), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, uploadResult.Outcome);
+            Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
+            Assert.AreEqual(3, Directory.EnumerateFiles(root, "*.jpg", SearchOption.AllDirectories).Count());
+            Assert.IsFalse(Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories)
+                .Any(path => path.Contains("derived", StringComparison.Ordinal) &&
+                    !path.EndsWith(".manifest.json", StringComparison.Ordinal)));
+            Assert.IsTrue(latest.TryGetSnapshot(out var latestFrame));
+            Assert.AreEqual(CameraPixelFormat.Mono8, latestFrame!.PixelFormat);
+            Assert.AreEqual(annotation.OutputVariant, latestFrame.RecipeVersion);
+            frameStorage.VerifyNoOtherCalls();
+            var outboxRecords = outbox.List(root, 10);
+            Assert.HasCount(1, outboxRecords);
+            Assert.AreEqual(FrameArtifactRole.Raw, outboxRecords[0].Role);
+            Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, outboxRecords[0].ArtifactId);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task MemoryOnlyRetryThenSuccess_ClearsStaleStateAndReexecutesAfterRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var policy = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly);
+            var step = new RetryThenCompleteStep();
+            CaptureProcessingGraphNode Node(ICaptureProcessingStep value) => new(
+                "memory", value, [], true, null, null, null, new string('Y', 64), Publication: policy);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+
+            var retry = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, new CaptureProcessingGraph([Node(step)]), persistence, telemetry,
+                1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, retry.Outcome);
+            Assert.AreEqual(DurableProcessingNodeStatus.RetryableFailure, (await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "memory", CancellationToken.None).ConfigureAwait(false))!.Status);
+
+            var success = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, new CaptureProcessingGraph([Node(step)]), persistence, telemetry,
+                2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, success.Outcome);
+            Assert.IsNull(await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "memory", CancellationToken.None).ConfigureAwait(false));
+
+            var restarted = new CountingStep();
+            var replay = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, new CaptureProcessingGraph([Node(restarted)]), persistence, telemetry,
+                3, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, replay.Outcome);
+            Assert.AreEqual(1, restarted.ExecutionCount);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("Skipped")]
+    [DataRow("TerminalFailure")]
+    [DataRow("RetryableFailure")]
+    [TestCategory("Integration")]
+    public async Task MemoryOnlyNode_IgnoresAndClearsEveryOutputlessStaleStatus(
+        string staleStatusName)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var staleStatus = Enum.Parse<DurableProcessingNodeStatus>(staleStatusName);
+            var step = new CountingStep();
+            var node = new CaptureProcessingGraphNode(
+                "memory",
+                step,
+                [],
+                true,
+                null,
+                null,
+                null,
+                new string('Z', 64),
+                Publication: new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly));
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            await store.WriteNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                node,
+                staleStatus,
+                "stale",
+                1,
+                fixture.Manifest.Descriptor.Profiles.Processing.Sha256,
+                DateTimeOffset.UnixEpoch,
+                DateTimeOffset.UnixEpoch,
+                TimeSpan.Zero,
+                staleStatus switch
+                {
+                    DurableProcessingNodeStatus.Skipped => ProcessingOutcomeStatus.Skipped,
+                    DurableProcessingNodeStatus.TerminalFailure => ProcessingOutcomeStatus.TerminalFailure,
+                    _ => ProcessingOutcomeStatus.RetryableFailure
+                },
+                [],
+                0,
+                null,
+                [],
+                CancellationToken.None).ConfigureAwait(false);
+
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item,
+                new CaptureProcessingGraph([node]),
+                CreatePersistence(fixture.Options, store, storage, telemetry),
+                telemetry,
+                2,
+                NullLogger.Instance,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            Assert.AreEqual(1, step.ExecutionCount);
+            Assert.IsNull(await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                node.Id,
+                CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task MalformedJpeg_IsRejectedBeforeCommitAndDuringRestore()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var policy = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+            CaptureProcessingGraphNode Node(JpegProducingStep step) => new(
+                step.Name, step, [], true, step.RecipeName, step.OutputRole, step.OutputVariant,
+                new string('J', 64), Publication: policy);
+
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                    await FrameProcessingWorker.ProcessGraphItemAsync(
+                        fixture.Item,
+                        new CaptureProcessingGraph([Node(new JpegProducingStep("malformed", malformed: true))]),
+                        CreatePersistence(fixture.Options, store, storage, telemetry),
+                        telemetry,
+                        1,
+                        NullLogger.Instance,
+                        CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            }
+            Assert.IsFalse(Directory.EnumerateFiles(root, "*.jpg", SearchOption.AllDirectories).Any());
+
+            DurableProcessingOutput output;
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var step = new JpegProducingStep("restore-malformed");
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item, new CaptureProcessingGraph([Node(step)]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry,
+                    1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+                output = (await store.ReadNodeAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId,
+                    step.Name,
+                    CancellationToken.None).ConfigureAwait(false))!.Outputs.Single();
+            }
+
+            var malformed = new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 };
+            var encodedManifest = Assert.IsInstanceOfType<DurableEncodedProductManifestV2>(output.ProductManifest);
+            var falseV1 = new DurableProcessingProductManifestV1(
+                DurableProcessingProductManifestV1.CurrentSchemaVersion,
+                encodedManifest.Capture,
+                encodedManifest.Artifact,
+                encodedManifest.OutputIdentitySha256,
+                encodedManifest.Algorithms,
+                encodedManifest.Compatibility,
+                encodedManifest.TotalIntegrationTicks,
+                encodedManifest.ByteLength,
+                encodedManifest.RelativeArtifactPath,
+                encodedManifest.Layout);
+            Assert.ThrowsExactly<InvalidDataException>(() =>
+                DurableProcessingProductManifestJson.Serialize(falseV1));
+
+            async Task CommitEvidenceAsync(DurableEncodedProductManifestV2 manifest, byte[] payload)
+            {
+                var evidence = DurableProcessingProductManifestJson.Serialize(manifest);
+                await File.WriteAllBytesAsync(Path.Combine(root, output.PayloadRelativePath), payload).ConfigureAwait(false);
+                await File.WriteAllBytesAsync(Path.Combine(root, output.SidecarRelativePath), evidence).ConfigureAwait(false);
+                using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE processing_outputs SET descriptor_json = $evidence WHERE output_identity_sha256 = $identity;";
+                command.Parameters.AddWithValue("$evidence", evidence);
+                command.Parameters.AddWithValue("$identity", output.OutputIdentitySha256);
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            async Task AssertRestoreRejectedAsync(int attempt)
+            {
+                using var restartedTelemetry = new CaptureProcessingTelemetry();
+                using var restartedStore = new SqliteCaptureProcessingStore(fixture.Options);
+                using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+                await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                    await FrameProcessingWorker.ProcessGraphItemAsync(
+                        fixture.Item,
+                        new CaptureProcessingGraph([Node(new JpegProducingStep("restore-malformed"))]),
+                        CreatePersistence(fixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                        restartedTelemetry,
+                        attempt,
+                        NullLogger.Instance,
+                        CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            }
+
+            var validPayload = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false);
+            await CommitEvidenceAsync(
+                encodedManifest with { EncodedWidth = encodedManifest.EncodedWidth + 1 },
+                validPayload).ConfigureAwait(false);
+            await AssertRestoreRejectedAsync(2).ConfigureAwait(false);
+
+            var malformedManifest = encodedManifest with
+            {
+                Artifact = encodedManifest.Artifact with
+                {
+                    ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(malformed)
+                },
+                ByteLength = malformed.Length
+            };
+            await CommitEvidenceAsync(malformedManifest, malformed).ConfigureAwait(false);
+            await AssertRestoreRejectedAsync(3).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     [TestCategory("Integration")]
     public async Task CompletedNode_RestartRestoresExactOutputWithoutReexecution()
@@ -183,11 +692,80 @@ public sealed class DurableCaptureProcessingTests
             Assert.HasCount(1, durable.Outputs);
             var output = durable.Outputs[0];
             Assert.IsNull(output.Descriptor);
-            Assert.IsNotNull(output.ProductManifest);
+            var manifest = Assert.IsInstanceOfType<DurableProcessingProductManifestV1>(output.ProductManifest);
+            Assert.AreEqual(DurableProcessingProductManifestV1.CurrentSchemaVersion, manifest.SchemaVersion);
             Assert.IsTrue(output.PayloadRelativePath.StartsWith("derived/", StringComparison.Ordinal));
             Assert.IsTrue(File.Exists(Path.Combine(root, output.PayloadRelativePath)));
             Assert.IsTrue(File.Exists(Path.Combine(root, output.SidecarRelativePath)));
             Assert.IsFalse(Directory.Exists(Path.Combine(root, "frames")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("payload-path")]
+    [DataRow("sidecar-path")]
+    [DataRow("artifact-id")]
+    [DataRow("output-identity")]
+    [DataRow("recipe-identity")]
+    [TestCategory("Integration")]
+    public async Task LayoutlessReplay_RejectsSqliteManifestFactMismatch(string mismatch)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry),
+                    telemetry,
+                    1,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE processing_outputs SET
+                        payload_relative_path = CASE WHEN $case = 'payload-path' THEN $payload ELSE payload_relative_path END,
+                        sidecar_relative_path = CASE WHEN $case = 'sidecar-path' THEN $sidecar ELSE sidecar_relative_path END,
+                        artifact_id = CASE WHEN $case = 'artifact-id' THEN $artifact ELSE artifact_id END,
+                        output_identity_sha256 = CASE WHEN $case = 'output-identity' THEN $output ELSE output_identity_sha256 END,
+                        recipe_identity_sha256 = CASE WHEN $case = 'recipe-identity' THEN $recipe ELSE recipe_identity_sha256 END;
+                    """;
+                command.Parameters.AddWithValue("$case", mismatch);
+                command.Parameters.AddWithValue("$payload", "derived/wrong.json");
+                command.Parameters.AddWithValue("$sidecar", "derived/wrong.manifest.json");
+                command.Parameters.AddWithValue("$artifact", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+                command.Parameters.AddWithValue("$output", new string('B', 64));
+                command.Parameters.AddWithValue("$recipe", new string('C', 64));
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            using var restartedTelemetry = new CaptureProcessingTelemetry();
+            using var restartedStore = new SqliteCaptureProcessingStore(fixture.Options);
+            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
+                    CreatePersistence(fixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                    restartedTelemetry,
+                    2,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         }
         finally
         {
@@ -396,6 +974,17 @@ public sealed class DurableCaptureProcessingTests
                     NullLogger.Instance,
                     CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
+            var legacySidecarPath = Directory.EnumerateFiles(
+                Path.Combine(root, "frames"), "*.json", SearchOption.AllDirectories).Single();
+            var legacySidecar = System.Text.Json.Nodes.JsonNode.Parse(
+                await File.ReadAllBytesAsync(legacySidecarPath).ConfigureAwait(false))!.AsObject();
+            Assert.IsTrue(legacySidecar.Remove("producerStepId"));
+            await File.WriteAllTextAsync(legacySidecarPath, legacySidecar.ToJsonString()).ConfigureAwait(false);
+            var legacyParsed = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(legacySidecarPath).ConfigureAwait(false));
+            Assert.IsTrue(legacyParsed.IsValid, legacyParsed.Validation.ReasonCode);
+            Assert.IsNull(legacyParsed.Document!.Manifest!.ProducerStepId);
+
             var replay = await FrameProcessingWorker.ProcessGraphItemAsync(
                 fixture.Item,
                 graph,
@@ -418,6 +1007,7 @@ public sealed class DurableCaptureProcessingTests
             var sidecar = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
                 Path.Combine(root, durable.Outputs[0].SidecarRelativePath)).ConfigureAwait(false));
             Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
+            Assert.AreEqual("normalize", sidecar.Document!.Manifest!.ProducerStepId);
             Assert.IsNull(sidecar.Document!.Manifest!.Descriptor.CycleEvidence);
         }
         finally
@@ -804,6 +1394,7 @@ public sealed class DurableCaptureProcessingTests
         var config = CreateConfig();
         manifest = manifest with
         {
+            RelativeArtifactPath = "raw.bin",
             Descriptor = manifest.Descriptor with
             {
                 Profiles = manifest.Descriptor.Profiles with
@@ -1095,6 +1686,140 @@ public sealed class DurableCaptureProcessingTests
         }
     }
 
+    private sealed class JpegProducingStep(string variant, bool malformed = false) : ICaptureProcessingStep, ICaptureProcessingGraphStep
+    {
+        public bool Enabled => true;
+        public int ExecutionCount { get; private set; }
+        public string Name => variant;
+        public int Order => 0;
+        public string RecipeName => "test-jpeg";
+        public FrameArtifactRole OutputRole => FrameArtifactRole.AnnotatedPreview;
+        public string OutputVariant => variant;
+        public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+            new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            ExecutionCount++;
+            var raw = context.Artifacts!.Raw;
+            var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                RecipeName,
+                "1.0.0",
+                "test-jpeg-v1",
+                JsonSerializer.SerializeToElement(new { variant })));
+            var sources = new[] { raw.ArtifactId };
+            var payload = malformed
+                ? new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 }
+                : JpegImageCodec.EncodeMono8ToJpeg(
+                    raw.Frame.Width,
+                    raw.Frame.Height,
+                    new byte[] { 0, 64, 128, 255 },
+                    cancellationToken: cancellationToken);
+            var product = new ProcessingProduct(
+                OutputRole,
+                OutputVariant,
+                ProcessingIdentity.CreateOutputIdentity(OutputRole, OutputVariant, recipe.IdentitySha256, sources),
+                JpegImageCodec.MediaType,
+                null,
+                payload,
+                ProcessingIdentity.ComputePayloadSha256(payload),
+                recipe,
+                [new ProcessingAlgorithmIdentity("jpeg", JpegImageCodec.AlgorithmVersion)],
+                sources,
+                raw.Frame.Metadata.Exposure,
+                CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility);
+            context.AddProcessingOutcome(ProcessingOutcome.Produced(product));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class PackedAnnotationProducingStep : ICaptureProcessingStep, ICaptureProcessingGraphStep
+    {
+        public bool Enabled => true;
+        public string Name => "annotation";
+        public int Order => 70;
+        public string RecipeName => "test-packed-annotation";
+        public FrameArtifactRole OutputRole => FrameArtifactRole.AnnotatedPreview;
+        public string OutputVariant => "production-like-annotated";
+        public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+            new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            var raw = context.Artifacts!.Raw;
+            var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                RecipeName,
+                "1.0.0",
+                "test-packed-annotation-v1",
+                JsonSerializer.SerializeToElement(new { outputEncoding = "Packed" })));
+            var sources = new[] { raw.ArtifactId };
+            var payload = new byte[] { 0, 64, 128, 255 };
+            var layout = new FrameLayoutDescriptor(
+                raw.Frame.Width,
+                raw.Frame.Height,
+                raw.Frame.Width,
+                CameraPixelFormat.Mono8,
+                FrameByteOrder.NotApplicable,
+                8,
+                8,
+                FrameSamplePacking.ByteAligned,
+                ColorFilterArrayPattern.None,
+                0,
+                byte.MaxValue,
+                payload.Length);
+            var product = new ProcessingProduct(
+                OutputRole,
+                OutputVariant,
+                ProcessingIdentity.CreateOutputIdentity(OutputRole, OutputVariant, recipe.IdentitySha256, sources),
+                "application/x-hvo-packed-image",
+                layout,
+                payload,
+                ProcessingIdentity.ComputePayloadSha256(payload),
+                recipe,
+                [new ProcessingAlgorithmIdentity("annotation", "test-v1")],
+                sources,
+                raw.Frame.Metadata.Exposure,
+                CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility);
+            var frame = new CameraFrame(
+                raw.Frame.TimestampUtc,
+                raw.Frame.Width,
+                raw.Frame.Height,
+                CameraPixelFormat.Mono8,
+                payload,
+                raw.Frame.Metadata with { SourceId = Name },
+                raw.Frame.Width)
+            {
+                Layout = layout
+            };
+            var artifact = context.AddDerivative(
+                OutputRole,
+                frame,
+                OutputVariant,
+                sources,
+                CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
+            context.AssociateProcessingProduct(artifact, product);
+            context.AddProcessingOutcome(ProcessingOutcome.Produced(product));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RetryThenCompleteStep : ICaptureProcessingStep
+    {
+        private int _attempt;
+
+        public string Name => "memory";
+        public int Order => 0;
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _attempt) == 1)
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.RetryableFailure("test.retry"));
+            }
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class RestoredFrameInspectingStep(SceneProvenance expectedScene) : ICaptureProcessingStep
     {
         public string Name => "inspect";
@@ -1218,6 +1943,18 @@ public sealed class DurableCaptureProcessingTests
             CancellationToken cancellationToken)
         {
             _ = await inner.SaveAsync(storageRoot, artifact, descriptor, cancellationToken).ConfigureAwait(false);
+            throw new IOException("Injected failure after immutable publication.");
+        }
+
+        public async ValueTask<StoredFrameReference> SaveAsync(
+            string storageRoot,
+            FrameArtifact artifact,
+            ReconstructionDescriptor descriptor,
+            string producerStepId,
+            CancellationToken cancellationToken)
+        {
+            _ = await inner.SaveAsync(
+                storageRoot, artifact, descriptor, producerStepId, cancellationToken).ConfigureAwait(false);
             throw new IOException("Injected failure after immutable publication.");
         }
 

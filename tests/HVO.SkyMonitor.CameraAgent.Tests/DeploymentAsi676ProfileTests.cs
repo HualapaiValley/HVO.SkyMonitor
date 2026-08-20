@@ -21,6 +21,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed class DeploymentAsi676ProfileTests
 {
     private static readonly ObservatoryLocation Location = new(35.5599378, -113.9119818, 520, "America/Phoenix");
+    private static readonly string[] ExpectedStorageDependencies =
+        ["sky-annotation", "final-jpeg", "thumbnail-large", "thumbnail-small"];
     private static readonly JsonSerializerOptions StrictJsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = false,
@@ -174,8 +176,8 @@ public sealed class DeploymentAsi676ProfileTests
         var colorPlan = factory.PreviewPlan(color);
         var monoPlan = factory.PreviewPlan(mono);
 
-        Assert.HasCount(8, colorPlan.EffectiveNodes);
-        Assert.HasCount(8, monoPlan.EffectiveNodes);
+        Assert.HasCount(11, colorPlan.EffectiveNodes);
+        Assert.HasCount(11, monoPlan.EffectiveNodes);
         Assert.AreEqual(BuiltInProcessingRecipes.LinearNormalization,
             colorPlan.EffectiveNodes.Single(node => node.Id == "calibration").RecipeName);
         Assert.AreEqual(BuiltInProcessingRecipes.LinearNormalization,
@@ -184,11 +186,121 @@ public sealed class DeploymentAsi676ProfileTests
         var monoPipeline = mono.Pipeline ?? throw new AssertFailedException("Mono pipeline is required.");
         Assert.IsTrue(colorPipeline.Steps.All(static step => step.DependsOn is { Count: > 0 }));
         Assert.IsTrue(monoPipeline.Steps.All(static step => step.DependsOn is { Count: > 0 }));
+        foreach (var pipeline in new[] { colorPipeline, monoPipeline })
+        {
+            Assert.AreEqual("$raw", pipeline.Steps.Single(step => step.Id == "rolling").DependsOn!.Single());
+            Assert.IsTrue(pipeline.Steps
+                .Where(step => step.Id is "calibration" or "calibrated-preview" or "rolling" or
+                    "combined-preview" or "quality" or "sky-annotation")
+                .All(step => step.Publication?.Persistence == CaptureProcessingPersistenceMode.MemoryOnly));
+            var jpegSteps = pipeline.Steps.Where(step => step.Type == "JpegEncoding").ToArray();
+            Assert.HasCount(3, jpegSteps);
+            Assert.IsTrue(jpegSteps.All(step =>
+                step.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal));
+            var storage = pipeline.Steps.Single(step => step.Id == "storage");
+            var storageOptions = storage.Options!.Value.Deserialize<NoOpFileStorageProcessingStepOptions>(StrictJsonOptions)!;
+            Assert.IsFalse(storageOptions.QueueForUpload);
+            CollectionAssert.AreEquivalent(
+                ExpectedStorageDependencies,
+                storage.DependsOn!.ToArray());
+        }
+        StringAssert.EndsWith(color.Rig.ProfileVersion, "-v2", StringComparison.Ordinal);
+        StringAssert.EndsWith(mono.Rig.ProfileVersion, "-v2", StringComparison.Ordinal);
         Assert.AreNotEqual(CameraRigProfileIdentity.ComputeSha256(color.Rig), CameraRigProfileIdentity.ComputeSha256(mono.Rig));
         Assert.IsFalse(color.Module.Options!.Value.GetRawText().Contains("meteor", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(color.Module.Options.Value.GetRawText().Contains("fireball", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(mono.Module.Options!.Value.GetRawText().Contains("meteor", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(mono.Module.Options.Value.GetRawText().Contains("fireball", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task StoragePolicies_SelectExactProducersAndRejectLayoutlessUploads()
+    {
+        var configuration = await LoadAsync("hvo-edge-01.virtual-asi676mm.full.json").ConfigureAwait(false);
+        using var provider = CreateProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+
+        CameraModuleConfig WithPolicies(
+            bool queueForUpload,
+            params ArtifactStoragePolicyOptions[] policies)
+        {
+            var steps = configuration.Pipeline!.Steps.Select(step => step.Id == "storage"
+                ? step with
+                {
+                    Options = JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                    {
+                        StorageRoot = "/app/data/raw",
+                        RetentionDays = 1,
+                        UpdateLatestFrame = true,
+                        QueueForUpload = queueForUpload,
+                        Policies = policies
+                    }, StrictJsonOptions)
+                }
+                : step).ToArray();
+            return configuration with { Pipeline = configuration.Pipeline with { Steps = steps } };
+        }
+
+        static CameraModuleConfig WithQualityDependency(CameraModuleConfig config)
+            => config with
+            {
+                Pipeline = config.Pipeline! with
+                {
+                    Steps = config.Pipeline.Steps.Select(step => step.Id == "storage"
+                        ? step with { DependsOn = [.. step.DependsOn!, "quality"] }
+                        : step).ToArray()
+                }
+            };
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(WithPolicies(
+            false, new ArtifactStoragePolicyOptions { StepId = "final-jpeg", QueueForUpload = true })));
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(WithQualityDependency(WithPolicies(
+            false, new ArtifactStoragePolicyOptions { StepId = "quality", QueueForUpload = true }))));
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(WithPolicies(
+            false, new ArtifactStoragePolicyOptions { StepId = "missing", QueueForUpload = true })));
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(WithPolicies(
+            true, new ArtifactStoragePolicyOptions { StepId = "sky-annotation" })));
+        Assert.ThrowsExactly<System.ComponentModel.DataAnnotations.ValidationException>(() => factory.CreateGraph(WithPolicies(
+            false,
+            new ArtifactStoragePolicyOptions { StepId = "final-jpeg", RetentionDays = 1 },
+            new ArtifactStoragePolicyOptions { StepId = "FINAL-JPEG", RetentionDays = 30 })));
+
+        var alertFrameGraph = factory.CreateGraph(WithPolicies(
+            false, new ArtifactStoragePolicyOptions { StepId = "sky-annotation", QueueForUpload = true }));
+        alertFrameGraph.DisposeSteps();
+        var globalWithLayoutlessOverrides = factory.CreateGraph(WithPolicies(
+            true,
+            new ArtifactStoragePolicyOptions { StepId = "final-jpeg", QueueForUpload = false },
+            new ArtifactStoragePolicyOptions { StepId = "thumbnail-large", QueueForUpload = false },
+            new ArtifactStoragePolicyOptions { StepId = "thumbnail-small", QueueForUpload = false }));
+        globalWithLayoutlessOverrides.DisposeSteps();
+    }
+
+    [TestMethod]
+    public async Task ProfileLoader_RejectsNumericPublicationPersistence()
+    {
+        var source = Path.Combine(AppContext.BaseDirectory, "hvo-edge-01.virtual-asi676mm.full.json");
+        var path = Path.Combine(Path.GetTempPath(), $"numeric-publication-{Guid.NewGuid():N}.json");
+        try
+        {
+            var json = await File.ReadAllTextAsync(source).ConfigureAwait(false);
+            await File.WriteAllTextAsync(path, json.Replace(
+                "\"persistence\": \"memory-only\"",
+                "\"persistence\": 0",
+                StringComparison.Ordinal)).ConfigureAwait(false);
+            var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
+            {
+                ConfigFilePath = path,
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled },
+                Observatory = Location
+            }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
+
+            await Assert.ThrowsExactlyAsync<JsonException>(
+                () => loader.LoadAsync(CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     private static async Task<CameraModuleConfig> LoadAsync(string fileName)

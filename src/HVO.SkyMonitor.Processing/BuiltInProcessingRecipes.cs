@@ -9,6 +9,7 @@ public static class BuiltInProcessingRecipes
 {
     public const string LinearNormalization = "linear-normalization";
     public const string EncodedPreview = "encoded-preview";
+    public const string JpegEncoding = "jpeg-encoding";
     public const string Annotation = "annotation";
     public const string RollingMean = "rolling-mean";
     public const string ImageQuality = "image-quality";
@@ -51,6 +52,7 @@ public static class BuiltInProcessingRecipes
     [
         new LinearNormalizationRecipe(),
         new EncodedPreviewRecipe(),
+        new JpegEncodingRecipe(),
         new AnnotationRecipe(),
         new RollingMeanRecipe(),
         new ImageQualityRecipe(),
@@ -59,6 +61,81 @@ public static class BuiltInProcessingRecipes
         new WeatherCloudOverlayRecipe(),
         new ReferenceCalibrationRecipe()
     ];
+}
+
+public sealed record JpegEncodingOptions(
+    int JpegQuality = JpegImageCodec.DefaultQuality,
+    int? MaximumDimension = null);
+
+internal sealed class JpegEncodingRecipe : IProcessingRecipe
+{
+    public ProcessingRecipeDefinition Definition { get; } = new(
+        BuiltInProcessingRecipes.JpegEncoding, "1.0.0", "packed-jpeg-v1",
+        ProcessingOperationKind.Transform);
+
+    public JsonElement NormalizeOptions(JsonElement options)
+    {
+        var parsed = ProcessingRecipeSupport.ParseOptions<JpegEncodingOptions>(options);
+        if (parsed.JpegQuality is < 1 or > 100 || parsed.MaximumDimension is < 1 or > 16384)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options));
+        }
+        return ProcessingRecipeSupport.Normalize(parsed);
+    }
+
+    public ValueTask<ProcessingOutcome> ExecuteAsync(
+        ProcessingExecutionRequest request,
+        ProcessingRecipeIdentity identity,
+        CancellationToken cancellationToken)
+    {
+        var input = ProcessingRecipeSupport.ResolveSingle(request, out var failure);
+        if (input is null)
+        {
+            return ValueTask.FromResult(failure!);
+        }
+        if (!ProcessingRecipeSupport.TryValidateFrame(input, out var layout, out var layoutFailure))
+        {
+            return ValueTask.FromResult(layoutFailure!);
+        }
+        if (input.Role is not (FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview))
+        {
+            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidSelector,
+                nameof(request.Input)));
+        }
+
+        var options = ProcessingRecipeSupport.ParseOptions<JpegEncodingOptions>(
+            identity.Descriptor.Options.GetProperty("parameters"));
+        var maximumDimension = options.MaximumDimension ?? Math.Max(layout.Width, layout.Height);
+        var resized = PackedImageDownsampler.Downsample(layout, input.Payload, maximumDimension);
+        var resizedLayout = new ImageLayout(
+            resized.Width,
+            resized.Height,
+            layout.PixelFormat,
+            checked(resized.Width * ImageLayout.BytesPerPixel(layout.PixelFormat)));
+        var payload = JpegImageCodec.EncodeToJpeg(
+            resizedLayout,
+            resized.Payload,
+            options.JpegQuality,
+            cancellationToken);
+        var algorithms = new List<ProcessingAlgorithmIdentity>();
+        if (resized.Width != layout.Width || resized.Height != layout.Height)
+        {
+            algorithms.Add(new("downsample", PackedImageDownsampler.AlgorithmVersion));
+        }
+        algorithms.Add(new("jpeg", JpegImageCodec.AlgorithmVersion));
+        return ValueTask.FromResult(ProcessingOutcome.Produced(ProcessingRecipeSupport.CreateProduct(
+            input.Role,
+            request.OutputVariant,
+            JpegImageCodec.MediaType,
+            null,
+            payload,
+            identity,
+            algorithms,
+            [input],
+            input.Integration,
+            input.Compatibility)));
+    }
 }
 
 internal static class ProcessingRecipeSupport

@@ -29,7 +29,7 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
         ReadOnlyMemory<byte> payload,
         int maximumDimension)
     {
-        var resized = Downsample(layout, payload, maximumDimension);
+        var resized = PackedImageDownsampler.Downsample(layout, payload, maximumDimension);
         var result = layout.PixelFormat switch
         {
             CameraPixelFormat.Mono8 => SkiaPreviewEncoder.EncodeMono8ToJpeg(
@@ -53,50 +53,7 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
         FrameLayoutDescriptor layout,
         ReadOnlyMemory<byte> payload,
         int maximumDimension)
-    {
-        var scale = Math.Min(1d, Math.Min(
-            (double)maximumDimension / layout.Width,
-            (double)maximumDimension / layout.Height));
-        var width = Math.Max(1, (int)Math.Floor(layout.Width * scale));
-        var height = Math.Max(1, (int)Math.Floor(layout.Height * scale));
-        if (layout.PixelFormat == CameraPixelFormat.BayerRggb16 && scale < 1)
-        {
-            width -= width > 1 ? width % 2 : 0;
-            height -= height > 1 ? height % 2 : 0;
-        }
-        if (width == layout.Width && height == layout.Height)
-        {
-            return (width, height, payload);
-        }
-
-        var bytesPerPixel = ImageLayout.BytesPerPixel(layout.PixelFormat);
-        var resized = new byte[checked(width * height * bytesPerPixel)];
-        var source = payload.Span;
-        for (var y = 0; y < height; y++)
-        {
-            var sourceY = SourceCoordinate(y, height, layout.Height, layout.PixelFormat);
-            for (var x = 0; x < width; x++)
-            {
-                var sourceX = SourceCoordinate(x, width, layout.Width, layout.PixelFormat);
-                source.Slice(
-                    checked((sourceY * layout.Width + sourceX) * bytesPerPixel),
-                    bytesPerPixel).CopyTo(resized.AsSpan(
-                        checked((y * width + x) * bytesPerPixel),
-                        bytesPerPixel));
-            }
-        }
-        return (width, height, resized);
-
-        static int SourceCoordinate(int destination, int destinationLength, int sourceLength, CameraPixelFormat format)
-        {
-            var coordinate = Math.Min(sourceLength - 1, checked(destination * sourceLength / destinationLength));
-            if (format != CameraPixelFormat.BayerRggb16 || (coordinate & 1) == (destination & 1))
-            {
-                return coordinate;
-            }
-            return coordinate + 1 < sourceLength ? coordinate + 1 : coordinate - 1;
-        }
-    }
+        => PackedImageDownsampler.Downsample(layout, payload, maximumDimension);
 
 }
 
@@ -448,7 +405,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         {
             using var document = JsonDocument.Parse(sidecar);
             if (document.RootElement.TryGetProperty("schemaVersion", out var schema) &&
-                string.Equals(schema.GetString(), DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal))
+                IsDurableProductSchema(schema.GetString()))
             {
                 var product = DurableProcessingProductManifestJson.Parse(sidecar);
                 ValidateProcessingFacts(
@@ -601,7 +558,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         {
             using var document = JsonDocument.Parse(evidence);
             if (document.RootElement.TryGetProperty("schemaVersion", out var schema) &&
-                string.Equals(schema.GetString(), DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal))
+                IsDurableProductSchema(schema.GetString()))
             {
                 var product = DurableProcessingProductManifestJson.Parse(evidence);
                 return new(product.Artifact.MediaType, product.ByteLength, product.Artifact.ChecksumSha256);
@@ -618,6 +575,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 manifest.Descriptor.Artifact.ChecksumSha256)
             : throw new ArtifactEvidenceException();
     }
+
+    private static bool IsDurableProductSchema(string? schema)
+        => string.Equals(schema, DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal) ||
+           string.Equals(schema, DurableEncodedProductManifestV2.CurrentSchemaVersion, StringComparison.Ordinal);
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated value is a validated integer host option used only for SQLite PRAGMA configuration.")]
     private async ValueTask<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)

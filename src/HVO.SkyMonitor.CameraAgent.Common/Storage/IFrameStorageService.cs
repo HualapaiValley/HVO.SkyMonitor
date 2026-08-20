@@ -13,6 +13,14 @@ public interface IFrameStorageService
         CancellationToken cancellationToken)
         => throw new NotSupportedException("This frame storage service does not support versioned reconstruction sidecars.");
 
+    ValueTask<StoredFrameReference> SaveAsync(
+        string storageRoot,
+        FrameArtifact artifact,
+        ReconstructionDescriptor descriptor,
+        string producerStepId,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This frame storage service does not support producer-aware reconstruction sidecars.");
+
     ValueTask RemoveAsync(string storageRoot, StoredFrameReference storedFrame, Guid artifactId, CancellationToken cancellationToken);
 
     async ValueTask RemoveBatchAsync(

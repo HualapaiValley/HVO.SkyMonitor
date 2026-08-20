@@ -29,7 +29,7 @@ public sealed class FileSystemFrameStorageService(
         string storageRoot,
         FrameArtifact artifact,
         CancellationToken cancellationToken)
-        => await SaveCoreAsync(storageRoot, artifact, null, cancellationToken).ConfigureAwait(false);
+        => await SaveCoreAsync(storageRoot, artifact, null, null, cancellationToken).ConfigureAwait(false);
 
     public async ValueTask<StoredFrameReference> SaveAsync(
         string storageRoot,
@@ -38,17 +38,31 @@ public sealed class FileSystemFrameStorageService(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
-        return await SaveCoreAsync(storageRoot, artifact, descriptor, cancellationToken).ConfigureAwait(false);
+        return await SaveCoreAsync(storageRoot, artifact, descriptor, null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<StoredFrameReference> SaveAsync(
+        string storageRoot,
+        FrameArtifact artifact,
+        ReconstructionDescriptor descriptor,
+        string producerStepId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentException.ThrowIfNullOrWhiteSpace(producerStepId);
+        return await SaveCoreAsync(storageRoot, artifact, descriptor, producerStepId, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<StoredFrameReference> SaveCoreAsync(
         string storageRoot,
         FrameArtifact artifact,
         ReconstructionDescriptor? descriptor,
+        string? producerStepId,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
         ArgumentNullException.ThrowIfNull(artifact);
+        producerStepId = producerStepId?.Trim();
         var frame = artifact.Frame;
 
         storageRoot = Path.GetFullPath(storageRoot);
@@ -100,14 +114,16 @@ public sealed class FileSystemFrameStorageService(
         var unversionedSidecar = descriptor is null
             ? JsonSerializer.SerializeToUtf8Bytes(metadata, SerializerOptions)
             : null;
+        var upgradeProducerSidecar = false;
         if (descriptor is not null)
         {
-            await ValidateExistingVersionedEvidenceAsync(
+            upgradeProducerSidecar = await ValidateExistingVersionedEvidenceAsync(
                 storageRoot,
                 descriptor,
                 payloadPath,
                 metadataPath,
                 relativePayloadPath,
+                producerStepId,
                 payloadExists,
                 sidecarExists,
                 cancellationToken).ConfigureAwait(false);
@@ -141,10 +157,14 @@ public sealed class FileSystemFrameStorageService(
             var sidecar = descriptor is null
                 ? unversionedSidecar!
                 : await CreateVersionedSidecarAsync(
-                    descriptor, payloadPath, relativePayloadPath, frame.Metadata.Scene, cancellationToken).ConfigureAwait(false);
+                    descriptor, payloadPath, relativePayloadPath, frame.Metadata.Scene, producerStepId, cancellationToken).ConfigureAwait(false);
             if (!sidecarExists)
             {
                 await WriteAtomicallyAsync(storageRoot, metadataPath, sidecar, cancellationToken).ConfigureAwait(false);
+            }
+            else if (upgradeProducerSidecar)
+            {
+                await ReplaceAtomicallyAsync(storageRoot, metadataPath, sidecar, cancellationToken).ConfigureAwait(false);
             }
 
             var indexDirectory = Path.Combine(storageRoot, "index");
@@ -250,6 +270,7 @@ public sealed class FileSystemFrameStorageService(
         string payloadPath,
         string relativePayloadPath,
         SceneProvenance? scene,
+        string? producerStepId,
         CancellationToken cancellationToken)
     {
         using var payload = new FileStream(
@@ -265,15 +286,17 @@ public sealed class FileSystemFrameStorageService(
             ArtifactManifestV2.CurrentSchemaVersion,
             descriptor,
             relativePayloadPath,
-            scene));
+            scene,
+            producerStepId));
     }
 
-    private static async ValueTask ValidateExistingVersionedEvidenceAsync(
+    private static async ValueTask<bool> ValidateExistingVersionedEvidenceAsync(
         string storageRoot,
         ReconstructionDescriptor descriptor,
         string payloadPath,
         string sidecarPath,
         string relativePayloadPath,
+        string? producerStepId,
         bool payloadExists,
         bool sidecarExists,
         CancellationToken cancellationToken)
@@ -290,6 +313,7 @@ public sealed class FileSystemFrameStorageService(
                 throw new InvalidDataException("Existing derivative payload conflicts with the requested output identity.");
             }
         }
+        var upgradeProducerSidecar = false;
         if (sidecarExists)
         {
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, sidecarPath);
@@ -298,11 +322,16 @@ public sealed class FileSystemFrameStorageService(
             var existing = parsed.Document?.Manifest;
             if (!parsed.IsValid || existing is null ||
                 !string.Equals(existing.IdempotencyKey, CaptureContractJson.ComputeDescriptorSha256(descriptor), StringComparison.Ordinal) ||
-                !string.Equals(existing.RelativeArtifactPath, relativePayloadPath, StringComparison.Ordinal))
+                !string.Equals(existing.RelativeArtifactPath, relativePayloadPath, StringComparison.Ordinal) ||
+                existing.ProducerStepId is not null && producerStepId is not null &&
+                !string.Equals(existing.ProducerStepId, producerStepId, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException("Existing derivative sidecar conflicts with the requested output identity.");
             }
+            upgradeProducerSidecar = producerStepId is not null &&
+                !string.Equals(existing.ProducerStepId, producerStepId, StringComparison.Ordinal);
         }
+        return upgradeProducerSidecar;
     }
 
     private static int GetPackedStride(int width, CameraPixelFormat pixelFormat)
@@ -433,6 +462,43 @@ public sealed class FileSystemFrameStorageService(
                 }
                 return;
             }
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
+            RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationPath)!);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
+    private static async Task ReplaceAtomicallyAsync(
+        string storageRoot,
+        string destinationPath,
+        ReadOnlyMemory<byte> content,
+        CancellationToken cancellationToken)
+    {
+        var temporaryPath = string.Concat(destinationPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
+        try
+        {
+            using (var stream = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                64 * 1024,
+                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
+                stream.Flush(flushToDisk: true);
+#pragma warning restore CA1849
+            }
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
+            File.Move(temporaryPath, destinationPath, overwrite: true);
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationPath)!);
         }
