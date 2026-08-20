@@ -302,7 +302,7 @@ deploy_measure_capture_control() {
 
 deploy_measure_activate_profile() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" rendered="$6" workload="$7" run_id="$8"
-    local expected_revision="${9:-}" expected_version="${10:-}"
+    local expected_revision="${9:-}"
     local name endpoint state status pending version activate_body activate_headers activate_response
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     state="$private_root/$name-schedule-state.json"
@@ -842,8 +842,7 @@ deploy_run_measure() {
         fi
         deploy_measure_activate_profile "$target" "$target_remote" "$private_root" "$render_root" "$cookies" \
           "$render_root/$name-$selected_workload-camera-module.json" "$selected_workload" "$execution_run_id" \
-          "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .priorState.scheduleRevisionId' <<< "$DEPLOY_MEASURE_JSON")" \
-          "" || return 1
+          "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .priorState.scheduleRevisionId' <<< "$DEPLOY_MEASURE_JSON")" || return 1
         interval_value="$(jq -er '.rig.pipeline.captureInterval | select(test("^[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?$"))' "$render_root/$name-$selected_workload-camera-module.json")" || return 1
         IFS=: read -r interval_hours interval_minutes interval_seconds <<< "$interval_value"; interval_seconds="${interval_seconds%%.*}"
         capture_interval_seconds=$(( 10#$interval_hours * 3600 + 10#$interval_minutes * 60 + 10#$interval_seconds ))
