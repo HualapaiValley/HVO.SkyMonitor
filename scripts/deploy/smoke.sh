@@ -126,6 +126,7 @@ deploy_smoke_activate_profile() {
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
       "$target_remote/schedule-before-activation.json" "$state")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail smoke "$name" schedule-read-failed; return 1; }
+    # The operator API redacts options; any full-profile option drift is exposed as a file-draft by store initialization.
     expected_profile="$(jq -c '.module.options=null | .processingSteps |= map(.options=null)' "$rendered")" || return 1
     if jq -e --argjson expected "$expected_profile" '
       .pendingRevision == null and
