@@ -49,7 +49,8 @@ public sealed record CaptureProcessingGraphNode(
     string? Alias = null,
     int? EffectiveOrder = null,
     JsonElement? EffectiveOptions = null,
-    IReadOnlyList<string>? DeclaredDependencies = null);
+    IReadOnlyList<string>? DeclaredDependencies = null,
+    CaptureProcessingPublicationPolicy? Publication = null);
 
 public sealed record CaptureProcessingPlanNode(
     string Id,
@@ -61,7 +62,10 @@ public sealed record CaptureProcessingPlanNode(
     IReadOnlyList<string>? Dependencies,
     string? RecipeName,
     FrameArtifactRole? OutputRole,
-    string? OutputVariant);
+    string? OutputVariant,
+    [property: System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    CaptureProcessingPublicationPolicy? Publication = null);
 
 public sealed record CaptureProcessingPlanPreview(
     string SchemaVersion,

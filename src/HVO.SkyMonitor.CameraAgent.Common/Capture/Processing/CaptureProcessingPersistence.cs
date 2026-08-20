@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
@@ -36,6 +37,14 @@ internal sealed class CaptureProcessingPersistence(
         string nodeId,
         CancellationToken cancellationToken)
         => _store.ReadNodeAsync(captureId, nodeId, cancellationToken);
+
+    internal ValueTask DeleteOutputlessNodeAsync(
+        Guid captureId,
+        string nodeId,
+        long workId,
+        string? leaseToken,
+        CancellationToken cancellationToken)
+        => _store.DeleteOutputlessNodeAsync(captureId, nodeId, workId, leaseToken, cancellationToken);
 
     public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
@@ -185,7 +194,7 @@ internal sealed class CaptureProcessingPersistence(
             {
                 var stopwatch = Stopwatch.StartNew();
                 using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-artifact.persist");
-                if (product.Layout is null && product.Role == FrameArtifactRole.Metadata)
+                if (product.Layout is null && IsDurableLayoutlessProduct(product))
                 {
                     outputs.Add(await PersistMetadataProductAsync(
                         rawCapture.Manifest.Descriptor, node, product, cancellationToken).ConfigureAwait(false));
@@ -193,7 +202,7 @@ internal sealed class CaptureProcessingPersistence(
                 else if (product.Layout is null)
                 {
                     throw new InvalidDataException(
-                        "Only metadata products may use layoutless CameraAgent durable persistence.");
+                        "Only JSON metadata and JPEG image products may use layoutless CameraAgent durable persistence.");
                 }
                 else
                 {
@@ -204,13 +213,14 @@ internal sealed class CaptureProcessingPersistence(
                         artifact.Frame.Metadata.SourceId ?? node.Id,
                         product);
                     var stored = await _frameStorage.SaveAsync(
-                        _storageRoot, artifact, descriptor, cancellationToken).ConfigureAwait(false);
+                        _storageRoot, artifact, descriptor, node.Id, cancellationToken).ConfigureAwait(false);
                     var relativePayloadPath = NormalizeRelativePath(stored.RelativePath);
                     var evidenceJson = CaptureContractJson.Serialize(new ArtifactManifestV2(
                         ArtifactManifestV2.CurrentSchemaVersion,
                         descriptor,
                         relativePayloadPath,
-                        artifact.Frame.Metadata.Scene));
+                        artifact.Frame.Metadata.Scene,
+                        node.Id));
                     outputs.Add(new DurableProcessingOutput(
                         product.OutputIdentitySha256,
                         artifact.ArtifactId,
@@ -270,6 +280,10 @@ internal sealed class CaptureProcessingPersistence(
         DurableProcessingOutput output,
         CancellationToken cancellationToken)
     {
+        if (output.ProductManifest is { } committedManifest)
+        {
+            ValidateLayoutlessOutputFacts(output, committedManifest);
+        }
         var payloadPath = ResolveSafePath(output.PayloadRelativePath);
         var sidecarPath = ResolveSafePath(output.SidecarRelativePath);
         var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
@@ -382,20 +396,28 @@ internal sealed class CaptureProcessingPersistence(
             product.Variant,
             product.Recipe.IdentitySha256,
             product.SourceArtifactIds);
-        if (product.Role != FrameArtifactRole.Metadata ||
+        if (!IsDurableLayoutlessProduct(product) ||
             !string.Equals(checksum, product.ChecksumSha256, StringComparison.Ordinal) ||
             !string.Equals(expectedOutputIdentity, product.OutputIdentitySha256, StringComparison.Ordinal))
         {
             throw new InvalidDataException("Layoutless processing product has invalid immutable facts.");
         }
         var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
-        try
+        DecodedImage? encodedImage = null;
+        if (product.Role == FrameArtifactRole.Metadata)
         {
-            using var _ = JsonDocument.Parse(product.Payload);
+            try
+            {
+                using var _ = JsonDocument.Parse(product.Payload);
+            }
+            catch (JsonException exception)
+            {
+                throw new InvalidDataException("Layoutless processing product payload is not valid JSON.", exception);
+            }
         }
-        catch (JsonException exception)
+        else
         {
-            throw new InvalidDataException("Layoutless processing product payload is not valid JSON.", exception);
+            encodedImage = DecodeJpeg(product.Payload, "JPEG processing product payload is invalid.");
         }
 
         var createdUtc = sourceDescriptor.Timing.ReadoutCompletedUtc.ToUniversalTime();
@@ -410,7 +432,9 @@ internal sealed class CaptureProcessingPersistence(
             createdUtc.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture),
             "-",
             artifactId.ToString("N"));
-        var payloadPath = Path.Combine(directory, string.Concat(stem, ".json"));
+        var payloadPath = Path.Combine(directory, string.Concat(
+            stem,
+            product.Role == FrameArtifactRole.Metadata ? ".json" : ".jpg"));
         var sidecarPath = Path.Combine(directory, string.Concat(stem, ".manifest.json"));
         var payloadRelativePath = NormalizeRelativePath(Path.GetRelativePath(storageRoot, payloadPath));
         var sidecarRelativePath = NormalizeRelativePath(Path.GetRelativePath(storageRoot, sidecarPath));
@@ -425,17 +449,33 @@ internal sealed class CaptureProcessingPersistence(
             product.MediaType,
             product.ChecksumSha256);
         using var nullDocument = JsonDocument.Parse("null");
-        var manifest = new DurableProcessingProductManifestV1(
-            DurableProcessingProductManifestV1.CurrentSchemaVersion,
-            sourceDescriptor.Capture,
-            artifact,
-            product.OutputIdentitySha256,
-            product.Algorithms,
-            product.Compatibility,
-            product.TotalIntegration.Ticks,
-            product.Payload.Length,
-            payloadRelativePath,
-            nullDocument.RootElement.Clone());
+        IDurableProcessingProductManifest manifest = encodedImage is null
+            ? new DurableProcessingProductManifestV1(
+                DurableProcessingProductManifestV1.CurrentSchemaVersion,
+                sourceDescriptor.Capture,
+                artifact,
+                product.OutputIdentitySha256,
+                product.Algorithms,
+                product.Compatibility,
+                product.TotalIntegration.Ticks,
+                product.Payload.Length,
+                payloadRelativePath,
+                nullDocument.RootElement.Clone())
+            : new DurableEncodedProductManifestV2(
+                DurableEncodedProductManifestV2.CurrentSchemaVersion,
+                sourceDescriptor.Capture,
+                artifact,
+                product.OutputIdentitySha256,
+                product.Algorithms,
+                product.Compatibility,
+                product.TotalIntegration.Ticks,
+                product.Payload.Length,
+                payloadRelativePath,
+                nullDocument.RootElement.Clone(),
+                encodedImage.Width,
+                encodedImage.Height,
+                encodedImage.PixelFormat,
+                sourceId);
         var evidenceJson = DurableProcessingProductManifestJson.Serialize(manifest);
 
         var directoryExisted = Directory.Exists(directory);
@@ -512,21 +552,34 @@ internal sealed class CaptureProcessingPersistence(
         CancellationToken cancellationToken)
     {
         var manifest = DurableProcessingProductManifestJson.Parse(sidecar);
+        ValidateLayoutlessOutputFacts(output, manifest);
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(manifest.Artifact.Recipe);
         var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
         if (payload.LongLength != manifest.ByteLength ||
             !string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), manifest.Artifact.ChecksumSha256, StringComparison.Ordinal))
         {
             throw new InvalidDataException("Committed metadata payload conflicts with its manifest.");
         }
-        try
+        if (manifest is DurableProcessingProductManifestV1)
         {
-            using var _ = JsonDocument.Parse(payload);
+            try
+            {
+                using var _ = JsonDocument.Parse(payload);
+            }
+            catch (JsonException exception)
+            {
+                throw new InvalidDataException("Committed metadata payload is not valid JSON.", exception);
+            }
         }
-        catch (JsonException exception)
+        else if (manifest is DurableEncodedProductManifestV2 encoded)
         {
-            throw new InvalidDataException("Committed metadata payload is not valid JSON.", exception);
+            var decoded = DecodeJpeg(payload, "Committed JPEG payload is invalid.");
+            if (decoded.Width != encoded.EncodedWidth || decoded.Height != encoded.EncodedHeight ||
+                decoded.PixelFormat != encoded.EncodedPixelFormat)
+            {
+                throw new InvalidDataException("Committed JPEG dimensions or pixel format conflict with its manifest.");
+            }
         }
-        var recipe = ProcessingIdentity.CreateRecipeIdentity(manifest.Artifact.Recipe);
         var product = new ProcessingProduct(
             manifest.Artifact.Role,
             manifest.Artifact.Variant,
@@ -637,4 +690,45 @@ internal sealed class CaptureProcessingPersistence(
            current.Controls.EffectiveGain == candidate.Controls.EffectiveGain &&
            current.Controls.EffectiveOffset == candidate.Controls.EffectiveOffset &&
            current.Controls.TemperatureSetpointC == candidate.Controls.TemperatureSetpointC;
+
+    private static bool IsDurableLayoutlessProduct(ProcessingProduct product)
+        => product.Role == FrameArtifactRole.Metadata && IsJsonMediaType(product.MediaType) ||
+           product.Role is FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview &&
+           string.Equals(product.MediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsJsonMediaType(string mediaType)
+        => string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase) ||
+           mediaType.StartsWith("application/", StringComparison.OrdinalIgnoreCase) &&
+           mediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase);
+
+    private static DecodedImage DecodeJpeg(ReadOnlyMemory<byte> payload, string message)
+    {
+        try
+        {
+            return JpegImageCodec.DecodeJpeg(payload);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidDataException or InvalidOperationException)
+        {
+            throw new InvalidDataException(message, exception);
+        }
+    }
+
+    private static void ValidateLayoutlessOutputFacts(
+        DurableProcessingOutput output,
+        IDurableProcessingProductManifest manifest)
+    {
+        var expectedSidecarPath = NormalizeRelativePath(Path.ChangeExtension(
+            manifest.RelativeArtifactPath,
+            ".manifest.json"));
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(manifest.Artifact.Recipe);
+        if (!string.Equals(NormalizeRelativePath(output.PayloadRelativePath),
+                NormalizeRelativePath(manifest.RelativeArtifactPath), StringComparison.Ordinal) ||
+            !string.Equals(NormalizeRelativePath(output.SidecarRelativePath), expectedSidecarPath, StringComparison.Ordinal) ||
+            output.ArtifactId != manifest.Artifact.ArtifactId ||
+            !string.Equals(output.OutputIdentitySha256, manifest.OutputIdentitySha256, StringComparison.Ordinal) ||
+            !string.Equals(output.RecipeIdentitySha256, recipe.IdentitySha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Committed layoutless processing output conflicts with its SQLite identity or paths.");
+        }
+    }
 }

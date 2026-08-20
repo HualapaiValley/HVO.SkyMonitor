@@ -248,6 +248,9 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "Annotation", typeof(AnnotationCaptureProcessingStep), typeof(AnnotationProcessingStepOptions), 75));
         services.AddSingleton(new CaptureProcessingStepRegistration(
+            "JpegEncoding", typeof(JpegEncodingCaptureProcessingStep),
+            typeof(JpegEncodingProcessingStepOptions), 80, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
             "Calibration", typeof(CalibrationCaptureProcessingStep), typeof(CalibrationProcessingStepOptions), 20, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "VirtualSkyCloudObservation", typeof(VirtualSkyCloudObservationProcessingStep),

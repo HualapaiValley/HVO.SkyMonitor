@@ -5,6 +5,21 @@ using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
+internal interface IDurableProcessingProductManifest
+{
+    string SchemaVersion { get; }
+    CaptureIdentityDescriptor Capture { get; }
+    ArtifactDescriptor Artifact { get; }
+    string OutputIdentitySha256 { get; }
+    IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms { get; }
+    ProcessingCompatibilityIdentity Compatibility { get; }
+    long TotalIntegrationTicks { get; }
+    long ByteLength { get; }
+    string RelativeArtifactPath { get; }
+    JsonElement? Layout { get; }
+    string? ProducerStepId { get; }
+}
+
 internal sealed record DurableProcessingProductManifestV1(
     [property: JsonRequired] string SchemaVersion,
     [property: JsonRequired] CaptureIdentityDescriptor Capture,
@@ -15,24 +30,49 @@ internal sealed record DurableProcessingProductManifestV1(
     [property: JsonRequired] long TotalIntegrationTicks,
     [property: JsonRequired] long ByteLength,
     [property: JsonRequired] string RelativeArtifactPath,
-    [property: JsonRequired] JsonElement? Layout)
+    [property: JsonRequired] JsonElement? Layout) : IDurableProcessingProductManifest
 {
     internal const string CurrentSchemaVersion = "hvo-cameraagent-processing-product-v1";
+    string? IDurableProcessingProductManifest.ProducerStepId => null;
+}
+
+internal sealed record DurableEncodedProductManifestV2(
+    [property: JsonRequired] string SchemaVersion,
+    [property: JsonRequired] CaptureIdentityDescriptor Capture,
+    [property: JsonRequired] ArtifactDescriptor Artifact,
+    [property: JsonRequired] string OutputIdentitySha256,
+    [property: JsonRequired] IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms,
+    [property: JsonRequired] ProcessingCompatibilityIdentity Compatibility,
+    [property: JsonRequired] long TotalIntegrationTicks,
+    [property: JsonRequired] long ByteLength,
+    [property: JsonRequired] string RelativeArtifactPath,
+    [property: JsonRequired] JsonElement? Layout,
+    [property: JsonRequired] int EncodedWidth,
+    [property: JsonRequired] int EncodedHeight,
+    [property: JsonRequired] CameraPixelFormat EncodedPixelFormat,
+    [property: JsonRequired] string ProducerStepId) : IDurableProcessingProductManifest
+{
+    internal const string CurrentSchemaVersion = "hvo-cameraagent-encoded-product-v2";
 }
 
 internal static class DurableProcessingProductManifestJson
 {
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
 
-    internal static byte[] Serialize(DurableProcessingProductManifestV1 manifest)
+    internal static byte[] Serialize(IDurableProcessingProductManifest manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         Validate(manifest);
-        var element = JsonSerializer.SerializeToElement(manifest, SerializerOptions);
+        var element = manifest switch
+        {
+            DurableProcessingProductManifestV1 metadata => JsonSerializer.SerializeToElement(metadata, SerializerOptions),
+            DurableEncodedProductManifestV2 encoded => JsonSerializer.SerializeToElement(encoded, SerializerOptions),
+            _ => throw new InvalidDataException("Durable processing product manifest type is unsupported.")
+        };
         return JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(element));
     }
 
-    internal static DurableProcessingProductManifestV1 Parse(ReadOnlyMemory<byte> json)
+    internal static IDurableProcessingProductManifest Parse(ReadOnlyMemory<byte> json)
     {
         try
         {
@@ -40,12 +80,20 @@ internal static class DurableProcessingProductManifestJson
             RejectDuplicateProperties(document.RootElement);
             if (document.RootElement.ValueKind != JsonValueKind.Object ||
                 !document.RootElement.TryGetProperty("layout", out var layout) ||
-                layout.ValueKind != JsonValueKind.Null)
+                layout.ValueKind != JsonValueKind.Null ||
+                !document.RootElement.TryGetProperty("schemaVersion", out var schema) ||
+                schema.ValueKind != JsonValueKind.String)
             {
-                throw new InvalidDataException("Durable processing product layout must be explicitly null.");
+                throw new InvalidDataException("Durable processing product manifest shape is invalid.");
             }
-            var manifest = JsonSerializer.Deserialize<DurableProcessingProductManifestV1>(json.Span, SerializerOptions)
-                ?? throw new InvalidDataException("Durable processing product manifest is empty.");
+            IDurableProcessingProductManifest manifest = schema.GetString() switch
+            {
+                DurableProcessingProductManifestV1.CurrentSchemaVersion =>
+                    (IDurableProcessingProductManifest?)JsonSerializer.Deserialize<DurableProcessingProductManifestV1>(json.Span, SerializerOptions),
+                DurableEncodedProductManifestV2.CurrentSchemaVersion =>
+                    JsonSerializer.Deserialize<DurableEncodedProductManifestV2>(json.Span, SerializerOptions),
+                _ => throw new InvalidDataException("Durable processing product manifest schema is unsupported.")
+            } ?? throw new InvalidDataException("Durable processing product manifest is empty.");
             Validate(manifest);
             return manifest;
         }
@@ -55,11 +103,15 @@ internal static class DurableProcessingProductManifestJson
         }
     }
 
-    private static void Validate(DurableProcessingProductManifestV1 manifest)
+    private static void Validate(IDurableProcessingProductManifest manifest)
     {
-        if (!string.Equals(manifest.SchemaVersion, DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal))
+        var isMetadataV1 = manifest is DurableProcessingProductManifestV1 &&
+            string.Equals(manifest.SchemaVersion, DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal);
+        var isEncodedV2 = manifest is DurableEncodedProductManifestV2 &&
+            string.Equals(manifest.SchemaVersion, DurableEncodedProductManifestV2.CurrentSchemaVersion, StringComparison.Ordinal);
+        if (!isMetadataV1 && !isEncodedV2)
         {
-            throw new InvalidDataException("Durable processing product manifest schema is unsupported.");
+            throw new InvalidDataException("Durable processing product manifest schema and type disagree.");
         }
         if (manifest.Capture is null || string.IsNullOrWhiteSpace(manifest.Capture.AgentId) ||
             string.IsNullOrWhiteSpace(manifest.Capture.RigId) || manifest.Capture.CaptureSequence < 1 ||
@@ -69,7 +121,9 @@ internal static class DurableProcessingProductManifestJson
         }
         if (manifest.Artifact is null || manifest.Artifact.ArtifactId == Guid.Empty ||
             manifest.Artifact.ArtifactId == manifest.Capture.CaptureId ||
-            manifest.Artifact.Role != FrameArtifactRole.Metadata ||
+            isMetadataV1 && (manifest.Artifact.Role != FrameArtifactRole.Metadata || !IsJsonMediaType(manifest.Artifact.MediaType)) ||
+            isEncodedV2 && (manifest.Artifact.Role is not (FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview) ||
+                !string.Equals(manifest.Artifact.MediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase)) ||
             string.IsNullOrWhiteSpace(manifest.Artifact.SourceId) ||
             string.IsNullOrWhiteSpace(manifest.Artifact.Variant) ||
             manifest.Artifact.CreatedUtc.Offset != TimeSpan.Zero ||
@@ -84,14 +138,17 @@ internal static class DurableProcessingProductManifestJson
             string.IsNullOrWhiteSpace(manifest.Artifact.Recipe.ImplementationVersion) ||
             manifest.Artifact.Recipe.Options.ValueKind != JsonValueKind.Object ||
             !IsSha256(manifest.Artifact.Recipe.OptionsSha256) ||
-            !IsJsonMediaType(manifest.Artifact.MediaType) ||
             !IsSha256(manifest.Artifact.ChecksumSha256))
         {
             throw new InvalidDataException("Durable processing product artifact descriptor is invalid.");
         }
-        if (manifest.Layout is { ValueKind: not JsonValueKind.Null })
+        if (manifest.Layout is { ValueKind: not JsonValueKind.Null } ||
+            manifest is DurableEncodedProductManifestV2 encoded &&
+            (encoded.EncodedWidth < 1 || encoded.EncodedHeight < 1 ||
+             encoded.EncodedPixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24) ||
+             string.IsNullOrWhiteSpace(encoded.ProducerStepId) || encoded.ProducerStepId.Length > 128))
         {
-            throw new InvalidDataException("Durable processing product layout must be explicitly null.");
+            throw new InvalidDataException("Durable processing product encoded layout is invalid.");
         }
         if (!IsSha256(manifest.OutputIdentitySha256) || manifest.ByteLength < 0 ||
             manifest.TotalIntegrationTicks < 0 || !IsSafeRelativePath(manifest.RelativeArtifactPath))

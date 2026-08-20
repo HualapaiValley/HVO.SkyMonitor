@@ -239,6 +239,49 @@ public sealed class ProcessingRecipeTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task JpegEncodingProducesFullSizeAndBoundedAnnotatedVariants()
+    {
+        var source = CreateArtifact(
+            FrameArtifactRole.AnnotatedPreview,
+            "packed-annotated",
+            CameraPixelFormat.Mono8,
+            4,
+            2,
+            [0, 32, 64, 96, 128, 160, 192, 255]);
+        var selector = ProcessingInputSelector.RecipeResult(
+            source.Role,
+            source.Variant,
+            source.RecipeIdentitySha256);
+        var executor = new ProcessingRecipeExecutor();
+
+        var full = await executor.ExecuteAsync(Request(
+            BuiltInProcessingRecipes.JpegEncoding,
+            Json("""{"jpegQuality":90}"""),
+            selector,
+            [source],
+            "annotated-final-jpeg")).ConfigureAwait(false);
+        var thumbnail = await executor.ExecuteAsync(Request(
+            BuiltInProcessingRecipes.JpegEncoding,
+            Json("""{"jpegQuality":80,"maximumDimension":2}"""),
+            selector,
+            [source],
+            "annotated-thumbnail-2-jpeg")).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, full.Status);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, thumbnail.Status);
+        Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, full.Products[0].Role);
+        Assert.AreEqual(JpegImageCodec.MediaType, full.Products[0].MediaType);
+        Assert.IsNull(full.Products[0].Layout);
+        Assert.AreEqual(4, JpegImageCodec.DecodeJpeg(full.Products[0].Payload).Width);
+        var decodedThumbnail = JpegImageCodec.DecodeJpeg(thumbnail.Products[0].Payload);
+        Assert.AreEqual(2, decodedThumbnail.Width);
+        Assert.AreEqual(1, decodedThumbnail.Height);
+        Assert.IsTrue(thumbnail.Products[0].Algorithms.Any(static algorithm => algorithm.Name == "downsample"));
+        CollectionAssert.AreEqual(new byte[] { 0, 32, 64, 96, 128, 160, 192, 255 }, source.Payload.ToArray());
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task AnnotationAcceptsExactPreviewRecipeResultAndBindsGeometryProvenance()
     {
         var raw = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono16, 8, 8,
