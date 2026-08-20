@@ -32,10 +32,15 @@ is_deploy_contract_shard() {
 
 run_deploy_contract_shards() {
     local log_base="${DEPLOY_TEST_LOG_DIR:-$REPO_ROOT/TestResults/deployment-contracts}" log_root=''
-    local started_at=$SECONDS shard pid finished_pid status failed_shard='' failed_status=0
+    local started_at=$SECONDS shard pid status failed_shard='' failed_status=0 now sequence progress_file
     local processor_count max_parallel next_index=0 invocation_prefix invocation_candidate attempt
     local term_grace_seconds="${DEPLOY_TEST_TERM_GRACE_SECONDS:-2}"
+    local status_seconds="${DEPLOY_TEST_STATUS_SECONDS:-60}" stall_seconds="${DEPLOY_TEST_STALL_SECONDS:-300}"
+    local hard_seconds="${DEPLOY_TEST_HARD_SECONDS:-1800}" next_status_at
     local -A shard_by_pid=()
+    local -A started_by_pid=()
+    local -A progress_by_pid=()
+    local -A progress_at_by_pid=()
 
     leader_stopped() {
         local leader_pid="$1" ignored state ignored_rest
@@ -94,6 +99,8 @@ run_deploy_contract_shards() {
 
     start_deploy_contract_shard() {
         local selected_shard="$1" selected_pid
+        printf 'sequence=0 checkpoint=started\n' > "$log_root/$selected_shard.progress"
+        chmod 600 "$log_root/$selected_shard.progress"
         if [[ "${DEPLOY_TEST_COORDINATOR_FAIL_SHARD:-}" == "$selected_shard" ]]; then
             DEPLOY_TEST_EARLY_FAIL_SHARD="$selected_shard" DEPLOY_TEST_PROCESS_RECORD_DIR="$log_root" \
                 setsid --wait "$0" --shard "$selected_shard" > "$log_root/$selected_shard.log" 2>&1 &
@@ -103,8 +110,26 @@ run_deploy_contract_shards() {
         fi
         selected_pid=$!
         shard_by_pid[$selected_pid]="$selected_shard"
+        started_by_pid[$selected_pid]=$SECONDS
+        progress_by_pid[$selected_pid]=0
+        progress_at_by_pid[$selected_pid]=$SECONDS
         printf '%s\n' "$selected_pid" > "$log_root/$selected_shard.leader.pid"
         printf 'Deployment contract shard %s started (pid=%s).\n' "$selected_shard" "$selected_pid"
+    }
+
+    report_running_shards() {
+        local report_pid report_shard output_bytes progress_age output_age output_mtime
+        now=$SECONDS
+        for report_pid in "${!shard_by_pid[@]}"; do
+            report_shard="${shard_by_pid[$report_pid]}"
+            output_bytes="$(stat -c %s "$log_root/$report_shard.log" 2>/dev/null || printf 0)"
+            output_mtime="$(stat -c %Y "$log_root/$report_shard.log" 2>/dev/null || printf 0)"
+            output_age=$(( $(date +%s) - output_mtime )); (( output_age >= 0 )) || output_age=0
+            progress_age=$(( now - progress_at_by_pid[$report_pid] ))
+            printf 'Deployment contract status shard=%s elapsed=%ss progress_idle=%ss output_idle=%ss output_bytes=%s checkpoint=%s.\n' \
+              "$report_shard" "$(( now - started_by_pid[$report_pid] ))" "$progress_age" "$output_age" "$output_bytes" \
+              "$(cut -d= -f3- "$log_root/$report_shard.progress" 2>/dev/null || printf unavailable)"
+        done
     }
 
     if [[ -n "${DEPLOY_TEST_COORDINATOR_FAIL_SHARD:-}" ]] && ! is_deploy_contract_shard "$DEPLOY_TEST_COORDINATOR_FAIL_SHARD"; then
@@ -116,11 +141,25 @@ run_deploy_contract_shards() {
         printf 'Unknown injected hanging deployment contract shard: %s\n' "$DEPLOY_TEST_COORDINATOR_HANG_SHARD" >&2
         return 2
     fi
+    if [[ -n "${DEPLOY_TEST_COORDINATOR_PROGRESS_SHARD:-}" ]] && ! is_deploy_contract_shard "$DEPLOY_TEST_COORDINATOR_PROGRESS_SHARD"; then
+        printf 'Unknown injected progressing deployment contract shard: %s\n' "$DEPLOY_TEST_COORDINATOR_PROGRESS_SHARD" >&2
+        return 2
+    fi
+    if [[ -n "${DEPLOY_TEST_COORDINATOR_FAIL_WITH_DESCENDANT_SHARD:-}" ]] && ! is_deploy_contract_shard "$DEPLOY_TEST_COORDINATOR_FAIL_WITH_DESCENDANT_SHARD"; then
+        printf 'Unknown injected descendant-failure deployment contract shard: %s\n' "$DEPLOY_TEST_COORDINATOR_FAIL_WITH_DESCENDANT_SHARD" >&2
+        return 2
+    fi
 
     [[ "$term_grace_seconds" =~ ^[1-9]$|^10$ ]] || {
         printf 'DEPLOY_TEST_TERM_GRACE_SECONDS must be an integer from 1 through 10.\n' >&2
         return 2
     }
+    for timing in "$status_seconds" "$stall_seconds" "$hard_seconds"; do
+        [[ "$timing" =~ ^[1-9][0-9]*$ && ${#timing} -le 5 && "$timing" -le 86400 ]] || {
+            printf 'Deployment watchdog intervals must be integers from 1 through 86400 seconds.\n' >&2
+            return 2
+        }
+    done
 
     if [[ -n "${DEPLOY_TEST_MAX_PARALLEL:-}" ]]; then
         [[ "$DEPLOY_TEST_MAX_PARALLEL" =~ ^[1-8]$ ]] || {
@@ -155,26 +194,55 @@ run_deploy_contract_shards() {
     trap 'coordinator_cleanup; exit 130' INT
     trap 'coordinator_cleanup; exit 143' TERM
     trap coordinator_cleanup EXIT
+    next_status_at=$(( SECONDS + status_seconds ))
     while (( next_index < ${#DEPLOY_CONTRACT_SHARDS[@]} && ${#shard_by_pid[@]} < max_parallel )); do
         start_deploy_contract_shard "${DEPLOY_CONTRACT_SHARDS[$next_index]}"
         ((next_index+=1))
     done
     while (( ${#shard_by_pid[@]} > 0 )); do
-        if wait -n -p finished_pid; then status=0; else status=$?; fi
-        shard="${shard_by_pid[$finished_pid]}"
-        unset 'shard_by_pid[$finished_pid]'
-        printf '%s elapsed_seconds=%s\n' "$([[ "$status" -eq 0 ]] && printf passed || printf failed)" "$((SECONDS - started_at))" > "$log_root/$shard.status"
-        printf 'Deployment contract shard %s %s after %ss.\n' "$shard" "$([[ "$status" -eq 0 ]] && printf completed || printf failed)" "$((SECONDS - started_at))"
-        if (( status != 0 )); then
-            failed_shard="$shard"
-            failed_status=$status
-            shard_by_pid[$finished_pid]="$shard"
-            break
-        fi
+        now=$SECONDS
+        # Completion wins over deadlines observed in the same polling cycle.
+        for pid in "${!shard_by_pid[@]}"; do
+            if ! kill -0 "$pid" 2>/dev/null || leader_stopped "$pid"; then
+                shard="${shard_by_pid[$pid]}"
+                if wait "$pid"; then status=0; else status=$?; fi
+                printf '%s elapsed_seconds=%s\n' "$([[ "$status" -eq 0 ]] && printf passed || printf failed)" "$((SECONDS - started_at))" > "$log_root/$shard.status"
+                printf 'Deployment contract shard %s %s after %ss.\n' "$shard" "$([[ "$status" -eq 0 ]] && printf completed || printf failed)" "$((SECONDS - started_at))"
+                if (( status != 0 )); then failed_shard="$shard"; failed_status=$status; break; fi
+                unset 'shard_by_pid[$pid]' 'started_by_pid[$pid]' 'progress_by_pid[$pid]' 'progress_at_by_pid[$pid]'
+            fi
+        done
+        [[ -z "$failed_shard" ]] || break
         while (( next_index < ${#DEPLOY_CONTRACT_SHARDS[@]} && ${#shard_by_pid[@]} < max_parallel )); do
             start_deploy_contract_shard "${DEPLOY_CONTRACT_SHARDS[$next_index]}"
             ((next_index+=1))
         done
+        now=$SECONDS
+        for pid in "${!shard_by_pid[@]}"; do
+            shard="${shard_by_pid[$pid]}"; progress_file="$log_root/$shard.progress"
+            sequence="$(sed -n 's/^sequence=\([0-9][0-9]*\) .*/\1/p' "$progress_file" 2>/dev/null || true)"
+            if [[ "$sequence" =~ ^[0-9]+$ ]] && (( sequence > progress_by_pid[$pid] )); then
+                progress_by_pid[$pid]="$sequence"; progress_at_by_pid[$pid]=$now
+            fi
+            # A completion after the first sweep is reaped on the next cycle, never classified as a timeout.
+            if ! kill -0 "$pid" 2>/dev/null || leader_stopped "$pid"; then continue; fi
+            if (( now - started_by_pid[$pid] >= hard_seconds )); then
+                failed_shard="$shard"; failed_status=124
+                printf 'hard-timeout elapsed_seconds=%s checkpoint=%s\n' "$((now - started_by_pid[$pid]))" \
+                  "$(cut -d= -f3- "$progress_file" 2>/dev/null || printf unavailable)" > "$log_root/$shard.status"
+                printf 'Deployment contract shard %s exceeded hard timeout after %ss.\n' "$shard" "$((now - started_by_pid[$pid]))" >> "$log_root/$shard.log"
+                break 2
+            fi
+            if (( now - progress_at_by_pid[$pid] >= stall_seconds )); then
+                failed_shard="$shard"; failed_status=125
+                printf 'stalled elapsed_seconds=%s progress_idle_seconds=%s checkpoint=%s\n' "$((now - started_by_pid[$pid]))" \
+                  "$((now - progress_at_by_pid[$pid]))" "$(cut -d= -f3- "$progress_file" 2>/dev/null || printf unavailable)" > "$log_root/$shard.status"
+                printf 'Deployment contract shard %s made no semantic progress for %ss.\n' "$shard" "$((now - progress_at_by_pid[$pid]))" >> "$log_root/$shard.log"
+                break 2
+            fi
+        done
+        if (( now >= next_status_at )); then report_running_shards; next_status_at=$(( now + status_seconds )); fi
+        sleep 1
     done
 
     if [[ -n "$failed_shard" ]]; then
@@ -219,6 +287,34 @@ case "${1:-}" in
 esac
 readonly SELECTED_SHARD
 
+deploy_test_checkpoint() {
+    local checkpoint="$1" progress_file sequence temporary
+    [[ -n "${DEPLOY_TEST_PROCESS_RECORD_DIR:-}" && "$SELECTED_SHARD" != all ]] || return 0
+    progress_file="$DEPLOY_TEST_PROCESS_RECORD_DIR/$SELECTED_SHARD.progress"
+    sequence="$(sed -n 's/^sequence=\([0-9][0-9]*\) .*/\1/p' "$progress_file" 2>/dev/null || true)"
+    [[ "$sequence" =~ ^[0-9]+$ ]] || sequence=0
+    temporary="$progress_file.$BASHPID"
+    printf 'sequence=%s checkpoint=%s\n' "$((sequence + 1))" "$checkpoint" > "$temporary"
+    chmod 600 "$temporary"
+    mv -fT "$temporary" "$progress_file"
+}
+
+if [[ -n "${DEPLOY_TEST_COORDINATOR_PROGRESS_SHARD:-}" && "$DEPLOY_TEST_COORDINATOR_PROGRESS_SHARD" == "$SELECTED_SHARD" ]]; then
+    for progress_step in 1 2 3 4; do
+        deploy_test_checkpoint "injected-progress-$progress_step"
+        sleep 1
+    done
+    exit 0
+fi
+
+if [[ -n "${DEPLOY_TEST_COORDINATOR_FAIL_WITH_DESCENDANT_SHARD:-}" && "$DEPLOY_TEST_COORDINATOR_FAIL_WITH_DESCENDANT_SHARD" == "$SELECTED_SHARD" ]]; then
+    bash -c 'trap "" TERM; printf "%s\n" "$BASHPID" > "${DEPLOY_TEST_PROCESS_RECORD_DIR:?}/$1.failed-descendant.pid"; while true; do sleep 60; done' \
+      _ "$SELECTED_SHARD" &
+    while [[ ! -s "$DEPLOY_TEST_PROCESS_RECORD_DIR/$SELECTED_SHARD.failed-descendant.pid" ]]; do sleep 0.1; done
+    printf 'Injected leader failure with descendant for deployment contract shard %s.\n' "$SELECTED_SHARD" >&2
+    exit 97
+fi
+
 if [[ -n "${DEPLOY_TEST_EARLY_FAIL_SHARD:-}" ]]; then
     [[ "$DEPLOY_TEST_EARLY_FAIL_SHARD" == "$SELECTED_SHARD" ]] || {
         printf 'Invalid deployment contract early-failure request.\n' >&2
@@ -240,7 +336,8 @@ if [[ -n "${DEPLOY_TEST_COORDINATOR_HANG_SHARD:-}" && "$DEPLOY_TEST_COORDINATOR_
         printf 'Missing deployment contract process-record directory.\n' >&2
         exit 2
     }
-    bash -c 'trap "" TERM; printf "%s\n" "$BASHPID" > "${DEPLOY_TEST_PROCESS_RECORD_DIR:?}/$1.descendant.pid"; while true; do sleep 60; done' \
+    bash -c 'trap "" TERM; printf "%s\n" "$BASHPID" > "${DEPLOY_TEST_PROCESS_RECORD_DIR:?}/$1.descendant.pid"; while true; do
+      if [[ "${DEPLOY_TEST_HANG_CHATTER:-false}" == true ]]; then printf "injected activity\n"; sleep 0.2; else sleep 60; fi; done' \
         _ "$SELECTED_SHARD"
     exit 98
 fi
@@ -1457,22 +1554,31 @@ write_inventory() {
 }
 
 run_deploy() {
-    local run_id="$1"; shift
-    PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$INVENTORY" --mode isolated \
-      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"
+    local run_id="$1" status; shift
+    deploy_test_checkpoint "preflight:$run_id:starting"
+    if PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$INVENTORY" --mode isolated \
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"; then status=0; else status=$?; fi
+    deploy_test_checkpoint "preflight:$run_id:$([[ $status -eq 0 ]] && printf completed || printf failed)"
+    return "$status"
 }
 
 run_deploy_mode() {
-    local phase="$1" run_id="$2" mode="$3"; shift 3
-    PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
-      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"
+    local phase="$1" run_id="$2" mode="$3" status; shift 3
+    deploy_test_checkpoint "$phase:$run_id:starting"
+    if PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"; then status=0; else status=$?; fi
+    deploy_test_checkpoint "$phase:$run_id:$([[ $status -eq 0 ]] && printf completed || printf failed)"
+    return "$status"
 }
 
 run_deploy_mode_with_registry_failure() {
-    local match="$1" phase="$2" run_id="$3" mode="$4"; shift 4
-    env DEPLOY_TEST_FAILPOINT="private-registry-publication:$match" PATH="$BIN:$PATH" \
+    local match="$1" phase="$2" run_id="$3" mode="$4" status; shift 4
+    deploy_test_checkpoint "$phase:$run_id:registry-failure-starting"
+    if env DEPLOY_TEST_FAILPOINT="private-registry-publication:$match" PATH="$BIN:$PATH" \
       "$REPO_ROOT/scripts/deploy:environment" "$phase" --inventory "$INVENTORY" --mode "$mode" \
-      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"
+      --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"; then status=0; else status=$?; fi
+    deploy_test_checkpoint "$phase:$run_id:registry-failure-$([[ $status -eq 0 ]] && printf completed || printf failed)"
+    return "$status"
 }
 
 exercise_phase_publication_recovery() {
