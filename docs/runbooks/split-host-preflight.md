@@ -630,6 +630,21 @@ representative hook; Tier M candidate evidence uses the inventory's canonical 5
 warm-up plus 30 measured operations fixed by the canonical manifest and the trial/regression rules in
 `docs/planning/performance-validation.md`.
 
+Before replacing a CameraAgent profile, `measure` durably records schema-v2
+recovery state: the exact active module-file and configuration hashes, active
+schedule revision/version, and capture-control state/version. It pauses capture
+before profile replacement. A successful measurement intentionally retains the
+canonical profile in the paused state for dependent campaigns. On `INT`, `TERM`,
+`HUP`, or an ordinary phase failure, cleanup first pauses every affected target,
+then restores and verifies each original module configuration, schedule
+revision, and capture-control state in that order. The ledger is published as
+failed before restoration begins. Unverified restoration remains explicit and
+retains cleanup material for a later retry; it is never reported as passed.
+Restart recovery reconciles completed control attempts and committed capture
+boundaries rather than replaying an already completed warm-up or measured set.
+Supervisors must signal the deployment process group so an active transport
+child is interrupted and the shell can enter its bounded restoration handler.
+
 For a required Hybrid transient lane, queue convergence permits only the temporal
 algorithm's final two healthy history captures. The retained capture identities must
 equal that exact tail. The bounded operations projection exposes up to three distinct

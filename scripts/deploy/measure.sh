@@ -3,12 +3,16 @@
 deploy_measure_mark_failed() {
     local status="${1:-1}" now cleanup_ok=true
     trap - ERR
+    trap 'deploy_measure_abort_cleanup 130 INT' INT
+    trap 'deploy_measure_abort_cleanup 143 TERM' TERM
+    trap 'deploy_measure_abort_cleanup 129 HUP' HUP
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [[ -n "${DEPLOY_MEASURE_JSON:-}" ]]; then
-        if [[ -n "${DEPLOY_MEASURE_INVENTORY:-}" && -n "${DEPLOY_MEASURE_RENDER_ROOT:-}" && -n "${DEPLOY_MEASURE_PRIVATE_ROOT:-}" ]]; then
-            deploy_measure_failure_pause_all || cleanup_ok=false
-        fi
         DEPLOY_MEASURE_JSON="$(jq -c --arg now "$now" '.phaseStatus="failed" | .updatedAt=$now | del(.completedAt)' <<< "$DEPLOY_MEASURE_JSON")"
+        [[ -z "${DEPLOY_MEASURE_LEDGER:-}" ]] || deploy_measure_publish >/dev/null 2>&1 || true
+        if [[ -n "${DEPLOY_MEASURE_INVENTORY:-}" && -n "${DEPLOY_MEASURE_RENDER_ROOT:-}" && -n "${DEPLOY_MEASURE_PRIVATE_ROOT:-}" ]]; then
+            deploy_measure_restore_all || cleanup_ok=false
+        fi
         [[ -z "${DEPLOY_MEASURE_LEDGER:-}" ]] || deploy_measure_publish >/dev/null 2>&1 || true
     fi
     if [[ "$cleanup_ok" == true ]]; then
@@ -16,6 +20,38 @@ deploy_measure_mark_failed() {
         deploy_bootstrap_cleanup_private_remote best-effort || true
     fi
     return "$status"
+}
+
+deploy_measure_abort_cleanup() {
+    local status="$1" signal="$2" now
+    trap - ERR INT TERM HUP
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [[ -n "${DEPLOY_MEASURE_JSON:-}" ]]; then
+        DEPLOY_MEASURE_JSON="$(jq -c --arg now "$now" '
+          .phaseStatus="failed" | .updatedAt=$now | del(.completedAt) |
+          .targets |= map(if .restoration.status == "completed" then . else
+            .failureCleanup.status="restoration-incomplete" |
+            if .restoration.status == "pending" or .restoration.status == "in-progress" then
+              if .restoration.configuration != "completed" then .restoration.status="configuration-unverified"
+              elif .restoration.schedule != "completed" then .restoration.status="schedule-unverified"
+              else .restoration.status="capture-unverified" end
+            else . end
+          end)' <<< "$DEPLOY_MEASURE_JSON")"
+        [[ -z "${DEPLOY_MEASURE_LEDGER:-}" ]] || deploy_measure_publish >/dev/null 2>&1 || true
+    fi
+    deploy_status measure interrupted failed "signal-${signal,,}-during-restoration"
+    exit "$status"
+}
+
+deploy_measure_handle_signal() {
+    local status="$1" signal="$2"
+    trap - ERR
+    trap 'deploy_measure_abort_cleanup 130 INT' INT
+    trap 'deploy_measure_abort_cleanup 143 TERM' TERM
+    trap 'deploy_measure_abort_cleanup 129 HUP' HUP
+    deploy_measure_mark_failed "$status" || true
+    deploy_status measure interrupted failed "signal-${signal,,}"
+    exit "$status"
 }
 
 deploy_measure_validate_snapshot() {
@@ -105,15 +141,27 @@ deploy_measure_validate_candidate() {
     local path="$1" run_id="$2" mode="$3" hash="$4" revision="$5" selected="$6" inventory="$7"
     local execution_run_id="${8:-$run_id}"
     jq -e --arg run "$run_id" --arg executionRun "$execution_run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg selected "$selected" --argjson inventory "$(jq -c . "$inventory")" '
-      .schemaVersion == 1 and .runId == $run and .mode == $mode and .inventorySha256 == $hash and .sourceRevision == $revision and
+      .schemaVersion == 2 and .runId == $run and .mode == $mode and .inventorySha256 == $hash and .sourceRevision == $revision and
       (($executionRun == $run and (has("executionRunId") | not)) or ($executionRun != $run and .executionRunId == $executionRun)) and
       (.publicationGeneration | numbers) >= 1 and .executionMode == "canonical" and .canonicalWorkloadConfigured == true and .workload == $selected and
       (.phaseStatus == "running" or .phaseStatus == "failed" or .phaseStatus == "passed") and
       ((keys - ["completedAt","elapsedSeconds","executionRunId"] | sort) == (["schemaVersion","publicationGeneration","runId","mode","inventorySha256","sourceRevision","executionMode","canonicalWorkloadConfigured","workload","phaseStatus","startedAt","updatedAt","targets"] | sort)) and
       (.targets | type == "array" and length == ([.[].target] | unique | length) and all(.[];
         .target as $target | ([ $inventory.cameraAgents[].name ] | index($target) != null) and
-        (keys | sort) == (["target","deviceId","status","profile","controlAttempts","warmupStart","measuredStart","warmupCompleted","measuredCompleted","warmup","measured","before","after","failureCleanup"] | sort) and
+        (keys | sort) == (["target","deviceId","status","profile","priorState","restoration","controlAttempts","warmupStart","measuredStart","warmupCompleted","measuredCompleted","warmup","measured","before","after","failureCleanup"] | sort) and
         (.status == "running" or .status == "measured") and
+        (.priorState | type == "object" and
+          (keys | sort) == (["configurationSha256","configurationFileSha256","scheduleRevisionId","scheduleVersion","captureState","captureVersion"] | sort) and
+          (.configurationSha256 | test("^[0-9a-f]{64}$")) and (.configurationFileSha256 | test("^[0-9a-f]{64}$")) and
+          (.scheduleRevisionId | test("^[A-Za-z0-9-]+$")) and (.scheduleVersion | numbers) >= 0 and (.scheduleVersion | floor) == .scheduleVersion and
+          (.captureState == "Running" or .captureState == "Paused") and (.captureVersion | numbers) >= 0 and (.captureVersion | floor) == .captureVersion) and
+        (.restoration | type == "object" and
+          (keys | sort) == (["status","configuration","schedule","capture"] | sort) and
+          (.status == "pending" or .status == "in-progress" or .status == "completed" or
+            .status == "configuration-unverified" or .status == "schedule-unverified" or .status == "capture-unverified") and
+          all(.configuration,.schedule,.capture; . == "pending" or . == "intent" or . == "completed") and
+          (if .status == "completed" then all(.configuration,.schedule,.capture; . == "completed")
+           elif .status == "pending" then all(.configuration,.schedule,.capture; . == "pending") else true end)) and
         ((.profile == null and .status == "running" and .warmupStart == null and .measuredStart == null and
           .warmupCompleted == 0 and .measuredCompleted == 0 and .warmup == null and .measured == null and .before == null and .after == null) or
          ((.profile | type) == "object" and .profile.workload == $selected)) and
@@ -122,7 +170,10 @@ deploy_measure_validate_candidate() {
           (.action == "pause" or .action == "resume") and (.attempt | numbers) >= 1 and
           (.key | test("^deploy-measure-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+-[0-9]+$")) and
           (.status == "intent" or .status == "completed" or .status == "reconciled" or .status == "superseded"))) and
-        (.failureCleanup.status == "not-required" or .failureCleanup.status == "completed" or .failureCleanup.status == "capture-may-be-running") and
+        (.failureCleanup.status == "not-required" or .failureCleanup.status == "completed" or
+          .failureCleanup.status == "capture-may-be-running" or .failureCleanup.status == "restoration-incomplete") and
+        (if .failureCleanup.status == "completed" then .restoration.status == "completed"
+         elif .failureCleanup.status == "restoration-incomplete" then .restoration.status != "completed" else true end) and
         (if .status == "measured" then all(.warmup,.measured;
           (keys | sort) == (["startSequence","endSequence","count","captures","drained","boundedTemporalTail","correctness"] | sort) and
           .count == (.captures | length) and (.drained | type) == "boolean" and .correctness == true and
@@ -135,7 +186,8 @@ deploy_measure_validate_candidate() {
           ([.captures[].captureSequence] | length == (unique | length)) and
           ([.captures[].captureId] | length == (unique | length))) else true end))) and
       ([.targets[].controlAttempts[].key] | length == (unique | length)) and
-      (if .phaseStatus == "passed" then ([.targets[].target] | sort) == ([$inventory.cameraAgents[].name] | sort) else true end)' "$path" >/dev/null 2>&1 ||
+      (if .phaseStatus == "passed" then ([.targets[].target] | sort) == ([$inventory.cameraAgents[].name] | sort) and
+        all(.targets[]; .restoration.status == "pending" and .failureCleanup.status == "not-required") else true end)' "$path" >/dev/null 2>&1 ||
       { deploy_fail measure ledger invalid; return 1; }
 }
 
@@ -190,6 +242,7 @@ deploy_measure_read_sequence() {
 
 deploy_measure_capture_control() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" action="$6" run_id="$7" boundary="$8" desired="$9" force="${10:-false}" not_before="${11:-0}"
+    local expected_state="${12:-}" expected_version="${13:-}"
     local name endpoint body base_headers request_headers status key attempt latest latest_status current_state current_version result_state result_version desired_value wait
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/summary" "" "" "$cookies" \
@@ -197,6 +250,8 @@ deploy_measure_capture_control() {
     [[ "$status" == 200 ]] || return 1
     current_state="$(jq -er '.captureControl.value.state' "$private_root/$name-$boundary-control-state.json")" || return 1
     current_version="$(jq -er '.captureControl.value.version | numbers' "$private_root/$name-$boundary-control-state.json")" || return 1
+    [[ -z "$expected_state" || "$current_state" == "$expected_state" ]] || { deploy_fail measure "$name" "$boundary-state-drift"; return 1; }
+    [[ -z "$expected_version" || "$current_version" == "$expected_version" ]] || { deploy_fail measure "$name" "$boundary-version-drift"; return 1; }
     latest="$(jq -c --arg target "$name" --arg boundary "$boundary" '[.targets[] | select(.target == $target) | .controlAttempts[] | select(.boundary == $boundary)] | sort_by(.attempt) | last // null' <<< "$DEPLOY_MEASURE_JSON")"
     latest_status="$(jq -r '.status // ""' <<< "$latest")"
     if [[ "$force" != true && "$current_state" == "$desired" ]]; then
@@ -221,7 +276,8 @@ deploy_measure_capture_control() {
         else . end)' <<< "$DEPLOY_MEASURE_JSON")"
     deploy_measure_publish || return 1
     body="$render_root/$name-$boundary-$attempt.json"; base_headers="$target_remote/owner.headers"; request_headers="$target_remote/$boundary-$attempt-control.headers"
-    jq -cn --arg reason "canonical measurement $boundary attempt $attempt" '{reason:$reason}' > "$body"
+    jq -cn --arg reason "canonical measurement $boundary attempt $attempt" --argjson version "$current_version" \
+      '{expectedVersion:$version,reason:$reason}' > "$body"
     deploy_bootstrap_stage_json "$target" "$body" "$target_remote/$boundary-$attempt.json" || return 1
     deploy_bootstrap_register_private_remote "$target" "$request_headers" || return 1
     deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$base_headers" "$request_headers" "$key" || return 1
@@ -246,27 +302,20 @@ deploy_measure_capture_control() {
 
 deploy_measure_activate_profile() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" rendered="$6" workload="$7" run_id="$8"
+    local expected_revision="${9:-}" expected_version="${10:-}"
     local name endpoint state status pending version activate_body activate_headers activate_response
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     state="$private_root/$name-schedule-state.json"
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
       "$target_remote/schedule-state.json" "$state")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-read-failed; return 1; }
-    if jq -e --slurpfile rendered "$rendered" '
-      .activeRevision.profile.module.type == $rendered[0].module.type and
-      .activeRevision.profile.rig.sensor.widthPixels == $rendered[0].rig.sensor.widthPixels and
-      .activeRevision.profile.rig.sensor.heightPixels == $rendered[0].rig.sensor.heightPixels and
-      .activeRevision.profile.rig.sensor.sensorRecipeVersion == $rendered[0].rig.sensor.sensorRecipeVersion and
-      .activeRevision.profile.rig.pipeline.captureInterval == $rendered[0].rig.pipeline.captureInterval' "$state" >/dev/null; then
+    if jq -e --slurpfile rendered "$rendered" '.activeRevision.profile == $rendered[0]' "$state" >/dev/null; then
         return 0
     fi
+    [[ -z "$expected_revision" || "$(jq -r '.activeRevision.revisionId // ""' "$state")" == "$expected_revision" ]] ||
+      { deploy_fail measure "$name" schedule-revision-drift; return 1; }
     pending="$(jq -er --slurpfile rendered "$rendered" '
-      .pendingRevision | select(.source == "file-draft" and
-        .profile.module.type == $rendered[0].module.type and
-        .profile.rig.sensor.widthPixels == $rendered[0].rig.sensor.widthPixels and
-        .profile.rig.sensor.heightPixels == $rendered[0].rig.sensor.heightPixels and
-        .profile.rig.sensor.sensorRecipeVersion == $rendered[0].rig.sensor.sensorRecipeVersion and
-        .profile.rig.pipeline.captureInterval == $rendered[0].rig.pipeline.captureInterval) | .revisionId' "$state")" ||
+      .pendingRevision | select(.source == "file-draft" and .profile == $rendered[0]) | .revisionId' "$state")" ||
       { deploy_fail measure "$name" canonical-schedule-draft-missing; return 1; }
     version="$(jq -er '.stateVersion | numbers' "$state")" || return 1
 
@@ -282,16 +331,216 @@ deploy_measure_activate_profile() {
       "$target_remote/$workload-schedule-activate.json" "$activate_headers" "$cookies" \
       "$target_remote/$workload-schedule-activate-response.json" "$activate_response")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-activate-failed; return 1; }
-    jq -e --slurpfile rendered "$rendered" '
-      .activeRevision.profile.module.type == $rendered[0].module.type and
-      .activeRevision.profile.rig.sensor.widthPixels == $rendered[0].rig.sensor.widthPixels and
-      .activeRevision.profile.rig.sensor.heightPixels == $rendered[0].rig.sensor.heightPixels and
-      .activeRevision.profile.rig.sensor.sensorRecipeVersion == $rendered[0].rig.sensor.sensorRecipeVersion and
-      .activeRevision.profile.rig.pipeline.captureInterval == $rendered[0].rig.pipeline.captureInterval' \
+    jq -e --slurpfile rendered "$rendered" '.activeRevision.profile == $rendered[0]' \
       "$activate_response" >/dev/null || { deploy_fail measure "$name" schedule-activation-mismatch; return 1; }
     deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" \
       "$target_remote/$workload-schedule-activate.json" "$activate_headers" || return 1
     deploy_transport_forget_private_path "$activate_headers" || return 1
+}
+
+deploy_measure_read_prior_state() {
+    local inventory="$1" target="$2" target_remote="$3" private_root="$4" cookies="$5" run_id="$6" continuity="$7"
+    local name target_root active_config backup operations schedule status configuration_sha configuration_file_sha capture_state capture_version
+    local schedule_revision schedule_version
+    name="$(jq -r '.name' <<< "$target")"; target_root="$(jq -r '.runtimeRoot' <<< "$target")"
+    active_config="$target_root/.hvo-deploy/up-$run_id/camera-module.json"
+    backup="$private_root/$name-prior-camera-module.json"
+    deploy_transport_fetch_private_file "$(jq -r '.sshHost' <<< "$target")" "$active_config" "$backup" || {
+        deploy_fail measure "$name" prior-profile-fetch-failed
+        return 1
+    }
+    configuration_file_sha="$(sha256sum "$backup" | cut -d' ' -f1)"
+    configuration_sha="$(printf '%s' "$(jq -S -c . "$backup")" | sha256sum | cut -d' ' -f1)"
+    jq -e --arg sha "$configuration_sha" '(.activeConfigurationSha256 | ascii_downcase) == $sha' "$continuity" >/dev/null || {
+        deploy_fail measure "$name" prior-profile-identity-mismatch
+        return 1
+    }
+    operations="$private_root/$name-prior-operations.json"
+    status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/v1/operations/summary" "" "" "$cookies" \
+      "$target_remote/prior-operations.json" "$operations")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail measure "$name" prior-control-read-failed; return 1; }
+    capture_state="$(jq -er '.captureControl.value.state | select(. == "Running" or . == "Paused")' "$operations")" || return 1
+    capture_version="$(jq -er '.captureControl.value.version | numbers | select(. >= 0 and floor == .)' "$operations")" || return 1
+    schedule="$private_root/$name-prior-schedule.json"
+    status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/v1/operations/schedule/" "" "" "$cookies" \
+      "$target_remote/prior-schedule.json" "$schedule")" || return 1
+    [[ "$status" == 200 ]] || { deploy_fail measure "$name" prior-schedule-read-failed; return 1; }
+    schedule_revision="$(jq -er '.activeRevision.revisionId | select(test("^[A-Za-z0-9-]+$"))' "$schedule")" || return 1
+    schedule_version="$(jq -er '.stateVersion | numbers | select(. >= 0 and floor == .)' "$schedule")" || return 1
+    jq -cn --arg configurationSha256 "$configuration_sha" --arg configurationFileSha256 "$configuration_file_sha" --arg scheduleRevisionId "$schedule_revision" \
+      --argjson scheduleVersion "$schedule_version" --arg captureState "$capture_state" --argjson captureVersion "$capture_version" \
+      '{configurationSha256:$configurationSha256,configurationFileSha256:$configurationFileSha256,scheduleRevisionId:$scheduleRevisionId,scheduleVersion:$scheduleVersion,
+        captureState:$captureState,captureVersion:$captureVersion}'
+}
+
+deploy_measure_set_restoration() {
+    local target="$1" status="$2" configuration="$3" schedule="$4" capture="$5" cleanup="${6:-}"
+    DEPLOY_MEASURE_JSON="$(jq -c --arg target "$target" --arg status "$status" --arg configuration "$configuration" \
+      --arg schedule "$schedule" --arg capture "$capture" --arg cleanup "$cleanup" '
+      .targets |= map(if .target == $target then
+        .restoration={status:$status,configuration:$configuration,schedule:$schedule,capture:$capture} |
+        if $cleanup == "" then . else .failureCleanup.status=$cleanup end
+      else . end)' <<< "$DEPLOY_MEASURE_JSON")"
+    deploy_measure_publish
+}
+
+deploy_measure_pause_for_restoration() {
+    local target="$1" name target_root target_remote execution_run_id response cookies
+    name="$(jq -r '.name' <<< "$target")"; target_root="$(jq -r '.runtimeRoot' <<< "$target")"
+    execution_run_id="$(jq -r '.executionRunId // .runId' <<< "$DEPLOY_MEASURE_JSON")"
+    target_remote="$target_root/.hvo-deploy/measure-$execution_run_id"
+    deploy_measure_set_restoration "$name" in-progress pending pending pending || return 1
+    deploy_transport_remote_directories "$(jq -r '.sshHost' <<< "$target")" "$target_remote" >/dev/null 2>&1 || return 1
+    response="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-antiforgery.json"
+    deploy_bootstrap_owner_session "$DEPLOY_MEASURE_INVENTORY" "$target" "$DEPLOY_MEASURE_RENDER_ROOT" "$target_remote" "$response" >/dev/null 2>&1 || return 1
+    cookies="$target_remote/owner.cookies"
+    if ! deploy_measure_capture_control "$target" "$target_remote" "$DEPLOY_MEASURE_PRIVATE_ROOT" "$DEPLOY_MEASURE_RENDER_ROOT" "$cookies" \
+      pause "$execution_run_id" restoration-pause Paused true >/dev/null 2>&1; then
+        deploy_measure_set_restoration "$name" capture-unverified pending pending intent restoration-incomplete >/dev/null 2>&1 || true
+        return 1
+    fi
+}
+
+deploy_measure_restore_target() {
+    local target="$1" name target_root target_remote execution_run_id response cookies endpoint prior backup active_config
+    local current_sha current_file current_file_sha current_file_config_sha canonical_sha canonical_file context project env_file status schedule_state schedule_revision schedule_version pending_revision body headers rollback_response activation_body activation_headers activation_response action desired
+    name="$(jq -r '.name' <<< "$target")"; target_root="$(jq -r '.runtimeRoot' <<< "$target")"
+    execution_run_id="$(jq -r '.executionRunId // .runId' <<< "$DEPLOY_MEASURE_JSON")"
+    target_remote="$target_root/.hvo-deploy/measure-$execution_run_id"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
+    prior="$(jq -c --arg target "$name" '.targets[] | select(.target == $target) | .priorState' <<< "$DEPLOY_MEASURE_JSON")"
+    backup="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-prior-camera-module.json"
+    active_config="$target_root/.hvo-deploy/up-$(jq -r '.runId' <<< "$DEPLOY_MEASURE_JSON")/camera-module.json"
+    canonical_file="$DEPLOY_MEASURE_RENDER_ROOT/$name-$(jq -r '.workload' <<< "$DEPLOY_MEASURE_JSON")-camera-module.json"
+    [[ -f "$canonical_file" && ! -L "$canonical_file" ]] || return 1
+    canonical_sha="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .profile.configSha256 // empty' <<< "$DEPLOY_MEASURE_JSON")"
+    if [[ -z "$canonical_sha" ]]; then
+        canonical_sha="$(printf '%s' "$(jq -S -c . "$canonical_file")" | sha256sum | cut -d' ' -f1)"
+    fi
+    deploy_transport_remote_directories "$(jq -r '.sshHost' <<< "$target")" "$target_remote" >/dev/null 2>&1 || return 1
+    response="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-antiforgery.json"
+    deploy_bootstrap_owner_session "$DEPLOY_MEASURE_INVENTORY" "$target" "$DEPLOY_MEASURE_RENDER_ROOT" "$target_remote" "$response" >/dev/null 2>&1 || return 1
+    cookies="$target_remote/owner.cookies"
+    status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/internal/deployment/continuity" "" "" "$cookies" \
+      "$target_remote/restoration-profile-state.json" "$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-profile-state.json")" || status=
+    current_sha="$(jq -r '.activeConfigurationSha256 // "" | ascii_downcase' "$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-profile-state.json" 2>/dev/null || true)"
+    current_file="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-current-camera-module.json"
+    deploy_transport_fetch_private_file "$(jq -r '.sshHost' <<< "$target")" "$active_config" "$current_file" || return 1
+    current_file_sha="$(sha256sum "$current_file" | cut -d' ' -f1)"
+    current_file_config_sha="$(printf '%s' "$(jq -S -c . "$current_file")" | sha256sum | cut -d' ' -f1)"
+    if [[ "$status" != 200 || "$current_sha" != "$(jq -r '.configurationSha256' <<< "$prior")" ||
+          "$current_file_sha" != "$(jq -r '.configurationFileSha256' <<< "$prior")" ]]; then
+        [[ "$status" == 200 && ( "$current_sha" == "$canonical_sha" || "$current_sha" == "$(jq -r '.configurationSha256' <<< "$prior")" ) &&
+           "$current_file_config_sha" == "$canonical_sha" ]] || {
+            deploy_measure_set_restoration "$name" configuration-unverified intent pending pending restoration-incomplete >/dev/null 2>&1 || true
+            return 1
+        }
+        deploy_measure_set_restoration "$name" in-progress intent pending pending || return 1
+        [[ -f "$backup" && ! -L "$backup" && "$(sha256sum "$backup" | cut -d' ' -f1)" == "$(jq -r '.configurationFileSha256' <<< "$prior")" ]] || {
+            deploy_measure_set_restoration "$name" configuration-unverified intent pending pending restoration-incomplete >/dev/null 2>&1 || true
+            return 1
+        }
+        deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+        deploy_transport_copy_private_file "$backup" "$(jq -r '.sshHost' <<< "$target")" "$active_config" || return 1
+        deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+        context="$(jq -r '.dockerContext' <<< "$target")"; project="$(jq -r '.deployment.resources.project' "$DEPLOY_MEASURE_INVENTORY")-$name"
+        env_file="$(dirname "$DEPLOY_MEASURE_LEDGER")/up-rendered/$name.env"
+        deploy_up_compose_mutation "$target" "$context" "$project" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" \
+          up -d --force-recreate cameraagent || return 1
+        deploy_transport_http_ready "$(jq -r '.sshHost' <<< "$target")" "$endpoint/health" || return 1
+        deploy_bootstrap_owner_session "$DEPLOY_MEASURE_INVENTORY" "$target" "$DEPLOY_MEASURE_RENDER_ROOT" "$target_remote" "$response" >/dev/null 2>&1 || return 1
+        cookies="$target_remote/owner.cookies"
+        status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/internal/deployment/continuity" "" "" "$cookies" \
+          "$target_remote/restoration-profile-verified.json" "$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-profile-verified.json")" || status=
+        if [[ "$status" != 200 ]] || ! jq -e --arg sha "$(jq -r '.configurationSha256' <<< "$prior")" \
+          '(.activeConfigurationSha256 | ascii_downcase) == $sha' "$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-profile-verified.json" >/dev/null; then
+            deploy_measure_set_restoration "$name" configuration-unverified intent pending pending restoration-incomplete >/dev/null 2>&1 || true
+            return 1
+        fi
+    fi
+    deploy_measure_set_restoration "$name" in-progress completed pending pending || return 1
+
+    schedule_state="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-schedule-state.json"
+    status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
+      "$target_remote/restoration-schedule-state.json" "$schedule_state")" || status=
+    [[ "$status" == 200 ]] || return 1
+    schedule_revision="$(jq -r '.activeRevision.revisionId // ""' "$schedule_state")"
+    pending_revision="$(jq -r '.pendingRevision.revisionId // ""' "$schedule_state")"
+    if [[ "$schedule_revision" == "$(jq -r '.scheduleRevisionId' <<< "$prior")" && -n "$pending_revision" ]]; then
+        jq -e --slurpfile rendered "$canonical_file" '.pendingRevision.source == "file-draft" and .pendingRevision.profile == $rendered[0]' \
+          "$schedule_state" >/dev/null || {
+            deploy_measure_set_restoration "$name" schedule-unverified completed intent pending restoration-incomplete >/dev/null 2>&1 || true
+            return 1
+        }
+        deploy_measure_set_restoration "$name" in-progress completed intent pending || return 1
+        schedule_version="$(jq -er '.stateVersion | numbers | select(. >= 0 and floor == .)' "$schedule_state")" || return 1
+        activation_body="$DEPLOY_MEASURE_RENDER_ROOT/$name-restoration-schedule-activate.json"
+        activation_headers="$target_remote/restoration-schedule-activate-control.headers"
+        jq -cn --arg revision "$pending_revision" --argjson version "$schedule_version" \
+          '{revisionId:$revision,expectedVersion:$version,reason:"clear pre-restoration canonical draft"}' > "$activation_body" || return 1
+        deploy_bootstrap_stage_json "$target" "$activation_body" "$target_remote/restoration-schedule-activate.json" || return 1
+        deploy_bootstrap_register_private_remote "$target" "$activation_headers" || return 1
+        deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$activation_headers" \
+          "deploy-measure-$execution_run_id-$name-restoration-schedule-activate-1" || return 1
+        activation_response="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-schedule-activate-response.json"
+        status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/schedule/activate" \
+          "$target_remote/restoration-schedule-activate.json" "$activation_headers" "$cookies" \
+          "$target_remote/restoration-schedule-activate-response.json" "$activation_response")" || status=
+        if [[ "$status" != 200 ]] || ! jq -e --slurpfile rendered "$canonical_file" \
+          '.activeRevision.profile == $rendered[0] and .pendingRevision == null' "$activation_response" >/dev/null; then
+            deploy_measure_set_restoration "$name" schedule-unverified completed intent pending restoration-incomplete >/dev/null 2>&1 || true
+            return 1
+        fi
+        deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" \
+          "$target_remote/restoration-schedule-activate.json" "$activation_headers" || return 1
+        deploy_transport_forget_private_path "$activation_headers" || return 1
+        status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
+          "$target_remote/restoration-schedule-after-activate.json" "$schedule_state")" || status=
+        [[ "$status" == 200 ]] || return 1
+        schedule_revision="$(jq -r '.activeRevision.revisionId // ""' "$schedule_state")"
+    fi
+    if [[ "$schedule_revision" != "$(jq -r '.scheduleRevisionId' <<< "$prior")" ]]; then
+        jq -e --slurpfile rendered "$canonical_file" --arg prior "$(jq -r '.scheduleRevisionId' <<< "$prior")" '
+          .activeRevision.profile == $rendered[0] and
+          (.pendingRevision == null or .pendingRevision.revisionId == $prior)' "$schedule_state" >/dev/null || {
+            deploy_measure_set_restoration "$name" schedule-unverified completed intent pending restoration-incomplete >/dev/null 2>&1 || true
+            return 1
+        }
+        deploy_measure_set_restoration "$name" in-progress completed intent pending || return 1
+        schedule_version="$(jq -er '.stateVersion | numbers | select(. >= 0 and floor == .)' "$schedule_state")" || return 1
+        body="$DEPLOY_MEASURE_RENDER_ROOT/$name-restoration-schedule.json"; headers="$target_remote/restoration-schedule-control.headers"
+        jq -cn --arg revision "$(jq -r '.scheduleRevisionId' <<< "$prior")" --argjson version "$schedule_version" \
+          '{revisionId:$revision,expectedVersion:$version,reason:"restore pre-measurement schedule"}' > "$body" || return 1
+        deploy_bootstrap_stage_json "$target" "$body" "$target_remote/restoration-schedule.json" || return 1
+        deploy_bootstrap_register_private_remote "$target" "$headers" || return 1
+        deploy_transport_derive_idempotent_headers "$(jq -r '.sshHost' <<< "$target")" "$target_remote/owner.headers" "$headers" \
+          "deploy-measure-$execution_run_id-$name-restoration-schedule-1" || return 1
+        rollback_response="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-restoration-schedule-response.json"
+        status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/schedule/rollback" \
+          "$target_remote/restoration-schedule.json" "$headers" "$cookies" "$target_remote/restoration-schedule-response.json" "$rollback_response")" || status=
+        if [[ "$status" != 200 ]] || ! jq -e --arg revision "$(jq -r '.scheduleRevisionId' <<< "$prior")" \
+          '.activeRevision.revisionId == $revision' "$rollback_response" >/dev/null; then
+            deploy_measure_set_restoration "$name" schedule-unverified completed intent pending restoration-incomplete >/dev/null 2>&1 || true
+            return 1
+        fi
+        cp "$rollback_response" "$schedule_state" || return 1
+        deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" "$target_remote/restoration-schedule.json" "$headers" || return 1
+        deploy_transport_forget_private_path "$headers" || return 1
+    fi
+    jq -e --arg revision "$(jq -r '.scheduleRevisionId' <<< "$prior")" \
+      '.activeRevision.revisionId == $revision and .pendingRevision == null' "$schedule_state" >/dev/null || {
+        deploy_measure_set_restoration "$name" schedule-unverified completed intent pending restoration-incomplete >/dev/null 2>&1 || true
+        return 1
+    }
+    deploy_measure_set_restoration "$name" in-progress completed completed pending || return 1
+
+    desired="$(jq -r '.captureState' <<< "$prior")"; action=resume; [[ "$desired" != Paused ]] || action=pause
+    deploy_measure_set_restoration "$name" in-progress completed completed intent || return 1
+    if ! deploy_measure_capture_control "$target" "$target_remote" "$DEPLOY_MEASURE_PRIVATE_ROOT" "$DEPLOY_MEASURE_RENDER_ROOT" "$cookies" \
+      "$action" "$execution_run_id" restoration-control "$desired" true >/dev/null 2>&1; then
+        deploy_measure_set_restoration "$name" capture-unverified completed completed intent restoration-incomplete >/dev/null 2>&1 || true
+        return 1
+    fi
+    deploy_measure_set_restoration "$name" completed completed completed completed completed
 }
 
 deploy_measure_pause_delay() {
@@ -320,7 +569,7 @@ deploy_measure_execute_exact_count() {
             # Leave a full cadence for a loaded agent to process the pause before another capture starts.
             delay="$(deploy_measure_pause_delay "$remaining" "$interval")" || return 1
             (( delay >= 1 )) || delay=1
-            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" resume "$run_id" "$label-resume" Running || return 1
+            deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" resume "$run_id" "$label-resume" Running true || return 1
             pause_at=$(( $(date +%s) + delay )); (( pause_at <= deadline )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
             deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause "$run_id" "$label-pause" Paused false "$pause_at" || return 1
             current="$(deploy_measure_read_sequence "$target" "$target_remote" "$private_root" "$cookies" "$label-boundary" "$device")" || return 1
@@ -332,7 +581,7 @@ deploy_measure_execute_exact_count() {
         (( current == expected )) || { deploy_fail measure "$name" "$label-count-not-reached"; return 1; }
         return 0
     fi
-    deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" resume "$run_id" "$label-resume" Running || return 1
+    deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" resume "$run_id" "$label-resume" Running true || return 1
     while (( $(date +%s) <= deadline )); do
         current="$(deploy_measure_read_sequence "$target" "$target_remote" "$private_root" "$cookies" "$label-boundary" "$device")" || return 1
         (( current <= expected )) || { deploy_fail measure "$name" "$label-boundary-overshot"; return 1; }
@@ -346,25 +595,32 @@ deploy_measure_execute_exact_count() {
     return 1
 }
 
-deploy_measure_failure_pause_all() {
-    local entry target name target_root target_remote response cookies failed=false
+deploy_measure_restore_all() {
+    local entry target name failed=false
+    while IFS= read -r entry; do
+        name="$(jq -r '.target' <<< "$entry")"
+        [[ "$(jq -r '.restoration.status' <<< "$entry")" != completed ]] || continue
+        target="$(jq -c --arg name "$name" '.cameraAgents[] | select(.name == $name)' "$DEPLOY_MEASURE_INVENTORY")"
+        if ! deploy_measure_pause_for_restoration "$target"; then
+            deploy_measure_set_restoration "$name" capture-unverified pending pending intent restoration-incomplete >/dev/null 2>&1 || true
+            failed=true
+        fi
+    done < <(jq -c '.targets[]' <<< "$DEPLOY_MEASURE_JSON")
     while IFS= read -r entry; do
         name="$(jq -r '.target' <<< "$entry")"
         target="$(jq -c --arg name "$name" '.cameraAgents[] | select(.name == $name)' "$DEPLOY_MEASURE_INVENTORY")"
-        target_root="$(jq -r '.runtimeRoot' <<< "$target")"; target_remote="$target_root/.hvo-deploy/measure-$(jq -r '.executionRunId // .runId' <<< "$DEPLOY_MEASURE_JSON")"
-        deploy_transport_remote_directories "$(jq -r '.sshHost' <<< "$target")" "$target_remote" >/dev/null 2>&1 || { failed=true; continue; }
-        response="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-failure-antiforgery.json"
-        if ! deploy_bootstrap_owner_session "$DEPLOY_MEASURE_INVENTORY" "$target" "$DEPLOY_MEASURE_RENDER_ROOT" "$target_remote" "$response" >/dev/null 2>&1; then
-            DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" '.targets |= map(if .target == $target then .failureCleanup.status="capture-may-be-running" else . end)' <<< "$DEPLOY_MEASURE_JSON")"
-            failed=true
-            continue
-        fi
-        cookies="$target_remote/owner.cookies"
-        if deploy_measure_capture_control "$target" "$target_remote" "$DEPLOY_MEASURE_PRIVATE_ROOT" "$DEPLOY_MEASURE_RENDER_ROOT" "$cookies" pause \
-          "$(jq -r '.executionRunId // .runId' <<< "$DEPLOY_MEASURE_JSON")" failure-pause Paused true >/dev/null 2>&1; then
-            DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" '.targets |= map(if .target == $target then .failureCleanup.status="completed" else . end)' <<< "$DEPLOY_MEASURE_JSON")"
-        else
-            DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" '.targets |= map(if .target == $target then .failureCleanup.status="capture-may-be-running" else . end)' <<< "$DEPLOY_MEASURE_JSON")"
+        if [[ "$(jq -r '.restoration.status' <<< "$entry")" == completed ]]; then continue; fi
+        if [[ "$(jq -r '.restoration.status' <<< "$entry")" == capture-unverified ]]; then failed=true; continue; fi
+        if ! deploy_measure_restore_target "$target"; then
+            DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" '.targets |= map(if .target == $target then
+              .failureCleanup.status="restoration-incomplete" |
+              if .restoration.status == "in-progress" then
+                if .restoration.configuration != "completed" then .restoration.status="configuration-unverified"
+                elif .restoration.schedule != "completed" then .restoration.status="schedule-unverified"
+                else .restoration.status="capture-unverified" end
+              else . end
+              else . end)' <<< "$DEPLOY_MEASURE_JSON")"
+            deploy_measure_publish >/dev/null 2>&1 || true
             failed=true
         fi
     done < <(jq -c '.targets[]' <<< "$DEPLOY_MEASURE_JSON")
@@ -435,7 +691,7 @@ deploy_measure_wait_capture_set() {
 deploy_run_measure() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6" selected_workload="$7"
     local scope="${8:-}" state_dir evidence_dir measure_root support_evidence render_root private_root execution_run_id now started_seconds ended_seconds duration deadline target name target_root target_remote response cookies
-    local device profile warmup_requested measured_requested warmup_start warmup_completed measured_start before after measured_completed measured_end status reset_status interval_value interval_hours interval_minutes interval_seconds capture_interval_seconds expected_mode
+    local device profile prior prior_sha backup_sha restoration_status reactivate_after_restoration latest_control expected_capture_state expected_capture_version warmup_requested measured_requested warmup_start warmup_completed measured_start before after measured_completed measured_end status reset_status interval_value interval_hours interval_minutes interval_seconds capture_interval_seconds expected_mode
     local logic logic_root logic_remote central_headers warmup measured
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/bootstrap-manifest.json" measure "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
@@ -472,12 +728,15 @@ deploy_run_measure() {
         DEPLOY_MEASURE_JSON="$(jq -c --arg now "$now" '.phaseStatus="running" | .updatedAt=$now | del(.completedAt)' "$DEPLOY_MEASURE_LEDGER")"
     else
         DEPLOY_MEASURE_JSON="$(jq -cn --arg run "$run_id" --arg executionRun "$execution_run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg now "$now" --arg selected "$selected_workload" '
-          {schemaVersion:1,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,executionMode:"canonical",
-           canonicalWorkloadConfigured:true,workload:$selected,phaseStatus:"running",startedAt:$now,updatedAt:$now,targets:[]} |
+          {schemaVersion:2,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,executionMode:"canonical",
+            canonicalWorkloadConfigured:true,workload:$selected,phaseStatus:"running",startedAt:$now,updatedAt:$now,targets:[]} |
           if $executionRun == $run then . else .executionRunId=$executionRun end')"
     fi
     [[ -z "$scope" ]] || DEPLOY_NORMAL_MEASURE_ACTIVE=true
-    deploy_measure_publish
+    deploy_measure_publish || return 1
+    if jq -e 'any(.targets[]; .restoration.status != "pending" and .restoration.status != "completed")' <<< "$DEPLOY_MEASURE_JSON" >/dev/null; then
+        deploy_measure_restore_all || return 1
+    fi
     logic="$(jq -c '.logicHost' "$inventory")"; logic_root="$(jq -r '.runtimeRoot' <<< "$logic")"; logic_remote="$logic_root/.hvo-deploy/measure-$execution_run_id"
     deploy_transport_remote_directories "$(jq -r '.sshHost' <<< "$logic")" "$logic_remote" || return 1
     central_headers="$logic_remote/owner.headers"; deploy_bootstrap_central_headers "$inventory" "$logic" "$render_root" "$central_headers" || return 1
@@ -492,7 +751,10 @@ deploy_run_measure() {
         device="$(jq -er '.deviceId' "$private_root/$name-profile-identity.json")"
         profile="$(deploy_stage_workload_profile "$inventory" "$target" "$selected_workload" "$device" "$render_root" "$state_dir" "$run_id" false)" || return 1
         if ! jq -e --arg target "$name" 'any(.targets[]; .target == $target)' <<< "$DEPLOY_MEASURE_JSON" >/dev/null; then
-            DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --arg device "$device" '.targets += [{target:$target,deviceId:$device,status:"running",profile:null,
+            prior="$(deploy_measure_read_prior_state "$inventory" "$target" "$target_remote" "$private_root" "$cookies" "$run_id" \
+              "$private_root/$name-profile-identity.json")" || return 1
+            DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --arg device "$device" --argjson prior "$prior" '.targets += [{target:$target,deviceId:$device,status:"running",profile:null,priorState:$prior,
+              restoration:{status:"pending",configuration:"pending",schedule:"pending",capture:"pending"},
               controlAttempts:[],warmupStart:null,measuredStart:null,warmupCompleted:0,measuredCompleted:0,warmup:null,measured:null,before:null,after:null,
               failureCleanup:{status:"not-required"}}]' <<< "$DEPLOY_MEASURE_JSON")"
             deploy_measure_publish || return 1
@@ -500,10 +762,51 @@ deploy_run_measure() {
             jq -e --arg target "$name" --arg device "$device" --argjson expected "$profile" '
               .targets[] | select(.target == $target) | .deviceId == $device and (.profile == null or .profile == $expected)' <<< "$DEPLOY_MEASURE_JSON" >/dev/null ||
               { deploy_fail measure "$name" resumed-profile-state-mismatch; return 1; }
+            prior_sha="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .priorState.configurationFileSha256' <<< "$DEPLOY_MEASURE_JSON")"
+            backup_sha=
+            if [[ -f "$private_root/$name-prior-camera-module.json" && ! -L "$private_root/$name-prior-camera-module.json" ]]; then
+                backup_sha="$(sha256sum "$private_root/$name-prior-camera-module.json" | cut -d' ' -f1)"
+            fi
+            [[ -f "$private_root/$name-prior-camera-module.json" && ! -L "$private_root/$name-prior-camera-module.json" && "$backup_sha" == "$prior_sha" ]] ||
+              { deploy_fail measure "$name" prior-profile-backup-missing; return 1; }
+        fi
+        restoration_status="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .restoration.status' <<< "$DEPLOY_MEASURE_JSON")"
+        if [[ "$restoration_status" != pending && "$restoration_status" != completed ]]; then
+            deploy_measure_pause_for_restoration "$target" || return 1
+            deploy_measure_restore_target "$target" || return 1
+            restoration_status=completed
+            status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/internal/deployment/continuity" "" "" "$cookies" \
+              "$target_remote/profile-restored.json" "$private_root/$name-profile-identity.json")" || return 1
+            [[ "$status" == 200 ]] || return 1
+        fi
+        expected_capture_state="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .priorState.captureState' <<< "$DEPLOY_MEASURE_JSON")"
+        expected_capture_version="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .priorState.captureVersion' <<< "$DEPLOY_MEASURE_JSON")"
+        latest_control="$(jq -c --arg target "$name" '[.targets[] | select(.target == $target) | .controlAttempts[] |
+          select(.status == "completed" or .status == "reconciled")] | last // null' \
+          <<< "$DEPLOY_MEASURE_JSON")"
+        if [[ "$latest_control" != null ]]; then
+            expected_capture_state="$(jq -r '.resultState' <<< "$latest_control")"
+            expected_capture_version="$(jq -r '.resultVersion' <<< "$latest_control")"
+        fi
+        if [[ "$restoration_status" == completed ]]; then expected_capture_state="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .priorState.captureState' <<< "$DEPLOY_MEASURE_JSON")"; expected_capture_version=; fi
+        deploy_measure_capture_control "$target" "$target_remote" "$private_root" "$render_root" "$cookies" pause \
+          "$execution_run_id" pre-activation-pause Paused false 0 \
+          "$expected_capture_state" "$expected_capture_version" || return 1
+        status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/internal/deployment/continuity" "" "" "$cookies" \
+          "$target_remote/pre-activation-profile-state.json" "$private_root/$name-profile-identity.json")" || return 1
+        [[ "$status" == 200 ]] || return 1
+        reactivate_after_restoration=false
+        if [[ "$restoration_status" == completed ]]; then
+            reactivate_after_restoration=true
+            deploy_measure_set_restoration "$name" pending pending pending pending not-required || return 1
+            restoration_status=pending
         fi
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .profile == null' <<< "$DEPLOY_MEASURE_JSON")" == true ]]; then
             if ! jq -e --arg device "$device" --arg sha "$(jq -r '.configSha256' <<< "$profile")" '
               .deviceId == $device and (.activeConfigurationSha256|ascii_downcase) == ($sha|ascii_downcase)' "$private_root/$name-profile-identity.json" >/dev/null; then
+                jq -e --arg sha "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .priorState.configurationSha256' <<< "$DEPLOY_MEASURE_JSON")" \
+                  '(.activeConfigurationSha256 | ascii_downcase) == $sha' "$private_root/$name-profile-identity.json" >/dev/null ||
+                  { deploy_fail measure "$name" pre-activation-profile-drift; return 1; }
                 [[ "${DEPLOY_TEST_FAILPOINT:-}" != abrupt-before-measure-profile-stage ]] || exit 75
                 profile="$(deploy_stage_workload_profile "$inventory" "$target" "$selected_workload" "$device" "$render_root" "$state_dir" "$run_id" true)" || return 1
                 status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/internal/deployment/continuity" "" "" "$cookies" \
@@ -513,17 +816,34 @@ deploy_run_measure() {
                     deploy_fail measure "$name" activated-profile-state-mismatch
                     return 1
                 fi
+                if [[ "${DEPLOY_TEST_FAILPOINT:-}" == signal-after-measure-profile-activation ]]; then
+                    : > "$private_root/$name-signal-profile-ready"
+                    while :; do sleep 1; done
+                fi
                 [[ "${DEPLOY_TEST_FAILPOINT:-}" != abrupt-after-measure-profile-activation ]] || exit 75
             fi
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --argjson profile "$profile" '.targets |= map(if .target == $target then .profile=$profile else . end)' <<< "$DEPLOY_MEASURE_JSON")"
             deploy_measure_publish || return 1
         else
-            jq -e --arg device "$device" --arg sha "$(jq -r '.configSha256' <<< "$profile")" '
-              .deviceId == $device and (.activeConfigurationSha256|ascii_downcase) == ($sha|ascii_downcase)' "$private_root/$name-profile-identity.json" >/dev/null ||
-              { deploy_fail measure "$name" resumed-profile-state-mismatch; return 1; }
+            if [[ "$reactivate_after_restoration" == true ]]; then
+                profile="$(deploy_stage_workload_profile "$inventory" "$target" "$selected_workload" "$device" "$render_root" "$state_dir" "$run_id" true)" || return 1
+                status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/internal/deployment/continuity" "" "" "$cookies" \
+                  "$target_remote/profile-reactivated.json" "$private_root/$name-profile-identity.json")" || return 1
+                if [[ "$status" != 200 ]] || ! jq -e --arg device "$device" --arg sha "$(jq -r '.configSha256' <<< "$profile")" '
+                  .deviceId == $device and (.activeConfigurationSha256|ascii_downcase) == ($sha|ascii_downcase)' "$private_root/$name-profile-identity.json" >/dev/null; then
+                    deploy_fail measure "$name" resumed-profile-state-mismatch
+                    return 1
+                fi
+            else
+                jq -e --arg device "$device" --arg sha "$(jq -r '.configSha256' <<< "$profile")" '
+                  .deviceId == $device and (.activeConfigurationSha256|ascii_downcase) == ($sha|ascii_downcase)' "$private_root/$name-profile-identity.json" >/dev/null ||
+                  { deploy_fail measure "$name" resumed-profile-state-mismatch; return 1; }
+            fi
         fi
         deploy_measure_activate_profile "$target" "$target_remote" "$private_root" "$render_root" "$cookies" \
-          "$render_root/$name-$selected_workload-camera-module.json" "$selected_workload" "$execution_run_id" || return 1
+          "$render_root/$name-$selected_workload-camera-module.json" "$selected_workload" "$execution_run_id" \
+          "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .priorState.scheduleRevisionId' <<< "$DEPLOY_MEASURE_JSON")" \
+          "" || return 1
         interval_value="$(jq -er '.rig.pipeline.captureInterval | select(test("^[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?$"))' "$render_root/$name-$selected_workload-camera-module.json")" || return 1
         IFS=: read -r interval_hours interval_minutes interval_seconds <<< "$interval_value"; interval_seconds="${interval_seconds%%.*}"
         capture_interval_seconds=$(( 10#$interval_hours * 3600 + 10#$interval_minutes * 60 + 10#$interval_seconds ))
@@ -554,6 +874,10 @@ deploy_run_measure() {
         if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .warmup == null' <<< "$DEPLOY_MEASURE_JSON")" == true ]]; then
             deploy_measure_execute_exact_count "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$device" "$execution_run_id" warmup "$warmup_start" "$warmup_requested" "$deadline" "$capture_interval_seconds" || return 1
             warmup="$(deploy_measure_wait_capture_set "$target" "$logic" "$target_remote" "$logic_remote" "$private_root" "$cookies" "$central_headers" "$device" warmup "$warmup_start" "$warmup_requested" "$deadline")" || return 1
+            if [[ "${DEPLOY_TEST_FAILPOINT:-}" == signal-after-measure-warmup-convergence ]]; then
+                : > "$private_root/$name-signal-warmup-ready"
+                while :; do sleep 1; done
+            fi
             warmup_completed="$(jq -r '.count' <<< "$warmup")"
             DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --argjson facts "$warmup" --argjson count "$warmup_completed" '.targets |= map(if .target == $target then .warmup=$facts | .warmupCompleted=$count else . end)' <<< "$DEPLOY_MEASURE_JSON")"
             deploy_measure_publish || return 1
