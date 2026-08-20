@@ -7,6 +7,15 @@ WORK_ROOT="$(mktemp -d -t hvo-deploy-cli-test.XXXXXX)"
 readonly WORK_ROOT
 trap 'rm -rf "$WORK_ROOT"' EXIT
 
+wait_for_process_exit() {
+    local pid="$1" poll
+    for ((poll=0; poll<50; poll++)); do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    return 1
+}
+
 expected_shards=$'preflight\nprepare-images\nexisting-catalog-up\nbootstrap-authority\nbootstrap-credentials\nsmoke\nmeasure\nexisting-down\ndeploy-services'
 actual_shards="$($HARNESS --list-shards)"
 [[ "$actual_shards" == "$expected_shards" ]] || {
@@ -25,6 +34,12 @@ done
 for invalid_limit in 0 9 -1 1.5 unlimited; do
     if DEPLOY_TEST_MAX_PARALLEL="$invalid_limit" "$HARNESS" --parallel > "$WORK_ROOT/invalid-limit.log" 2>&1; then
         printf 'Deployment coordinator accepted invalid worker limit: %s\n' "$invalid_limit" >&2
+        exit 1
+    fi
+done
+for invalid_timing in 0 -1 1.5 unlimited 86401 18446744073709551616; do
+    if DEPLOY_TEST_STATUS_SECONDS="$invalid_timing" "$HARNESS" --parallel > "$WORK_ROOT/invalid-timing.log" 2>&1; then
+        printf 'Deployment coordinator accepted invalid watchdog timing: %s\n' "$invalid_timing" >&2
         exit 1
     fi
 done
@@ -55,6 +70,72 @@ hang_leader="$(<"$run_dir/prepare-images.leader.pid")"
 hang_descendant="$(<"$run_dir/prepare-images.descendant.pid")"
 if kill -0 "$hang_leader" 2>/dev/null || kill -0 -- "-$hang_leader" 2>/dev/null || kill -0 "$hang_descendant" 2>/dev/null; then
     printf 'Deployment coordinator left a shard leader or descendant running.\n' >&2
+    exit 1
+fi
+
+if DEPLOY_TEST_LOG_DIR="$WORK_ROOT/failed-descendant-logs" DEPLOY_TEST_MAX_PARALLEL=1 DEPLOY_TEST_TERM_GRACE_SECONDS=1 \
+    DEPLOY_TEST_COORDINATOR_FAIL_WITH_DESCENDANT_SHARD=preflight "$HARNESS" --parallel > "$WORK_ROOT/failed-descendant.log" 2>&1; then
+    printf 'Deployment coordinator accepted an injected leader failure with a descendant.\n' >&2
+    exit 1
+else
+    status=$?
+fi
+[[ "$status" -eq 97 ]]
+failed_descendant_dirs=("$WORK_ROOT/failed-descendant-logs"/*); [[ "${#failed_descendant_dirs[@]}" -eq 1 ]]
+failed_descendant="$(<"${failed_descendant_dirs[0]}/preflight.failed-descendant.pid")"
+wait_for_process_exit "$failed_descendant" || { printf 'Failed shard left its descendant running.\n' >&2; exit 1; }
+
+if DEPLOY_TEST_LOG_DIR="$WORK_ROOT/progress-logs" DEPLOY_TEST_MAX_PARALLEL=1 DEPLOY_TEST_TERM_GRACE_SECONDS=1 \
+    DEPLOY_TEST_STATUS_SECONDS=1 DEPLOY_TEST_STALL_SECONDS=2 DEPLOY_TEST_HARD_SECONDS=10 \
+    DEPLOY_TEST_COORDINATOR_PROGRESS_SHARD=preflight DEPLOY_TEST_COORDINATOR_FAIL_SHARD=prepare-images \
+    "$HARNESS" --parallel > "$WORK_ROOT/progress.log" 2>&1; then
+    printf 'Deployment progress fixture unexpectedly passed the following injected failure.\n' >&2
+    exit 1
+else
+    status=$?
+fi
+[[ "$status" -eq 97 ]]
+progress_dirs=("$WORK_ROOT/progress-logs"/*); [[ "${#progress_dirs[@]}" -eq 1 ]]
+grep -Eq '^passed elapsed_seconds=[0-9]+$' "${progress_dirs[0]}/preflight.status"
+grep -Eq '^sequence=4 checkpoint=injected-progress-4$' "${progress_dirs[0]}/preflight.progress"
+
+started_at=$SECONDS
+if timeout --signal=TERM --kill-after=2s 15s env DEPLOY_TEST_LOG_DIR="$WORK_ROOT/stall-logs" DEPLOY_TEST_MAX_PARALLEL=1 DEPLOY_TEST_TERM_GRACE_SECONDS=1 \
+    DEPLOY_TEST_STATUS_SECONDS=1 DEPLOY_TEST_STALL_SECONDS=3 DEPLOY_TEST_HARD_SECONDS=10 \
+    DEPLOY_TEST_COORDINATOR_HANG_SHARD=preflight DEPLOY_TEST_HANG_CHATTER=true "$HARNESS" --parallel > "$WORK_ROOT/stall.log" 2>&1; then
+    printf 'Deployment watchdog accepted an injected semantic stall.\n' >&2
+    exit 1
+else
+    status=$?
+fi
+[[ "$status" -eq 125 ]]
+(( SECONDS - started_at <= 10 ))
+stall_dirs=("$WORK_ROOT/stall-logs"/*); [[ "${#stall_dirs[@]}" -eq 1 ]]
+grep -Eq '^stalled elapsed_seconds=[0-9]+ progress_idle_seconds=[0-9]+ checkpoint=' "${stall_dirs[0]}/preflight.status"
+[[ "$(grep -Fc 'Deployment contract status shard=preflight' "$WORK_ROOT/stall.log")" -ge 2 ]]
+grep -Eq 'output_bytes=[1-9][0-9]*' "$WORK_ROOT/stall.log"
+stall_leader="$(<"${stall_dirs[0]}/preflight.leader.pid")"; stall_descendant="$(<"${stall_dirs[0]}/preflight.descendant.pid")"
+wait_for_process_exit "$stall_descendant" || { printf 'Deployment stall descendant was not reaped boundedly.\n' >&2; exit 1; }
+if kill -0 "$stall_leader" 2>/dev/null || kill -0 -- "-$stall_leader" 2>/dev/null || kill -0 "$stall_descendant" 2>/dev/null; then
+    printf 'Deployment stall watchdog left a shard leader or descendant running.\n' >&2
+    exit 1
+fi
+
+if timeout --signal=TERM --kill-after=2s 15s env DEPLOY_TEST_LOG_DIR="$WORK_ROOT/hard-logs" DEPLOY_TEST_MAX_PARALLEL=1 DEPLOY_TEST_TERM_GRACE_SECONDS=1 \
+    DEPLOY_TEST_STATUS_SECONDS=1 DEPLOY_TEST_STALL_SECONDS=10 DEPLOY_TEST_HARD_SECONDS=2 \
+    DEPLOY_TEST_COORDINATOR_HANG_SHARD=preflight "$HARNESS" --parallel > "$WORK_ROOT/hard.log" 2>&1; then
+    printf 'Deployment watchdog accepted an injected hard timeout.\n' >&2
+    exit 1
+else
+    status=$?
+fi
+[[ "$status" -eq 124 ]]
+hard_dirs=("$WORK_ROOT/hard-logs"/*); [[ "${#hard_dirs[@]}" -eq 1 ]]
+grep -Eq '^hard-timeout elapsed_seconds=[0-9]+ checkpoint=' "${hard_dirs[0]}/preflight.status"
+hard_leader="$(<"${hard_dirs[0]}/preflight.leader.pid")"; hard_descendant="$(<"${hard_dirs[0]}/preflight.descendant.pid")"
+wait_for_process_exit "$hard_descendant" || { printf 'Deployment hard-timeout descendant was not reaped boundedly.\n' >&2; exit 1; }
+if kill -0 "$hard_leader" 2>/dev/null || kill -0 -- "-$hard_leader" 2>/dev/null || kill -0 "$hard_descendant" 2>/dev/null; then
+    printf 'Deployment hard-timeout watchdog left a shard leader or descendant running.\n' >&2
     exit 1
 fi
 
