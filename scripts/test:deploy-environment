@@ -288,7 +288,11 @@ cleanup() {
         fi
         wait "$SERVER_PID" 2>/dev/null || true
     fi
-    rm -rf "$TEMP_DIR"
+    if [[ "${DEPLOY_TEST_KEEP_TEMP:-false}" == true ]]; then
+        printf 'Preserved deployment test directory: %s\n' "$TEMP_DIR" >&2
+    else
+        rm -rf "$TEMP_DIR"
+    fi
 }
 trap cleanup EXIT
 trap 'printf "Deploy environment contract test failed near line %s.\n" "$LINENO" >&2' ERR
@@ -1202,26 +1206,26 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
   continuity_path="${url%%\?*}"; device="${continuity_path##*/}"
   if [[ ! -f "${FAKE_HTTP_STATE:?}/$device.active" ]]; then
     if [[ -f "${FAKE_HTTP_STATE:?}/$device.pending" ]]; then
-      jq -cn --arg device "$device" '{registrationId:"22222222-2222-2222-2222-222222222222",deviceId:$device,
-        devicePublicId:null,observatoryId:"11111111-1111-1111-1111-111111111111",status:"Pending",issuedAtUtc:"2026-08-07T00:00:00Z",
-        expiresAtUtc:"2099-08-07T00:15:00Z",activatedAtUtc:null,currentRigProfileVersion:null,maximumCaptureSequence:null,
-        fleetAgentInstanceId:null,maximumHeartbeatSequence:null,lastHeartbeatReceivedAtUtc:null,centralFrameCount:0,centralArtifactCount:0,
-        lineageSourceCount:0,completedDerivativeCount:0,latestArtifacts:[],registrations:[{registrationId:"22222222-2222-2222-2222-222222222222",
-          status:"Pending",devicePublicId:null,observatoryId:"11111111-1111-1111-1111-111111111111",issuedAtUtc:"2026-08-07T00:00:00Z",
-          expiresAtUtc:"2099-08-07T00:15:00Z",activatedAtUtc:null,isAuthoritative:true}]}' > "$output"
+      jq -cn --arg device "$device" '{RegistrationId:"22222222-2222-2222-2222-222222222222",DeviceId:$device,
+        DevicePublicId:null,ObservatoryId:"11111111-1111-1111-1111-111111111111",Status:"Pending",IssuedAtUtc:"2026-08-07T00:00:00Z",
+        ExpiresAtUtc:"2099-08-07T00:15:00Z",ActivatedAtUtc:null,CurrentRigProfileVersion:null,MaximumCaptureSequence:null,
+        FleetAgentInstanceId:null,MaximumHeartbeatSequence:null,LastHeartbeatReceivedAtUtc:null,CentralFrameCount:0,CentralArtifactCount:0,
+        LineageSourceCount:0,CompletedDerivativeCount:0,LatestArtifacts:[],CaptureWindow:[],Registrations:[{RegistrationId:"22222222-2222-2222-2222-222222222222",
+          Status:"Pending",DevicePublicId:null,ObservatoryId:"11111111-1111-1111-1111-111111111111",IssuedAtUtc:"2026-08-07T00:00:00Z",
+          ExpiresAtUtc:"2099-08-07T00:15:00Z",ActivatedAtUtc:null,IsAuthoritative:true}]}' > "$output"
       printf 200; exit 0
     fi
     : > "$output"; printf 404; exit 0
   fi
   if [[ -f "${FAKE_HTTP_STATE:?}/$device.active-no-evidence" ]]; then
-    jq -cn --arg device "$device" '{registrationId:"22222222-2222-2222-2222-222222222222",deviceId:$device,
-      devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",status:"Active",
-      issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",currentRigProfileVersion:1,
-      maximumCaptureSequence:null,fleetAgentInstanceId:null,maximumHeartbeatSequence:null,lastHeartbeatReceivedAtUtc:null,
-      centralFrameCount:0,centralArtifactCount:0,lineageSourceCount:0,completedDerivativeCount:0,latestArtifacts:[],
-      registrations:[{registrationId:"22222222-2222-2222-2222-222222222222",status:"Active",devicePublicId:"33333333-3333-3333-3333-333333333333",
-        observatoryId:"11111111-1111-1111-1111-111111111111",issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,
-        activatedAtUtc:"2026-08-07T00:00:00Z",isAuthoritative:true}]}' > "$output"
+    jq -cn --arg device "$device" '{RegistrationId:"22222222-2222-2222-2222-222222222222",DeviceId:$device,
+      DevicePublicId:"33333333-3333-3333-3333-333333333333",ObservatoryId:"11111111-1111-1111-1111-111111111111",Status:"Active",
+      IssuedAtUtc:"2026-08-07T00:00:00Z",ExpiresAtUtc:null,ActivatedAtUtc:"2026-08-07T00:00:00Z",CurrentRigProfileVersion:1,
+      MaximumCaptureSequence:null,FleetAgentInstanceId:null,MaximumHeartbeatSequence:null,LastHeartbeatReceivedAtUtc:null,
+      CentralFrameCount:0,CentralArtifactCount:0,LineageSourceCount:0,CompletedDerivativeCount:0,LatestArtifacts:[],CaptureWindow:[],
+      Registrations:[{RegistrationId:"22222222-2222-2222-2222-222222222222",Status:"Active",DevicePublicId:"33333333-3333-3333-3333-333333333333",
+        ObservatoryId:"11111111-1111-1111-1111-111111111111",IssuedAtUtc:"2026-08-07T00:00:00Z",ExpiresAtUtc:null,
+        ActivatedAtUtc:"2026-08-07T00:00:00Z",IsAuthoritative:true}]}' > "$output"
     printf 200; exit 0
   fi
   from="${url#*fromCaptureSequence=}"; [[ "$from" != "$url" ]] || from=0; from="${from%%&*}"
@@ -1245,34 +1249,34 @@ if [[ "$url" == */api/internal/devices/continuity/* ]]; then
       fi
       window="$(jq -c --argjson sequence "$sequence" --arg capture "$capture_id" --arg raw "$central_raw_id" --arg derivative "$derivative_id" \
         --arg rawSha "$central_raw_sha" --argjson rawLength "$central_raw_length" --arg derivativeSha "$FAKE_ARTIFACT_SHA" --arg acknowledged "2026-08-07T00:01:00Z" '
-        . + [{captureSequence:$sequence,captureId:$capture,artifacts:[
-          {artifactId:$raw,role:"Raw",checksumSha256:$rawSha,byteLength:$rawLength,objectState:"Available",objectVerifiedAtUtc:$acknowledged,sources:[],completedDerivativeCount:1},
-          {artifactId:$derivative,role:"Preview",checksumSha256:$derivativeSha,objectState:"Available",objectVerifiedAtUtc:null,
-           sources:[{artifactId:$raw,checksumSha256:$rawSha}],completedDerivativeCount:0}]}]' <<< "$window")"
+        . + [{CaptureSequence:$sequence,CaptureId:$capture,Artifacts:[
+          {ArtifactId:$raw,Role:"Raw",ChecksumSha256:$rawSha,ByteLength:$rawLength,ObjectState:"Available",ObjectVerifiedAtUtc:$acknowledged,Sources:[],CompletedDerivativeCount:1},
+          {ArtifactId:$derivative,Role:"Preview",ChecksumSha256:$derivativeSha,ByteLength:24,ObjectState:"Available",ObjectVerifiedAtUtc:null,
+            Sources:[{ArtifactId:$raw,ChecksumSha256:$rawSha}],CompletedDerivativeCount:0}]}]' <<< "$window")"
     done
   fi
   printf -v acknowledged '2026-08-07T%02d:%02d:%02dZ' \
     "$(((60 + count) / 3600))" "$((((60 + count) / 60) % 60))" "$(((60 + count) % 60))"
-  jq -cn --arg device "$device" --argjson sequence "$count" --arg acknowledged "$acknowledged" --argjson window "$window" '{registrationId:"22222222-2222-2222-2222-222222222222",deviceId:$device,
-    devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",status:"Active",
-    issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",currentRigProfileVersion:1,maximumCaptureSequence:$sequence,
-    fleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",maximumHeartbeatSequence:$sequence,lastHeartbeatReceivedAtUtc:$acknowledged,
-     centralFrameCount:$sequence,centralArtifactCount:($sequence*3),lineageSourceCount:($sequence*2),completedDerivativeCount:($sequence*2),
-     currentRigProfileVersion:(if $ENV.FAKE_RIG_PROFILE_MISSING == "true" then null else 1 end),
-     currentRigProfileHash:(if $ENV.FAKE_RIG_PROFILE_HASH_MISMATCH == "true" then ("F"*64) else $ENV.FAKE_RIG_HASH end),
-    latestArtifacts:[
-       {artifactId:"99999999-9999-9999-9999-999999999999",role:"Raw",recipeVersion:"raw-ingress-v1",width:64,height:48,pixelFormat:"Mono16",byteLength:6144,checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA,
-        objectState:"Available",objectVerifiedAtUtc:$acknowledged,captureSequence:$sequence,recipeName:"RawCapture",recipeSemanticVersion:"1.0.0",
-        recipeImplementationVersion:"fixture",sources:[],completedDerivativeCount:0},
-       {artifactId:"11111111-1111-1111-1111-111111111111",role:"Preview",recipeVersion:"central-preview-v1",width:null,height:null,pixelFormat:null,byteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),checksumSha256:$ENV.FAKE_ARTIFACT_SHA,
-        objectState:"Available",objectVerifiedAtUtc:null,captureSequence:$sequence,recipeName:"encoded-preview",recipeSemanticVersion:"1.0.0",
-        recipeImplementationVersion:"fixture",sources:[{artifactId:"99999999-9999-9999-9999-999999999999",checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA}],completedDerivativeCount:0},
-       {artifactId:"77777777-7777-7777-7777-777777777777",role:"Metadata",recipeVersion:"central-image-quality-v1",width:null,height:null,pixelFormat:null,byteLength:128,checksumSha256:("C"*64),
-        objectState:"Available",objectVerifiedAtUtc:null,captureSequence:$sequence,recipeName:"image-quality",recipeSemanticVersion:"1.0.0",
-          recipeImplementationVersion:"fixture",sources:[{artifactId:"99999999-9999-9999-9999-999999999999",checksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA}],completedDerivativeCount:0}],captureWindow:$window,
-    registrations:[{registrationId:"22222222-2222-2222-2222-222222222222",status:"Active",
-      devicePublicId:"33333333-3333-3333-3333-333333333333",observatoryId:"11111111-1111-1111-1111-111111111111",
-      issuedAtUtc:"2026-08-07T00:00:00Z",expiresAtUtc:null,activatedAtUtc:"2026-08-07T00:00:00Z",isAuthoritative:true}]}' > "$output"
+  jq -cn --arg device "$device" --argjson sequence "$count" --arg acknowledged "$acknowledged" --argjson window "$window" '{RegistrationId:"22222222-2222-2222-2222-222222222222",DeviceId:$device,
+    DevicePublicId:"33333333-3333-3333-3333-333333333333",ObservatoryId:"11111111-1111-1111-1111-111111111111",Status:"Active",
+    IssuedAtUtc:"2026-08-07T00:00:00Z",ExpiresAtUtc:null,ActivatedAtUtc:"2026-08-07T00:00:00Z",MaximumCaptureSequence:$sequence,
+    FleetAgentInstanceId:"44444444-4444-4444-4444-444444444444",MaximumHeartbeatSequence:$sequence,LastHeartbeatReceivedAtUtc:$acknowledged,
+    CentralFrameCount:$sequence,CentralArtifactCount:($sequence*3),LineageSourceCount:($sequence*2),CompletedDerivativeCount:($sequence*2),
+    CurrentRigProfileVersion:(if $ENV.FAKE_RIG_PROFILE_MISSING == "true" then null else 1 end),
+    CurrentRigProfileHash:(if $ENV.FAKE_RIG_PROFILE_HASH_MISMATCH == "true" then ("F"*64) else $ENV.FAKE_RIG_HASH end),
+    LatestArtifacts:[
+       {ArtifactId:"99999999-9999-9999-9999-999999999999",Role:"Raw",RecipeVersion:"raw-ingress-v1",Width:64,Height:48,PixelFormat:"Mono16",ByteLength:6144,ChecksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA,
+        ObjectState:"Available",ObjectVerifiedAtUtc:$acknowledged,CaptureSequence:$sequence,RecipeName:"RawCapture",RecipeSemanticVersion:"1.0.0",
+        RecipeImplementationVersion:"fixture",Sources:[],CompletedDerivativeCount:0},
+       {ArtifactId:"11111111-1111-1111-1111-111111111111",Role:"Preview",RecipeVersion:"central-preview-v1",Width:null,Height:null,PixelFormat:null,ByteLength:($ENV.FAKE_ARTIFACT_BYTES|tonumber),ChecksumSha256:$ENV.FAKE_ARTIFACT_SHA,
+        ObjectState:"Available",ObjectVerifiedAtUtc:null,CaptureSequence:$sequence,RecipeName:"encoded-preview",RecipeSemanticVersion:"1.0.0",
+        RecipeImplementationVersion:"fixture",Sources:[{ArtifactId:"99999999-9999-9999-9999-999999999999",ChecksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA}],CompletedDerivativeCount:0},
+       {ArtifactId:"77777777-7777-7777-7777-777777777777",Role:"Metadata",RecipeVersion:"central-image-quality-v1",Width:null,Height:null,PixelFormat:null,ByteLength:128,ChecksumSha256:("C"*64),
+        ObjectState:"Available",ObjectVerifiedAtUtc:null,CaptureSequence:$sequence,RecipeName:"image-quality",RecipeSemanticVersion:"1.0.0",
+        RecipeImplementationVersion:"fixture",Sources:[{ArtifactId:"99999999-9999-9999-9999-999999999999",ChecksumSha256:$ENV.FAKE_RAW_ARTIFACT_SHA}],CompletedDerivativeCount:0}],CaptureWindow:$window,
+    Registrations:[{RegistrationId:"22222222-2222-2222-2222-222222222222",Status:"Active",
+      DevicePublicId:"33333333-3333-3333-3333-333333333333",ObservatoryId:"11111111-1111-1111-1111-111111111111",
+      IssuedAtUtc:"2026-08-07T00:00:00Z",ExpiresAtUtc:null,ActivatedAtUtc:"2026-08-07T00:00:00Z",IsAuthoritative:true}]}' > "$output"
   printf 200; exit 0
 fi
 [[ "${FAKE_CURL_ALWAYS_SUCCESS:-false}" == true || "$url" == https://public.example.test:* ]] && exit 0
@@ -3529,7 +3533,7 @@ for service in sql redis minio; do
   grep -Fq 'device: ${HVO_STATE_ROOT:?state root required}/'"$service" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml"
 done
 normalize_fixture="$TEMP_DIR/bootstrap-pascal-response.json"
-printf '%s\n' '{"RegistrationId":"00000000-0000-0000-0000-000000000001","Status":1,"CaptureControl":{"Value":{"State":"Paused","Version":2}},"FleetAgentInstanceId":"instance-1","MaximumHeartbeatSequence":4,"CentralArtifactCount":5,"CurrentRigProfileVersion":1,"CurrentRigProfileHash":"ABC123","LastHeartbeatReceivedAtUtc":"2026-08-15T00:00:00Z","Metadata":{"CaseSensitiveKey":"value"}}' > "$normalize_fixture"
+printf '%s\n' '{"RegistrationId":"00000000-0000-0000-0000-000000000001","Status":1,"CaptureControl":{"Value":{"State":"Paused","Version":2}},"FleetAgentInstanceId":"instance-1","MaximumHeartbeatSequence":4,"CentralArtifactCount":5,"CurrentRigProfileVersion":1,"CurrentRigProfileHash":"ABC123","LastHeartbeatReceivedAtUtc":"2026-08-15T00:00:00Z","CaptureWindow":[{"CaptureSequence":4,"CaptureId":"00000000-0000-0000-0000-000000000004","Artifacts":[{"ArtifactId":"10000000-0000-0000-0000-000000000004","Role":"Raw","ChecksumSha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ByteLength":6144,"ObjectState":"Available","ObjectVerifiedAtUtc":"2026-08-15T00:00:00Z","Sources":[],"CompletedDerivativeCount":1}]}],"Metadata":{"CaseSensitiveKey":"value","Status":"opaque"}}' > "$normalize_fixture"
 chmod 600 "$normalize_fixture"
 (source "$REPO_ROOT/scripts/deploy/bootstrap.sh"; deploy_bootstrap_normalize_response "$normalize_fixture")
 jq -e '.registrationId == "00000000-0000-0000-0000-000000000001" and .status == "Active" and
@@ -3537,7 +3541,9 @@ jq -e '.registrationId == "00000000-0000-0000-0000-000000000001" and .status == 
   .fleetAgentInstanceId == "instance-1" and .maximumHeartbeatSequence == 4 and .centralArtifactCount == 5 and
   .currentRigProfileVersion == 1 and .currentRigProfileHash == "ABC123" and
   .lastHeartbeatReceivedAtUtc == "2026-08-15T00:00:00Z" and
-  .Metadata.CaseSensitiveKey == "value"' \
+  .captureWindow[0].captureSequence == 4 and .captureWindow[0].artifacts[0].role == "Raw" and
+  .captureWindow[0].artifacts[0].sources == [] and
+  .Metadata.CaseSensitiveKey == "value" and .Metadata.Status == "opaque" and (.Metadata | has("status") | not)' \
   "$normalize_fixture" >/dev/null
 printf 'hvo_capture_total 1\n' > "$normalize_fixture"
 (source "$REPO_ROOT/scripts/deploy/bootstrap.sh"; deploy_bootstrap_normalize_response "$normalize_fixture")

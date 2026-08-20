@@ -95,10 +95,23 @@ deploy_bootstrap_normalize_response() {
          RequestToken:"requestToken",HeaderName:"headerName",State:"state",Version:"version",Replayed:"replayed",
          CentralFrameCount:"centralFrameCount",MaximumCaptureSequence:"maximumCaptureSequence",
          CaptureControl:"captureControl",Value:"value",FleetAgentInstanceId:"fleetAgentInstanceId",
-         MaximumHeartbeatSequence:"maximumHeartbeatSequence",CentralArtifactCount:"centralArtifactCount",
-         CurrentRigProfileVersion:"currentRigProfileVersion",CurrentRigProfileHash:"currentRigProfileHash",
-         LastHeartbeatReceivedAtUtc:"lastHeartbeatReceivedAtUtc"}[.] // .;
-      walk(if type == "object" then with_entries(.key |= contract_key) else . end) |
+          MaximumHeartbeatSequence:"maximumHeartbeatSequence",CentralArtifactCount:"centralArtifactCount",
+          CurrentRigProfileVersion:"currentRigProfileVersion",CurrentRigProfileHash:"currentRigProfileHash",
+          LastHeartbeatReceivedAtUtc:"lastHeartbeatReceivedAtUtc",CaptureWindow:"captureWindow",
+          CaptureSequence:"captureSequence",CaptureId:"captureId",Artifacts:"artifacts",ArtifactId:"artifactId",
+          Role:"role",ChecksumSha256:"checksumSha256",ByteLength:"byteLength",ObjectState:"objectState",
+          ObjectVerifiedAtUtc:"objectVerifiedAtUtc",Sources:"sources",CompletedDerivativeCount:"completedDerivativeCount",
+          IssuedAtUtc:"issuedAtUtc",ActivatedAtUtc:"activatedAtUtc",LineageSourceCount:"lineageSourceCount",
+          LatestArtifacts:"latestArtifacts",RecipeVersion:"recipeVersion",RecipeName:"recipeName",
+          RecipeSemanticVersion:"recipeSemanticVersion",RecipeImplementationVersion:"recipeImplementationVersion",
+          Width:"width",Height:"height",PixelFormat:"pixelFormat"}[.] // .;
+      def normalize_contract:
+        if type == "object" then
+          with_entries(.key as $key | .key |= contract_key |
+            .value = (if $key == "Metadata" or $key == "metadata" then .value else (.value | normalize_contract) end))
+        elif type == "array" then map(normalize_contract)
+        else . end;
+      normalize_contract |
       if type == "object" and has("registrationId") and (.status | type) == "number" then
         .status = (["Pending","Active","Revoked"][.status] // .status)
       else . end' "$path" > "$normalized" || { rm -f -- "$normalized"; return 1; }

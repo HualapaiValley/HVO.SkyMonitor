@@ -985,12 +985,6 @@ if [[ -n "$cookies" ]]; then
 fi
 status=$(curl "${args[@]}" "$url") || exit 95
 [[ "$status" =~ ^[0-9]{3}$ && -f "$output" && ! -L "$output" ]] || exit 96
-if jq -e . "$output" >/dev/null 2>&1; then
-  normalized="$output.normalized"; trap 'rm -f -- "$normalized"' EXIT
-  [[ ! -e "$normalized" && ! -L "$normalized" ]] || exit 97
-  (umask 077; jq -c 'walk(if type == "object" then with_entries(.key = ((.key[0:1] | ascii_downcase) + .key[1:])) else . end)' "$output" > "$normalized") || exit 98
-  chmod 600 "$normalized" && mv -T "$normalized" "$output" || exit 99
-fi
 chmod 600 "$output"
 [[ -z "$cookies" || ( -f "$cookies" && ! -L "$cookies" ) ]] || exit 97
 [[ -z "$cookies" ]] || chmod 600 "$cookies"
