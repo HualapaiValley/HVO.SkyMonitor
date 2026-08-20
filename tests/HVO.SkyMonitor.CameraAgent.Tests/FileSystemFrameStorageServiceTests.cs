@@ -46,12 +46,17 @@ public sealed class FileSystemFrameStorageServiceTests
             var stored = await service.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
 
             await service.SaveAsync(root, artifact, descriptor, "Final-Jpeg", CancellationToken.None).ConfigureAwait(false);
+            var sidecarPath = Path.ChangeExtension(stored.AbsolutePath, ".json");
+            var producerSidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            await service.SaveAsync(root, artifact, descriptor, "final-jpeg", CancellationToken.None).ConfigureAwait(false);
+            var recasedReplaySidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
             var parsed = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(Path.ChangeExtension(stored.AbsolutePath, ".json")).ConfigureAwait(false));
+                recasedReplaySidecar);
 
             Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
             Assert.AreEqual("Final-Jpeg", parsed.Document!.Manifest!.ProducerStepId);
             Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(descriptor), parsed.Document.Manifest.IdempotencyKey);
+            CollectionAssert.AreEqual(producerSidecar, recasedReplaySidecar);
             Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
         }
         finally

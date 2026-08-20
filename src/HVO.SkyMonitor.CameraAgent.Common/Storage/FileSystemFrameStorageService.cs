@@ -329,7 +329,7 @@ public sealed class FileSystemFrameStorageService(
                 throw new InvalidDataException("Existing derivative sidecar conflicts with the requested output identity.");
             }
             upgradeProducerSidecar = producerStepId is not null &&
-                !string.Equals(existing.ProducerStepId, producerStepId, StringComparison.Ordinal);
+                !string.Equals(existing.ProducerStepId, producerStepId, StringComparison.OrdinalIgnoreCase);
         }
         return upgradeProducerSidecar;
     }
