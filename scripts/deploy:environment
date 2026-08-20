@@ -235,11 +235,16 @@ fi
 
 if [[ "$phase" == measure ]]; then
     trap 'deploy_measure_mark_failed $?' ERR
-    if ! deploy_run_measure "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$workload"; then
-        deploy_measure_mark_failed 1
-        exit 1
+    trap 'deploy_measure_handle_signal 130 INT' INT
+    trap 'deploy_measure_handle_signal 143 TERM' TERM
+    trap 'deploy_measure_handle_signal 129 HUP' HUP
+    measure_status=0
+    deploy_run_measure "$inventory" "$run_id" "$mode" "$inventory_hash" "$actual_revision" "$worktree_state" "$workload" || measure_status=$?
+    if (( measure_status != 0 )); then
+        deploy_measure_mark_failed "$measure_status"
+        exit "$measure_status"
     fi
-    trap - ERR
+    trap - ERR INT TERM HUP
     deploy_status measure complete passed "$workload"
     exit 0
 fi

@@ -475,12 +475,17 @@ remote_path="${FAKE_REMOTE_BIN:?}"
 if FAKE_REMOTE_HOST="$host" FAKE_REMOTE_PREPARE="$prepare" PATH="$remote_path" /usr/bin/bash "${remote_args[@]}" "$@"; then
   if (( $# == 2 )) && [[ "$2" == */camera-module.json ]]; then
     canonical="$(/usr/bin/jq -S -c . "$2")"
-    printf '%s' "$canonical" | /usr/bin/sha256sum | /usr/bin/cut -d' ' -f1 > "${FAKE_HTTP_STATE:?}/$host.active-config-sha"
-    rm -f "${FAKE_HTTP_STATE:?}/$host.measure-profile" "$FAKE_HTTP_STATE/$host.measure-running" "$FAKE_HTTP_STATE/$host.measure-stage"
     width="$(/usr/bin/jq -r '.rig.sensor.widthPixels' "$2")"
+    if [[ "${FAKE_CONFIG_RUNTIME_HASH_STALE:-}" != "$host" || ( "$width" != 1936 && "$width" != 3096 ) ]]; then
+      printf '%s' "$canonical" | /usr/bin/sha256sum | /usr/bin/cut -d' ' -f1 > "${FAKE_HTTP_STATE:?}/$host.active-config-sha"
+    fi
+    /usr/bin/cp "$2" "$FAKE_HTTP_STATE/$host.active-profile.json"
+    rm -f "${FAKE_HTTP_STATE:?}/$host.measure-profile" "$FAKE_HTTP_STATE/$host.measure-running" "$FAKE_HTTP_STATE/$host.measure-stage"
     if [[ "$width" == 1936 || "$width" == 3096 ]]; then
-      : > "$FAKE_HTTP_STATE/$host.measure-profile"; : > "$FAKE_HTTP_STATE/$host.measure-running"
-      printf 'Running\n' > "$FAKE_HTTP_STATE/$host.control-state"; printf '0\n' > "$FAKE_HTTP_STATE/$host.control-version"
+      : > "$FAKE_HTTP_STATE/$host.measure-profile"
+      /usr/bin/cp "$2" "$FAKE_HTTP_STATE/$host.schedule-pending.json"
+    elif [[ -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]]; then
+      /usr/bin/cp "$2" "$FAKE_HTTP_STATE/$host.schedule-pending.json"
     fi
   fi
 else exit $?; fi
@@ -1233,7 +1238,7 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   action="${url##*/}"; desired=Running; [[ "$action" != pause ]] || desired=Paused
   [[ "$action" != pause || "${FAKE_PAUSE_CONFLICT:-false}" != true ]] || { : > "$output"; printf 409; exit 0; }
   host="${FAKE_REMOTE_HOST:?}"
-  if [[ "$key" == *-failure-pause-* && "${FAKE_MEASURE_FAILURE_PAUSE_FAIL:-}" == "$host" ]]; then : > "$output"; printf 503; exit 0; fi
+  if [[ ( "$key" == *-failure-pause-* || "$key" == *-restoration-pause-* ) && "${FAKE_MEASURE_FAILURE_PAUSE_FAIL:-}" == "$host" ]]; then : > "$output"; printf 503; exit 0; fi
   receipt="$FAKE_HTTP_STATE/$host.idempotency.$(printf '%s' "$key" | sha256sum | cut -c1-32).json"
   if [[ -f "$receipt" ]]; then
     jq '.replayed=true' "$receipt" > "$output"
@@ -1243,6 +1248,10 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
   current=Running; version=0
   [[ ! -f "$FAKE_HTTP_STATE/$host.control-state" ]] || current="$(<"$FAKE_HTTP_STATE/$host.control-state")"
   [[ ! -f "$FAKE_HTTP_STATE/$host.control-version" ]] || version="$(<"$FAKE_HTTP_STATE/$host.control-version")"
+  if jq -e 'has("expectedVersion")' "$body" >/dev/null; then
+    expected_version="$(jq -er '.expectedVersion | numbers | select(. >= 0 and floor == .)' "$body")" || { : > "$output"; printf 400; exit 0; }
+    [[ "$expected_version" == "$version" ]] || { : > "$output"; printf 409; exit 0; }
+  fi
   if [[ "$key" == *-final-pause-* && "${FAKE_DOWN_FINAL_REASSERT_RACE:-false}" == true ]]; then
     current=Running; version=$((version+1)); printf '%s\n' "$current" > "$FAKE_HTTP_STATE/$host.control-state"; printf '%s\n' "$version" > "$FAKE_HTTP_STATE/$host.control-version"
   fi
@@ -1267,14 +1276,28 @@ if [[ "$url" == */api/v1/operations/capture/pause || "$url" == */api/v1/operatio
 fi
 if [[ "$url" == */api/v1/operations/schedule/ ]]; then
   host="${FAKE_REMOTE_HOST:?}"; active="$FAKE_HTTP_STATE/$host.schedule-active.json"
-  pending='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":1936,"heightPixels":1216,"sensorRecipeVersion":"virtual-asi174mm-electron-domain-v2"},"pipeline":{"captureInterval":"00:00:25"}},"processingSteps":[],"schedule":{}}'
-  if [[ -f "$active" ]]; then profile="$(jq -c . "$active")"; jq -cn --argjson profile "$profile" '{stateVersion:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile},pendingRevision:null}' > "$output"
-  else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; jq -cn --argjson profile "$profile" --argjson pending "$pending" '{stateVersion:2,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile},pendingRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,source:"file-draft",profile:$pending}}' > "$output"; fi
+  pending=null; [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-pending.json" ]] || pending="$(jq -c . "$FAKE_HTTP_STATE/$host.schedule-pending.json")"
+  pending_id=schedule-pending-v2; pending_number=2; pending_source=file-draft
+  if [[ "$pending" != null && "$(jq -r '.rig.sensor.widthPixels' <<< "$pending")" != 1936 && "$(jq -r '.rig.sensor.widthPixels' <<< "$pending")" != 3096 ]]; then pending_id=schedule-active-v1; pending_number=1; pending_source=file-bootstrap; fi
+  active_version=3; [[ "$pending_id" != schedule-active-v1 ]] || active_version=4
+  if [[ -f "$active" ]]; then profile="$(jq -c . "$active")"; jq -cn --argjson profile "$profile" --argjson pending "$pending" --arg pendingId "$pending_id" --argjson pendingNumber "$pending_number" --arg pendingSource "$pending_source" --argjson version "$active_version" '{stateVersion:$version,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile},pendingRevision:(if $pending == null then null else {revisionId:$pendingId,revisionNumber:$pendingNumber,source:$pendingSource,profile:$pending} end)}' > "$output"
+  else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; jq -cn --argjson profile "$profile" --argjson pending "$pending" '{stateVersion:(if $pending == null then 1 else 2 end),activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile},pendingRevision:(if $pending == null then null else {revisionId:"schedule-pending-v2",revisionNumber:2,source:"file-draft",profile:$pending} end)}' > "$output"; fi
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1/operations/schedule/activate ]]; then
-  host="${FAKE_REMOTE_HOST:?}"; printf '%s\n' '{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":1936,"heightPixels":1216,"sensorRecipeVersion":"virtual-asi174mm-electron-domain-v2"},"pipeline":{"captureInterval":"00:00:25"}},"processingSteps":[],"schedule":{}}' > "$FAKE_HTTP_STATE/$host.schedule-active.json"
-  jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-active.json" '{version:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile[0]}}' > "$output"
+  host="${FAKE_REMOTE_HOST:?}"; test -f "$FAKE_HTTP_STATE/$host.schedule-pending.json"
+  jq -e '.revisionId == "schedule-pending-v2" and (.expectedVersion == 2 or .expectedVersion == 3)' "$body" >/dev/null || { : > "$output"; printf 409; exit 0; }
+  mv "$FAKE_HTTP_STATE/$host.schedule-pending.json" "$FAKE_HTTP_STATE/$host.schedule-active.json"
+  jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-active.json" '{version:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:$profile[0]},pendingRevision:null}' > "$output"
+  printf 200; exit 0
+fi
+if [[ "$url" == */api/v1/operations/schedule/rollback ]]; then
+  host="${FAKE_REMOTE_HOST:?}"
+  jq -e '.revisionId == "schedule-active-v1" and (.expectedVersion == 3 or .expectedVersion == 4) and (.reason | type == "string" and length > 0)' "$body" >/dev/null || { : > "$output"; printf 400; exit 0; }
+  [[ "${FAKE_MEASURE_ROLLBACK_CONFLICT:-false}" != true ]] || { : > "$output"; printf 409; exit 0; }
+  rm -f "$FAKE_HTTP_STATE/$host.schedule-active.json" "$FAKE_HTTP_STATE/$host.schedule-pending.json"
+  profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'
+  jq -cn --argjson profile "$profile" '{version:4,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile},pendingRevision:null}' > "$output"
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1.0/devices/*/artifacts/*/download-authorizations ]]; then
@@ -1570,6 +1593,75 @@ run_deploy_mode() {
       --run-id "$run_id" --state-root "$TEMP_DIR/output/$run_id-state" --evidence-root "$TEMP_DIR/output/$run_id-evidence" "$@"; then status=0; else status=$?; fi
     deploy_test_checkpoint "$phase:$run_id:$([[ $status -eq 0 ]] && printf completed || printf failed)"
     return "$status"
+}
+
+reset_measure_fixture() {
+    local east_state="$1" west_state="$2" target name root original canonical
+    grep -v '^control' "$LOG" > "$LOG.reset"
+    grep '^control' "$LOG" | grep $'\tdeploy-bootstrap-' >> "$LOG.reset" || true
+    mv "$LOG.reset" "$LOG"
+    rm -rf "$TEMP_DIR/output/$deploy_case-state/measure-rendered" "$TEMP_DIR/output/$deploy_case-state/measure-private"
+    rm -f "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" "$TEMP_DIR/output/$deploy_case-state/measure-manifest.json" \
+      "$TEMP_DIR/output/$deploy_case-state/measure-commit.json" "$TEMP_DIR/output/$deploy_case-evidence/measure.json"
+    printf '[]\n' > "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+    chmod 600 "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json"
+    while IFS= read -r target; do
+        name="$(jq -r '.name' <<< "$target")"; root="$(jq -r '.runtimeRoot' <<< "$target")"
+        original="$TEMP_DIR/$name-original-camera-module.json"
+        cp "$original" "$root/.hvo-deploy/up-$deploy_case/camera-module.json"
+        cp "$original" "$FAKE_HTTP_STATE/$name.active-profile.json"
+        canonical="$(jq -S -c . "$original")"
+        printf '%s' "$canonical" | sha256sum | cut -d' ' -f1 > "$FAKE_HTTP_STATE/$name.active-config-sha"
+        rm -rf "$root/.hvo-deploy/measure-$deploy_case"
+        rm -f "$FAKE_HTTP_STATE/$name.measure-profile" "$FAKE_HTTP_STATE/$name.measure-running" \
+          "$FAKE_HTTP_STATE/$name.measure-stage" "$FAKE_HTTP_STATE/$name.schedule-active.json" "$FAKE_HTTP_STATE/$name.schedule-pending.json"
+        rm -f "$FAKE_HTTP_STATE/$name.idempotency."*.json
+        printf '1\n' > "$FAKE_HTTP_STATE/$name.count"
+        printf '10\n' > "$FAKE_HTTP_STATE/$name.control-version"
+    done < <(jq -c '.cameraAgents[]' "$INVENTORY")
+    printf '%s\n' "$east_state" > "$FAKE_HTTP_STATE/east.control-state"
+    printf '%s\n' "$west_state" > "$FAKE_HTTP_STATE/west.control-state"
+}
+
+run_measure_signal() {
+    local signal="$1" expected="$2" marker="$3" log="$4" pid_file progress_file= ledger pid status
+    pid_file="$TEMP_DIR/measure-signal-${signal,,}.pid"
+    shift 4
+    deploy_test_checkpoint "measure:signal-${signal,,}:waiting"
+    [[ -z "${DEPLOY_TEST_PROCESS_RECORD_DIR:-}" ]] || progress_file="$DEPLOY_TEST_PROCESS_RECORD_DIR/$SELECTED_SHARD.progress"
+    ledger="$TEMP_DIR/output/$deploy_case-state/measure-ledger.json"
+    rm -f "$marker" "$pid_file"
+    if setsid bash -c '
+      marker=$1; pid_file=$2; signal=$3; progress_file=$4; ledger=$5; shift 5; printf "%s\n" "$$" > "$pid_file"
+      (ready=false; generation=-1; deadline=$((SECONDS + 300))
+       while (( SECONDS <= deadline )); do
+         if [[ -f "$ledger" ]]; then
+           current_generation="$(jq -r ".publicationGeneration // 0" "$ledger" 2>/dev/null || printf 0)"
+           if [[ "$current_generation" =~ ^[0-9]+$ && "$current_generation" != "$generation" ]]; then
+             generation=$current_generation
+             if [[ -n "$progress_file" ]]; then
+               sequence="$(sed -n "s/^sequence=\\([0-9][0-9]*\\) .*/\\1/p" "$progress_file" 2>/dev/null || true)"
+               [[ "$sequence" =~ ^[0-9]+$ ]] || sequence=0
+               temporary="$progress_file.$BASHPID"
+               printf "sequence=%s checkpoint=measure-signal-%s-generation-%s\n" "$((sequence + 1))" "${signal,,}" "$generation" > "$temporary"
+               chmod 600 "$temporary"; mv -fT -- "$temporary" "$progress_file"
+             fi
+           fi
+         fi
+         [[ ! -e "$marker" ]] || { ready=true; break; }
+         sleep 1
+       done
+       if [[ "$ready" == true ]]; then kill -s "$signal" -- "-$$"; else kill -KILL -- "-$$"; fi) &
+      exec "$@"
+    ' signal-run "$marker" "$pid_file" "$signal" "$progress_file" "$ledger" env "$@" PATH="$BIN:$PATH" \
+        "$REPO_ROOT/scripts/deploy:environment" measure --inventory "$INVENTORY" --mode isolated \
+        --run-id "$deploy_case" --state-root "$TEMP_DIR/output/$deploy_case-state" --evidence-root "$TEMP_DIR/output/$deploy_case-evidence" \
+        --workload W1 > "$log" 2>&1; then status=0; else status=$?; fi
+    [[ -e "$marker" ]] || fail "Measure did not reach the $signal signal boundary."
+    pid="$(<"$pid_file")"
+    [[ "$status" == "$expected" ]] || fail "Measure $signal returned $status instead of $expected."
+    ! kill -0 -- "-$pid" 2>/dev/null || fail "Measure $signal retained a process-group descendant."
+    deploy_test_checkpoint "measure:signal-${signal,,}:completed"
 }
 
 run_deploy_mode_with_registry_failure() {
@@ -3118,24 +3210,35 @@ test -f "$measure_cleanup"
 jq -e 'length == 1' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
 test ! -e "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json"
 active_before_stage="$(<"$FAKE_HTTP_STATE/east.active-config-sha")"
-activation_count_before="$(grep -c $'^scp\t.*east-W1-camera-module[.]json\teast@example:' "$LOG" || true)"
 if DEPLOY_TEST_FAILPOINT=abrupt-before-measure-profile-stage run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-before-profile-stage.log" 2>&1; then
   fail 'Measure pre-stage failpoint passed.'
 fi
-grep -Fq 'owner-authenticated' "$measure_cleanup"
-! grep -Fq 'retained-credential' "$measure_cleanup" || fail 'Measure reused a credential that strict entry cleanup should remove.'
 jq -e 'length > 0 and any(.[]; .path == $path)' --arg path "$measure_cleanup" "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
-jq -e '.phaseStatus == "running" and (.targets | length) == 1 and .targets[0].profile == null' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+jq -e --arg sha "$active_before_stage" '.phaseStatus == "running" and (.targets | length) == 1 and .targets[0].profile == null and
+  .targets[0].restoration.status == "pending" and .targets[0].failureCleanup.status == "not-required" and
+  .targets[0].priorState.configurationSha256 == $sha' \
+  "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
 test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" = "$active_before_stage"
+if FAKE_CONFIG_RUNTIME_HASH_STALE=east run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-staged-file-stale-runtime.log" 2>&1; then
+  fail 'Measure accepted a staged canonical file without matching runtime activation.'
+fi
+jq -e '.phaseStatus == "failed" and .targets[0].restoration.status == "completed" and
+  .targets[0].failureCleanup.status == "completed"' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+east_active_module="$(jq -r '.cameraAgents[] | select(.name == "east") | .runtimeRoot' "$INVENTORY")/.hvo-deploy/up-$deploy_case/camera-module.json"
+test "$(sha256sum "$east_active_module" | cut -d' ' -f1)" = \
+  "$(jq -r '.targets[0].priorState.configurationFileSha256' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json")"
+test ! -e "$FAKE_HTTP_STATE/east.schedule-pending.json"
+test "$(( $(grep -c $'^scp\t.*east-prior-camera-module[.]json\teast@example:' "$LOG" || true) ))" -ge 1
+activation_count_before_abrupt="$(grep -c $'^scp\t.*east-W1-camera-module[.]json\teast@example:' "$LOG" || true)"
 if DEPLOY_TEST_FAILPOINT=abrupt-after-measure-profile-activation run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-after-profile-activation.log" 2>&1; then
   fail 'Measure post-activation failpoint passed.'
 fi
-jq -e '.phaseStatus == "running" and .targets[0].profile == null' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null ||
-  fail 'Measure did not retain an incomplete profile intent after activation interruption.'
+jq -e '.phaseStatus == "running" and .targets[0].profile == null and .targets[0].restoration.status == "pending"' \
+  "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null || fail 'Measure did not retain an incomplete profile intent after abrupt activation.'
 active_after_activation="$(<"$FAKE_HTTP_STATE/east.active-config-sha")"
 test "$active_after_activation" != "$active_before_stage"
 activation_count_after="$(grep -c $'^scp\t.*east-W1-camera-module[.]json\teast@example:' "$LOG" || true)"
-(( activation_count_after == activation_count_before + 1 )) || fail 'Measure profile activation did not occur exactly once.'
+(( activation_count_after == activation_count_before_abrupt + 1 )) || fail 'Measure profile activation did not occur exactly once.'
 for measure_boundary in initial-pause warmup-resume warmup-pause warmup-complete measured-resume measured-pause measured-complete; do
   if DEPLOY_TEST_FAILPOINT="abrupt-after-measure-$measure_boundary" run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-$measure_boundary.log" 2>&1; then
     fail "Measure boundary failpoint passed: $measure_boundary"
@@ -3147,19 +3250,66 @@ for measure_boundary in initial-pause warmup-resume warmup-pause warmup-complete
     if FAKE_MEASURE_SEQUENCE_READ_FAIL=east FAKE_MEASURE_FAILURE_PAUSE_FAIL=east run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-failure-pause.log" 2>&1; then
       fail 'Measure passed after a resumed target read failure and failed safety pause.'
     fi
-    jq -e '.phaseStatus == "failed" and any(.targets[]; .target == "east" and .failureCleanup.status == "capture-may-be-running" and
-      any(.controlAttempts[]; .boundary == "failure-pause" and .status == "intent"))' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+    jq -e '.phaseStatus == "failed" and any(.targets[]; .target == "east" and .failureCleanup.status == "restoration-incomplete" and
+      .restoration.status == "capture-unverified" and any(.controlAttempts[]; .boundary == "restoration-pause" and .status == "intent"))' \
+      "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
     jq -e 'length > 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
   fi
   if [[ "$measure_boundary" == initial-pause ]]; then
     jq -e '.targets[0].profile != null' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
     test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" = "$active_after_activation"
-    test "$(grep -c $'^scp\t.*east-W1-camera-module[.]json\teast@example:' "$LOG" || true)" = "$activation_count_after"
   fi
 done
+restore_order_log="$TEMP_DIR/measure-restore-order.log"
+(
+  source "$REPO_ROOT/scripts/deploy/measure.sh"
+  DEPLOY_MEASURE_JSON='{"targets":[{"target":"east","restoration":{"status":"pending"}},{"target":"west","restoration":{"status":"pending"}}]}'
+  DEPLOY_MEASURE_INVENTORY="$INVENTORY"
+  deploy_measure_pause_for_restoration() { printf 'pause-%s\n' "$(jq -r '.name' <<< "$1")" >> "$restore_order_log"; }
+  deploy_measure_restore_target() { printf 'restore-%s\n' "$(jq -r '.name' <<< "$1")" >> "$restore_order_log"; }
+  deploy_measure_restore_all
+)
+test "$(<"$restore_order_log")" = $'pause-east\npause-west\nrestore-east\nrestore-west'
+
+if [[ -z "${DEPLOY_TEST_PROCESS_RECORD_DIR:-}" ]]; then
+  # Real process-group signals run serially; nesting them under the parallel coordinator
+  # would place two independent supervisors around the same child process group.
+  cp "$TEMP_DIR/output/$deploy_case-state/measure-private/east-prior-camera-module.json" "$TEMP_DIR/east-original-camera-module.json"
+  west_runtime="$(jq -r '.cameraAgents[] | select(.name == "west") | .runtimeRoot' "$INVENTORY")"
+  cp "$west_runtime/.hvo-deploy/up-$deploy_case/camera-module.json" "$TEMP_DIR/west-original-camera-module.json"
+
+  reset_measure_fixture Running Paused
+  signal_int_marker="$TEMP_DIR/output/$deploy_case-state/measure-private/east-signal-profile-ready"
+  run_measure_signal INT 130 "$signal_int_marker" "$TEMP_DIR/measure-signal-int.log" \
+    DEPLOY_TEST_FAILPOINT=signal-after-measure-profile-activation
+  jq -e --arg eastSha "$active_before_stage" '.phaseStatus == "failed" and (.targets | length) == 1 and
+    all(.targets[]; .restoration.status == "completed" and .failureCleanup.status == "completed") and
+    (.targets[] | select(.target == "east") | .priorState.captureState == "Running" and .priorState.configurationSha256 == $eastSha)' \
+    "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+  test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" = "$active_before_stage"
+  test "$(<"$FAKE_HTTP_STATE/east.control-state")" = Running
+  test ! -e "$FAKE_HTTP_STATE/east.schedule-active.json"
+  test ! -e "$FAKE_HTTP_STATE/east.schedule-pending.json"
+  jq -e 'length == 0' "$TEMP_DIR/output/$deploy_case-state/private-upload-registry.json" >/dev/null
+
+  reset_measure_fixture Paused Paused
+  signal_term_marker="$TEMP_DIR/output/$deploy_case-state/measure-private/east-signal-warmup-ready"
+  run_measure_signal TERM 143 "$signal_term_marker" "$TEMP_DIR/measure-signal-term.log" \
+    DEPLOY_TEST_FAILPOINT=signal-after-measure-warmup-convergence
+  jq -e '.phaseStatus == "failed" and .targets[0].priorState.captureState == "Paused" and
+    .targets[0].warmupStart == 1 and .targets[0].warmup == null and .targets[0].restoration.status == "completed" and
+    .targets[0].failureCleanup.status == "completed"' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+  test "$(<"$FAKE_HTTP_STATE/east.count")" = 6
+  test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" = "$active_before_stage"
+  test "$(<"$FAKE_HTTP_STATE/east.control-state")" = Paused
+  test ! -e "$FAKE_HTTP_STATE/east.schedule-active.json"
+  test ! -e "$FAKE_HTTP_STATE/east.schedule-pending.json"
+fi
+
 run_deploy_mode measure "$deploy_case" isolated --workload W1 >/dev/null
-jq -e '.phaseStatus == "passed" and .executionMode == "canonical" and .canonicalWorkloadConfigured == true and
-  .workload == "W1" and all(.targets[]; .status == "measured" and .warmupCompleted == 5 and .measuredCompleted == 30 and
+jq -e --arg priorSha "$active_before_stage" '.phaseStatus == "passed" and .executionMode == "canonical" and .canonicalWorkloadConfigured == true and
+  .workload == "W1" and (.targets[] | select(.target == "east") | .priorState.configurationSha256) == $priorSha and
+  all(.targets[]; .status == "measured" and .warmupCompleted == 5 and .measuredCompleted == 30 and
     .warmup.count == 5 and .warmup.endSequence == (.warmup.startSequence + 5) and .warmup.drained and .warmup.correctness and
     .measured.count == 30 and .measured.endSequence == (.measured.startSequence + 30) and .measured.drained and .measured.correctness and
     ([.warmup.captures[].captureSequence] | length == 5 and length == (unique | length)) and
@@ -3168,10 +3318,18 @@ jq -e '.phaseStatus == "passed" and .executionMode == "canonical" and .canonical
     all(.warmup.captures[],.measured.captures[];
       (.rawArtifactId | test("^[0-9a-fA-F-]{36}$")) and (.rawChecksumSha256 | test("^[0-9A-Fa-f]{64}$")) and .rawByteLength == 6144) and
     ([.controlAttempts[].key] | length == (unique | length)) and
+    .priorState.scheduleRevisionId == "schedule-active-v1" and
+    (.priorState.captureState == "Running" or .priorState.captureState == "Paused") and
+    .restoration.status == "pending" and .failureCleanup.status == "not-required" and
     .before.telemetry.sampleCount == 0 and (.before.timings | length) == 0 and .after.telemetry.sampleCount > 0 and
     .profile.width == 1936 and .profile.height == 1216 and .profile.pixelFormat == "Mono16" and
     .profile.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json")' \
   "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
+if [[ -z "${DEPLOY_TEST_PROCESS_RECORD_DIR:-}" ]]; then
+  test "$(jq -r '.targets[] | select(.target == "east") | .warmup.startSequence' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json")" = 1
+  test "$(jq -r '.targets[] | select(.target == "east") | .warmup.endSequence' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json")" = 6
+fi
+test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" != "$active_before_stage"
 measure_sequence_fixture="$TEMP_DIR/measure-sequence-fixture.json"
 measure_sequence_operations="$TEMP_DIR/measure-sequence-operations.json"
 measure_sequence_private="$TEMP_DIR/measure-sequence-private"

@@ -74,11 +74,13 @@ make_measure() {
            lanes:{pendingCount:10,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,lanes:[
             {name:"standard",required:true,pendingCount:0,pendingBytes:0,leasedCount:0,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:null,pendingCaptures:[]},
              {name:"transient",required:true,pendingCount:10,pendingBytes:($bytes*2),leasedCount:0,retryCount:0,quarantineCount:0,pressureLevel:0,oldestPendingUtc:"2026-08-10T00:09:00Z",pendingCaptures:[{agentId:"east-device",captureSequence:($end-1)},{agentId:"east-device",captureSequence:$end}]}]}};
-      {schemaVersion:1,publicationGeneration:3,runId:$run,executionRunId:$executionRun,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,
+      {schemaVersion:2,publicationGeneration:3,runId:$run,executionRunId:$executionRun,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,
        executionMode:"canonical",canonicalWorkloadConfigured:true,workload:$workload,phaseStatus:"passed",
        startedAt:"2026-08-10T00:00:00Z",updatedAt:"2026-08-10T00:10:00Z",completedAt:"2026-08-10T00:10:00Z",elapsedSeconds:600,
        targets:[{target:"east",deviceId:"east-device",status:"measured",
-         profile:($canonical + {workload:$workload,configSha256:("4"*64)}),controlAttempts:[],warmupStart:$start,measuredStart:($start+5),
+          profile:($canonical + {workload:$workload,configSha256:("4"*64)}),
+          priorState:{configurationSha256:("3"*64),configurationFileSha256:("2"*64),scheduleRevisionId:"schedule-prior-v1",scheduleVersion:1,captureState:"Paused",captureVersion:1},
+          restoration:{status:"pending",configuration:"pending",schedule:"pending",capture:"pending"},controlAttempts:[],warmupStart:$start,measuredStart:($start+5),
          warmupCompleted:5,measuredCompleted:30,
           warmup:{startSequence:$start,endSequence:($start+5),count:5,captures:[range($start+1;$start+6)|capture(.;1)],drained:false,boundedTemporalTail:{count:2,captureSequences:[$start+4,$start+5]},correctness:true},
           measured:{startSequence:($start+5),endSequence:($start+35),count:30,captures:[range($start+6;$start+36)|capture(.;2)],drained:false,boundedTemporalTail:{count:2,captureSequences:[$start+34,$start+35]},correctness:true},
@@ -187,11 +189,12 @@ after_sha="$(sha256sum "$w1")"; after_sha="${after_sha%% *}"
 : > "$CALL_LOG"
 DEPLOY_MEASURE_INVENTORY="$inventory"; DEPLOY_MEASURE_RENDER_ROOT="$TEMP_DIR/render"; DEPLOY_MEASURE_PRIVATE_ROOT="$TEMP_DIR/private"
 install -d -m 700 "$DEPLOY_MEASURE_RENDER_ROOT" "$DEPLOY_MEASURE_PRIVATE_ROOT"
-DEPLOY_MEASURE_JSON='{"runId":"phase14-normal","executionRunId":"phase14-normal-w2","targets":[{"target":"east","failureCleanup":{"status":"not-required"}}]}'
+DEPLOY_MEASURE_JSON='{"runId":"phase14-normal","executionRunId":"phase14-normal-w2","targets":[{"target":"east","restoration":{"status":"pending","configuration":"pending","schedule":"pending","capture":"pending"},"failureCleanup":{"status":"not-required"}}]}'
+deploy_measure_publish() { return 0; }
 deploy_transport_remote_directories() { return 0; }
 deploy_bootstrap_owner_session() { return 0; }
 deploy_measure_capture_control() { printf 'cleanup-%s\n' "$7" >> "$CALL_LOG"; }
-deploy_measure_failure_pause_all
+deploy_measure_pause_for_restoration "$(jq -c '.cameraAgents[0]' "$inventory")"
 [[ "$(cat "$CALL_LOG")" == cleanup-phase14-normal-w2 ]] || fail 'Failure cleanup used the unscoped measurement identity.'
 
 unsafe_state="$TEMP_DIR/unsafe-state"; install -d -m 700 "$unsafe_state" "$unsafe_state/target"
