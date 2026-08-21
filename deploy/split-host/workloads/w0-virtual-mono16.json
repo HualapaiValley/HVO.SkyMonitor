@@ -22,6 +22,23 @@
       "byteOrder": "LittleEndian",
       "sensorRecipeVersion": "w0-deterministic-mono16-v1"
     },
+    "readout": {
+      "roi": { "x": 0, "y": 0, "width": 64, "height": 48 },
+      "binX": 1,
+      "binY": 1,
+      "binningAlgorithm": "IdentityV1",
+      "pixelFormat": "Mono16",
+      "sampleDepthBits": 16,
+      "containerDepthBits": 16,
+      "packing": "ByteAligned",
+      "storedCodeTransform": "IdentityV1",
+      "levelCodeSpace": "StoredContainer",
+      "blackLevel": 0.0,
+      "whiteLevel": 65535.0,
+      "strideBytes": 128,
+      "byteOrder": "LittleEndian",
+      "cfaPattern": "None"
+    },
     "optics": {
       "projectionModel": "EquidistantFisheye",
       "focalLengthMillimeters": 0.0,

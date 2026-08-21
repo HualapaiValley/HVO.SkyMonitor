@@ -1970,12 +1970,21 @@ jq -e '."$defs".applicationTarget.required == ["name","sshHost","dockerContext",
   ."$defs".cameraAgentTarget.properties.moduleConfigPath.pattern == "^/" and
   (."$defs".applicationTarget.properties.publicEndpoint.pattern | contains(":"))' "$REPO_ROOT/deploy/split-host/inventory.schema.json" >/dev/null
 canonical_workloads="$REPO_ROOT/deploy/split-host/workloads/canonical-workloads.json"
-jq -e '.schemaVersion == 1 and .profiles.W1.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json" and
+jq -e '.schemaVersion == 1 and .profiles.W0.sourcePath == "deploy/split-host/workloads/w0-virtual-mono16.json" and
+  .profiles.W0.warmupOperations == 0 and .profiles.W0.measuredOperations == 1 and .profiles.W0.width == 64 and
+  .profiles.W0.height == 48 and .profiles.W0.pixelFormat == "Mono16" and .profiles.W0.seed == 2025 and
+  .profiles.W1.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json" and
   .profiles.W1.warmupOperations == 5 and .profiles.W1.measuredOperations == 30 and .profiles.W1.width == 1936 and
   .profiles.W1.height == 1216 and .profiles.W1.pixelFormat == "Mono16" and .profiles.W1.seed == 2025 and
   .profiles.W2.sourcePath == "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json" and
   .profiles.W2.warmupOperations == 5 and .profiles.W2.measuredOperations == 30 and .profiles.W2.width == 3096 and
   .profiles.W2.height == 2080 and .profiles.W2.pixelFormat == "BayerRggb16" and .profiles.W2.seed == 2025' "$canonical_workloads" >/dev/null
+w0_profile="$REPO_ROOT/deploy/split-host/workloads/w0-virtual-mono16.json"
+jq -e '.rig.readout == {
+  roi:{x:0,y:0,width:64,height:48},binX:1,binY:1,binningAlgorithm:"IdentityV1",pixelFormat:"Mono16",
+  sampleDepthBits:16,containerDepthBits:16,packing:"ByteAligned",storedCodeTransform:"IdentityV1",
+  levelCodeSpace:"StoredContainer",blackLevel:0,whiteLevel:65535,strideBytes:128,
+  byteOrder:"LittleEndian",cfaPattern:"None"}' "$w0_profile" >/dev/null
 while IFS=$'\t' read -r source expected_file expected_config expected_options; do
   test "$(sha256sum "$REPO_ROOT/$source" | cut -d' ' -f1)" = "$expected_file"
   test "$(printf '%s' "$(jq -S -c . "$REPO_ROOT/$source")" | sha256sum | cut -d' ' -f1)" = "$expected_config"
