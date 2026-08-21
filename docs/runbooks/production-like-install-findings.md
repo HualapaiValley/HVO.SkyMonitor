@@ -14,10 +14,11 @@ daemon identities, or private evidence paths.
 | Mono CameraAgent | `hvo-edge-01` (`192.168.2.183` Ethernet; `192.168.2.185` Wi-Fi) | ARM64 Pi 5 | 4 CPUs, 8.4 GB RAM, about 979 GB free under Docker root |
 | Control/build host | `hvo-dev-02` (`192.168.1.13`) | AMD64 | 8 CPUs, 33.7 GB RAM |
 
-Direct measured payload rates were 111.6 MiB/s from `allsky01` to
-`home-docker` and 16.8 MiB/s from `hvo-edge-01` to `home-docker`. Both exceed
-the roughly 1.2 MiB/s uncompressed raw rate per camera. The earlier cross-subnet
-central topology did not provide adequate headroom.
+Earlier host-preparation measurements were 111.6 MiB/s from `allsky01` to
+`home-docker` and 16.8 MiB/s from `hvo-edge-01` over its then-healthy Wi-Fi
+link. Both exceeded the roughly 1.2 MiB/s uncompressed raw rate per camera at
+that time; these point-in-time results were not a continuing link guarantee.
+The earlier cross-subnet central topology did not provide adequate headroom.
 
 Wired Ethernet is recommended for sustained CameraAgent workloads. During the
 release campaign, `hvo-edge-01` Wi-Fi still passed SSH, health, strong-signal,
