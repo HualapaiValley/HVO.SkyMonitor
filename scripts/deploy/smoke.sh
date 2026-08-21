@@ -110,7 +110,7 @@ deploy_smoke_capture_control() {
       "deploy-smoke-$run_id-$name-$boundary-$attempt" || return 1
     status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/capture/$action" "$target_remote/$boundary-$attempt.json" \
       "$request_headers" "$cookies" "$target_remote/$boundary-$attempt-response.json" "$private_root/$name-$boundary-$attempt-response.json")" || return 1
-    [[ "$status" == 200 ]] || { deploy_fail smoke "$name" "$action-control-failed"; return 1; }
+    [[ "$status" == 200 ]] || { deploy_fail smoke "$name" "$boundary-control-failed"; return 1; }
     desired_value=1; [[ "$desired" != Paused ]] || desired_value=3
     jq -e --arg desired "$desired" --argjson desiredValue "$desired_value" '.state == $desired or .state == $desiredValue' \
       "$private_root/$name-$boundary-$attempt-response.json" >/dev/null || return 1
