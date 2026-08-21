@@ -75,7 +75,6 @@ public sealed class CaptureScheduleRuntimeCoordinator(
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _stateGate = new();
     private CaptureScheduleRuntimeSnapshot? _snapshot;
-    private string _fileConfigurationProfileSha256 = string.Empty;
     private CancellationTokenSource _revisionChanged = new();
 
     public CaptureScheduleRuntimeSnapshot? Snapshot => Volatile.Read(ref _snapshot);
@@ -111,8 +110,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             {
                 return initialized;
             }
-            var fileProfile = SqliteCaptureScheduleStore.CreateFileProfile(configuration);
-            var durable = await _store.InitializeAsync(configuration, cancellationToken).ConfigureAwait(false);
+            var durable = await _store.InitializeRuntimeAsync(configuration, cancellationToken).ConfigureAwait(false);
             var activeConfiguration = durable.ActiveRevision.Profile.ApplyTo(configuration);
             ValidateConfiguration(activeConfiguration);
             var snapshot = await CreateSnapshotAsync(
@@ -124,7 +122,6 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                 .ConfigureAwait(false);
             lock (_stateGate)
             {
-                _fileConfigurationProfileSha256 = LocalCaptureProfileContract.ComputeSha256(fileProfile);
                 Volatile.Write(ref _snapshot, snapshot);
             }
             return snapshot;
@@ -312,8 +309,8 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             {
                 continue;
             }
-            var durable = await _store.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
-            var history = await _store.GetHistoryAsync(20, cancellationToken).ConfigureAwait(false);
+            var durableState = await _store.GetOperatorStateAsync(20, cancellationToken).ConfigureAwait(false);
+            var durable = durableState.Snapshot;
             if (!string.Equals(
                     durable.ActiveRevision.RevisionId,
                     current.Revision.RevisionId,
@@ -329,11 +326,11 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                 durable.Version,
                 durable.ActiveRevision,
                 durable.PendingRevision,
-                history,
+                durableState.History,
                 decision,
                 current.Preview,
                 overrides,
-                _fileConfigurationProfileSha256);
+                durableState.FileConfigurationProfileSha256);
         }
     }
 
