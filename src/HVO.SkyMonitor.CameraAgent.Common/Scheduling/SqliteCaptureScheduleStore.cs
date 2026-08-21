@@ -315,6 +315,18 @@ public sealed class SqliteCaptureScheduleStore(
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginRead(connection);
+        var revisions = await ReadHistoryAsync(
+            connection, transaction, maximumCount, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return revisions;
+    }
+
+    private static async Task<IReadOnlyList<CaptureScheduleRevisionSnapshot>> ReadHistoryAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
         var revisionIds = new List<string>();
         using (var command = connection.CreateCommand())
         {
@@ -337,7 +349,6 @@ public sealed class SqliteCaptureScheduleStore(
                 connection, transaction, revisionId, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("A capture schedule history revision is missing."));
         }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return revisions;
     }
 
@@ -345,11 +356,21 @@ public sealed class SqliteCaptureScheduleStore(
         int historyCount,
         CancellationToken cancellationToken)
     {
+        if (historyCount is < 1 or > 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(historyCount));
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var snapshot = await GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
-            var history = await GetHistoryAsync(historyCount, cancellationToken).ConfigureAwait(false);
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginRead(connection);
+            var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Capture schedule state has not been initialized.");
+            var history = await ReadHistoryAsync(
+                connection, transaction, historyCount, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return new CaptureScheduleOperatorStoreState(
                 snapshot,
                 history,
