@@ -45,7 +45,8 @@ public sealed record CaptureScheduleOperatorState(
     IReadOnlyList<CaptureScheduleRevisionSnapshot> History,
     CaptureScheduleDecision Decision,
     CaptureSchedulePreview Preview,
-    IReadOnlyList<CaptureScheduleOverride> Overrides);
+    IReadOnlyList<CaptureScheduleOverride> Overrides,
+    string FileConfigurationProfileSha256 = "");
 
 public sealed class CaptureScheduleRuntimeCoordinator(
     SqliteCaptureScheduleStore store,
@@ -74,6 +75,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _stateGate = new();
     private CaptureScheduleRuntimeSnapshot? _snapshot;
+    private string _fileConfigurationProfileSha256 = string.Empty;
     private CancellationTokenSource _revisionChanged = new();
 
     public CaptureScheduleRuntimeSnapshot? Snapshot => Volatile.Read(ref _snapshot);
@@ -109,6 +111,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             {
                 return initialized;
             }
+            var fileProfile = SqliteCaptureScheduleStore.CreateFileProfile(configuration);
             var durable = await _store.InitializeAsync(configuration, cancellationToken).ConfigureAwait(false);
             var activeConfiguration = durable.ActiveRevision.Profile.ApplyTo(configuration);
             ValidateConfiguration(activeConfiguration);
@@ -121,6 +124,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                 .ConfigureAwait(false);
             lock (_stateGate)
             {
+                _fileConfigurationProfileSha256 = LocalCaptureProfileContract.ComputeSha256(fileProfile);
                 Volatile.Write(ref _snapshot, snapshot);
             }
             return snapshot;
@@ -328,7 +332,8 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                 history,
                 decision,
                 current.Preview,
-                overrides);
+                overrides,
+                _fileConfigurationProfileSha256);
         }
     }
 

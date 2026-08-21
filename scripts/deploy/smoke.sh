@@ -120,23 +120,16 @@ deploy_smoke_capture_control() {
 
 deploy_smoke_activate_profile() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" rendered="$6" run_id="$7"
-    local name endpoint state status pending version body request_headers response verification expected_profile
+    local name endpoint state status pending pending_sha version body request_headers response verification
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     state="$private_root/$name-schedule-before-activation.json"
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
       "$target_remote/schedule-before-activation.json" "$state")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail smoke "$name" schedule-read-failed; return 1; }
-    # The operator API redacts options; any full-profile option drift is exposed as a file-draft by store initialization.
-    expected_profile="$(jq -c '.module.options=null | .processingSteps |= map(.options=null)' "$rendered")" || return 1
-    if jq -e --argjson expected "$expected_profile" '
-      .pendingRevision == null and
-      ((.activeRevision.profile | .module.options=null | .processingSteps |= map(.options=null)) == $expected)' "$state" >/dev/null; then
+    if deploy_schedule_verify_active_profile "$state"; then
         return 0
     fi
-    pending="$(jq -er --argjson expected "$expected_profile" '
-      .pendingRevision | select(.source == "file-draft" and
-        ((.profile | .module.options=null | .processingSteps |= map(.options=null)) == $expected)) | .revisionId |
-      select(test("^[A-Za-z0-9-]+$"))' "$state")" ||
+    IFS=$'\t' read -r pending pending_sha < <(deploy_schedule_select_file_draft "$state") ||
       { deploy_fail smoke "$name" canonical-schedule-draft-missing; return 1; }
     version="$(jq -er '.stateVersion | numbers | select(. >= 0 and floor == .)' "$state")" ||
       { deploy_fail smoke "$name" schedule-version-invalid; return 1; }
@@ -162,10 +155,7 @@ deploy_smoke_activate_profile() {
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
       "$target_remote/schedule-after-activation.json" "$verification")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail smoke "$name" schedule-verification-read-failed; return 1; }
-    jq -e --arg revision "$pending" --argjson expected "$expected_profile" '
-      .activeRevision.revisionId == $revision and
-      ((.activeRevision.profile | .module.options=null | .processingSteps |= map(.options=null)) == $expected) and
-      .pendingRevision == null' "$verification" >/dev/null ||
+    deploy_schedule_verify_active_profile "$verification" "$pending" "$pending_sha" ||
       { deploy_fail smoke "$name" schedule-activation-mismatch; return 1; }
 }
 

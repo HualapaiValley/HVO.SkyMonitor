@@ -16,6 +16,20 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 public sealed class CaptureScheduleRuntimeCoordinatorTests
 {
     [TestMethod]
+    public async Task OperatorState_ExposesExactFileConfigurationProfileSha256()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+
+        var state = await fixture.Runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);
+        var expected = LocalCaptureProfileContract.ComputeSha256(
+            LocalCaptureProfileDefinition.CreateForConfiguration(
+                fixture.Configuration,
+                fixture.Configuration.Schedule!));
+
+        Assert.AreEqual(expected, state.FileConfigurationProfileSha256);
+    }
+
+    [TestMethod]
     public async Task Grant_BindsRevisionExpansionProfileAndLocationBeforeModuleCall()
     {
         using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);

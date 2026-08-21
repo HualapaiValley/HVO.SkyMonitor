@@ -148,7 +148,7 @@ deploy_measure_validate_candidate() {
       ((keys - ["completedAt","elapsedSeconds","executionRunId"] | sort) == (["schemaVersion","publicationGeneration","runId","mode","inventorySha256","sourceRevision","executionMode","canonicalWorkloadConfigured","workload","phaseStatus","startedAt","updatedAt","targets"] | sort)) and
       (.targets | type == "array" and length == ([.[].target] | unique | length) and all(.[];
         .target as $target | ([ $inventory.cameraAgents[].name ] | index($target) != null) and
-        (keys | sort) == (["target","deviceId","status","profile","priorState","restoration","controlAttempts","warmupStart","measuredStart","warmupCompleted","measuredCompleted","warmup","measured","before","after","failureCleanup"] | sort) and
+        ((keys - ["canonicalScheduleProfileSha256"] | sort) == (["target","deviceId","status","profile","priorState","restoration","controlAttempts","warmupStart","measuredStart","warmupCompleted","measuredCompleted","warmup","measured","before","after","failureCleanup"] | sort)) and
         (.status == "running" or .status == "measured") and
         (.priorState | type == "object" and
           (keys | sort) == (["configurationSha256","configurationFileSha256","scheduleRevisionId","scheduleVersion","captureState","captureVersion"] | sort) and
@@ -162,6 +162,7 @@ deploy_measure_validate_candidate() {
           all(.configuration,.schedule,.capture; . == "pending" or . == "intent" or . == "completed") and
           (if .status == "completed" then all(.configuration,.schedule,.capture; . == "completed")
            elif .status == "pending" then all(.configuration,.schedule,.capture; . == "pending") else true end)) and
+        (.canonicalScheduleProfileSha256 == null or (.canonicalScheduleProfileSha256 | test("^[0-9a-f]{64}$"))) and
         ((.profile == null and .status == "running" and .warmupStart == null and .measuredStart == null and
           .warmupCompleted == 0 and .measuredCompleted == 0 and .warmup == null and .measured == null and .before == null and .after == null) or
          ((.profile | type) == "object" and .profile.workload == $selected)) and
@@ -303,19 +304,18 @@ deploy_measure_capture_control() {
 deploy_measure_activate_profile() {
     local target="$1" target_remote="$2" private_root="$3" render_root="$4" cookies="$5" rendered="$6" workload="$7" run_id="$8"
     local expected_revision="${9:-}"
-    local name endpoint state status pending version activate_body activate_headers activate_response
+    local name endpoint state status pending pending_sha version activate_body activate_headers activate_response
     name="$(jq -r '.name' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     state="$private_root/$name-schedule-state.json"
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
       "$target_remote/schedule-state.json" "$state")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-read-failed; return 1; }
-    if jq -e --slurpfile rendered "$rendered" '.activeRevision.profile == $rendered[0]' "$state" >/dev/null; then
+    if deploy_schedule_verify_active_profile "$state"; then
         return 0
     fi
     [[ -z "$expected_revision" || "$(jq -r '.activeRevision.revisionId // ""' "$state")" == "$expected_revision" ]] ||
       { deploy_fail measure "$name" schedule-revision-drift; return 1; }
-    pending="$(jq -er --slurpfile rendered "$rendered" '
-      .pendingRevision | select(.source == "file-draft" and .profile == $rendered[0]) | .revisionId' "$state")" ||
+    IFS=$'\t' read -r pending pending_sha < <(deploy_schedule_select_file_draft "$state") ||
       { deploy_fail measure "$name" canonical-schedule-draft-missing; return 1; }
     version="$(jq -er '.stateVersion | numbers' "$state")" || return 1
 
@@ -331,11 +331,28 @@ deploy_measure_activate_profile() {
       "$target_remote/$workload-schedule-activate.json" "$activate_headers" "$cookies" \
       "$target_remote/$workload-schedule-activate-response.json" "$activate_response")" || return 1
     [[ "$status" == 200 ]] || { deploy_fail measure "$name" schedule-activate-failed; return 1; }
-    jq -e --slurpfile rendered "$rendered" '.activeRevision.profile == $rendered[0]' \
-      "$activate_response" >/dev/null || { deploy_fail measure "$name" schedule-activation-mismatch; return 1; }
+    deploy_schedule_verify_active_profile "$activate_response" "$pending" "$pending_sha" ||
+      { deploy_fail measure "$name" schedule-activation-mismatch; return 1; }
     deploy_transport_remove_private_files "$(jq -r '.sshHost' <<< "$target")" \
       "$target_remote/$workload-schedule-activate.json" "$activate_headers" || return 1
     deploy_transport_forget_private_path "$activate_headers" || return 1
+}
+
+deploy_measure_record_canonical_schedule_sha() {
+    local target="$1" target_remote="$2" private_root="$3" cookies="$4" name endpoint state status sha
+    name="$(jq -r '.name' <<< "$target")"
+    if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .canonicalScheduleProfileSha256 // ""' <<< "$DEPLOY_MEASURE_JSON")" =~ ^[0-9a-f]{64}$ ]]; then
+        return 0
+    fi
+    endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
+    state="$private_root/$name-canonical-schedule-state.json"
+    status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
+      "$target_remote/canonical-schedule-state.json" "$state")" || return 1
+    [[ "$status" == 200 ]] || return 1
+    sha="$(jq -er '.fileConfigurationProfileSha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$state")" || return 1
+    DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --arg sha "$sha" \
+      '.targets |= map(if .target == $target then .canonicalScheduleProfileSha256=$sha else . end)' <<< "$DEPLOY_MEASURE_JSON")"
+    deploy_measure_publish
 }
 
 deploy_measure_read_prior_state() {
@@ -403,7 +420,7 @@ deploy_measure_pause_for_restoration() {
 
 deploy_measure_restore_target() {
     local target="$1" name target_root target_remote execution_run_id response cookies endpoint prior backup active_config
-    local current_sha current_file current_file_sha current_file_config_sha canonical_sha canonical_file context project env_file status schedule_state schedule_revision schedule_version pending_revision body headers rollback_response activation_body activation_headers activation_response action desired
+    local current_sha current_file current_file_sha current_file_config_sha canonical_sha canonical_file canonical_profile_sha context project env_file status schedule_state schedule_revision schedule_version pending_revision pending_sha body headers rollback_response activation_body activation_headers activation_response action desired
     name="$(jq -r '.name' <<< "$target")"; target_root="$(jq -r '.runtimeRoot' <<< "$target")"
     execution_run_id="$(jq -r '.executionRunId // .runId' <<< "$DEPLOY_MEASURE_JSON")"
     target_remote="$target_root/.hvo-deploy/measure-$execution_run_id"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
@@ -427,6 +444,20 @@ deploy_measure_restore_target() {
     deploy_transport_fetch_private_file "$(jq -r '.sshHost' <<< "$target")" "$active_config" "$current_file" || return 1
     current_file_sha="$(sha256sum "$current_file" | cut -d' ' -f1)"
     current_file_config_sha="$(printf '%s' "$(jq -S -c . "$current_file")" | sha256sum | cut -d' ' -f1)"
+    schedule_state="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-pre-restoration-schedule-state.json"
+    [[ "$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/schedule/" "" "" "$cookies" \
+      "$target_remote/pre-restoration-schedule-state.json" "$schedule_state")" == 200 ]] || return 1
+    canonical_profile_sha="$(jq -er '.fileConfigurationProfileSha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$schedule_state")" || return 1
+    if [[ "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .canonicalScheduleProfileSha256 // ""' <<< "$DEPLOY_MEASURE_JSON")" =~ ^[0-9a-f]{64}$ ]]; then
+        canonical_profile_sha="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .canonicalScheduleProfileSha256' <<< "$DEPLOY_MEASURE_JSON")"
+    elif [[ "$current_file_config_sha" == "$canonical_sha" ]]; then
+        DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --arg sha "$canonical_profile_sha" \
+          '.targets |= map(if .target == $target then .canonicalScheduleProfileSha256=$sha else . end)' <<< "$DEPLOY_MEASURE_JSON")"
+        deploy_measure_publish || return 1
+    else
+        deploy_measure_set_restoration "$name" schedule-unverified pending intent pending restoration-incomplete >/dev/null 2>&1 || true
+        return 1
+    fi
     if [[ "$status" != 200 || "$current_sha" != "$(jq -r '.configurationSha256' <<< "$prior")" ||
           "$current_file_sha" != "$(jq -r '.configurationFileSha256' <<< "$prior")" ]]; then
         [[ "$status" == 200 && ( "$current_sha" == "$canonical_sha" || "$current_sha" == "$(jq -r '.configurationSha256' <<< "$prior")" ) &&
@@ -466,11 +497,13 @@ deploy_measure_restore_target() {
     schedule_revision="$(jq -r '.activeRevision.revisionId // ""' "$schedule_state")"
     pending_revision="$(jq -r '.pendingRevision.revisionId // ""' "$schedule_state")"
     if [[ "$schedule_revision" == "$(jq -r '.scheduleRevisionId' <<< "$prior")" && -n "$pending_revision" ]]; then
-        jq -e --slurpfile rendered "$canonical_file" '.pendingRevision.source == "file-draft" and .pendingRevision.profile == $rendered[0]' \
-          "$schedule_state" >/dev/null || {
+        IFS=$'\t' read -r selected_revision pending_sha < <(jq -er --arg sha "$canonical_profile_sha" '
+          .pendingRevision | select(.source == "file-draft" and (.profileSha256 | ascii_downcase) == $sha) |
+          [.revisionId, (.profileSha256 | ascii_downcase)] | @tsv' "$schedule_state") || {
             deploy_measure_set_restoration "$name" schedule-unverified completed intent pending restoration-incomplete >/dev/null 2>&1 || true
             return 1
         }
+        [[ "$selected_revision" == "$pending_revision" ]] || return 1
         deploy_measure_set_restoration "$name" in-progress completed intent pending || return 1
         schedule_version="$(jq -er '.stateVersion | numbers | select(. >= 0 and floor == .)' "$schedule_state")" || return 1
         activation_body="$DEPLOY_MEASURE_RENDER_ROOT/$name-restoration-schedule-activate.json"
@@ -485,8 +518,8 @@ deploy_measure_restore_target() {
         status="$(deploy_bootstrap_request "$target" POST "$endpoint/api/v1/operations/schedule/activate" \
           "$target_remote/restoration-schedule-activate.json" "$activation_headers" "$cookies" \
           "$target_remote/restoration-schedule-activate-response.json" "$activation_response")" || status=
-        if [[ "$status" != 200 ]] || ! jq -e --slurpfile rendered "$canonical_file" \
-          '.activeRevision.profile == $rendered[0] and .pendingRevision == null' "$activation_response" >/dev/null; then
+        if [[ "$status" != 200 ]] || ! deploy_schedule_verify_active_profile \
+          "$activation_response" "$pending_revision" "$pending_sha"; then
             deploy_measure_set_restoration "$name" schedule-unverified completed intent pending restoration-incomplete >/dev/null 2>&1 || true
             return 1
         fi
@@ -499,8 +532,8 @@ deploy_measure_restore_target() {
         schedule_revision="$(jq -r '.activeRevision.revisionId // ""' "$schedule_state")"
     fi
     if [[ "$schedule_revision" != "$(jq -r '.scheduleRevisionId' <<< "$prior")" ]]; then
-        jq -e --slurpfile rendered "$canonical_file" --arg prior "$(jq -r '.scheduleRevisionId' <<< "$prior")" '
-          .activeRevision.profile == $rendered[0] and
+        jq -e --arg prior "$(jq -r '.scheduleRevisionId' <<< "$prior")" --arg canonicalSha "$canonical_profile_sha" '
+          (.activeRevision.profileSha256 | ascii_downcase) == $canonicalSha and
           (.pendingRevision == null or .pendingRevision.revisionId == $prior)' "$schedule_state" >/dev/null || {
             deploy_measure_set_restoration "$name" schedule-unverified completed intent pending restoration-incomplete >/dev/null 2>&1 || true
             return 1
@@ -753,7 +786,7 @@ deploy_run_measure() {
         if ! jq -e --arg target "$name" 'any(.targets[]; .target == $target)' <<< "$DEPLOY_MEASURE_JSON" >/dev/null; then
             prior="$(deploy_measure_read_prior_state "$inventory" "$target" "$target_remote" "$private_root" "$cookies" "$run_id" \
               "$private_root/$name-profile-identity.json")" || return 1
-            DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --arg device "$device" --argjson prior "$prior" '.targets += [{target:$target,deviceId:$device,status:"running",profile:null,priorState:$prior,
+            DEPLOY_MEASURE_JSON="$(jq -c --arg target "$name" --arg device "$device" --argjson prior "$prior" '.targets += [{target:$target,deviceId:$device,status:"running",profile:null,canonicalScheduleProfileSha256:null,priorState:$prior,
               restoration:{status:"pending",configuration:"pending",schedule:"pending",capture:"pending"},
               controlAttempts:[],warmupStart:null,measuredStart:null,warmupCompleted:0,measuredCompleted:0,warmup:null,measured:null,before:null,after:null,
               failureCleanup:{status:"not-required"}}]' <<< "$DEPLOY_MEASURE_JSON")"
@@ -809,6 +842,7 @@ deploy_run_measure() {
                   { deploy_fail measure "$name" pre-activation-profile-drift; return 1; }
                 [[ "${DEPLOY_TEST_FAILPOINT:-}" != abrupt-before-measure-profile-stage ]] || exit 75
                 profile="$(deploy_stage_workload_profile "$inventory" "$target" "$selected_workload" "$device" "$render_root" "$state_dir" "$run_id" true)" || return 1
+                deploy_measure_record_canonical_schedule_sha "$target" "$target_remote" "$private_root" "$cookies" || return 1
                 status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/internal/deployment/continuity" "" "" "$cookies" \
                   "$target_remote/profile-activated.json" "$private_root/$name-profile-activated.json")" || return 1
                 if [[ "$status" != 200 ]] || ! jq -e --arg device "$device" --arg sha "$(jq -r '.configSha256' <<< "$profile")" '
@@ -827,6 +861,7 @@ deploy_run_measure() {
         else
             if [[ "$reactivate_after_restoration" == true ]]; then
                 profile="$(deploy_stage_workload_profile "$inventory" "$target" "$selected_workload" "$device" "$render_root" "$state_dir" "$run_id" true)" || return 1
+                deploy_measure_record_canonical_schedule_sha "$target" "$target_remote" "$private_root" "$cookies" || return 1
                 status="$(deploy_bootstrap_request "$target" GET "$(jq -r '.internalEndpoint' <<< "$target")/api/internal/deployment/continuity" "" "" "$cookies" \
                   "$target_remote/profile-reactivated.json" "$private_root/$name-profile-identity.json")" || return 1
                 if [[ "$status" != 200 ]] || ! jq -e --arg device "$device" --arg sha "$(jq -r '.configSha256' <<< "$profile")" '
@@ -840,6 +875,7 @@ deploy_run_measure() {
                   { deploy_fail measure "$name" resumed-profile-state-mismatch; return 1; }
             fi
         fi
+        deploy_measure_record_canonical_schedule_sha "$target" "$target_remote" "$private_root" "$cookies" || return 1
         deploy_measure_activate_profile "$target" "$target_remote" "$private_root" "$render_root" "$cookies" \
           "$render_root/$name-$selected_workload-camera-module.json" "$selected_workload" "$execution_run_id" \
           "$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .priorState.scheduleRevisionId' <<< "$DEPLOY_MEASURE_JSON")" || return 1

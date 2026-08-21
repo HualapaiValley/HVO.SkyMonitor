@@ -991,6 +991,17 @@ set -euo pipefail
 output= response_headers= cookie_jar= cookies= body= method=GET explicit_request=false location=false url="${*: -1}"
 url="${url//\\&/$'\x26'}"
 args=("$@")
+operator_schedule_profile() {
+  jq -c '
+    .schemaVersion = (.schemaVersion // "cameraagent-local-profile-v1") |
+    .module.options = null |
+    .processingSteps = ((.processingSteps // []) | map(.options=null | .required=(.required // true))) |
+    .rig.sensor.pixelFormat |= (if . == "Mono16" then 1 elif . == "BayerRggb16" then 3 else . end) |
+    .rig.sensor.colorMode |= (if . == "Mono" then 0 elif . == "BayerRggb" then 1 else . end) |
+    .rig.sensor.responseMode |= (if . == "Monochrome" then 1 elif . == "Color" then 3 else . end) |
+    .rig.sensor.byteOrder |= (if . == "LittleEndian" then 0 else . end)' <<< "$1"
+}
+schedule_profile_sha() { printf '%s' "$1" | jq -S -c . | sha256sum | cut -d' ' -f1; }
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
     --output) output="${args[$((i+1))]}" ;;
@@ -1308,15 +1319,21 @@ fi
 if [[ "$url" == */api/v1/operations/schedule/ ]]; then
   host="${FAKE_REMOTE_HOST:?}"; active="$FAKE_HTTP_STATE/$host.schedule-active.json"
   printf 'schedule-read\t%s\n' "$host" >> "${FAKE_LOG:?}"
-  pending=null; [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-pending.json" ]] || pending="$(jq -c . "$FAKE_HTTP_STATE/$host.schedule-pending.json")"
+  pending=null; pending_sha=; raw_pending=null
+  file_profile_sha="$(schedule_profile_sha "$(jq -c . "$FAKE_HTTP_STATE/$host.active-profile.json")")"
+  [[ "${FAKE_SMOKE_SCHEDULE_STALE_DRAFT:-}" != "$host" ]] || file_profile_sha="$(printf stale-file-profile | sha256sum | cut -d' ' -f1)"
+  if [[ -f "$FAKE_HTTP_STATE/$host.schedule-pending.json" ]]; then
+    raw_pending="$(jq -c . "$FAKE_HTTP_STATE/$host.schedule-pending.json")"
+    pending="$(operator_schedule_profile "$raw_pending")"; pending_sha="$(schedule_profile_sha "$raw_pending")"
+  fi
   pending_id=schedule-pending-v2; pending_number=2; pending_source=file-draft
   [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-pending-revision" ]] || pending_id="$(<"$FAKE_HTTP_STATE/$host.schedule-pending-revision")"
   pending_number="${pending_id##*-v}"
   if [[ "$pending" != null && ! -f "$FAKE_HTTP_STATE/$host.schedule-w0-draft" && "$(jq -r '.rig.sensor.widthPixels' <<< "$pending")" != 1936 && "$(jq -r '.rig.sensor.widthPixels' <<< "$pending")" != 3096 ]]; then pending_id=schedule-active-v1; pending_number=1; pending_source=file-bootstrap; fi
   [[ "${FAKE_SMOKE_SCHEDULE_REVISION_DRIFT:-}" != "$host" ]] || pending_id=schedule-drift-v9
   active_version=1; [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-state-version" ]] || active_version="$(<"$FAKE_HTTP_STATE/$host.schedule-state-version")"
-  if [[ -f "$active" ]]; then active_id=schedule-active-v1; [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-active-revision" ]] || active_id="$(<"$FAKE_HTTP_STATE/$host.schedule-active-revision")"; active_number="${active_id##*-v}"; profile="$(jq -c . "$active")"; jq -cn --argjson profile "$profile" --arg activeId "$active_id" --argjson activeNumber "$active_number" --argjson pending "$pending" --arg pendingId "$pending_id" --argjson pendingNumber "$pending_number" --arg pendingSource "$pending_source" --argjson version "$active_version" '{stateVersion:$version,activeRevision:{revisionId:$activeId,revisionNumber:$activeNumber,profile:$profile},pendingRevision:(if $pending == null then null else {revisionId:$pendingId,revisionNumber:$pendingNumber,source:$pendingSource,profile:$pending} end)}' > "$output"
-  else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; jq -cn --argjson profile "$profile" --argjson pending "$pending" --arg pendingId "$pending_id" --argjson pendingNumber "$pending_number" --arg pendingSource "$pending_source" --argjson version "$active_version" '{stateVersion:$version,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile},pendingRevision:(if $pending == null then null else {revisionId:$pendingId,revisionNumber:$pendingNumber,source:$pendingSource,profile:$pending} end)}' > "$output"; fi
+  if [[ -f "$active" ]]; then raw_profile="$(jq -c . "$active")"; profile="$(operator_schedule_profile "$raw_profile")"; profile_sha="$(schedule_profile_sha "$raw_profile")"; active_id=schedule-active-v1; [[ ! -f "$FAKE_HTTP_STATE/$host.schedule-active-revision" ]] || active_id="$(<"$FAKE_HTTP_STATE/$host.schedule-active-revision")"; active_number="${active_id##*-v}"; jq -cn --argjson profile "$profile" --arg profileSha "$profile_sha" --arg fileProfileSha "$file_profile_sha" --arg activeId "$active_id" --argjson activeNumber "$active_number" --argjson pending "$pending" --arg pendingSha "$pending_sha" --arg pendingId "$pending_id" --argjson pendingNumber "$pending_number" --arg pendingSource "$pending_source" --argjson version "$active_version" '{stateVersion:$version,fileConfigurationProfileSha256:$fileProfileSha,activeRevision:{revisionId:$activeId,revisionNumber:$activeNumber,profile:$profile,profileSha256:$profileSha},pendingRevision:(if $pending == null then null else {revisionId:$pendingId,revisionNumber:$pendingNumber,source:$pendingSource,profile:$pending,profileSha256:$pendingSha} end)}' > "$output"
+  else raw_profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; profile="$(operator_schedule_profile "$raw_profile")"; profile_sha="$(schedule_profile_sha "$raw_profile")"; jq -cn --argjson profile "$profile" --arg profileSha "$profile_sha" --arg fileProfileSha "$file_profile_sha" --argjson pending "$pending" --arg pendingSha "$pending_sha" --arg pendingId "$pending_id" --argjson pendingNumber "$pending_number" --arg pendingSource "$pending_source" --argjson version "$active_version" '{stateVersion:$version,fileConfigurationProfileSha256:$fileProfileSha,activeRevision:{revisionId:"schedule-active-v1",revisionNumber:1,profile:$profile,profileSha256:$profileSha},pendingRevision:(if $pending == null then null else {revisionId:$pendingId,revisionNumber:$pendingNumber,source:$pendingSource,profile:$pending,profileSha256:$pendingSha} end)}' > "$output"; fi
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1/operations/schedule/activate ]]; then
@@ -1327,7 +1344,7 @@ if [[ "$url" == */api/v1/operations/schedule/activate ]]; then
   jq -e --arg revision "$pending_revision" --argjson version "$state_version" '.revisionId == $revision and .expectedVersion == $version' "$body" >/dev/null || { : > "$output"; printf 409; exit 0; }
   if [[ "${FAKE_SMOKE_SCHEDULE_STALE_ACTIVE:-}" == "$host" ]]; then
     rm -f "$FAKE_HTTP_STATE/$host.schedule-pending.json" "$FAKE_HTTP_STATE/$host.schedule-w0-draft"
-    jq -cn '{version:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profile:{schemaVersion:"cameraagent-local-profile-v1",module:{type:"VirtualSky",options:{}},rig:{sensor:{widthPixels:484}},processingSteps:[],schedule:{}}},pendingRevision:null}' > "$output"
+    jq -cn --arg sha "$(printf stale | sha256sum | cut -d' ' -f1)" '{version:3,activeRevision:{revisionId:"schedule-pending-v2",revisionNumber:2,profileSha256:$sha,profile:{schemaVersion:"cameraagent-local-profile-v1",module:{type:"VirtualSky",options:null},rig:{sensor:{widthPixels:484}},processingSteps:[],schedule:{}}},pendingRevision:null}' > "$output"
     printf 200; exit 0
   fi
   if [[ -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]]; then
@@ -1341,7 +1358,8 @@ if [[ "$url" == */api/v1/operations/schedule/activate ]]; then
   printf '%s\n' "$pending_revision" > "$FAKE_HTTP_STATE/$host.schedule-active-revision"
   state_version=$((state_version + 1)); printf '%s\n' "$state_version" > "$FAKE_HTTP_STATE/$host.schedule-state-version"
   rm -f "$FAKE_HTTP_STATE/$host.schedule-pending-revision" "$FAKE_HTTP_STATE/$host.schedule-w0-draft"
-  jq -cn --slurpfile profile "$FAKE_HTTP_STATE/$host.schedule-active.json" --arg revision "$pending_revision" --argjson version "$state_version" '{version:$version,activeRevision:{revisionId:$revision,revisionNumber:($revision | split("-v")[-1] | tonumber),profile:$profile[0]},pendingRevision:null}' > "$output"
+  raw_profile="$(jq -c . "$FAKE_HTTP_STATE/$host.schedule-active.json")"; profile="$(operator_schedule_profile "$raw_profile")"; profile_sha="$(schedule_profile_sha "$raw_profile")"
+  jq -cn --argjson profile "$profile" --arg profileSha "$profile_sha" --arg revision "$pending_revision" --argjson version "$state_version" '{version:$version,activeRevision:{revisionId:$revision,revisionNumber:($revision | split("-v")[-1] | tonumber),profile:$profile,profileSha256:$profileSha},pendingRevision:null}' > "$output"
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1/operations/schedule/rollback ]]; then
@@ -1357,8 +1375,9 @@ if [[ "$url" == */api/v1/operations/schedule/rollback ]]; then
   printf '%s\n' "$requested_revision" > "$FAKE_HTTP_STATE/$host.schedule-active-revision"
   rm -f "$FAKE_HTTP_STATE/$host.schedule-pending.json" "$FAKE_HTTP_STATE/$host.schedule-pending-revision" "$FAKE_HTTP_STATE/$host.schedule-w0-draft"
   state_version=$((state_version + 1)); printf '%s\n' "$state_version" > "$FAKE_HTTP_STATE/$host.schedule-state-version"
-  if [[ -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]]; then profile="$(jq -c . "$FAKE_HTTP_STATE/$host.schedule-active.json")"; else profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; fi
-  jq -cn --argjson profile "$profile" --arg revision "$requested_revision" --argjson version "$state_version" '{version:$version,activeRevision:{revisionId:$revision,revisionNumber:($revision | split("-v")[-1] | tonumber),profile:$profile},pendingRevision:null}' > "$output"
+  if [[ -f "$FAKE_HTTP_STATE/$host.schedule-active.json" ]]; then raw_profile="$(jq -c . "$FAKE_HTTP_STATE/$host.schedule-active.json")"; else raw_profile='{"schemaVersion":"cameraagent-local-profile-v1","module":{"type":"VirtualSky","options":{}},"rig":{"sensor":{"widthPixels":64}},"processingSteps":[],"schedule":{}}'; fi
+  profile="$(operator_schedule_profile "$raw_profile")"; profile_sha="$(schedule_profile_sha "$raw_profile")"
+  jq -cn --argjson profile "$profile" --arg profileSha "$profile_sha" --arg revision "$requested_revision" --argjson version "$state_version" '{version:$version,activeRevision:{revisionId:$revision,revisionNumber:($revision | split("-v")[-1] | tonumber),profile:$profile,profileSha256:$profileSha},pendingRevision:null}' > "$output"
   printf 200; exit 0
 fi
 if [[ "$url" == */api/v1.0/devices/*/artifacts/*/download-authorizations ]]; then
@@ -3313,7 +3332,7 @@ jq -e '.targets[] | select(.target == "east") |
   .captureSequence.centralBefore == (.captureSequence.localBefore - 1) and
   .captureSequence.centralAfter == .captureSequence.localAfter' \
   "$TEMP_DIR/output/$deploy_case-state/smoke-ledger.json" >/dev/null
-for schedule_failure in revision-drift version-drift stale-active; do
+  for schedule_failure in revision-drift version-drift stale-active stale-draft; do
   reset_smoke_fixture
   case "$schedule_failure" in
     revision-drift)
@@ -3333,6 +3352,12 @@ for schedule_failure in revision-drift version-drift stale-active; do
         fail 'Smoke accepted a stale active schedule profile.'
       fi
       grep -Fq 'schedule-activation-mismatch' "$TEMP_DIR/smoke-$schedule_failure.log"
+      ;;
+    stale-draft)
+      if FAKE_SMOKE_SCHEDULE_STALE_DRAFT=east run_deploy_mode smoke "$deploy_case" isolated > "$TEMP_DIR/smoke-$schedule_failure.log" 2>&1; then
+        fail 'Smoke accepted a stale file-draft schedule profile.'
+      fi
+      grep -Fq 'canonical-schedule-draft-missing' "$TEMP_DIR/smoke-$schedule_failure.log"
       ;;
   esac
   test "$(<"$FAKE_HTTP_STATE/east.control-state")" = Paused
@@ -3389,7 +3414,7 @@ test "$(<"$FAKE_HTTP_STATE/east.active-config-sha")" = "$active_before_stage"
 if FAKE_CONFIG_RUNTIME_HASH_STALE=east run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-staged-file-stale-runtime.log" 2>&1; then
   fail 'Measure accepted a staged canonical file without matching runtime activation.'
 fi
-jq -e '.phaseStatus == "failed" and .targets[0].restoration.status == "completed" and
+jq -e '.phaseStatus == "failed" and (.targets[0].canonicalScheduleProfileSha256 | test("^[0-9a-f]{64}$")) and .targets[0].restoration.status == "completed" and
   .targets[0].failureCleanup.status == "completed"' "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null
 east_active_module="$(jq -r '.cameraAgents[] | select(.name == "east") | .runtimeRoot' "$INVENTORY")/.hvo-deploy/up-$deploy_case/camera-module.json"
 test "$(sha256sum "$east_active_module" | cut -d' ' -f1)" = \
@@ -3400,7 +3425,8 @@ activation_count_before_abrupt="$(grep -c $'^scp\t.*east-W1-camera-module[.]json
 if DEPLOY_TEST_FAILPOINT=abrupt-after-measure-profile-activation run_deploy_mode measure "$deploy_case" isolated --workload W1 > "$TEMP_DIR/measure-after-profile-activation.log" 2>&1; then
   fail 'Measure post-activation failpoint passed.'
 fi
-jq -e '.phaseStatus == "running" and .targets[0].profile == null and .targets[0].restoration.status == "pending"' \
+jq -e '.phaseStatus == "running" and .targets[0].profile == null and
+  (.targets[0].canonicalScheduleProfileSha256 | test("^[0-9a-f]{64}$")) and .targets[0].restoration.status == "pending"' \
   "$TEMP_DIR/output/$deploy_case-state/measure-ledger.json" >/dev/null || fail 'Measure did not retain an incomplete profile intent after abrupt activation.'
 active_after_activation="$(<"$FAKE_HTTP_STATE/east.active-config-sha")"
 test "$active_after_activation" != "$active_before_stage"
