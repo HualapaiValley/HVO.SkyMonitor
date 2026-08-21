@@ -177,15 +177,20 @@ deploy_smoke_validate_candidate() {
       { deploy_fail smoke ledger invalid; return 1; }
 }
 
+deploy_smoke_queues_converged() {
+    deploy_capture_queues_converged "$@"
+}
+
 deploy_run_smoke() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6"
     local state_dir evidence_dir render_root private_root now duration deadline logic logic_root logic_remote headers target name target_root target_remote
     local endpoint cookies response status initial_local initial_central current_local current_central operations device_id checks deadline
     local initial_lineage initial_derivatives expected_recipes artifact_facts proof_artifact proof_id proof_device local_checksum retrieval_result retrieval_status retrieved_checksum retrieved_bytes declared_checksum
-    local metrics_status metrics_facts log_facts telemetry_status telemetry_facts telemetry_evidence context project env_file workload_profile rendered_profile
+    local metrics_status metrics_facts log_facts telemetry_status telemetry_facts telemetry_evidence context project env_file workload_profile rendered_profile expected_mode
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/bootstrap-manifest.json" smoke "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
     [[ "$(jq -r '.deployment.workload.kind' "$inventory")" == W0 ]] || { deploy_fail smoke workload explicit-measure-required; return 1; }
+    expected_mode="$(jq -r '.deployment.transient.mode' "$inventory")"
     # shellcheck disable=SC2034 # Consumed by shared bootstrap/transport helpers.
     DEPLOY_IMAGES_PREFLIGHT_JSON="$(jq -c . "$DEPLOY_MANIFEST")"
     deploy_transport_reconcile_private_uploads strict || { deploy_fail smoke private-upload-registry cleanup-failed; return 1; }
@@ -195,7 +200,7 @@ deploy_run_smoke() {
     DEPLOY_SMOKE_MANIFEST="$state_dir/smoke-manifest.json"; DEPLOY_SMOKE_LEDGER="$state_dir/smoke-ledger.json"; DEPLOY_SMOKE_EVIDENCE="$evidence_dir/smoke.json"
     DEPLOY_SMOKE_COMMIT="$state_dir/smoke-commit.json"
     deploy_require_no_orphan_phase_files "$DEPLOY_SMOKE_LEDGER" "$DEPLOY_SMOKE_MANIFEST" "$DEPLOY_SMOKE_EVIDENCE" "$DEPLOY_SMOKE_COMMIT" || return 1
-    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; duration="$(jq -r '.deployment.workload.durationSeconds' "$inventory")"
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; duration="${DEPLOY_TEST_SMOKE_DURATION_SECONDS:-$(jq -r '.deployment.workload.durationSeconds' "$inventory")}"
     if [[ -e "$DEPLOY_SMOKE_LEDGER" || -L "$DEPLOY_SMOKE_LEDGER" ]]; then
         deploy_require_phase_files_match "$DEPLOY_SMOKE_LEDGER" "$DEPLOY_SMOKE_MANIFEST" "$DEPLOY_SMOKE_EVIDENCE" "$DEPLOY_SMOKE_COMMIT" \
           deploy_smoke_validate_candidate "$run_id" "$mode" "$hash" "$revision" "$inventory" || return 1
@@ -274,12 +279,10 @@ deploy_run_smoke() {
               deploy_smoke_validate_artifacts "$private_root/$name-current-central.json" "$current_local" "$initial_lineage" "$initial_derivatives" "$expected_recipes" \
                 "$(jq -r '.width' <<< "$workload_profile")" "$(jq -r '.height' <<< "$workload_profile")" "$(jq -r '.pixelFormat' <<< "$workload_profile")" &&
               deploy_smoke_validate_derivative_provenance "$private_root/$name-current-central.json" "$current_local" "$initial_derivatives" &&
+              deploy_smoke_queues_converged "$operations" "$current_local" "$device_id" "$expected_mode" &&
               jq -e --arg device "$device_id" '
               .configuration.value.agentId == $device and .configuration.value.centralIntegration == "Enabled" and
-              any(.captureRuntime.value.timings[]; .sampleCount > 0) and .rawIngress.value.pendingCount == 0 and
-              .captureLanes.value.pendingCount == 0 and .captureProcessing.value.pendingCount == 0 and
-              .artifactOutbox.value.pendingCount == 0 and .rawIngress.value.quarantineCount == 0 and
-              .captureLanes.value.quarantineCount == 0 and .artifactOutbox.value.quarantineCount == 0 and
+              any(.captureRuntime.value.timings[]; .sampleCount > 0) and
               .heartbeat.value.lastAcknowledgedUtc != null' "$operations" >/dev/null; then checks=true; break; fi
             sleep "${DEPLOY_TEST_POLL_SECONDS:-2}"
         done
