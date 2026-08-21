@@ -87,8 +87,7 @@ public sealed class SqliteCaptureScheduleStore(
             var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             if (snapshot is null)
             {
-                var initialSchedule = fileConfiguration.Schedule ?? CreateLegacySchedule(fileConfiguration.Rig);
-                var initial = LocalCaptureProfileDefinition.CreateForConfiguration(fileConfiguration, initialSchedule);
+                var initial = CreateFileProfile(fileConfiguration);
                 var source = fileConfiguration.Schedule is null ? "legacy-bootstrap" : "file-bootstrap";
                 var revision = await InsertRevisionAsync(
                     connection, transaction, initial, source, "system", "initial configuration", cancellationToken)
@@ -111,8 +110,7 @@ public sealed class SqliteCaptureScheduleStore(
             }
             else
             {
-                var fileSchedule = fileConfiguration.Schedule ?? CreateLegacySchedule(fileConfiguration.Rig);
-                var fileProfile = LocalCaptureProfileDefinition.CreateForConfiguration(fileConfiguration, fileSchedule);
+                var fileProfile = CreateFileProfile(fileConfiguration);
                 var fileSha256 = LocalCaptureProfileContract.ComputeSha256(fileProfile);
                 if (!string.Equals(fileSha256, snapshot.ActiveRevision.ProfileSha256, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(fileSha256, snapshot.PendingRevision?.ProfileSha256, StringComparison.OrdinalIgnoreCase))
@@ -1318,6 +1316,13 @@ public sealed class SqliteCaptureScheduleStore(
         long StateVersion,
         DateTimeOffset? LastEvaluatedUtc,
         DateTimeOffset CompletedUtc);
+
+    internal static LocalCaptureProfileDefinition CreateFileProfile(CameraModuleConfig fileConfiguration)
+    {
+        ArgumentNullException.ThrowIfNull(fileConfiguration);
+        var schedule = fileConfiguration.Schedule ?? CreateLegacySchedule(fileConfiguration.Rig);
+        return LocalCaptureProfileDefinition.CreateForConfiguration(fileConfiguration, schedule);
+    }
 
     private static CaptureScheduleDefinition CreateLegacySchedule(CameraRigConfig rig)
         => new(

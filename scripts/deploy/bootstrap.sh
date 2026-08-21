@@ -311,6 +311,26 @@ deploy_bootstrap_central_capture_sequence() {
       else empty end' "$path"
 }
 
+deploy_schedule_select_file_draft() {
+    local state="$1" revision sha file_sha
+    file_sha="$(jq -er '.fileConfigurationProfileSha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$state")" || return 1
+    jq -e --arg sha "$file_sha" '
+      .pendingRevision.source == "file-draft" and
+      (.pendingRevision.profileSha256 | ascii_downcase) == $sha' "$state" >/dev/null || return 1
+    revision="$(jq -er '.pendingRevision.revisionId | select(test("^[A-Za-z0-9-]+$"))' "$state")" || return 1
+    sha="$(jq -er '.pendingRevision.profileSha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$state")" || return 1
+    printf '%s\t%s\n' "$revision" "$sha"
+}
+
+deploy_schedule_verify_active_profile() {
+    local state="$1" revision="${2:-}" sha="${3:-}"
+    [[ -n "$sha" ]] || sha="$(jq -er '.fileConfigurationProfileSha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$state")" || return 1
+    jq -e --arg revision "$revision" --arg sha "$sha" '
+      .pendingRevision == null and
+      ($revision == "" or .activeRevision.revisionId == $revision) and
+      (.activeRevision.profileSha256 | ascii_downcase) == $sha' "$state" >/dev/null
+}
+
 deploy_stage_workload_profile() {
     local inventory="$1" target="$2" workload="$3" device_id="$4" render_root="$5" state_dir="$6" run_id="$7"
     local activate="${8:-true}"
