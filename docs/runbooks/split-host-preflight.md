@@ -37,6 +37,13 @@ than trusting unrelated inventory assertions. Docker daemon architecture values
 `arm64`. Other daemon values fail with a bounded `unsupported-architecture`
 reason and are not copied into output or evidence.
 
+Use wired Ethernet for sustained or full-frame CameraAgent workloads when it is
+available. Wi-Fi remains supported, but SSH reachability, health checks, signal
+strength, nominal association rate, and loss-free ping do not prove sufficient
+payload throughput. Before relying on Wi-Fi, measure a representative direct
+transfer from the CameraAgent to LogicHost and require comfortable margin under
+the observed artifact-upload request deadline and expected capture cadence.
+
 Runtime roots may contain ordinary spaces and are passed only through quoted
 arguments. Control characters, repeated separators, `.` or `..` components,
 backslash, comma, and double quote are rejected before deployment so every
