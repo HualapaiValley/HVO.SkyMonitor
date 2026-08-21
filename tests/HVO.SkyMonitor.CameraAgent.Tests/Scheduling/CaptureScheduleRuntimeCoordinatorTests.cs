@@ -16,17 +16,25 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 public sealed class CaptureScheduleRuntimeCoordinatorTests
 {
     [TestMethod]
-    public async Task OperatorState_ExposesExactFileConfigurationProfileSha256()
+    public async Task OperatorState_AfterFileConfigurationReload_ExposesReloadedProfileSha256()
     {
-        using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
+        using var fixture = await RuntimeFixture.CreateAsync(initializeRuntime: false).ConfigureAwait(false);
 
+        var initial = await fixture.Store.InitializeAsync(
+            fixture.Configuration, CancellationToken.None).ConfigureAwait(false);
+        var reloaded = fixture.Configuration with { Schedule = AlwaysOpenDefinition("reloaded") };
+        var durable = await fixture.Store.InitializeAsync(reloaded, CancellationToken.None).ConfigureAwait(false);
+        var effective = initial.ActiveRevision.Profile.ApplyTo(reloaded);
+        _ = await fixture.Runtime.InitializeAsync(effective, CancellationToken.None).ConfigureAwait(false);
         var state = await fixture.Runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);
         var expected = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(
-                fixture.Configuration,
-                fixture.Configuration.Schedule!));
+                reloaded,
+                reloaded.Schedule!));
 
         Assert.AreEqual(expected, state.FileConfigurationProfileSha256);
+        Assert.AreEqual(expected, durable.PendingRevision!.ProfileSha256);
+        Assert.AreEqual(durable.PendingRevision.RevisionId, state.PendingRevision!.RevisionId);
     }
 
     [TestMethod]
@@ -300,7 +308,8 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
         internal TimeProvider TimeProvider { get; }
 
         internal static async Task<RuntimeFixture> CreateAsync(
-            ICameraModuleConfigurationValidator? moduleConfigurationValidator = null)
+            ICameraModuleConfigurationValidator? moduleConfigurationValidator = null,
+            bool initializeRuntime = true)
         {
             var root = Path.Combine(Path.GetTempPath(), "hvo-schedule-runtime", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
@@ -342,7 +351,10 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
                 timeProvider,
                 moduleConfigurationValidator: moduleConfigurationValidator);
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            await runtime.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            if (initializeRuntime)
+            {
+                await runtime.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            }
             return new RuntimeFixture(
                 root, telemetry, store, admission, runtime, configuration, location, timeProvider);
         }

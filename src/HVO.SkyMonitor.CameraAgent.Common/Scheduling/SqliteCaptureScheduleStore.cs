@@ -31,6 +31,11 @@ public sealed record CaptureScheduleStoreSnapshot(
     DateTimeOffset? LastEvaluatedUtc,
     DateTimeOffset UpdatedUtc);
 
+internal sealed record CaptureScheduleOperatorStoreState(
+    CaptureScheduleStoreSnapshot Snapshot,
+    IReadOnlyList<CaptureScheduleRevisionSnapshot> History,
+    string FileConfigurationProfileSha256);
+
 internal sealed record CaptureScheduleMutationResult(
     CaptureScheduleStoreSnapshot Receipt,
     CaptureScheduleStoreSnapshot Current);
@@ -72,25 +77,42 @@ public sealed class SqliteCaptureScheduleStore(
     }.ToString();
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private string _fileConfigurationProfileSha256 = string.Empty;
 
-    public async Task<CaptureScheduleStoreSnapshot> InitializeAsync(
+    public Task<CaptureScheduleStoreSnapshot> InitializeAsync(
         CameraModuleConfig fileConfiguration,
         CancellationToken cancellationToken)
+        => InitializeAsync(fileConfiguration, preserveFileIdentity: false, cancellationToken);
+
+    internal Task<CaptureScheduleStoreSnapshot> InitializeRuntimeAsync(
+        CameraModuleConfig effectiveConfiguration,
+        CancellationToken cancellationToken)
+        => InitializeAsync(effectiveConfiguration, preserveFileIdentity: true, cancellationToken);
+
+    private async Task<CaptureScheduleStoreSnapshot> InitializeAsync(
+        CameraModuleConfig configuration,
+        bool preserveFileIdentity,
+        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(fileConfiguration);
+        ArgumentNullException.ThrowIfNull(configuration);
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (preserveFileIdentity && _fileConfigurationProfileSha256.Length > 0)
+            {
+                return await GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            }
+            var fileProfile = CreateFileProfile(configuration);
+            var fileSha256 = LocalCaptureProfileContract.ComputeSha256(fileProfile);
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
             var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             if (snapshot is null)
             {
-                var initial = CreateFileProfile(fileConfiguration);
-                var source = fileConfiguration.Schedule is null ? "legacy-bootstrap" : "file-bootstrap";
+                var source = configuration.Schedule is null ? "legacy-bootstrap" : "file-bootstrap";
                 var revision = await InsertRevisionAsync(
-                    connection, transaction, initial, source, "system", "initial configuration", cancellationToken)
+                    connection, transaction, fileProfile, source, "system", "initial configuration", cancellationToken)
                     .ConfigureAwait(false);
                 var now = Now();
                 await ExecuteAsync(connection, transaction, """
@@ -110,8 +132,6 @@ public sealed class SqliteCaptureScheduleStore(
             }
             else
             {
-                var fileProfile = CreateFileProfile(fileConfiguration);
-                var fileSha256 = LocalCaptureProfileContract.ComputeSha256(fileProfile);
                 if (!string.Equals(fileSha256, snapshot.ActiveRevision.ProfileSha256, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(fileSha256, snapshot.PendingRevision?.ProfileSha256, StringComparison.OrdinalIgnoreCase))
                 {
@@ -137,6 +157,7 @@ public sealed class SqliteCaptureScheduleStore(
                 }
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            _fileConfigurationProfileSha256 = fileSha256;
             return snapshot;
         }
         finally
@@ -294,6 +315,18 @@ public sealed class SqliteCaptureScheduleStore(
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginRead(connection);
+        var revisions = await ReadHistoryAsync(
+            connection, transaction, maximumCount, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return revisions;
+    }
+
+    private static async Task<IReadOnlyList<CaptureScheduleRevisionSnapshot>> ReadHistoryAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
         var revisionIds = new List<string>();
         using (var command = connection.CreateCommand())
         {
@@ -316,8 +349,37 @@ public sealed class SqliteCaptureScheduleStore(
                 connection, transaction, revisionId, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("A capture schedule history revision is missing."));
         }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return revisions;
+    }
+
+    internal async Task<CaptureScheduleOperatorStoreState> GetOperatorStateAsync(
+        int historyCount,
+        CancellationToken cancellationToken)
+    {
+        if (historyCount is < 1 or > 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(historyCount));
+        }
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginRead(connection);
+            var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Capture schedule state has not been initialized.");
+            var history = await ReadHistoryAsync(
+                connection, transaction, historyCount, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new CaptureScheduleOperatorStoreState(
+                snapshot,
+                history,
+                _fileConfigurationProfileSha256);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     internal async Task<CaptureScheduleStoreSnapshot> ActivateAsync(
