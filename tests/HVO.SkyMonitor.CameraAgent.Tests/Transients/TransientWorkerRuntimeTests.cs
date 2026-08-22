@@ -262,6 +262,12 @@ public sealed class TransientWorkerRuntimeTests
             Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
 
             var runtime = provider.GetRequiredService<ITransientRuntimeManagement>();
+            var pageSizeError = await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() => runtime
+                .ReadQuarantinePageAsync(0, null, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            var cursorError = await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() => runtime
+                .ReadQuarantinePageAsync(10, new(1, 0), CancellationToken.None).AsTask()).ConfigureAwait(false);
+            Assert.AreEqual("pageSize", pageSizeError.ParamName);
+            Assert.AreEqual("cursor", cursorError.ParamName);
             var store = provider.GetRequiredService<SqliteTransientRuntimeStore>();
             var initial = await runtime.ReadQuarantinePageAsync(10, null, CancellationToken.None).ConfigureAwait(false);
             var blocked = initial.Items.Single();

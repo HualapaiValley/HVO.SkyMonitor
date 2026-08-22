@@ -849,9 +849,13 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         TransientRuntimeQuarantineCursor? cursor,
         CancellationToken cancellationToken)
     {
-        if (pageSize is < 1 or > 100 || cursor is { RawCaptureRowId: < 1 })
+        if (pageSize is < 1 or > 100)
         {
             throw new ArgumentOutOfRangeException(nameof(pageSize));
+        }
+        if (cursor is { RawCaptureRowId: < 1 })
+        {
+            throw new ArgumentOutOfRangeException(nameof(cursor));
         }
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
