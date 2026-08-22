@@ -72,6 +72,129 @@ public sealed class QuarantinePageTests
         });
     }
 
+    [TestMethod]
+    public void TransientRuntimeSource_RendersExactIdentityAndSafeAbandonmentWarning()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = Configure(context);
+        var captureId = Guid.NewGuid();
+        var artifactId = Guid.NewGuid();
+        service.QuarantineHandler = (kind, alias, _, pageSize, _) =>
+        {
+            Assert.AreEqual("TransientRuntime", kind);
+            Assert.IsNull(alias);
+            Assert.AreEqual(25, pageSize);
+            return ValueTask.FromResult(OperatorUiResult<OperatorOutboxPage>.Success(new(
+                "TransientRuntime", [], null,
+                [new OperatorOutboxItem(
+                    "TransientRuntime", "quarantined", null, "Required transient", 3, 4096,
+                    OperatorUiTestData.Now, "transient-runtime.input-levels-invalid", null, "abandon-token",
+                    OperatorUiTestData.Now.AddHours(-1), AgentId: "agent-east", Lane: "transient",
+                    CaptureId: captureId, ArtifactId: artifactId, CaptureSequence: 10, WorkId: 42, OuterWorkId: 41,
+                    ManifestSha256: new string('A', 64), PayloadSha256: new string('C', 64),
+                    ProcessingProfile: "pipeline configured-v1",
+                    ProcessingProfileSha256: new string('B', 64),
+                    DurableState: "hybrid; outer completed; work quarantined; frame quarantined")],
+                null)));
+        };
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        navigation.NavigateTo("/operations/quarantine?kind=TransientRuntime");
+
+        var cut = context.Render<QuarantinePage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "agent-east", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "transient", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, captureId.ToString(), StringComparison.OrdinalIgnoreCase);
+            StringAssert.Contains(cut.Markup, artifactId.ToString(), StringComparison.OrdinalIgnoreCase);
+            StringAssert.Contains(cut.Markup, new string('A', 64), StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll("button[id$='-replay']"));
+            Assert.AreEqual("page", cut.Find(".source-nav a.active").GetAttribute("aria-current"));
+        });
+        cut.Find("button[id$='-abandon']").Click();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "audited loss decision", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Lane work", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "outer completed", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, new string('B', 64), StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Legacy durable rows do not contain deployment-run identity", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".confirmation-actions .btn-danger"));
+            Assert.AreEqual("quarantine-confirm-heading", cut.Find("dialog").GetAttribute("aria-labelledby"));
+        });
+        cut.Find("#deployment-run-id").Change("d331-0821084607");
+        cut.Find("#deployment-inventory-sha").Change(new string('d', 64));
+        cut.Find("#legacy-ownership-acknowledgment").Change(true);
+        cut.Find(".bind-ownership").Click();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("d331-0821084607", cut.Find("#deployment-run-id").GetAttribute("value"));
+            Assert.AreEqual(new string('D', 64), cut.Find("#deployment-inventory-sha").GetAttribute("value"));
+            StringAssert.Contains(cut.Markup, "sealed into the protected abandon token", StringComparison.Ordinal);
+            Assert.HasCount(1, cut.FindAll(".confirmation-actions .btn-danger"));
+        });
+    }
+
+    [TestMethod]
+    public void TransientRuntimeFailure_PreservesSealedOwnershipForRetry()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = Configure(context);
+        service.QuarantineHandler = (_, _, _, _, _) => ValueTask.FromResult(
+            OperatorUiResult<OperatorOutboxPage>.Success(new(
+                "TransientRuntime", [], null,
+                [new OperatorOutboxItem(
+                    "TransientRuntime", "quarantined", null, "Required transient", 3, 4096,
+                    OperatorUiTestData.Now, "transient-runtime.input-levels-invalid", null, "reference-token",
+                    OperatorUiTestData.Now.AddHours(-1), AgentId: "agent-east", Lane: "transient",
+                    CaptureId: Guid.NewGuid(), ArtifactId: Guid.NewGuid(), CaptureSequence: 10,
+                    WorkId: 42, OuterWorkId: 41, ManifestSha256: new string('A', 64),
+                    PayloadSha256: new string('C', 64), ProcessingProfile: "pipeline configured-v1",
+                    ProcessingProfileSha256: new string('B', 64),
+                    DurableState: "hybrid; outer completed; work quarantined; frame quarantined")], null)));
+        var submissions = new List<string>();
+        service.OutboxHandler = (_, _, token, _, _, _) =>
+        {
+            submissions.Add(token);
+            return ValueTask.FromResult(submissions.Count == 1
+                ? OperatorUiResult<OperatorCommandReceipt>.Failure(
+                    OperatorUiResultKind.Unavailable, "The outbox command could not be completed.")
+                : OperatorUiResult<OperatorCommandReceipt>.Success(new(
+                    "Abandon transient runtime item", "Applied", "Abandoned", null, OperatorUiTestData.Now)));
+        };
+        context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>()
+            .NavigateTo("/operations/quarantine?kind=TransientRuntime");
+        var cut = context.Render<QuarantinePage>();
+        cut.WaitForElement("button[id$='-abandon']").Click();
+        cut.Find("#deployment-run-id").Change("d331-0821084607");
+        cut.Find("#deployment-inventory-sha").Change(new string('d', 64));
+        cut.Find("#legacy-ownership-acknowledgment").Change(true);
+        cut.Find(".bind-ownership").Click();
+        cut.WaitForElement(".confirmation-actions .btn-danger").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(1, submissions);
+            Assert.AreEqual("bound-action-token", submissions[0]);
+            Assert.AreEqual("d331-0821084607", cut.Find("#deployment-run-id").GetAttribute("value"));
+            Assert.AreEqual(new string('D', 64), cut.Find("#deployment-inventory-sha").GetAttribute("value"));
+            Assert.IsTrue(cut.Find("#legacy-ownership-acknowledgment").HasAttribute("checked"));
+            Assert.IsTrue(cut.Find("#legacy-ownership-acknowledgment").HasAttribute("disabled"));
+            StringAssert.Contains(cut.Markup, "sealed into the protected abandon token", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "could not be completed", StringComparison.Ordinal);
+        });
+        cut.Find(".confirmation-actions .btn-danger").Click();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(2, submissions);
+            Assert.IsTrue(submissions.All(static token => token == "bound-action-token"));
+            Assert.IsEmpty(cut.FindAll("dialog"));
+            StringAssert.Contains(cut.Markup, "Current state: Abandoned", StringComparison.Ordinal);
+        });
+    }
+
     private static OperatorOutboxItem CreateItem(int index) => new(
         "Artifact",
         "Quarantined",

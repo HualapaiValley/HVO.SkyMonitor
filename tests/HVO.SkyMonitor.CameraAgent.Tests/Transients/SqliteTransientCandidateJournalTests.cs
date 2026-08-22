@@ -137,11 +137,21 @@ public sealed class SqliteTransientCandidateJournalTests
         Assert.AreEqual(100L, quarantined.HeldSourceBytes);
         Assert.AreEqual(2, quarantined.PressureLevel);
 
+        var quarantine = (await ((ITransientRuntimeManagement)store)
+            .ReadQuarantinePageAsync(10, null, CancellationToken.None).ConfigureAwait(false)).Items.Single();
+        var target = new TransientRuntimeOperationTarget(
+            quarantine.RawCaptureRowId, quarantine.LaneWorkId, quarantine.OuterLaneWorkId,
+            quarantine.AgentId, quarantine.CaptureSequence, quarantine.CaptureId, quarantine.ArtifactId,
+            quarantine.ManifestSha256, quarantine.PayloadSha256, quarantine.ProcessingProfileSha256, quarantine.Mode,
+            quarantine.Required, quarantine.OuterLaneState, quarantine.WorkState, quarantine.FrameState,
+            quarantine.FailureReason, quarantine.OuterLaneUpdatedUtc, quarantine.WorkUpdatedUtc,
+            quarantine.FrameUpdatedUtc,
+            new TransientRuntimeExternalOwnershipEvidence("d331-0821084607", new string('D', 64), true));
         Assert.AreEqual(
-            TransientQuarantineReleaseDisposition.Abandoned,
-            await ((ITransientRuntimeManagement)store)
-                .AbandonQuarantinedCaptureAsync(frame.ArtifactId, CancellationToken.None)
-                .ConfigureAwait(false));
+            TransientRuntimeOperationDisposition.Applied,
+            (await ((ITransientRuntimeManagement)store).AbandonQuarantinedCaptureAsync(
+                target, "test-abandon", "owner-id", "operator-approved-loss", CancellationToken.None)
+                .ConfigureAwait(false)).Disposition);
         var released = await fixture.Journal.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(0L, released.ActiveCount);
         Assert.AreEqual(0L, released.HeldSourceBytes);
@@ -798,7 +808,7 @@ public sealed class SqliteTransientCandidateJournalTests
 
         await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
 
-        Assert.AreEqual(10L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(11L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await fixture.ScalarLongAsync(
             "SELECT COUNT(*) FROM pragma_table_info('transient_candidates') WHERE name = 'candidate_state';")
             .ConfigureAwait(false));
@@ -826,7 +836,7 @@ public sealed class SqliteTransientCandidateJournalTests
 
         await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
 
-        Assert.AreEqual(10L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(11L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual("Provisional", await fixture.ScalarStringAsync(
             "SELECT candidate_state FROM transient_candidates;").ConfigureAwait(false));
     }

@@ -5,10 +5,13 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -48,8 +51,18 @@ public sealed class CameraAgentOperatorUiServiceTests
             "evidence-restored",
             "operation-key",
             CancellationToken.None).ConfigureAwait(false);
+        var captureLane = await service.ResolveOutboxAsync(
+            "TransientRuntime",
+            OutboxOperationAction.Abandon,
+            "action-token",
+            "operator-approved-loss",
+            "operation-key-2",
+            CancellationToken.None).ConfigureAwait(false);
+        var ownership = await service.BindTransientRuntimeOwnershipAsync(
+            "reference-token", "d331-0821084607", new string('D', 64), true,
+            CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(7, authentication.ReadCount);
+        Assert.AreEqual(9, authentication.ReadCount);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, operations.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, gallery.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, quarantine.Kind);
@@ -57,6 +70,8 @@ public sealed class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, system.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, capture.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, outbox.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, captureLane.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, ownership.Kind);
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
@@ -64,7 +79,7 @@ public sealed class CameraAgentOperatorUiServiceTests
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
-            CameraAgentAuthorizationPolicyNames.OperationsMutateV1), Times.Exactly(2));
+            CameraAgentAuthorizationPolicyNames.OperationsMutateV1), Times.Exactly(4));
     }
 
     [TestMethod]
@@ -90,6 +105,41 @@ public sealed class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(
             "Unavailable",
             CameraAgentOperatorUiService.ResolveModuleAlias("Unknown.Type, Unknown.Assembly", [module]));
+    }
+
+    [TestMethod]
+    public async Task BindTransientOwnership_RequiresAcknowledgmentAndSealsNormalizedEvidenceAsync()
+    {
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, "owner-id")], "test"));
+        var authentication = new CountingAuthenticationStateProvider(principal);
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(service => service.AuthorizeAsync(
+                principal, null, CameraAgentAuthorizationPolicyNames.OperationsMutateV1))
+            .ReturnsAsync(AuthorizationResult.Success());
+        var tokens = new OutboxOperationsTokenService(
+            new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(1));
+        var service = CreateService(authentication, authorization.Object, tokens);
+        var updated = new DateTimeOffset(2026, 8, 22, 1, 2, 3, TimeSpan.Zero);
+        var target = new TransientRuntimeOperationTarget(
+            42, 43, 44, "agent-east", 10, Guid.NewGuid(), Guid.NewGuid(),
+            new string('A', 64), new string('C', 64), new string('B', 64), "hybrid", true,
+            "completed", "quarantined", "quarantined", "transient-runtime.input-levels-invalid",
+            updated.AddSeconds(-2), updated.AddSeconds(-1), updated);
+        var reference = tokens.ProtectTransientRuntimeReference(target);
+
+        var missingAcknowledgment = await service.BindTransientRuntimeOwnershipAsync(
+            reference, "d331-0821084607", new string('d', 64), false, CancellationToken.None).ConfigureAwait(false);
+        var bound = await service.BindTransientRuntimeOwnershipAsync(
+            reference, "d331-0821084607", new string('d', 64), true, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Invalid, missingAcknowledgment.Kind);
+        Assert.IsTrue(bound.IsSuccess);
+        Assert.AreEqual("d331-0821084607", bound.Value!.DeploymentRunId);
+        Assert.AreEqual(new string('D', 64), bound.Value.InventorySha256);
+        Assert.IsTrue(tokens.TryReadTransientRuntimeAction(bound.Value.ActionToken, out var parsed));
+        Assert.AreEqual(new TransientRuntimeExternalOwnershipEvidence(
+            "d331-0821084607", new string('D', 64), true), parsed!.ExternalOwnershipEvidence);
     }
 
     [TestMethod]
@@ -131,9 +181,11 @@ public sealed class CameraAgentOperatorUiServiceTests
 
     private static CameraAgentOperatorUiService CreateService(
         AuthenticationStateProvider authentication,
-        IAuthorizationService authorization) => new(
+        IAuthorizationService authorization,
+        OutboxOperationsTokenService? tokenService = null) => new(
             authentication,
             authorization,
+            null!,
             null!,
             null!,
             null!,
@@ -145,7 +197,7 @@ public sealed class CameraAgentOperatorUiServiceTests
             [],
             [],
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = "/unused" }),
-            null!,
+            tokenService!,
             TimeProvider.System,
             NullLogger<CameraAgentOperatorUiService>.Instance);
 

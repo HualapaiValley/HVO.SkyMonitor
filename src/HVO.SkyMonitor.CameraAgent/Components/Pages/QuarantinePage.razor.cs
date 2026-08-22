@@ -17,10 +17,13 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
     private string? _errorMessage;
     private string? _commandError;
     private string? _statusMessage;
+    private string? _deploymentRunId;
+    private string? _inventorySha256;
     private long _generation;
     private bool _isLoading;
     private bool _isSubmitting;
     private bool _showDialog;
+    private bool _ownershipAcknowledged;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
@@ -110,12 +113,56 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         _reasonCode = ReasonCodes[0].Code;
         _commandError = null;
         _statusMessage = null;
+        ClearOwnershipEvidence();
         _showDialog = true;
+    }
+
+    private async Task BindOwnershipAsync()
+    {
+        if (_pending is null || _pending.Item.Kind != "TransientRuntime" || _pending.OwnershipBound ||
+            _isSubmitting || _loadCancellation is null)
+        {
+            return;
+        }
+        _isSubmitting = true;
+        _commandError = null;
+        try
+        {
+            var result = await OperatorService.BindTransientRuntimeOwnershipAsync(
+                _pending.ActionToken,
+                _deploymentRunId ?? string.Empty,
+                _inventorySha256 ?? string.Empty,
+                _ownershipAcknowledged,
+                _loadCancellation.Token);
+            if (result.IsSuccess && result.Value is not null)
+            {
+                _deploymentRunId = result.Value.DeploymentRunId;
+                _inventorySha256 = result.Value.InventorySha256;
+                _pending = _pending with { ActionToken = result.Value.ActionToken, OwnershipBound = true };
+            }
+            else if (result.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                ClearRenderedData();
+                NavigationManager.NavigateTo("/Account/AccessDenied");
+            }
+            else
+            {
+                _commandError = result.Message ?? "The external ownership evidence could not be bound.";
+            }
+        }
+        catch (OperationCanceledException) when (_loadCancellation?.IsCancellationRequested == true)
+        {
+        }
+        finally
+        {
+            _isSubmitting = false;
+        }
     }
 
     private async Task ConfirmAsync()
     {
-        if (_pending is null || _isSubmitting || _loadCancellation is null)
+        if (_pending is null || _isSubmitting || _loadCancellation is null ||
+            _pending.Item.Kind == "TransientRuntime" && !_pending.OwnershipBound)
         {
             return;
         }
@@ -136,6 +183,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
                 await CloseAsync(command.TriggerId);
                 _pending = null;
                 _reasonCode = null;
+                ClearOwnershipEvidence();
                 _statusMessage = $"{result.Value.Action}: {result.Value.Disposition}. Current state: {result.Value.State}.";
                 await LoadAsync();
             }
@@ -165,6 +213,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         _pending = null;
         _reasonCode = null;
         _commandError = null;
+        ClearOwnershipEvidence();
     }
 
     private async Task CloseAsync(string? triggerId)
@@ -195,9 +244,19 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
             ? "active"
             : string.Empty;
 
+    private string? SourceCurrent(string kind) => SourceClass(kind) == "active" ? "page" : null;
+
     private string ListTitle => _page?.Kind == "Environmental"
         ? "Environmental quarantine and terminal records"
-        : $"Artifact quarantine / {_page?.StorageAlias ?? "no configured storage"}";
+        : _page?.Kind == "TransientRuntime"
+            ? "Transient runtime quarantine"
+            : $"Artifact quarantine / {_page?.StorageAlias ?? "no configured storage"}";
+
+    private string ConfirmationDescription => _pending?.Item.Kind == "TransientRuntime"
+        ? "Abandonment records an audited loss decision for this exact immutable source identity before recomputing its retention hold. Other required holds remain unchanged."
+        : _pending?.Action == OutboxOperationAction.Abandon
+            ? "Abandonment releases the durable delivery hold and stops delivery by this outbox."
+            : "Replay returns the item to bounded delivery using its existing durable evidence.";
 
     private void ClearRenderedData()
     {
@@ -207,7 +266,17 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         _errorMessage = null;
         _commandError = null;
         _statusMessage = null;
+        _deploymentRunId = null;
+        _inventorySha256 = null;
+        _ownershipAcknowledged = false;
         _showDialog = false;
+    }
+
+    private void ClearOwnershipEvidence()
+    {
+        _deploymentRunId = null;
+        _inventorySha256 = null;
+        _ownershipAcknowledged = false;
     }
 
     private static IReadOnlyList<(string Code, string Label)> ReplayReasons { get; } =
@@ -253,5 +322,6 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         OutboxOperationAction Action,
         string TriggerId,
         string ActionToken,
-        string IdempotencyKey);
+        string IdempotencyKey,
+        bool OwnershipBound = false);
 }

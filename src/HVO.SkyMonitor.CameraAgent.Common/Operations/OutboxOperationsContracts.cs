@@ -164,14 +164,14 @@ public sealed class CameraAgentStorageResolver(
 
 public static class OutboxOperationsReasonCodes
 {
-    private static readonly IReadOnlySet<string> ReplayCodes = new HashSet<string>(StringComparer.Ordinal)
+    private static readonly HashSet<string> ReplayCodes = new(StringComparer.Ordinal)
     {
         "configuration-corrected",
         "evidence-restored",
         "upstream-recovered"
     };
 
-    private static readonly IReadOnlySet<string> AbandonCodes = new HashSet<string>(StringComparer.Ordinal)
+    private static readonly HashSet<string> AbandonCodes = new(StringComparer.Ordinal)
     {
         "invalid-source",
         "irrecoverable-evidence",
@@ -179,7 +179,12 @@ public static class OutboxOperationsReasonCodes
     };
 
     public static bool IsAllowed(OutboxOperationAction action, string? reasonCode)
-        => reasonCode is not null && (action == OutboxOperationAction.Replay ? ReplayCodes : AbandonCodes).Contains(reasonCode);
+        => reasonCode is not null && action switch
+        {
+            OutboxOperationAction.Replay => ReplayCodes.Contains(reasonCode),
+            OutboxOperationAction.Abandon => AbandonCodes.Contains(reasonCode),
+            _ => false
+        };
 
     public static string Sanitize(string? reasonCode)
     {

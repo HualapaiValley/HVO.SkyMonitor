@@ -60,7 +60,7 @@ public sealed class CaptureAdmissionCoordinatorTests
             await CreateJournal(root).InitializeAsync(CancellationToken.None).ConfigureAwait(false);
 
             using var verify = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(10L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(11L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual("running", await ScalarStringAsync(
                 verify, "SELECT state FROM capture_control_state WHERE state_key = 1;").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarLongAsync(
