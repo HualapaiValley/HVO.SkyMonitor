@@ -9,16 +9,16 @@ updates:
     groups:
       opentelemetry:
         patterns:
-          - "OpenTelemetry.*"
+          - "OpenTelemetry*"
       openiddict:
         patterns:
-          - "OpenIddict.*"
+          - "OpenIddict*"
       skiasharp:
         patterns:
           - "SkiaSharp*"
       asp-versioning:
         patterns:
-          - "Asp.Versioning.*"
+          - "Asp.Versioning*"
     labels:
       - "dependencies"
       - "nuget"
