@@ -4,6 +4,8 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using Microsoft.Data.Sqlite;
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 
@@ -392,18 +394,20 @@ internal sealed class SqliteCaptureLaneStore(
     public async ValueTask<IReadOnlyList<CaptureLaneBacklog>> ReadBacklogsAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginImmediate(connection);
         var backlogs = new List<CaptureLaneBacklog>(_policy.Definitions.Count);
         foreach (var lane in _policy.Definitions)
         {
-            backlogs.Add(await ReadBacklogAsync(connection, lane, null, cancellationToken).ConfigureAwait(false));
+            backlogs.Add(await ReadBacklogAsync(connection, lane, transaction, cancellationToken).ConfigureAwait(false));
         }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return backlogs;
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query is selected from two internal constant statements; lane input remains parameterized.")]
     private static async Task<Candidate?> ReadCandidateAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         CaptureLaneDefinition lane,
         DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -479,7 +483,7 @@ internal sealed class SqliteCaptureLaneStore(
             SELECT COUNT(*), COALESCE(SUM(r.payload_length), 0), MIN(r.durable_ingress_unix_ms),
                    COALESCE(SUM(CASE WHEN w.state = 'leased' THEN 1 ELSE 0 END), 0),
                    COALESCE(SUM(CASE WHEN w.state = 'retry_wait' THEN 1 ELSE 0 END), 0),
-                   COALESCE(SUM(CASE WHEN w.state = 'quarantined' THEN 1 ELSE 0 END), 0)
+                    COALESCE(SUM(CASE WHEN w.state = 'quarantined' THEN 1 ELSE 0 END), 0)
             FROM capture_lane_work w
             JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
             WHERE w.lane_name = $lane AND w.state IN ('pending', 'leased', 'retry_wait', 'quarantined');
@@ -527,19 +531,87 @@ internal sealed class SqliteCaptureLaneStore(
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
+        await ReassertUnauditedTransientHoldsAsync(
+            connection, transaction, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
+            WITH valid_abandonments(raw_capture_row_id, lane_work_id, completed_unix_ms) AS (
+                SELECT operation.raw_capture_row_id, operation.lane_work_id, operation.completed_unix_ms
+                FROM transient_runtime_operations operation
+                JOIN transient_capture_work work
+                  ON work.raw_capture_row_id = operation.raw_capture_row_id
+                 AND work.lane_work_id = operation.lane_work_id
+                JOIN capture_lane_work lane ON lane.work_id = operation.outer_lane_work_id
+                JOIN raw_captures raw ON raw.raw_capture_row_id = operation.raw_capture_row_id
+                WHERE operation.outer_lane_work_id = work.lane_work_id
+                  AND operation.agent_id = raw.agent_id AND operation.agent_id = lane.agent_id
+                  AND operation.capture_sequence = raw.capture_sequence
+                  AND operation.capture_sequence = lane.capture_sequence
+                  AND operation.capture_id = raw.capture_id
+                  AND operation.artifact_id = raw.raw_artifact_id
+                  AND operation.artifact_id = work.artifact_id
+                  AND operation.manifest_sha256 = raw.manifest_sha256
+                  AND operation.manifest_sha256 = work.manifest_sha256
+                  AND operation.payload_sha256 = raw.payload_sha256
+                  AND operation.processing_profile_sha256 = json_extract(
+                      CAST(raw.manifest_json AS TEXT), '$.descriptor.profiles.processing.sha256')
+                  AND operation.mode = work.mode
+                  AND operation.required = work.required AND operation.required = lane.required
+                  AND operation.expected_outer_lane_state = lane.state
+                  AND operation.expected_outer_lane_state = 'completed'
+                  AND operation.expected_work_state = 'quarantined'
+                  AND operation.expected_frame_state = 'quarantined'
+                  AND length(operation.expected_failure_reason) BETWEEN 1 AND 128
+                  AND operation.expected_outer_lane_updated_unix_ms = lane.updated_unix_ms
+                  AND operation.expected_work_updated_unix_ms > 0
+                  AND operation.expected_work_updated_unix_ms <= operation.completed_unix_ms
+                  AND operation.expected_frame_updated_unix_ms > 0
+                  AND operation.expected_frame_updated_unix_ms <= operation.completed_unix_ms
+                  AND work.state = 'abandoned' AND work.updated_unix_ms = operation.completed_unix_ms
+                  AND length(operation.idempotency_key) BETWEEN 1 AND 128
+                  AND operation.action = 'abandon' AND operation.result_state = 'abandoned'
+                  AND length(operation.deployment_run_id) BETWEEN 1 AND 128
+                  AND substr(operation.deployment_run_id, 1, 1) GLOB '[A-Za-z0-9]'
+                  AND operation.deployment_run_id NOT GLOB '*[^A-Za-z0-9._-]*'
+                  AND length(operation.inventory_sha256) = 64
+                  AND operation.inventory_sha256 NOT GLOB '*[^0-9A-F]*'
+                  AND operation.legacy_ownership_externally_established = 1
+                  AND length(operation.actor) BETWEEN 1 AND 128
+                  AND operation.reason_code IN (
+                      'invalid-source', 'irrecoverable-evidence', 'operator-approved-loss')
+                  AND operation.receipt_identity_sha256 = hvo_sha256(json_array(
+                      operation.idempotency_key, operation.raw_capture_row_id, operation.lane_work_id,
+                      operation.outer_lane_work_id, operation.agent_id, operation.capture_sequence,
+                      operation.capture_id, operation.artifact_id, operation.manifest_sha256,
+                      operation.payload_sha256, operation.processing_profile_sha256, operation.mode,
+                      operation.required, operation.expected_outer_lane_state, operation.expected_work_state,
+                      operation.expected_frame_state, operation.expected_failure_reason,
+                      operation.expected_outer_lane_updated_unix_ms, operation.expected_work_updated_unix_ms,
+                      operation.expected_frame_updated_unix_ms, operation.deployment_run_id,
+                      operation.inventory_sha256, operation.legacy_ownership_externally_established,
+                      operation.action, operation.actor, operation.reason_code, operation.result_state,
+                      operation.completed_unix_ms))
+            )
             SELECT
                 (SELECT COUNT(*) FROM capture_lane_work
                  WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')) +
-                    (SELECT COUNT(*) FROM transient_capture_work WHERE state IN ('pending', 'candidate_persisted', 'quarantined')) +
+                    (SELECT COUNT(*) FROM transient_capture_work work WHERE state IN ('pending', 'candidate_persisted', 'quarantined') OR
+                        (state = 'abandoned' AND NOT EXISTS (SELECT 1 FROM valid_abandonments operation
+                            WHERE operation.raw_capture_row_id = work.raw_capture_row_id
+                              AND operation.lane_work_id = work.lane_work_id
+                              AND operation.completed_unix_ms = work.updated_unix_ms))) +
                     (SELECT COUNT(*) FROM transient_candidates WHERE source_hold_released = 0),
                 (SELECT COALESCE(SUM(payload_length), 0) FROM raw_captures WHERE raw_capture_row_id IN (
                     SELECT raw_capture_row_id FROM capture_lane_work
                     WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                     UNION
-                    SELECT raw_capture_row_id FROM transient_capture_work WHERE state IN ('pending', 'candidate_persisted', 'quarantined')
+                    SELECT raw_capture_row_id FROM transient_capture_work work
+                    WHERE state IN ('pending', 'candidate_persisted', 'quarantined') OR
+                        (state = 'abandoned' AND NOT EXISTS (SELECT 1 FROM valid_abandonments operation
+                            WHERE operation.raw_capture_row_id = work.raw_capture_row_id
+                              AND operation.lane_work_id = work.lane_work_id
+                              AND operation.completed_unix_ms = work.updated_unix_ms))
                     UNION
                     SELECT s.raw_capture_row_id
                     FROM transient_candidate_sources s
@@ -549,13 +621,22 @@ internal sealed class SqliteCaptureLaneStore(
                     SELECT created_unix_ms FROM capture_lane_work
                     WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                     UNION ALL
-                    SELECT created_unix_ms FROM transient_capture_work WHERE state IN ('pending', 'candidate_persisted', 'quarantined')
+                    SELECT created_unix_ms FROM transient_capture_work work
+                    WHERE state IN ('pending', 'candidate_persisted', 'quarantined') OR
+                        (state = 'abandoned' AND NOT EXISTS (SELECT 1 FROM valid_abandonments operation
+                            WHERE operation.raw_capture_row_id = work.raw_capture_row_id
+                              AND operation.lane_work_id = work.lane_work_id
+                              AND operation.completed_unix_ms = work.updated_unix_ms))
                     UNION ALL
                     SELECT created_unix_ms FROM transient_candidates WHERE source_hold_released = 0)),
                 (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'leased'),
                 (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'retry_wait'),
                 (SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'transient' AND state = 'quarantined') +
-                    (SELECT COUNT(*) FROM transient_capture_work WHERE state = 'quarantined') +
+                    (SELECT COUNT(*) FROM transient_capture_work work WHERE state = 'quarantined' OR
+                        (state = 'abandoned' AND NOT EXISTS (SELECT 1 FROM valid_abandonments operation
+                            WHERE operation.raw_capture_row_id = work.raw_capture_row_id
+                              AND operation.lane_work_id = work.lane_work_id
+                              AND operation.completed_unix_ms = work.updated_unix_ms))) +
                     (SELECT COUNT(*) FROM transient_candidates WHERE phase = 'quarantined') +
                     (SELECT COUNT(*) FROM transient_candidate_conflicts),
                 (SELECT pressure_state FROM capture_lane_definitions WHERE lane_name = 'transient');
@@ -575,14 +656,75 @@ internal sealed class SqliteCaptureLaneStore(
         using var sequencesCommand = connection.CreateCommand();
         sequencesCommand.Transaction = transaction;
         sequencesCommand.CommandText = """
-            WITH active_centers(raw_capture_row_id) AS (
+            WITH valid_abandonments(raw_capture_row_id, lane_work_id, completed_unix_ms) AS (
+                SELECT operation.raw_capture_row_id, operation.lane_work_id, operation.completed_unix_ms
+                FROM transient_runtime_operations operation
+                JOIN transient_capture_work work
+                  ON work.raw_capture_row_id = operation.raw_capture_row_id
+                 AND work.lane_work_id = operation.lane_work_id
+                JOIN capture_lane_work lane ON lane.work_id = operation.outer_lane_work_id
+                JOIN raw_captures raw ON raw.raw_capture_row_id = operation.raw_capture_row_id
+                WHERE operation.outer_lane_work_id = work.lane_work_id
+                  AND operation.agent_id = raw.agent_id AND operation.agent_id = lane.agent_id
+                  AND operation.capture_sequence = raw.capture_sequence
+                  AND operation.capture_sequence = lane.capture_sequence
+                  AND operation.capture_id = raw.capture_id
+                  AND operation.artifact_id = raw.raw_artifact_id
+                  AND operation.artifact_id = work.artifact_id
+                  AND operation.manifest_sha256 = raw.manifest_sha256
+                  AND operation.manifest_sha256 = work.manifest_sha256
+                  AND operation.payload_sha256 = raw.payload_sha256
+                  AND operation.processing_profile_sha256 = json_extract(
+                      CAST(raw.manifest_json AS TEXT), '$.descriptor.profiles.processing.sha256')
+                  AND operation.mode = work.mode
+                  AND operation.required = work.required AND operation.required = lane.required
+                  AND operation.expected_outer_lane_state = lane.state
+                  AND operation.expected_outer_lane_state = 'completed'
+                  AND operation.expected_work_state = 'quarantined'
+                  AND operation.expected_frame_state = 'quarantined'
+                  AND length(operation.expected_failure_reason) BETWEEN 1 AND 128
+                  AND operation.expected_outer_lane_updated_unix_ms = lane.updated_unix_ms
+                  AND operation.expected_work_updated_unix_ms > 0
+                  AND operation.expected_work_updated_unix_ms <= operation.completed_unix_ms
+                  AND operation.expected_frame_updated_unix_ms > 0
+                  AND operation.expected_frame_updated_unix_ms <= operation.completed_unix_ms
+                  AND work.state = 'abandoned' AND work.updated_unix_ms = operation.completed_unix_ms
+                  AND length(operation.idempotency_key) BETWEEN 1 AND 128
+                  AND operation.action = 'abandon' AND operation.result_state = 'abandoned'
+                  AND length(operation.deployment_run_id) BETWEEN 1 AND 128
+                  AND substr(operation.deployment_run_id, 1, 1) GLOB '[A-Za-z0-9]'
+                  AND operation.deployment_run_id NOT GLOB '*[^A-Za-z0-9._-]*'
+                  AND length(operation.inventory_sha256) = 64
+                  AND operation.inventory_sha256 NOT GLOB '*[^0-9A-F]*'
+                  AND operation.legacy_ownership_externally_established = 1
+                  AND length(operation.actor) BETWEEN 1 AND 128
+                  AND operation.reason_code IN (
+                      'invalid-source', 'irrecoverable-evidence', 'operator-approved-loss')
+                  AND operation.receipt_identity_sha256 = hvo_sha256(json_array(
+                      operation.idempotency_key, operation.raw_capture_row_id, operation.lane_work_id,
+                      operation.outer_lane_work_id, operation.agent_id, operation.capture_sequence,
+                      operation.capture_id, operation.artifact_id, operation.manifest_sha256,
+                      operation.payload_sha256, operation.processing_profile_sha256, operation.mode,
+                      operation.required, operation.expected_outer_lane_state, operation.expected_work_state,
+                      operation.expected_frame_state, operation.expected_failure_reason,
+                      operation.expected_outer_lane_updated_unix_ms, operation.expected_work_updated_unix_ms,
+                      operation.expected_frame_updated_unix_ms, operation.deployment_run_id,
+                      operation.inventory_sha256, operation.legacy_ownership_externally_established,
+                      operation.action, operation.actor, operation.reason_code, operation.result_state,
+                      operation.completed_unix_ms))
+            ),
+            active_centers(raw_capture_row_id) AS (
                 SELECT raw_capture_row_id
                 FROM capture_lane_work
                 WHERE lane_name = 'transient' AND state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                 UNION
                 SELECT raw_capture_row_id
-                FROM transient_capture_work
-                WHERE state IN ('pending', 'candidate_persisted', 'quarantined')
+                FROM transient_capture_work work
+                WHERE state IN ('pending', 'candidate_persisted', 'quarantined') OR
+                    (state = 'abandoned' AND NOT EXISTS (SELECT 1 FROM valid_abandonments operation
+                        WHERE operation.raw_capture_row_id = work.raw_capture_row_id
+                          AND operation.lane_work_id = work.lane_work_id
+                          AND operation.completed_unix_ms = work.updated_unix_ms))
                 UNION
                 SELECT source.raw_capture_row_id
                 FROM transient_candidates candidate
@@ -620,6 +762,86 @@ internal sealed class SqliteCaptureLaneStore(
             quarantined,
             pressure,
             pendingCaptures);
+    }
+
+    private static async Task ReassertUnauditedTransientHoldsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            WITH valid_abandonments(raw_capture_row_id, lane_work_id, completed_unix_ms) AS (
+                SELECT operation.raw_capture_row_id, operation.lane_work_id, operation.completed_unix_ms
+                FROM transient_runtime_operations operation
+                JOIN transient_capture_work work
+                  ON work.raw_capture_row_id = operation.raw_capture_row_id
+                 AND work.lane_work_id = operation.lane_work_id
+                JOIN capture_lane_work lane ON lane.work_id = operation.outer_lane_work_id
+                JOIN raw_captures raw ON raw.raw_capture_row_id = operation.raw_capture_row_id
+                WHERE operation.outer_lane_work_id = work.lane_work_id
+                  AND operation.agent_id = raw.agent_id AND operation.agent_id = lane.agent_id
+                  AND operation.capture_sequence = raw.capture_sequence
+                  AND operation.capture_sequence = lane.capture_sequence
+                  AND operation.capture_id = raw.capture_id
+                  AND operation.artifact_id = raw.raw_artifact_id
+                  AND operation.artifact_id = work.artifact_id
+                  AND operation.manifest_sha256 = raw.manifest_sha256
+                  AND operation.manifest_sha256 = work.manifest_sha256
+                  AND operation.payload_sha256 = raw.payload_sha256
+                  AND operation.processing_profile_sha256 = json_extract(
+                      CAST(raw.manifest_json AS TEXT), '$.descriptor.profiles.processing.sha256')
+                  AND operation.mode = work.mode
+                  AND operation.required = work.required AND operation.required = lane.required
+                  AND operation.expected_outer_lane_state = lane.state
+                  AND operation.expected_outer_lane_state = 'completed'
+                  AND operation.expected_work_state = 'quarantined'
+                  AND operation.expected_frame_state = 'quarantined'
+                  AND length(operation.expected_failure_reason) BETWEEN 1 AND 128
+                  AND operation.expected_outer_lane_updated_unix_ms = lane.updated_unix_ms
+                  AND operation.expected_work_updated_unix_ms > 0
+                  AND operation.expected_work_updated_unix_ms <= operation.completed_unix_ms
+                  AND operation.expected_frame_updated_unix_ms > 0
+                  AND operation.expected_frame_updated_unix_ms <= operation.completed_unix_ms
+                  AND work.state = 'abandoned' AND work.updated_unix_ms = operation.completed_unix_ms
+                  AND length(operation.idempotency_key) BETWEEN 1 AND 128
+                  AND operation.action = 'abandon' AND operation.result_state = 'abandoned'
+                  AND length(operation.deployment_run_id) BETWEEN 1 AND 128
+                  AND substr(operation.deployment_run_id, 1, 1) GLOB '[A-Za-z0-9]'
+                  AND operation.deployment_run_id NOT GLOB '*[^A-Za-z0-9._-]*'
+                  AND length(operation.inventory_sha256) = 64
+                  AND operation.inventory_sha256 NOT GLOB '*[^0-9A-F]*'
+                  AND operation.legacy_ownership_externally_established = 1
+                  AND length(operation.actor) BETWEEN 1 AND 128
+                  AND operation.reason_code IN (
+                      'invalid-source', 'irrecoverable-evidence', 'operator-approved-loss')
+                  AND operation.receipt_identity_sha256 = hvo_sha256(json_array(
+                      operation.idempotency_key, operation.raw_capture_row_id, operation.lane_work_id,
+                      operation.outer_lane_work_id, operation.agent_id, operation.capture_sequence,
+                      operation.capture_id, operation.artifact_id, operation.manifest_sha256,
+                      operation.payload_sha256, operation.processing_profile_sha256, operation.mode,
+                      operation.required, operation.expected_outer_lane_state, operation.expected_work_state,
+                      operation.expected_frame_state, operation.expected_failure_reason,
+                      operation.expected_outer_lane_updated_unix_ms, operation.expected_work_updated_unix_ms,
+                      operation.expected_frame_updated_unix_ms, operation.deployment_run_id,
+                      operation.inventory_sha256, operation.legacy_ownership_externally_established,
+                      operation.action, operation.actor, operation.reason_code, operation.result_state,
+                      operation.completed_unix_ms))
+            )
+            UPDATE raw_captures
+            SET retention_hold = 1
+            WHERE retention_hold = 0 AND raw_capture_row_id IN (
+                SELECT work.raw_capture_row_id
+                FROM transient_capture_work work
+                WHERE work.state = 'abandoned'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM valid_abandonments operation
+                      WHERE operation.raw_capture_row_id = work.raw_capture_row_id
+                        AND operation.lane_work_id = work.lane_work_id
+                        AND operation.completed_unix_ms = work.updated_unix_ms));
+            """;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<bool> ReadHasRequiredAsync(
@@ -713,7 +935,7 @@ internal sealed class SqliteCaptureLaneStore(
         command.Transaction = transaction;
         command.CommandText = """
             UPDATE raw_captures
-            SET retention_hold = CASE WHEN
+                SET retention_hold = CASE WHEN
                 EXISTS (
                     SELECT 1 FROM capture_lane_work
                     WHERE raw_capture_row_id = $raw
@@ -818,6 +1040,10 @@ internal sealed class SqliteCaptureLaneStore(
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        connection.CreateFunction<string?, string>(
+            "hvo_sha256",
+            static value => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty))),
+            isDeterministic: true);
         using (var command = connection.CreateCommand())
         {
             command.CommandText = $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000}; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;";
@@ -863,6 +1089,7 @@ internal sealed class SqliteCaptureLaneStore(
         string? LeaseOwner,
         string? CompletionToken,
         DateTimeOffset? LeaseExpiresUtc);
+
 }
 
 [Serializable]

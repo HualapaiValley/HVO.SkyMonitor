@@ -5,6 +5,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
@@ -13,6 +14,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -57,7 +59,19 @@ public sealed record OperatorOutboxItem(
     DateTimeOffset? CreatedUtc = null,
     DateTimeOffset? NextAttemptUtc = null,
     string? MediaType = null,
-    string? AuditSummary = null);
+    string? AuditSummary = null,
+    string? AgentId = null,
+    string? Lane = null,
+    Guid? CaptureId = null,
+    Guid? ArtifactId = null,
+    long? CaptureSequence = null,
+    long? WorkId = null,
+    long? OuterWorkId = null,
+    string? ManifestSha256 = null,
+    string? PayloadSha256 = null,
+    string? ProcessingProfile = null,
+    string? ProcessingProfileSha256 = null,
+    string? DurableState = null);
 
 internal sealed record OperatorOutboxPage(
     string Kind,
@@ -77,6 +91,11 @@ internal sealed record OperatorCommandReceipt(
     string State,
     long? Version,
     DateTimeOffset CompletedUtc);
+
+internal sealed record OperatorTransientOwnershipBinding(
+    string ActionToken,
+    string DeploymentRunId,
+    string InventorySha256);
 
 internal sealed record CameraAgentSystemStatus(
     string SnapshotLabel,
@@ -197,6 +216,13 @@ internal interface ICameraAgentOperatorUiService
         string idempotencyKey,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>> BindTransientRuntimeOwnershipAsync(
+        string referenceToken,
+        string deploymentRunId,
+        string inventorySha256,
+        bool legacyOwnershipExternallyEstablished,
+        CancellationToken cancellationToken);
+
     ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(
         string kind,
         OutboxOperationAction action,
@@ -216,6 +242,7 @@ internal sealed class CameraAgentOperatorUiService(
     IArtifactOutbox artifactOutbox,
     IEnvironmentalObservationOutbox environmentalOutbox,
     EnvironmentalObservationDeliveryWakeup environmentalWakeup,
+    ITransientRuntimeManagement transientRuntime,
     ICameraAgentConfigurationAccessor configurationAccessor,
     IEnumerable<CaptureProcessingStepRegistration> processingRegistrations,
     IEnumerable<CameraModuleRegistration> moduleRegistrations,
@@ -306,7 +333,8 @@ internal sealed class CameraAgentOperatorUiService(
         }
         if (pageSize is < 1 or > 50 ||
             !string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(kind, "Environmental", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(kind, "Environmental", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase))
         {
             return OperatorUiResult<OperatorOutboxPage>.Failure(
                 OperatorUiResultKind.Invalid,
@@ -315,6 +343,49 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
+            if (string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(storageAlias))
+                {
+                    return OperatorUiResult<OperatorOutboxPage>.Failure(
+                        OperatorUiResultKind.Invalid, "Transient runtime quarantine is not storage-alias scoped.");
+                }
+                TransientRuntimeQuarantineCursor? runtimeCursor = null;
+                if (!string.IsNullOrWhiteSpace(cursor) &&
+                    !tokens.TryReadTransientRuntimeCursor(cursor, out runtimeCursor))
+                {
+                    return OperatorUiResult<OperatorOutboxPage>.Failure(
+                        OperatorUiResultKind.Invalid, "The quarantine source or cursor is invalid.");
+                }
+                var runtimePage = await transientRuntime.ReadQuarantinePageAsync(
+                    pageSize, runtimeCursor, cancellationToken).ConfigureAwait(false);
+                var runtimeItems = runtimePage.Items.Select(item =>
+                {
+                    var target = new TransientRuntimeOperationTarget(
+                        item.RawCaptureRowId, item.LaneWorkId, item.OuterLaneWorkId, item.AgentId,
+                        item.CaptureSequence, item.CaptureId, item.ArtifactId, item.ManifestSha256,
+                        item.PayloadSha256, item.ProcessingProfileSha256, item.Mode, item.Required, item.OuterLaneState,
+                        item.WorkState, item.FrameState, item.FailureReason, item.OuterLaneUpdatedUtc,
+                        item.WorkUpdatedUtc, item.FrameUpdatedUtc);
+                    return new OperatorOutboxItem(
+                        "TransientRuntime", item.FrameState, null, item.Required ? "Required transient" : "Optional transient",
+                        item.AttemptCount, item.PayloadBytes, item.FrameUpdatedUtc,
+                        OutboxOperationsReasonCodes.Sanitize(item.FailureReason),
+                        null,
+                        tokens.ProtectTransientRuntimeReference(target),
+                        item.CreatedUtc, null, null,
+                        null, item.AgentId, "transient", item.CaptureId, item.ArtifactId, item.CaptureSequence,
+                        item.LaneWorkId, item.OuterLaneWorkId, item.ManifestSha256, item.PayloadSha256,
+                        $"{item.ProcessingProfileName} {item.ProcessingProfileVersion}", item.ProcessingProfileSha256,
+                        $"{item.Mode}; outer {item.OuterLaneState}; work {item.WorkState}; frame {item.FrameState}");
+                }).ToArray();
+                return OperatorUiResult<OperatorOutboxPage>.Success(new(
+                    "TransientRuntime", [], null, runtimeItems,
+                    runtimePage.NextCursor is null
+                        ? null
+                        : tokens.ProtectTransientRuntimeCursor(runtimePage.NextCursor)));
+            }
+
             if (_hostOptions.CentralIntegration.Mode == CentralIntegrationMode.Disabled)
             {
                 return OperatorUiResult<OperatorOutboxPage>.Success(new(
@@ -646,6 +717,38 @@ internal sealed class CameraAgentOperatorUiService(
         }
     }
 
+    public async ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>> BindTransientRuntimeOwnershipAsync(
+        string referenceToken,
+        string deploymentRunId,
+        string inventorySha256,
+        bool legacyOwnershipExternallyEstablished,
+        CancellationToken cancellationToken)
+    {
+        if (await GetAuthorizedActorAsync().ConfigureAwait(false) is null)
+        {
+            return Denied<OperatorTransientOwnershipBinding>();
+        }
+        if (!tokens.TryReadTransientRuntimeReference(referenceToken, out var target) || target is null)
+        {
+            return NotFound<OperatorTransientOwnershipBinding>(
+                "The transient runtime reference expired or is no longer available.");
+        }
+        if (!TransientRuntimeExternalOwnershipEvidence.TryCreate(
+                deploymentRunId,
+                inventorySha256,
+                legacyOwnershipExternallyEstablished,
+                out var evidence) || evidence is null)
+        {
+            return OperatorUiResult<OperatorTransientOwnershipBinding>.Failure(
+                OperatorUiResultKind.Invalid,
+                "Enter the exact deployment run ID and inventory SHA-256, then acknowledge external legacy ownership.");
+        }
+        return OperatorUiResult<OperatorTransientOwnershipBinding>.Success(new(
+            tokens.ProtectTransientRuntimeAction(target with { ExternalOwnershipEvidence = evidence }),
+            evidence.DeploymentRunId,
+            evidence.InventorySha256));
+    }
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
     public async ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(
         string kind,
@@ -699,6 +802,19 @@ internal sealed class CameraAgentOperatorUiService(
                     environmentalWakeup.Signal();
                 }
             }
+            else if (string.Equals(kind, "TransientRuntime", StringComparison.Ordinal) &&
+                action == OutboxOperationAction.Abandon &&
+                tokens.TryReadTransientRuntimeAction(actionToken, out var runtimeTarget) && runtimeTarget is not null)
+            {
+                var receipt = await transientRuntime.AbandonQuarantinedCaptureAsync(
+                    runtimeTarget, idempotencyKey, actor, reasonCode, cancellationToken).ConfigureAwait(false);
+                return OperatorUiResult<OperatorCommandReceipt>.Success(new(
+                    "Abandon transient runtime item",
+                    receipt.Disposition == TransientRuntimeOperationDisposition.Duplicate ? "Duplicate receipt" : "Applied",
+                    receipt.State,
+                    null,
+                    receipt.CompletedUtc));
+            }
             else
             {
                 return NotFound<OperatorCommandReceipt>("The outbox action expired or is no longer available.");
@@ -707,7 +823,9 @@ internal sealed class CameraAgentOperatorUiService(
             return OperatorUiResult<OperatorCommandReceipt>.Success(new(
                 string.Equals(kind, "Artifact", StringComparison.Ordinal)
                     ? $"{action} artifact item"
-                    : $"{action} environmental item",
+                    : string.Equals(kind, "Environmental", StringComparison.Ordinal)
+                        ? $"{action} environmental item"
+                        : $"{action} outbox item",
                 disposition == OutboxOperationDisposition.Duplicate ? "Duplicate receipt" : "Applied",
                 action == OutboxOperationAction.Replay ? "Pending" : "Abandoned",
                 null,

@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
+using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
@@ -11,16 +13,117 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Transients;
 
-public enum TransientQuarantineReleaseDisposition
+public enum TransientRuntimeOperationDisposition
 {
-    Abandoned,
-    NotFound
+    Applied,
+    Duplicate
 }
+
+public sealed record TransientRuntimeQuarantineCursor(long UpdatedUnixMs, long RawCaptureRowId);
+
+public sealed record TransientRuntimeQuarantineRecord(
+    long RawCaptureRowId,
+    long LaneWorkId,
+    long OuterLaneWorkId,
+    string AgentId,
+    long CaptureSequence,
+    Guid CaptureId,
+    Guid ArtifactId,
+    string ManifestSha256,
+    string PayloadSha256,
+    string ProcessingProfileName,
+    string ProcessingProfileVersion,
+    string ProcessingProfileSha256,
+    string Mode,
+    bool Required,
+    string OuterLaneState,
+    string WorkState,
+    string FrameState,
+    string FailureReason,
+    int AttemptCount,
+    long PayloadBytes,
+    bool RetentionHold,
+    DateTimeOffset CreatedUtc,
+    DateTimeOffset OuterLaneUpdatedUtc,
+    DateTimeOffset WorkUpdatedUtc,
+    DateTimeOffset FrameUpdatedUtc,
+    TransientRuntimeQuarantineCursor Cursor);
+
+public sealed record TransientRuntimeQuarantinePage(
+    IReadOnlyList<TransientRuntimeQuarantineRecord> Items,
+    TransientRuntimeQuarantineCursor? NextCursor);
+
+public sealed record TransientRuntimeExternalOwnershipEvidence(
+    string DeploymentRunId,
+    string InventorySha256,
+    bool LegacyOwnershipExternallyEstablished)
+{
+    public static bool TryCreate(
+        string? deploymentRunId,
+        string? inventorySha256,
+        bool legacyOwnershipExternallyEstablished,
+        out TransientRuntimeExternalOwnershipEvidence? evidence)
+    {
+        evidence = null;
+        if (!legacyOwnershipExternallyEstablished || string.IsNullOrEmpty(deploymentRunId) ||
+            deploymentRunId.Length > 128 || !char.IsAsciiLetterOrDigit(deploymentRunId[0]) ||
+            deploymentRunId.Any(static character =>
+                !char.IsAsciiLetterOrDigit(character) && character is not ('.' or '_' or '-')) ||
+            inventorySha256?.Length != 64 || !inventorySha256.All(Uri.IsHexDigit))
+        {
+            return false;
+        }
+        evidence = new TransientRuntimeExternalOwnershipEvidence(
+            deploymentRunId,
+            inventorySha256.ToUpperInvariant(),
+            LegacyOwnershipExternallyEstablished: true);
+        return true;
+    }
+}
+
+public sealed record TransientRuntimeOperationTarget(
+    long RawCaptureRowId,
+    long LaneWorkId,
+    long OuterLaneWorkId,
+    string AgentId,
+    long CaptureSequence,
+    Guid CaptureId,
+    Guid ArtifactId,
+    string ManifestSha256,
+    string PayloadSha256,
+    string ProcessingProfileSha256,
+    string Mode,
+    bool Required,
+    string ExpectedOuterLaneState,
+    string ExpectedWorkState,
+    string ExpectedFrameState,
+    string ExpectedFailureReason,
+    DateTimeOffset ExpectedOuterLaneUpdatedUtc,
+    DateTimeOffset ExpectedWorkUpdatedUtc,
+    DateTimeOffset ExpectedFrameUpdatedUtc,
+    TransientRuntimeExternalOwnershipEvidence? ExternalOwnershipEvidence = null);
+
+public sealed record TransientRuntimeOperationReceipt(
+    TransientRuntimeOperationDisposition Disposition,
+    string State,
+    string Actor,
+    string ReasonCode,
+    DateTimeOffset CompletedUtc,
+    string DeploymentRunId,
+    string InventorySha256);
 
 public interface ITransientRuntimeManagement
 {
-    ValueTask<TransientQuarantineReleaseDisposition> AbandonQuarantinedCaptureAsync(
-        Guid artifactId,
+    ValueTask<TransientRuntimeQuarantinePage> ReadQuarantinePageAsync(
+        int pageSize,
+        TransientRuntimeQuarantineCursor? cursor,
+        CancellationToken cancellationToken);
+
+    ValueTask<TransientRuntimeOperationReceipt> AbandonQuarantinedCaptureAsync(
+        TransientRuntimeOperationTarget target,
+        string idempotencyKey,
+        string actor,
+        string reasonCode,
         CancellationToken cancellationToken);
 }
 
@@ -89,8 +192,16 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = RuntimeSchemaSql;
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception)
+        {
+            throw new InvalidDataException("Transient runtime schema is malformed.", exception);
+        }
         await MigrateLegacyFrameSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await VerifyOperationsSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
         await ReconcileAsync(connection, cancellationToken).ConfigureAwait(false);
     }
 
@@ -733,53 +844,173 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         _faultInjector.Inject(TransientRuntimeFaultPoint.AfterRuntimeCompletionCommit);
     }
 
-    public async ValueTask<TransientQuarantineReleaseDisposition> AbandonQuarantinedCaptureAsync(
-        Guid artifactId,
+    public async ValueTask<TransientRuntimeQuarantinePage> ReadQuarantinePageAsync(
+        int pageSize,
+        TransientRuntimeQuarantineCursor? cursor,
         CancellationToken cancellationToken)
     {
-        ArgumentOutOfRangeException.ThrowIfEqual(artifactId, Guid.Empty);
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginImmediate(connection);
-        using (var work = connection.CreateCommand())
+        if (pageSize is < 1 or > 100 || cursor is { RawCaptureRowId: < 1 })
         {
-            work.Transaction = transaction;
-            work.CommandText = """
-            UPDATE transient_capture_work
-            SET state = 'abandoned', updated_unix_ms = $now
-            WHERE raw_capture_row_id = (
-                SELECT raw_capture_row_id FROM raw_captures WHERE raw_artifact_id = $artifact)
-              AND state = 'quarantined';
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        }
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateQuarantineReadCommand(connection, transaction: null);
+        command.CommandText += "\n" + """
+            WHERE f.state = 'quarantined' AND ($cursor_updated IS NULL OR
+                f.updated_unix_ms < $cursor_updated OR
+                (f.updated_unix_ms = $cursor_updated AND f.raw_capture_row_id < $cursor_raw))
+            ORDER BY f.updated_unix_ms DESC, f.raw_capture_row_id DESC
+            LIMIT $limit;
             """;
-            work.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
-            work.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
-            if (await work.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 0)
+        command.Parameters.AddWithValue("$cursor_updated", cursor is null ? DBNull.Value : cursor.UpdatedUnixMs);
+        command.Parameters.AddWithValue("$cursor_raw", cursor is null ? DBNull.Value : cursor.RawCaptureRowId);
+        command.Parameters.AddWithValue("$limit", pageSize + 1);
+        var items = new List<TransientRuntimeQuarantineRecord>(pageSize + 1);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            items.Add(await ReadQuarantineRecordAsync(reader, cancellationToken).ConfigureAwait(false));
+        }
+        var next = items.Count > pageSize ? items[pageSize - 1].Cursor : null;
+        if (items.Count > pageSize)
+        {
+            items.RemoveAt(pageSize);
+        }
+        return new TransientRuntimeQuarantinePage(items, next);
+    }
+
+    public async ValueTask<TransientRuntimeOperationReceipt> AbandonQuarantinedCaptureAsync(
+        TransientRuntimeOperationTarget target,
+        string idempotencyKey,
+        string actor,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        ValidateOperation(target, idempotencyKey, actor, reasonCode);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var lifecycleGate = RawIngressLifecycleLock.ForRoot(_root);
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            var duplicate = await ReadOperationReceiptAsync(
+                connection, null, target, idempotencyKey, actor, reasonCode, cancellationToken)
+                .ConfigureAwait(false);
+            if (duplicate is not null)
+            {
+                return duplicate;
+            }
+
+            {
+                using var evidenceRead = CreateQuarantineReadCommand(connection, transaction: null);
+                evidenceRead.CommandText += "\nWHERE f.raw_capture_row_id = $raw;";
+                evidenceRead.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
+                using var evidenceReader = await evidenceRead.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                if (!await evidenceReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    throw new OutboxOperationCollisionException("Transient runtime quarantine no longer exists.");
+                }
+                var evidence = await ReadQuarantineRecordAsync(evidenceReader, cancellationToken).ConfigureAwait(false);
+                EnsureExactTarget(evidence, target);
+            }
+            await VerifyPayloadAsync(connection, target, cancellationToken).ConfigureAwait(false);
+
+            using var transaction = BeginImmediate(connection);
+            duplicate = await ReadOperationReceiptAsync(
+                connection, transaction, target, idempotencyKey, actor, reasonCode, cancellationToken)
+                .ConfigureAwait(false);
+            if (duplicate is not null)
             {
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return TransientQuarantineReleaseDisposition.NotFound;
+                return duplicate;
             }
+            using var read = CreateQuarantineReadCommand(connection, transaction);
+            read.CommandText += "\nWHERE f.raw_capture_row_id = $raw;";
+            read.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
+            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new OutboxOperationCollisionException("Transient runtime quarantine no longer exists.");
+            }
+            var current = await ReadQuarantineRecordAsync(reader, cancellationToken).ConfigureAwait(false);
+            await reader.DisposeAsync().ConfigureAwait(false);
+            EnsureExactTarget(current, target);
+
+            var now = DateTimeOffset.FromUnixTimeMilliseconds(
+                _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+            using (var work = connection.CreateCommand())
+            {
+                work.Transaction = transaction;
+                work.CommandText = """
+                    UPDATE transient_capture_work
+                    SET state = 'abandoned', updated_unix_ms = $now
+                    WHERE raw_capture_row_id = $raw AND lane_work_id = $lane_work
+                      AND state = 'quarantined' AND updated_unix_ms = $expected;
+                    """;
+                work.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+                work.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
+                work.Parameters.AddWithValue("$lane_work", target.LaneWorkId);
+                work.Parameters.AddWithValue("$expected", target.ExpectedWorkUpdatedUtc.ToUnixTimeMilliseconds());
+                if (await work.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                {
+                    throw new OutboxOperationCollisionException("Transient lane work changed before abandonment.");
+                }
+            }
+            using (var frame = connection.CreateCommand())
+            {
+                frame.Transaction = transaction;
+                frame.CommandText = """
+                    UPDATE transient_worker_frames
+                    SET state = 'abandoned', failure_reason = 'operator-abandoned', updated_unix_ms = $now
+                    WHERE raw_capture_row_id = $raw AND state = 'quarantined'
+                      AND updated_unix_ms = $expected AND failure_reason = $failure;
+                    """;
+                frame.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+                frame.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
+                frame.Parameters.AddWithValue("$expected", target.ExpectedFrameUpdatedUtc.ToUnixTimeMilliseconds());
+                frame.Parameters.AddWithValue("$failure", target.ExpectedFailureReason);
+                if (await frame.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                {
+                    throw new OutboxOperationCollisionException("Transient worker frame changed before abandonment.");
+                }
+            }
+            await InsertOperationReceiptAsync(
+                connection, transaction, target, idempotencyKey, actor, reasonCode, now, cancellationToken)
+                .ConfigureAwait(false);
+            using (var hold = connection.CreateCommand())
+            {
+                hold.Transaction = transaction;
+                hold.CommandText = """
+                    UPDATE raw_captures SET retention_hold = CASE WHEN
+                        EXISTS (SELECT 1 FROM capture_lane_work WHERE raw_capture_row_id = $raw
+                            AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                        OR EXISTS (SELECT 1 FROM transient_candidate_sources s JOIN transient_candidates c
+                            ON c.candidate_id = s.candidate_id
+                            WHERE s.raw_capture_row_id = $raw AND c.source_hold_released = 0)
+                        THEN 1 ELSE 0 END WHERE raw_capture_row_id = $raw;
+                    """;
+                hold.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
+                if (await hold.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                {
+                    throw new InvalidDataException("Transient runtime source disappeared before hold release.");
+                }
+            }
+            await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new TransientRuntimeOperationReceipt(
+                TransientRuntimeOperationDisposition.Applied, "abandoned", actor, reasonCode, now,
+                target.ExternalOwnershipEvidence!.DeploymentRunId,
+                target.ExternalOwnershipEvidence.InventorySha256);
         }
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            UPDATE transient_worker_frames
-            SET state = 'abandoned', failure_reason = 'operator-abandoned', updated_unix_ms = $now
-            WHERE raw_capture_row_id = (
-                SELECT raw_capture_row_id FROM raw_captures WHERE raw_artifact_id = $artifact)
-              AND state = 'quarantined';
-            UPDATE raw_captures SET retention_hold = CASE WHEN
-                EXISTS (SELECT 1 FROM capture_lane_work WHERE raw_capture_row_id = raw_captures.raw_capture_row_id
-                    AND ((required = 1 AND state != 'completed') OR state = 'leased'))
-                OR EXISTS (SELECT 1 FROM transient_candidate_sources s JOIN transient_candidates c
-                    ON c.candidate_id = s.candidate_id
-                    WHERE s.raw_capture_row_id = raw_captures.raw_capture_row_id AND c.source_hold_released = 0)
-                THEN 1 ELSE 0 END WHERE raw_artifact_id = $artifact;
-            """;
-        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
-        command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        await UpdatePressureAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return TransientQuarantineReleaseDisposition.Abandoned;
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
+        {
+            throw new OutboxOperationCollisionException("Transient runtime operation collided with durable state.", exception);
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
     }
 
     internal async ValueTask MarkCandidateRetryAsync(
@@ -1014,6 +1245,310 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         _faultInjector.Inject(afterCommit);
     }
 
+    private static SqliteCommand CreateQuarantineReadCommand(
+        SqliteConnection connection,
+        SqliteTransaction? transaction)
+    {
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT f.raw_capture_row_id, w.lane_work_id, lane.work_id,
+                   r.agent_id, r.capture_sequence, r.capture_id, r.raw_artifact_id, w.artifact_id,
+                   r.manifest_sha256, w.manifest_sha256, r.manifest_json,
+                   w.mode, w.required, lane.lane_name, lane.required,
+                   lane.state, w.state, f.state, f.failure_reason, f.attempt_count,
+                   r.payload_length, r.retention_hold, f.created_unix_ms,
+                   lane.updated_unix_ms, w.updated_unix_ms, f.updated_unix_ms,
+                   r.state, lane.lease_token, lane.lease_owner, lane.lease_expires_unix_ms,
+                   r.payload_sha256
+            FROM transient_worker_frames f
+            JOIN transient_capture_work w ON w.raw_capture_row_id = f.raw_capture_row_id
+            JOIN capture_lane_work lane ON lane.work_id = w.lane_work_id
+            JOIN raw_captures r ON r.raw_capture_row_id = f.raw_capture_row_id
+            """;
+        return command;
+    }
+
+    private static async ValueTask<TransientRuntimeQuarantineRecord> ReadQuarantineRecordAsync(
+        SqliteDataReader reader,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParseExact(reader.GetString(5), "N", out var captureId) ||
+            !Guid.TryParseExact(reader.GetString(6), "N", out var artifactId) ||
+            !string.Equals(reader.GetString(6), reader.GetString(7), StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(8), reader.GetString(9), StringComparison.Ordinal) ||
+            reader.GetString(8).Length != 64 ||
+            !string.Equals(reader.GetString(13), "transient", StringComparison.Ordinal) ||
+            reader.GetBoolean(12) != reader.GetBoolean(14) ||
+            !string.Equals(reader.GetString(15), "completed", StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(16), "quarantined", StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(17), "quarantined", StringComparison.Ordinal) ||
+            await reader.IsDBNullAsync(18, cancellationToken).ConfigureAwait(false) ||
+            !reader.GetBoolean(21) ||
+            !string.Equals(reader.GetString(26), "committed", StringComparison.Ordinal) ||
+            !await reader.IsDBNullAsync(27, cancellationToken).ConfigureAwait(false) ||
+            !await reader.IsDBNullAsync(28, cancellationToken).ConfigureAwait(false) ||
+            !await reader.IsDBNullAsync(29, cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidDataException("Transient runtime quarantine contains malformed or unheld durable state.");
+        }
+        var manifestJson = await reader.GetFieldValueAsync<byte[]>(10, cancellationToken).ConfigureAwait(false);
+        var parsed = CaptureContractJson.ParseManifest(manifestJson);
+        var manifest = parsed.Document?.Manifest;
+        if (!parsed.IsValid || manifest is null ||
+            !string.Equals(CaptureContractJson.ComputeManifestSha256(manifestJson), reader.GetString(8), StringComparison.Ordinal) ||
+            manifest.Descriptor.Capture.CaptureId != captureId ||
+            manifest.Descriptor.Capture.CaptureSequence != reader.GetInt64(4) ||
+            !string.Equals(manifest.Descriptor.Capture.AgentId, reader.GetString(3), StringComparison.Ordinal) ||
+            manifest.Descriptor.Artifact.ArtifactId != artifactId ||
+            !string.Equals(manifest.Descriptor.Artifact.ChecksumSha256, reader.GetString(30), StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Transient runtime quarantine source manifest is invalid or unrelated.");
+        }
+        var profile = manifest.Descriptor.Profiles.Processing;
+        if (string.IsNullOrWhiteSpace(profile.Name) || string.IsNullOrWhiteSpace(profile.Version) ||
+            profile.Sha256.Length != 64)
+        {
+            throw new InvalidDataException("Transient runtime quarantine processing profile identity is malformed.");
+        }
+        var frameUpdated = reader.GetInt64(25);
+        return new TransientRuntimeQuarantineRecord(
+            reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetString(3), reader.GetInt64(4),
+            captureId, artifactId, reader.GetString(8), reader.GetString(30), profile.Name, profile.Version, profile.Sha256,
+            reader.GetString(11), reader.GetBoolean(12), reader.GetString(15), reader.GetString(16), reader.GetString(17),
+            reader.GetString(18), reader.GetInt32(19), reader.GetInt64(20), reader.GetBoolean(21),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(22)),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(23)),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(24)),
+            DateTimeOffset.FromUnixTimeMilliseconds(frameUpdated),
+            new TransientRuntimeQuarantineCursor(frameUpdated, reader.GetInt64(0)));
+    }
+
+    private static void ValidateOperation(
+        TransientRuntimeOperationTarget target,
+        string idempotencyKey,
+        string actor,
+        string reasonCode)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        if (target.RawCaptureRowId < 1 || target.LaneWorkId < 1 || target.OuterLaneWorkId < 1 ||
+            target.CaptureSequence < 1 || target.CaptureId == Guid.Empty || target.ArtifactId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(target.AgentId) || target.AgentId.Length > 128 ||
+            target.ManifestSha256.Length != 64 || target.PayloadSha256.Length != 64 ||
+            target.ProcessingProfileSha256.Length != 64 ||
+            target.Mode is not ("edge" or "hybrid") ||
+            target.ExpectedOuterLaneState != "completed" || target.ExpectedWorkState != "quarantined" ||
+            target.ExpectedFrameState != "quarantined" || string.IsNullOrWhiteSpace(target.ExpectedFailureReason) ||
+            target.ExpectedFailureReason.Length > 128 || string.IsNullOrWhiteSpace(idempotencyKey) ||
+            idempotencyKey.Length > 128 || idempotencyKey.Any(char.IsControl) ||
+            string.IsNullOrWhiteSpace(actor) || actor.Length > 128 || actor.Any(char.IsControl) ||
+            target.ExternalOwnershipEvidence is not { } ownership ||
+            !TransientRuntimeExternalOwnershipEvidence.TryCreate(
+                ownership.DeploymentRunId,
+                ownership.InventorySha256,
+                ownership.LegacyOwnershipExternallyEstablished,
+                out var normalizedOwnership) || ownership != normalizedOwnership ||
+            !OutboxOperationsReasonCodes.IsAllowed(OutboxOperationAction.Abandon, reasonCode))
+        {
+            throw new ArgumentException("Transient runtime operation is invalid.");
+        }
+    }
+
+    private static void EnsureExactTarget(
+        TransientRuntimeQuarantineRecord current,
+        TransientRuntimeOperationTarget target)
+    {
+        if (current.RawCaptureRowId != target.RawCaptureRowId || current.LaneWorkId != target.LaneWorkId ||
+            current.OuterLaneWorkId != target.OuterLaneWorkId || current.CaptureSequence != target.CaptureSequence ||
+            current.CaptureId != target.CaptureId || current.ArtifactId != target.ArtifactId ||
+            !string.Equals(current.AgentId, target.AgentId, StringComparison.Ordinal) ||
+            !string.Equals(current.ManifestSha256, target.ManifestSha256, StringComparison.Ordinal) ||
+            !string.Equals(current.PayloadSha256, target.PayloadSha256, StringComparison.Ordinal) ||
+            !string.Equals(current.ProcessingProfileSha256, target.ProcessingProfileSha256, StringComparison.Ordinal) ||
+            !string.Equals(current.Mode, target.Mode, StringComparison.Ordinal) || current.Required != target.Required ||
+            !string.Equals(current.OuterLaneState, target.ExpectedOuterLaneState, StringComparison.Ordinal) ||
+            !string.Equals(current.WorkState, target.ExpectedWorkState, StringComparison.Ordinal) ||
+            !string.Equals(current.FrameState, target.ExpectedFrameState, StringComparison.Ordinal) ||
+            !string.Equals(current.FailureReason, target.ExpectedFailureReason, StringComparison.Ordinal) ||
+            current.OuterLaneUpdatedUtc != target.ExpectedOuterLaneUpdatedUtc ||
+            current.WorkUpdatedUtc != target.ExpectedWorkUpdatedUtc ||
+            current.FrameUpdatedUtc != target.ExpectedFrameUpdatedUtc)
+        {
+            throw new OutboxOperationCollisionException("Transient runtime identity or state changed.");
+        }
+    }
+
+    private async ValueTask VerifyPayloadAsync(
+        SqliteConnection connection,
+        TransientRuntimeOperationTarget target,
+        CancellationToken cancellationToken)
+    {
+        string payloadRelativePath;
+        string sidecarRelativePath;
+        long payloadLength;
+        byte[] manifestJson;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT payload_relative_path, sidecar_relative_path, payload_length, payload_sha256,
+                       manifest_json, manifest_sha256, state, retention_hold
+                FROM raw_captures WHERE raw_capture_row_id = $raw;
+                """;
+            command.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
+                reader.GetString(3) != target.PayloadSha256 || reader.GetString(5) != target.ManifestSha256 ||
+                reader.GetString(6) != "committed" || !reader.GetBoolean(7))
+            {
+                throw new InvalidDataException("Transient runtime source evidence or retention hold changed.");
+            }
+            payloadRelativePath = reader.GetString(0);
+            sidecarRelativePath = reader.GetString(1);
+            payloadLength = reader.GetInt64(2);
+            manifestJson = await reader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false);
+        }
+        var payloadPath = Resolve(payloadRelativePath);
+        var sidecarPath = Resolve(sidecarRelativePath);
+        if (!File.Exists(payloadPath) || !File.Exists(sidecarPath) || new FileInfo(payloadPath).Length != payloadLength)
+        {
+            throw new InvalidDataException("Transient runtime source evidence is unavailable.");
+        }
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, payloadPath);
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, sidecarPath);
+        using (var payload = OpenEvidence(payloadPath))
+        {
+            var checksum = Convert.ToHexString(
+                await SHA256.HashDataAsync(payload, cancellationToken).ConfigureAwait(false));
+            if (!string.Equals(checksum, target.PayloadSha256, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Transient runtime source payload checksum is invalid.");
+            }
+        }
+        using var sidecar = OpenEvidence(sidecarPath);
+        var sidecarBytes = await ReadExactlyAsync(sidecar, manifestJson.Length, cancellationToken).ConfigureAwait(false);
+        if (!sidecarBytes.AsSpan().SequenceEqual(manifestJson))
+        {
+            throw new InvalidDataException("Transient runtime source sidecar differs from its durable manifest.");
+        }
+    }
+
+    private static async ValueTask<TransientRuntimeOperationReceipt?> ReadOperationReceiptAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        TransientRuntimeOperationTarget target,
+        string idempotencyKey,
+        string actor,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT raw_capture_row_id, lane_work_id, outer_lane_work_id, agent_id, capture_sequence,
+                   capture_id, artifact_id, manifest_sha256, payload_sha256, processing_profile_sha256, mode, required,
+                   expected_outer_lane_state, expected_work_state, expected_frame_state, expected_failure_reason,
+                   expected_outer_lane_updated_unix_ms, expected_work_updated_unix_ms,
+                    expected_frame_updated_unix_ms, deployment_run_id, inventory_sha256,
+                    legacy_ownership_externally_established, action, actor, reason_code, result_state, completed_unix_ms,
+                    receipt_identity_sha256,
+                    hvo_sha256(json_array(
+                        idempotency_key, raw_capture_row_id, lane_work_id, outer_lane_work_id, agent_id,
+                        capture_sequence, capture_id, artifact_id, manifest_sha256, payload_sha256,
+                        processing_profile_sha256, mode, required, expected_outer_lane_state, expected_work_state,
+                        expected_frame_state, expected_failure_reason, expected_outer_lane_updated_unix_ms,
+                        expected_work_updated_unix_ms, expected_frame_updated_unix_ms, deployment_run_id,
+                        inventory_sha256, legacy_ownership_externally_established, action, actor, reason_code,
+                        result_state, completed_unix_ms))
+            FROM transient_runtime_operations WHERE idempotency_key = $key;
+            """;
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+        if (reader.GetInt64(0) != target.RawCaptureRowId || reader.GetInt64(1) != target.LaneWorkId ||
+            reader.GetInt64(2) != target.OuterLaneWorkId || !string.Equals(reader.GetString(3), target.AgentId, StringComparison.Ordinal) ||
+            reader.GetInt64(4) != target.CaptureSequence || reader.GetString(5) != target.CaptureId.ToString("N") ||
+            reader.GetString(6) != target.ArtifactId.ToString("N") || reader.GetString(7) != target.ManifestSha256 ||
+            reader.GetString(8) != target.PayloadSha256 || reader.GetString(9) != target.ProcessingProfileSha256 ||
+            reader.GetString(10) != target.Mode || reader.GetBoolean(11) != target.Required ||
+            reader.GetString(12) != target.ExpectedOuterLaneState || reader.GetString(13) != target.ExpectedWorkState ||
+            reader.GetString(14) != target.ExpectedFrameState || reader.GetString(15) != target.ExpectedFailureReason ||
+            reader.GetInt64(16) != target.ExpectedOuterLaneUpdatedUtc.ToUnixTimeMilliseconds() ||
+            reader.GetInt64(17) != target.ExpectedWorkUpdatedUtc.ToUnixTimeMilliseconds() ||
+            reader.GetInt64(18) != target.ExpectedFrameUpdatedUtc.ToUnixTimeMilliseconds() ||
+            reader.GetString(19) != target.ExternalOwnershipEvidence!.DeploymentRunId ||
+            reader.GetString(20) != target.ExternalOwnershipEvidence.InventorySha256 || !reader.GetBoolean(21) ||
+            reader.GetString(22) != "abandon" || reader.GetString(23) != actor || reader.GetString(24) != reasonCode ||
+            reader.GetString(27) != reader.GetString(28))
+        {
+            throw new OutboxOperationCollisionException("Idempotency key belongs to another transient runtime operation.");
+        }
+        return new TransientRuntimeOperationReceipt(
+            TransientRuntimeOperationDisposition.Duplicate, reader.GetString(25), actor, reasonCode,
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(26)), reader.GetString(19), reader.GetString(20));
+    }
+
+    private static async ValueTask InsertOperationReceiptAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        TransientRuntimeOperationTarget target,
+        string idempotencyKey,
+        string actor,
+        string reasonCode,
+        DateTimeOffset completedUtc,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO transient_runtime_operations(
+                idempotency_key, raw_capture_row_id, lane_work_id, outer_lane_work_id, agent_id,
+                capture_sequence, capture_id, artifact_id, manifest_sha256, payload_sha256, processing_profile_sha256,
+                mode, required, expected_outer_lane_state, expected_work_state, expected_frame_state,
+                expected_failure_reason, expected_outer_lane_updated_unix_ms, expected_work_updated_unix_ms,
+                expected_frame_updated_unix_ms, deployment_run_id, inventory_sha256,
+                legacy_ownership_externally_established, action, actor, reason_code, result_state, completed_unix_ms,
+                receipt_identity_sha256)
+            VALUES($key, $raw, $lane_work, $outer_work, $agent, $sequence, $capture, $artifact,
+                   $manifest, $payload, $profile, $mode, $required, $outer_state, $work_state, $frame_state,
+                   $failure, $outer_updated, $work_updated, $frame_updated, $deployment_run, $inventory, 1, 'abandon', $actor,
+                   $reason, 'abandoned', $completed,
+                   hvo_sha256(json_array(
+                       $key, $raw, $lane_work, $outer_work, $agent, $sequence, $capture, $artifact,
+                       $manifest, $payload, $profile, $mode, $required, $outer_state, $work_state,
+                       $frame_state, $failure, $outer_updated, $work_updated, $frame_updated,
+                       $deployment_run, $inventory, 1, 'abandon', $actor, $reason, 'abandoned', $completed)));
+            """;
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        command.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
+        command.Parameters.AddWithValue("$lane_work", target.LaneWorkId);
+        command.Parameters.AddWithValue("$outer_work", target.OuterLaneWorkId);
+        command.Parameters.AddWithValue("$agent", target.AgentId);
+        command.Parameters.AddWithValue("$sequence", target.CaptureSequence);
+        command.Parameters.AddWithValue("$capture", target.CaptureId.ToString("N"));
+        command.Parameters.AddWithValue("$artifact", target.ArtifactId.ToString("N"));
+        command.Parameters.AddWithValue("$manifest", target.ManifestSha256);
+        command.Parameters.AddWithValue("$payload", target.PayloadSha256);
+        command.Parameters.AddWithValue("$profile", target.ProcessingProfileSha256);
+        command.Parameters.AddWithValue("$mode", target.Mode);
+        command.Parameters.AddWithValue("$required", target.Required ? 1 : 0);
+        command.Parameters.AddWithValue("$outer_state", target.ExpectedOuterLaneState);
+        command.Parameters.AddWithValue("$work_state", target.ExpectedWorkState);
+        command.Parameters.AddWithValue("$frame_state", target.ExpectedFrameState);
+        command.Parameters.AddWithValue("$failure", target.ExpectedFailureReason);
+        command.Parameters.AddWithValue("$outer_updated", target.ExpectedOuterLaneUpdatedUtc.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$work_updated", target.ExpectedWorkUpdatedUtc.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$frame_updated", target.ExpectedFrameUpdatedUtc.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$deployment_run", target.ExternalOwnershipEvidence!.DeploymentRunId);
+        command.Parameters.AddWithValue("$inventory", target.ExternalOwnershipEvidence.InventorySha256);
+        command.Parameters.AddWithValue("$actor", actor);
+        command.Parameters.AddWithValue("$reason", reasonCode);
+        command.Parameters.AddWithValue("$completed", completedUtc.ToUnixTimeMilliseconds());
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private async ValueTask ReconcileAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         using var transaction = BeginImmediate(connection);
@@ -1065,6 +1600,108 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         migrate.CommandText = LegacyFrameMigrationSql;
         await migrate.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask VerifyOperationsSchemaAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string expectedColumns = "operation_id,idempotency_key,raw_capture_row_id,lane_work_id,outer_lane_work_id,agent_id,capture_sequence,capture_id,artifact_id,manifest_sha256,payload_sha256,processing_profile_sha256,mode,required,expected_outer_lane_state,expected_work_state,expected_frame_state,expected_failure_reason,expected_outer_lane_updated_unix_ms,expected_work_updated_unix_ms,expected_frame_updated_unix_ms,deployment_run_id,inventory_sha256,legacy_ownership_externally_established,action,actor,reason_code,result_state,completed_unix_ms,receipt_identity_sha256";
+        using (var columns = connection.CreateCommand())
+        {
+            columns.CommandText = "SELECT group_concat(name, ',') FROM (SELECT name FROM pragma_table_info('transient_runtime_operations') ORDER BY cid);";
+            var actual = Convert.ToString(
+                await columns.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (!string.Equals(actual, expectedColumns, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Transient runtime operation table columns do not match the supported schema.");
+            }
+        }
+        using (var table = connection.CreateCommand())
+        {
+            table.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transient_runtime_operations';";
+            var sql = Convert.ToString(
+                await table.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+            string[] requiredFragments =
+            [
+                "STRICT", "idempotency_key TEXT NOT NULL UNIQUE", "length(idempotency_key) BETWEEN 1 AND 128",
+                "length(agent_id) BETWEEN 1 AND 128", "capture_sequence > 0", "length(capture_id) = 32",
+                "length(artifact_id) = 32", "length(manifest_sha256) = 64", "length(payload_sha256) = 64",
+                "length(processing_profile_sha256) = 64", "mode IN ('edge', 'hybrid')", "required IN (0, 1)",
+                "expected_outer_lane_state = 'completed'", "expected_work_state = 'quarantined'",
+                "expected_frame_state = 'quarantined'", "length(expected_failure_reason) BETWEEN 1 AND 128",
+                "length(deployment_run_id) BETWEEN 1 AND 128", "length(inventory_sha256) = 64",
+                "inventory_sha256 NOT GLOB '*[^0-9A-F]*'", "legacy_ownership_externally_established = 1",
+                "action = 'abandon'", "length(actor) BETWEEN 1 AND 128", "length(reason_code) BETWEEN 1 AND 64",
+                "result_state = 'abandoned'", "length(receipt_identity_sha256) = 64",
+                "receipt_identity_sha256 NOT GLOB '*[^0-9A-F]*'"
+            ];
+            var missing = sql is null
+                ? requiredFragments
+                : requiredFragments.Where(fragment =>
+                    !sql.Contains(fragment, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (missing.Length > 0)
+            {
+                throw new InvalidDataException(
+                    $"Transient runtime operation table definition is malformed ({string.Join(", ", missing)}).");
+            }
+        }
+        using (var foreignKeys = connection.CreateCommand())
+        {
+            foreignKeys.CommandText = """
+                SELECT group_concat("from" || '>' || "table" || '.' || "to", ',')
+                FROM (SELECT "from", "table", "to" FROM pragma_foreign_key_list('transient_runtime_operations') ORDER BY "from");
+                """;
+            var actual = Convert.ToString(
+                await foreignKeys.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (!string.Equals(
+                    actual,
+                    "lane_work_id>transient_capture_work.lane_work_id,outer_lane_work_id>capture_lane_work.work_id,raw_capture_row_id>raw_captures.raw_capture_row_id",
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Transient runtime operation foreign keys are malformed.");
+            }
+        }
+        using (var unique = connection.CreateCommand())
+        {
+            unique.CommandText = """
+                SELECT COUNT(*) FROM pragma_index_list('transient_runtime_operations') indexes
+                WHERE indexes."unique" = 1 AND indexes.origin = 'u'
+                  AND (SELECT group_concat(name, ',') FROM pragma_index_info(indexes.name)) = 'idempotency_key';
+                """;
+            if (Convert.ToInt64(
+                    await unique.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture) != 1)
+            {
+                throw new InvalidDataException("Transient runtime operation idempotency constraint is malformed.");
+            }
+        }
+        using var index = connection.CreateCommand();
+        index.CommandText = """
+            SELECT group_concat(name, ',') FROM (
+                SELECT name FROM pragma_index_info('ix_transient_runtime_operations_target') ORDER BY seqno);
+            """;
+        var indexColumns = Convert.ToString(
+            await index.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture);
+        if (!string.Equals(indexColumns, "raw_capture_row_id,operation_id", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Transient runtime operation index does not match the supported schema.");
+        }
+        using var indexDefinition = connection.CreateCommand();
+        indexDefinition.CommandText = """
+            SELECT COUNT(*) FROM pragma_index_list('transient_runtime_operations')
+            WHERE name = 'ix_transient_runtime_operations_target' AND "unique" = 0 AND partial = 0;
+            """;
+        if (Convert.ToInt64(
+                await indexDefinition.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture) != 1)
+        {
+            throw new InvalidDataException("Transient runtime operation index definition is malformed.");
+        }
     }
 
     private static async ValueTask<IReadOnlyList<TransientRuntimeCandidate>> ReadCandidatesAsync(
@@ -1164,6 +1801,10 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        connection.CreateFunction<string?, string>(
+            "hvo_sha256",
+            static value => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty))),
+            isDeterministic: true);
         using var command = connection.CreateCommand();
         command.CommandText = $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000}; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;";
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

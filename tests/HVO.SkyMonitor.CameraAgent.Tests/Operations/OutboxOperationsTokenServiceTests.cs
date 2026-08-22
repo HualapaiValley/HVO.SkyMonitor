@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using Microsoft.AspNetCore.DataProtection;
 
@@ -52,5 +53,50 @@ public sealed class OutboxOperationsTokenServiceTests
         Assert.IsFalse(tokens.TryReadEnvironmentalCursor(artifact, out _));
         Assert.IsFalse(tokens.TryReadArtifactCursor(environmental, "raw-ingress", out _));
         Assert.AreNotEqual("42", artifact);
+    }
+
+    [TestMethod]
+    public void TransientRuntimeTokens_BindExactImmutableIdentity()
+    {
+        var tokens = new OutboxOperationsTokenService(
+            new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(1));
+        var updated = new DateTimeOffset(2026, 8, 22, 1, 2, 3, TimeSpan.Zero);
+        var target = new TransientRuntimeOperationTarget(
+            42, 43, 44, "agent-east", 10, Guid.NewGuid(), Guid.NewGuid(),
+            new string('A', 64), new string('C', 64), new string('B', 64), "hybrid", true,
+            "completed", "quarantined", "quarantined", "transient-runtime.input-levels-invalid",
+            updated.AddSeconds(-2), updated.AddSeconds(-1), updated);
+        var reference = tokens.ProtectTransientRuntimeReference(target);
+        var bound = target with
+        {
+            ExternalOwnershipEvidence = new("d331-0821084607", new string('D', 64), true)
+        };
+        var action = tokens.ProtectTransientRuntimeAction(bound);
+        var cursor = tokens.ProtectTransientRuntimeCursor(new(updated.ToUnixTimeMilliseconds(), 42));
+
+        Assert.IsTrue(tokens.TryReadTransientRuntimeAction(action, out var parsed));
+        Assert.AreEqual(bound, parsed);
+        Assert.IsTrue(tokens.TryReadTransientRuntimeReference(reference, out var parsedReference));
+        Assert.AreEqual(target, parsedReference);
+        Assert.IsFalse(tokens.TryReadTransientRuntimeAction(reference, out _));
+        Assert.IsFalse(tokens.TryReadTransientRuntimeReference(action, out _));
+        Assert.IsFalse(tokens.TryReadArtifactAction(OutboxOperationAction.Abandon, action, out _, out _));
+        Assert.IsTrue(tokens.TryReadTransientRuntimeCursor(cursor, out var parsedCursor));
+        Assert.AreEqual(42, parsedCursor!.RawCaptureRowId);
+        Assert.AreEqual(updated.ToUnixTimeMilliseconds(), parsedCursor.UpdatedUnixMs);
+        Assert.IsFalse(tokens.TryReadTransientRuntimeCursor(cursor + "x", out _));
+        Assert.IsFalse(action.Contains(target.AgentId, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void MalformedActionEnum_DoesNotFallBackToAbandon()
+    {
+        var tokens = new OutboxOperationsTokenService(
+            new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(1));
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            tokens.ProtectArtifactAction((OutboxOperationAction)999, "raw-ingress", "record"));
+        Assert.IsFalse(OutboxOperationsReasonCodes.IsAllowed(
+            (OutboxOperationAction)999, "operator-approved-loss"));
     }
 }

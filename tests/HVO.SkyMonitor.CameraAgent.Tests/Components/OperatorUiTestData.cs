@@ -144,6 +144,11 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService
     internal Func<string, OutboxOperationAction, string, string, string, CancellationToken, ValueTask<OperatorUiResult<OperatorCommandReceipt>>> OutboxHandler { get; set; } =
         (kind, action, _, _, _, _) => ValueTask.FromResult(OperatorUiResult<OperatorCommandReceipt>.Success(new(
             $"{action} {kind}", "Applied", action == OutboxOperationAction.Replay ? "Pending" : "Abandoned", null, OperatorUiTestData.Now)));
+    internal Func<string, string, string, bool, CancellationToken, ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>>> OwnershipHandler { get; set; } =
+        (_, run, hash, acknowledged, _) => ValueTask.FromResult(
+            acknowledged
+                ? OperatorUiResult<OperatorTransientOwnershipBinding>.Success(new("bound-action-token", run, hash.ToUpperInvariant()))
+                : OperatorUiResult<OperatorTransientOwnershipBinding>.Failure(OperatorUiResultKind.Invalid, "Ownership acknowledgment required."));
 
     public ValueTask<OperatorUiResult<CameraAgentOperationsView>> GetOperationsAsync(CancellationToken cancellationToken) => OperationsHandler(cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentGalleryPage>> GetGalleryPageAsync(CameraAgentGalleryQuery query, CancellationToken cancellationToken) => GalleryHandler(query, cancellationToken);
@@ -151,6 +156,7 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService
     public ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(string kind, string? storageAlias, string? cursor, int pageSize, CancellationToken cancellationToken) => QuarantineHandler(kind, storageAlias, cursor, pageSize, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken) => SystemHandler(cancellationToken);
     public Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(bool paused, long expectedVersion, string idempotencyKey, CancellationToken cancellationToken) => CaptureHandler(paused, expectedVersion, idempotencyKey, cancellationToken);
+    public ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>> BindTransientRuntimeOwnershipAsync(string referenceToken, string deploymentRunId, string inventorySha256, bool legacyOwnershipExternallyEstablished, CancellationToken cancellationToken) => OwnershipHandler(referenceToken, deploymentRunId, inventorySha256, legacyOwnershipExternallyEstablished, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(string kind, OutboxOperationAction action, string actionToken, string reasonCode, string idempotencyKey, CancellationToken cancellationToken) => OutboxHandler(kind, action, actionToken, reasonCode, idempotencyKey, cancellationToken);
 }
 

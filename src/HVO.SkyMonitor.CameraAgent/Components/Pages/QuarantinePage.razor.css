@@ -19,7 +19,14 @@
 .confirmation::backdrop { background: rgba(2, 6, 23, .86); }
 .confirmation h2 { margin: 0; }
 .confirmation dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.confirmation dl .wide { grid-column: 1 / -1; overflow-wrap: anywhere; }
 .confirmation label { display: block; margin: .8rem 0 .35rem; font-weight: 700; }
+.ownership-evidence { display: grid; gap: .55rem; margin: 1rem 0; padding: 1rem; border: 1px solid var(--hvo-border-muted); }
+.ownership-evidence legend { float: none; width: auto; margin: 0; padding: 0 .35rem; font-size: 1rem; font-weight: 700; }
+.ownership-evidence p { margin: 0 0 .25rem; }
+.confirmation .ownership-acknowledgment { display: flex; gap: .65rem; align-items: flex-start; margin-top: .5rem; }
+.ownership-acknowledgment input { margin-top: .3rem; }
+.ownership-bound { color: var(--hvo-success-fg); font-weight: 700; }
 .confirmation-actions { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1rem; }
 .confirmation-actions .btn { min-height: 44px; }
 .dialog-error { margin: .8rem 0 0; padding: .7rem; border: 1px solid var(--hvo-danger-strong); color: var(--hvo-danger-fg); background: var(--hvo-danger-bg); }

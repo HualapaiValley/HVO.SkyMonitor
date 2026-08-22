@@ -11,13 +11,14 @@
 <div class="quarantine-page">
     <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/operations">Operations</a><span>/</span><span aria-current="page">Quarantine</span></nav>
     <header class="page-heading">
-        <div><p class="eyebrow">Protected durable recovery</p><h1>Quarantine browser</h1><p>Cursor-paged artifact and environmental dead letters. Records remain bounded and storage paths are never disclosed.</p></div>
+        <div><p class="eyebrow">Protected durable recovery</p><h1>Quarantine browser</h1><p>Cursor-paged artifact, environmental, and transient-runtime records. Results remain bounded and storage paths are never disclosed.</p></div>
         @if (_page is not null) { <span class="result-count">@_page.Items.Count record@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
     </header>
 
     <nav class="source-nav" aria-label="Quarantine source">
-        <a class="@SourceClass("Artifact")" href="/operations/quarantine">Artifact quarantine</a>
-        <a class="@SourceClass("Environmental")" href="/operations/quarantine?kind=Environmental">Environmental quarantine and terminal</a>
+        <a class="@SourceClass("Artifact")" aria-current="@SourceCurrent("Artifact")" href="/operations/quarantine">Artifact quarantine</a>
+        <a class="@SourceClass("Environmental")" aria-current="@SourceCurrent("Environmental")" href="/operations/quarantine?kind=Environmental">Environmental quarantine and terminal</a>
+        <a class="@SourceClass("TransientRuntime")" aria-current="@SourceCurrent("TransientRuntime")" href="/operations/quarantine?kind=TransientRuntime">Transient runtime quarantine</a>
     </nav>
 
     @if (_page?.Kind == "Artifact" && _page.StorageAliases.Count > 0)
@@ -55,16 +56,53 @@
         <dialog @ref="_dialog" class="confirmation" aria-labelledby="quarantine-confirm-heading" aria-describedby="quarantine-confirm-description" @oncancel="CancelAsync" @oncancel:preventDefault>
             <p class="eyebrow">Explicit confirmation</p>
             <h2 id="quarantine-confirm-heading">@_pending.Action @OperationsPage.SplitWords(_pending.Item.Kind) item?</h2>
-            <p id="quarantine-confirm-description">@(_pending.Action == OutboxOperationAction.Abandon ? "Abandonment releases the durable delivery hold and stops delivery by this outbox." : "Replay returns the item to bounded delivery using its existing durable evidence.")</p>
-            <dl><div><dt>Status</dt><dd>@OperationsPage.SplitWords(_pending.Item.Status)</dd></div><div><dt>Storage alias</dt><dd>@(_pending.Item.StorageAlias ?? "Not applicable")</dd></div><div><dt>Attempts</dt><dd>@_pending.Item.AttemptCount</dd></div><div><dt>Reason</dt><dd>@OperationsPage.SplitWords(_pending.Item.ReasonCode)</dd></div></dl>
+            <p id="quarantine-confirm-description">@ConfirmationDescription</p>
+            <dl>
+                <div><dt>Status</dt><dd>@OperationsPage.SplitWords(_pending.Item.Status)</dd></div>
+                <div><dt>Attempts</dt><dd>@_pending.Item.AttemptCount</dd></div>
+                <div><dt>Agent</dt><dd>@(_pending.Item.AgentId ?? "Not applicable")</dd></div>
+                <div><dt>Sequence</dt><dd>@(_pending.Item.CaptureSequence?.ToString() ?? "Not applicable")</dd></div>
+                <div><dt>Lane work</dt><dd>@(_pending.Item.WorkId?.ToString() ?? "Not applicable")</dd></div>
+                <div><dt>Outer lane work</dt><dd>@(_pending.Item.OuterWorkId?.ToString() ?? "Not applicable")</dd></div>
+                <div class="wide"><dt>Capture ID</dt><dd>@(_pending.Item.CaptureId?.ToString() ?? "Not applicable")</dd></div>
+                <div class="wide"><dt>Artifact ID</dt><dd>@(_pending.Item.ArtifactId?.ToString() ?? "Not applicable")</dd></div>
+                <div class="wide"><dt>Durable states</dt><dd>@(_pending.Item.DurableState ?? "Not applicable")</dd></div>
+                <div class="wide"><dt>Manifest SHA-256</dt><dd>@(_pending.Item.ManifestSha256 ?? "Not applicable")</dd></div>
+                <div class="wide"><dt>Payload SHA-256</dt><dd>@(_pending.Item.PayloadSha256 ?? "Not applicable")</dd></div>
+                <div class="wide"><dt>Processing profile</dt><dd>@(_pending.Item.ProcessingProfile ?? "Not applicable") / @(_pending.Item.ProcessingProfileSha256 ?? "Not applicable")</dd></div>
+                <div class="wide"><dt>Failure reason</dt><dd>@OperationsPage.SplitWords(_pending.Item.ReasonCode)</dd></div>
+            </dl>
             <label for="quarantine-reason">Controlled reason</label>
             <select id="quarantine-reason" class="form-select" @bind="_reasonCode">
                 @foreach (var reason in ReasonCodes) { <option value="@reason.Code">@reason.Label</option> }
             </select>
+            @if (_pending.Item.Kind == "TransientRuntime")
+            {
+                <fieldset class="ownership-evidence">
+                    <legend>External legacy ownership evidence</legend>
+                    <p>Legacy durable rows do not contain deployment-run identity. Verify this exact capture against retained deployment inventory evidence before binding the operation.</p>
+                    <label for="deployment-run-id">Exact deployment run ID</label>
+                    <input id="deployment-run-id" class="form-control" autocomplete="off" readonly="@_pending.OwnershipBound" @bind="_deploymentRunId" />
+                    <label for="deployment-inventory-sha">Exact inventory SHA-256</label>
+                    <input id="deployment-inventory-sha" class="form-control" autocomplete="off" readonly="@_pending.OwnershipBound" @bind="_inventorySha256" />
+                    <label class="ownership-acknowledgment" for="legacy-ownership-acknowledgment">
+                        <input id="legacy-ownership-acknowledgment" type="checkbox" disabled="@_pending.OwnershipBound" @bind="_ownershipAcknowledged" />
+                        I verified retained deployment evidence and externally established that this exact legacy capture belongs to the deployment run and inventory above.
+                    </label>
+                    @if (_pending.OwnershipBound) { <p class="ownership-bound" role="status">Ownership evidence is sealed into the protected abandon token.</p> }
+                </fieldset>
+            }
             @if (_commandError is not null) { <p class="dialog-error" role="alert">@_commandError</p> }
             <div class="confirmation-actions">
                 <button type="button" class="btn btn-outline-light" disabled="@_isSubmitting" @onclick="CancelAsync">Cancel action</button>
-                <button type="button" class="btn @(_pending.Action == OutboxOperationAction.Abandon ? "btn-danger" : "btn-primary")" disabled="@_isSubmitting" @onclick="ConfirmAsync">@(_isSubmitting ? "Submitting..." : $"Confirm {_pending.Action.ToString().ToLowerInvariant()}")</button>
+                @if (_pending.Item.Kind == "TransientRuntime" && !_pending.OwnershipBound)
+                {
+                    <button type="button" class="btn btn-primary bind-ownership" disabled="@_isSubmitting" @onclick="BindOwnershipAsync">@(_isSubmitting ? "Binding..." : "Bind and review evidence")</button>
+                }
+                else
+                {
+                    <button type="button" class="btn @(_pending.Action == OutboxOperationAction.Abandon ? "btn-danger" : "btn-primary")" disabled="@_isSubmitting" @onclick="ConfirmAsync">@(_isSubmitting ? "Submitting..." : $"Confirm {_pending.Action.ToString().ToLowerInvariant()}")</button>
+                }
             </div>
         </dialog>
     }

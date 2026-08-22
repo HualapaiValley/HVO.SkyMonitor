@@ -19,7 +19,7 @@ internal sealed class SqliteRawCaptureJournal(
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null)
 {
-    internal const int CurrentSchemaVersion = 10;
+    internal const int CurrentSchemaVersion = 11;
     private const int CoordinateScrubbedSchemaVersion = 7;
     private const int PendingCoordinateScrubSchemaVersion = -7;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
@@ -146,6 +146,12 @@ internal sealed class SqliteRawCaptureJournal(
                         connection, transaction, TransientCandidateStateV10MigrationSql, cancellationToken)
                         .ConfigureAwait(false);
                 }
+                if (version < 11)
+                {
+                    await ExecuteNonQueryAsync(
+                        connection, transaction, TransientRuntimeOperationsV11MigrationSql, cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 await ExecuteNonQueryAsync(
                     connection, transaction, CaptureScheduleSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
@@ -203,7 +209,8 @@ internal sealed class SqliteRawCaptureJournal(
                 'transient_event_identities', 'transient_candidates', 'transient_candidate_sources',
                 'ix_transient_candidates_backlog', 'ix_transient_candidates_operator',
                 'ix_transient_candidate_sources_raw',
-                'transient_runtime_policy', 'transient_capture_work', 'transient_candidate_conflicts',
+                 'transient_runtime_policy', 'transient_capture_work', 'transient_candidate_conflicts',
+                 'transient_runtime_operations', 'ix_transient_runtime_operations_target',
                  'ix_transient_capture_work_backlog', 'ix_transient_candidate_conflicts_observed',
                  'ix_transient_candidate_conflicts_candidate',
                  'capture_control_state', 'capture_control_commands',
@@ -221,7 +228,7 @@ internal sealed class SqliteRawCaptureJournal(
                   'ix_calibration_acquisition_jobs_camera', 'ux_calibration_acquisition_jobs_camera_nonterminal',
                   'ix_calibration_library_reconciliation_state');
             """, cancellationToken).ConfigureAwait(false);
-        if (schemaObjectCount != 61)
+        if (schemaObjectCount != 63)
         {
             throw new InvalidDataException("Raw ingress SQLite schema is incomplete or drifted.");
         }
@@ -239,6 +246,8 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyColumnsAsync(connection, "transient_runtime_policy", TransientRuntimePolicyColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "transient_capture_work", TransientCaptureWorkColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "transient_candidate_conflicts", TransientCandidateConflictColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyColumnsAsync(connection, "transient_runtime_operations", TransientRuntimeOperationColumns, cancellationToken).ConfigureAwait(false);
+        await VerifyTransientRuntimeOperationSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_control_state", CaptureControlStateColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_control_commands", CaptureControlCommandColumns, cancellationToken).ConfigureAwait(false);
         await VerifyColumnsAsync(connection, "capture_schedule_revisions", CaptureScheduleRevisionColumns, cancellationToken).ConfigureAwait(false);
@@ -1802,6 +1811,89 @@ internal sealed class SqliteRawCaptureJournal(
         }
     }
 
+    private static async Task VerifyTransientRuntimeOperationSchemaAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        using (var table = connection.CreateCommand())
+        {
+            table.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transient_runtime_operations';";
+            var sql = Convert.ToString(
+                await table.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+            string[] requiredFragments =
+            [
+                "STRICT", "idempotency_key TEXT NOT NULL UNIQUE", "length(idempotency_key) BETWEEN 1 AND 128",
+                "length(agent_id) BETWEEN 1 AND 128", "capture_sequence > 0", "length(capture_id) = 32",
+                "length(artifact_id) = 32", "length(manifest_sha256) = 64", "length(payload_sha256) = 64",
+                "length(processing_profile_sha256) = 64", "mode IN ('edge', 'hybrid')", "required IN (0, 1)",
+                "expected_outer_lane_state = 'completed'", "expected_work_state = 'quarantined'",
+                "expected_frame_state = 'quarantined'", "length(expected_failure_reason) BETWEEN 1 AND 128",
+                "length(deployment_run_id) BETWEEN 1 AND 128", "length(inventory_sha256) = 64",
+                "inventory_sha256 NOT GLOB '*[^0-9A-F]*'", "legacy_ownership_externally_established = 1",
+                "action = 'abandon'", "length(actor) BETWEEN 1 AND 128", "length(reason_code) BETWEEN 1 AND 64",
+                "result_state = 'abandoned'", "length(receipt_identity_sha256) = 64",
+                "receipt_identity_sha256 NOT GLOB '*[^0-9A-F]*'"
+            ];
+            var missing = sql is null
+                ? requiredFragments
+                : requiredFragments.Where(fragment =>
+                    !sql.Contains(fragment, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (missing.Length > 0)
+            {
+                throw new InvalidDataException(
+                    $"Transient runtime operation table definition is malformed ({string.Join(", ", missing)}).");
+            }
+        }
+        using (var foreignKeys = connection.CreateCommand())
+        {
+            foreignKeys.CommandText = """
+                SELECT group_concat("from" || '>' || "table" || '.' || "to", ',')
+                FROM (SELECT "from", "table", "to" FROM pragma_foreign_key_list('transient_runtime_operations') ORDER BY "from");
+                """;
+            var actual = Convert.ToString(
+                await foreignKeys.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (!string.Equals(
+                    actual,
+                    "lane_work_id>transient_capture_work.lane_work_id,outer_lane_work_id>capture_lane_work.work_id,raw_capture_row_id>raw_captures.raw_capture_row_id",
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Transient runtime operation foreign keys are malformed.");
+            }
+        }
+        using (var unique = connection.CreateCommand())
+        {
+            unique.CommandText = """
+                SELECT COUNT(*) FROM pragma_index_list('transient_runtime_operations') indexes
+                WHERE indexes."unique" = 1 AND indexes.origin = 'u'
+                  AND (SELECT group_concat(name, ',') FROM pragma_index_info(indexes.name)) = 'idempotency_key';
+                """;
+            if (Convert.ToInt64(
+                    await unique.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture) != 1)
+            {
+                throw new InvalidDataException("Transient runtime operation idempotency constraint is malformed.");
+            }
+        }
+        await VerifyIndexAsync(
+            connection,
+            "ix_transient_runtime_operations_target",
+            "raw_capture_row_id,operation_id",
+            cancellationToken).ConfigureAwait(false);
+        using var indexDefinition = connection.CreateCommand();
+        indexDefinition.CommandText = """
+            SELECT COUNT(*) FROM pragma_index_list('transient_runtime_operations')
+            WHERE name = 'ix_transient_runtime_operations_target' AND "unique" = 0 AND partial = 0;
+            """;
+        if (Convert.ToInt64(
+                await indexDefinition.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture) != 1)
+        {
+            throw new InvalidDataException("Transient runtime operation index definition is malformed.");
+        }
+    }
+
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only internal constant schema and PRAGMA statements are passed to this helper.")]
     private static async Task ExecuteNonQueryAsync(
         SqliteConnection connection,
@@ -1846,6 +1938,8 @@ internal sealed class SqliteRawCaptureJournal(
         "raw_capture_row_id,lane_work_id,mode,required,state,artifact_id,manifest_sha256,created_unix_ms,updated_unix_ms";
     private const string TransientCandidateConflictColumns =
         "conflict_id,candidate_id,event_id,reason,observed_unix_ms";
+    private const string TransientRuntimeOperationColumns =
+        "operation_id,idempotency_key,raw_capture_row_id,lane_work_id,outer_lane_work_id,agent_id,capture_sequence,capture_id,artifact_id,manifest_sha256,payload_sha256,processing_profile_sha256,mode,required,expected_outer_lane_state,expected_work_state,expected_frame_state,expected_failure_reason,expected_outer_lane_updated_unix_ms,expected_work_updated_unix_ms,expected_frame_updated_unix_ms,deployment_run_id,inventory_sha256,legacy_ownership_externally_established,action,actor,reason_code,result_state,completed_unix_ms,receipt_identity_sha256";
     private const string CaptureControlStateColumns =
         "state_key,state,version,updated_unix_ms";
     private const string CaptureControlCommandColumns =
@@ -2312,6 +2406,49 @@ internal sealed class SqliteRawCaptureJournal(
             WHERE state NOT IN ('published', 'failed', 'cancelled');
         CREATE INDEX IF NOT EXISTS ix_transient_candidates_operator
             ON transient_candidates(created_unix_ms DESC, candidate_id DESC);
+        """;
+
+    private const string TransientRuntimeOperationsV11MigrationSql = """
+        CREATE TABLE IF NOT EXISTS transient_runtime_operations (
+            operation_id INTEGER PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            raw_capture_row_id INTEGER NOT NULL,
+            lane_work_id INTEGER NOT NULL,
+            outer_lane_work_id INTEGER NOT NULL,
+            agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128),
+            capture_sequence INTEGER NOT NULL CHECK (capture_sequence > 0),
+            capture_id TEXT NOT NULL CHECK (length(capture_id) = 32),
+            artifact_id TEXT NOT NULL CHECK (length(artifact_id) = 32),
+            manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+            payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+            processing_profile_sha256 TEXT NOT NULL CHECK (length(processing_profile_sha256) = 64),
+            mode TEXT NOT NULL CHECK (mode IN ('edge', 'hybrid')),
+            required INTEGER NOT NULL CHECK (required IN (0, 1)),
+            expected_outer_lane_state TEXT NOT NULL CHECK (expected_outer_lane_state = 'completed'),
+            expected_work_state TEXT NOT NULL CHECK (expected_work_state = 'quarantined'),
+            expected_frame_state TEXT NOT NULL CHECK (expected_frame_state = 'quarantined'),
+            expected_failure_reason TEXT NOT NULL CHECK (length(expected_failure_reason) BETWEEN 1 AND 128),
+            expected_outer_lane_updated_unix_ms INTEGER NOT NULL,
+            expected_work_updated_unix_ms INTEGER NOT NULL,
+            expected_frame_updated_unix_ms INTEGER NOT NULL,
+            deployment_run_id TEXT NOT NULL CHECK (length(deployment_run_id) BETWEEN 1 AND 128),
+            inventory_sha256 TEXT NOT NULL CHECK (
+                length(inventory_sha256) = 64 AND inventory_sha256 NOT GLOB '*[^0-9A-F]*'),
+            legacy_ownership_externally_established INTEGER NOT NULL
+                CHECK (legacy_ownership_externally_established = 1),
+            action TEXT NOT NULL CHECK (action = 'abandon'),
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
+            reason_code TEXT NOT NULL CHECK (length(reason_code) BETWEEN 1 AND 64),
+            result_state TEXT NOT NULL CHECK (result_state = 'abandoned'),
+            completed_unix_ms INTEGER NOT NULL,
+            receipt_identity_sha256 TEXT NOT NULL CHECK (
+                length(receipt_identity_sha256) = 64 AND receipt_identity_sha256 NOT GLOB '*[^0-9A-F]*'),
+            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id),
+            FOREIGN KEY (lane_work_id) REFERENCES transient_capture_work(lane_work_id),
+            FOREIGN KEY (outer_lane_work_id) REFERENCES capture_lane_work(work_id)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS ix_transient_runtime_operations_target
+            ON transient_runtime_operations(raw_capture_row_id, operation_id DESC);
         """;
 
     private const string LaneSchemaSql = """

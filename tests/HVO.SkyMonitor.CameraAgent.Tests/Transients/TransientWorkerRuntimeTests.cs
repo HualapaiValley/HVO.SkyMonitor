@@ -245,6 +245,388 @@ public sealed class TransientWorkerRuntimeTests
     }
 
     [TestMethod]
+    public async Task Hybrid_InputLevelsInvalid_AuditedAbandonReleasesOnlyExactBlockingHold()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-operator", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root, mode: TransientOperatingMode.Hybrid);
+            var epoch = new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);
+            var cameraConfiguration = CreateConfiguration();
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
+            await StageVirtualFramesAsync(
+                provider, cameraConfiguration, epoch, frameCount: 5, invalidLevels: true).ConfigureAwait(false);
+            var worker = provider.GetRequiredService<TransientWorkerService>();
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+
+            var runtime = provider.GetRequiredService<ITransientRuntimeManagement>();
+            var store = provider.GetRequiredService<SqliteTransientRuntimeStore>();
+            var initial = await runtime.ReadQuarantinePageAsync(10, null, CancellationToken.None).ConfigureAwait(false);
+            var blocked = initial.Items.Single();
+            Assert.AreEqual(3L, blocked.CaptureSequence);
+            Assert.AreEqual("transient-runtime.input-levels-invalid", blocked.FailureReason);
+            Assert.AreEqual("completed", blocked.OuterLaneState);
+            Assert.AreEqual("quarantined", blocked.WorkState);
+            Assert.AreEqual("quarantined", blocked.FrameState);
+            Assert.IsTrue(blocked.RetentionHold);
+
+            string payloadPath;
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            using (var payload = connection.CreateCommand())
+            {
+                payload.CommandText = "SELECT payload_relative_path FROM raw_captures WHERE raw_capture_row_id = $raw;";
+                payload.Parameters.AddWithValue("$raw", blocked.RawCaptureRowId);
+                payloadPath = Path.Combine(root, Convert.ToString(
+                    await payload.ExecuteScalarAsync().ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture)!.Replace('/', Path.DirectorySeparatorChar));
+            }
+            var retainedBytes = await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false);
+            var changedBytes = retainedBytes.ToArray();
+            changedBytes[0] ^= 0xFF;
+            await File.WriteAllBytesAsync(payloadPath, changedBytes).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => runtime
+                .AbandonQuarantinedCaptureAsync(
+                    Target(blocked), "payload-mismatch-key", "owner-id", "operator-approved-loss",
+                    CancellationToken.None).AsTask()).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(payloadPath, retainedBytes).ConfigureAwait(false);
+
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            using (var activeLease = connection.CreateCommand())
+            {
+                activeLease.CommandText = """
+                    UPDATE capture_lane_work
+                    SET state = 'leased', lease_token = 'target-token', lease_owner = 'target-worker',
+                        lease_expires_unix_ms = 9999999999999
+                    WHERE work_id = $work;
+                    """;
+                activeLease.Parameters.AddWithValue("$work", blocked.OuterLaneWorkId);
+                Assert.AreEqual(1, await activeLease.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => runtime
+                .AbandonQuarantinedCaptureAsync(
+                    Target(blocked), "active-lease-key", "owner-id", "operator-approved-loss",
+                    CancellationToken.None).AsTask()).ConfigureAwait(false);
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            using (var restore = connection.CreateCommand())
+            {
+                restore.CommandText = """
+                    UPDATE capture_lane_work
+                    SET state = 'completed', lease_token = NULL, lease_owner = NULL,
+                        lease_expires_unix_ms = NULL, updated_unix_ms = $updated
+                    WHERE work_id = $work;
+                    """;
+                restore.Parameters.AddWithValue("$updated", blocked.OuterLaneUpdatedUtc.ToUnixTimeMilliseconds());
+                restore.Parameters.AddWithValue("$work", blocked.OuterLaneWorkId);
+                Assert.AreEqual(1, await restore.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+
+            var unrelatedFrame = await store.ReadFrameAsync(
+                (await store.ReadNextAsync(CancellationToken.None).ConfigureAwait(false))!.RawCaptureRowId,
+                CancellationToken.None).ConfigureAwait(false);
+            await store.QuarantineAsync(
+                unrelatedFrame.RawCaptureRowId, "unrelated-quarantine", CancellationToken.None).ConfigureAwait(false);
+            var firstPage = await runtime.ReadQuarantinePageAsync(1, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, firstPage.Items);
+            Assert.IsNotNull(firstPage.NextCursor);
+            var secondPage = await runtime.ReadQuarantinePageAsync(
+                1, firstPage.NextCursor, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, secondPage.Items);
+            Assert.AreNotEqual(firstPage.Items[0].RawCaptureRowId, secondPage.Items[0].RawCaptureRowId);
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            using (var lease = connection.CreateCommand())
+            {
+                lease.CommandText = """
+                    UPDATE capture_lane_work
+                    SET state = 'leased', lease_token = 'unrelated-token', lease_owner = 'unrelated-worker',
+                        lease_expires_unix_ms = 9999999999999
+                    WHERE lane_name = 'transient' AND capture_sequence = 5;
+                    """;
+                Assert.AreEqual(1, await lease.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+
+            var target = Target(blocked);
+            await Assert.ThrowsExactlyAsync<ArgumentException>(() => runtime
+                .AbandonQuarantinedCaptureAsync(
+                    target with { ExternalOwnershipEvidence = null }, "missing-ownership-key", "owner-id",
+                    "operator-approved-loss", CancellationToken.None).AsTask()).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentException>(() => runtime
+                .AbandonQuarantinedCaptureAsync(
+                    target with { ExternalOwnershipEvidence = new("d331-0821084607", "not-a-sha", true) },
+                    "malformed-ownership-key", "owner-id", "operator-approved-loss",
+                    CancellationToken.None).AsTask()).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(() => runtime
+                .AbandonQuarantinedCaptureAsync(
+                    target with { CaptureSequence = 99 }, "mismatch-key", "owner-id",
+                    "operator-approved-loss", CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+            var receipts = await Task.WhenAll(
+                runtime.AbandonQuarantinedCaptureAsync(
+                    target, "runtime-abandon-key", "owner-id", "operator-approved-loss", CancellationToken.None).AsTask(),
+                runtime.AbandonQuarantinedCaptureAsync(
+                    target, "runtime-abandon-key", "owner-id", "operator-approved-loss", CancellationToken.None).AsTask())
+                .ConfigureAwait(false);
+            CollectionAssert.AreEquivalent(
+                new[] { TransientRuntimeOperationDisposition.Applied, TransientRuntimeOperationDisposition.Duplicate },
+                receipts.Select(static receipt => receipt.Disposition).ToArray());
+            Assert.AreEqual(receipts[0].CompletedUtc, receipts[1].CompletedUtc);
+            Assert.AreEqual("d331-0821084607", receipts[0].DeploymentRunId);
+            Assert.AreEqual(new string('D', 64), receipts[0].InventorySha256);
+            await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(() => runtime
+                .AbandonQuarantinedCaptureAsync(
+                    target with
+                    {
+                        ExternalOwnershipEvidence = new("d331-0821084608", new string('E', 64), true)
+                    },
+                    "runtime-abandon-key", "owner-id", "operator-approved-loss",
+                    CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+            using var verify = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarAsync(verify, """
+                SELECT COUNT(*) FROM transient_runtime_operations
+                WHERE idempotency_key = 'runtime-abandon-key' AND actor = 'owner-id'
+                  AND reason_code = 'operator-approved-loss' AND expected_failure_reason = 'transient-runtime.input-levels-invalid'
+                  AND deployment_run_id = 'd331-0821084607' AND inventory_sha256 = 'DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD'
+                  AND legacy_ownership_externally_established = 1;
+                """).ConfigureAwait(false));
+            Assert.AreEqual("abandoned", await ScalarStringAsync(verify,
+                "SELECT state FROM transient_capture_work WHERE raw_capture_row_id = " + blocked.RawCaptureRowId + ";").ConfigureAwait(false));
+            Assert.AreEqual("abandoned", await ScalarStringAsync(verify,
+                "SELECT state FROM transient_worker_frames WHERE raw_capture_row_id = " + blocked.RawCaptureRowId + ";").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(verify,
+                "SELECT retention_hold FROM raw_captures WHERE raw_capture_row_id = " + blocked.RawCaptureRowId + ";").ConfigureAwait(false));
+            Assert.AreEqual("quarantined", await ScalarStringAsync(verify,
+                "SELECT state FROM transient_capture_work WHERE raw_capture_row_id = " + unrelatedFrame.RawCaptureRowId + ";").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarAsync(verify,
+                "SELECT retention_hold FROM raw_captures WHERE raw_capture_row_id = " + unrelatedFrame.RawCaptureRowId + ";").ConfigureAwait(false));
+            Assert.AreEqual("leased", await ScalarStringAsync(verify,
+                "SELECT state FROM capture_lane_work WHERE lane_name = 'transient' AND capture_sequence = 5;").ConfigureAwait(false));
+            using (var removeAudit = verify.CreateCommand())
+            {
+                removeAudit.CommandText = "DELETE FROM transient_runtime_operations WHERE idempotency_key = 'runtime-abandon-key';";
+                Assert.AreEqual(1, await removeAudit.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+            var unsafeBacklog = (await provider.GetRequiredService<ICaptureLaneStore>()
+                .ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
+                .Single(static lane => lane.Lane == "transient");
+            Assert.IsGreaterThanOrEqualTo(2L, unsafeBacklog.QuarantineCount);
+            using var holdVerify = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(1L, await ScalarAsync(holdVerify,
+                "SELECT retention_hold FROM raw_captures WHERE raw_capture_row_id = " + blocked.RawCaptureRowId + ";").ConfigureAwait(false));
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Column names come only from the fixed malformed-audit test matrix; values are parameterized.")]
+    public async Task MalformedAbandonmentAudit_RestoresHoldAndProjectsQuarantine()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-malformed-audit", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var provider = CreateProvider(root, mode: TransientOperatingMode.Hybrid);
+            var cameraConfiguration = CreateConfiguration();
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(cameraConfiguration);
+            await StageVirtualFramesAsync(
+                provider, cameraConfiguration, new DateTimeOffset(2025, 1, 15, 8, 0, 0, TimeSpan.Zero),
+                frameCount: 5, invalidLevels: true).ConfigureAwait(false);
+            var worker = provider.GetRequiredService<TransientWorkerService>();
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            Assert.IsTrue(await worker.ProcessFrameAsync(CancellationToken.None).ConfigureAwait(false));
+            var runtime = provider.GetRequiredService<ITransientRuntimeManagement>();
+            var blocked = (await runtime.ReadQuarantinePageAsync(10, null, CancellationToken.None).ConfigureAwait(false))
+                .Items.Single();
+            var target = Target(blocked);
+            await runtime.AbandonQuarantinedCaptureAsync(
+                target, "malformed-audit-key", "owner-id", "operator-approved-loss", CancellationToken.None)
+                .ConfigureAwait(false);
+            string receiptIdentity;
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            {
+                receiptIdentity = await ScalarStringAsync(
+                    connection,
+                    "SELECT receipt_identity_sha256 FROM transient_runtime_operations WHERE idempotency_key = 'malformed-audit-key';")
+                    .ConfigureAwait(false);
+            }
+
+            var evidence = target.ExternalOwnershipEvidence!;
+            (string Column, object Bad, object Good)[] mutations =
+            [
+                ("outer_lane_work_id", target.OuterLaneWorkId + 1000, target.OuterLaneWorkId),
+                ("agent_id", "wrong-agent", target.AgentId),
+                ("capture_id", Guid.NewGuid().ToString("N"), target.CaptureId.ToString("N")),
+                ("artifact_id", Guid.NewGuid().ToString("N"), target.ArtifactId.ToString("N")),
+                ("manifest_sha256", new string('E', 64), target.ManifestSha256),
+                ("processing_profile_sha256", new string('E', 64), target.ProcessingProfileSha256),
+                ("expected_outer_lane_state", "quarantined", target.ExpectedOuterLaneState),
+                ("expected_work_state", "completed", target.ExpectedWorkState),
+                ("action", "replay", "abandon"),
+                ("deployment_run_id", "wrong-run", evidence.DeploymentRunId),
+                ("inventory_sha256", new string('E', 64), evidence.InventorySha256),
+                ("legacy_ownership_externally_established", 0, 1),
+                ("actor", "wrong-owner", "owner-id"),
+                ("reason_code", "configuration-corrected", "operator-approved-loss"),
+                ("receipt_identity_sha256", new string('E', 64), receiptIdentity)
+            ];
+
+            foreach (var mutation in mutations)
+            {
+                using (var connection = await OpenAsync(root).ConfigureAwait(false))
+                using (var corrupt = connection.CreateCommand())
+                {
+                    corrupt.CommandText = $"""
+                        PRAGMA foreign_keys = OFF;
+                        PRAGMA ignore_check_constraints = ON;
+                        UPDATE transient_runtime_operations SET {mutation.Column} = $value
+                        WHERE idempotency_key = 'malformed-audit-key';
+                        UPDATE raw_captures SET retention_hold = 0 WHERE raw_capture_row_id = $raw;
+                        """;
+                    corrupt.Parameters.AddWithValue("$value", mutation.Bad);
+                    corrupt.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
+                    await corrupt.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+
+                var backlog = (await provider.GetRequiredService<ICaptureLaneStore>()
+                    .ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false))
+                    .Single(static lane => lane.Lane == "transient");
+                Assert.IsGreaterThanOrEqualTo(1L, backlog.QuarantineCount, mutation.Column);
+                await Assert.ThrowsExactlyAsync<OutboxOperationCollisionException>(() => runtime
+                    .AbandonQuarantinedCaptureAsync(
+                        target, "malformed-audit-key", "owner-id", "operator-approved-loss",
+                        CancellationToken.None).AsTask()).ConfigureAwait(false);
+                using (var verify = await OpenAsync(root).ConfigureAwait(false))
+                {
+                    Assert.AreEqual(1L, await ScalarAsync(verify,
+                        $"SELECT retention_hold FROM raw_captures WHERE raw_capture_row_id = {target.RawCaptureRowId};")
+                        .ConfigureAwait(false), mutation.Column);
+                    using var restore = verify.CreateCommand();
+                    restore.CommandText = $"""
+                        PRAGMA foreign_keys = OFF;
+                        PRAGMA ignore_check_constraints = ON;
+                        UPDATE transient_runtime_operations SET {mutation.Column} = $value
+                        WHERE idempotency_key = 'malformed-audit-key';
+                        """;
+                    restore.Parameters.AddWithValue("$value", mutation.Good);
+                    await restore.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task RawIngressV10_MigratesRuntimeOperationAuditSchemaToV11()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-v11-migration", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var provider = CreateProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>()
+                    .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            using (var downgrade = connection.CreateCommand())
+            {
+                downgrade.CommandText = """
+                    DROP INDEX ix_transient_runtime_operations_target;
+                    DROP TABLE transient_runtime_operations;
+                    PRAGMA user_version = 10;
+                    """;
+                await downgrade.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            using var restarted = CreateProvider(root);
+            await restarted.GetRequiredService<IRawCaptureIngress>()
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using var verify = await OpenAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(11L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(30L, await ScalarAsync(verify,
+                "SELECT COUNT(*) FROM pragma_table_info('transient_runtime_operations');").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarAsync(verify,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_transient_runtime_operations_target';").ConfigureAwait(false));
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("table")]
+    [DataRow("index")]
+    [DataRow("unique")]
+    [DataRow("check")]
+    [DataRow("strict")]
+    [DataRow("foreign-key")]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The test mutates the locally generated canonical schema with fixed replacements to exercise drift detection.")]
+    public async Task CurrentV11RuntimeOperationSchemaDrift_FailsClosed(string drift)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-schema", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (var provider = CreateProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>()
+                    .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            using (var connection = await OpenAsync(root).ConfigureAwait(false))
+            using (var command = connection.CreateCommand())
+            {
+                if (drift is "unique" or "check" or "strict" or "foreign-key")
+                {
+                    using var schema = connection.CreateCommand();
+                    schema.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transient_runtime_operations';";
+                    var createSql = Convert.ToString(
+                        await schema.ExecuteScalarAsync().ConfigureAwait(false),
+                        System.Globalization.CultureInfo.InvariantCulture)!;
+                    createSql = drift switch
+                    {
+                        "unique" => createSql.Replace(
+                            "idempotency_key TEXT NOT NULL UNIQUE",
+                            "idempotency_key TEXT NOT NULL",
+                            StringComparison.Ordinal),
+                        "check" => createSql.Replace(
+                            "CHECK (action = 'abandon')",
+                            "CHECK (action IN ('abandon', 'replay'))",
+                            StringComparison.Ordinal),
+                        "strict" => createSql.Replace(") STRICT", ")", StringComparison.Ordinal),
+                        _ => createSql.Replace(
+                            "FOREIGN KEY (outer_lane_work_id) REFERENCES capture_lane_work(work_id)",
+                            "CHECK (outer_lane_work_id > 0)",
+                            StringComparison.Ordinal)
+                    };
+                    command.CommandText = $"DROP INDEX ix_transient_runtime_operations_target; DROP TABLE transient_runtime_operations; {createSql}; CREATE INDEX ix_transient_runtime_operations_target ON transient_runtime_operations(raw_capture_row_id, operation_id DESC);";
+                }
+                else
+                {
+                    command.CommandText = drift == "table"
+                        ? "DROP INDEX ix_transient_runtime_operations_target; DROP TABLE transient_runtime_operations;"
+                        : "DROP INDEX ix_transient_runtime_operations_target; CREATE INDEX ix_transient_runtime_operations_target ON transient_runtime_operations(operation_id);";
+                }
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            using var restarted = CreateProvider(root);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => restarted
+                .GetRequiredService<IRawCaptureIngress>()
+                .InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [TestMethod]
     public async Task Hybrid_BacklogProjectsActiveCentersAcrossDurableLayers()
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-active-centers", Guid.NewGuid().ToString("N"));
@@ -1207,7 +1589,8 @@ public sealed class TransientWorkerRuntimeTests
         CameraModuleConfig cameraConfiguration,
         DateTimeOffset epoch,
         int frameCount = 5,
-        bool candidateLimitFrame = false)
+        bool candidateLimitFrame = false,
+        bool invalidLevels = false)
     {
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1262,16 +1645,28 @@ public sealed class TransientWorkerRuntimeTests
             }
             var extra = new Dictionary<string, string>(frame.Metadata.Extra ?? new Dictionary<string, string>(), StringComparer.Ordinal)
             {
-                ["blackLevelAdu"] = "0",
-                ["whiteLevelAdu"] = ushort.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["sensorAdcBitDepth"] = "16"
             };
+            if (invalidLevels)
+            {
+                extra.Remove("blackLevelAdu");
+                extra.Remove("whiteLevelAdu");
+            }
+            else
+            {
+                extra["blackLevelAdu"] = "0";
+                extra["whiteLevelAdu"] = ushort.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
             capture = capture with
             {
                 Frame = frame with
                 {
                     Metadata = frame.Metadata with { Extra = extra },
-                    Layout = frame.Layout! with { BlackLevel = 0, WhiteLevel = ushort.MaxValue }
+                    Layout = frame.Layout! with
+                    {
+                        BlackLevel = invalidLevels ? null : 0,
+                        WhiteLevel = invalidLevels ? null : ushort.MaxValue
+                    }
                 }
             };
             var submission = new CaptureLoopSubmission(
@@ -1299,6 +1694,14 @@ public sealed class TransientWorkerRuntimeTests
             await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
         }
     }
+
+    private static TransientRuntimeOperationTarget Target(TransientRuntimeQuarantineRecord item) => new(
+        item.RawCaptureRowId, item.LaneWorkId, item.OuterLaneWorkId, item.AgentId, item.CaptureSequence,
+        item.CaptureId, item.ArtifactId, item.ManifestSha256, item.PayloadSha256,
+        item.ProcessingProfileSha256, item.Mode,
+        item.Required, item.OuterLaneState, item.WorkState, item.FrameState, item.FailureReason,
+        item.OuterLaneUpdatedUtc, item.WorkUpdatedUtc, item.FrameUpdatedUtc,
+        new TransientRuntimeExternalOwnershipEvidence("d331-0821084607", new string('D', 64), true));
 
     private static async Task<TransientCandidateBacklog> AssertBacklogMatchesDurableStateAsync(
         ServiceProvider provider,

@@ -3,6 +3,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Options;
 
@@ -110,6 +111,24 @@ internal sealed class OutboxOperationsTokenService
             recordId > 0;
     }
 
+    public string ProtectTransientRuntimeReference(TransientRuntimeOperationTarget target)
+        => Protect("transient-runtime.reference", target);
+
+    public bool TryReadTransientRuntimeReference(
+        string token,
+        out TransientRuntimeOperationTarget? target)
+        => TryUnprotect("transient-runtime.reference", token, out target) &&
+            target?.ExternalOwnershipEvidence is null;
+
+    public string ProtectTransientRuntimeAction(TransientRuntimeOperationTarget target)
+        => Protect("transient-runtime.action.abandon", target);
+
+    public bool TryReadTransientRuntimeAction(
+        string token,
+        out TransientRuntimeOperationTarget? target)
+        => TryUnprotect("transient-runtime.action.abandon", token, out target) &&
+            target?.ExternalOwnershipEvidence is not null;
+
     public string ProtectArtifactCursor(string alias, ArtifactOutboxOperationsCursor cursor)
         => Protect("artifact.cursor", new CursorPayload(alias, null, cursor.RecordId, cursor.RecordId));
 
@@ -136,6 +155,24 @@ internal sealed class OutboxOperationsTokenService
             return false;
         }
         cursor = new EnvironmentalOutboxOperationsCursor(payload.RecordId);
+        return true;
+    }
+
+    public string ProtectTransientRuntimeCursor(TransientRuntimeQuarantineCursor cursor)
+        => Protect("transient-runtime.cursor", new CursorPayload(
+            "transient-runtime", null, cursor.UpdatedUnixMs, cursor.RawCaptureRowId));
+
+    public bool TryReadTransientRuntimeCursor(
+        string token,
+        out TransientRuntimeQuarantineCursor? cursor)
+    {
+        cursor = null;
+        if (!TryUnprotect("transient-runtime.cursor", token, out CursorPayload? payload) ||
+            payload?.Alias != "transient-runtime" || payload.Position < 1 || payload.RecordId < 1)
+        {
+            return false;
+        }
+        cursor = new TransientRuntimeQuarantineCursor(payload.Position, payload.RecordId);
         return true;
     }
 
@@ -198,8 +235,12 @@ internal sealed class OutboxOperationsTokenService
         }
     }
 
-    private static string ActionPurpose(string kind, OutboxOperationAction action)
-        => string.Concat(kind, ".action.", action == OutboxOperationAction.Replay ? "replay" : "abandon");
+    private static string ActionPurpose(string kind, OutboxOperationAction action) => action switch
+    {
+        OutboxOperationAction.Replay => string.Concat(kind, ".action.replay"),
+        OutboxOperationAction.Abandon => string.Concat(kind, ".action.abandon"),
+        _ => throw new ArgumentOutOfRangeException(nameof(action))
+    };
 
     private sealed record TokenPayload(string Alias, string RecordKey);
 
