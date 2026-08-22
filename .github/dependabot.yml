@@ -6,6 +6,19 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
+    groups:
+      opentelemetry:
+        patterns:
+          - "OpenTelemetry*"
+      openiddict:
+        patterns:
+          - "OpenIddict*"
+      skiasharp:
+        patterns:
+          - "SkiaSharp*"
+      asp-versioning:
+        patterns:
+          - "Asp.Versioning*"
     labels:
       - "dependencies"
       - "nuget"
