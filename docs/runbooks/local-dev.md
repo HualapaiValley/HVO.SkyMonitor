@@ -57,7 +57,7 @@ LogicHost requires the root `.env` translation performed by `with-env`:
 ```
 
 CameraAgent supports project User Secrets. Set its local owner password through
-the prompt before a direct run:
+the prompt before the first direct run:
 
 ```bash
 ./scripts/user-secret:set \
@@ -66,6 +66,10 @@ the prompt before a direct run:
 ./scripts/with-env dotnet run \
   --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 ```
+
+On first login, replace that temporary password. Then remove the user-secret
+value and configure `LocalIdentity:AllowMissingAdminPassword=true` for later
+starts. Existing passwords are never reconciled from configuration.
 
 The launch profiles include HTTPS endpoints for direct development. Repository
 Compose does not provide HTTPS termination and must not be described as a
@@ -83,6 +87,9 @@ After startup:
 - LogicHost API-key management is `/Account/Manage/ApiKeys`.
 - Device registration is `/devices/register` and inventory is `/devices`.
 - CameraAgent import is `/devices/bootstrap`.
+- CameraAgent temporary-owner replacement is
+  `/Account/ReplaceTemporaryPassword`; bounded authenticated status is
+  `/api/internal/owner-bootstrap/status`.
 - API-key proof uses `/api/v1.0/status/detailed`; anonymous
   `/api/v1.0/status` does not validate a key.
 
@@ -124,7 +131,7 @@ developer state.
 | Redis connection times out | Verify `REDIS_*`, the selected endpoint, and the `skymonitor:` instance prefix. |
 | SMTP email is missing | Verify `SMTP_*`, then inspect the configured Mailpit instance without retaining confirmation links. |
 | CameraAgent startup rejects configuration | Set `CAMERA_AGENT_ADMIN_PASSWORD` for Compose or `LocalIdentity:AdminPassword` in CameraAgent User Secrets. |
-| CameraAgent owner password reverted | Change the effective `LocalIdentity:AdminPassword`; startup intentionally reconciles the configured owner. |
+| CameraAgent owner cannot access operations after login | Complete `/Account/ReplaceTemporaryPassword`; pending setup intentionally denies ordinary owner UI and APIs without stopping capture. |
 | Cookies fail after reset | Reset removes the selected host's Data Protection keys. Restore the approved key-ring backup or sign in/bootstrap again. |
 | Device secrets cannot decrypt | Restore CameraAgent provisioning and Data Protection state from the same backup set. |
 

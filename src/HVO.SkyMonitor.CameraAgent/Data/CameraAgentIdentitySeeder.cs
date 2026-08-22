@@ -40,7 +40,8 @@ internal sealed class CameraAgentIdentitySeeder(
                 UserName = _options.AdminEmail,
                 Email = _options.AdminEmail,
                 EmailConfirmed = true,
-                IsSiteOwner = true
+                IsSiteOwner = true,
+                PasswordChangeRequired = true
             };
 
             var createResult = await userManager.CreateAsync(user, _options.AdminPassword);
@@ -53,7 +54,9 @@ internal sealed class CameraAgentIdentitySeeder(
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Seeded default admin account {Email}", _options.AdminEmail);
+                _logger.LogInformation(
+                    new EventId(4180, "OwnerTemporaryPasswordSeeded"),
+                    "Seeded the local owner with a temporary password; password replacement is required");
             }
         }
 
@@ -95,35 +98,18 @@ internal sealed class CameraAgentIdentitySeeder(
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Aligned default admin account to use email {Email} as username", _options.AdminEmail);
+                _logger.LogInformation("Aligned local owner account metadata with configured identity");
             }
         }
 
-        if (!string.IsNullOrEmpty(_options.AdminPassword)
-            && !await userManager.CheckPasswordAsync(user, _options.AdminPassword))
+        if (user.PasswordChangeRequired &&
+            !string.IsNullOrEmpty(_options.AdminPassword) &&
+            !await userManager.CheckPasswordAsync(user, _options.AdminPassword))
         {
-            IdentityResult resetResult;
-            if (await userManager.HasPasswordAsync(user))
-            {
-                var resetToken = await userManager.GeneratePasswordResetTokenAsync(user);
-                resetResult = await userManager.ResetPasswordAsync(user, resetToken, _options.AdminPassword);
-            }
-            else
-            {
-                resetResult = await userManager.AddPasswordAsync(user, _options.AdminPassword);
-            }
-
-            if (!resetResult.Succeeded)
-            {
-                var errors = string.Join(", ", resetResult.Errors.Select(e => e.Description));
-                _logger.LogError("Failed to reset default admin password: {Errors}", errors);
-                throw new InvalidOperationException("Could not update default admin password");
-            }
-
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Reset password for default admin account {Email}", _options.AdminEmail);
-            }
+            _logger.LogError(
+                new EventId(4181, "OwnerTemporaryPasswordMismatch"),
+                "The configured temporary owner password does not match durable bootstrap state");
+            throw new InvalidOperationException("The configured temporary owner password does not match the seeded owner.");
         }
 
         var staleOwners = await userManager.Users
@@ -146,9 +132,8 @@ internal sealed class CameraAgentIdentitySeeder(
         if (staleOwners.Count > 0 && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Demoted {StaleOwnerCount} stale site owner accounts while reconciling {Email}",
-                staleOwners.Count,
-                _options.AdminEmail);
+                "Demoted {StaleOwnerCount} stale site owner accounts while reconciling local ownership",
+                staleOwners.Count);
         }
     }
 }

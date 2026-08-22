@@ -48,6 +48,12 @@ public sealed partial class Login : ComponentBase
         if (result.Succeeded)
         {
             Logger.LogInformation("User logged in.");
+            var user = await SignInManager.UserManager.FindByEmailAsync(Input.Email).ConfigureAwait(false);
+            if (user?.IsSiteOwner == true && user.PasswordChangeRequired)
+            {
+                RedirectManager.RedirectTo("Account/ReplaceTemporaryPassword");
+                return;
+            }
             RedirectManager.RedirectTo(ReturnUrl);
             return;
         }

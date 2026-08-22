@@ -1,5 +1,18 @@
 # HVO.SkyMonitor.CameraAgent
 
+## Local Owner Bootstrap
+
+Initial startup requires a temporary owner password from
+`LocalIdentity:AdminPassword` or `LocalIdentity:AdminPasswordFile`. A newly
+seeded owner must replace it at `/Account/ReplaceTemporaryPassword` before using
+ordinary CameraAgent UI or APIs. After seeding, remove the password setting and
+set `LocalIdentity:AllowMissingAdminPassword=true`; the durable replacement is
+not reconciled from configuration on restart.
+
+Authenticated installer status is available at
+`/api/internal/owner-bootstrap/status`. See
+`docs/identity/operations-runbook.md` for states, health, logs, and exclusions.
+
 Blazor Server host for a self-contained SkyMonitor camera agent. It provides local identity, operational UI, capture APIs, and configuration-driven camera/pipeline hosting while remaining independent of LogicHost.
 
 ## Highlights

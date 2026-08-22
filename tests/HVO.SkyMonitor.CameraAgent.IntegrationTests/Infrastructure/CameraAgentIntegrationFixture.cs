@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -167,6 +168,15 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
 
         using var scope = _agentFactory.Services.CreateScope();
         var scopedProvider = scope.ServiceProvider;
+        var ownerManager = scopedProvider.GetRequiredService<Microsoft.AspNetCore.Identity.UserManager<ApplicationUser>>();
+        var owner = await ownerManager.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The CameraAgent integration owner was not seeded.");
+        owner.PasswordChangeRequired = false;
+        var ownerUpdate = await ownerManager.UpdateAsync(owner).ConfigureAwait(false);
+        if (!ownerUpdate.Succeeded)
+        {
+            throw new InvalidOperationException("The CameraAgent integration owner could not be prepared.");
+        }
         var identity = await scopedProvider.GetRequiredService<IDeviceIdentityStore>()
             .GetOrCreateAsync(CancellationToken.None).ConfigureAwait(false);
         await _hostFixture.SeedActiveDeviceAsync(identity.DeviceId).ConfigureAwait(false);

@@ -19,6 +19,82 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 public sealed class OwnerAuthorizationTests
 {
     [TestMethod]
+    [DoNotParallelize]
+    public async Task PendingOwnerCanReadBootstrapStatusButCannotUseOperationsAsync()
+    {
+        string ownerId;
+        string nonOwnerId;
+        using (var scope = AssemblyHooks.Fixture.CreateCameraAgentScope())
+        {
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var owner = await users.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
+            Assert.IsNotNull(owner);
+            ownerId = owner.Id;
+            owner.PasswordChangeRequired = true;
+            Assert.IsTrue((await users.UpdateAsync(owner).ConfigureAwait(false)).Succeeded);
+            var nonOwner = await users.FindByEmailAsync("bootstrap-status-non-owner@cameraagent.integration")
+                .ConfigureAwait(false);
+            if (nonOwner is null)
+            {
+                nonOwner = new ApplicationUser
+                {
+                    UserName = "bootstrap-status-non-owner@cameraagent.integration",
+                    Email = "bootstrap-status-non-owner@cameraagent.integration",
+                    EmailConfirmed = true
+                };
+                Assert.IsTrue((await users.CreateAsync(nonOwner, "BootstrapStatusNonOwner!418")
+                    .ConfigureAwait(false)).Succeeded);
+            }
+            nonOwnerId = nonOwner.Id;
+        }
+
+        try
+        {
+            using var anonymousClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+            using var anonymousStatus = await anonymousClient.GetAsync(
+                new Uri(OwnerBootstrapGateMiddleware.StatusPath, UriKind.Relative)).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousStatus.StatusCode);
+            using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+            nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
+            using var nonOwnerStatus = await nonOwnerClient.GetAsync(
+                new Uri(OwnerBootstrapGateMiddleware.StatusPath, UriKind.Relative)).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerStatus.StatusCode);
+
+            using var client = AssemblyHooks.Fixture.CreateCameraAgentClient();
+            client.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
+            using var status = await client.GetAsync(
+                new Uri(OwnerBootstrapGateMiddleware.StatusPath, UriKind.Relative)).ConfigureAwait(false);
+            var statusJson = await status.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, status.StatusCode, statusJson);
+            StringAssert.Contains(statusJson, OwnerBootstrapStates.TemporaryPassword, StringComparison.Ordinal);
+            using var denied = await client.GetAsync(
+                new Uri("/api/v1/operations/summary", UriKind.Relative)).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.Forbidden, denied.StatusCode);
+            Assert.AreEqual(OwnerBootstrapStates.PasswordChangeRequired,
+                denied.Headers.GetValues("X-HVO-Authorization-Reason").Single());
+
+            using var healthClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
+            using var health = await healthClient.GetAsync(
+                new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+            var healthJson = await health.Content.ReadAsStringAsync().ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, health.StatusCode, healthJson);
+            StringAssert.Contains(healthJson, "owner-bootstrap", StringComparison.Ordinal);
+            StringAssert.Contains(healthJson, "Owner bootstrap is operational.", StringComparison.Ordinal);
+            Assert.IsFalse(healthJson.Contains(OwnerBootstrapStates.TemporaryPassword, StringComparison.Ordinal));
+            Assert.IsFalse(healthJson.Contains(OwnerBootstrapStates.PasswordChangeRequired, StringComparison.Ordinal));
+        }
+        finally
+        {
+            using var scope = AssemblyHooks.Fixture.CreateCameraAgentScope();
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var owner = await users.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
+            Assert.IsNotNull(owner);
+            owner.PasswordChangeRequired = false;
+            Assert.IsTrue((await users.UpdateAsync(owner).ConfigureAwait(false)).Succeeded);
+        }
+    }
+
+    [TestMethod]
     public async Task BlazorFrameworkAssetIsServedWithoutAuthenticationAsync()
     {
         using var client = AssemblyHooks.Fixture.CreateCameraAgentClient();

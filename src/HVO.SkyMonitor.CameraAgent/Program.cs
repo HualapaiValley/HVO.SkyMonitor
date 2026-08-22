@@ -173,6 +173,8 @@ public class Program
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, LoggingEmailSender>();
         builder.Services.AddSingleton<CameraAgentIdentitySeeder>();
         builder.Services.AddSingleton<CameraAgentIdentityInitialization>();
+        builder.Services.AddScoped<OwnerBootstrapStateReader>();
+        builder.Services.AddScoped<OwnerPasswordReplacementService>();
 
         builder.Services.AddApiVersioning(options =>
             {
@@ -189,6 +191,7 @@ public class Program
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks();
         builder.Services.AddSingleton<CameraAgentOperatorTelemetry>();
         healthChecks.AddDbContextCheck<ApplicationDbContext>("identity-database", tags: ["dependency"]);
+        healthChecks.AddCheck<OwnerBootstrapHealthCheck>("owner-bootstrap", tags: ["dependency"]);
         healthChecks.AddInstalledCelestialCatalogHealthCheck();
         healthChecks.AddCheck<DeploymentLocationHealthCheck>("deployment-location", tags: ["dependency"]);
         builder.Services.AddOpenTelemetry()
@@ -332,6 +335,7 @@ public class Program
         app.UseRouting();
 
         app.UseAuthentication();
+        app.UseMiddleware<OwnerBootstrapGateMiddleware>();
         app.UseAuthorization();
 
         app.UseAntiforgery();
@@ -355,6 +359,18 @@ public class Program
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();
+        app.MapGet(OwnerBootstrapGateMiddleware.StatusPath, async (
+                OwnerBootstrapStateReader stateReader,
+                CancellationToken cancellationToken) =>
+            {
+                var state = await stateReader.GetStateAsync(cancellationToken).ConfigureAwait(false);
+                return Results.Ok(new
+                {
+                    state,
+                    passwordChangeRequired = state is OwnerBootstrapStates.TemporaryPassword or OwnerBootstrapStates.PasswordChangeRequired
+                });
+            })
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OwnerBootstrapReadV1);
         app.MapPrometheusScrapingEndpoint();
 
         app.MapSkyMonitorHealthEndpoints();
