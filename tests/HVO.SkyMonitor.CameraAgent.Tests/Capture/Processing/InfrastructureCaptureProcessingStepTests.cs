@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -20,6 +21,105 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class InfrastructureCaptureProcessingStepTests
 {
+    [TestMethod]
+    public async Task OrdinaryUploadLane_QueuesExactlyOneRawManifest()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "raw-upload");
+        var payload = new byte[] { 0, 0, 0, 0 };
+        var manifest = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono8,
+            2,
+            2,
+            2,
+            payload);
+        var receipt = new RawCaptureReceipt(
+            RawIngressOutcome.Committed,
+            manifest,
+            new StoredFrameReference(
+                manifest.RelativeArtifactPath,
+                Path.Combine(root, manifest.RelativeArtifactPath),
+                manifest.Descriptor.Timing.ExposureStartedUtc,
+                FrameArtifactRole.Raw),
+            CaptureContractJson.ComputeManifestSha256(manifest));
+        var context = CreateContext(receipt);
+        var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
+        outbox.Setup(value => value.EnqueueAsync(root, manifest, It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.CompletedTask);
+        var handler = new UploadCaptureLaneHandler(
+            outbox.Object,
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
+
+        var result = await handler.HandleAsync(new CaptureLaneHandlerContext(
+            "upload",
+            1,
+            context.Config,
+            context.Submission,
+            receipt), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
+        outbox.Verify(value => value.EnqueueAsync(root, manifest, It.IsAny<CancellationToken>()), Times.Once);
+        outbox.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task ExplicitPublicationOwnership_PreventsStorageWriteButKeepsPackedLatestFrame()
+    {
+        var baseline = ProcessingConformanceFixture.CameraConfig;
+        var config = baseline with
+        {
+            AgentId = "agent-test",
+            ProcessingSteps = null,
+            Pipeline = new CapturePipelineConfig(
+                [
+                    new CaptureProcessingStepConfig(
+                        "Annotation",
+                        "annotation",
+                        DependsOn: ["$raw"],
+                        Publication: new CaptureProcessingPublicationPolicy(
+                            CaptureProcessingPersistenceMode.MemoryOnly)),
+                    new CaptureProcessingStepConfig("Storage", "storage", DependsOn: ["annotation"])
+                ],
+                CapturePipelineSchemaVersions.ExplicitV2,
+                CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        };
+        var frame = CreateFrame(0);
+        var context = new CaptureProcessingContext(
+            config,
+            new CaptureLoopSubmission(
+                new CaptureRequest(frame.TimestampUtc, frame.Metadata.Exposure, CaptureMode.Still),
+                new CaptureResult(
+                    frame,
+                    new CaptureSetpoint(frame.Metadata.Exposure, frame.Metadata.Gain, null, null),
+                    TimeSpan.Zero,
+                    CaptureMode.Still,
+                    false),
+                frame.TimestampUtc,
+                frame.Metadata.Exposure,
+                TimeSpan.Zero));
+        context.BeginNode("annotation", []);
+        var annotation = context.AddDerivative(
+            FrameArtifactRole.AnnotatedPreview,
+            CreateFrame(2),
+            "annotation-v1");
+        context.BeginNode("storage", ["annotation"]);
+        var latest = new Mock<ILatestFrameAccessor>(MockBehavior.Strict);
+        latest.Setup(accessor => accessor.Update(annotation));
+        var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
+        var step = new NoOpFileStorageProcessingStep(
+            new CaptureProcessingStepMetadata("storage", "Storage", 100),
+            new NoOpFileStorageProcessingStepOptions { UpdateLatestFrame = true },
+            latest.Object,
+            storage.Object,
+            Mock.Of<IArtifactOutbox>(),
+            Options.Create(new CameraAgentHostOptions()),
+            NullLogger<NoOpFileStorageProcessingStep>.Instance);
+
+        await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+
+        storage.VerifyNoOtherCalls();
+        latest.Verify(accessor => accessor.Update(annotation), Times.Once);
+    }
+
     [TestMethod]
     public async Task ExplicitStorageConsumesOnlyDeclaredDependencyArtifacts()
     {
@@ -54,6 +154,94 @@ public sealed class InfrastructureCaptureProcessingStepTests
         Assert.HasCount(1, evidence);
         Assert.AreEqual(included.ArtifactId, evidence[0].ArtifactId);
         Assert.IsTrue(evidence[0].Selected);
+    }
+
+    [TestMethod]
+    public async Task StorageStepIdPolicy_DoesNotChangeDescriptorIdentityOrSemanticSource()
+    {
+        var payload = new byte[] { 0, 0, 0, 0 };
+        var manifest = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono8, 2, 2, 2, payload);
+        var receipt = new RawCaptureReceipt(
+            RawIngressOutcome.Committed,
+            manifest,
+            new StoredFrameReference(
+                manifest.RelativeArtifactPath,
+                Path.Combine("/tmp/camera", manifest.RelativeArtifactPath),
+                manifest.Descriptor.Timing.ExposureStartedUtc,
+                FrameArtifactRole.Raw),
+            CaptureContractJson.ComputeManifestSha256(manifest));
+
+        async Task<ReconstructionDescriptor> StoreAsync(string? policyStepId)
+        {
+            var context = CreateContext(receipt);
+            context.BeginNode("producer", ["$raw"]);
+            var raw = context.Artifacts!.Raw;
+            var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                "preview", "1.0.0", "preview-v1", System.Text.Json.JsonSerializer.SerializeToElement(new { })));
+            var sources = new[] { manifest.Descriptor.Artifact.ArtifactId };
+            var product = new ProcessingProduct(
+                FrameArtifactRole.Preview,
+                "preview-v1",
+                ProcessingIdentity.CreateOutputIdentity(
+                    FrameArtifactRole.Preview, "preview-v1", recipe.IdentitySha256, sources),
+                "application/x-hvo-linear-frame",
+                manifest.Descriptor.Layout,
+                payload,
+                ProcessingIdentity.ComputePayloadSha256(payload),
+                recipe,
+                [new ProcessingAlgorithmIdentity("preview", "v1")],
+                sources,
+                raw.Frame.Metadata.Exposure,
+                CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility);
+            var artifact = context.AddDerivative(
+                FrameArtifactRole.Preview,
+                raw.Frame with { Metadata = raw.Frame.Metadata with { SourceId = "semantic-source" } },
+                "preview-v1",
+                sources,
+                CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
+            context.AssociateProcessingProduct(artifact, product);
+            context.BeginNode("storage", ["producer"]);
+            ReconstructionDescriptor? captured = null;
+            var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
+            storage.Setup(service => service.SaveAsync(
+                    "/tmp/camera", artifact, It.IsAny<ReconstructionDescriptor>(), It.IsAny<CancellationToken>()))
+                .Callback((string _, FrameArtifact _, ReconstructionDescriptor descriptor, CancellationToken _) => captured = descriptor)
+                .ReturnsAsync(new StoredFrameReference(
+                    "preview.bin", "/tmp/camera/preview.bin", artifact.Frame.TimestampUtc, artifact.Role));
+            storage.Setup(service => service.SaveAsync(
+                    "/tmp/camera", artifact, It.IsAny<ReconstructionDescriptor>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .Callback((string _, FrameArtifact _, ReconstructionDescriptor descriptor, string _, CancellationToken _) => captured = descriptor)
+                .ReturnsAsync(new StoredFrameReference(
+                    "preview.bin", "/tmp/camera/preview.bin", artifact.Frame.TimestampUtc, artifact.Role));
+            var step = new NoOpFileStorageProcessingStep(
+                new CaptureProcessingStepMetadata("storage", "Storage", 100),
+                new NoOpFileStorageProcessingStepOptions
+                {
+                    StorageRoot = "/tmp/camera",
+                    UpdateLatestFrame = false,
+                    Policies = policyStepId is null
+                        ? []
+                        : [new ArtifactStoragePolicyOptions { StepId = policyStepId }]
+                },
+                Mock.Of<ILatestFrameAccessor>(),
+                storage.Object,
+                Mock.Of<IArtifactOutbox>(),
+                Options.Create(new CameraAgentHostOptions()),
+                NullLogger<NoOpFileStorageProcessingStep>.Instance);
+
+            await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+            return captured!;
+        }
+
+        var withoutPolicy = await StoreAsync(null).ConfigureAwait(false);
+        var withRecasedPolicy = await StoreAsync("PrOdUcEr").ConfigureAwait(false);
+
+        Assert.AreEqual("semantic-source", withoutPolicy.Artifact.SourceId);
+        Assert.AreEqual(withoutPolicy.Artifact.SourceId, withRecasedPolicy.Artifact.SourceId);
+        Assert.AreEqual(
+            CaptureContractJson.ComputeDescriptorSha256(withoutPolicy),
+            CaptureContractJson.ComputeDescriptorSha256(withRecasedPolicy));
     }
 
     [TestMethod]

@@ -142,6 +142,7 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.AreEqual("VirtualSky", summary.Configuration.Value.ModuleType);
         Assert.AreEqual("validated", summary.Configuration.Value.ValidationStatus);
         Assert.AreEqual("Enabled", summary.Configuration.Value.CentralIntegration);
+        Assert.AreEqual("Off", summary.Configuration.Value.TransientDetection);
         Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Source));
         Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Freshness));
 

@@ -10,6 +10,7 @@ deploy_validate_inventory() {
       def token: text and test("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
       def root: text and startswith("/") and . != "/" and
         (contains("//") | not) and (split("/") | any(. == "." or . == "..") | not);
+      def runtime_root: root and ((contains("\\") or contains(",") or contains("\"")) | not);
        def memory_mib: capture("^(?<value>[1-9][0-9]*)(?<unit>[MG])$") |
          (.value | tonumber) * (if .unit == "G" then 1024 else 1 end);
        def url: text and test("^https?://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}(/[^[:space:]]*)?$") and
@@ -21,7 +22,7 @@ deploy_validate_inventory() {
         (.dockerContext | text and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
         (.expectedArchitecture == "amd64" or .expectedArchitecture == "arm64") and
         (.expectedHostName | text and test("^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$")) and
-        (.expectedHostIdentity | token) and (.expectedDockerDaemonIdentity | token) and (.runtimeRoot | root) and
+        (.expectedHostIdentity | token) and (.expectedDockerDaemonIdentity | token) and (.runtimeRoot | runtime_root) and
         (.runtimeOwner | text and test("^[a-z_][a-z0-9_-]{0,31}$"));
        def infra: exact(["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","ports"]) and
          ({name,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot,runtimeOwner} | base) and

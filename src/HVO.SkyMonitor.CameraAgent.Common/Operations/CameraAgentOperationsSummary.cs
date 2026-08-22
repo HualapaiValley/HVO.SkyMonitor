@@ -129,7 +129,8 @@ public sealed record OperationsConfigurationState(
     string ValidationStatus,
     string? AgentId,
     string? ModuleType,
-    string CentralIntegration);
+    string CentralIntegration,
+    string TransientDetection);
 
 public sealed record OperationsCaptureControlState(
     string State,
@@ -279,7 +280,8 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 telemetry.Aggregate.ImmediateUploadCount)),
             Section("validated-configuration", null, now, new OperationsConfigurationState(
                 config is not null, config is null ? "unavailable" : "validated", config?.AgentId,
-                config?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString())));
+                config?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString(),
+                hostOptions.Value.TransientDetection.Mode.ToString())));
     }
 
     private static OperationsSection<T> Section<T>(

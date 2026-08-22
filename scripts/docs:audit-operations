@@ -15,6 +15,7 @@ readonly DOCS=(
     docs/runbooks/local-dev.md
     docs/runbooks/smoke-test.md
     docs/runbooks/split-host-preflight.md
+    docs/runbooks/ci-pipeline.md
     docs/catalog/production-install.md
     docs/catalog/hyg-v42.md
 )
@@ -74,6 +75,23 @@ require_source_reference 'DeviceBootstrap__CentralIdentity__ClientCredentials__C
 require_source_reference 'canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on' docs/catalog/production-install.md
 require_source_reference 'ARM64 operators must install the' docs/catalog/production-install.md
 require_source_reference 'It never copies or executes the catalog builder remotely.' docs/runbooks/split-host-preflight.md
+require_source_reference 'Two consecutive' docs/runbooks/split-host-preflight.md
+require_source_reference 'final reassertion' docs/runbooks/split-host-preflight.md
+require_source_reference 'There is no generic privilege escalation path.' docs/runbooks/split-host-preflight.md
+require_source_reference 'including a same-device bind' docs/runbooks/split-host-preflight.md
+require_source_reference 'It removes neither marker nor root.' docs/runbooks/split-host-preflight.md
+require_source_reference '--pull never' docs/runbooks/split-host-preflight.md
+require_source_reference 'does not claim inode binding' docs/runbooks/split-host-preflight.md
+require_source_reference 'POSIX/BusyBox-compatible syntax' docs/runbooks/split-host-preflight.md
+require_source_reference 'inventory-label-drift-retained' docs/runbooks/split-host-preflight.md
+require_source_reference 'never uses a' docs/runbooks/split-host-preflight.md
+require_source_reference 'wildcard.' docs/runbooks/split-host-preflight.md
+require_source_reference 'no intent permits partial absence' docs/runbooks/split-host-preflight.md
+require_source_reference 'deploy_capture_queues_converged' scripts/deploy/common.sh
+require_source_reference './scripts/test:deploy-environment --parallel' docs/runbooks/ci-pipeline.md
+require_source_reference 'name: Deployment Contracts' .github/workflows/ci.yml
+require_source_reference 'deployment: ${{ steps.classify.outputs.deployment }}' .github/workflows/ci.yml
+require_source_reference 'is_deployment_path()' scripts/ci:classify
 # shellcheck disable=SC2016 # The deployment source must retain this literal shell expression.
 require_source_reference 'deploy_transport_copy "$bundle/."' scripts/deploy/catalog.sh
 require_source_reference 'deploy_transport_catalog_install' scripts/deploy/catalog.sh

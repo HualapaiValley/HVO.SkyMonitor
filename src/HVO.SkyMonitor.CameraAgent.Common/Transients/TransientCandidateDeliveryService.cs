@@ -179,6 +179,9 @@ internal sealed class TransientCandidateDeliveryService(
     TimeProvider timeProvider,
     ILogger<TransientCandidateDeliveryService> logger) : BackgroundService
 {
+    internal const string ModeDisabledReason = "hybrid-submission.mode-disabled";
+    internal const string EvidenceMissingReason = "hybrid-submission.evidence-missing";
+    internal const string EvidenceUnavailableReason = "hybrid-submission.evidence-unavailable";
     internal const int MaximumBatchCount = 64;
     internal const int MaximumConcurrentSends = 4;
     internal const int MaximumRetryBatchCount = 16;
@@ -190,6 +193,8 @@ internal sealed class TransientCandidateDeliveryService(
     private DateTimeOffset? _lastAcknowledgedUtc;
     private DateTimeOffset? _lastAttemptUtc;
     private DateTimeOffset? _lastScanUtc;
+    private DependencyCircuit? _dependencyCircuit;
+    private bool _drainImmediately;
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The hosted delivery loop must remain available to retry durable submissions after an iteration failure.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -218,10 +223,15 @@ internal sealed class TransientCandidateDeliveryService(
                 TransientCandidateDeliveryLog.ScanFailed(logger, exception.GetType().Name, exception);
             }
 
-            await wakeup.WaitAsync(
-                GetWaitDelay(timeProvider.GetUtcNow()),
-                timeProvider,
-                stoppingToken).ConfigureAwait(false);
+            var delay = GetWaitDelay(timeProvider.GetUtcNow());
+            if (_dependencyCircuit is null)
+            {
+                await wakeup.WaitAsync(delay, timeProvider, stoppingToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await Task.Delay(delay, timeProvider, stoppingToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -234,6 +244,77 @@ internal sealed class TransientCandidateDeliveryService(
         }
 
         var now = timeProvider.GetUtcNow();
+        if (_dependencyCircuit is { } circuit)
+        {
+            if (circuit.NextAttemptUtc > now)
+            {
+                await UpdateStateAsync(dependencyWaiting: false, cancellationToken).ConfigureAwait(false);
+                return 0;
+            }
+
+            try
+            {
+                var retained = await journal.ReadAsync(circuit.CandidateId, cancellationToken).ConfigureAwait(false);
+                if (retained is not { Phase: TransientCandidateWorkflowPhase.HandoffPending, Submission: not null } ||
+                    retained.SourceHoldReleased)
+                {
+                    var replacement = await FindReplacementCanaryAsync(
+                        circuit.CandidateId, cancellationToken).ConfigureAwait(false);
+                    var retainedCircuit = replacement is null
+                        ? circuit
+                        : circuit with { CandidateId = replacement.CandidateId };
+                    AdvanceDependencyCircuit(
+                        retainedCircuit,
+                        timeProvider.GetUtcNow(),
+                        requestedDelay: null,
+                        "canary-retained-candidate-unavailable");
+                    await UpdateStateAsync(dependencyWaiting: false, cancellationToken).ConfigureAwait(false);
+                    return 0;
+                }
+
+                var canary = await SendAsync(retained, cancellationToken).ConfigureAwait(false);
+                RecordAttempt(canary);
+                if (ProvesModeAvailable(canary))
+                {
+                    await SettleCandidateSafelyAsync(canary, cancellationToken).ConfigureAwait(false);
+                    CloseDependencyCircuit();
+                }
+                else
+                {
+                    if (IsTerminal(canary))
+                    {
+                        await SettleCandidateSafelyAsync(canary, cancellationToken).ConfigureAwait(false);
+                        var replacement = await FindReplacementCanaryAsync(
+                            circuit.CandidateId, cancellationToken).ConfigureAwait(false);
+                        if (replacement is not null)
+                        {
+                            circuit = circuit with { CandidateId = replacement.CandidateId };
+                        }
+                    }
+                    RecordSharedDependencyWait(canary);
+                    AdvanceDependencyCircuit(circuit, canary.CompletedUtc, canary.Result.RetryAfter, canary.Result.Reason);
+                }
+                await UpdateStateAsync(dependencyWaiting: false, cancellationToken).ConfigureAwait(false);
+                return 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                if (_dependencyCircuit is null || _dependencyCircuit.NextAttemptUtc <= now)
+                {
+                    AdvanceDependencyCircuit(
+                        circuit,
+                        timeProvider.GetUtcNow(),
+                        requestedDelay: null,
+                        $"canary-{exception.GetType().Name}");
+                }
+                throw;
+            }
+        }
+
         var artifactOutboxSnapshot = artifactOutboxState.Snapshot;
         var dependencyWaiting = artifactOutboxSnapshot.Availability is
             ArtifactOutboxAvailability.Initializing or ArtifactOutboxAvailability.Unavailable;
@@ -273,6 +354,7 @@ internal sealed class TransientCandidateDeliveryService(
         }
         var entries = new List<TransientCandidateJournalEntry>(MaximumBatchCount);
         var candidateIds = new HashSet<Guid>();
+        var discoveryCursors = new Dictionary<Guid, TransientCandidateDeliveryCursor>();
         var dueRetryIds = _retries
             .Where(value => value.Value.NextAttemptUtc <= now)
             .OrderBy(value => value.Value.NextAttemptUtc)
@@ -298,6 +380,7 @@ internal sealed class TransientCandidateDeliveryService(
         if (!dependencyWaiting && pendingPage is not null)
         {
             var publicationTracked = artifactOutboxState.Roots.Count > 0;
+            var freshCandidateSeen = false;
             foreach (var entry in pendingPage.Entries.Take(MaximumBatchCount - entries.Count))
             {
                 if (publicationTracked && entry.Submission!.Candidate.ContextSources.Any(source =>
@@ -310,32 +393,86 @@ internal sealed class TransientCandidateDeliveryService(
                     (!_retries.TryGetValue(entry.CandidateId, out var retry) || retry.NextAttemptUtc <= now))
                 {
                     entries.Add(entry);
+                    discoveryCursors[entry.CandidateId] = new(entry.CreatedUtc, entry.CandidateId);
+                    freshCandidateSeen = true;
                 }
-                _cursor = new TransientCandidateDeliveryCursor(entry.CreatedUtc, entry.CandidateId);
+                else if (!freshCandidateSeen && _retries.ContainsKey(entry.CandidateId))
+                {
+                    _cursor = new(entry.CreatedUtc, entry.CandidateId);
+                }
             }
         }
 
         var waiting = new Queue<TransientCandidateJournalEntry>(entries);
-        var active = new List<Task<SendOutcome>>(MaximumConcurrentSends);
-        while (active.Count < MaximumConcurrentSends && waiting.TryDequeue(out var entry))
+        var attemptedCount = 0;
+        while (waiting.Count > 0)
         {
-            active.Add(SendAsync(entry, cancellationToken));
-        }
-        while (active.Count > 0)
-        {
-            var completed = await Task.WhenAny(active).ConfigureAwait(false);
-            active.Remove(completed);
-            await SettleAsync(await completed.ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-            if (waiting.TryDequeue(out var entry))
+            var active = new List<Task<SendOutcome>>(MaximumConcurrentSends);
+            while (active.Count < MaximumConcurrentSends && waiting.TryDequeue(out var entry))
             {
                 active.Add(SendAsync(entry, cancellationToken));
+                if (discoveryCursors.TryGetValue(entry.CandidateId, out var dispatchedCursor))
+                {
+                    _cursor = dispatchedCursor;
+                }
+                attemptedCount++;
+            }
+
+            var modeDisabled = false;
+            Exception? waveFailure = null;
+            while (active.Count > 0)
+            {
+                var completed = await Task.WhenAny(active).ConfigureAwait(false);
+                active.Remove(completed);
+                SendOutcome outcome;
+                try
+                {
+                    outcome = await completed.ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    waveFailure ??= exception;
+                    continue;
+                }
+                RecordAttempt(outcome);
+                if (IsModeDisabled(outcome.Result))
+                {
+                    RetainModeDisabledCandidate(outcome);
+                    if (!modeDisabled)
+                    {
+                        OpenDependencyCircuit(outcome);
+                        modeDisabled = true;
+                    }
+                    else
+                    {
+                        telemetry.Record("delivery", "dependency-wait", outcome.Duration);
+                    }
+                }
+                else
+                {
+                    try
+                    {
+                        await SettleCandidateAsync(outcome, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        ScheduleSettlementRetry(outcome, exception);
+                        waveFailure ??= exception;
+                    }
+                }
+            }
+            if (waveFailure is not null)
+            {
+                throw waveFailure;
+            }
+            if (modeDisabled)
+            {
+                break;
             }
         }
 
-        _lastScanUtc = timeProvider.GetUtcNow();
-        var aggregate = await journal.ReadDeliveryAggregateAsync(cancellationToken).ConfigureAwait(false);
-        UpdateState(aggregate, dependencyWaiting);
-        return entries.Count;
+        await UpdateStateAsync(dependencyWaiting, cancellationToken).ConfigureAwait(false);
+        return attemptedCount;
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Each transport attempt is isolated so a failed request cannot cancel sibling durable deliveries.")]
@@ -360,12 +497,11 @@ internal sealed class TransientCandidateDeliveryService(
         return new(entry, result, timeProvider.GetUtcNow(), timeProvider.GetElapsedTime(started));
     }
 
-    private async Task SettleAsync(SendOutcome outcome, CancellationToken cancellationToken)
+    private async Task SettleCandidateAsync(SendOutcome outcome, CancellationToken cancellationToken)
     {
         var entry = outcome.Entry;
         var submission = entry.Submission!;
         var result = outcome.Result;
-        _lastAttemptUtc = Later(_lastAttemptUtc, outcome.CompletedUtc);
         if (result.Disposition == TransientCandidateTransportDisposition.Rejected)
         {
             await journal.QuarantineDeliveryAsync(
@@ -428,8 +564,50 @@ internal sealed class TransientCandidateDeliveryService(
         }
     }
 
+    private async Task SettleCandidateSafelyAsync(SendOutcome outcome, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SettleCandidateAsync(outcome, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            ScheduleSettlementRetry(outcome, exception);
+            throw;
+        }
+    }
+
+    private void ScheduleSettlementRetry(SendOutcome outcome, Exception exception)
+    {
+        _retries.TryGetValue(outcome.Entry.CandidateId, out var retry);
+        var attempts = retry?.Attempts + 1 ?? 1;
+        var delay = RetryDelay(attempts, requestedDelay: null);
+        _retries[outcome.Entry.CandidateId] = new(
+            attempts,
+            outcome.CompletedUtc + delay,
+            TransientCandidateTransportDisposition.Retry);
+        TransientCandidateDeliveryLog.Retrying(
+            logger,
+            $"settlement-{exception.GetType().Name}",
+            (long)delay.TotalMilliseconds);
+    }
+
+    private void RecordAttempt(SendOutcome outcome)
+        => _lastAttemptUtc = Later(_lastAttemptUtc, outcome.CompletedUtc);
+
     internal TimeSpan GetWaitDelay(DateTimeOffset now)
     {
+        if (_drainImmediately)
+        {
+            _drainImmediately = false;
+            return TimeSpan.Zero;
+        }
+        if (_dependencyCircuit is { } circuit)
+        {
+            var circuitDelay = circuit.NextAttemptUtc - now;
+            return circuitDelay <= TimeSpan.Zero ? TimeSpan.Zero : circuitDelay;
+        }
+
         var poll = TimeSpan.FromMilliseconds(_options.WorkerPollIntervalMilliseconds);
         DateTimeOffset? earliest = _retries.Count == 0
             ? null
@@ -442,13 +620,22 @@ internal sealed class TransientCandidateDeliveryService(
         return retryDelay <= TimeSpan.Zero ? TimeSpan.Zero : retryDelay < poll ? retryDelay : poll;
     }
 
+    private async ValueTask UpdateStateAsync(bool dependencyWaiting, CancellationToken cancellationToken)
+    {
+        _lastScanUtc = timeProvider.GetUtcNow();
+        var aggregate = await journal.ReadDeliveryAggregateAsync(cancellationToken).ConfigureAwait(false);
+        UpdateState(aggregate, dependencyWaiting);
+    }
+
     private void UpdateState(TransientCandidateDeliveryAggregate aggregate, bool dependencyWaiting = false)
     {
         var authenticationBlocked = _retries.Count(value =>
             value.Value.Disposition == TransientCandidateTransportDisposition.AuthenticationBlocked);
         var centralWaiting = _retries.Count(value =>
-            value.Value.Disposition == TransientCandidateTransportDisposition.DependencyWaiting);
-        var retrying = _retries.Count - authenticationBlocked - centralWaiting;
+            value.Value.Disposition == TransientCandidateTransportDisposition.DependencyWaiting &&
+            !value.Value.RetainedModeDisabled);
+        var retainedModeDisabled = _retries.Count(value => value.Value.RetainedModeDisabled);
+        var retrying = _retries.Count - authenticationBlocked - centralWaiting - retainedModeDisabled;
         var availability = aggregate.QuarantinedCount > 0
             ? TransientCandidateDeliveryAvailability.Unhealthy
             : authenticationBlocked > 0 || retrying > 0
@@ -456,13 +643,15 @@ internal sealed class TransientCandidateDeliveryService(
                 : TransientCandidateDeliveryAvailability.Healthy;
         var reason = aggregate.QuarantinedCount > 0
             ? "quarantined"
-            : authenticationBlocked > 0
-                ? "authentication-blocked"
-                : retrying > 0
-                    ? "retrying"
-                    : centralWaiting > 0
-                        ? "waiting-central-evidence"
-                        : dependencyWaiting ? "waiting-artifact-upload" : "ready";
+            : _dependencyCircuit is not null
+                ? "waiting-central-mode"
+                : authenticationBlocked > 0
+                    ? "authentication-blocked"
+                    : retrying > 0
+                        ? "retrying"
+                        : centralWaiting > 0
+                            ? "waiting-central-evidence"
+                            : dependencyWaiting ? "waiting-artifact-upload" : "ready";
         state.Set(
             availability,
             reason,
@@ -472,6 +661,106 @@ internal sealed class TransientCandidateDeliveryService(
             _lastAcknowledgedUtc,
             _lastAttemptUtc,
             _lastScanUtc);
+    }
+
+    private void OpenDependencyCircuit(SendOutcome outcome)
+    {
+        var delay = RetryDelay(attempts: 1, outcome.Result.RetryAfter);
+        _dependencyCircuit = new(outcome.Entry.CandidateId, Attempts: 1, outcome.CompletedUtc + delay);
+        _drainImmediately = false;
+        telemetry.Record("delivery", "dependency-wait", outcome.Duration);
+        TransientCandidateDeliveryLog.DependencyWaiting(
+            logger, outcome.Result.Reason, (long)delay.TotalMilliseconds);
+    }
+
+    private void RetainModeDisabledCandidate(SendOutcome outcome)
+    {
+        _retries[outcome.Entry.CandidateId] = new(
+            Attempts: 1,
+            NextAttemptUtc: outcome.CompletedUtc,
+            TransientCandidateTransportDisposition.DependencyWaiting,
+            RetainedModeDisabled: true);
+    }
+
+    private void AdvanceDependencyCircuit(
+        DependencyCircuit circuit,
+        DateTimeOffset completedUtc,
+        TimeSpan? requestedDelay,
+        string reason)
+    {
+        var attempts = circuit.Attempts + 1;
+        var delay = RetryDelay(attempts, requestedDelay);
+        _dependencyCircuit = circuit with { Attempts = attempts, NextAttemptUtc = completedUtc + delay };
+        _drainImmediately = false;
+        TransientCandidateDeliveryLog.DependencyWaiting(logger, reason, (long)delay.TotalMilliseconds);
+    }
+
+    private void RecordSharedDependencyWait(SendOutcome outcome)
+    {
+        telemetry.Record(
+            "delivery",
+            IsModeDisabled(outcome.Result) ? "dependency-wait" : "retry",
+            outcome.Duration);
+    }
+
+    private void CloseDependencyCircuit()
+    {
+        if (_dependencyCircuit is null)
+        {
+            return;
+        }
+        _dependencyCircuit = null;
+        _drainImmediately = true;
+    }
+
+    private static bool IsModeDisabled(TransientCandidateTransportResult result)
+        => result.Disposition == TransientCandidateTransportDisposition.DependencyWaiting &&
+            string.Equals(result.Reason, ModeDisabledReason, StringComparison.Ordinal);
+
+    private static bool ProvesModeAvailable(SendOutcome outcome)
+    {
+        var result = outcome.Result;
+        return result.Disposition == TransientCandidateTransportDisposition.DependencyWaiting &&
+                result.Reason is EvidenceMissingReason or EvidenceUnavailableReason ||
+            result is
+            {
+                Disposition: TransientCandidateTransportDisposition.Acknowledged,
+                Acknowledgement: { } acknowledgement
+            } && acknowledgement.Disposition == TransientCandidateSubmissionDisposition.Accepted &&
+                TransientCandidateDeliveryJson.Matches(acknowledgement, outcome.Entry.Submission!);
+    }
+
+    private static bool IsTerminal(SendOutcome outcome)
+        => outcome.Result.Disposition == TransientCandidateTransportDisposition.Rejected ||
+            outcome.Result is
+            {
+                Disposition: TransientCandidateTransportDisposition.Acknowledged,
+                Acknowledgement: { } acknowledgement
+            } && TransientCandidateDeliveryJson.Matches(acknowledgement, outcome.Entry.Submission!);
+
+    private async ValueTask<TransientCandidateJournalEntry?> FindReplacementCanaryAsync(
+        Guid excludedCandidateId,
+        CancellationToken cancellationToken)
+    {
+        var retainedCandidateIds = _retries
+            .Where(value => value.Key != excludedCandidateId && value.Value.RetainedModeDisabled)
+            .OrderBy(value => value.Key)
+            .Select(value => value.Key)
+            .ToArray();
+        foreach (var candidateId in retainedCandidateIds)
+        {
+            var retained = await journal.ReadAsync(candidateId, cancellationToken).ConfigureAwait(false);
+            if (retained is { Phase: TransientCandidateWorkflowPhase.HandoffPending, Submission: not null } &&
+                !retained.SourceHoldReleased)
+            {
+                return retained;
+            }
+            _retries.Remove(candidateId);
+        }
+
+        var page = await journal.ReadPendingDeliveryPageAsync(
+            after: null, maximumCount: 1, cancellationToken: cancellationToken).ConfigureAwait(false);
+        return page.Entries.FirstOrDefault(entry => entry.CandidateId != excludedCandidateId);
     }
 
     private static DateTimeOffset Later(DateTimeOffset? current, DateTimeOffset candidate)
@@ -494,12 +783,14 @@ internal sealed class TransientCandidateDeliveryService(
     private sealed record RetryState(
         int Attempts,
         DateTimeOffset NextAttemptUtc,
-        TransientCandidateTransportDisposition Disposition);
+        TransientCandidateTransportDisposition Disposition,
+        bool RetainedModeDisabled = false);
     private sealed record SendOutcome(
         TransientCandidateJournalEntry Entry,
         TransientCandidateTransportResult Result,
         DateTimeOffset CompletedUtc,
         TimeSpan Duration);
+    private sealed record DependencyCircuit(Guid CandidateId, int Attempts, DateTimeOffset NextAttemptUtc);
 }
 
 internal static partial class TransientCandidateDeliveryLog

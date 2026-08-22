@@ -37,9 +37,19 @@ than trusting unrelated inventory assertions. Docker daemon architecture values
 `arm64`. Other daemon values fail with a bounded `unsupported-architecture`
 reason and are not copied into output or evidence.
 
+Use wired Ethernet for sustained or full-frame CameraAgent workloads when it is
+available. Wi-Fi remains supported, but SSH reachability, health checks, signal
+strength, nominal association rate, and loss-free ping do not prove sufficient
+payload throughput. Before relying on Wi-Fi, measure a representative direct
+transfer from the CameraAgent to LogicHost and require comfortable margin under
+the observed artifact-upload request deadline and expected capture cadence.
+
 Runtime roots may contain ordinary spaces and are passed only through quoted
-arguments. Control characters, repeated separators, and `.` or `..` components
-are rejected. Catalog versions follow the repository's existing `4.2`,
+arguments. Control characters, repeated separators, `.` or `..` components,
+backslash, comma, and double quote are rejected before deployment so every
+accepted root has one unambiguous Docker bind-mount and mountinfo representation.
+`moduleConfigPath` remains a generic safe absolute file path and does not inherit
+those Docker-specific delimiter restrictions. Catalog versions follow the repository's existing `4.2`,
 `hyg-v4.2-p3-s2-r1`, and fixture-style identifiers; colon is not a supported
 catalog-version separator.
 Inventory schema v7 pins the Git revision, catalog, source-revision image tag,
@@ -226,6 +236,13 @@ per-target durable cooperative locks before changing deployment state.
 ```bash
 ./scripts/test:deploy-environment
 ```
+
+The no-argument command remains the serial all-contract mode. CI runs nine
+isolated shards with at most eight concurrent workers; list or select them with
+`./scripts/test:deploy-environment --list-shards` and
+`./scripts/test:deploy-environment --shard NAME`. See the
+[CI pipeline runbook](ci-pipeline.md) for coordinator failure and retained-log
+behavior.
 
 The test uses fake `ssh`, `scp`, and `docker` through `PATH`. Fake SSH executes the exact
 supplied remote Bash scripts against controlled host commands, while TCP and HTTP
@@ -620,6 +637,21 @@ representative hook; Tier M candidate evidence uses the inventory's canonical 5
 warm-up plus 30 measured operations fixed by the canonical manifest and the trial/regression rules in
 `docs/planning/performance-validation.md`.
 
+Before replacing a CameraAgent profile, `measure` durably records schema-v2
+recovery state: the exact active module-file and configuration hashes, active
+schedule revision/version, and capture-control state/version. It pauses capture
+before profile replacement. A successful measurement intentionally retains the
+canonical profile in the paused state for dependent campaigns. On `INT`, `TERM`,
+`HUP`, or an ordinary phase failure, cleanup first pauses every affected target,
+then restores and verifies each original module configuration, schedule
+revision, and capture-control state in that order. The ledger is published as
+failed before restoration begins. Unverified restoration remains explicit and
+retains cleanup material for a later retry; it is never reported as passed.
+Restart recovery reconciles completed control attempts and committed capture
+boundaries rather than replaying an already completed warm-up or measured set.
+Supervisors must signal the deployment process group so an active transport
+child is interrupted and the shell can enter its bounded restoration handler.
+
 For a required Hybrid transient lane, queue convergence permits only the temporal
 algorithm's final two healthy history captures. The retained capture identities must
 equal that exact tail. The bounded operations projection exposes up to three distinct
@@ -627,8 +659,12 @@ active center-capture identities across transient lane work, worker work, and un
 candidate holds, so a stale third center fails closed. Raw-ingress records range from one
 retained center row through its three-source causal window. Transient records range from
 one worker row per center through the built-in extraction profile's maximum 32 candidates
-per center. Every other lane and queue must be empty, and the transient worker must be
-healthy and idle. The retained before/after queue snapshots expose this tail and its exact
+per center. These are bounded record counts, not substitutes for record-level identities:
+they are accepted only after the pending-capture projection proves the complete active
+center identities and every other lane, the transient worker, capture processing, and
+artifact outbox prove there is no unrelated active work. Every other lane and queue must
+be empty, and the transient worker must be healthy and idle. The retained before/after
+queue snapshots expose this tail and its exact
 final capture sequences; measurement marks the queues converged but not fully drained.
 Any unexpected pending identity, excess fan-out, pressure, lease, retry, quarantine,
 terminal work, or active transient worker fails convergence.
@@ -952,23 +988,154 @@ Delete a fully isolated, orchestrator-owned stack:
   --delete-state --confirm observatory-preflight-01
 ```
 
-Exactly one policy is required. CameraAgents are paused and drained before they
-stop, LogicHost stops second, and
+Exactly one policy is required. CameraAgents are paused and reach a safe queue
+boundary before they stop, LogicHost stops second, and
 deployed shared services last; existing shared services are left running.
 The pause command carries a stable run-and-target-scoped `Idempotency-Key`; only
-an HTTP success response is accepted, and an arbitrary conflict is not treated
-as an idempotent replay. Deletion is accepted only in isolated `services.mode: deploy`, only when every
+an exact paused state and integer control version in the HTTP success response
+are accepted, and an arbitrary conflict is not treated as an idempotent replay.
+Teardown binds that receipt to the durable paused control projection, the inventory's
+exact Off or Hybrid mode, and exactly one durable capture sequence for the provisioned
+device. The device identity, nonnegative end sequence (including zero), and normalized
+active-configuration SHA-256 must remain unchanged. Two consecutive
+fresh observations must satisfy the shared queue convergence contract before
+Compose stop: Off requires an empty drain and a Disabled idle transient worker;
+Hybrid is selected from the required transient runtime lane and permits only its
+healthy idle zero-boundary state or bounded final one-or-two-capture temporal
+tail. Every summary and continuity request is cache-busted; each accepted summary must
+be newer than the preceding accepted root timestamp, bound to the current validated
+device configuration and expected transient mode, and identical in its canonical
+safety-value fingerprint. Raw ingress and capture lanes must be fresh and observed after
+the pause. Capture processing and artifact outbox must be fresh but may predate the pause
+because they refresh asynchronously or may be disabled. Capture control needs a valid
+observation timestamp and the exact receipt state/version, but an already-paused durable
+state need not refresh periodically. Hybrid requires a fresh transient worker; Off accepts
+an idle Disabled worker with a valid observation timestamp even when its initial state is
+stale. Any unsafe or non-monotonic summary resets confirmation. A newer safe summary with
+a changed fingerprint begins a new candidate pair, so A,B,B converges while continuously
+changing snapshots do not. Identity, sequence, or active configuration drift fails closed.
+A final pause uses a new idempotency key and request after those two observations and must
+return the same control version. One final cache-busted summary/continuity pair must then
+be newer, queue-safe, mode/hash stable, and fingerprint-identical before Compose stop.
+Supported orchestration assumes no malicious external
+mutation in the remaining non-atomic script-to-Compose boundary; the final reassertion
+narrows that boundary without a new application endpoint.
+Deletion is accepted only in isolated `services.mode: deploy`, only when every
 runtime root was created by the confirmed run, and only after all guards pass.
 Before parsing, the prepare ledger, manifest, and evidence must each be an
 owner-UID, mode-`0600`, single-link regular non-symlink, and the passed private
 manifest must equal the ledger. Deletion removes explicit Compose services, all
 four exact project default networks, the three exact project-named volumes, and
-marker-validated runtime roots. The three volume objects are bind-backed by the
+marker-validated runtime roots plus their matching prepare lock/state pairs. The
+three volume objects are bind-backed by the
 run-owned shared-service directories; removing a volume object does not delete
 an arbitrary host path, and the later marker-validated runtime-root deletion
 removes the backing data. Mailpit is included through the `test-smtp`
 profile. Every mutation is journaled with an atomic intent and completion; resume
 accepts absence only after a committed ownership-validated intent/completion.
+
+A volume whose run-ID label matches but whose inventory label is a different
+valid SHA-256 is never removed or relabeled. Down records the exact volume as a
+completed `retain-volume-label-drift` action, emits
+`inventory-label-drift-retained`, and fails before runtime-root deletion. That
+retained action authorizes only exact Docker absence on a later retry, allowing
+operator recovery to converge without treating a foreign, malformed, unlabeled,
+or unreachable volume as absent. If the exact expected labels are restored, the
+normal validated deletion path remains available. Wrong run identity, malformed
+labels, daemon errors, and unproven initial absence remain hard failures.
+
+Runtime-root deletion has no sudo, host privilege escalation, generic privileged
+helper, or arbitrary image path. The effective SSH UID must own the exact root,
+its `.hvo-deploy` control directory, and the single-link regular `ownership`
+marker. Root and control mode must remain `0700`; marker mode must remain `0600`
+and its two-line bytes, including exactly one final newline and no appended data,
+must match the prepare-ledger digest exactly. Inspection uses no symlink
+following. When the unprivileged ownership traversal succeeds, it allows only
+the runtime UID or UID 0 and rejects every reported foreign UID before mutation.
+If that traversal cannot enter a mode-`0700` UID-0 directory or otherwise fails,
+the tree is classified as mixed and delegated without host mutation; the failure
+never authorizes unprivileged deletion. The helper then performs the complete
+ownership traversal and rejects every foreign UID or metadata error before
+mutation. A mountpoint at or below
+the runtime root is also rejected before mutation, including a same-device bind
+mount. Each validation pass scans `/proc/self/mountinfo` once, encodes the actual
+root into its escaped path representation for comparison, and fails closed on
+scan errors; `-xdev` is
+not treated as mountpoint proof. The component-by-component
+ancestor checks and exact marker checks still fail closed for symlinks, special
+files, hard links, wrong content, and mode or owner drift.
+
+An entirely runtime-owned root is cleared by the unprivileged SSH user. Runtime-
+owned directories are made owner-writable without following links, all content
+except `.hvo-deploy/ownership` is removed, and the marker is revalidated before
+the marker, control directory, and root are removed last. If inspection finds a
+legitimate UID-0 descendant or cannot fully inspect an inaccessible descendant,
+deletion uses only the already identity-correlated
+target Docker daemon. The helper image is parsed without sourcing from the
+owner-only up-rendered environment: `CAMERAAGENT_IMAGE` for a CameraAgent,
+`LOGICHOST_IMAGE` for LogicHost, or `REDIS_IMAGE` for shared services. It must be
+one exact locally present immutable reference: either a registry
+`repository@sha256:<64-lowercase-hex>` reference or an archive-loaded local
+`sha256:<64-lowercase-hex>` image ID. Tags, options, whitespace, duplicate
+assignments, and malformed digests are rejected.
+
+The mixed-UID helper runs through a 3600-second execution bound with
+`--pull never`, PID limit 64, no network, a read-only helper
+root filesystem, root user, dropped capabilities except the reviewed filesystem
+override/owner capabilities, and no-new-privileges. Its `/bin/sh` script uses
+POSIX/BusyBox-compatible syntax so both the Debian ASP.NET application images and
+the Alpine Redis image can execute it. Its only host mount is the
+exact validated runtime root at fixed `/runtime-root`. Inventory and transport
+reject backslash, comma, and double quote roots before the host mountinfo scan or
+Docker mount construction. The helper
+independently revalidates root/control/
+marker ownership and modes, exact marker content and link count, descendant UIDs,
+and nested mountpoints. After making validated directories writable, depth-first
+directory removal is checked again through exact tree emptiness, including nested
+and top-level UID-0 directories. It removes neither marker nor root. Docker/SSH identity
+is re-correlated immediately before and after this helper, after which the SSH
+runtime owner revalidates and removes marker, control, and root. Helper denial,
+failure, or interruption after mixed content clearing leaves the exact marker
+and durable delete intent in place, so a corrected rerun resumes safely through
+the same validation. There is no generic privilege escalation path.
+
+Each helper run receives a fresh owner-only mode-`0700` local directory containing
+a fixed, initially nonexistent cidfile path. Docker creates that file under
+`umask 077`; only an owner-owned, single-link, mode-`0600` regular file containing
+exactly 64 lowercase hexadecimal bytes with no newline is authoritative. Success
+requires exact Docker not-found proof that `--rm` removed that full-ID helper
+before host finalization. On timeout or failure, only that valid full ID authorizes
+`docker --context <exact-target> container rm -f <exact-id>`, followed by the same
+exact not-found proof. Empty or malformed cidfiles authorize no container removal;
+the cidfile and its private directory are removed on every handled return path.
+
+This is the same owner-controlled marker trust model used by prepare. Immediate
+component and marker revalidation prevents accidental deletion and deletion of a
+foreign path, but it does not claim inode binding or resistance to a malicious
+runtime account that can race its owner-controlled parent between checks. Such an
+account is inside the deployment trust boundary; operators must protect that
+identity and parent from hostile concurrent mutation.
+
+After an exact run-created runtime root is absent, down journals a separate
+deletion for its deterministic sibling prepare lock and `.state` sidecar. It
+derives one exact lock name from the prepare-ledger target/root and never uses a
+wildcard. The runtime SSH owner must still control the non-group/world-writable
+parent. Under a nonblocking flock, cleanup requires owner-UID, single-link,
+mode-`0600` regular non-symlinks, exact lock bytes, and exact state bytes binding
+the marker digest, creating run, and all ledger creation flags. It removes state
+before lock and verifies both absent. A durable lock-delete intent permits retry
+when interruption left the exact lock but already removed its state, or when both
+are absent; no intent permits partial absence. Completed actions re-probe the
+root, lock, and sidecar as absent, so recreation fails closed. Prepare itself
+never repairs or adopts stale cross-run provenance.
+
+The initial SSH filesystem inspection, final owner cleanup, and prepare-lock
+cleanup are bounded to 3600 seconds with a 30-second kill grace and SSH
+keepalives every 10 seconds with three missed replies permitted. Timeout or
+transport loss fails the durable
+delete intent and preserves the ownership marker unless final cleanup had already
+completed and returned success.
+
 SSH host and Docker daemon identity are re-correlated immediately before and
 after each mutation. Every removable network and volume carries the exact
 run-ID and inventory-SHA labels written at creation; network identity additionally

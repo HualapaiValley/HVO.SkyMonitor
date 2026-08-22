@@ -36,6 +36,63 @@ public sealed class FileSystemFrameStorageServiceTests
     }
 
     [TestMethod]
+    public async Task SaveAsync_LegacySidecarWithoutProducer_ConvergesOnProducerAwareReplay()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var (artifact, descriptor) = CreateVersionedArtifact();
+            using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var stored = await service.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
+
+            await service.SaveAsync(root, artifact, descriptor, "Final-Jpeg", CancellationToken.None).ConfigureAwait(false);
+            var sidecarPath = Path.ChangeExtension(stored.AbsolutePath, ".json");
+            var producerSidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            await service.SaveAsync(root, artifact, descriptor, "final-jpeg", CancellationToken.None).ConfigureAwait(false);
+            var recasedReplaySidecar = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+            var parsed = CaptureContractJson.ParseManifest(
+                recasedReplaySidecar);
+
+            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+            Assert.AreEqual("Final-Jpeg", parsed.Document!.Manifest!.ProducerStepId);
+            Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(descriptor), parsed.Document.Manifest.IdempotencyKey);
+            CollectionAssert.AreEqual(producerSidecar, recasedReplaySidecar);
+            Assert.AreEqual(1, Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_ExistingNonNullProducerConflict_FailsClosed()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var (artifact, descriptor) = CreateVersionedArtifact();
+            using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            await service.SaveAsync(root, artifact, descriptor, "final-jpeg", CancellationToken.None).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await service.SaveAsync(
+                    root, artifact, descriptor, "thumbnail-large", CancellationToken.None).ConfigureAwait(false))
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task SaveAsync_ExistingCorruptUnversionedPayload_FailsClosed()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));

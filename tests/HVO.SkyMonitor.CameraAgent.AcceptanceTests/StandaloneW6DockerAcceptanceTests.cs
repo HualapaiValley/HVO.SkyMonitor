@@ -4105,16 +4105,20 @@ public sealed class StandaloneW6DockerAcceptanceTests
     {
         foreach (var path in Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories))
         {
-            DurableProcessingProductManifestV1 manifest;
+            IDurableProcessingProductManifest parsed;
             try
             {
-                manifest = DurableProcessingProductManifestJson.Parse(File.ReadAllBytes(path));
+                parsed = DurableProcessingProductManifestJson.Parse(File.ReadAllBytes(path));
             }
             catch (IOException)
             {
                 continue;
             }
             catch (InvalidDataException)
+            {
+                continue;
+            }
+            if (parsed is not DurableProcessingProductManifestV1 manifest)
             {
                 continue;
             }

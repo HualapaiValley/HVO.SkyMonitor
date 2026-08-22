@@ -187,7 +187,9 @@ public sealed class RetentionBackgroundService(
 
     private List<StorageRetentionPlan> BuildRetentionPlans(CameraModuleConfig config)
     {
-        var plans = new List<StorageRetentionPlan>();
+        var configuredStorage = new List<StorageRetentionPlan>();
+        var hasDurableOutputs = config.ResolveProcessingSteps().Any(static step =>
+            step.Enabled != false && step.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal);
         foreach (var step in config.ResolveProcessingSteps())
         {
             if (!IsFileStorageStep(step.Type) || step.Enabled == false)
@@ -214,13 +216,10 @@ public sealed class RetentionBackgroundService(
                 var normalizedRoot = Path.GetFullPath(storageRoot);
                 var retentionDays = Math.Max(1, options.RetentionDays);
 
-                var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-                if (plans.Any(p => string.Equals(p.StorageRoot, normalizedRoot, comparison)))
-                {
-                    continue;
-                }
-
-                plans.Add(new StorageRetentionPlan(normalizedRoot, retentionDays, options.Policies));
+                configuredStorage.Add(new StorageRetentionPlan(
+                    normalizedRoot,
+                    retentionDays,
+                    options.Policies));
             }
             catch (JsonException)
             {
@@ -228,17 +227,54 @@ public sealed class RetentionBackgroundService(
             }
         }
 
+        if (hasDurableOutputs && configuredStorage.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Durable processing outputs require an enabled Storage step to define raw-root retention.");
+        }
+
+        var plans = configuredStorage
+            .GroupBy(static plan => Path.TrimEndingDirectorySeparator(plan.StorageRoot), PathComparer)
+            .Select(static group => new StorageRetentionPlan(
+                group.Key,
+                group.Max(static plan => plan.RetentionDays),
+                MergePolicies(group.SelectMany(static plan => plan.Policies ?? []))))
+            .OrderBy(static plan => plan.StorageRoot, PathComparer)
+            .ToList();
+        var needsRawRoot = hasDurableOutputs || _rawIngressHolds is not null || _processingHolds is not null;
+        var rawRoot = needsRawRoot
+            ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(_hostOptions.RawIngressRoot))
+            : null;
+        if (hasDurableOutputs && !plans.Any(plan => PathsEqual(plan.StorageRoot, rawRoot!)))
+        {
+            plans.Add(new StorageRetentionPlan(
+                rawRoot!,
+                configuredStorage.Max(static plan => plan.RetentionDays),
+                MergePolicies(configuredStorage.SelectMany(static plan => plan.Policies ?? []))));
+        }
+
         if (_rawIngressHolds is not null || _processingHolds is not null)
         {
-            var rawRoot = Path.GetFullPath(_hostOptions.RawIngressRoot);
-            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-            if (!plans.Any(plan => string.Equals(plan.StorageRoot, rawRoot, comparison)))
+            if (!plans.Any(plan => PathsEqual(plan.StorageRoot, rawRoot!)))
             {
-                plans.Add(new StorageRetentionPlan(rawRoot, 3650));
+                plans.Add(new StorageRetentionPlan(rawRoot!, 3650));
             }
         }
-        return plans;
+        return plans.OrderBy(static plan => plan.StorageRoot, PathComparer).ToList();
     }
+
+    private static ArtifactStoragePolicyOptions[] MergePolicies(IEnumerable<ArtifactStoragePolicyOptions> policies)
+        => policies
+            .GroupBy(static policy => $"{policy.StepId?.ToUpperInvariant()}\0{policy.Role}\0{policy.Variant}\0{policy.RecipeName}", StringComparer.Ordinal)
+            .Select(static group => group
+                .OrderByDescending(static policy => policy.RetentionDays ?? 0)
+                .ThenByDescending(static policy => policy.QueueForUpload == true)
+                .First())
+            .OrderBy(static policy => policy.StepId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static policy => policy.Role)
+            .ThenBy(static policy => policy.Variant, StringComparer.Ordinal)
+            .ThenBy(static policy => policy.RecipeName, StringComparer.Ordinal)
+            .ToArray();
 
     private static bool IsFileStorageStep(string? typeName)
     {
@@ -382,7 +418,11 @@ public sealed class RetentionBackgroundService(
                 var manifest = parsed.Document?.Manifest;
                 if (parsed.IsValid && manifest is not null)
                 {
-                    AddPolicyHold(manifest.Descriptor.Artifact, manifest.RelativeArtifactPath, sidecarPath);
+                    AddPolicyHold(
+                        manifest.Descriptor.Artifact,
+                        manifest.RelativeArtifactPath,
+                        sidecarPath,
+                        manifest.ProducerStepId);
                 }
             }
         }
@@ -399,7 +439,11 @@ public sealed class RetentionBackgroundService(
                 try
                 {
                     var manifest = DurableProcessingProductManifestJson.Parse(File.ReadAllBytes(sidecarPath));
-                    AddPolicyHold(manifest.Artifact, manifest.RelativeArtifactPath, sidecarPath);
+                    AddPolicyHold(
+                        manifest.Artifact,
+                        manifest.RelativeArtifactPath,
+                        sidecarPath,
+                        manifest.ProducerStepId ?? manifest.Artifact.SourceId);
                 }
                 catch (InvalidDataException)
                 {
@@ -409,15 +453,22 @@ public sealed class RetentionBackgroundService(
         }
         return new PendingArtifacts(paths, artifactIds);
 
-        void AddPolicyHold(ArtifactDescriptor artifact, string relativeArtifactPath, string sidecarPath)
+        void AddPolicyHold(
+            ArtifactDescriptor artifact,
+            string relativeArtifactPath,
+            string sidecarPath,
+            string? producerStepId)
         {
             var policy = policies
+                .Where(policy => policy.StepId is null || string.Equals(
+                    policy.StepId, producerStepId, StringComparison.OrdinalIgnoreCase))
                 .Where(policy => policy.Role is null || policy.Role == artifact.Role)
                 .Where(policy => policy.Variant is null || string.Equals(policy.Variant, artifact.Variant, StringComparison.Ordinal))
                 .Where(policy => policy.RecipeName is null || string.Equals(
                     policy.RecipeName, artifact.Recipe.Name, StringComparison.Ordinal))
                 .OrderByDescending(static policy =>
-                    (policy.Role is null ? 0 : 1) + (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
+                    (policy.StepId is null ? 0 : 1) + (policy.Role is null ? 0 : 1) +
+                    (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
                 .FirstOrDefault();
             if (policy?.RetentionDays is not { } retentionDays ||
                 artifact.CreatedUtc < evaluatedUtc.AddDays(-retentionDays))

@@ -31,11 +31,45 @@ deploy_bootstrap_publish() {
 deploy_bootstrap_validate_candidate() {
     local path="$1" run_id="$2" mode="$3" hash="$4" revision="$5" inventory="$6"
     jq -e --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --argjson inventory "$(jq -c . "$inventory")" '
+      def nonempty_string: type == "string" and length > 0;
+      def whole_number: type == "number" and . >= 0 and floor == .;
+      def prior_sequence: type == "number" and . >= -1 and floor == .;
+      def utc_timestamp:
+        type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") and
+        (. as $timestamp | try ((fromdateiso8601 | strftime("%Y-%m-%dT%H:%M:%SZ")) == $timestamp) catch false);
+      def continuity_valid:
+        .lastFleetAcknowledgedUtc as $last_acknowledged |
+        type == "object" and
+        (keys | sort) == (["deviceId","configuredAgentId","devicePublicId","observatoryId","lastFleetAcknowledgedUtc",
+          "expectedRigProfileVersion","expectedRigProfileHash","fleetAcknowledgement","captureAcknowledgement"] | sort) and
+        (.deviceId | nonempty_string) and .configuredAgentId == .deviceId and
+        (.devicePublicId | nonempty_string) and (.observatoryId | nonempty_string) and
+        (.lastFleetAcknowledgedUtc | utc_timestamp) and
+        ((.expectedRigProfileVersion | nonempty_string) or (.expectedRigProfileVersion | whole_number and . >= 1)) and
+        (.expectedRigProfileHash | type == "string" and test("^[0-9A-Fa-f]{64}$")) and
+        (.fleetAcknowledgement | type == "object" and
+          (keys | sort) == (["localSequenceBefore","localSequenceAfter","centralSequenceBefore","centralSequenceAfter","centralReceivedAtBefore"] | sort) and
+          (.localSequenceBefore | prior_sequence) and (.localSequenceAfter | whole_number) and .localSequenceAfter > .localSequenceBefore and
+          (.centralSequenceBefore | prior_sequence) and (.centralSequenceAfter | whole_number) and .centralSequenceAfter > .centralSequenceBefore and
+          (.centralReceivedAtBefore == null or
+            ((.centralReceivedAtBefore | utc_timestamp) and
+             (.centralReceivedAtBefore | fromdateiso8601) <= ($last_acknowledged | fromdateiso8601)))) and
+        (.captureAcknowledgement | type == "object" and
+          (keys | sort) == (["localSequenceBefore","localSequenceAfter","centralSequenceBefore","centralSequenceAfter"] | sort) and
+          (.localSequenceBefore | prior_sequence) and (.localSequenceAfter | whole_number) and .localSequenceAfter > .localSequenceBefore and
+          (.centralSequenceBefore | prior_sequence) and (.centralSequenceAfter | whole_number) and .centralSequenceAfter > .centralSequenceBefore);
       .schemaVersion == 1 and .runId == $run and .mode == $mode and .inventorySha256 == $hash and .sourceRevision == $revision and
       (.publicationGeneration | numbers) >= 1 and (.phaseStatus == "running" or .phaseStatus == "failed" or .phaseStatus == "passed") and
       ((keys - ["completedAt"] | sort) == (["schemaVersion","publicationGeneration","runId","mode","inventorySha256","sourceRevision","phaseStatus","startedAt","updatedAt","targets"] | sort)) and
+      (.startedAt | utc_timestamp) and (.updatedAt | utc_timestamp) and
+      (.startedAt | fromdateiso8601) <= (.updatedAt | fromdateiso8601) and
+      (if .phaseStatus == "passed" then
+         has("completedAt") and (.completedAt | utc_timestamp) and
+         (.updatedAt | fromdateiso8601) <= (.completedAt | fromdateiso8601)
+       else has("completedAt") | not end) and
       (.targets | type == "array" and length == ([.[].target] | unique | length) and
-        all(.[]; .target as $target | (keys | sort) == (["target","status","continuity"] | sort) and ([ $inventory.cameraAgents[].name ] | index($target) != null))) and
+        all(.[]; .target as $target | (keys | sort) == (["target","status","continuity"] | sort) and .status == "ready" and
+          (.continuity | continuity_valid) and ([ $inventory.cameraAgents[].name ] | index($target) != null))) and
       (if .phaseStatus == "passed" then ([.targets[].target] | sort) == ([$inventory.cameraAgents[].name] | sort) else true end)' "$path" >/dev/null 2>&1 ||
       { deploy_fail bootstrap ledger invalid; return 1; }
 }
@@ -61,10 +95,23 @@ deploy_bootstrap_normalize_response() {
          RequestToken:"requestToken",HeaderName:"headerName",State:"state",Version:"version",Replayed:"replayed",
          CentralFrameCount:"centralFrameCount",MaximumCaptureSequence:"maximumCaptureSequence",
          CaptureControl:"captureControl",Value:"value",FleetAgentInstanceId:"fleetAgentInstanceId",
-         MaximumHeartbeatSequence:"maximumHeartbeatSequence",CentralArtifactCount:"centralArtifactCount",
-         CurrentRigProfileVersion:"currentRigProfileVersion",CurrentRigProfileHash:"currentRigProfileHash",
-         LastHeartbeatReceivedAtUtc:"lastHeartbeatReceivedAtUtc"}[.] // .;
-      walk(if type == "object" then with_entries(.key |= contract_key) else . end) |
+          MaximumHeartbeatSequence:"maximumHeartbeatSequence",CentralArtifactCount:"centralArtifactCount",
+          CurrentRigProfileVersion:"currentRigProfileVersion",CurrentRigProfileHash:"currentRigProfileHash",
+          LastHeartbeatReceivedAtUtc:"lastHeartbeatReceivedAtUtc",CaptureWindow:"captureWindow",
+          CaptureSequence:"captureSequence",CaptureId:"captureId",Artifacts:"artifacts",ArtifactId:"artifactId",
+          Role:"role",ChecksumSha256:"checksumSha256",ByteLength:"byteLength",ObjectState:"objectState",
+          ObjectVerifiedAtUtc:"objectVerifiedAtUtc",Sources:"sources",CompletedDerivativeCount:"completedDerivativeCount",
+          IssuedAtUtc:"issuedAtUtc",ActivatedAtUtc:"activatedAtUtc",LineageSourceCount:"lineageSourceCount",
+          LatestArtifacts:"latestArtifacts",RecipeVersion:"recipeVersion",RecipeName:"recipeName",
+          RecipeSemanticVersion:"recipeSemanticVersion",RecipeImplementationVersion:"recipeImplementationVersion",
+          Width:"width",Height:"height",PixelFormat:"pixelFormat"}[.] // .;
+      def normalize_contract:
+        if type == "object" then
+          with_entries(.key as $key | .key |= contract_key |
+            .value = (if $key == "Metadata" or $key == "metadata" then .value else (.value | normalize_contract) end))
+        elif type == "array" then map(normalize_contract)
+        else . end;
+      normalize_contract |
       if type == "object" and has("registrationId") and (.status | type) == "number" then
         .status = (["Pending","Active","Revoked"][.status] // .status)
       else . end' "$path" > "$normalized" || { rm -f -- "$normalized"; return 1; }
@@ -264,6 +311,26 @@ deploy_bootstrap_central_capture_sequence() {
       else empty end' "$path"
 }
 
+deploy_schedule_select_file_draft() {
+    local state="$1" revision sha file_sha
+    file_sha="$(jq -er '.fileConfigurationProfileSha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$state")" || return 1
+    jq -e --arg sha "$file_sha" '
+      .pendingRevision.source == "file-draft" and
+      (.pendingRevision.profileSha256 | ascii_downcase) == $sha' "$state" >/dev/null || return 1
+    revision="$(jq -er '.pendingRevision.revisionId | select(test("^[A-Za-z0-9-]+$"))' "$state")" || return 1
+    sha="$(jq -er '.pendingRevision.profileSha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$state")" || return 1
+    printf '%s\t%s\n' "$revision" "$sha"
+}
+
+deploy_schedule_verify_active_profile() {
+    local state="$1" revision="${2:-}" sha="${3:-}"
+    [[ -n "$sha" ]] || sha="$(jq -er '.fileConfigurationProfileSha256 | ascii_downcase | select(test("^[0-9a-f]{64}$"))' "$state")" || return 1
+    jq -e --arg revision "$revision" --arg sha "$sha" '
+      .pendingRevision == null and
+      ($revision == "" or .activeRevision.revisionId == $revision) and
+      (.activeRevision.profileSha256 | ascii_downcase) == $sha' "$state" >/dev/null
+}
+
 deploy_stage_workload_profile() {
     local inventory="$1" target="$2" workload="$3" device_id="$4" render_root="$5" state_dir="$6" run_id="$7"
     local activate="${8:-true}"
@@ -341,7 +408,6 @@ deploy_run_bootstrap() {
     deploy_transport_reconcile_private_uploads strict || { deploy_fail bootstrap private-upload-registry cleanup-failed; return 1; }
     state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"
     render_root="$state_dir/bootstrap-rendered"; private_root="$state_dir/bootstrap-private"
-    install -d -m 700 "$render_root" "$private_root"
     DEPLOY_BOOTSTRAP_MANIFEST="$state_dir/bootstrap-manifest.json"; DEPLOY_BOOTSTRAP_LEDGER="$state_dir/bootstrap-ledger.json"; DEPLOY_BOOTSTRAP_EVIDENCE="$evidence_dir/bootstrap.json"
     DEPLOY_BOOTSTRAP_COMMIT="$state_dir/bootstrap-commit.json"
     deploy_require_no_orphan_phase_files "$DEPLOY_BOOTSTRAP_LEDGER" "$DEPLOY_BOOTSTRAP_MANIFEST" "$DEPLOY_BOOTSTRAP_EVIDENCE" "$DEPLOY_BOOTSTRAP_COMMIT" || return 1
@@ -349,18 +415,15 @@ deploy_run_bootstrap() {
     if [[ -e "$DEPLOY_BOOTSTRAP_LEDGER" || -L "$DEPLOY_BOOTSTRAP_LEDGER" ]]; then
         deploy_require_phase_files_match "$DEPLOY_BOOTSTRAP_LEDGER" "$DEPLOY_BOOTSTRAP_MANIFEST" "$DEPLOY_BOOTSTRAP_EVIDENCE" "$DEPLOY_BOOTSTRAP_COMMIT" \
           deploy_bootstrap_validate_candidate "$run_id" "$mode" "$hash" "$revision" "$inventory" || return 1
-        jq -e --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" '
-          .schemaVersion == 1 and .runId == $run and .mode == $mode and .inventorySha256 == $hash and .sourceRevision == $revision and
-          (.phaseStatus == "running" or .phaseStatus == "failed" or .phaseStatus == "passed") and
-          ((keys - ["completedAt"] | sort) == (["schemaVersion","publicationGeneration","runId","mode","inventorySha256","sourceRevision","phaseStatus","startedAt","updatedAt","targets"] | sort)) and
-          (.targets | type == "array" and length == ([.[].target] | unique | length) and
-            all(.[]; (keys | sort) == (["target","status","continuity"] | sort)))' "$DEPLOY_BOOTSTRAP_LEDGER" >/dev/null 2>&1 ||
-          { deploy_fail bootstrap ledger invalid; return 1; }
+        if [[ "$(jq -r '.phaseStatus' "$DEPLOY_BOOTSTRAP_LEDGER")" == passed ]]; then
+            return 0
+        fi
         DEPLOY_BOOTSTRAP_JSON="$(jq -c --arg now "$now" '.phaseStatus="running" | .updatedAt=$now | del(.completedAt)' "$DEPLOY_BOOTSTRAP_LEDGER")"
     else
         DEPLOY_BOOTSTRAP_JSON="$(jq -cn --arg run "$run_id" --arg mode "$mode" --arg hash "$hash" --arg revision "$revision" --arg now "$now" \
           '{schemaVersion:1,runId:$run,mode:$mode,inventorySha256:$hash,sourceRevision:$revision,phaseStatus:"running",startedAt:$now,updatedAt:$now,targets:[]}')"
     fi
+    install -d -m 700 "$render_root" "$private_root"
     deploy_bootstrap_publish
 
     logic="$(jq -c '.logicHost' "$inventory")"; logic_root="$(jq -r '.runtimeRoot' <<< "$logic")"; logic_remote="$logic_root/.hvo-deploy/bootstrap-$run_id"
@@ -390,7 +453,12 @@ deploy_run_bootstrap() {
     fi
 
     while IFS= read -r target; do
-        name="$(jq -r '.name' <<< "$target")"; target_root="$(jq -r '.runtimeRoot' <<< "$target")"; target_remote="$target_root/.hvo-deploy/bootstrap-$run_id"
+        name="$(jq -r '.name' <<< "$target")"
+        if jq -e --arg target "$name" 'any(.targets[]; .target == $target)' <<< "$DEPLOY_BOOTSTRAP_JSON" >/dev/null; then
+            deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+            continue
+        fi
+        target_root="$(jq -r '.runtimeRoot' <<< "$target")"; target_remote="$target_root/.hvo-deploy/bootstrap-$run_id"
         deploy_transport_remote_directories "$(jq -r '.sshHost' <<< "$target")" "$target_remote" || return 1
         response="$private_root/$name-antiforgery.json"; deploy_bootstrap_owner_session "$inventory" "$target" "$render_root" "$target_remote" "$response" || return 1
         cookies="$target_remote/owner.cookies"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"

@@ -441,6 +441,220 @@ public sealed class RetentionBackgroundServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task ApplyRetentionAsync_DurableProductsUseRawIngressPlanWhenStorageRootDiffers()
+    {
+        var rawRoot = CreateRoot();
+        var storageRoot = CreateRoot();
+        try
+        {
+            var expired = Path.Combine(rawRoot, "derived", "2020", "01", "01", "AnnotatedPreview", "expired.jpg");
+            Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
+            await File.WriteAllBytesAsync(expired, [0xFF, 0xD8, 0xFF, 0xD9]).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(expired, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+            var config = CreateConfig() with
+            {
+                ProcessingSteps = null,
+                Pipeline = new CapturePipelineConfig(
+                    [
+                        new CaptureProcessingStepConfig(
+                            "JpegEncoding",
+                            "final-jpeg",
+                            DependsOn: ["$raw"],
+                            Publication: new CaptureProcessingPublicationPolicy(
+                                CaptureProcessingPersistenceMode.DurableLocal)),
+                        new CaptureProcessingStepConfig("Telemetry", "telemetry", DependsOn: ["final-jpeg"]),
+                        new CaptureProcessingStepConfig(
+                            NoOpFileStorageProcessingStep.StableAlias,
+                            "storage",
+                            Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                            {
+                                StorageRoot = storageRoot,
+                                RetentionDays = 1
+                            }),
+                            DependsOn: ["telemetry"])
+                    ],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var service = CreateService(new FileSystemArtifactOutbox(), rawRoot);
+
+            await service.ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(File.Exists(expired));
+        }
+        finally
+        {
+            DeleteRoot(rawRoot);
+            DeleteRoot(storageRoot);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ApplyRetentionAsync_ExplicitRawRootPlanWinsRegardlessOfStorageOrder(bool rawStorageFirst)
+    {
+        var rawRoot = CreateRoot();
+        var archiveRoot = CreateRoot();
+        try
+        {
+            var retained = Path.Combine(rawRoot, "derived", "2026", "07", "01", "AnnotatedPreview", "retained.jpg");
+            Directory.CreateDirectory(Path.GetDirectoryName(retained)!);
+            await File.WriteAllBytesAsync(retained, [0xFF, 0xD8, 0xFF, 0xD9]).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(retained, new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
+            CaptureProcessingStepConfig Storage(string id, string root, int days) => new(
+                NoOpFileStorageProcessingStep.StableAlias,
+                id,
+                Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                {
+                    StorageRoot = root,
+                    RetentionDays = days
+                }),
+                DependsOn: ["final-jpeg"]);
+            var rawStorage = Storage("raw-storage", rawRoot, 30);
+            var archiveStorage = Storage("archive-storage", archiveRoot, 1);
+            var config = CreateConfig() with
+            {
+                ProcessingSteps = null,
+                Pipeline = new CapturePipelineConfig(
+                    [
+                        new CaptureProcessingStepConfig(
+                            "JpegEncoding", "final-jpeg", DependsOn: ["$raw"],
+                            Publication: new CaptureProcessingPublicationPolicy(
+                                CaptureProcessingPersistenceMode.DurableLocal)),
+                        .. (rawStorageFirst
+                            ? new[] { rawStorage, archiveStorage }
+                            : new[] { archiveStorage, rawStorage })
+                    ],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+
+            await CreateService(new FileSystemArtifactOutbox(), rawRoot)
+                .ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(retained));
+        }
+        finally
+        {
+            DeleteRoot(rawRoot);
+            DeleteRoot(archiveRoot);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_DurableOutputWithoutStoragePolicyFailsClosed()
+    {
+        var rawRoot = CreateRoot();
+        try
+        {
+            var config = CreateConfig() with
+            {
+                ProcessingSteps = null,
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig(
+                        "JpegEncoding", "final-jpeg", DependsOn: ["$raw"],
+                        Publication: new CaptureProcessingPublicationPolicy(
+                            CaptureProcessingPersistenceMode.DurableLocal))],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                CreateService(new FileSystemArtifactOutbox(), rawRoot)
+                    .ApplyRetentionAsync(config, CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            DeleteRoot(rawRoot);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_RecasedStepIdsMergeToMaximumWithoutChangingSemanticSourceId()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var payload = new byte[] { 1, 2, 3, 4 };
+            var manifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono8, 2, 2, 2, payload);
+            var reconstruction = FrameReconstructor.TryReconstruct(manifest.Descriptor, payload, out var frame);
+            Assert.IsTrue(reconstruction.IsValid);
+            var artifact = new FrameArtifact(
+                manifest.Descriptor.Artifact.ArtifactId,
+                FrameArtifactRole.Raw,
+                frame!);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var stored = await storage.SaveAsync(
+                root,
+                artifact,
+                manifest.Descriptor,
+                "custom-producer-node",
+                CancellationToken.None).ConfigureAwait(false);
+            var sidecarPath = Path.ChangeExtension(stored.AbsolutePath, ".json");
+            var parsed = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
+            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+            Assert.AreEqual("custom-producer-node", parsed.Document!.Manifest!.ProducerStepId);
+            Assert.AreEqual(manifest.Descriptor.Artifact.SourceId, parsed.Document.Manifest.Descriptor.Artifact.SourceId);
+            var evaluatedUtc = manifest.Descriptor.Artifact.CreatedUtc.AddDays(10);
+            var config = CreateConfig() with
+            {
+                ProcessingSteps =
+                [
+                    new CaptureProcessingStepConfig(
+                        NoOpFileStorageProcessingStep.StableAlias,
+                        Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                        {
+                            StorageRoot = root,
+                            RetentionDays = 1,
+                            Policies =
+                            [
+                                new ArtifactStoragePolicyOptions
+                                {
+                                    StepId = "custom-producer-node",
+                                    RetentionDays = 1
+                                }
+                            ]
+                        })),
+                    new CaptureProcessingStepConfig(
+                        NoOpFileStorageProcessingStep.StableAlias,
+                        Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                        {
+                            StorageRoot = root,
+                            RetentionDays = 1,
+                            Policies =
+                            [
+                                new ArtifactStoragePolicyOptions
+                                {
+                                    StepId = "CUSTOM-PRODUCER-NODE",
+                                    RetentionDays = 30
+                                }
+                            ]
+                        }))
+                ]
+            };
+            var service = new RetentionBackgroundService(
+                new StubConfigurationAccessor(),
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+                new FixedTimeProvider(evaluatedUtc),
+                new FileSystemArtifactOutbox(),
+                new FixedCapacityProvider(50),
+                new StoragePressureState(),
+                NullLogger<RetentionBackgroundService>.Instance);
+
+            await service.ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(stored.AbsolutePath));
+            Assert.IsTrue(File.Exists(sidecarPath));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     private static CameraModuleConfig CreateConfig(params string[] roots)
     {
         return new CameraModuleConfig(new ObservatoryLocation(0, 0, 0, "UTC"), new CameraModuleDescriptor("VirtualSky"),

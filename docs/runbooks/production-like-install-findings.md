@@ -11,13 +11,23 @@ daemon identities, or private evidence paths.
 | --- | --- | --- | --- |
 | LogicHost and fresh shared services | `home-docker` (`192.168.2.104`) | AMD64 | 8 CPUs, 32 GiB RAM, dedicated 3000 GiB runtime mount |
 | Color CameraAgent | `allsky01` (`192.168.2.168`) | ARM64 | 4 CPUs, 17 GB RAM, about 3.9 TB free |
-| Mono CameraAgent | `hvo-edge-01` (`192.168.2.185`) | ARM64 Pi 5 | 4 CPUs, 8.4 GB RAM, about 979 GB free under Docker root |
+| Mono CameraAgent | `hvo-edge-01` (`192.168.2.183` Ethernet; `192.168.2.185` Wi-Fi) | ARM64 Pi 5 | 4 CPUs, 8.4 GB RAM, about 979 GB free under Docker root |
 | Control/build host | `hvo-dev-02` (`192.168.1.13`) | AMD64 | 8 CPUs, 33.7 GB RAM |
 
-Direct measured payload rates were 111.6 MiB/s from `allsky01` to
-`home-docker` and 16.8 MiB/s from `hvo-edge-01` to `home-docker`. Both exceed
-the roughly 1.2 MiB/s uncompressed raw rate per camera. The earlier cross-subnet
-central topology did not provide adequate headroom.
+Earlier host-preparation measurements were 111.6 MiB/s from `allsky01` to
+`home-docker` and 16.8 MiB/s from `hvo-edge-01` over its then-healthy Wi-Fi
+link. Both exceeded the roughly 1.2 MiB/s uncompressed raw rate per camera at
+that time; these point-in-time results were not a continuing link guarantee.
+The earlier cross-subnet central topology did not provide adequate headroom.
+
+Wired Ethernet is recommended for sustained CameraAgent workloads. During the
+release campaign, `hvo-edge-01` Wi-Fi still passed SSH, health, strong-signal,
+nominal-rate, and loss-free ping checks, but a direct 25 MiB upload took 140.2
+seconds and the Broadcom driver reported repeated SDIO transmit failures. The
+same transfer took 0.744 seconds after traffic selected Ethernet. Wi-Fi is not
+prohibited, but it requires a representative payload test with margin under the
+observed artifact-upload request deadline; reachability checks alone are
+insufficient.
 
 Each 3552 x 3552 16-bit frame is 25,233,408 bytes. At a 20-second start
 interval, both agents produce about 218 GB/day of raw input. The inspected edge

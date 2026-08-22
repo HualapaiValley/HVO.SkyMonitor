@@ -195,7 +195,9 @@ internal sealed class FrameProcessingWorker
                         throw new InvalidDataException(
                             $"Committed processing node '{node.Id}' does not match the current graph plan.");
                     }
-                    if (durable?.Status is DurableProcessingNodeStatus.Completed or DurableProcessingNodeStatus.Skipped)
+                    var memoryOnly = node.Publication?.Persistence == CaptureProcessingPersistenceMode.MemoryOnly;
+                    if (!memoryOnly && durable?.Status is
+                        (DurableProcessingNodeStatus.Completed or DurableProcessingNodeStatus.Skipped))
                     {
                         if (durable.Status == DurableProcessingNodeStatus.Completed)
                         {
@@ -214,7 +216,7 @@ internal sealed class FrameProcessingWorker
                         }
                         continue;
                     }
-                    if (durable?.Status == DurableProcessingNodeStatus.TerminalFailure)
+                    if (!memoryOnly && durable?.Status == DurableProcessingNodeStatus.TerminalFailure)
                     {
                         statuses[node.Id] = durable.Status;
                         context.AddStepTelemetry(new CaptureProcessingStepTelemetry(
@@ -307,12 +309,25 @@ internal sealed class FrameProcessingWorker
                     reason));
                 if (persistence is not null && rawCapture is not null)
                 {
-                    await persistence.WriteNodeAsync(
-                        rawCapture, node, status, reason, attempt,
-                        startedUtc, completedUtc, duration,
-                        outcome?.Status,
-                        item.WorkId, item.LeaseToken,
-                        products, context, cancellationToken).ConfigureAwait(false);
+                    if (status == DurableProcessingNodeStatus.Completed &&
+                        node.Publication?.Persistence == CaptureProcessingPersistenceMode.MemoryOnly)
+                    {
+                        await persistence.DeleteOutputlessNodeAsync(
+                            rawCapture.Manifest.Descriptor.Capture.CaptureId,
+                            node.Id,
+                            item.WorkId,
+                            item.LeaseToken,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await persistence.WriteNodeAsync(
+                            rawCapture, node, status, reason, attempt,
+                            startedUtc, completedUtc, duration,
+                            outcome?.Status,
+                            item.WorkId, item.LeaseToken,
+                            products, context, cancellationToken).ConfigureAwait(false);
+                    }
                 }
                 statuses[node.Id] = status;
                 if (node.Required)

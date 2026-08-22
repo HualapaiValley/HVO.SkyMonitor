@@ -45,7 +45,8 @@ public sealed record CaptureScheduleOperatorState(
     IReadOnlyList<CaptureScheduleRevisionSnapshot> History,
     CaptureScheduleDecision Decision,
     CaptureSchedulePreview Preview,
-    IReadOnlyList<CaptureScheduleOverride> Overrides);
+    IReadOnlyList<CaptureScheduleOverride> Overrides,
+    string FileConfigurationProfileSha256 = "");
 
 public sealed class CaptureScheduleRuntimeCoordinator(
     SqliteCaptureScheduleStore store,
@@ -109,7 +110,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             {
                 return initialized;
             }
-            var durable = await _store.InitializeAsync(configuration, cancellationToken).ConfigureAwait(false);
+            var durable = await _store.InitializeRuntimeAsync(configuration, cancellationToken).ConfigureAwait(false);
             var activeConfiguration = durable.ActiveRevision.Profile.ApplyTo(configuration);
             ValidateConfiguration(activeConfiguration);
             var snapshot = await CreateSnapshotAsync(
@@ -308,8 +309,8 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             {
                 continue;
             }
-            var durable = await _store.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
-            var history = await _store.GetHistoryAsync(20, cancellationToken).ConfigureAwait(false);
+            var durableState = await _store.GetOperatorStateAsync(20, cancellationToken).ConfigureAwait(false);
+            var durable = durableState.Snapshot;
             if (!string.Equals(
                     durable.ActiveRevision.RevisionId,
                     current.Revision.RevisionId,
@@ -325,10 +326,11 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                 durable.Version,
                 durable.ActiveRevision,
                 durable.PendingRevision,
-                history,
+                durableState.History,
                 decision,
                 current.Preview,
-                overrides);
+                overrides,
+                durableState.FileConfigurationProfileSha256);
         }
     }
 

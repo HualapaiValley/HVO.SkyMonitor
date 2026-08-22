@@ -7,7 +7,8 @@ public sealed record ArtifactManifestV2(
     [property: JsonRequired] string SchemaVersion,
     [property: JsonRequired] ReconstructionDescriptor Descriptor,
     [property: JsonRequired] string RelativeArtifactPath,
-    SceneProvenance? Scene = null)
+    SceneProvenance? Scene = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProducerStepId = null)
 {
     public const string CurrentSchemaVersion = "v2";
 
@@ -22,6 +23,11 @@ public sealed record ArtifactManifestV2(
         if (!IsSafeRelativePath(RelativeArtifactPath))
         {
             return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidPath, "relativeArtifactPath");
+        }
+        if (ProducerStepId is not null &&
+            (string.IsNullOrWhiteSpace(ProducerStepId) || ProducerStepId.Length > 128))
+        {
+            return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "producerStepId");
         }
         var descriptorValidation = Descriptor?.Validate() ?? CaptureContractValidationResult.Failure(
             CaptureContractReasonCodes.InvalidIdentity, "descriptor");

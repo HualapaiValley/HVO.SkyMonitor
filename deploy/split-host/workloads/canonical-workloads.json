@@ -3,8 +3,8 @@
   "profiles": {
     "W0": {
       "sourcePath": "deploy/split-host/workloads/w0-virtual-mono16.json",
-      "sourceSha256": "b163cd6f380515c67dcdf4076687197e6e454b48c59cf25eee218f2f8378e33f",
-      "configurationIdentitySha256": "43c5b981af16c81c4c722fe03f72eeb5c896ce5b565a3ed2d663ad0096d061bb",
+      "sourceSha256": "4c4c35fb6c9cf979b718623a9b7b44b4c55c04d7f7b26357dd4570b4486f8355",
+      "configurationIdentitySha256": "383f98525e011fa889b1c9a26866169d1b081e2647903464ec18f26741bc1cc5",
       "optionsSha256": "f7f898c02a9a93c19820dc658e55ae79a061e8fce2b0ba66275bd0b06dd5cda6",
       "width": 64,
       "height": 48,

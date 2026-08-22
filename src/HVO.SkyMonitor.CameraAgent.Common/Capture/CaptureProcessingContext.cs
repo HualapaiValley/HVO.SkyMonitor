@@ -155,6 +155,22 @@ public sealed class CaptureProcessingContext
             .Select(artifactId => _processingProductsByArtifactId[artifactId])
             .ToArray();
 
+    internal CaptureProcessingPublicationPolicy? GetDependencyPublicationPolicy(Guid artifactId)
+    {
+        var nodeId = GetDependencyProducerStepId(artifactId);
+        return nodeId is null
+            ? null
+            : Config.Pipeline?.Steps.SingleOrDefault(step => string.Equals(
+                string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim(),
+                nodeId,
+                StringComparison.OrdinalIgnoreCase))?.Publication;
+    }
+
+    internal string? GetDependencyProducerStepId(Guid artifactId)
+        => _currentDependencies.SingleOrDefault(dependency =>
+            _artifactsByNode.GetValueOrDefault(dependency)?.Any(artifact => artifact.ArtifactId == artifactId) == true ||
+            _productArtifactIdsByNode.GetValueOrDefault(dependency)?.Contains(artifactId) == true);
+
     internal IReadOnlyList<CaptureProcessingStepTelemetry> GetDependencyStepTelemetry()
         => _stepTelemetry
             .Where(telemetry => _currentDependencies.Contains(telemetry.Name, StringComparer.OrdinalIgnoreCase))

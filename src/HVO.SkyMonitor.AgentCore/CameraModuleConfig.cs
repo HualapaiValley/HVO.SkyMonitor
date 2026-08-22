@@ -85,4 +85,17 @@ public sealed record CaptureProcessingStepConfig(
     JsonElement? Options = null,
     IReadOnlyList<string>? DependsOn = null,
     bool Required = true,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? Enabled = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? Enabled = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CaptureProcessingPublicationPolicy? Publication = null);
+
+public sealed record CaptureProcessingPublicationPolicy(
+    [property: JsonRequired] CaptureProcessingPersistenceMode Persistence);
+
+public enum CaptureProcessingPersistenceMode
+{
+    [JsonStringEnumMemberName("memory-only")]
+    MemoryOnly,
+
+    [JsonStringEnumMemberName("durable-local")]
+    DurableLocal
+}

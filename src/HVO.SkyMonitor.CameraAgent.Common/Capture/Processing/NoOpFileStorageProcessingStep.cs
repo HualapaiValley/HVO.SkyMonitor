@@ -35,6 +35,8 @@ internal sealed class NoOpFileStorageProcessingStep(
     private readonly ILogger<NoOpFileStorageProcessingStep> _logger = logger;
     private readonly CaptureProcessingPersistence? _processingPersistence = processingPersistence;
 
+    internal NoOpFileStorageProcessingStepOptions ConfiguredOptions => Options;
+
     public IReadOnlySet<FrameArtifactRole> AcceptedDependencyRoles { get; } = new HashSet<FrameArtifactRole>
     {
         FrameArtifactRole.Calibrated,
@@ -80,7 +82,41 @@ internal sealed class NoOpFileStorageProcessingStep(
             foreach (var artifact in selectedArtifacts)
             {
                 var product = context.GetProcessingProduct(artifact.ArtifactId);
-                var policy = ResolvePolicy(artifact, product);
+                var producerStepId = context.GetDependencyProducerStepId(artifact.ArtifactId);
+                var policy = ResolvePolicy(producerStepId, artifact, product);
+                var publication = context.GetDependencyPublicationPolicy(artifact.ArtifactId);
+                if (publication is not null)
+                {
+                    if (_centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload))
+                    {
+                        if (product is null || context.RawCapture is not { } rawCapture)
+                        {
+                            throw new InvalidDataException(
+                                "Per-step upload publication requires a reconstructable processing product.");
+                        }
+                        var descriptor = DerivativeDescriptorFactory.Create(
+                            rawCapture.Manifest.Descriptor,
+                            artifact.ArtifactId,
+                            artifact.Frame.Metadata.SourceId ?? Name,
+                            product);
+                        var published = await _frameStorageService.SaveAsync(
+                            Options.StorageRoot,
+                            artifact,
+                            descriptor,
+                            producerStepId!,
+                            cancellationToken).ConfigureAwait(false);
+                        await _artifactOutbox.EnqueueAsync(
+                            Options.StorageRoot,
+                            new ArtifactManifestV2(
+                                ArtifactManifestV2.CurrentSchemaVersion,
+                                descriptor,
+                                published.RelativePath,
+                                artifact.Frame.Metadata.Scene,
+                                producerStepId),
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    continue;
+                }
                 StoredFrameReference stored;
                 ArtifactManifestV2? uploadManifest = null;
                 if (artifact.Role == FrameArtifactRole.Raw && context.RawCapture is { } ingress)
@@ -105,16 +141,24 @@ internal sealed class NoOpFileStorageProcessingStep(
                             artifact.ArtifactId,
                             artifact.Frame.Metadata.SourceId ?? Name,
                             product);
-                        stored = await _frameStorageService.SaveAsync(
-                            Options.StorageRoot,
-                            artifact,
-                            descriptor,
-                            cancellationToken).ConfigureAwait(false);
+                        stored = policy?.StepId is null
+                            ? await _frameStorageService.SaveAsync(
+                                Options.StorageRoot,
+                                artifact,
+                                descriptor,
+                                cancellationToken).ConfigureAwait(false)
+                            : await _frameStorageService.SaveAsync(
+                                Options.StorageRoot,
+                                artifact,
+                                descriptor,
+                                producerStepId!,
+                                cancellationToken).ConfigureAwait(false);
                         uploadManifest = new ArtifactManifestV2(
                             ArtifactManifestV2.CurrentSchemaVersion,
                             descriptor,
                             stored.RelativePath,
-                            artifact.Frame.Metadata.Scene);
+                            artifact.Frame.Metadata.Scene,
+                            policy?.StepId is null ? null : producerStepId);
                     }
                     else
                     {
@@ -132,9 +176,25 @@ internal sealed class NoOpFileStorageProcessingStep(
                         Options.StorageRoot, uploadManifest, cancellationToken).ConfigureAwait(false);
                 }
             }
-            foreach (var product in selectedProducts.Where(static product =>
-                         product.Role == FrameArtifactRole.Metadata && product.Layout is null))
+            foreach (var product in selectedProducts.Where(static product => product.Layout is null))
             {
+                var artifactId = CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256);
+                var producerStepId = context.GetDependencyProducerStepId(artifactId);
+                var publication = context.GetDependencyPublicationPolicy(artifactId);
+                if (publication is not null)
+                {
+                    var policy = ResolvePolicy(producerStepId, product);
+                    if (_centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload))
+                    {
+                        throw new InvalidDataException(
+                            "Per-step upload publication requires a reconstructable frame product.");
+                    }
+                    continue;
+                }
+                if (product.Role != FrameArtifactRole.Metadata)
+                {
+                    continue;
+                }
                 if (metadataAlreadyStoredUnderRoot)
                 {
                     continue;
@@ -181,14 +241,31 @@ internal sealed class NoOpFileStorageProcessingStep(
     private static bool IsExplicitPipeline(CameraModuleConfig config)
         => config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 };
 
-    private ArtifactStoragePolicyOptions? ResolvePolicy(FrameArtifact artifact, HVO.SkyMonitor.Processing.ProcessingProduct? product)
+    private ArtifactStoragePolicyOptions? ResolvePolicy(
+        string? producerStepId,
+        FrameArtifact artifact,
+        ProcessingProduct? product)
         => (Options.Policies ?? [])
+            .Where(policy => policy.StepId is null || string.Equals(policy.StepId, producerStepId, StringComparison.OrdinalIgnoreCase))
             .Where(policy => policy.Role is null || policy.Role == artifact.Role)
             .Where(policy => policy.Variant is null || string.Equals(policy.Variant, product?.Variant, StringComparison.Ordinal))
             .Where(policy => policy.RecipeName is null || string.Equals(
                 policy.RecipeName, product?.Recipe.Descriptor.Name, StringComparison.Ordinal))
             .OrderByDescending(static policy =>
-                (policy.Role is null ? 0 : 1) + (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
+                (policy.StepId is null ? 0 : 1) + (policy.Role is null ? 0 : 1) +
+                (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
+            .FirstOrDefault();
+
+    private ArtifactStoragePolicyOptions? ResolvePolicy(string? producerStepId, ProcessingProduct product)
+        => (Options.Policies ?? [])
+            .Where(policy => policy.StepId is null || string.Equals(policy.StepId, producerStepId, StringComparison.OrdinalIgnoreCase))
+            .Where(policy => policy.Role is null || policy.Role == product.Role)
+            .Where(policy => policy.Variant is null || string.Equals(policy.Variant, product.Variant, StringComparison.Ordinal))
+            .Where(policy => policy.RecipeName is null || string.Equals(
+                policy.RecipeName, product.Recipe.Descriptor.Name, StringComparison.Ordinal))
+            .OrderByDescending(static policy =>
+                (policy.StepId is null ? 0 : 1) + (policy.Role is null ? 0 : 1) +
+                (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
             .FirstOrDefault();
 
     private static bool IsStoredUnderRoot(StoredFrameReference storedFrame, string storageRoot)
@@ -218,10 +295,14 @@ public sealed class NoOpFileStorageProcessingStepOptions : IValidatableObject
         var selectors = new HashSet<string>(StringComparer.Ordinal);
         foreach (var policy in Policies ?? [])
         {
-            if (policy.Role is null && policy.Variant is null && policy.RecipeName is null)
+            if (policy.StepId is not null && string.IsNullOrWhiteSpace(policy.StepId))
+            {
+                yield return new ValidationResult("Artifact storage policy step selectors cannot be empty.", [nameof(Policies)]);
+            }
+            if (policy.StepId is null && policy.Role is null && policy.Variant is null && policy.RecipeName is null)
             {
                 yield return new ValidationResult(
-                    "Artifact storage policies require at least one role, variant, or recipe selector.",
+                    "Artifact storage policies require at least one step, role, variant, or recipe selector.",
                     [nameof(Policies)]);
             }
             if (policy.RetentionDays is { } retentionDays && retentionDays < RetentionDays)
@@ -230,7 +311,7 @@ public sealed class NoOpFileStorageProcessingStepOptions : IValidatableObject
                     "Artifact-specific retention may extend, but not shorten, the storage-root retention period.",
                     [nameof(Policies)]);
             }
-            var key = $"{policy.Role}\0{policy.Variant}\0{policy.RecipeName}";
+            var key = $"{policy.StepId?.ToUpperInvariant()}\0{policy.Role}\0{policy.Variant}\0{policy.RecipeName}";
             if (!selectors.Add(key))
             {
                 yield return new ValidationResult("Artifact storage policy selectors must be unique.", [nameof(Policies)]);
@@ -241,6 +322,8 @@ public sealed class NoOpFileStorageProcessingStepOptions : IValidatableObject
 
 public sealed class ArtifactStoragePolicyOptions
 {
+    public string? StepId { get; init; }
+
     public FrameArtifactRole? Role { get; init; }
 
     public string? Variant { get; init; }

@@ -21,6 +21,96 @@ public sealed class CaptureProcessingGraphTests
     private static readonly string[] ExpectedLegacyDependencies = ["producer"];
 
     [TestMethod]
+    public void CreateGraph_PublicationPolicyIsFailClosedAndExplicitV2Only()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var factory = CreateFactory(services, telemetry);
+        var memoryOnly = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(CreateConfig(
+            new CaptureProcessingStepConfig("Product", Publication: memoryOnly))));
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(CreateExplicitConfig(
+            new CaptureProcessingStepConfig(
+                "Product",
+                "product",
+                DependsOn: ["$raw"],
+                Publication: new CaptureProcessingPublicationPolicy(
+                    (CaptureProcessingPersistenceMode)999)))));
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(CreateExplicitConfig(
+            new CaptureProcessingStepConfig(
+                "Test",
+                "infrastructure",
+                DependsOn: ["$raw"],
+                Publication: memoryOnly))));
+    }
+
+    [TestMethod]
+    public void CreateGraph_PreservesValidatedPublicationPolicyInPlan()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var factory = CreateFactory(services, telemetry);
+        var policy = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly);
+
+        var graph = factory.CreateGraph(CreateExplicitConfig(new CaptureProcessingStepConfig(
+            "Product", "product", DependsOn: ["$raw"], Publication: policy)));
+
+        Assert.AreEqual(policy, graph.Nodes.Single().Publication);
+        graph.DisposeSteps();
+    }
+
+    [TestMethod]
+    public void CreateGraph_ExplicitV2RejectsDurableOutputWithoutEnabledStorageOwner()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
+            })
+            .Build());
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        var durable = new CaptureProcessingStepConfig(
+            "Calibration",
+            "calibration",
+            DependsOn: ["$raw"],
+            Publication: new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal));
+
+        var missing = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            factory.CreateGraph(CreateExplicitConfig(durable)));
+        var disabled = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(CreateExplicitConfig(
+            durable,
+            new CaptureProcessingStepConfig(
+                "Storage", "storage", DependsOn: ["calibration"], Enabled: false))));
+
+        StringAssert.Contains(missing.Message, "enabled Storage step", StringComparison.Ordinal);
+        StringAssert.Contains(disabled.Message, "enabled Storage step", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void CreateGraph_PublicationHashesUseStableStringEnumTokens()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var factory = CreateFactory(services, telemetry);
+        var policy = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly);
+        var config = CreateExplicitConfig(new CaptureProcessingStepConfig(
+            "Product", "product", DependsOn: ["$raw"], Publication: policy));
+
+        var first = factory.CreateGraph(config);
+        var second = factory.CreateGraph(config);
+        var policyJson = CaptureContractJson.SerializeToElement(policy);
+
+        Assert.AreEqual("memory-only", policyJson.GetProperty("persistence").GetString());
+        Assert.AreEqual(first.Nodes.Single().PlanSha256, second.Nodes.Single().PlanSha256);
+        first.DisposeSteps();
+        second.DisposeSteps();
+    }
+
+    [TestMethod]
     public void CreateGraph_UsesDeterministicTopologicalOrder()
     {
         using var telemetry = new CaptureProcessingTelemetry();
