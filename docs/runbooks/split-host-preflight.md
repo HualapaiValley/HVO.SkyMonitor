@@ -2,7 +2,9 @@
 
 This runbook covers preflight, runtime-root preparation, immutable image
 distribution, catalog installation, and controlled application startup from issue #151. Preflight validates a versioned multi-host
-inventory without remote mutation. Prepare creates only declared runtime roots
+inventory without remote mutation. The product/UUID/catalog identity contract is
+defined in [Product and Instance Persistent Layout](product-instance-layout.md).
+Prepare creates only declared runtime roots
 and exact ownership/lock metadata. Images then builds on the control host and
 either pushes and pulls registry manifests or transfers local archives through
 declared Docker contexts. `catalog` installs the declared verified catalog on
@@ -52,7 +54,9 @@ accepted root has one unambiguous Docker bind-mount and mountinfo representation
 those Docker-specific delimiter restrictions. Catalog versions follow the repository's existing `4.2`,
 `hyg-v4.2-p3-s2-r1`, and fixture-style identifiers; colon is not a supported
 catalog-version separator.
-Inventory schema v7 pins the Git revision, catalog, source-revision image tag,
+Inventory schema v8 pins the product root, immutable instance UUIDs, explicit
+application identities, named catalogs and per-target selection, the Git
+revision, source-revision image tag,
 distribution mode, named control-host buildx builder, repositories, registry tag
 policy, and non-secret service routes. Image platforms are derived from target
 architectures rather than separately asserted. There are no ambient target or
@@ -66,7 +70,7 @@ their values. Keep the inventory owner-only too if its declared runtime roots or
 hostnames are operationally sensitive, although they are intentionally treated
 as non-secret evidence fields.
 
-Schema v7 also declares the observatory, agent friendly names, owner automation
+Schema v8 also declares the observatory, agent friendly names, owner automation
 credential reference, workload selection, service ownership, distinct SQL
 administrator/initializer/runtime users, Redis administrator/runtime identities
 and key prefix, MinIO root/runtime identities and buckets, certificate paths,
@@ -275,8 +279,10 @@ never skips or synthesizes preflight. Each target explicitly declares
 root helper, password, interactive privilege, or ownership-escalation path.
 The immediate parent of a missing runtime root must already be owned and writable
 by that SSH user while remaining non-writable to group and world.
-The example assumes packaging has provisioned `/srv/hvo/skymonitor` to user
-`hvo`; its LogicHost and CameraAgent roots are distinct children of that parent.
+The example assumes packaging has provisioned `/var/lib/hvo/skymonitor`, plus
+its `cameraagents`, `logichosts`, and `catalogs` children, to user `hvo` without
+making them group/world writable. Application roots are UUID children beneath
+their component directory.
 
 For each target, prepare validates every existing component again and acquires a
 nonblocking sibling `.hvo-deploy-prepare-<digest>.lock` before root mutation. The
@@ -503,8 +509,10 @@ LogicHost initialization mounts only `initializer-secrets`; runtime mounts only
 `--host-mode=database-initialize`. After it succeeds, deployed-service mode
 applies runtime grants against the final schema before starting LogicHost.
 Production OpenIddict signing and encryption PFX files are mounted read-only and
-loaded from configured absolute paths. Both hosts mount the complete catalog
-installation root at `/app/catalog` and receive the inventory package kind.
+loaded from configured absolute paths. Each host mounts its selected named
+catalog installation root read-only at `/app/catalog` and receives that
+catalog's package kind. Shared selection binds the same root; independent
+selection never changes a sibling catalog pointer.
 Internal HTTP `/alive`, `/health`, and `/metrics` must pass before agents start;
 OIDC discovery is checked through the declared public authority from every
 CameraAgent host. Isolated mode explicitly stages `Deployment:Mode=isolated`,

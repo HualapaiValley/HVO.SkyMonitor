@@ -128,7 +128,13 @@ reconcile_pointer_transaction() {
 validate_installed_target() {
     local target="$1"
     local file
-    hyg_validate_bundle "$INSTALL_ROOT/$target"
+    local manifest_version
+    manifest_version="$(hyg_json_value "$INSTALL_ROOT/$target/$HYG_MANIFEST_FILE" '$.manifestVersion')"
+    if [[ "$manifest_version" == 1 ]]; then
+        hyg_validate_legacy_production_bundle "$INSTALL_ROOT/$target"
+    else
+        hyg_validate_bundle "$INSTALL_ROOT/$target"
+    fi
     [[ "$target" == "versions/$HYG_MANIFEST_PACKAGE_VERSION" ]] || hyg_fail "version directory does not match its manifest package version"
     [[ "$(stat -c '%a' "$INSTALL_ROOT/$target")" == "555" ]] || hyg_fail "installed version directory is not immutable"
     for file in "$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE"; do
@@ -213,8 +219,10 @@ install_bundle() {
     if [[ -e "$target_path" || -L "$target_path" ]]; then
         [[ -d "$target_path" && ! -L "$target_path" ]] || hyg_fail "immutable version path is not a safe directory: $target_path"
         validate_installed_target "$target"
-        [[ "$(hyg_sha256 "$target_path/$HYG_MANIFEST_FILE")" == "$bundle_manifest_sha256" ]] || \
-            hyg_fail "installed package version has different immutable bundle contents"
+        if [[ "$(hyg_json_value "$target_path/$HYG_MANIFEST_FILE" '$.manifestVersion')" == 2 ]]; then
+            [[ "$(hyg_sha256 "$target_path/$HYG_MANIFEST_FILE")" == "$bundle_manifest_sha256" ]] || \
+                hyg_fail "installed package version has different immutable bundle contents"
+        fi
     else
         INSTALL_STAGING="$(mktemp -d "$INSTALL_ROOT/versions/.staging.XXXXXX")"
         cleanup_candidate() {

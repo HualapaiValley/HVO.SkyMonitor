@@ -1,5 +1,6 @@
 services:
   logic-init:
+    container_name: ${HVO_CONTAINER_NAME:?container name required}-init
     image: ${LOGICHOST_IMAGE:?digest reference required}
     profiles: [initialize]
     command: ["--host-mode=database-initialize"]
@@ -18,6 +19,7 @@ services:
     mem_limit: ${HVO_MEMORY:-2G}
 
   logichost:
+    container_name: ${HVO_CONTAINER_NAME:?container name required}
     image: ${LOGICHOST_IMAGE:?digest reference required}
     environment:
       ASPNETCORE_ENVIRONMENT: Production

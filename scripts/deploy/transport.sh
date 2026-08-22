@@ -141,7 +141,7 @@ deploy_transport_copy() {
 deploy_transport_copy_private_file() {
     local source="$1" ssh_host="$2" destination="$3" target runtime_root upload_root token temporary
     [[ -f "$source" && ! -L "$source" ]] || return 1
-    target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
+    target="$(deploy_transport_private_upload_target "$ssh_host" "$destination")" || return 1
     runtime_root="$(jq -r '.runtimeRoot' <<< "$target")"; upload_root="$runtime_root/.hvo-deploy/uploads"
     [[ "$destination" == "$runtime_root"/* ]] || return 1
     token="$(printf '%s' "${DEPLOY_PRIVATE_UPLOAD_PHASE:?}|$destination|$$" | sha256sum | cut -c1-32)"
@@ -171,10 +171,11 @@ REMOTE
 }
 
 deploy_transport_private_upload_target() {
-    local ssh_host="$1" target
+    local ssh_host="$1" path="${2:-}" target
     [[ -n "${DEPLOY_PRIVATE_UPLOAD_INVENTORY:-}" ]] || return 1
-    target="$(jq -c --arg ssh "$ssh_host" '([.logicHost] + .cameraAgents + (if .sharedServices then [.sharedServices] else [] end)) |
-      [.[] | select(.sshHost == $ssh)] | if length == 1 then .[0] else empty end' "$DEPLOY_PRIVATE_UPLOAD_INVENTORY")"
+    target="$(jq -c --arg ssh "$ssh_host" --arg path "$path" '([.logicHost] + .cameraAgents + (if .sharedServices then [.sharedServices] else [] end)) |
+      [.[] | . as $target | select(.sshHost == $ssh and ($path == "" or ($path | startswith($target.runtimeRoot + "/"))))] |
+      if length == 1 then .[0] else empty end' "$DEPLOY_PRIVATE_UPLOAD_INVENTORY")"
     [[ -n "$target" ]] || return 1
     printf '%s\n' "$target"
 }
@@ -194,10 +195,13 @@ deploy_transport_initialize_private_upload_registry() {
               ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/uploads/") and
               (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|transient-confirm|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))
              elif .kind == "remote-private" then
-               any(targets[]; . == $entry.target) and ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/")) and
+               any(targets[]; . == $entry.target) and
+               ((($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/")) and
                (($entry.path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
-                 ($entry.path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")) or
-                 ($entry.path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))
+                  ($entry.path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")) or
+                  ($entry.path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))) or
+                $entry.path == ($entry.target.runtimeRoot + "/config/private/owner-password") or
+                $entry.path == ($entry.target.runtimeRoot + "/config/secrets/LocalIdentity__AdminPasswordFile"))
              elif .kind == "local-private" then
                any(targets[]; . == $entry.target) and ($entry.path | startswith(($registry | sub("/private-upload-registry[.]json$"; "")) + "/")) and
                ($entry.path | test("/(central[.]headers|[A-Za-z0-9._-]+-(owner-password|antiforgery[.]headers|antiforgery[.]json|envelope[.]json|bootstrap-request[.]json))$")) and
@@ -223,7 +227,7 @@ deploy_transport_register_private_upload() {
         DEPLOY_PRIVATE_UPLOADS+="${DEPLOY_PRIVATE_UPLOADS:+$'\n'}$ssh_host"$'\t'"$temporary"
         return 0
     fi
-    target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
+    target="$(deploy_transport_private_upload_target "$ssh_host" "$temporary")" || return 1
     jq -e --arg path "$temporary" --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" '
       .runtimeRoot as $root | ($path | startswith($root + "/.hvo-deploy/uploads/") and
       (split("/")[-1] | test("^hvo-upload-" + $phase + "-[0-9]+-[0-9a-f]{32}[.]tmp$")))' <<< "$target" >/dev/null || return 1
@@ -234,10 +238,13 @@ deploy_transport_register_private_upload() {
 
 deploy_transport_register_remote_private() {
     local target="$1" path="$2" updated
-    jq -e --arg path "$path" '.runtimeRoot as $root | ($path | startswith($root + "/.hvo-deploy/")) and
+    jq -e --arg path "$path" '.runtimeRoot as $root |
+      ((($path | startswith($root + "/.hvo-deploy/")) and
       (($path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
         ($path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")) or
-        ($path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))' \
+        ($path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))) or
+       $path == ($root + "/config/private/owner-password") or
+       $path == ($root + "/config/secrets/LocalIdentity__AdminPasswordFile"))' \
       <<< "$target" >/dev/null || return 1
     updated="$(jq -c --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" --arg path "$path" --argjson target "$target" '
       if any(.[]; .path == $path and .phase == $phase and .kind == "remote-private" and .target == $target) then .
@@ -311,7 +318,7 @@ deploy_transport_reconcile_private_uploads() {
 
 deploy_transport_cleanup_private_upload() {
     local ssh_host="$1" temporary="$2" target
-    target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
+    target="$(deploy_transport_private_upload_target "$ssh_host" "$temporary")" || return 1
     jq -e --arg path "$temporary" '.runtimeRoot as $root |
       ($path | startswith($root + "/.hvo-deploy/uploads/") and
         (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|transient-confirm|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))' \
@@ -375,6 +382,80 @@ done
 REMOTE
 }
 
+deploy_transport_instance_manifest() {
+    local ssh_host="$1" root="$2" expected_json="$3" binding_json="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$expected_json" "$binding_json" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; expected=$2; binding_initial=$3; manifest="$root/instance-manifest.json"; binding="$root/application-identity.json"
+[[ "$root" == /* && -d "$root" && ! -L "$root" && "$expected" != *$'\n'* && "$binding_initial" != *$'\n'* ]] || exit 90
+if [[ -e "$manifest" || -L "$manifest" ]]; then
+  [[ -f "$manifest" && ! -L "$manifest" && "$(stat -c '%h:%a' "$manifest")" == 1:600 ]] || exit 91
+  jq -e --argjson expected "$expected" '
+    (keys | sort) == (["applicationIdentityFile","component","creationProvenance","instanceId","product","schemaVersion"] | sort) and
+    .schemaVersion == $expected.schemaVersion and .product == $expected.product and .component == $expected.component and
+    .instanceId == $expected.instanceId and .applicationIdentityFile == $expected.applicationIdentityFile and
+    (.creationProvenance == $expected.creationProvenance or .creationProvenance == {migration:"singular-layout-v1"})' "$manifest" >/dev/null || exit 91
+else
+  temporary="$root/.instance-manifest.tmp.$$"
+  (umask 077; printf '%s\n' "$expected" > "$temporary")
+  [[ -f "$temporary" && ! -L "$temporary" ]] || exit 92
+  mv -T "$temporary" "$manifest"
+  if command -v sync >/dev/null; then sync -f "$manifest"; sync -f "$root"; fi
+fi
+if [[ -e "$binding" || -L "$binding" ]]; then
+  [[ -f "$binding" && ! -L "$binding" && "$(stat -c '%h:%a' "$binding")" == 1:600 ]] || exit 93
+  jq -e --argjson initial "$binding_initial" '.schemaVersion == 1 and .configuredIdentity == $initial.configuredIdentity and
+    ((.state == "pre-provisioning" and .boundIdentity == null) or (.state == "bound" and (.boundIdentity | type == "string" and length > 0)))' "$binding" >/dev/null || exit 93
+  if [[ "$(jq -r '.state' "$binding")" == bound ]]; then
+    [[ "$(jq -r '.component' "$manifest")" == cameraAgent ]] || exit 93
+    bound="$(jq -r '.boundIdentity' "$binding")"; configured="$(jq -r '.configuredIdentity' "$binding")"; agent_file="$root/config/secrets/CameraAgent__AgentId"; module="$root/config/camera-module.json"
+    gate_file="$root/config/secrets/CameraAgent__ProvisioningStartupGate__Enabled"; upload_file="$root/config/secrets/CameraAgent__CaptureDistribution__UploadEnabled"
+    module_identity="$(jq -r '.agentId' "$module")"
+    [[ -f "$agent_file" && ! -L "$agent_file" && -f "$module" && ! -L "$module" && "$(<"$agent_file")" == "$bound" &&
+       ( "$module_identity" == "$configured" || "$module_identity" == "$bound" ) &&
+       -f "$gate_file" && ! -L "$gate_file" && "$(<"$gate_file")" == false &&
+       -f "$upload_file" && ! -L "$upload_file" && "$(<"$upload_file")" == true ]] || exit 93
+  fi
+else
+  temporary="$root/.application-identity.tmp.$$"; (umask 077; printf '%s\n' "$binding_initial" > "$temporary"); mv -T "$temporary" "$binding"
+  if command -v sync >/dev/null; then sync -f "$binding"; sync -f "$root"; fi
+fi
+cat "$binding"
+REMOTE
+}
+
+deploy_transport_camera_provisioning_state() {
+    local ssh_host="$1" root="$2" expected_state="$3"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$expected_state" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; expected_state=$2; gate="$root/config/secrets/CameraAgent__ProvisioningStartupGate__Enabled"; upload="$root/config/secrets/CameraAgent__CaptureDistribution__UploadEnabled"
+[[ "$root" == /* && ( "$expected_state" == pre-provisioning || "$expected_state" == bound ) ]] || exit 90
+for path in "$gate" "$upload"; do [[ -f "$path" && ! -L "$path" && "$(stat -c %h "$path")" == 1 ]] || exit 91; done
+gate_value="$(<"$gate")"; upload_value="$(<"$upload")"
+[[ ( "$gate_value" == true || "$gate_value" == false ) && ( "$upload_value" == true || "$upload_value" == false ) ]] || exit 92
+if [[ "$expected_state" == bound ]]; then [[ "$gate_value" == false && "$upload_value" == true ]] || exit 93
+else [[ "$gate_value" == true && "$upload_value" == false ]] || exit 93; fi
+printf '%s\t%s\n' "$gate_value" "$upload_value"
+REMOTE
+}
+
+deploy_transport_update_application_identity() {
+    local ssh_host="$1" root="$2" expected="$3" replacement="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$expected" "$replacement" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; expected=$2; replacement=$3; binding="$root/application-identity.json"
+for value in "$expected" "$replacement"; do [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || exit 90; done
+before="$(printf '{\"schemaVersion\":1,\"state\":\"pre-provisioning\",\"configuredIdentity\":\"%s\",\"boundIdentity\":null}' "$expected")"
+after="$(printf '{\"schemaVersion\":1,\"state\":\"bound\",\"configuredIdentity\":\"%s\",\"boundIdentity\":\"%s\"}' "$expected" "$replacement")"
+[[ -f "$binding" && ! -L "$binding" && "$(stat -c '%h:%a' "$binding")" == 1:600 ]] || exit 91
+actual="$(<"$binding")"; [[ "$actual" == "$before" || "$actual" == "$after" ]] || exit 92
+if [[ "$actual" != "$after" ]]; then
+  temporary="$root/.application-identity.tmp.$$"; (umask 077; printf '%s\n' "$after" > "$temporary"); mv -T "$temporary" "$binding"
+  if command -v sync >/dev/null; then sync -f "$binding"; sync -f "$root"; fi
+fi
+REMOTE
+}
+
 deploy_transport_remote_seed_state() {
     local ssh_host="$1"
     shift
@@ -393,24 +474,31 @@ deploy_transport_catalog_install() {
     shift
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null <<'REMOTE'
 set -euo pipefail
-stage=$1; install_root=$2; kind=$3; version=$4; expected_sha=$5; expected_length=$6; expected_rows=$7
+stage=$1; install_root=$2; catalog_id=$3; kind=$4; version=$5; schema_version=$6; preprocessing_version=$7; expected_sha=$8; expected_length=$9; expected_rows=${10}
 bundle="$stage/bundle"; database="$bundle/hyg_v42.sqlite"
 [[ -d "$bundle" && ! -L "$bundle" && -f "$database" && ! -L "$database" ]] || exit 92
-[[ "$(sha256sum "$database" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$database")" == "$expected_length" ]] || exit 93
-[[ "$(sqlite3 -batch -noheader -readonly "$database" 'PRAGMA integrity_check;')" == ok ]] || exit 94
-[[ "$(sqlite3 -batch -noheader -readonly "$database" 'SELECT count(*) FROM celestial_objects;')" == "$expected_rows" ]] || exit 95
+# shellcheck disable=SC1091
+source "$stage/scripts/catalog/catalog-common.sh"
+hyg_validate_catalog_contract "$bundle" "$catalog_id" "$kind" "$version" "$schema_version" \
+  "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 92
 if [[ "$kind" == production ]]; then
   "$stage/scripts/catalog/install-hyg-v42.sh" install "$bundle" "$install_root" >/dev/null
 else
   destination="$install_root/versions/$version"
   mkdir -p -- "$install_root/versions"
-  if [[ ! -e "$destination" ]]; then mkdir -m 755 -- "$destination"; cp -a -- "$bundle/." "$destination/"; fi
+  if [[ ! -e "$destination" ]]; then
+    mkdir -m 755 -- "$destination"; cp -a -- "$bundle/." "$destination/"
+  else
+    existing="$destination/hyg_v42.sqlite"
+    [[ -d "$destination" && ! -L "$destination" && -f "$existing" && ! -L "$existing" &&
+       "$(sha256sum "$existing" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$existing")" == "$expected_length" ]] || exit 98
+  fi
   temporary="$install_root/.current.tmp.$$"
   ln -s "versions/$version" "$temporary"; mv -Tf -- "$temporary" "$install_root/current"
 fi
 current="$(readlink "$install_root/current")"; installed="$install_root/$current/hyg_v42.sqlite"
-[[ -f "$installed" && "$(sha256sum "$installed" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$installed")" == "$expected_length" ]] || exit 96
-[[ "$(sqlite3 -batch -noheader -readonly "$installed" 'PRAGMA integrity_check; SELECT count(*) FROM celestial_objects;')" == $'ok\n'"$expected_rows" ]] || exit 97
+hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$version" "$schema_version" \
+  "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 96
 printf 'installed\t%s\t%s\n' "$current" "$expected_sha"
 REMOTE
 }
@@ -433,14 +521,15 @@ deploy_transport_catalog_verify() {
     shift
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null <<'REMOTE'
 set -euo pipefail
-install_root=$1; expected_version=$2; expected_sha=$3; expected_length=$4; expected_rows=$5
+stage=$1; install_root=$2; catalog_id=$3; kind=$4; expected_version=$5; schema_version=$6; preprocessing_version=$7; expected_sha=$8; expected_length=$9; expected_rows=${10}
+# shellcheck disable=SC1091
+source "$stage/scripts/catalog/catalog-common.sh"
 [[ -L "$install_root/current" ]] || exit 90
 current=$(readlink "$install_root/current")
 [[ "$current" == "versions/$expected_version" ]] || exit 91
 database="$install_root/$current/hyg_v42.sqlite"
-[[ -f "$database" && ! -L "$database" && "$(sha256sum "$database" | cut -d' ' -f1)" == "$expected_sha" &&
-   "$(wc -c < "$database")" == "$expected_length" ]] || exit 92
-[[ "$(sqlite3 -batch -noheader -readonly "$database" 'PRAGMA integrity_check; SELECT count(*) FROM celestial_objects;')" == $'ok\n'"$expected_rows" ]] || exit 93
+hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$expected_version" "$schema_version" \
+  "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 92
 printf 'verified\t%s\t%s\n' "$current" "$expected_sha"
 REMOTE
 }

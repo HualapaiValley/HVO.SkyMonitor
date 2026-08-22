@@ -53,12 +53,13 @@ attribution_sha256="$(hyg_sha256 "$staging/$HYG_ATTRIBUTION_FILE")"
 
 cat > "$staging/$HYG_MANIFEST_FILE" <<JSON
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "package": {
     "kind": "production",
     "version": "$HYG_PACKAGE_VERSION"
   },
   "catalog": {
+    "id": "$HYG_CATALOG_ID",
     "name": "$HYG_CATALOG_NAME",
     "version": "$HYG_CATALOG_VERSION"
   },

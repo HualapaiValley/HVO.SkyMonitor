@@ -17,12 +17,13 @@ install_root="$temporary_directory/install"
 mkdir -p "$bundle" "$install_root/versions/sentinel" "$install_root/.staging.orphan"
 cat > "$bundle/manifest.json" <<JSON
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "package": {
     "kind": "fixture",
     "version": "fixture-1"
   },
   "catalog": {
+    "id": "fixture-smoke",
     "name": "fixture",
     "version": "fixture-1"
   },
@@ -58,7 +59,7 @@ fi
 
 cat > "$bundle/manifest.json" <<JSON
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "package": {
     "kind": "production",
     "kind": "production",

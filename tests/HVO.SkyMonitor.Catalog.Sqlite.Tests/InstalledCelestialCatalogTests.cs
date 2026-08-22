@@ -48,12 +48,14 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreEqual("InstalledCatalogSnapshotResolved", entry.EventId.Name);
         Assert.AreEqual(LogLevel.Information, entry.Level);
         Assert.AreEqual(CatalogSnapshotPackageKind.Fixture, entry.Properties["Kind"]);
+        Assert.AreEqual("hyg-v42-fixture", entry.Properties["CatalogId"]);
+        Assert.AreEqual("explicit-manifest-v2", entry.Properties["CatalogIdentitySource"]);
         Assert.AreEqual("4.2-fixture.1", entry.Properties["CatalogVersion"]);
         Assert.AreEqual("2", entry.Properties["SchemaVersion"]);
         Assert.AreEqual("3", entry.Properties["PreprocessingVersion"]);
         Assert.AreEqual(snapshot.DatabaseSha256, entry.Properties["DatabaseSha256"]);
         Assert.AreEqual(9L, entry.Properties["RowCount"]);
-        Assert.HasCount(7, entry.Properties);
+        Assert.HasCount(9, entry.Properties);
         Assert.IsFalse(entry.Message.Contains(installation.Root, StringComparison.Ordinal));
     }
 
@@ -103,8 +105,10 @@ internal sealed class InstalledCelestialCatalogTests
             fixture.Description);
         Assert.AreEqual(HealthStatus.Healthy, production.Status);
         Assert.AreEqual("Production celestial catalog snapshot is installed.", production.Description);
-        Assert.HasCount(6, fixture.Data);
+        Assert.HasCount(8, fixture.Data);
         Assert.AreEqual("Fixture", fixture.Data["Kind"]);
+        Assert.AreEqual("hyg-v42-fixture", fixture.Data["CatalogId"]);
+        Assert.AreEqual("explicit-manifest-v2", fixture.Data["CatalogIdentitySource"]);
         Assert.AreEqual(snapshot.DatabaseSha256, fixture.Data["DatabaseSha256"]);
         Assert.AreEqual(snapshot.RowCount, fixture.Data["RowCount"]);
         Assert.IsFalse(fixture.Data.Keys.Any(static key => key.Contains("Path", StringComparison.Ordinal)));

@@ -24,11 +24,14 @@ deploy_phase_correlate_target() {
 }
 
 deploy_validate_local_catalog() {
-    local inventory="$1" bundle database manifest kind version sha length rows expected file
+    local inventory="$1" catalog="${2:-}" bundle database manifest kind version schema_version preprocessing_version sha length rows expected file catalog_id
     local -a bundle_entries expected_entries
-    bundle="$(jq -r '.deployment.catalog.bundlePath' "$inventory")"; kind="$(jq -r '.catalog.kind' "$inventory")"
-    version="$(jq -r '.catalog.version' "$inventory")"; sha="$(jq -r '.catalog.sha256' "$inventory")"
-    length="$(jq -r '.catalog.length' "$inventory")"; rows="$(jq -r '.catalog.rowCount' "$inventory")"
+    [[ -n "$catalog" ]] || catalog="$(jq -c '.catalogs[0]' "$inventory")"
+    bundle="$(jq -r '.bundlePath' <<< "$catalog")"; kind="$(jq -r '.kind' <<< "$catalog")"
+    version="$(jq -r '.version' <<< "$catalog")"; sha="$(jq -r '.sha256' <<< "$catalog")"
+    catalog_id="$(jq -r '.catalogId' <<< "$catalog")"
+    schema_version="$(jq -r '.schemaVersion' <<< "$catalog")"; preprocessing_version="$(jq -r '.preprocessingVersion' <<< "$catalog")"
+    length="$(jq -r '.length' <<< "$catalog")"; rows="$(jq -r '.rowCount' <<< "$catalog")"
     database="$bundle/hyg_v42.sqlite"; manifest="$bundle/manifest.json"
     [[ -d "$bundle" && ! -L "$bundle" && -f "$database" && ! -L "$database" && -f "$manifest" && ! -L "$manifest" ]] ||
       { deploy_fail catalog bundle missing-or-unsafe; return 1; }
@@ -46,8 +49,8 @@ deploy_validate_local_catalog() {
         [[ -f "$file" && ! -L "$file" && "$(stat -c %h "$file" 2>/dev/null)" == 1 ]] ||
           { deploy_fail catalog bundle shape-mismatch; return 1; }
     done
-    jq -e --arg kind "$kind" --arg version "$version" --arg sha "$sha" --argjson length "$length" --argjson rows "$rows" '
-      .package.kind == $kind and .package.version == $version and
+    jq -e --arg id "$catalog_id" --arg kind "$kind" --arg version "$version" --arg schema "$schema_version" --arg preprocessing "$preprocessing_version" --arg sha "$sha" --argjson length "$length" --argjson rows "$rows" '
+      .manifestVersion == 2 and .catalog.id == $id and .package.kind == $kind and .package.version == $version and .schemaVersion == $schema and .preprocessingVersion == $preprocessing and
       .database.relativePath == "hyg_v42.sqlite" and .database.sha256 == $sha and
       .database.length == $length and .database.rowCount == $rows' "$manifest" >/dev/null 2>&1 ||
       { deploy_fail catalog bundle manifest-inventory-mismatch; return 1; }
@@ -55,9 +58,9 @@ deploy_validate_local_catalog() {
         jq -e '
           (keys | sort) == (["catalog","database","manifestVersion","package","preprocessingVersion","schemaVersion"] | sort) and
           (.package | keys | sort) == (["kind","version"] | sort) and
-          (.catalog | keys | sort) == (["name","version"] | sort) and
+          (.catalog | keys | sort) == (["id","name","version"] | sort) and
           (.database | keys | sort) == (["length","relativePath","rowCount","sha256"] | sort) and
-          .manifestVersion == 1 and (.catalog.name | type == "string" and length > 0) and
+          .manifestVersion == 2 and (.catalog.id | type == "string" and test("^[a-z0-9][a-z0-9-]{0,31}$")) and (.catalog.name | type == "string" and length > 0) and
           (.catalog.version | type == "string" and length > 0) and
           (.schemaVersion | type == "string" and length > 0) and
           (.preprocessingVersion | type == "string" and length > 0)' "$manifest" >/dev/null 2>&1 ||
@@ -91,11 +94,11 @@ deploy_catalog_mark_failed() {
 
 deploy_run_catalog() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6"
-    local state_dir evidence_dir target name root ssh stage result now bundle install_root kind version sha length rows entry
+    local state_dir evidence_dir target name root ssh stage result now bundle install_root kind version schema_version preprocessing_version sha length rows entry catalog catalog_id
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/prepare-manifest.json" catalog "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/images-manifest.json" catalog "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
-    deploy_validate_local_catalog "$inventory" || return 1
+    while IFS= read -r catalog; do deploy_validate_local_catalog "$inventory" "$catalog" || return 1; done < <(jq -c '.catalogs[]' "$inventory")
     DEPLOY_IMAGES_PREFLIGHT_JSON="$(jq -c . "$DEPLOY_MANIFEST")"
     state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"
     DEPLOY_CATALOG_MANIFEST="$state_dir/catalog-manifest.json"; DEPLOY_CATALOG_LEDGER="$state_dir/catalog-ledger.json"; DEPLOY_CATALOG_EVIDENCE="$evidence_dir/catalog.json"
@@ -106,13 +109,14 @@ deploy_run_catalog() {
           .schemaVersion == 1 and .runId == $run and .mode == $mode and .inventorySha256 == $hash and .sourceRevision == $revision and
           (.phaseStatus == "running" or .phaseStatus == "failed" or .phaseStatus == "passed") and
           (.targets | type == "array" and length == ([.[].target] | unique | length) and all(.[];
-            (keys | sort) == (["sha256","status","target","version"] | sort) and .status == "installed" and
-            .version == $inventory.catalog.version and .sha256 == $inventory.catalog.sha256 and
+            (keys | sort) == (["catalogId","kind","length","preprocessingVersion","rowCount","schemaVersion","sha256","status","target","version"] | sort) and .status == "installed" and
+            . as $entry | ($inventory.catalogs[] | select(.catalogId == $entry.catalogId)) as $catalog |
+            .kind == $catalog.kind and .version == $catalog.version and .schemaVersion == $catalog.schemaVersion and .preprocessingVersion == $catalog.preprocessingVersion and
+            .sha256 == $catalog.sha256 and .length == $catalog.length and .rowCount == $catalog.rowCount and
             (.target as $target | ([$inventory.logicHost.name] + [$inventory.cameraAgents[].name] +
-              (if $inventory.sharedServices then [$inventory.sharedServices.name] else [] end)) | index($target) != null))) and
+              []) | index($target) != null))) and
           (if .phaseStatus == "passed" then
-             ([.targets[].target] | sort) == ([$inventory.logicHost.name] + [$inventory.cameraAgents[].name] +
-               (if $inventory.sharedServices then [$inventory.sharedServices.name] else [] end) | sort)
+              ([.targets[].target] | sort) == ([$inventory.logicHost.name] + [$inventory.cameraAgents[].name] | sort)
            else true end)' <<< "$DEPLOY_CATALOG_JSON" >/dev/null ||
           { deploy_fail catalog ledger invalid; return 1; }
         [[ -f "$DEPLOY_CATALOG_MANIFEST" && ! -L "$DEPLOY_CATALOG_MANIFEST" && "$(stat -c '%u:%h:%a' "$DEPLOY_CATALOG_MANIFEST" 2>/dev/null)" == "$(id -u):1:600" ]] ||
@@ -129,35 +133,37 @@ deploy_run_catalog() {
     fi
     deploy_publish_json "$DEPLOY_CATALOG_LEDGER" "$DEPLOY_CATALOG_JSON" || return 1
     deploy_publish_json "$DEPLOY_CATALOG_MANIFEST" "$DEPLOY_CATALOG_JSON" || return 1
-    bundle="$(jq -r '.deployment.catalog.bundlePath' "$inventory")"; install_root="$(jq -r '.deployment.catalog.installRoot' "$inventory")"
-    kind="$(jq -r '.catalog.kind' "$inventory")"; version="$(jq -r '.catalog.version' "$inventory")"; sha="$(jq -r '.catalog.sha256' "$inventory")"
-    length="$(jq -r '.catalog.length' "$inventory")"; rows="$(jq -r '.catalog.rowCount' "$inventory")"
     while IFS= read -r target; do
         name="$(jq -r '.name' <<< "$target")"; root="$(jq -r '.runtimeRoot' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
+        catalog="$(deploy_catalog_for_target "$inventory" "$target")" || return 1; catalog_id="$(jq -r '.catalogId' <<< "$catalog")"
+        bundle="$(jq -r '.bundlePath' <<< "$catalog")"; install_root="$(jq -r '.installRoot' <<< "$catalog")"
+        kind="$(jq -r '.kind' <<< "$catalog")"; version="$(jq -r '.version' <<< "$catalog")"; sha="$(jq -r '.sha256' <<< "$catalog")"
+        schema_version="$(jq -r '.schemaVersion' <<< "$catalog")"; preprocessing_version="$(jq -r '.preprocessingVersion' <<< "$catalog")"
+        length="$(jq -r '.length' <<< "$catalog")"; rows="$(jq -r '.rowCount' <<< "$catalog")"
         entry="$(jq -c --arg name "$name" '.targets[]? | select(.target == $name)' <<< "$DEPLOY_CATALOG_JSON")"
-        stage="$root/.hvo-deploy/catalog-$run_id"
+        stage="$root/.hvo-deploy/catalog-$run_id-$catalog_id"
+        deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+        deploy_transport_remote_directories "$ssh" "$stage" "$stage/bundle" "$stage/scripts" "$stage/scripts/catalog" || { deploy_fail catalog "$name" stage-create-failed; return 1; }
+        deploy_transport_copy "$REPO_ROOT/scripts/catalog/catalog-common.sh" "$ssh" "$stage/scripts/catalog/catalog-common.sh" || return 1
+        deploy_transport_copy "$REPO_ROOT/scripts/catalog/install-hyg-v42.sh" "$ssh" "$stage/scripts/catalog/install-hyg-v42.sh" || return 1
+        deploy_transport_copy "$REPO_ROOT/scripts/infra:operation-lock" "$ssh" "$stage/scripts/infra:operation-lock" || return 1
+        deploy_transport_catalog_prepare_scripts "$ssh" "$stage" || { deploy_fail catalog "$name" script-stage-invalid; return 1; }
         deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         if [[ -z "$entry" ]]; then
-            deploy_transport_remote_directories "$ssh" "$stage" "$stage/bundle" "$stage/scripts" "$stage/scripts/catalog" || { deploy_fail catalog "$name" stage-create-failed; return 1; }
-            deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
             deploy_transport_copy "$bundle/." "$ssh" "$stage/bundle/" || { deploy_fail catalog "$name" bundle-transfer-failed; return 1; }
-            deploy_transport_copy "$REPO_ROOT/scripts/catalog/catalog-common.sh" "$ssh" "$stage/scripts/catalog/catalog-common.sh" || return 1
-            deploy_transport_copy "$REPO_ROOT/scripts/catalog/install-hyg-v42.sh" "$ssh" "$stage/scripts/catalog/install-hyg-v42.sh" || return 1
-            deploy_transport_copy "$REPO_ROOT/scripts/infra:operation-lock" "$ssh" "$stage/scripts/infra:operation-lock" || return 1
-            deploy_transport_catalog_prepare_scripts "$ssh" "$stage" || { deploy_fail catalog "$name" script-stage-invalid; return 1; }
             deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
-            result="$(deploy_transport_catalog_install "$ssh" "$stage" "$install_root" "$kind" "$version" "$sha" "$length" "$rows")" || { deploy_fail catalog "$name" install-or-verify-failed; return 1; }
+            result="$(deploy_transport_catalog_install "$ssh" "$stage" "$install_root" "$catalog_id" "$kind" "$version" "$schema_version" "$preprocessing_version" "$sha" "$length" "$rows")" || { deploy_fail catalog "$name" install-or-verify-failed; return 1; }
             [[ "$result" == installed$'\t'"versions/$version"$'\t'"$sha" ]] || { deploy_fail catalog "$name" invalid-install-response; return 1; }
             deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
-            DEPLOY_CATALOG_JSON="$(jq -c --arg target "$name" --arg version "$version" --arg sha "$sha" '.targets += [{target:$target,version:$version,sha256:$sha,status:"installed"}]' <<< "$DEPLOY_CATALOG_JSON")"
+            DEPLOY_CATALOG_JSON="$(jq -c --arg target "$name" --arg catalog "$catalog_id" --arg kind "$kind" --arg version "$version" --arg schema "$schema_version" --arg preprocessing "$preprocessing_version" --arg sha "$sha" --argjson length "$length" --argjson rows "$rows" '.targets += [{target:$target,catalogId:$catalog,kind:$kind,version:$version,schemaVersion:$schema,preprocessingVersion:$preprocessing,sha256:$sha,length:$length,rowCount:$rows,status:"installed"}]' <<< "$DEPLOY_CATALOG_JSON")"
             deploy_publish_json "$DEPLOY_CATALOG_LEDGER" "$DEPLOY_CATALOG_JSON" || return 1
             deploy_publish_json "$DEPLOY_CATALOG_MANIFEST" "$DEPLOY_CATALOG_JSON" || return 1
         else
-            result="$(deploy_transport_catalog_verify "$ssh" "$install_root" "$version" "$sha" "$length" "$rows")" || { deploy_fail catalog "$name" installed-catalog-drift; return 1; }
+            result="$(deploy_transport_catalog_verify "$ssh" "$stage" "$install_root" "$catalog_id" "$kind" "$version" "$schema_version" "$preprocessing_version" "$sha" "$length" "$rows")" || { deploy_fail catalog "$name" installed-catalog-drift; return 1; }
             [[ "$result" == verified$'\t'"versions/$version"$'\t'"$sha" ]] || { deploy_fail catalog "$name" invalid-verify-response; return 1; }
             deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         fi
-    done < <(deploy_inventory_targets "$inventory")
+    done < <(jq -c '([.logicHost] + .cameraAgents)[]' "$inventory")
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; DEPLOY_CATALOG_JSON="$(jq -c --arg now "$now" '.phaseStatus="passed" | .updatedAt=$now | .completedAt=$now' <<< "$DEPLOY_CATALOG_JSON")"
     deploy_publish_json "$DEPLOY_CATALOG_LEDGER" "$DEPLOY_CATALOG_JSON" &&
       deploy_publish_json "$DEPLOY_CATALOG_EVIDENCE" "$(jq -c 'del(.targets[].runtimeRoot)' <<< "$DEPLOY_CATALOG_JSON")" &&

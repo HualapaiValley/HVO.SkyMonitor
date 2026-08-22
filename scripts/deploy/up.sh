@@ -16,7 +16,9 @@ deploy_secret_value() {
 }
 
 deploy_up_catalog_required_kind() {
-    case "$(jq -r '.catalog.kind' "$1")" in
+    local inventory="$1" target="$2" catalog
+    catalog="$(deploy_catalog_for_target "$inventory" "$target")" || return 1
+    case "$(jq -r '.kind' <<< "$catalog")" in
       fixture) printf 'Fixture\n' ;;
       production) printf 'Production\n' ;;
       *) return 1 ;;
@@ -48,7 +50,7 @@ deploy_up_stage_value() {
 }
 
 deploy_up_validate_local_inputs() {
-    local inventory="$1" path owner mode links length target
+    local inventory="$1" path owner mode links length target application_identity
     local signing encryption
     signing="$(jq -r '.deployment.certificates.signingPath' "$inventory")"
     encryption="$(jq -r '.deployment.certificates.encryptionPath' "$inventory")"
@@ -67,6 +69,9 @@ deploy_up_validate_local_inputs() {
         path="$(jq -r '.moduleConfigPath' <<< "$target")"
         [[ -f "$path" && ! -L "$path" && "$(jq -r 'has("agentId") and has("module") and has("rig")' "$path" 2>/dev/null)" == true ]] ||
           { deploy_fail up camera-module missing-unsafe-or-invalid; return 1; }
+        application_identity="$(jq -er '.agentId | strings | select(length > 0)' "$path")" || return 1
+        [[ "$application_identity" == "$(jq -r '.applicationIdentity' <<< "$target")" ]] ||
+          { deploy_fail up camera-module application-identity-mismatch; return 1; }
     done < <(jq -c '.cameraAgents[]' "$inventory")
 }
 
@@ -81,6 +86,19 @@ deploy_up_validate_namespaces() {
         [[ "$(jq -r '.deployment.services.sql.adminUser' "$inventory")" == sa ]] ||
           { deploy_fail up services sql-deploy-admin-must-be-sa; return 1; }
     fi
+}
+
+deploy_up_validate_instance_identities() {
+    local inventory="$1" target component root ssh manifest binding
+    while IFS= read -r target; do
+        component="$(deploy_target_component "$inventory" "$(jq -r '.name' <<< "$target")")" || return 1
+        root="$(jq -r '.runtimeRoot' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
+        manifest="$(deploy_instance_manifest_json "$inventory" "$target" "$component")" || return 1
+        binding="$(deploy_application_binding_json "$target")" || return 1
+        deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+        deploy_transport_instance_manifest "$ssh" "$root" "$manifest" "$binding" >/dev/null ||
+          { deploy_fail up "$(jq -r '.name' <<< "$target")" instance-or-application-identity-conflict; return 1; }
+    done < <(jq -c '([.logicHost] + .cameraAgents)[]' "$inventory")
 }
 
 deploy_up_compose_mutation() {
@@ -107,11 +125,21 @@ deploy_up_mark_failed() {
 
 deploy_up_stage_target() {
     local inventory="$1" target="$2" run_id="$3" render_root="$4" image="$5" component="$6"
-    local name root ssh config_root secrets_root state_root catalog_root env_file mapping reference key value local_secret port image_key destination
+    local name root ssh config_root secrets_root state_root catalog_root env_file mapping reference key value local_secret port image_key destination instance_manifest binding_initial binding_actual binding_state provisioning_state
     local -a secret_destinations
     name="$(jq -r '.name' <<< "$target")"; root="$(jq -r '.runtimeRoot' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
-    config_root="$root/.hvo-deploy/up-$run_id"; secrets_root="$config_root/secrets"; state_root="$root/application"; catalog_root="$(jq -r '.deployment.catalog.installRoot' "$inventory")"
+    config_root="$root/config"; secrets_root="$config_root/secrets"; state_root="$root/state"
+    if [[ "$component" == shared ]]; then catalog_root=unused; else catalog_root="$(deploy_catalog_root "$inventory" "$target")" || return 1; fi
     deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
+    if [[ "$component" != shared ]]; then
+        instance_manifest="$(deploy_instance_manifest_json "$inventory" "$target" "$component")" || return 1
+        binding_initial="$(deploy_application_binding_json "$target")" || return 1
+        binding_actual="$(deploy_transport_instance_manifest "$ssh" "$root" "$instance_manifest" "$binding_initial")" ||
+          { deploy_fail up "$name" instance-or-application-identity-conflict; return 1; }
+        binding_state="$(jq -r '.state' <<< "$binding_actual")" || return 1
+    else
+        binding_state=none
+    fi
     deploy_transport_remote_directories "$ssh" "$config_root" "$secrets_root" "$config_root/initializer-secrets" "$config_root/runtime-secrets" \
       "$config_root/certificates" "$config_root/sql" "$config_root/minio" "$config_root/minio-output" "$config_root/private" "$config_root/private/mc" "$state_root" \
       "$state_root/data-protection" "$state_root/identity" "$state_root/provisioning" "$state_root/raw" "$state_root/archive" \
@@ -149,7 +177,7 @@ deploy_up_stage_target() {
             deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__ArtifactBucket "$(jq -r '.deployment.resources.artifactBucket' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__DiagnosticsBucket "$(jq -r '.deployment.resources.diagnosticsBucket' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__Root /app/catalog || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__RequiredPackageKind "$(deploy_up_catalog_required_kind "$inventory")" || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__RequiredPackageKind "$(deploy_up_catalog_required_kind "$inventory" "$target")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Smtp__Host "$(jq -r '.deployment.services.smtp.host' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Smtp__Port "$(jq -r '.deployment.services.smtp.ports[0]' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" DeviceBootstrap__CentralIdentity__Mode ClientCredentials || return 1
@@ -196,33 +224,42 @@ deploy_up_stage_target() {
           "$(jq -r '.deployment.services.redis.host' "$inventory"):$(jq -r '.deployment.services.redis.port' "$inventory"),user=$(jq -r '.deployment.services.redis.user' "$inventory"),password=$value" || return 1
         unset value
     elif [[ "$component" == cameraAgent ]]; then
-        deploy_transport_copy_private_file "$(jq -r '.moduleConfigPath' <<< "$target")" "$ssh" "$config_root/camera-module.json" || return 1
-        deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$config_root/private" \
-          "$(jq -r '.ownerPasswordSecretReference' <<< "$target")" owner-password || return 1
-        deploy_up_stage_value "$target" "$render_root" "$secrets_root" LocalIdentity__AdminPasswordFile /run/hvo-private/owner-password || return 1
-        deploy_up_stage_value "$target" "$render_root" "$secrets_root" LocalIdentity__AdminEmail "$(jq -r '.ownerEmail' <<< "$target")" || return 1
+        if [[ "$binding_state" == pre-provisioning ]]; then
+            deploy_transport_copy_private_file "$(jq -r '.moduleConfigPath' <<< "$target")" "$ssh" "$config_root/camera-module.json" || return 1
+            deploy_up_stage_named_secret "$inventory" "$target" "$render_root" "$config_root/private" \
+              "$(jq -r '.ownerPasswordSecretReference' <<< "$target")" owner-password || return 1
+            deploy_up_stage_value "$target" "$render_root" "$secrets_root" LocalIdentity__AdminPasswordFile /run/hvo-private/owner-password || return 1
+            deploy_up_stage_value "$target" "$render_root" "$secrets_root" LocalIdentity__AdminEmail "$(jq -r '.ownerEmail' <<< "$target")" || return 1
+            deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__ProvisioningStartupGate__Enabled true || return 1
+            deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CaptureDistribution__UploadEnabled false || return 1
+        fi
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__ConfigFilePath /app/cameraagent.deploy.json || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__RawIngressRoot /app/data/raw || return 1
-        deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__ProvisioningStartupGate__Enabled true || return 1
-        deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CaptureDistribution__UploadEnabled false || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__TransientDetection__Mode Off || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" CameraAgent__CentralIntegration__Mode Enabled || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" SkyMonitor__BaseUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" SkyMonitor__PublicBaseUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__Root /app/catalog || return 1
-        deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__RequiredPackageKind "$(deploy_up_catalog_required_kind "$inventory")" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__RequiredPackageKind "$(deploy_up_catalog_required_kind "$inventory" "$target")" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$secrets_root" LocalIdentity__CookieName "$(jq -r '.cookieName' <<< "$target")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" ReverseProxy__Enabled "$(jq -r '(.trustedProxyAddresses | length) > 0' <<< "$target")" || return 1
         while IFS= read -r value; do
             key="ReverseProxy__TrustedProxies__$(jq -r '.index' <<< "$value")"
             deploy_up_stage_value "$target" "$render_root" "$secrets_root" "$key" "$(jq -r '.proxy' <<< "$value")" || return 1
         done < <(jq -c '.trustedProxyAddresses | to_entries[] | {index:.key,proxy:.value}' <<< "$target")
     fi
+    if [[ "$component" == cameraAgent ]]; then
+        provisioning_state="$(deploy_transport_camera_provisioning_state "$ssh" "$root" "$binding_state")" ||
+          { deploy_fail up "$name" provisioning-state-invalid; return 1; }
+        IFS=$'\t' read -r DEPLOY_UP_PROVISIONING_GATE DEPLOY_UP_UPLOAD_ENABLED <<< "$provisioning_state"
+    fi
     [[ "$component" != shared ]] || { DEPLOY_UP_CONFIG_ROOT="$config_root"; DEPLOY_UP_STATE_ROOT="$state_root"; return 0; }
     port="$(jq -r '.internalEndpoint | capture("^http://[^/:]+:(?<port>[0-9]+)").port' <<< "$target")"; env_file="$render_root/$name.env"
     if [[ "$component" == logicHost ]]; then image_key=LOGICHOST_IMAGE; else image_key=CAMERAAGENT_IMAGE; fi
-    (umask 077; printf 'HVO_CONFIG_ROOT=%s\nHVO_STATE_ROOT=%s\nHVO_CATALOG_ROOT=%s\nHVO_PUBLIC_PORT=%s\nHVO_CPUS=%s\nHVO_MEMORY=%s\nHVO_RUN_ID=%s\nHVO_INVENTORY_SHA256=%s\n%s=%s\n' \
-      "$config_root" "$state_root" "$catalog_root" "$port" "$(jq -r '.deployment.limits.cpus // "1"' "$inventory")" \
-      "$(jq -r '.deployment.limits.memory // "1G"' "$inventory")" "$run_id" "$(jq -S -c . "$inventory" | sha256sum | cut -d' ' -f1)" \
+    (umask 077; printf 'HVO_CONFIG_ROOT=%s\nHVO_STATE_ROOT=%s\nHVO_CATALOG_ROOT=%s\nHVO_CONTAINER_NAME=%s\nHVO_PUBLIC_PORT=%s\nHVO_CPUS=%s\nHVO_MEMORY=%s\nHVO_RUN_ID=%s\nHVO_INVENTORY_SHA256=%s\n%s=%s\n' \
+      "$config_root" "$state_root" "$catalog_root" "hvo-skymonitor-$(jq -r '.instanceId | gsub("-"; "")' <<< "$target")" \
+      "$port" "$(jq -r '.deployment.limits.cpus // "1"' "$inventory")" "$(jq -r '.deployment.limits.memory // "1G"' "$inventory")" \
+      "$run_id" "$(jq -S -c . "$inventory" | sha256sum | cut -d' ' -f1)" \
       "$image_key" "$image" > "$env_file")
     DEPLOY_UP_ENV_FILE="$env_file"; DEPLOY_UP_CONFIG_ROOT="$config_root"; DEPLOY_UP_STATE_ROOT="$state_root"
     deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
@@ -230,7 +267,7 @@ deploy_up_stage_target() {
 
 deploy_run_up() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" revision="$5" worktree="$6"
-    local state_dir evidence_dir render_root images mode_services project now target agent name context ssh component image endpoint path shared_context shared_env shared_target minio_response minio_runtime_access minio_runtime_secret runtime_identity runtime_uid runtime_gid value root_access root_secret mc_config
+    local state_dir evidence_dir render_root images mode_services project now target agent name context ssh component image endpoint path shared_context shared_env shared_target minio_response minio_runtime_access minio_runtime_secret runtime_identity runtime_uid runtime_gid value root_access root_secret mc_config provisioning_gate upload_enabled
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/prepare-manifest.json" up "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_passed_phase "$(dirname "$DEPLOY_MANIFEST")/catalog-manifest.json" up "$run_id" "$mode" "$hash" "$revision" || return 1
     deploy_require_resume_match "$DEPLOY_MANIFEST" "$run_id" "$mode" "$hash" "$revision" "$worktree" || return 1
@@ -240,7 +277,6 @@ deploy_run_up() {
     deploy_transport_reconcile_private_uploads strict || { deploy_fail up private-upload-registry cleanup-failed; return 1; }
     deploy_require_committed_images "$inventory" "$run_id" "$mode" "$hash" "$revision" || return 1
     state_dir="$(dirname "$DEPLOY_MANIFEST")"; evidence_dir="$(dirname "$DEPLOY_EVIDENCE")"; render_root="$state_dir/up-rendered"
-    install -d -m 700 "$render_root"
     images="$DEPLOY_COMMITTED_IMAGES_JSON"; mode_services="$(jq -r '.deployment.services.mode' "$inventory")"; project="$(jq -r '.deployment.resources.project' "$inventory")"
     DEPLOY_UP_MANIFEST="$state_dir/up-manifest.json"; DEPLOY_UP_LEDGER="$state_dir/up-ledger.json"; DEPLOY_UP_EVIDENCE="$evidence_dir/up.json"
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -257,8 +293,8 @@ deploy_run_up() {
              (.kind == "runtime-role" and .status == "applied" and $services == "deploy")))) and
           (.targets | type == "array" and length == ([.[].target] | unique | length) and all(.[];
             ((.component == "logicHost" and (keys | sort) == (["component","status","target"] | sort)) or
-             (.component == "cameraAgent" and (keys | sort) == (["component","provisioningGate","status","target","uploadEnabled"] | sort) and
-               .provisioningGate == true and .uploadEnabled == false)) and .status == "ready" and
+              (.component == "cameraAgent" and (keys | sort) == (["component","provisioningGate","status","target","uploadEnabled"] | sort) and
+                ((.provisioningGate == true and .uploadEnabled == false) or (.provisioningGate == false and .uploadEnabled == true)))) and .status == "ready" and
             ((.component == "logicHost" and .target == $inventory.logicHost.name) or
              (.component == "cameraAgent" and (.target as $target | [$inventory.cameraAgents[].name] | index($target) != null))))) and
           (if .phaseStatus == "passed" then
@@ -282,6 +318,8 @@ deploy_run_up() {
             phaseStatus:"running",startedAt:$now,updatedAt:$now,resources:[],targets:[]}')"
     fi
     deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"; deploy_publish_json "$DEPLOY_UP_MANIFEST" "$DEPLOY_UP_JSON"
+    deploy_up_validate_instance_identities "$inventory" || return 1
+    install -d -m 700 "$render_root"
     if [[ "$mode_services" == deploy ]]; then
         target="$(jq -c '.sharedServices' "$inventory")"; shared_target="$target"; name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
         deploy_up_stage_target "$inventory" "$target" "$run_id" "$render_root" "" shared || return 1
@@ -374,13 +412,13 @@ deploy_run_up() {
         deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/runtime-secrets" Minio__SecretKey "$minio_runtime_secret" || return 1
         unset minio_runtime_access minio_runtime_secret
     fi
-    deploy_up_compose_mutation "$target" "$context" "$project-logic" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" --profile initialize run --rm logic-init || { deploy_fail up logic initializer-failed; return 1; }
+    deploy_up_compose_mutation "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" --profile initialize run --rm logic-init || { deploy_fail up logic initializer-failed; return 1; }
     DEPLOY_UP_JSON="$(jq -c '.resources = ([.resources[] | select(.kind != "logic-initializer")] + [{kind:"logic-initializer",status:"completed"}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
     if [[ "$mode_services" == deploy ]]; then
         deploy_up_compose_mutation "$shared_target" "$shared_context" "$project-services" "$shared_env" "$REPO_ROOT/deploy/split-host/compose.shared-services.yml" --profile provision run --rm -e SQL_PROVISION_PHASE=after sql-provision || { deploy_fail up services runtime-role-failed; return 1; }
         DEPLOY_UP_JSON="$(jq -c '.resources = ([.resources[] | select(.kind != "runtime-role")] + [{kind:"runtime-role",status:"applied"}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
     fi
-    deploy_up_compose_mutation "$target" "$context" "$project-logic" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" up -d logichost || return 1
+    deploy_up_compose_mutation "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" up -d logichost || return 1
     endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     for path in /alive /health /metrics; do deploy_transport_http_ready "$ssh" "${endpoint%/}$path" || { deploy_fail up logic readiness-failed; return 1; }; done
     endpoint="$(jq -r '.logicHost.publicEndpoint' "$inventory")"
@@ -394,10 +432,11 @@ deploy_run_up() {
         name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"
         image="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .reference' <<< "$images")"
         deploy_up_stage_target "$inventory" "$target" "$run_id" "$render_root" "$image" cameraAgent || return 1
-        deploy_up_compose_mutation "$target" "$context" "$project-$name" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" up -d cameraagent || return 1
+        deploy_up_compose_mutation "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" up -d cameraagent || return 1
         endpoint="$(jq -r '.internalEndpoint' <<< "$target")"; deploy_transport_http_ready "$ssh" "${endpoint%/}/alive" || return 1
         deploy_transport_http_ready "$ssh" "${endpoint%/}/health" || return 1
-        DEPLOY_UP_JSON="$(jq -c --arg target "$name" '.targets = ([.targets[] | select(.target != $target)] + [{target:$target,component:"cameraAgent",provisioningGate:true,uploadEnabled:false,status:"ready"}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
+        provisioning_gate="$DEPLOY_UP_PROVISIONING_GATE"; upload_enabled="$DEPLOY_UP_UPLOAD_ENABLED"
+        DEPLOY_UP_JSON="$(jq -c --arg target "$name" --argjson gate "$provisioning_gate" --argjson upload "$upload_enabled" '.targets = ([.targets[] | select(.target != $target)] + [{target:$target,component:"cameraAgent",provisioningGate:$gate,uploadEnabled:$upload,status:"ready"}])' <<< "$DEPLOY_UP_JSON")"; deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON"
     done < <(jq -c '.cameraAgents[]' "$inventory")
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; DEPLOY_UP_JSON="$(jq -c --arg now "$now" '.phaseStatus="passed" | .updatedAt=$now | .completedAt=$now' <<< "$DEPLOY_UP_JSON")"
     deploy_publish_json "$DEPLOY_UP_LEDGER" "$DEPLOY_UP_JSON" && deploy_publish_json "$DEPLOY_UP_EVIDENCE" "$DEPLOY_UP_JSON" && deploy_publish_json "$DEPLOY_UP_MANIFEST" "$DEPLOY_UP_JSON"

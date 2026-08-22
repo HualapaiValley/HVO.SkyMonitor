@@ -1,0 +1,326 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+usage() { printf 'Usage: %s <apply|verify|rollback|finalize> --legacy-root ABS --product-root ABS --instance-id UUID --application-id ID [--bound-device-id ID] --catalog-id ID --evidence ABS [--cutover-evidence ABS]\n' "${0##*/}" >&2; exit 2; }
+action="${1:-}"; shift || true
+legacy_root= product_root= instance_id= application_id= bound_device_id= catalog_id= evidence= cutover_evidence=
+while (( $# )); do case "$1" in
+  --legacy-root) legacy_root="${2:-}"; shift 2 ;; --product-root) product_root="${2:-}"; shift 2 ;;
+  --instance-id) instance_id="${2:-}"; shift 2 ;; --application-id) application_id="${2:-}"; shift 2 ;;
+  --bound-device-id) bound_device_id="${2:-}"; shift 2 ;;
+  --catalog-id) catalog_id="${2:-}"; shift 2 ;; --evidence) evidence="${2:-}"; shift 2 ;;
+  --cutover-evidence) cutover_evidence="${2:-}"; shift 2 ;; *) usage ;; esac; done
+[[ "$action" == apply || "$action" == verify || "$action" == rollback || "$action" == finalize ]] || usage
+[[ -n "$legacy_root" && -n "$product_root" && -n "$instance_id" && -n "$application_id" && -n "$catalog_id" && -n "$evidence" ]] || usage
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/deploy/common.sh"
+. "$SCRIPT_DIR/deploy/product-layout.sh"
+# shellcheck source=scripts/catalog/catalog-common.sh
+. "$SCRIPT_DIR/catalog/catalog-common.sh"
+deploy_require_commands cmp cp dirname find flock jq mkdir mktemp mv readlink realpath rm sha256sum sort sqlite3 stat sync wc
+for path in "$legacy_root" "$product_root" "$evidence"; do
+  deploy_is_safe_absolute_path "$path" && [[ "$(realpath -m -- "$path")" == "$path" ]] || { printf 'Unsafe or noncanonical migration path.\n' >&2; exit 1; }
+done
+if [[ -n "$cutover_evidence" ]]; then deploy_is_safe_absolute_path "$cutover_evidence" && [[ "$(realpath -m -- "$cutover_evidence")" == "$cutover_evidence" ]] || { printf 'Cutover evidence path is unsafe.\n' >&2; exit 1; }; fi
+deploy_is_canonical_uuid "$instance_id" || { printf 'Instance ID must be a canonical lowercase UUID.\n' >&2; exit 1; }
+deploy_is_catalog_id "$catalog_id" || { printf 'Catalog ID is invalid.\n' >&2; exit 1; }
+[[ "$application_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { printf 'Application ID is invalid.\n' >&2; exit 1; }
+[[ -z "$bound_device_id" || "$bound_device_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { printf 'Bound device ID is invalid.\n' >&2; exit 1; }
+[[ "$legacy_root" != "$product_root" && "$product_root" != "$legacy_root"/* && "$legacy_root" != "$product_root"/* ]] || { printf 'Legacy and product roots must not overlap.\n' >&2; exit 1; }
+
+legacy_config="$legacy_root/config/cameraagent"; legacy_state="$legacy_root/data/agent"; legacy_catalog="$legacy_root/data/catalog"
+instance_root="$product_root/cameraagents/$instance_id"; catalog_root="$product_root/catalogs/$catalog_id"
+manifest="$instance_root/instance-manifest.json"; binding="$instance_root/application-identity.json"
+lock="${product_root}.migration.lock"; intent="${evidence}.finalize-intent.json"
+apply_intent="${evidence}.apply-intent.json"
+instance_stage="$product_root/cameraagents/.hvo-migration-$instance_id.stage"; catalog_stage="$product_root/catalogs/.hvo-migration-$instance_id.stage"
+config_snapshot="${evidence}.config.snapshot"; state_snapshot="${evidence}.state.snapshot"; catalog_snapshot="${evidence}.catalog.snapshot"
+config_tomb="${legacy_config}.hvo-migration-$instance_id"; state_tomb="${legacy_state}.hvo-migration-$instance_id"; catalog_tomb="${legacy_catalog}.hvo-migration-$instance_id"
+
+snapshot_tree() {
+  local root="$1" output="$2" root_device path relative kind target resolved metadata uid gid mode device inode links
+  [[ -d "$root" && ! -L "$root" ]] || return 1
+  root_device="$(stat -c %d -- "$root")"; : > "$output"
+  while IFS= read -r -d '' path; do
+    [[ "$(stat -c %d -- "$path")" == "$root_device" ]] || { printf 'Nested device or mount crossing rejected: %s\n' "$path" >&2; return 1; }
+    relative=.; [[ "$path" == "$root" ]] || relative="${path#"$root"/}"
+    read -r uid gid mode device inode links < <(stat -c '%u %g %a %d %i %h' -- "$path")
+    printf -v metadata '%s\t%s\t%s\t%s\t%s\t%s' "$uid" "$gid" "$mode" "$device" "$inode" "$links"
+    if [[ -L "$path" ]]; then
+      target="$(readlink -- "$path")"; [[ "$target" != /* ]] || { printf 'Absolute symlink rejected: %s\n' "$path" >&2; return 1; }
+      resolved="$(realpath -m -- "$(dirname -- "$path")/$target")"
+      [[ "$resolved" == "$root" || "$resolved" == "$root"/* ]] || { printf 'Escaping symlink rejected: %s\n' "$path" >&2; return 1; }
+      kind=link; printf '%s\t%s\t%s\t%s\n' "$kind" "$metadata" "$relative" "$target" >> "$output"
+    elif [[ -d "$path" ]]; then kind=directory; printf '%s\t%s\t%s\t-\n' "$kind" "$metadata" "$relative" >> "$output"
+    elif [[ -f "$path" && "$(stat -c %h -- "$path")" == 1 ]]; then kind=file; printf '%s\t%s\t%s\t%s\n' "$kind" "$metadata" "$relative" "$(sha256sum -- "$path" | cut -d' ' -f1)" >> "$output"
+    else printf 'Special or multiply-linked migration entry rejected: %s\n' "$path" >&2; return 1; fi
+  done < <({ printf '%s\0' "$root"; find -P "$root" -mindepth 1 -print0; } | sort -z)
+}
+
+content_tree() { cut -f1-4,7-9 "$1"; }
+capture_tree() { local root="$1" output="$2" temporary; temporary="$(mktemp)"; snapshot_tree "$root" "$temporary" && mv -T -- "$temporary" "$output"; }
+revalidate_tree() { local root="$1" expected="$2" actual; actual="$(mktemp)"; snapshot_tree "$root" "$actual" && cmp -s "$expected" "$actual"; local status=$?; rm -f -- "$actual"; return "$status"; }
+verify_copy() { local source="$1" destination="$2" a b; a="$(mktemp)"; b="$(mktemp)"; snapshot_tree "$source" "$a" && snapshot_tree "$destination" "$b" && content_tree "$a" > "$a.content" && content_tree "$b" > "$b.content" && cmp -s "$a.content" "$b.content"; local status=$?; rm -f -- "$a" "$b" "$a.content" "$b.content"; return "$status"; }
+validate_snapshot_subset() {
+  local root="$1" expected="$2" actual status
+  actual="$(mktemp)"; snapshot_tree "$root" "$actual" || { rm -f -- "$actual"; return 1; }
+  awk -F '\t' '
+    function comparable(kind, line, f,n) { n=split(line,f,"\t"); return kind=="directory" ? f[1] FS f[2] FS f[3] FS f[4] FS f[5] FS f[6] FS f[8] FS f[9] : line }
+    NR==FNR { expected[$8]=comparable($1,$0); next }
+    !($8 in expected) || expected[$8] != comparable($1,$0) { exit 1 }
+    $8=="." { root_seen=1 }
+    END { if (!root_seen) exit 1 }' "$expected" "$actual"; status=$?; rm -f -- "$actual"; return "$status"
+}
+validate_copy_subset() {
+  local root="$1" expected="$2" actual status
+  actual="$(mktemp)"; snapshot_tree "$root" "$actual" || { rm -f -- "$actual"; return 1; }
+  awk -F '\t' '
+    function comparable(kind, line, f,n) { n=split(line,f,"\t"); return kind=="directory" ? f[1] FS f[2] FS f[3] FS f[4] FS f[8] FS f[9] : f[1] FS f[2] FS f[3] FS f[4] FS f[7] FS f[8] FS f[9] }
+    NR==FNR { expected[$8]=comparable($1,$0); next }
+    !($8 in expected) || expected[$8] != comparable($1,$0) { exit 1 }
+    $8=="." { root_seen=1 }
+    END { if (!root_seen) exit 1 }' "$expected" "$actual"; status=$?; rm -f -- "$actual"; return "$status"
+}
+validate_stage_root() {
+  local stage="$1" parent="$2" mode
+  [[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%g:%d' "$stage")" == "$(id -u):$(id -g):$(stat -c %d "$parent")" ]] || return 1
+  mode="$(stat -c %a "$stage")"; (( (8#$mode & 0022) == 0 ))
+}
+validate_instance_identity_file() {
+  local path="$1" kind="$2" root="$3"
+  [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%g:%h:%a:%d' "$path")" == "$(id -u):$(id -g):1:600:$(stat -c %d "$root")" ]] || return 1
+  if [[ "$kind" == manifest ]]; then
+    jq -e --arg instance "$instance_id" '.schemaVersion == 1 and .product == "HVO.SkyMonitor" and .component == "cameraAgent" and
+      .instanceId == $instance and .creationProvenance == {migration:"singular-layout-v1"} and
+      .applicationIdentityFile == "application-identity.json"' "$path" >/dev/null
+  else
+    jq -e --arg configured "$application_id" --arg bound "$bound_device_id" '.schemaVersion == 1 and
+      .configuredIdentity == $configured and .state == (if $bound == "" then "pre-provisioning" else "bound" end) and
+      .boundIdentity == (if $bound == "" then null else $bound end)' "$path" >/dev/null
+  fi
+}
+validate_instance_tree_for_removal() {
+  local root="$1" parent="$2" completeness="$3" path name
+  local have_config=false have_state=false have_manifest=false have_binding=false
+  validate_stage_root "$root" "$parent" || return 1
+  while IFS= read -r path; do
+    name="${path##*/}"
+    case "$name" in
+      config) have_config=true; [[ -d "$path" && ! -L "$path" ]] || return 1 ;;
+      state) have_state=true; [[ -d "$path" && ! -L "$path" ]] || return 1 ;;
+      instance-manifest.json) have_manifest=true; validate_instance_identity_file "$path" manifest "$root" || return 1 ;;
+      application-identity.json) have_binding=true; validate_instance_identity_file "$path" binding "$root" || return 1 ;;
+      *) return 1 ;;
+    esac
+  done < <(find -P "$root" -mindepth 1 -maxdepth 1 -print)
+  [[ "$have_config" == false ]] || validate_copy_subset "$root/config" "$config_snapshot" || return 1
+  [[ "$have_state" == false ]] || validate_copy_subset "$root/state" "$state_snapshot" || return 1
+  if [[ "$completeness" == complete ]]; then
+    [[ "$have_config" == true && "$have_state" == true && "$have_manifest" == true && "$have_binding" == true ]] || return 1
+  else
+    [[ "$have_config" == true ]] || return 1
+    [[ "$have_binding" == false || "$have_manifest" == true ]] || return 1
+  fi
+}
+delete_instance_tree() {
+  local root="$1" path
+  [[ ! -e "$root/config" ]] || delete_copy_subset "$root/config" "$config_snapshot"
+  [[ ! -e "$root/state" ]] || delete_copy_subset "$root/state" "$state_snapshot"
+  for path in "$root/instance-manifest.json" "$root/application-identity.json"; do
+    [[ ! -e "$path" && ! -L "$path" ]] || delete_validated_entry "$root" "$path"
+  done
+  rmdir -- "$root"
+}
+partial_delete_one() {
+  local root="$1" victim
+  victim="$(find -P "$root" -xdev -depth -mindepth 1 ! -type d -print -quit)"; [[ -n "$victim" ]] || return 1
+  [[ "$victim" == "$root"/* && ! -d "$victim" ]] || return 1; rm -f -- "$victim"; sync -f "$root"
+}
+delete_validated_entry() {
+  local root="$1" victim="$2" parent mode status
+  parent="$(dirname -- "$victim")"
+  [[ "$parent" == "$root" || "$parent" == "$root"/* ]] || return 1
+  [[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%d' -- "$parent")" == "$(id -u):$(stat -c %d -- "$root")" ]] || return 1
+  mode="$(stat -c %a -- "$parent")"; chmod u+w -- "$parent"
+  if [[ -d "$victim" && ! -L "$victim" ]]; then rmdir -- "$victim"; else rm -f -- "$victim"; fi
+  status=$?; chmod "$mode" -- "$parent" || return 1; return "$status"
+}
+delete_snapshot_subset() {
+  local root="$1" expected="$2" victim
+  while :; do
+    validate_snapshot_subset "$root" "$expected" || return 1
+    victim="$(find -P "$root" -xdev -depth -mindepth 1 -print -quit)"
+    [[ -n "$victim" ]] || break
+    [[ "$victim" == "$root"/* ]] || return 1
+    delete_validated_entry "$root" "$victim" || return 1
+  done
+  validate_snapshot_subset "$root" "$expected" && rmdir -- "$root"
+}
+delete_copy_subset() {
+  local root="$1" expected="$2" victim
+  while :; do
+    validate_copy_subset "$root" "$expected" || return 1
+    victim="$(find -P "$root" -xdev -depth -mindepth 1 -print -quit)"
+    [[ -n "$victim" ]] || break
+    [[ "$victim" == "$root"/* ]] || return 1
+    delete_validated_entry "$root" "$victim" || return 1
+  done
+  validate_copy_subset "$root" "$expected" && rmdir -- "$root"
+}
+publish_json() { local path="$1" json="$2" temporary; temporary="${path}.tmp.$$"; printf '%s\n' "$json" > "$temporary"; chmod 600 "$temporary"; mv -Tf -- "$temporary" "$path"; sync -f "$path"; sync -f "$(dirname -- "$path")"; }
+failpoint() { [[ "${DEPLOY_MIGRATION_FAILPOINT:-}" != "$1" ]] || exit 75; }
+catalog_manifest_identity() {
+  local manifest="$1" bundle="$2" manifest_version identity
+  manifest_version="$(jq -er '.manifestVersion' "$manifest")" || return 1
+  if [[ "$manifest_version" == 2 ]]; then
+    identity="$(jq -er '.catalog.id | select(type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$"))' "$manifest")" || return 1
+    printf '%s\texplicit-manifest-v2\n' "$identity"
+  elif [[ "$manifest_version" == 1 ]]; then
+    identity="$(hyg_resolve_legacy_catalog_identity "$bundle")" || return 1
+    printf '%s\tderived-manifest-v1\n' "$identity"
+  else
+    return 1
+  fi
+}
+
+mkdir -p -- "$(dirname -- "$lock")"; exec 9>"$lock"; flock -n 9 || { printf 'Another product-layout migration is active.\n' >&2; exit 1; }
+case "$action" in
+apply)
+  catalog_manifest="$legacy_catalog/current/manifest.json"; catalog_bundle= catalog_identity= catalog_identity_source=
+  [[ -d "$legacy_config" && ! -L "$legacy_config" && -d "$legacy_state" && ! -L "$legacy_state" && -d "$legacy_catalog" && ! -L "$legacy_catalog" ]] || { printf 'The exact singular legacy layout is not present.\n' >&2; exit 1; }
+  [[ "$(stat -c %d -- "$legacy_root")" == "$(stat -c %d -- "$(dirname -- "$product_root")")" ]] || { printf 'Migration requires one filesystem for guarded publication.\n' >&2; exit 1; }
+  [[ -f "$catalog_manifest" && ! -L "$catalog_manifest" ]] || { printf 'Legacy catalog manifest is missing or unsafe.\n' >&2; exit 1; }
+  catalog_bundle="$(realpath -- "$legacy_catalog/current")"
+  [[ "$catalog_bundle" == "$legacy_catalog/versions/"* && -d "$catalog_bundle" && ! -L "$catalog_bundle" ]] || { printf 'Legacy catalog current target is unsafe.\n' >&2; exit 1; }
+  IFS=$'\t' read -r catalog_identity catalog_identity_source < <(catalog_manifest_identity "$catalog_manifest" "$catalog_bundle") || { printf 'Legacy catalog identity is not canonical.\n' >&2; exit 1; }
+  [[ "$catalog_identity" == "$catalog_id" ]] || { printf 'Legacy catalog manifest identity mismatch.\n' >&2; exit 1; }
+  if [[ -f "$evidence" && ! -L "$evidence" ]]; then
+    jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg identitySource "$catalog_identity_source" '
+      .schemaVersion == 2 and .status == "copied-and-verified" and .instanceId == $instance and .applicationIdentity == $application and
+      .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and .catalogIdentitySource == $identitySource' "$evidence" >/dev/null || exit 1
+    verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"; verify_copy "$legacy_catalog" "$catalog_root"
+    [[ -f "$manifest" && ! -L "$manifest" && -f "$binding" && ! -L "$binding" && "$(stat -c '%u:%h:%a' "$manifest")" == "$(id -u):1:600" && "$(stat -c '%u:%h:%a' "$binding")" == "$(id -u):1:600" ]] || exit 1
+    printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"; exit 0
+  fi
+  if [[ ! -e "$apply_intent" && ! -L "$apply_intent" ]]; then
+    for path in "$instance_root" "$catalog_root" "$instance_stage" "$catalog_stage"; do [[ ! -e "$path" && ! -L "$path" ]] || { printf 'Unowned migration destination exists.\n' >&2; exit 1; }; done
+    publish_json "$apply_intent" "$(jq -cn --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg identitySource "$catalog_identity_source" --arg legacy "$legacy_root" --arg product "$product_root" --arg instanceStage "$instance_stage" --arg catalogStage "$catalog_stage" '
+      {schemaVersion:1,state:"staging",instanceId:$instance,applicationIdentity:$application,boundDeviceIdentity:(if $bound == "" then null else $bound end),catalogId:$catalog,catalogIdentitySource:$identitySource,legacyRoot:$legacy,productRoot:$product,instanceStage:$instanceStage,catalogStage:$catalogStage}')"
+  fi
+  [[ -f "$apply_intent" && ! -L "$apply_intent" && "$(stat -c '%u:%h:%a' "$apply_intent")" == "$(id -u):1:600" ]] || exit 1
+  jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg identitySource "$catalog_identity_source" --arg legacy "$legacy_root" --arg product "$product_root" --arg instanceStage "$instance_stage" --arg catalogStage "$catalog_stage" '
+    .schemaVersion == 1 and .instanceId == $instance and .applicationIdentity == $application and
+    .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and .catalogIdentitySource == $identitySource and .legacyRoot == $legacy and
+    .productRoot == $product and .instanceStage == $instanceStage and .catalogStage == $catalogStage' "$apply_intent" >/dev/null || exit 1
+  if [[ -e "$config_snapshot" ]]; then revalidate_tree "$legacy_config" "$config_snapshot"; else capture_tree "$legacy_config" "$config_snapshot"; fi
+  if [[ -e "$state_snapshot" ]]; then revalidate_tree "$legacy_state" "$state_snapshot"; else capture_tree "$legacy_state" "$state_snapshot"; fi
+  if [[ -e "$catalog_snapshot" ]]; then revalidate_tree "$legacy_catalog" "$catalog_snapshot"; else capture_tree "$legacy_catalog" "$catalog_snapshot"; fi
+  if [[ -n "$bound_device_id" ]]; then
+    [[ -f "$legacy_config/camera-module.json" && -f "$legacy_config/secrets/CameraAgent__AgentId" && "$(<"$legacy_config/secrets/CameraAgent__AgentId")" == "$bound_device_id" ]] || { printf 'Preserved provisioning identity is not present in legacy configuration.\n' >&2; exit 1; }
+    module_identity="$(jq -r '.agentId' "$legacy_config/camera-module.json")"; [[ "$module_identity" == "$application_id" || "$module_identity" == "$bound_device_id" ]] || exit 1
+  fi
+  mkdir -m 700 -p -- "$product_root/cameraagents" "$product_root/catalogs"
+  if [[ ! -e "$instance_root" && ! -L "$instance_root" ]]; then
+    if [[ -d "$instance_stage" && ! -L "$instance_stage" ]] && { ! verify_copy "$legacy_config" "$instance_stage/config" || ! verify_copy "$legacy_state" "$instance_stage/state"; }; then
+      validate_instance_tree_for_removal "$instance_stage" "$product_root/cameraagents" partial || { printf 'Stale instance stage is unsafe.\n' >&2; exit 1; }
+      delete_instance_tree "$instance_stage"
+    fi
+    if [[ ! -e "$instance_stage" && ! -L "$instance_stage" ]]; then
+      mkdir -m 700 -- "$instance_stage"; cp -a -- "$legacy_config" "$instance_stage/config"
+      if [[ "${DEPLOY_MIGRATION_FAILPOINT:-}" == mid-copy-config ]]; then partial_delete_one "$instance_stage/config"; exit 75; fi
+      failpoint after-copy-config; cp -a -- "$legacy_state" "$instance_stage/state"
+    fi
+    verify_copy "$legacy_config" "$instance_stage/config" && verify_copy "$legacy_state" "$instance_stage/state" || { printf 'Staged instance state did not verify.\n' >&2; exit 1; }
+    publish_json "$instance_stage/instance-manifest.json" "$(jq -cn --arg instance "$instance_id" '{schemaVersion:1,product:"HVO.SkyMonitor",component:"cameraAgent",instanceId:$instance,creationProvenance:{migration:"singular-layout-v1"},applicationIdentityFile:"application-identity.json"}')"
+    publish_json "$instance_stage/application-identity.json" "$(jq -cn --arg configured "$application_id" --arg bound "$bound_device_id" '{schemaVersion:1,state:(if $bound == "" then "pre-provisioning" else "bound" end),configuredIdentity:$configured,boundIdentity:(if $bound == "" then null else $bound end)}')"
+    mv -T -- "$instance_stage" "$instance_root"; sync -f "$product_root/cameraagents"
+  fi
+  [[ -d "$instance_root" && ! -L "$instance_root" && ! -e "$instance_stage" ]] || exit 1
+  verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"; failpoint after-publish-instance
+  [[ -f "$manifest" && ! -L "$manifest" && -f "$binding" && ! -L "$binding" && "$(stat -c '%u:%h:%a' "$manifest")" == "$(id -u):1:600" && "$(stat -c '%u:%h:%a' "$binding")" == "$(id -u):1:600" ]] || exit 1
+  jq -e --arg instance "$instance_id" '.schemaVersion == 1 and .product == "HVO.SkyMonitor" and .component == "cameraAgent" and .instanceId == $instance and .creationProvenance == {migration:"singular-layout-v1"} and .applicationIdentityFile == "application-identity.json"' "$manifest" >/dev/null || exit 1
+  jq -e --arg configured "$application_id" --arg bound "$bound_device_id" '.schemaVersion == 1 and .configuredIdentity == $configured and .state == (if $bound == "" then "pre-provisioning" else "bound" end) and .boundIdentity == (if $bound == "" then null else $bound end)' "$binding" >/dev/null || exit 1
+  if [[ ! -e "$catalog_root" && ! -L "$catalog_root" ]]; then
+    if [[ -d "$catalog_stage" && ! -L "$catalog_stage" ]] && ! verify_copy "$legacy_catalog" "$catalog_stage"; then
+      validate_stage_root "$catalog_stage" "$product_root/catalogs" && validate_copy_subset "$catalog_stage" "$catalog_snapshot" ||
+        { printf 'Stale catalog stage is unsafe.\n' >&2; exit 1; }
+      delete_copy_subset "$catalog_stage" "$catalog_snapshot"
+    fi
+    if [[ ! -e "$catalog_stage" && ! -L "$catalog_stage" ]]; then cp -a -- "$legacy_catalog" "$catalog_stage"; failpoint after-copy-catalog; fi
+    verify_copy "$legacy_catalog" "$catalog_stage" || { printf 'Staged catalog did not verify.\n' >&2; exit 1; }
+    mv -T -- "$catalog_stage" "$catalog_root"; sync -f "$product_root/catalogs"
+  fi
+  [[ -d "$catalog_root" && ! -L "$catalog_root" && ! -e "$catalog_stage" ]] || exit 1
+  verify_copy "$legacy_catalog" "$catalog_root"
+  publish_json "$evidence" "$(jq -cn --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg identitySource "$catalog_identity_source" --arg legacy "$legacy_root" --arg product "$product_root" '{schemaVersion:2,status:"copied-and-verified",instanceId:$instance,applicationIdentity:$application,boundDeviceIdentity:(if $bound == "" then null else $bound end),catalogId:$catalog,catalogIdentitySource:$identitySource,legacyRoot:$legacy,productRoot:$product,legacyRetained:true}')"
+  ;;
+verify)
+  jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" '.schemaVersion == 2 and .instanceId == $instance and .applicationIdentity == $application and .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and (.status | IN("copied-and-verified","finalized-removal-pending","finalized"))' "$evidence" >/dev/null
+  if [[ -d "$legacy_config" ]]; then revalidate_tree "$legacy_config" "$config_snapshot"; verify_copy "$legacy_config" "$instance_root/config"; fi
+  if [[ -d "$legacy_state" ]]; then revalidate_tree "$legacy_state" "$state_snapshot"; verify_copy "$legacy_state" "$instance_root/state"; fi
+  if [[ -d "$legacy_catalog" ]]; then revalidate_tree "$legacy_catalog" "$catalog_snapshot"; verify_copy "$legacy_catalog" "$catalog_root"; fi
+  ;;
+rollback)
+  [[ -f "$apply_intent" && ! -L "$apply_intent" ]] || { printf 'Migration apply intent is missing.\n' >&2; exit 1; }
+  revalidate_tree "$legacy_config" "$config_snapshot"; revalidate_tree "$legacy_state" "$state_snapshot"; revalidate_tree "$legacy_catalog" "$catalog_snapshot"
+  if [[ -f "$evidence" && ! -L "$evidence" ]]; then jq -e '.schemaVersion == 2 and .status == "copied-and-verified" and .legacyRetained == true' "$evidence" >/dev/null || { printf 'Finalized migration cannot be rolled back.\n' >&2; exit 1; }; fi
+  if [[ -e "$instance_stage" || -L "$instance_stage" ]]; then validate_instance_tree_for_removal "$instance_stage" "$product_root/cameraagents" partial || exit 1; fi
+  if [[ -e "$instance_root" || -L "$instance_root" ]]; then
+    validate_instance_tree_for_removal "$instance_root" "$product_root/cameraagents" complete || exit 1
+    verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"
+  fi
+  if [[ -e "$catalog_stage" || -L "$catalog_stage" ]]; then validate_stage_root "$catalog_stage" "$product_root/catalogs" && validate_copy_subset "$catalog_stage" "$catalog_snapshot" || exit 1; fi
+  if [[ -e "$catalog_root" || -L "$catalog_root" ]]; then
+    [[ -d "$catalog_root" && ! -L "$catalog_root" ]] || exit 1
+    verify_copy "$legacy_catalog" "$catalog_root"; validate_copy_subset "$catalog_root" "$catalog_snapshot" || exit 1
+  fi
+  if [[ -e "$instance_stage" || -L "$instance_stage" ]]; then delete_instance_tree "$instance_stage"; fi
+  if [[ -e "$instance_root" || -L "$instance_root" ]]; then delete_instance_tree "$instance_root"; fi
+  if [[ -e "$catalog_stage" || -L "$catalog_stage" ]]; then delete_copy_subset "$catalog_stage" "$catalog_snapshot"; fi
+  if [[ -e "$catalog_root" || -L "$catalog_root" ]]; then delete_copy_subset "$catalog_root" "$catalog_snapshot"; fi
+  rm -f -- "$evidence" "$config_snapshot" "$state_snapshot" "$catalog_snapshot" "$apply_intent"
+  ;;
+finalize)
+  [[ -f "$cutover_evidence" && ! -L "$cutover_evidence" && "$(stat -c '%u:%h:%a' "$cutover_evidence")" == "$(id -u):1:600" ]] || { printf 'Owner-only cutover evidence is required for finalization.\n' >&2; exit 1; }
+  jq -e --arg instance "$instance_id" --arg application "$application_id" '(keys | sort) == (["applicationIdentity","artifactChecksumsVerified","captureSequenceAfter","captureSequenceBefore","dataProtectionVerified","healthVerified","imageIdentityVerified","instanceId","locationHistoryVerified","loginVerified","provisioningVerified","rollbackRehearsed","schemaVersion"] | sort) and .schemaVersion == 1 and .instanceId == $instance and .applicationIdentity == $application and all(.artifactChecksumsVerified,.dataProtectionVerified,.healthVerified,.imageIdentityVerified,.locationHistoryVerified,.loginVerified,.provisioningVerified,.rollbackRehearsed; . == true) and .captureSequenceBefore as $before | ($before | type == "number" and floor == . and . >= 0) and (.captureSequenceAfter | type == "number" and floor == . and . >= $before)' "$cutover_evidence" >/dev/null || { printf 'Cutover evidence is invalid or incomplete.\n' >&2; exit 1; }
+  jq -e --arg bound "$bound_device_id" '.schemaVersion == 2 and .boundDeviceIdentity == (if $bound == "" then null else $bound end) and (.status | IN("copied-and-verified","finalized-removal-pending","finalized"))' "$evidence" >/dev/null
+  migration_status="$(jq -r '.status' "$evidence")"
+  if [[ "$migration_status" == finalized ]]; then
+    for path in "$legacy_config" "$legacy_state" "$legacy_catalog" "$config_tomb" "$state_tomb" "$catalog_tomb"; do [[ ! -e "$path" && ! -L "$path" ]] || exit 1; done
+    printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"; exit 0
+  fi
+  if [[ ! -e "$intent" ]]; then
+    revalidate_tree "$legacy_config" "$config_snapshot"; revalidate_tree "$legacy_state" "$state_snapshot"; revalidate_tree "$legacy_catalog" "$catalog_snapshot"
+    verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"; verify_copy "$legacy_catalog" "$catalog_root"
+    publish_json "$intent" "$(jq -cn --arg instance "$instance_id" --arg c "$config_tomb" --arg s "$state_tomb" --arg k "$catalog_tomb" '{schemaVersion:1,state:"rename-pending",instanceId:$instance,tombstones:{config:$c,state:$s,catalog:$k}}')"
+  fi
+  jq -e --arg instance "$instance_id" --arg c "$config_tomb" --arg s "$state_tomb" --arg k "$catalog_tomb" '.schemaVersion == 1 and .instanceId == $instance and .tombstones == {config:$c,state:$s,catalog:$k}' "$intent" >/dev/null
+  if [[ "$migration_status" == copied-and-verified ]]; then
+    for spec in "config|$legacy_config|$config_tomb|$config_snapshot" "state|$legacy_state|$state_tomb|$state_snapshot" "catalog|$legacy_catalog|$catalog_tomb|$catalog_snapshot"; do
+      IFS='|' read -r label original tomb snapshot <<< "$spec"
+      if [[ -d "$original" && ! -L "$original" && ! -e "$tomb" && ! -L "$tomb" ]]; then revalidate_tree "$original" "$snapshot"; mv -T -- "$original" "$tomb"; sync -f "$(dirname -- "$original")"; fi
+      [[ ! -e "$original" && ! -L "$original" && -d "$tomb" && ! -L "$tomb" ]] || { printf 'Migration tombstone state is inconsistent.\n' >&2; exit 1; }
+      revalidate_tree "$tomb" "$snapshot"; failpoint "after-tombstone-$label"
+    done
+  else
+    for original in "$legacy_config" "$legacy_state" "$legacy_catalog"; do [[ ! -e "$original" && ! -L "$original" ]] || exit 1; done
+  fi
+  cutover_sha="$(sha256sum "$cutover_evidence" | cut -d' ' -f1)"
+  if [[ "$migration_status" == copied-and-verified ]]; then publish_json "$evidence" "$(jq --arg sha "$cutover_sha" '.status="finalized-removal-pending" | .legacyRetained=false | .cutoverEvidenceSha256=$sha' "$evidence")"; fi
+  failpoint after-finalized-evidence
+  for spec in "config|$config_tomb|$config_snapshot" "state|$state_tomb|$state_snapshot" "catalog|$catalog_tomb|$catalog_snapshot"; do
+    IFS='|' read -r label tomb snapshot <<< "$spec"
+    if [[ -e "$tomb" || -L "$tomb" ]]; then
+      validate_snapshot_subset "$tomb" "$snapshot"
+      if [[ "${DEPLOY_MIGRATION_FAILPOINT:-}" == "after-partial-delete-$label" ]]; then partial_delete_one "$tomb"; validate_snapshot_subset "$tomb" "$snapshot"; exit 75; fi
+      delete_snapshot_subset "$tomb" "$snapshot"; sync -f "$(dirname -- "$tomb")"
+    fi
+    [[ ! -e "$tomb" && ! -L "$tomb" ]] || exit 1; failpoint "after-remove-$label"
+  done
+  publish_json "$evidence" "$(jq '.status="finalized" | .legacyRetained=false | .tombstonesRemoved=true' "$evidence")"
+  ;;
+esac
+printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"

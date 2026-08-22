@@ -73,7 +73,7 @@ One command can build, bundle, and install:
 ```bash
 ./scripts/catalog/build-hyg-v42.sh \
   --source /secure-cache/hyg_v42.csv.gz \
-  --install-root /var/lib/hvo/data/catalog \
+  --install-root /var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
   ./artifacts/hyg-v42
 ```
 
@@ -99,9 +99,9 @@ mistyped, or non-pinned values are rejected at every level:
 
 ```json
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "package": { "kind": "production", "version": "hyg-v4.2-p3-s2-r1" },
-  "catalog": { "name": "HYG 4.2", "version": "4.2" },
+  "catalog": { "id": "hyg-v42-production", "name": "HYG 4.2", "version": "4.2" },
   "source": {
     "projectUrl": "https://codeberg.org/astronexus/hyg",
     "downloadUrl": "https://codeberg.org/astronexus/hyg.git/info/lfs/objects/5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601",
@@ -149,15 +149,21 @@ bundle and has no network or build code path:
 ```bash
 ./scripts/catalog:install install \
   /mnt/catalog-bundles/hyg-v4.2-p3-s2-r1.bundle \
-  /var/lib/hvo/data/catalog
+  /var/lib/hvo/skymonitor/catalogs/hyg-v42-production
 ```
 
-Configure each host with `HVO_RUNTIME_DATA_ROOT=/var/lib/hvo/data` and
-`Catalog:Root=/var/lib/hvo/data/catalog`; `/var/lib/hvo` must be a nonsymlink
-directory owned by the application operator so the shared operation lock can be
-created without changing parent permissions, and it must not be group- or
-world-writable. When `HVO_RUNTIME_DATA_ROOT` is supplied, the requested install
-root must be exactly its canonical `catalog` child. Configure
+The stable logical catalog ID for this specification is required as `catalog.id`
+in manifest version 2 and is `hyg-v42-production`. Install it at
+`/var/lib/hvo/skymonitor/catalogs/hyg-v42-production` and select that ID per
+application target as described in the
+[product-instance layout runbook](../runbooks/product-instance-layout.md).
+Inventory also pins package `version`, `schemaVersion`, and
+`preprocessingVersion`; deployment rejects disagreement in the source bundle,
+installed manifest, phase ledger, or active `current` selection. Resume validates
+package kind/version, catalog ID, schema/preprocessing versions, manifest database
+SHA-256/length/row count, and the actual database bytes and row count.
+The product root must be a nonsymlink and must not be group- or world-writable.
+Configure
 `Catalog:RequiredPackageKind=Production`. The resolver reads the active pointer
 and all identity, checksum, length, and provenance requirements from the strict
 manifest; there is no independently configurable database path or checksum.
@@ -184,11 +190,11 @@ before the transaction never changes `current`.
 Rollback validates the complete previous bundle before changing either pointer:
 
 ```bash
-./scripts/catalog:install rollback /var/lib/hvo/data/catalog
+./scripts/catalog:install rollback /var/lib/hvo/skymonitor/catalogs/hyg-v42-production
 ```
 
 The equivalent catalog-scoped command is
-`./scripts/catalog/rollback-hyg-v42.sh /var/lib/hvo/data/catalog`.
+`./scripts/catalog/rollback-hyg-v42.sh /var/lib/hvo/skymonitor/catalogs/hyg-v42-production`.
 
 On a normal rollback, `previous` becomes the displaced current version, allowing
 the operator to reverse the selection again. Do not modify a published version

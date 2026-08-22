@@ -15,6 +15,7 @@ public sealed class CatalogSnapshotHealthCheck : IHealthCheck
     public CatalogSnapshotHealthCheck(CatalogSnapshotResult snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        ValidateVersion(snapshot.CatalogId, nameof(snapshot.CatalogId), MaximumCatalogVersionLength);
         ValidateVersion(snapshot.CatalogVersion, nameof(snapshot.CatalogVersion), MaximumCatalogVersionLength);
         ValidateVersion(snapshot.SchemaVersion, nameof(snapshot.SchemaVersion), MaximumComponentVersionLength);
         ValidateVersion(snapshot.PreprocessingVersion, nameof(snapshot.PreprocessingVersion), MaximumComponentVersionLength);
@@ -30,6 +31,10 @@ public sealed class CatalogSnapshotHealthCheck : IHealthCheck
         var data = new ReadOnlyDictionary<string, object>(new Dictionary<string, object>(StringComparer.Ordinal)
         {
             ["Kind"] = snapshot.PackageKind.ToString(),
+            ["CatalogId"] = snapshot.CatalogId,
+            ["CatalogIdentitySource"] = snapshot.CatalogIdDerivedFromLegacyManifest
+                ? "derived-manifest-v1"
+                : "explicit-manifest-v2",
             ["CatalogVersion"] = snapshot.CatalogVersion,
             ["SchemaVersion"] = snapshot.SchemaVersion,
             ["PreprocessingVersion"] = snapshot.PreprocessingVersion,

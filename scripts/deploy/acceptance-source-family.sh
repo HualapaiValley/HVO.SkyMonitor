@@ -150,7 +150,7 @@ phase14_source_catalog_identity() {
     phase14_source_no_symlink_path "$root/versions" "$resolved" || return 1
     manifest="$resolved/manifest.json"
     phase14_source_no_symlink_path "$root/versions" "$manifest" && phase14_source_safe_catalog_file "$manifest" || return 1
-    jq -e '.manifestVersion == 1 and .package.kind == "production" and
+    jq -e '.manifestVersion == 2 and .catalog.id == "hyg-v42-production" and .package.kind == "production" and
       (.database.relativePath | type == "string" and test("^[A-Za-z0-9._/-]+$") and (startswith("/") | not)) and
       (.database.sha256 | test("^[0-9a-f]{64}$")) and
       (.database.length | numbers) > 0 and (.database.length | floor) == .database.length' "$manifest" >/dev/null || return 1

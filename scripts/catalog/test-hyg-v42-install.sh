@@ -3,6 +3,8 @@ set -euo pipefail
 umask 077
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/catalog/catalog-common.sh
+source "$SCRIPT_DIR/catalog-common.sh"
 readonly TEMPORARY_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/hvo-catalog-install-test.XXXXXX")"
 
 cleanup() {
@@ -150,5 +152,21 @@ assert_current "$INSTALL_ROOT" 1
 # Reinstalling the active local bundle simulates an offline restart/revalidation.
 "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null
 assert_current "$INSTALL_ROOT" 1
+
+if [[ -n "${HVO_LEGACY_CATALOG_BUNDLE:-}" ]]; then
+    legacy_root="$TEMPORARY_DIRECTORY/legacy-v1-install"
+    legacy_target="$legacy_root/versions/hyg-v4.2-p3-s2-r1"
+    mkdir -p "$legacy_root/versions"
+    cp -a "$HVO_LEGACY_CATALOG_BUNDLE" "$legacy_target"
+    ln -s versions/hyg-v4.2-p3-s2-r1 "$legacy_root/current"
+    legacy_manifest_sha="$(hyg_sha256 "$legacy_target/manifest.json")"
+    legacy_database_sha="$(hyg_sha256 "$legacy_target/hyg_v42.sqlite")"
+    "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$legacy_root" >/dev/null
+    assert_current "$legacy_root" 1
+    [[ "$(hyg_sha256 "$legacy_target/manifest.json")" == "$legacy_manifest_sha" ]]
+    [[ "$(hyg_sha256 "$legacy_target/hyg_v42.sqlite")" == "$legacy_database_sha" ]]
+    [[ "$(hyg_json_value "$legacy_target/manifest.json" '$.manifestVersion')" == 1 ]]
+    [[ "$(hyg_json_type "$legacy_target/manifest.json" '$.catalog.id')" == "" ]]
+fi
 
 printf 'Catalog production install, fault, restart, upgrade, and rollback checks passed.\n'

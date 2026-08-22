@@ -1,5 +1,6 @@
 services:
   cameraagent:
+    container_name: ${HVO_CONTAINER_NAME:?container name required}
     image: ${CAMERAAGENT_IMAGE:?digest reference required}
     environment:
       ASPNETCORE_ENVIRONMENT: Production
