@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+if ! declare -F hyg_resolve_catalog_identity >/dev/null; then
+    # shellcheck source=scripts/catalog/catalog-common.sh
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/catalog/catalog-common.sh"
+fi
+
 phase14_source_fail() {
     deploy_fail source-import "$1" "$2"
 }
@@ -141,8 +146,10 @@ phase14_source_run_issue211() {
       HVO_PHASE14_SOURCE_TREE="$PHASE14_PRODUCT_TREE" "$repo/scripts/test:cameraagent-standalone-211" >/dev/null
 }
 
-phase14_source_catalog_identity() {
-    local root="$1" current resolved manifest database relative expected_sha expected_length actual_sha actual_length
+phase14_source_catalog_inputs() {
+    local root="$1" expected_id="$2" expected_kind="$3" current resolved manifest database relative
+    local actual_id actual_sha actual_length package_version path
+    local -a payload_files
     current="$root/current"
     [[ -L "$current" ]] || return 1
     resolved="$(readlink -e -- "$current" 2>/dev/null)" || return 1
@@ -150,21 +157,36 @@ phase14_source_catalog_identity() {
     phase14_source_no_symlink_path "$root/versions" "$resolved" || return 1
     manifest="$resolved/manifest.json"
     phase14_source_no_symlink_path "$root/versions" "$manifest" && phase14_source_safe_catalog_file "$manifest" || return 1
-    jq -e '.manifestVersion == 1 and .package.kind == "production" and
-      (.database.relativePath | type == "string" and test("^[A-Za-z0-9._/-]+$") and (startswith("/") | not)) and
-      (.database.sha256 | test("^[0-9a-f]{64}$")) and
-      (.database.length | numbers) > 0 and (.database.length | floor) == .database.length' "$manifest" >/dev/null || return 1
-    relative="$(jq -r '.database.relativePath' "$manifest")"
+    hyg_validate_manifest_document "$manifest" || return 1
+    package_version="$(hyg_json_value "$manifest" '$.package.version')" || return 1
+    [[ "${resolved##*/}" == "$package_version" ]] || return 1
+    [[ "$(hyg_json_value "$manifest" '$.package.kind')" == "$expected_kind" ]] || return 1
+    if [[ "$expected_kind" == production ]]; then
+        payload_files=("$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE")
+    elif [[ "$expected_kind" == fixture ]]; then
+        payload_files=("$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE")
+    else
+        return 1
+    fi
+    for path in "${payload_files[@]}"; do
+        path="$resolved/$path"
+        phase14_source_no_symlink_path "$root/versions" "$path" && phase14_source_safe_catalog_file "$path" || return 1
+    done
+    actual_id="$(hyg_resolve_catalog_identity "$resolved")" || return 1
+    [[ "$actual_id" == "$expected_id" ]] || return 1
+    relative="$(hyg_json_value "$manifest" '$.database.relativePath')" || return 1
     phase14_source_safe_relative_path "$relative" || return 1
     database="$resolved/$relative"
     phase14_source_no_symlink_path "$root/versions" "$database" && phase14_source_safe_catalog_file "$database" || return 1
-    expected_sha="$(jq -r '.database.sha256' "$manifest")"; expected_length="$(jq -r '.database.length' "$manifest")"
     actual_sha="$(phase14_source_hash "$database")"; actual_length="$(stat -c %s -- "$database")"
-    [[ "$actual_sha" == "$expected_sha" && "$actual_length" == "$expected_length" ]] || return 1
     jq -cn --arg collectorImage "$PHASE14_COLLECTOR_IMAGE" --arg manifestSha256 "$(phase14_source_hash "$manifest")" \
       --arg databaseSha256 "$actual_sha" --argjson databaseByteLength "$actual_length" \
       '{collectorImage:$collectorImage,catalogManifestSha256:$manifestSha256,
         catalogDatabaseSha256:$databaseSha256,catalogDatabaseByteLength:$databaseByteLength}'
+}
+
+phase14_source_catalog_identity() {
+    phase14_source_catalog_inputs "$1" "$HYG_CATALOG_ID" production
 }
 
 phase14_source_validate_contract() {
@@ -323,7 +345,7 @@ phase14_source_collect() (
     project="$(jq -r '.[0].project' <<< "$acceptance_entries")"; method_id="$(phase14_source_method_id "$acceptance_fqn")"
     method="$input/$acceptance_family/$method_id"; fragments="$method/fragments"
     install -d -m 700 "$input/$acceptance_family" "$method" "$method/results" "$method/trial-results" "$fragments"
-    catalog_lock="$catalog_root/.install.lock"
+    catalog_lock="$catalog_root/.catalog.lock"
     [[ -f "$catalog_lock" && ! -L "$catalog_lock" ]] || { phase14_source_fail catalog-root unsafe-lock; return 1; }
     catalog_lock_metadata="$(stat -c '%u:%h:%a' -- "$catalog_lock" 2>/dev/null)" || return 1
     [[ "$catalog_lock_metadata" == "$(id -u):1:600" ]] || { phase14_source_fail catalog-root unsafe-lock; return 1; }

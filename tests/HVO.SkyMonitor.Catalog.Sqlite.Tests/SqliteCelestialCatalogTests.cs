@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 [TestClass]
+[DoNotParallelize]
 internal sealed class SqliteCelestialCatalogTests
 {
     private const string FixtureChecksum = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
@@ -206,6 +207,140 @@ internal sealed class SqliteCelestialCatalogTests
         finally
         {
             File.Delete(sidecar);
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void ConstructorRejectsHardLinkedDatabase()
+    {
+        var path = CopyFixture();
+        var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-external-{Guid.NewGuid():N}");
+        CatalogSnapshotResolverTests.CreateHardLink(path, externalPath);
+        try
+        {
+            var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
+                _ = new SqliteCelestialCatalog(CreateOptions(path, Checksum(path))));
+
+            StringAssert.Contains(exception.Message, "hard-link", StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(externalPath);
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void ConstructorConsumesAuthenticatedDatabaseAcrossAbaSqliteOpenReplacement()
+    {
+        var path = CopyFixture();
+        var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-original-{Guid.NewGuid():N}");
+        var originalChecksum = Checksum(path);
+        var swapped = false;
+        var replacementBlocked = false;
+        CatalogSnapshotResolver.ValidationTestHook = (hookPath, point) =>
+        {
+            if (!string.Equals(hookPath, path, StringComparison.Ordinal))
+            {
+                return;
+            }
+            if (point == CatalogSnapshotValidationPoint.BeforeSqliteOpen)
+            {
+                try
+                {
+                    File.Move(path, externalPath);
+                    swapped = true;
+                    File.WriteAllBytes(path, new byte[checked((int)new FileInfo(externalPath).Length)]);
+                }
+                catch (IOException) when (OperatingSystem.IsWindows())
+                {
+                    replacementBlocked = true;
+                }
+            }
+            else if (point == CatalogSnapshotValidationPoint.AfterSqliteLoad && swapped)
+            {
+                File.Delete(path);
+                File.Move(externalPath, path);
+                swapped = false;
+            }
+        };
+        try
+        {
+            var catalog = new SqliteCelestialCatalog(CreateOptions(path, originalChecksum));
+
+            Assert.AreEqual(9, catalog.ObjectCount);
+            Assert.AreEqual(OperatingSystem.IsWindows(), replacementBlocked);
+            Assert.AreEqual(originalChecksum, Checksum(path));
+        }
+        finally
+        {
+            CatalogSnapshotResolver.ValidationTestHook = null;
+            if (swapped)
+            {
+                File.Delete(path);
+                File.Move(externalPath, path);
+            }
+            else
+            {
+                File.Delete(externalPath);
+            }
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void ConstructorNeverCachesValidRowsMutatedAndRestoredDuringSqliteLoad()
+    {
+        var path = CopyFixture();
+        var originalBytes = File.ReadAllBytes(path);
+        var expectedDisplayName = CatalogSnapshotResolverTests.ReadDisplayName(path);
+        var modifiedBytes = CatalogSnapshotResolverTests.CreateModifiedFixtureBytes();
+        var mutationAttempted = false;
+        var mutationSucceeded = false;
+        var sourceMutated = false;
+        CatalogSnapshotResolver.ValidationTestHook = (hookPath, point) =>
+        {
+            if (!string.Equals(hookPath, path, StringComparison.Ordinal))
+            {
+                return;
+            }
+            if (point == CatalogSnapshotValidationPoint.BeforeSqliteOpen)
+            {
+                mutationAttempted = true;
+                try
+                {
+                    CatalogSnapshotResolverTests.OverwriteFile(path, modifiedBytes);
+                    mutationSucceeded = true;
+                    sourceMutated = true;
+                }
+                catch (IOException) when (OperatingSystem.IsWindows())
+                {
+                }
+            }
+            else if (point == CatalogSnapshotValidationPoint.AfterSqliteLoad && sourceMutated)
+            {
+                CatalogSnapshotResolverTests.OverwriteFile(path, originalBytes);
+                sourceMutated = false;
+            }
+        };
+        try
+        {
+            var catalog = new SqliteCelestialCatalog(CreateOptions(path, Checksum(path)));
+
+            Assert.IsTrue(mutationAttempted);
+            Assert.AreEqual(!OperatingSystem.IsWindows(), mutationSucceeded);
+            Assert.AreEqual(expectedDisplayName,
+                catalog.Query(new CatalogQuery(1, 100)).Single(item => item.Id == "32263").DisplayName);
+        }
+        finally
+        {
+            CatalogSnapshotResolver.ValidationTestHook = null;
+            if (sourceMutated)
+            {
+                CatalogSnapshotResolverTests.OverwriteFile(path, originalBytes);
+            }
+            CollectionAssert.AreEqual(originalBytes, File.ReadAllBytes(path));
             File.Delete(path);
         }
     }

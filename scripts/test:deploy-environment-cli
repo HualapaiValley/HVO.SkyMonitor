@@ -23,6 +23,16 @@ actual_shards="$($HARNESS --list-shards)"
     exit 1
 }
 
+# No arguments must stay in-process with SELECTED_SHARD=all rather than entering the shard coordinator.
+if DEPLOY_TEST_EARLY_FAIL_SHARD=all "$HARNESS" > "$WORK_ROOT/serial-dispatch.log" 2>&1; then
+    printf 'Deployment harness accepted an injected serial early failure.\n' >&2
+    exit 1
+else
+    status=$?
+fi
+[[ "$status" -eq 97 ]]
+grep -Fqx 'Injected early failure for deployment contract shard all.' "$WORK_ROOT/serial-dispatch.log"
+
 for arguments in '--unknown' '--list-shards extra' '--parallel extra' '--shard' '--shard unknown' '--shard preflight extra' '--shard preflight --shard preflight'; do
     read -r -a fields <<< "$arguments"
     if "$HARNESS" "${fields[@]}" > "$WORK_ROOT/invalid.log" 2>&1; then

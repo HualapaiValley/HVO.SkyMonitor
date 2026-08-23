@@ -31,7 +31,7 @@ public static class SkyMonitorObservabilityExtensions
     private const string AlivenessEndpointPath = "/alive";
     private static readonly HashSet<string> CatalogHealthDataKeys = new(StringComparer.Ordinal)
     {
-        "Kind", "CatalogVersion", "SchemaVersion", "PreprocessingVersion", "RowCount"
+        "Kind", "CatalogId", "CatalogIdentitySource", "CatalogVersion", "SchemaVersion", "PreprocessingVersion", "RowCount"
     };
     private static readonly HashSet<string> RawIngressHealthDataKeys = new(StringComparer.Ordinal)
     {

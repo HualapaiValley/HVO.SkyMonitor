@@ -1,7 +1,8 @@
 {
-  "schemaVersion": 7,
+  "schemaVersion": 8,
   "environment": "observatory-production",
   "installationId": "observatory-main",
+  "productRoot": "/var/lib/hvo/skymonitor",
   "source": {
     "revision": "0000000000000000000000000000000000000000",
     "dirtyDisposition": "require-clean"
@@ -13,13 +14,18 @@
   "observatory": { "name": "Main Observatory", "latitudeDegrees": 19.5362, "longitudeDegrees": -155.5763, "elevationMeters": 3397, "timeZoneId": "Pacific/Honolulu" },
   "logicHost": {
     "name": "logic-01",
+    "friendlyName": "Primary LogicHost",
+    "instanceId": "11111111-1111-4111-8111-111111111111",
+    "applicationIdentity": "observatory-main-logic",
+    "catalogId": "hyg-v42-production",
+    "cookieName": "hvo.skymonitor.11111111111141118111111111111111",
     "sshHost": "hvo@logic-01.example.net",
     "dockerContext": "logic-01",
     "expectedArchitecture": "amd64",
     "expectedHostName": "logic-01",
     "expectedHostIdentity": "11111111111111111111111111111111",
     "expectedDockerDaemonIdentity": "LOGICDAEMON0001",
-    "runtimeRoot": "/srv/hvo/skymonitor/logic-01",
+    "runtimeRoot": "/var/lib/hvo/skymonitor/logichosts/11111111-1111-4111-8111-111111111111",
     "runtimeOwner": "hvo",
     "internalEndpoint": "http://127.0.0.1:5174",
     "publicEndpoint": "https://sky.example.net:5174",
@@ -29,6 +35,10 @@
   "cameraAgents": [{
     "name": "camera-east",
     "friendlyName": "East All-Sky Camera",
+    "instanceId": "22222222-2222-4222-8222-222222222222",
+    "applicationIdentity": "camera-east-device",
+    "catalogId": "hyg-v42-production",
+    "cookieName": "hvo.skymonitor.22222222222242228222222222222222",
     "ownerEmail": "owner-east@cameraagent.local",
     "sshHost": "hvo@camera-east.example.net",
     "dockerContext": "camera-east",
@@ -36,7 +46,7 @@
     "expectedHostName": "camera-east",
     "expectedHostIdentity": "22222222222222222222222222222222",
     "expectedDockerDaemonIdentity": "CAMERADAEMON0001",
-    "runtimeRoot": "/srv/hvo/skymonitor/camera-east",
+    "runtimeRoot": "/var/lib/hvo/skymonitor/cameraagents/22222222-2222-4222-8222-222222222222",
     "runtimeOwner": "hvo",
     "internalEndpoint": "http://127.0.0.1:5130",
     "publicEndpoint": "https://camera-east.example.net:5130",
@@ -52,13 +62,20 @@
     "port": 1433,
     "fromTargets": ["logic-01"]
   }],
-  "catalog": {
+  "catalogs": [{
+    "catalogId": "hyg-v42-production",
+    "displayName": "HYG 4.2 production",
     "kind": "production",
     "version": "hyg-v4.2-p3-s2-r1",
+    "schemaVersion": "2",
+    "preprocessingVersion": "3",
     "sha256": "b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2",
     "length": 9302016,
-    "rowCount": 119625
-  },
+    "rowCount": 119625,
+    "bundlePath": "/home/operator/catalogs/hyg-v4.2-p3-s2-r1",
+    "installRoot": "/var/lib/hvo/skymonitor/catalogs/hyg-v42-production",
+    "allowFixture": false
+  }],
   "images": {
     "distributionMode": "registry",
     "artifactRoot": null,
@@ -76,11 +93,6 @@
     "cameraAgent": { "repository": "registry.example.net/hvo/cameraagent" }
   },
   "deployment": {
-    "catalog": {
-      "bundlePath": "/home/operator/catalogs/hyg-v4.2-p3-s2-r1",
-      "installRoot": "/srv/hvo/catalogs",
-      "allowFixture": false
-    },
     "services": {
       "mode": "existing",
       "sql": { "host": "sql.example.net", "port": 1433, "database": "hvo-main", "adminUser": "sa", "adminSecretReference": "SQLSERVER_PASSWORD", "initializerUser": "HVO.LogicHost.Migrator", "initializerSecretReference": "SQL_INIT_PASSWORD", "initializerConnectionReference": "SQL_INIT_CONNECTION", "runtimeUser": "HVO.LogicHost.Runtime", "runtimeSecretReference": "SQL_RUNTIME_PASSWORD", "runtimeConnectionReference": "SQL_RUNTIME_CONNECTION" },

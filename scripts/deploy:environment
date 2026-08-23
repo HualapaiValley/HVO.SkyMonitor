@@ -10,6 +10,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
 # shellcheck source=scripts/deploy/common.sh
 . "$SCRIPT_DIR/deploy/common.sh"
+# shellcheck source=scripts/deploy/product-layout.sh
+. "$SCRIPT_DIR/deploy/product-layout.sh"
 # shellcheck source=scripts/deploy/inventory.sh
 . "$SCRIPT_DIR/deploy/inventory.sh"
 # shellcheck source=scripts/deploy/transport.sh
@@ -103,6 +105,7 @@ deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install
 [[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke && "$phase" != acceptance-run && "$phase" != transient-confirm ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
 deploy_validate_inventory "$inventory" "$mode"
+deploy_validate_product_layout "$inventory" "$mode"
 deploy_validate_secret_references "$inventory"
 expected_revision="$(jq -r '.source.revision' "$inventory")"
 actual_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"

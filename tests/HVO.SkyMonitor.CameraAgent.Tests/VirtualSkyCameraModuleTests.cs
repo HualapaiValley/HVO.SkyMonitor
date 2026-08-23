@@ -137,6 +137,7 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:CaptureDistribution:UploadEnabled"));
         Assert.IsFalse(deployment.GetValue<bool>("CameraAgent:EnvironmentalDelivery:Enabled"));
         Assert.AreEqual("Production", deployment["Catalog:RequiredPackageKind"]);
+        Assert.AreEqual("hyg-v42-production", deployment["Catalog:RequiredCatalogId"]);
         Assert.AreEqual("/var/lib/hvo/data/catalog", deployment["Catalog:Root"]);
         Assert.AreEqual(
             deployment["CameraAgent:RawIngressRoot"],

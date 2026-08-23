@@ -11,7 +11,11 @@ SOURCE_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 . "$SCRIPT_DIR/deploy/acceptance-source-family.sh"
 
 TEMP_DIR="$(mktemp -d -t hvo-phase14-source-import.XXXXXX)"
-trap 'rm -rf "$TEMP_DIR"' EXIT
+cleanup() {
+    chmod -R u+w "$TEMP_DIR" 2>/dev/null || true
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
 trap 'printf "Phase 14 source-import contract failed near line %s.\n" "$LINENO" >&2' ERR
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 expect_rejected() { local message="$1"; shift; if "$@" >"$TEMP_DIR/rejection.log" 2>&1; then fail "$message"; fi; }
@@ -168,16 +172,75 @@ phase14_source_run_issue211() {
 
 COLLECT_OUTPUT="$TEMP_DIR/collected-output"; CATALOG="$TEMP_DIR/catalog"
 COLLECTOR_IMAGE="collector.invalid/otel@sha256:$(printf 'a%.0s' {1..64})"
-install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG" "$CATALOG/versions" "$CATALOG/versions/catalog-v1"
-install -m 600 /dev/null "$CATALOG/.install.lock"
-printf 'catalog\n' > "$CATALOG/versions/catalog-v1/catalog.sqlite"
-catalog_sha="$(phase14_source_hash "$CATALOG/versions/catalog-v1/catalog.sqlite")"
-jq -S -n --arg sha "$catalog_sha" --argjson length "$(stat -c %s "$CATALOG/versions/catalog-v1/catalog.sqlite")" \
-  '{manifestVersion:1,package:{kind:"production",version:"catalog-v1"},database:{relativePath:"catalog.sqlite",sha256:$sha,length:$length}}' \
-  > "$CATALOG/versions/catalog-v1/manifest.json"
-chmod 400 "$CATALOG/versions/catalog-v1/catalog.sqlite" "$CATALOG/versions/catalog-v1/manifest.json"
-ln -s versions/catalog-v1 "$CATALOG/current"
 PHASE14_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
+
+install_catalog_bundle() {
+    local root="$1" bundle="$2" version
+    version="$(jq -er '.package.version' "$bundle/manifest.json")"
+    install -d -m 700 "$root" "$root/versions"
+    install -m 600 /dev/null "$root/.catalog.lock"
+    cp -a -- "$bundle" "$root/versions/$version"
+    ln -s "versions/$version" "$root/current"
+}
+
+if [[ -n "${HVO_PHASE14_PRODUCTION_CATALOG_BUNDLE:-}" ]]; then
+    exact_v2="$(readlink -e -- "$HVO_PHASE14_PRODUCTION_CATALOG_BUNDLE")" || fail 'Exact v2 production bundle is unavailable.'
+    exact_v1="$(readlink -e -- "${HVO_PHASE14_LEGACY_PRODUCTION_CATALOG_BUNDLE:-}")" || fail 'Exact v1 production bundle is unavailable.'
+    for exact_spec in "v2|$exact_v2" "v1|$exact_v1"; do
+        IFS='|' read -r exact_label exact_bundle <<< "$exact_spec"
+        exact_root="$TEMP_DIR/exact-$exact_label"
+        install_catalog_bundle "$exact_root" "$exact_bundle"
+        phase14_source_catalog_identity "$exact_root" >/dev/null || fail "The canonical production $exact_label bundle was rejected."
+        external="$TEMP_DIR/external-$exact_label"; cp "$exact_bundle/hyg_v42.sqlite" "$external"; chmod 400 "$external"
+        hardlink_root="$TEMP_DIR/exact-$exact_label-hardlink"; install_catalog_bundle "$hardlink_root" "$exact_bundle"
+        hardlink_database="$(readlink -e -- "$hardlink_root/current")/hyg_v42.sqlite"; chmod 755 "$(dirname "$hardlink_database")"; rm "$hardlink_database"; ln "$external" "$hardlink_database"; chmod 555 "$(dirname "$hardlink_database")"
+        external_before="$(stat -c '%d:%i:%u:%h:%a:%s' "$external")|$(phase14_source_hash "$external")"
+        if phase14_source_catalog_identity "$hardlink_root" >/dev/null 2>&1; then fail "A hardlinked production $exact_label database was accepted."; fi
+        [[ "$(stat -c '%d:%i:%u:%h:%a:%s' "$external")|$(phase14_source_hash "$external")" == "$external_before" ]] ||
+          fail "Production $exact_label validation mutated external bytes."
+        for mutation in source serializer license attribution topology database-bytes database-schema database-rows package catalog duplicate; do
+            mutation_root="$TEMP_DIR/exact-$exact_label-$mutation"; install_catalog_bundle "$mutation_root" "$exact_bundle"
+            mutation_bundle="$(readlink -e -- "$mutation_root/current")"; mutation_manifest="$mutation_bundle/manifest.json"
+            chmod 755 "$mutation_bundle"; chmod 644 "$mutation_manifest"
+            case "$mutation" in
+              source) jq '.source.oid=("0" * 64)' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+              serializer) jq '.serializer.version="0.0.0"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+              license) jq '.license.identifier="invalid"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+              attribution) chmod 644 "$mutation_bundle/ATTRIBUTION-HYG.md"; printf 'changed\n' >> "$mutation_bundle/ATTRIBUTION-HYG.md"; cp "$mutation_manifest" "$mutation_manifest.changed" ;;
+              topology) jq '.topology.sha256=("0" * 64)' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+              database-bytes) chmod 644 "$mutation_bundle/hyg_v42.sqlite"; printf 'changed\n' >> "$mutation_bundle/hyg_v42.sqlite"; cp "$mutation_manifest" "$mutation_manifest.changed" ;;
+              database-schema) chmod 644 "$mutation_bundle/hyg_v42.sqlite"; sqlite3 "$mutation_bundle/hyg_v42.sqlite" 'CREATE TABLE phase14_invalid(value TEXT);'; cp "$mutation_manifest" "$mutation_manifest.changed" ;;
+              database-rows) jq '.database.rowCount += 1' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+              package) jq '.package.version="hyg-v4.2-p3-s2-r2"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+              catalog) jq '.catalog.id="different-production"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+              duplicate) compact="$(jq -c . "$mutation_manifest")"; printf '{"manifestVersion":1,%s\n' "${compact#\{}" > "$mutation_manifest.changed" ;;
+            esac
+            mv -T -- "$mutation_manifest.changed" "$mutation_manifest"; chmod 400 "$mutation_bundle"/*; chmod 555 "$mutation_bundle"
+            if phase14_source_catalog_identity "$mutation_root" >/dev/null 2>&1; then fail "Production $exact_label validation accepted $mutation mutation."; fi
+        done
+    done
+    case "${HVO_PHASE14_CATALOG_MANIFEST_VERSION:-2}" in
+      1) selected_bundle="$exact_v1" ;;
+      2) selected_bundle="$exact_v2" ;;
+      *) fail 'HVO_PHASE14_CATALOG_MANIFEST_VERSION must be 1 or 2.' ;;
+    esac
+    install_catalog_bundle "$CATALOG" "$selected_bundle"
+else
+    CATALOG_VERSION="$HYG_FIXTURE_PACKAGE_VERSION"
+    install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG" "$CATALOG/versions" "$CATALOG/versions/$CATALOG_VERSION"
+    install -m 600 /dev/null "$CATALOG/.catalog.lock"
+    cp "$SOURCE_REPO_ROOT/tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" "$CATALOG/versions/$CATALOG_VERSION/hyg_v42.sqlite"
+    jq -S -n --arg sha "$HYG_FIXTURE_DATABASE_SHA256" --argjson length "$HYG_FIXTURE_DATABASE_LENGTH" --argjson rows "$HYG_FIXTURE_EXPECTED_ROWS" \
+      '{manifestVersion:2,package:{kind:"fixture",version:"hyg-v42-fixture-1"},catalog:{id:"hyg-v42-fixture",name:"HYG bright-star test fixture",version:"4.2-fixture.1"},
+        schemaVersion:"2",preprocessingVersion:"3",database:{relativePath:"hyg_v42.sqlite",sha256:$sha,length:$length,rowCount:$rows}}' \
+      > "$CATALOG/versions/$CATALOG_VERSION/manifest.json"
+    chmod 400 "$CATALOG/versions/$CATALOG_VERSION/hyg_v42.sqlite" "$CATALOG/versions/$CATALOG_VERSION/manifest.json"
+    chmod 555 "$CATALOG/versions/$CATALOG_VERSION"
+    ln -s "versions/$CATALOG_VERSION" "$CATALOG/current"
+    phase14_source_catalog_identity() { phase14_source_catalog_inputs "$1" "$HYG_FIXTURE_CATALOG_ID" fixture; }
+fi
+install -d -m 700 "$COLLECT_OUTPUT"
+catalog_sha="$(phase14_source_hash "$(readlink -e -- "$CATALOG/current")/hyg_v42.sqlite")"
 PHASE14_ACCEPTANCE_INPUTS="$(phase14_source_catalog_identity "$CATALOG")"
 export PHASE14_ACCEPTANCE_INPUTS
 export HVO_DERIVATIVE_PERF_SMOKE=1 HVO_DERIVATIVE_P5_DIAGNOSTIC_TRIAL=1 \
@@ -230,7 +293,8 @@ phase14_source_collect "$REPO_ROOT" "$REPEAT_OUTPUT" "$harness_revision" "$CATAL
   fail 'Repeated collection retained auxiliary issue-170 evidence.'
 [[ -e "$REPEAT_OUTPUT/source-import/source-import-index.json" ]] || fail 'Repeated collection did not publish.'
 MUTATED_CATALOG_OUTPUT="$TEMP_DIR/mutated-catalog"; install -d -m 700 "$MUTATED_CATALOG_OUTPUT"
-cp -a "$CATALOG" "$TEMP_DIR/mutable-catalog"; chmod 600 "$TEMP_DIR/mutable-catalog/versions/catalog-v1/manifest.json"
+cp -a "$CATALOG" "$TEMP_DIR/mutable-catalog"
+chmod 600 "$(readlink -e -- "$TEMP_DIR/mutable-catalog/current")/manifest.json"
 CATALOG="$TEMP_DIR/mutable-catalog"
 export PHASE14_TEST_MUTATE_CATALOG_AFTER_ACCEPTANCE=true
 expect_rejected 'A catalog identity change during acceptance was accepted.' phase14_source_collect \

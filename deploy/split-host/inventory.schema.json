@@ -5,11 +5,12 @@
   "title": "HVO.SkyMonitor split-host preflight inventory",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "environment", "installationId", "source", "secretSource", "observatory", "logicHost", "cameraAgents", "sharedServices", "serviceEndpoints", "catalog", "images", "deployment"],
+  "required": ["schemaVersion", "environment", "installationId", "productRoot", "source", "secretSource", "observatory", "logicHost", "cameraAgents", "sharedServices", "serviceEndpoints", "catalogs", "images", "deployment"],
   "properties": {
-    "schemaVersion": { "const": 7 },
+    "schemaVersion": { "const": 8 },
     "environment": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
     "installationId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "productRoot": { "$ref": "#/$defs/runtimeRoot" },
     "source": {
       "type": "object",
       "additionalProperties": false,
@@ -61,17 +62,8 @@
       "type": "array",
       "items": { "$ref": "#/$defs/serviceEndpoint" }
     },
-    "catalog": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "version", "sha256", "length", "rowCount"],
-      "properties": {
-        "kind": { "enum": ["production", "fixture"] },
-        "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
-        "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
-        "length": { "type": "integer", "minimum": 1 },
-        "rowCount": { "type": "integer", "minimum": 1 }
-      }
+    "catalogs": {
+      "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/catalogInstallation" }
     },
     "images": {
       "type": "object",
@@ -102,17 +94,8 @@
     "deployment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["catalog", "services", "resources", "certificates", "automation", "deviceBootstrap", "transient", "workload", "secretMappings", "limits"],
+      "required": ["services", "resources", "certificates", "automation", "deviceBootstrap", "transient", "workload", "secretMappings", "limits"],
       "properties": {
-        "catalog": {
-          "type": "object", "additionalProperties": false,
-          "required": ["bundlePath", "installRoot", "allowFixture"],
-          "properties": {
-            "bundlePath": { "type": "string", "pattern": "^/" },
-            "installRoot": { "type": "string", "pattern": "^/" },
-            "allowFixture": { "type": "boolean" }
-          }
-        },
         "services": { "$ref": "#/$defs/deploymentServices" },
         "resources": {
           "type": "object", "additionalProperties": false,
@@ -193,8 +176,22 @@
   },
   "$defs": {
     "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
     "runtimeRoot": { "type": "string", "pattern": "^/(?![.]{1,2}(?:/|$))(?!.*(?:/)[.]{1,2}(?:/|$))(?!.*//)(?!.*[\\\\,\"])(?!.*[\\x00-\\x1F\\x7F]).+$" },
     "nullableSecretReference": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }] },
+    "catalogInstallation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["catalogId", "displayName", "kind", "version", "schemaVersion", "preprocessingVersion", "sha256", "length", "rowCount", "bundlePath", "installRoot", "allowFixture"],
+      "properties": {
+        "catalogId": { "$ref": "#/$defs/name" }, "displayName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "kind": { "enum": ["production", "fixture"] }, "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "schemaVersion": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "preprocessingVersion": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }, "length": { "type": "integer", "minimum": 1 },
+        "rowCount": { "type": "integer", "minimum": 1 }, "bundlePath": { "type": "string", "pattern": "^/" },
+        "installRoot": { "$ref": "#/$defs/runtimeRoot" }, "allowFixture": { "type": "boolean" }
+      }
+    },
     "secretMapping": {
       "type": "object", "additionalProperties": false, "required": ["reference", "key"],
       "properties": {
@@ -254,9 +251,14 @@
     "applicationTarget": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner", "internalEndpoint", "publicEndpoint", "trustedProxyAddresses", "ports"],
+      "required": ["name", "friendlyName", "instanceId", "applicationIdentity", "catalogId", "cookieName", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner", "internalEndpoint", "publicEndpoint", "trustedProxyAddresses", "ports"],
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
+        "friendlyName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "instanceId": { "$ref": "#/$defs/uuid" },
+        "applicationIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "catalogId": { "$ref": "#/$defs/name" },
+        "cookieName": { "type": "string", "pattern": "^hvo[.]skymonitor[.][0-9a-f]{32}$" },
         "sshHost": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,254}$" },
         "dockerContext": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
         "expectedArchitecture": { "enum": ["amd64", "arm64"] },
@@ -285,10 +287,14 @@
     },
     "cameraAgentTarget": {
       "type": "object", "additionalProperties": false,
-      "required": ["name", "friendlyName", "ownerEmail", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner", "internalEndpoint", "publicEndpoint", "trustedProxyAddresses", "ports", "moduleConfigPath", "ownerPasswordSecretReference"],
+      "required": ["name", "friendlyName", "instanceId", "applicationIdentity", "catalogId", "cookieName", "ownerEmail", "sshHost", "dockerContext", "expectedArchitecture", "expectedHostName", "expectedHostIdentity", "expectedDockerDaemonIdentity", "runtimeRoot", "runtimeOwner", "internalEndpoint", "publicEndpoint", "trustedProxyAddresses", "ports", "moduleConfigPath", "ownerPasswordSecretReference"],
       "properties": {
         "name": { "$ref": "#/$defs/name" },
         "friendlyName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "instanceId": { "$ref": "#/$defs/uuid" },
+        "applicationIdentity": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "catalogId": { "$ref": "#/$defs/name" },
+        "cookieName": { "type": "string", "pattern": "^hvo[.]skymonitor[.][0-9a-f]{32}$" },
         "ownerEmail": { "type": "string", "format": "email", "maxLength": 254 },
         "sshHost": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,254}$" },
         "dockerContext": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },

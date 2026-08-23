@@ -147,7 +147,7 @@ deploy_run_acceptance_campaign() {
     DEPLOY_CAMPAIGN_TARGET="$target"; DEPLOY_CAMPAIGN_LOGIC="$logic"
     device="$(jq -r '.targets[0].deviceId' "$state_dir/measure-ledger.json")"; profile="$(jq -c '.targets[0].profile' "$state_dir/measure-ledger.json")"
     interval=25; deadline=$(( $(date +%s) + 900 ))
-    logic_context="$(jq -r '.dockerContext' <<< "$logic")"; logic_project="$(jq -r '.deployment.resources.project' "$inventory")-logic"
+    logic_context="$(jq -r '.dockerContext' <<< "$logic")"; logic_project="$(deploy_compose_project "$inventory" "$logic")"
     logic_env="$state_dir/up-rendered/$(jq -r '.name' <<< "$logic").env"
     DEPLOY_CAMPAIGN_LOGIC_PROJECT="$logic_project"; DEPLOY_CAMPAIGN_LOGIC_ENV="$logic_env"
     function deploy_measure_publish() { deploy_acceptance_campaign_runtime_publish; }

@@ -73,7 +73,7 @@ One command can build, bundle, and install:
 ```bash
 ./scripts/catalog/build-hyg-v42.sh \
   --source /secure-cache/hyg_v42.csv.gz \
-  --install-root /var/lib/hvo/data/catalog \
+  --install-root /var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
   ./artifacts/hyg-v42
 ```
 
@@ -81,7 +81,7 @@ One command can build, bundle, and install:
 
 The self-contained bundle contains only:
 
-- `manifest.json`, the UTF-8 JSON v1 manifest consumed by both the installer and
+- `manifest.json`, the UTF-8 JSON v2 manifest consumed by both the installer and
   `CatalogSnapshotResolver`.
 - `hyg_v42.sqlite`, the production database.
 - `LICENSE-HYG.md`, the retained upstream license notice.
@@ -99,9 +99,9 @@ mistyped, or non-pinned values are rejected at every level:
 
 ```json
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "package": { "kind": "production", "version": "hyg-v4.2-p3-s2-r1" },
-  "catalog": { "name": "HYG 4.2", "version": "4.2" },
+  "catalog": { "id": "hyg-v42-production", "name": "HYG 4.2", "version": "4.2" },
   "source": {
     "projectUrl": "https://codeberg.org/astronexus/hyg",
     "downloadUrl": "https://codeberg.org/astronexus/hyg.git/info/lfs/objects/5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601",
@@ -149,15 +149,21 @@ bundle and has no network or build code path:
 ```bash
 ./scripts/catalog:install install \
   /mnt/catalog-bundles/hyg-v4.2-p3-s2-r1.bundle \
-  /var/lib/hvo/data/catalog
+  /var/lib/hvo/skymonitor/catalogs/hyg-v42-production
 ```
 
-Configure each host with `HVO_RUNTIME_DATA_ROOT=/var/lib/hvo/data` and
-`Catalog:Root=/var/lib/hvo/data/catalog`; `/var/lib/hvo` must be a nonsymlink
-directory owned by the application operator so the shared operation lock can be
-created without changing parent permissions, and it must not be group- or
-world-writable. When `HVO_RUNTIME_DATA_ROOT` is supplied, the requested install
-root must be exactly its canonical `catalog` child. Configure
+The stable logical catalog ID for this specification is required as `catalog.id`
+in manifest version 2 and is `hyg-v42-production`. Install it at
+`/var/lib/hvo/skymonitor/catalogs/hyg-v42-production` and select that ID per
+application target as described in the
+[product-instance layout runbook](../runbooks/product-instance-layout.md).
+Inventory also pins package `version`, `schemaVersion`, and
+`preprocessingVersion`; deployment rejects disagreement in the source bundle,
+installed manifest, phase ledger, or active `current` selection. Resume validates
+package kind/version, catalog ID, schema/preprocessing versions, manifest database
+SHA-256/length/row count, and the actual database bytes and row count.
+The product root must be a nonsymlink and must not be group- or world-writable.
+Configure `Catalog:RequiredCatalogId=hyg-v42-production` and
 `Catalog:RequiredPackageKind=Production`. The resolver reads the active pointer
 and all identity, checksum, length, and provenance requirements from the strict
 manifest; there is no independently configurable database path or checksum.
@@ -166,8 +172,14 @@ loaded immutable catalog.
 
 The installer first takes the application-state operation lock shared with
 start, rebuild, reset, backup, and restore, then takes its catalog-exclusive
-`.install.lock`. This prevents catalog pointer mutation while restore preserves
-the target catalog. It removes abandoned
+`.catalog.lock`, shared by production and fixture publishers. This prevents catalog pointer mutation while restore preserves
+the target catalog. The lock is an owner-only, single-link regular file and its
+device/inode identity is revalidated against the held descriptor. Under that
+lock, `.catalog-lineage.json` permanently binds the root to its catalog ID,
+package kind, and schema/preprocessing lineage. A pre-binding installation is
+adopted only after its complete active snapshot validates; an empty root is
+bound before candidate publication. Conflicting IDs, package kinds, or lineage
+fail closed. It removes abandoned
 `.staging.*` directories, and validates the local bundle before staging. It
 checks every retained payload length and hash, the pinned production identity,
 SQLite integrity/user version/schema/index/metadata, exactly 119,625 rows, Sol
@@ -181,14 +193,21 @@ the recorded targets and finishes the old-to-new transition before new work. A
 valid displaced active target is retained as `previous`. Candidate failure
 before the transaction never changes `current`.
 
+Fixture publication uses the same root lock and lineage binding. Its durable
+pointer transaction authenticates both the candidate and displaced active
+snapshot, publishes the displaced target as `previous`, then publishes
+`current`. Restart recovery independently revalidates both targets before
+completing either pointer move; reactivating the already-current version leaves
+`previous` unchanged.
+
 Rollback validates the complete previous bundle before changing either pointer:
 
 ```bash
-./scripts/catalog:install rollback /var/lib/hvo/data/catalog
+./scripts/catalog:install rollback /var/lib/hvo/skymonitor/catalogs/hyg-v42-production
 ```
 
 The equivalent catalog-scoped command is
-`./scripts/catalog/rollback-hyg-v42.sh /var/lib/hvo/data/catalog`.
+`./scripts/catalog/rollback-hyg-v42.sh /var/lib/hvo/skymonitor/catalogs/hyg-v42-production`.
 
 On a normal rollback, `previous` becomes the displaced current version, allowing
 the operator to reverse the selection again. Do not modify a published version

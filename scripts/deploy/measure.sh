@@ -115,7 +115,7 @@ deploy_measure_snapshot() {
     status="$(deploy_bootstrap_request "$target" GET "$endpoint/api/v1/operations/summary" "" "" "$cookies" \
       "$target_remote/$label-operations.json" "$private_root/$name-$label-operations.json")" || return 1
     [[ "$status" == 200 ]] || return 1
-    context="$(jq -r '.dockerContext' <<< "$target")"; project="$(jq -r '.deployment.resources.project' "$inventory")-$name"; env_file="$state_dir/up-rendered/$name.env"
+    context="$(jq -r '.dockerContext' <<< "$target")"; project="$(deploy_compose_project "$inventory" "$target")"; env_file="$state_dir/up-rendered/$name.env"
     stats="$(deploy_transport_compose_stats "$context" "$project" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent)" || return 1
     deploy_publish_json "$private_root/$name-$label-stats.json" "$stats"
     deploy_measure_validate_snapshot "$private_root/$name-$label-continuity.json" "$private_root/$name-$label-operations.json" \
@@ -360,7 +360,7 @@ deploy_measure_read_prior_state() {
     local name target_root active_config backup operations schedule status configuration_sha configuration_file_sha capture_state capture_version
     local schedule_revision schedule_version
     name="$(jq -r '.name' <<< "$target")"; target_root="$(jq -r '.runtimeRoot' <<< "$target")"
-    active_config="$target_root/.hvo-deploy/up-$run_id/camera-module.json"
+    active_config="$target_root/config/camera-module.json"
     backup="$private_root/$name-prior-camera-module.json"
     deploy_transport_fetch_private_file "$(jq -r '.sshHost' <<< "$target")" "$active_config" "$backup" || {
         deploy_fail measure "$name" prior-profile-fetch-failed
@@ -426,7 +426,7 @@ deploy_measure_restore_target() {
     target_remote="$target_root/.hvo-deploy/measure-$execution_run_id"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"
     prior="$(jq -c --arg target "$name" '.targets[] | select(.target == $target) | .priorState' <<< "$DEPLOY_MEASURE_JSON")"
     backup="$DEPLOY_MEASURE_PRIVATE_ROOT/$name-prior-camera-module.json"
-    active_config="$target_root/.hvo-deploy/up-$(jq -r '.runId' <<< "$DEPLOY_MEASURE_JSON")/camera-module.json"
+    active_config="$target_root/config/camera-module.json"
     canonical_file="$DEPLOY_MEASURE_RENDER_ROOT/$name-$(jq -r '.workload' <<< "$DEPLOY_MEASURE_JSON")-camera-module.json"
     [[ -f "$canonical_file" && ! -L "$canonical_file" ]] || return 1
     canonical_sha="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .profile.configSha256 // empty' <<< "$DEPLOY_MEASURE_JSON")"
@@ -473,7 +473,7 @@ deploy_measure_restore_target() {
         deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         deploy_transport_copy_private_file "$backup" "$(jq -r '.sshHost' <<< "$target")" "$active_config" || return 1
         deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
-        context="$(jq -r '.dockerContext' <<< "$target")"; project="$(jq -r '.deployment.resources.project' "$DEPLOY_MEASURE_INVENTORY")-$name"
+        context="$(jq -r '.dockerContext' <<< "$target")"; project="$(deploy_compose_project "$DEPLOY_MEASURE_INVENTORY" "$target")"
         env_file="$(dirname "$DEPLOY_MEASURE_LEDGER")/up-rendered/$name.env"
         deploy_up_compose_mutation "$target" "$context" "$project" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" \
           up -d --force-recreate cameraagent || return 1

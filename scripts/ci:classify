@@ -76,10 +76,10 @@ is_deployment_path() {
     scripts/ci:classify | scripts/ci:require | scripts/test:ci-classification)
       return 0
       ;;
-    scripts/deploy:environment | scripts/deploy/*)
+    scripts/deploy:environment | scripts/deploy:migrate-product-layout | scripts/deploy/*)
       return 0
       ;;
-    scripts/test:deploy-environment | scripts/test:deploy-environment-cli)
+    scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:product-layout)
       return 0
       ;;
     scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
