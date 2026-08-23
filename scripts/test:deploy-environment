@@ -2967,6 +2967,34 @@ done
 chmod 755 "$catalog_parent"
 rm -rf "$install_root"
 
+for hostile_fixture_lock in symlink hardlink mode owner; do
+  rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
+    "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
+  rm -rf "$install_root"; mkdir -m 700 "$install_root"
+  fixture_lock="$install_root/.fixture-install.lock"
+  case "$hostile_fixture_lock" in
+    symlink) printf 'preserve\n' > "$TEMP_DIR/fixture-lock-target"; ln -s "$TEMP_DIR/fixture-lock-target" "$fixture_lock" ;;
+    hardlink) printf 'lock\n' > "$TEMP_DIR/fixture-lock-hardlink"; chmod 600 "$TEMP_DIR/fixture-lock-hardlink"; ln "$TEMP_DIR/fixture-lock-hardlink" "$fixture_lock" ;;
+    mode) printf 'lock\n' > "$fixture_lock"; chmod 640 "$fixture_lock" ;;
+    owner) printf 'lock\n' > "$fixture_lock"; chmod 600 "$fixture_lock" ;;
+  esac
+  if [[ "$hostile_fixture_lock" == owner ]]; then
+    cp "$FAKE_REMOTE_UID_MAP" "$TEMP_DIR/fixture-lock-uid-map"
+    printf '%s\t99999\n' "$fixture_lock" >> "$FAKE_REMOTE_UID_MAP"
+    if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-hostile-lock-$hostile_fixture_lock.log" 2>&1; then
+      mv "$TEMP_DIR/fixture-lock-uid-map" "$FAKE_REMOTE_UID_MAP"
+      fail "Catalog accepted hostile fixture install lock: $hostile_fixture_lock"
+    fi
+    mv "$TEMP_DIR/fixture-lock-uid-map" "$FAKE_REMOTE_UID_MAP"
+  elif run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-hostile-lock-$hostile_fixture_lock.log" 2>&1; then
+    fail "Catalog accepted hostile fixture install lock: $hostile_fixture_lock"
+  fi
+  test ! -e "$install_root/current" && test ! -e "$install_root/.fixture-pointer-transaction"
+  [[ "$hostile_fixture_lock" != symlink ]] || test "$(<"$TEMP_DIR/fixture-lock-target")" = preserve
+  rm -f "$fixture_lock" "$TEMP_DIR/fixture-lock-target" "$TEMP_DIR/fixture-lock-hardlink"
+done
+rm -rf "$install_root"
+
 # A runtime-owned 0755 catalog parent is safe; activation preserves the old pointer before intent and reconciles on restart.
 test "$(stat -c %a "$catalog_parent")" = 755
 for fixture_boundary in after-candidate-publication after-pointer-transaction after-current-pointer; do
@@ -2988,6 +3016,68 @@ for fixture_boundary in after-candidate-publication after-pointer-transaction af
   test "$(readlink "$install_root/current")" = versions/fixture-v1
   test ! -e "$install_root/.fixture-pointer-transaction"
 done
+
+make_fixture_transport_stage() {
+  local stage_root="$1" package_version="$2"
+  mkdir -m 700 -p "$stage_root/bundle" "$stage_root/scripts/catalog"
+  cp "$bundle/hyg_v42.sqlite" "$stage_root/bundle/hyg_v42.sqlite"
+  jq --arg version "$package_version" '.package.version=$version' "$TEMP_DIR/fixture-manifest.valid" > "$stage_root/bundle/manifest.json"
+  cp "$REPO_ROOT/scripts/catalog/catalog-common.sh" "$stage_root/scripts/catalog/catalog-common.sh"
+}
+
+run_fixture_transport_install() {
+  local stage_root="$1" target_root="$2" package_version="$3" output="$4"
+  (
+    source "$REPO_ROOT/scripts/deploy/transport.sh"
+    PATH="$BIN:$PATH" deploy_transport_catalog_install logic@example "$stage_root" "$target_root" test-fixture fixture \
+      "$package_version" 2 3 "$catalog_sha" "$catalog_length" 9 > "$output"
+  )
+}
+
+wait_for_fixture_lock() {
+  local lock_path="$1" process_id="$2" attempt
+  for ((attempt=0; attempt<100; attempt++)); do
+    kill -0 "$process_id" 2>/dev/null || return 1
+    if [[ -f "$lock_path" ]] && ! flock -n "$lock_path" true; then return 0; fi
+    sleep 0.05
+  done
+  return 1
+}
+
+concurrent_root="$TEMP_DIR/remote/concurrent-fixture-catalog"
+same_stage="$TEMP_DIR/concurrent-stage-same"
+make_fixture_transport_stage "$same_stage" fixture-v1
+rm -rf "$concurrent_root"; mkdir -m 700 "$concurrent_root"
+HVO_FIXTURE_CATALOG_TEST_MODE=true HVO_FIXTURE_CATALOG_TEST_LOCK_HOLD_SECONDS=2 \
+  run_fixture_transport_install "$same_stage" "$concurrent_root" fixture-v1 "$TEMP_DIR/concurrent-same-first.out" &
+same_first_pid=$!
+wait_for_fixture_lock "$concurrent_root/.fixture-install.lock" "$same_first_pid" || fail 'Same-version fixture publisher did not acquire its install lock.'
+run_fixture_transport_install "$same_stage" "$concurrent_root" fixture-v1 "$TEMP_DIR/concurrent-same-second.out" &
+same_second_pid=$!
+wait "$same_first_pid"; wait "$same_second_pid"
+test "$(<"$TEMP_DIR/concurrent-same-first.out")" = $'installed\tversions/fixture-v1\t'"$catalog_sha"
+test "$(<"$TEMP_DIR/concurrent-same-second.out")" = $'installed\tversions/fixture-v1\t'"$catalog_sha"
+test "$(readlink "$concurrent_root/current")" = versions/fixture-v1
+test ! -e "$concurrent_root/.fixture-pointer-transaction"
+
+first_stage="$TEMP_DIR/concurrent-stage-v1"
+second_stage="$TEMP_DIR/concurrent-stage-v2"
+make_fixture_transport_stage "$first_stage" fixture-v1
+make_fixture_transport_stage "$second_stage" fixture-v2
+chmod -R u+w "$concurrent_root"; rm -rf "$concurrent_root"; mkdir -m 700 "$concurrent_root"
+HVO_FIXTURE_CATALOG_TEST_MODE=true HVO_FIXTURE_CATALOG_TEST_LOCK_HOLD_SECONDS=2 \
+  run_fixture_transport_install "$first_stage" "$concurrent_root" fixture-v1 "$TEMP_DIR/concurrent-v1.out" &
+first_publisher_pid=$!
+wait_for_fixture_lock "$concurrent_root/.fixture-install.lock" "$first_publisher_pid" || fail 'First different-version fixture publisher did not acquire its install lock.'
+run_fixture_transport_install "$second_stage" "$concurrent_root" fixture-v2 "$TEMP_DIR/concurrent-v2.out" &
+second_publisher_pid=$!
+wait "$first_publisher_pid"; wait "$second_publisher_pid"
+test "$(<"$TEMP_DIR/concurrent-v1.out")" = $'installed\tversions/fixture-v1\t'"$catalog_sha"
+test "$(<"$TEMP_DIR/concurrent-v2.out")" = $'installed\tversions/fixture-v2\t'"$catalog_sha"
+test "$(readlink "$concurrent_root/current")" = versions/fixture-v2
+test -d "$concurrent_root/versions/fixture-v1" && test -d "$concurrent_root/versions/fixture-v2"
+test ! -e "$concurrent_root/.fixture-pointer-transaction"
+
 rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
   "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
 chmod -R u+w "$install_root" 2>/dev/null || true

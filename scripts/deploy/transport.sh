@@ -521,6 +521,7 @@ else
     hyg_fixture_safe_mutable_directory "$install_root" || exit 97
     sync -f "$install_parent"
   fi
+  hyg_fixture_acquire_install_lock "$install_root" || exit 97
   if [[ -e "$install_root/versions" || -L "$install_root/versions" ]]; then
     hyg_fixture_safe_mutable_directory "$install_root/versions" || exit 97
   else
@@ -592,6 +593,9 @@ stage=$1; install_root=$2; catalog_id=$3; kind=$4; expected_version=$5; schema_v
 # shellcheck disable=SC1091
 source "$stage/scripts/catalog/catalog-common.sh"
 [[ -L "$install_root/current" ]] || exit 90
+if [[ "$kind" == fixture ]]; then
+  hyg_fixture_acquire_install_lock "$install_root" || exit 92
+fi
 current=$(readlink "$install_root/current")
 [[ "$current" == "versions/$expected_version" ]] || exit 91
 database="$install_root/$current/hyg_v42.sqlite"

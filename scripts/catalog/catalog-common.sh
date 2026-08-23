@@ -362,6 +362,35 @@ hyg_fixture_safe_mutable_directory() {
     (( (8#$mode & 0022) == 0 ))
 }
 
+hyg_fixture_acquire_install_lock() {
+    local install_root="$1"
+    local lock_path="$install_root/.fixture-install.lock"
+    local install_parent
+    local hold_seconds="${HVO_FIXTURE_CATALOG_TEST_LOCK_HOLD_SECONDS:-}"
+    install_parent="$(dirname -- "$install_root")"
+    [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
+       -d "$install_parent" && ! -L "$install_parent" ]] || return 1
+    hyg_fixture_validate_ancestor_chain "$install_parent" &&
+        hyg_fixture_safe_mutable_directory "$install_parent" &&
+        hyg_fixture_safe_mutable_directory "$install_root" || return 1
+    if [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
+        (set -o noclobber; umask 077; : > "$lock_path") 2>/dev/null || true
+    fi
+    [[ -f "$lock_path" && ! -L "$lock_path" &&
+       "$(stat -c %u -- "$lock_path")" == "$(id -u)" &&
+       "$(stat -c '%h:%a' -- "$lock_path")" == "1:600" ]] || return 1
+    exec {HYG_FIXTURE_INSTALL_LOCK_FD}<>"$lock_path" || return 1
+    flock -x "$HYG_FIXTURE_INSTALL_LOCK_FD" || return 1
+    [[ -f "$lock_path" && ! -L "$lock_path" &&
+       "$(stat -c %u -- "$lock_path")" == "$(id -u)" &&
+       "$(stat -c '%h:%a' -- "$lock_path")" == "1:600" &&
+       "$(stat -Lc '%d:%i' -- "$lock_path")" == "$(stat -Lc '%d:%i' -- "/proc/$$/fd/$HYG_FIXTURE_INSTALL_LOCK_FD")" ]] || return 1
+    if [[ -n "$hold_seconds" ]]; then
+        [[ "${HVO_FIXTURE_CATALOG_TEST_MODE:-}" == true && "$hold_seconds" =~ ^[1-9]$ ]] || return 1
+        sleep "$hold_seconds"
+    fi
+}
+
 hyg_fixture_validate_ancestor_chain() {
     local path="$1"
     local current=/ component owner mode

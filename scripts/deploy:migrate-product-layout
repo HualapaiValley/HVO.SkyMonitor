@@ -307,6 +307,30 @@ validate_migration_filesystem_state() {
   *) return 1 ;;
   esac
 }
+validate_finalize_intent() {
+  validate_metadata_file "$intent" && jq -e --arg instance "$instance_id" --arg c "$config_tomb" --arg s "$state_tomb" --arg k "$catalog_tomb" '
+    (keys | sort) == (["instanceId","schemaVersion","state","tombstones"] | sort) and
+    .schemaVersion == 1 and .state == "rename-pending" and .instanceId == $instance and
+    (.tombstones | keys | sort) == (["catalog","config","state"] | sort) and .tombstones == {config:$c,state:$s,catalog:$k}' "$intent" >/dev/null
+}
+validate_finalize_filesystem_state() {
+  local status spec original tomb snapshot
+  status="$(jq -r '.status' "$evidence")"
+  if [[ "$status" != copied-and-verified ]]; then
+    validate_migration_filesystem_state
+    return
+  fi
+  for spec in "$legacy_config|$config_tomb|$config_snapshot" "$legacy_state|$state_tomb|$state_snapshot" "$legacy_catalog|$catalog_tomb|$catalog_snapshot"; do
+    IFS='|' read -r original tomb snapshot <<< "$spec"
+    if [[ -d "$original" && ! -L "$original" && ! -e "$tomb" && ! -L "$tomb" ]]; then
+      revalidate_tree "$original" "$snapshot" || return 1
+    elif [[ ! -e "$original" && ! -L "$original" && -d "$tomb" && ! -L "$tomb" ]]; then
+      revalidate_tree "$tomb" "$snapshot" || return 1
+    else
+      return 1
+    fi
+  done
+}
 verify_migration_destination() {
   local catalog_manifest catalog_bundle catalog_identity catalog_identity_source
   validate_instance_tree_for_removal "$instance_root" "$product_root/cameraagents" complete || return 1
@@ -351,8 +375,9 @@ apply)
   [[ "$catalog_identity" == "$catalog_id" ]] || { printf 'Legacy catalog manifest identity mismatch.\n' >&2; exit 1; }
   if [[ -e "$evidence" || -L "$evidence" ]]; then
     validate_rollback_evidence "$catalog_identity_source" || exit 1
-    verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"; verify_copy "$legacy_catalog" "$catalog_root"
-    [[ -f "$manifest" && ! -L "$manifest" && -f "$binding" && ! -L "$binding" && "$(stat -c '%u:%h:%a' "$manifest")" == "$(id -u):1:600" && "$(stat -c '%u:%h:%a' "$binding")" == "$(id -u):1:600" ]] || exit 1
+    validate_metadata_file "$config_snapshot" && validate_metadata_file "$state_snapshot" &&
+      validate_metadata_file "$catalog_snapshot" || exit 1
+    validate_migration_filesystem_state && verify_migration_destination || exit 1
     printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"; exit 0
   fi
   if [[ ! -e "$apply_intent" && ! -L "$apply_intent" ]]; then
@@ -491,15 +516,14 @@ finalize)
     printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"; exit 0
   fi
   if [[ ! -e "$intent" && ! -L "$intent" ]]; then
-    revalidate_tree "$legacy_config" "$config_snapshot"; revalidate_tree "$legacy_state" "$state_snapshot"; revalidate_tree "$legacy_catalog" "$catalog_snapshot"
-    verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"; verify_copy "$legacy_catalog" "$catalog_root"
+    [[ "$migration_status" == copied-and-verified ]] || exit 1
+    validate_migration_filesystem_state && verify_migration_destination || exit 1
     publish_json "$intent" "$(jq -cn --arg instance "$instance_id" --arg c "$config_tomb" --arg s "$state_tomb" --arg k "$catalog_tomb" '{schemaVersion:1,state:"rename-pending",instanceId:$instance,tombstones:{config:$c,state:$s,catalog:$k}}')"
+  else
+    validate_finalize_intent || exit 1
+    validate_finalize_filesystem_state && verify_migration_destination || exit 1
   fi
-  validate_metadata_file "$intent" || exit 1
-  jq -e --arg instance "$instance_id" --arg c "$config_tomb" --arg s "$state_tomb" --arg k "$catalog_tomb" '
-    (keys | sort) == (["instanceId","schemaVersion","state","tombstones"] | sort) and
-    .schemaVersion == 1 and .state == "rename-pending" and .instanceId == $instance and
-    (.tombstones | keys | sort) == (["catalog","config","state"] | sort) and .tombstones == {config:$c,state:$s,catalog:$k}' "$intent" >/dev/null
+  validate_finalize_intent || exit 1
   if [[ "$migration_status" == copied-and-verified ]]; then
     for spec in "config|$legacy_config|$config_tomb|$config_snapshot" "state|$legacy_state|$state_tomb|$state_snapshot" "catalog|$legacy_catalog|$catalog_tomb|$catalog_snapshot"; do
       IFS='|' read -r label original tomb snapshot <<< "$spec"

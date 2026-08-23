@@ -205,6 +205,29 @@ test "$(readlink "$migrated/catalogs/hyg-v42-production/current")" = versions/v1
 jq -e --arg instance "$instance" '.schemaVersion == 2 and .status == "copied-and-verified" and .legacyRetained == true and .instanceId == $instance' "$evidence" >/dev/null
 jq -e --arg instance "$instance" '.component == "cameraAgent" and .instanceId == $instance and .applicationIdentityFile == "application-identity.json" and (has("applicationIdentity") | not)' "$migrated/cameraagents/$instance/instance-manifest.json" >/dev/null
 jq -e '.state == "pre-provisioning" and .configuredIdentity == "agent-legacy" and .boundIdentity == null' "$migrated/cameraagents/$instance/application-identity.json" >/dev/null
+identity_manifest="$migrated/cameraagents/$instance/instance-manifest.json"
+identity_binding="$migrated/cameraagents/$instance/application-identity.json"
+cp "$identity_manifest" "$TEMP_DIR/instance-manifest.valid"
+cp "$identity_binding" "$TEMP_DIR/application-identity.valid"
+for apply_identity_drift in manifest binding; do
+  evidence_sha_before="$(sha256sum "$evidence" | cut -d' ' -f1)"
+  if [[ "$apply_identity_drift" == manifest ]]; then
+    jq '.instanceId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"' "$TEMP_DIR/instance-manifest.valid" > "$identity_manifest.changed"
+    mv "$identity_manifest.changed" "$identity_manifest"
+  else
+    jq '.configuredIdentity="corrupt"' "$TEMP_DIR/application-identity.valid" > "$identity_binding.changed"
+    mv "$identity_binding.changed" "$identity_binding"
+  fi
+  chmod 600 "$identity_manifest" "$identity_binding"
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then
+    printf 'Repeated apply accepted corrupt %s identity.\n' "$apply_identity_drift" >&2; exit 106
+  fi
+  test "$(sha256sum "$evidence" | cut -d' ' -f1)" = "$evidence_sha_before"
+  test -d "$legacy/config/cameraagent"; test -d "$legacy/data/agent"; test -d "$legacy/data/catalog"
+  cp "$TEMP_DIR/instance-manifest.valid" "$identity_manifest"
+  cp "$TEMP_DIR/application-identity.valid" "$identity_binding"
+  chmod 600 "$identity_manifest" "$identity_binding"
+done
 cp "$evidence" "$evidence.valid"; jq '.unexpected=true' "$evidence.valid" > "$evidence"; chmod 600 "$evidence"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
 mv "$evidence.valid" "$evidence"; chmod 600 "$evidence"
@@ -232,6 +255,26 @@ jq -n --arg instance "$instance" '{schemaVersion:1,instanceId:$instance,applicat
 chmod 600 "$cutover"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]/hyg-v42-production/alternate-catalog}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 103; fi
 test -d "$legacy/config/cameraagent"; test -d "$legacy/data/agent"; test -d "$legacy/data/catalog"
+for finalize_identity_drift in manifest binding; do
+  evidence_sha_before="$(sha256sum "$evidence" | cut -d' ' -f1)"
+  if [[ "$finalize_identity_drift" == manifest ]]; then
+    jq '.instanceId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"' "$TEMP_DIR/instance-manifest.valid" > "$identity_manifest.changed"
+    mv "$identity_manifest.changed" "$identity_manifest"
+  else
+    jq '.configuredIdentity="corrupt"' "$TEMP_DIR/application-identity.valid" > "$identity_binding.changed"
+    mv "$identity_binding.changed" "$identity_binding"
+  fi
+  chmod 600 "$identity_manifest" "$identity_binding"
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then
+    printf 'First finalize accepted corrupt %s identity.\n' "$finalize_identity_drift" >&2; exit 107
+  fi
+  test "$(sha256sum "$evidence" | cut -d' ' -f1)" = "$evidence_sha_before"
+  test ! -e "$evidence.finalize-intent.json"
+  test -d "$legacy/config/cameraagent"; test -d "$legacy/data/agent"; test -d "$legacy/data/catalog"
+  cp "$TEMP_DIR/instance-manifest.valid" "$identity_manifest"
+  cp "$TEMP_DIR/application-identity.valid" "$identity_binding"
+  chmod 600 "$identity_manifest" "$identity_binding"
+done
 if DEPLOY_MIGRATION_FAILPOINT=after-tombstone-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 91; fi
 test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent"; test -d "$legacy/data/catalog"
 if DEPLOY_MIGRATION_FAILPOINT=after-partial-delete-state "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 92; fi
