@@ -742,11 +742,17 @@ parent=$1; run_id=$2; catalog_id=$3
    "$run_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && "$catalog_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || exit 90
 [[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%a' -- "$parent")" == "$(id -u):700" ]] || exit 91
 parent_device="$(stat -c %d -- "$parent")"
-safe_remove() {
+safe_remove() (
   local root=$1 boundary=${2:-catalog-remnant-cleanup-final} path path_parent mode root_identity paths_file map_identity
   local map_fd read_fd attempt
   local -A identities=()
   local -a entries=()
+  cleanup_map() {
+    [[ -z "${paths_file:-}" ]] || rm -f -- "$paths_file"
+    [[ -z "${read_fd:-}" ]] || exec {read_fd}<&-
+    [[ -z "${map_fd:-}" ]] || exec {map_fd}>&-
+  }
+  trap cleanup_map EXIT
   [[ -d "$root" && ! -L "$root" &&
      "$(stat -c '%u:%d' -- "$root")" == "$(id -u):$parent_device" ]] || return 1
   mode="$(stat -c %a -- "$root")"; (( (8#$mode & 0022) == 0 )) || return 1
@@ -765,8 +771,10 @@ safe_remove() {
   exec {read_fd}<"$paths_file" || return 1
   [[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$read_fd")" ]] || return 1
   rm -f -- "$paths_file" || return 1
+  paths_file=''
   find -P "$root" -xdev -depth -mindepth 1 -print0 > "/proc/$BASHPID/fd/$map_fd" || return 1
   exec {map_fd}>&-
+  map_fd=''
   while IFS= read -r -d '' path; do
     [[ "$(stat -c %d -- "$path")" == "$parent_device" ]] || return 1
     if [[ -d "$path" && ! -L "$path" ]]; then
@@ -781,6 +789,7 @@ safe_remove() {
     entries+=("$path")
   done <&"$read_fd"
   exec {read_fd}<&-
+  read_fd=''
   if [[ "${HVO_CATALOG_TEST_MODE:-}" == true && "${HVO_CATALOG_TEST_LOCK_BARRIER:-}" == "$boundary" ]]; then
     [[ -n "${HVO_CATALOG_TEST_LOCK_MARKER:-}" ]] || return 1
     printf '%s\n' "$BASHPID" > "$HVO_CATALOG_TEST_LOCK_MARKER"
@@ -801,7 +810,7 @@ safe_remove() {
   done
   [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$root")" == "$root_identity" && -d "$root" && ! -L "$root" ]] || return 1
   rmdir -- "$root"
-}
+)
 shopt -s nullglob dotglob
 remnants=("$parent/.catalog-transaction-$run_id-$catalog_id."* "$parent/.catalog-stage-$run_id-$catalog_id."*)
 shopt -u nullglob dotglob
@@ -879,6 +888,12 @@ device="$(stat -c %d -- "$parent")"
 [[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%d' -- "$stage")" == "$(id -u):$device" ]] || exit 92
 stage_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$stage")" || exit 93
 paths_file=''; map_fd=''; read_fd=''
+cleanup_map() {
+  [[ -z "${paths_file:-}" ]] || rm -f -- "$paths_file"
+  [[ -z "${read_fd:-}" ]] || exec {read_fd}<&-
+  [[ -z "${map_fd:-}" ]] || exec {map_fd}>&-
+}
+trap cleanup_map EXIT
 declare -A identities=()
 declare -a entries=()
 identities["$stage"]="$stage_identity"
@@ -894,8 +909,10 @@ map_identity="$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$map_fd")"
 exec {read_fd}<"$paths_file" || exit 93
 [[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$read_fd")" ]] || exit 93
 rm -f -- "$paths_file" || exit 93
+paths_file=''
 find -P "$stage" -xdev -depth -mindepth 1 -print0 > "/proc/$BASHPID/fd/$map_fd" || exit 93
 exec {map_fd}>&-
+map_fd=''
 while IFS= read -r -d '' path; do
   [[ "$(stat -c %d -- "$path")" == "$device" ]] || exit 93
   if [[ -d "$path" && ! -L "$path" ]]; then
@@ -910,6 +927,7 @@ while IFS= read -r -d '' path; do
   entries+=("$path")
 done <&"$read_fd"
 exec {read_fd}<&-
+read_fd=''
 if [[ "${HVO_CATALOG_TEST_MODE:-}" == true && "${HVO_CATALOG_TEST_LOCK_BARRIER:-}" == catalog-stage-cleanup-final ]]; then
   [[ -n "${HVO_CATALOG_TEST_LOCK_MARKER:-}" ]] || exit 93
   printf '%s\n' "$BASHPID" > "$HVO_CATALOG_TEST_LOCK_MARKER"
