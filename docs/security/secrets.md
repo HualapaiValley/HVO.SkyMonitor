@@ -84,8 +84,8 @@ project for LogicHost keys.
 | `DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret` | Fleet-scoped client included in bootstrap responses | User Secrets or environment variables |
 | `CentralIdentity:ClientCredentials:ClientSecret` | CameraAgent outbound client-credentials mode | Imported encrypted device state, User Secrets, or environment variables |
 | `CentralIdentity:ApiKey:Key` | CameraAgent outbound API-key mode | Imported encrypted device state, User Secrets, or environment variables |
-| `CAMERA_AGENT_ADMIN_PASSWORD` / `LocalIdentity:AdminPassword` | Configuration-seeded local site owner | Ignored `.env` or CameraAgent User Secrets |
-| Split-host owner API key and per-agent owner passwords | LogicHost owner automation and normal local Identity login | Schema-v6 owner-only `secretSource`; each temporary path is bound to the full correlated target identity, remote password is deleted after login, final cookie/header/envelope cleanup verifies absence and is phase-fatal on failure, failure traps retry cleanup best-effort, and none enter evidence |
+| `CAMERA_AGENT_ADMIN_PASSWORD` / `LocalIdentity:AdminPassword` or `AdminPasswordFile` | One-time temporary credential for initial local site-owner seeding and verification | Ignored `.env`, CameraAgent User Secrets, or an owner-only deployment file; remove runtime authority after durable seeding |
+| Split-host owner API key and per-agent owner passwords | LogicHost owner automation and temporary local Identity login | Schema-v6 owner-only `secretSource`; current automation stages credentials for its existing workflow but does not yet perform the #415 password-authority transition, first-login replacement, or correlated bootstrap-file deletion |
 | `CentralIdentity:LocalFallback:AccessCodeHash` | Reserved option; no runtime fallback handler is implemented | Do not configure as an active control |
 | OpenIddict signing/encryption PFX files and passwords | Token, code, and refresh-token cryptography | Development certificate store locally; split-host production mounts owner-supplied files and reads passwords through KeyPerFile |
 | Kestrel/TLS private key and password | HTTPS when Kestrel owns TLS | Framework configuration is available, but repository Compose has no HTTPS profile or secure mount |
@@ -183,7 +183,7 @@ also sensitive operational state.
 
 | Credential | Current supported operation |
 | --- | --- |
-| User password | User self-service change/reset; CameraAgent owner configuration must change at the same time because startup reconciles it. |
+| User password | User self-service change/reset; CameraAgent seeds its temporary owner password once and never reverts a later replacement from configuration. |
 | LogicHost API key | Manual make-before-break create, deploy, validate, deactivate, rollback/reactivate, then delete. |
 | Device key | Central revocation and full re-registration only; renewal/overlap is not implemented. |
 | Confidential OAuth client | Startup replaces a changed secret immediately; use coordinated downtime or a new client ID because same-client overlap is not implemented. |
@@ -233,7 +233,7 @@ Back up LogicHost keys with protected envelopes and CameraAgent keys with
 | Symptom | Safe check |
 | --- | --- |
 | Configuration is ignored | Confirm whether the value uses a root `.env` name or a nested .NET name, and confirm the intended project/environment without printing the value. |
-| CameraAgent owner password reverts | Update `LocalIdentity:AdminPassword` in the effective secret source before restart. |
+| CameraAgent owner password replacement is pending | Authenticate with the temporary credential, complete `/Account/ReplaceTemporaryPassword`, remove runtime password authority, and retain only the approved installer-side cleanup record. |
 | Token acquisition fails | Verify configured service URL, client ID, grant permissions, scopes, and secret presence; inspect status-only logs. |
 | API key fails | Use `/api/v1.0/status/detailed`, verify active/expiry/access state, and inspect key-ID audit events. |
 | CameraAgent secrets cannot decrypt | Restore matching provisioning and Data Protection state; do not fall back silently to fixture credentials. |

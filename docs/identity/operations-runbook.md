@@ -115,10 +115,18 @@ user-secrets store:
   'LocalIdentity:AdminPassword'
 ```
 
-The host creates or reconciles the configured `LocalIdentity:AdminEmail` owner
-at startup. It also reconciles the password to
-`LocalIdentity:AdminPassword`, so a password changed in the UI will be reverted
-on the next startup unless configuration is changed at the same time.
+The host creates the configured `LocalIdentity:AdminEmail` owner once with the
+temporary password. It never reconciles an existing owner's password from
+configuration. The first authenticated owner session is redirected to
+`/Account/ReplaceTemporaryPassword` and must supply the current temporary
+password, a policy-valid new password, and matching confirmation. Until that
+transaction commits, ordinary CameraAgent pages and APIs are denied.
+
+After the owner exists durably, remove `AdminPassword`/`AdminPasswordFile` from
+runtime configuration and set
+`LocalIdentity:AllowMissingAdminPassword=true`. Startup still fails if both the
+durable owner and configured password are absent. Reintroducing a password file
+does not reset a ready owner and is not a recovery workflow.
 
 CameraAgent email delivery is not implemented; its email sender only records a
 development message. Do not rely on local password-reset email as a recovery
@@ -185,12 +193,51 @@ artifact ID and returns only the matching bounded capture-pipeline capture ID,
 trace ID, and span ID. It never uses the telemetry HTTP request Activity and does
 not expose request or response bodies.
 
-After the owner database is seeded, CameraAgent can restart without retaining the
-configuration password. Split-host automation deletes the remote plaintext
-password and its password-file setting immediately after login, then records the
-non-secret `AllowMissingAdminPassword` restart opt-in. A missing password is valid
-only when that opt-in is explicit and the durable owner already exists; initial
-seeding still fails.
+After the owner database is seeded, the CameraAgent host contract supports a
+restart without retaining the configuration password. A missing password is
+valid only when `AllowMissingAdminPassword` is explicit and the durable owner
+already exists; initial seeding still fails. Current split-host automation does
+not perform this transition, replace the temporary owner password, or correlate
+and delete its bootstrap file. Implementing those installer actions remains
+issue #415; this issue supplies only the stable host, status, and UI contract.
+
+### Owner bootstrap status contract
+
+`GET /api/internal/owner-bootstrap/status` requires the configured local owner,
+including while that owner still requires password replacement, and returns only
+`state` and `passwordChangeRequired`. Other authenticated local users are denied.
+It is deliberately small and stable for installer issue #415. States are:
+
+| State | Meaning |
+| --- | --- |
+| `owner-uninitialized` | No durable site owner exists. Initial startup normally fails before serving this state. |
+| `owner-temporary-password` | The durable owner requires replacement and a temporary password remains configured. |
+| `owner-password-change-required` | The durable owner requires replacement and runtime password authority has been removed. |
+| `owner-ready` | Password replacement is complete. |
+| `owner-recovery-required` | Durable owner identity is ambiguous or does not match configured ownership. |
+
+The `owner-bootstrap` health check remains Healthy while interactive password
+replacement is pending, so capture readiness is independent of owner setup. It
+is Degraded only for `owner-recovery-required`; anonymous `/health` uses only a
+generic operational or operator-attention description and never returns the
+exact bootstrap state. Pending owner API requests return `403`, header
+`X-HVO-Authorization-Reason: owner-password-change-required`, and the same code
+in the JSON body. Login, logout, replacement, bootstrap status, and required
+static assets remain available.
+
+Structured events contain no email, password, token, path, or credential value:
+
+| Event ID | Name | Meaning |
+| --- | --- | --- |
+| `4180` | `OwnerTemporaryPasswordSeeded` | A new durable owner was seeded and requires replacement. |
+| `4181` | `OwnerTemporaryPasswordMismatch` | Configured temporary input conflicts with still-pending durable state. |
+| `4182` | `OwnerPasswordBootstrapCompleted` | Replacement committed and the completing session was refreshed. |
+| `4183` | `OwnerOperationDeniedDuringBootstrap` | A pending owner attempted an ordinary API operation. |
+
+No anonymous account creation or password endpoint is added. Owner recovery,
+email reset, installer configuration transition, and correlated bootstrap-file
+deletion remain #415 or separate work; do not emulate them with direct SQLite
+edits.
 
 Every temporary remote credential registration binds the full inventory target
 identity. Cleanup re-correlates that identity before and after deletion and
@@ -421,8 +468,9 @@ Restore order is:
    jobs, lineage, and retention references before deleting rollback or
    quarantine state.
 
-The seeder may reconcile configured user passwords and confidential-client
-secrets after restore. Confirm the effective secret source before startup.
+The LogicHost seeder may reconcile its configured users and confidential-client
+secrets after restore. CameraAgent never reconciles an existing owner password;
+confirm whether the restored owner is ready or still requires replacement.
 
 These commands are destructive and have no automatic rollback:
 
@@ -523,6 +571,8 @@ as a metric label.
 | Device bootstrap fails | Confirm Pending status, envelope lifetime, exact device ID, and one-time use. Generate a new pending registration after expiry or consumption. |
 | Device calls fail after restore | Restore CameraAgent `device-secrets.dat` with its matching Data Protection key ring and confirm central registration is Active and unexpired. |
 | Cookies fail after rebuild | Verify the matching host's `DataProtection-Keys` bind mount was preserved and readable. |
+| CameraAgent owner is redirected after login | Complete `/Account/ReplaceTemporaryPassword`; inspect the bounded owner-bootstrap status without recording credential values. |
+| CameraAgent starts without an owner password | This is valid only with a durable owner and explicit `AllowMissingAdminPassword=true`. Initial seeding still requires a temporary password. |
 | MinIO access fails | Check scoped application credentials and the two approved buckets; do not switch the application to root credentials. |
 
 ## Validation Evidence

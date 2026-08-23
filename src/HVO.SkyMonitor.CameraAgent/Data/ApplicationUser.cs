@@ -12,4 +12,9 @@ public sealed class ApplicationUser : IdentityUser
     /// Indicates whether the account represents a physical site owner.
     /// </summary>
     public bool IsSiteOwner { get; set; }
+
+    /// <summary>
+    /// Indicates that the installer-provided temporary password must be replaced before owner operations are allowed.
+    /// </summary>
+    public bool PasswordChangeRequired { get; set; }
 }

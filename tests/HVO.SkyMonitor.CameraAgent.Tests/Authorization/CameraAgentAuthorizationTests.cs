@@ -95,6 +95,62 @@ public sealed class CameraAgentAuthorizationTests
         Assert.AreEqual(isSiteOwner && useStoredEmailAsConfiguration, result.Succeeded);
     }
 
+    [TestMethod]
+    public async Task OperationsPolicies_DenyOwnerUntilTemporaryPasswordIsReplaced()
+    {
+        var userManager = CreateUserManager();
+        userManager.Setup(manager => manager.GetUserAsync(It.IsAny<ClaimsPrincipal>()))
+            .ReturnsAsync(new ApplicationUser
+            {
+                IsSiteOwner = true,
+                PasswordChangeRequired = true,
+                NormalizedEmail = ConfiguredEmail.ToUpperInvariant()
+            });
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(userManager.Object);
+        services.AddSingleton<ILookupNormalizer, UpperInvariantLookupNormalizer>();
+        services.AddSingleton(Options.Create(new LocalIdentityOptions { AdminEmail = ConfiguredEmail }));
+        services.AddCameraAgentAuthorization();
+        using var provider = services.BuildServiceProvider();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, "owner")], "Test"));
+
+        var result = await provider.GetRequiredService<IAuthorizationService>().AuthorizeAsync(
+            principal,
+            CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false);
+
+        Assert.IsFalse(result.Succeeded);
+    }
+
+    [TestMethod]
+    public async Task BootstrapStatusPolicy_AllowsConfiguredOwnerBeforePasswordReplacement()
+    {
+        var userManager = CreateUserManager();
+        userManager.Setup(manager => manager.GetUserAsync(It.IsAny<ClaimsPrincipal>()))
+            .ReturnsAsync(new ApplicationUser
+            {
+                IsSiteOwner = true,
+                PasswordChangeRequired = true,
+                NormalizedEmail = ConfiguredEmail.ToUpperInvariant()
+            });
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(userManager.Object);
+        services.AddSingleton<ILookupNormalizer, UpperInvariantLookupNormalizer>();
+        services.AddSingleton(Options.Create(new LocalIdentityOptions { AdminEmail = ConfiguredEmail }));
+        services.AddCameraAgentAuthorization();
+        using var provider = services.BuildServiceProvider();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, "owner")], "Test"));
+
+        var result = await provider.GetRequiredService<IAuthorizationService>().AuthorizeAsync(
+            principal,
+            CameraAgentAuthorizationPolicyNames.OwnerBootstrapReadV1).ConfigureAwait(false);
+
+        Assert.IsTrue(result.Succeeded);
+    }
+
     private static Mock<UserManager<ApplicationUser>> CreateUserManager()
     {
         return new Mock<UserManager<ApplicationUser>>(

@@ -29,31 +29,35 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
 
     private readonly string _root;
     private readonly CatalogFixtureInstallation _catalog;
-    private readonly WebApplicationFactory<Program> _factory;
-    private readonly HttpClient _lifetimeClient;
+    private readonly Dictionary<string, string?> _overrides;
+    private readonly Action<IServiceCollection>? _configureServices;
+    private BrowserWebApplicationFactory? _factory;
+    private HttpClient? _lifetimeClient;
 
     private CameraAgentKestrelFixture(
         string root,
         CatalogFixtureInstallation catalog,
-        WebApplicationFactory<Program> factory,
-        HttpClient lifetimeClient)
+        Dictionary<string, string?> overrides,
+        Action<IServiceCollection>? configureServices)
     {
         _root = root;
         _catalog = catalog;
-        _factory = factory;
-        _lifetimeClient = lifetimeClient;
+        _overrides = overrides;
+        _configureServices = configureServices;
     }
 
-    internal Uri BaseAddress => _lifetimeClient.BaseAddress
+    internal Uri BaseAddress => _lifetimeClient?.BaseAddress
         ?? throw new InvalidOperationException("The Kestrel fixture has no base address.");
 
     internal string Root => _root;
 
-    internal IServiceProvider Services => _factory.Services;
+    internal IServiceProvider Services => (_factory
+        ?? throw new InvalidOperationException("The Kestrel fixture is not running.")).Services;
 
     internal static async Task<CameraAgentKestrelFixture> CreateAsync(
         Action<IServiceCollection>? configureServices = null,
-        bool useCalibrationLibrary = false)
+        bool useCalibrationLibrary = false,
+        bool requireOwnerPasswordReplacement = false)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -130,9 +134,45 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["Serilog:MinimumLevel:Default"] = "Warning"
         };
 
-        var factory = new BrowserWebApplicationFactory(root, overrides, configureServices);
-        factory.UseKestrel(0);
+        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices);
+        try
+        {
+            await fixture.StartHostAsync().ConfigureAwait(false);
+            if (!requireOwnerPasswordReplacement)
+            {
+                await CompleteOwnerBootstrapForExistingAcceptanceTestsAsync(fixture.Services).ConfigureAwait(false);
+            }
+            await SeedNonOwnerAsync(fixture.Services).ConfigureAwait(false);
+            await SeedArtifactQuarantineAsync(fixture.Services, root).ConfigureAwait(false);
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
 
+    internal async Task RestartWithoutPasswordAuthorityAsync()
+    {
+        await StopHostAsync().ConfigureAwait(false);
+        _overrides["LocalIdentity:AdminPassword"] = string.Empty;
+        _overrides["LocalIdentity:AdminPasswordFile"] = string.Empty;
+        _overrides["LocalIdentity:AllowMissingAdminPassword"] = "true";
+        await StartHostAsync().ConfigureAwait(false);
+    }
+
+    internal async Task RestartAsync()
+    {
+        await StopHostAsync().ConfigureAwait(false);
+        await StartHostAsync().ConfigureAwait(false);
+    }
+
+    private async Task StartHostAsync()
+    {
+        var factory = new BrowserWebApplicationFactory(_root, _overrides, _configureServices);
+        factory.UseKestrel(0);
+        _factory = factory;
         try
         {
             var client = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -143,17 +183,25 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             var address = server.Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault()
                 ?? throw new InvalidOperationException("Kestrel did not publish its loopback address.");
             client.BaseAddress = new Uri(address, UriKind.Absolute);
-            await SeedNonOwnerAsync(factory.Services).ConfigureAwait(false);
-            await SeedArtifactQuarantineAsync(factory.Services, root).ConfigureAwait(false);
-            return new CameraAgentKestrelFixture(root, catalog, factory, client);
+            _lifetimeClient = client;
         }
         catch
         {
-            await factory.DisposeAsync().ConfigureAwait(false);
-            catalog.Dispose();
-            await DeleteWithRetriesAsync(root).ConfigureAwait(false);
+            await StopHostAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    private async Task StopHostAsync()
+    {
+        _lifetimeClient?.Dispose();
+        _lifetimeClient = null;
+        if (_factory is not null)
+        {
+            await _factory.DisposeAsync().ConfigureAwait(false);
+            _factory = null;
+        }
+        SqliteConnection.ClearAllPools();
     }
 
     private static async Task SeedArtifactQuarantineAsync(IServiceProvider services, string root)
@@ -228,7 +276,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "HttpClient takes ownership of its handler and the caller owns the returned client.")]
-    internal async Task<HttpClient> CreateOwnerClientAsync()
+    internal async Task<HttpClient> CreateOwnerClientAsync(string password = OwnerPassword)
     {
         var client = new HttpClient(new HttpClientHandler
         {
@@ -257,7 +305,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             {
                 ["__RequestVerificationToken"] = WebUtility.HtmlDecode(match.Groups[1].Value),
                 ["Input.Email"] = OwnerEmail,
-                ["Input.Password"] = OwnerPassword,
+                ["Input.Password"] = password,
                 ["Input.RememberMe"] = "false",
                 ["_handler"] = "login"
             });
@@ -298,10 +346,24 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         }
     }
 
+    private static async Task CompleteOwnerBootstrapForExistingAcceptanceTestsAsync(IServiceProvider services)
+    {
+        using var scope = services.CreateScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var owner = await users.FindByEmailAsync(OwnerEmail).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The browser acceptance owner was not seeded.");
+        owner.PasswordChangeRequired = false;
+        var result = await users.UpdateAsync(owner).ConfigureAwait(false);
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Could not prepare the browser acceptance owner: {string.Join(", ", result.Errors.Select(static error => error.Code))}");
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
-        _lifetimeClient.Dispose();
-        await _factory.DisposeAsync().ConfigureAwait(false);
+        await StopHostAsync().ConfigureAwait(false);
         _catalog.Dispose();
         await DeleteWithRetriesAsync(_root).ConfigureAwait(false);
     }

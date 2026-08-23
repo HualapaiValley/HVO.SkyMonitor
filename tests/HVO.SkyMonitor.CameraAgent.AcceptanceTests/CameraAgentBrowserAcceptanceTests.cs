@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
@@ -17,6 +18,142 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 public sealed class CameraAgentBrowserAcceptanceTests
 {
     private const float DefaultTimeoutMilliseconds = 45_000;
+
+    [TestMethod]
+    public async Task FirstOwnerLoginRequiresPasswordReplacementAndRevokesStaleSessionAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive(
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui-106 --install-browser` from the repository root.");
+        }
+
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(
+            requireOwnerPasswordReplacement: true).ConfigureAwait(false);
+        using (var installerVerification = await host.CreateOwnerClientAsync().ConfigureAwait(false))
+        using (var initialStatus = await installerVerification.GetAsync(
+            new Uri("/api/internal/owner-bootstrap/status", UriKind.Relative)).ConfigureAwait(false))
+        {
+            Assert.AreEqual(System.Net.HttpStatusCode.OK, initialStatus.StatusCode);
+            StringAssert.Contains(
+                await initialStatus.Content.ReadAsStringAsync().ConfigureAwait(false),
+                OwnerBootstrapStates.TemporaryPassword,
+                StringComparison.Ordinal);
+        }
+        await host.RestartWithoutPasswordAuthorityAsync().ConfigureAwait(false);
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true
+        }).ConfigureAwait(false);
+        await using var replacingContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        await using var staleContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        var replacingPage = await replacingContext.NewPageAsync().ConfigureAwait(false);
+        var stalePage = await staleContext.NewPageAsync().ConfigureAwait(false);
+
+        await LoginAsync(replacingPage, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+        await LoginAsync(stalePage, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+        await replacingPage.WaitForURLAsync(
+            url => url.Contains("/Account/ReplaceTemporaryPassword", StringComparison.OrdinalIgnoreCase))
+            .ConfigureAwait(false);
+        await stalePage.WaitForURLAsync(
+            url => url.Contains("/Account/ReplaceTemporaryPassword", StringComparison.OrdinalIgnoreCase))
+            .ConfigureAwait(false);
+
+        var pendingStatus = await replacingContext.APIRequest.GetAsync("/api/internal/owner-bootstrap/status")
+            .ConfigureAwait(false);
+        try
+        {
+            Assert.AreEqual(200, pendingStatus.Status);
+            StringAssert.Contains(
+                await pendingStatus.TextAsync().ConfigureAwait(false),
+                OwnerBootstrapStates.PasswordChangeRequired,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            await pendingStatus.DisposeAsync().ConfigureAwait(false);
+        }
+
+        var denied = await replacingContext.APIRequest.GetAsync("/api/v1/operations/summary").ConfigureAwait(false);
+        try
+        {
+            Assert.AreEqual(403, denied.Status);
+            Assert.AreEqual(OwnerBootstrapStates.PasswordChangeRequired,
+                denied.Headers["x-hvo-authorization-reason"]);
+        }
+        finally
+        {
+            await denied.DisposeAsync().ConfigureAwait(false);
+        }
+
+        const string replacementPassword = "BrowserReplacement!418";
+        await replacingPage.GetByLabel("Current password").FillAsync(CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+        await replacingPage.GetByLabel("New password", new() { Exact = true }).FillAsync(replacementPassword)
+            .ConfigureAwait(false);
+        await replacingPage.GetByLabel("Confirm new password").FillAsync(replacementPassword).ConfigureAwait(false);
+        await SubmitPasswordReplacementAsync(replacingPage, replacingContext).ConfigureAwait(false);
+
+        var ownerReady = await replacingContext.APIRequest.GetAsync("/api/internal/owner-bootstrap/status")
+            .ConfigureAwait(false);
+        try
+        {
+            Assert.AreEqual(200, ownerReady.Status);
+            StringAssert.Contains(await ownerReady.TextAsync().ConfigureAwait(false), OwnerBootstrapStates.Ready, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await ownerReady.DisposeAsync().ConfigureAwait(false);
+        }
+
+        var stale = await staleContext.APIRequest.GetAsync("/api/v1/operations/summary").ConfigureAwait(false);
+        try
+        {
+            Assert.AreEqual(401, stale.Status);
+        }
+        finally
+        {
+            await stale.DisposeAsync().ConfigureAwait(false);
+        }
+
+        await host.RestartAsync().ConfigureAwait(false);
+        await using var oldCredentialContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        var oldCredentialPage = await oldCredentialContext.NewPageAsync().ConfigureAwait(false);
+        await oldCredentialPage.GotoAsync("/Account/Login").ConfigureAwait(false);
+        await oldCredentialPage.GetByLabel("Email").FillAsync(CameraAgentKestrelFixture.OwnerEmail)
+            .ConfigureAwait(false);
+        await oldCredentialPage.GetByLabel("Password").FillAsync(CameraAgentKestrelFixture.OwnerPassword)
+            .ConfigureAwait(false);
+        await oldCredentialPage.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync()
+            .ConfigureAwait(false);
+        await VisibleAsync(oldCredentialPage.GetByText("Error: Invalid login attempt.", new() { Exact = true }))
+            .ConfigureAwait(false);
+
+        await using var replacementCredentialContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString()
+        }).ConfigureAwait(false);
+        var replacementCredentialPage = await replacementCredentialContext.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(
+            replacementCredentialPage,
+            CameraAgentKestrelFixture.OwnerEmail,
+            replacementPassword).ConfigureAwait(false);
+        await replacementCredentialPage.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/").ConfigureAwait(false);
+        await VisibleAsync(replacementCredentialPage.GetByRole(AriaRole.Heading, new() { Name = "Capture operations" }))
+            .ConfigureAwait(false);
+    }
 
     [TestMethod]
     [TestCategory("Manual")]
@@ -385,6 +522,81 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase))
             .ConfigureAwait(false);
+    }
+
+    private static async Task SubmitPasswordReplacementAsync(IPage page, IBrowserContext context)
+    {
+        var form = page.Locator("form[action='/Account/ReplaceTemporaryPassword']");
+        var isValid = await form.EvaluateAsync<bool>("form => form.checkValidity()").ConfigureAwait(false);
+        if (!isValid)
+        {
+            Assert.Fail(await ReadPasswordReplacementDiagnosticsAsync(page, context, "browser-validation")
+                .ConfigureAwait(false));
+        }
+
+        var responseTask = page.WaitForResponseAsync(response =>
+            response.Request.Method == "POST" &&
+            new Uri(response.Url).AbsolutePath == "/Account/ReplaceTemporaryPassword");
+        try
+        {
+            await page.GetByRole(AriaRole.Button, new() { Name = "Replace password" }).ClickAsync()
+                .ConfigureAwait(false);
+            var response = await responseTask.ConfigureAwait(false);
+            response.Headers.TryGetValue("location", out var location);
+            var locationPath = Uri.TryCreate(location, UriKind.Absolute, out var absoluteLocation)
+                ? absoluteLocation.AbsolutePath
+                : location;
+            if (response.Status != 302 || locationPath != "/" || new Uri(page.Url).AbsolutePath != "/")
+            {
+                Assert.Fail(await ReadPasswordReplacementDiagnosticsAsync(
+                    page,
+                    context,
+                    $"post-status-{response.Status}-location-{locationPath ?? "missing"}").ConfigureAwait(false));
+            }
+        }
+        catch (TimeoutException)
+        {
+            Assert.Fail(await ReadPasswordReplacementDiagnosticsAsync(page, context, "post-not-observed")
+                .ConfigureAwait(false));
+        }
+    }
+
+    private static async Task<string> ReadPasswordReplacementDiagnosticsAsync(
+        IPage page,
+        IBrowserContext context,
+        string phase)
+    {
+        var fields = page.Locator("input[type=password]");
+        var fieldLengths = new List<int>();
+        var fieldNames = new List<string>();
+        var browserMessages = new List<string>();
+        for (var index = 0; index < await fields.CountAsync().ConfigureAwait(false); index++)
+        {
+            var field = fields.Nth(index);
+            fieldLengths.Add((await field.InputValueAsync().ConfigureAwait(false)).Length);
+            fieldNames.Add(await field.GetAttributeAsync("name").ConfigureAwait(false) ?? "missing");
+            browserMessages.Add(await field.EvaluateAsync<string>("input => input.validationMessage")
+                .ConfigureAwait(false));
+        }
+        var renderedValidation = await page.Locator("[role=alert]").AllInnerTextsAsync().ConfigureAwait(false);
+        var status = await context.APIRequest.GetAsync("/api/internal/owner-bootstrap/status").ConfigureAwait(false);
+        try
+        {
+            return string.Join(
+                "; ",
+                $"phase={phase}",
+                $"path={new Uri(page.Url).AbsolutePath}",
+                $"fieldNames={string.Join(',', fieldNames)}",
+                $"fieldLengths={string.Join(',', fieldLengths)}",
+                $"browserValidation={string.Join('|', browserMessages.Where(static value => value.Length > 0))}",
+                $"renderedValidation={string.Join('|', renderedValidation)}",
+                $"bootstrapStatusCode={status.Status}",
+                $"bootstrapStatus={await status.TextAsync().ConfigureAwait(false)}");
+        }
+        finally
+        {
+            await status.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private static async Task AssertOperationsAndCaptureControlAsync(IPage page)

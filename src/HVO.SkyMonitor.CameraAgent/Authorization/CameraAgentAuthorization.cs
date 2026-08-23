@@ -11,6 +11,7 @@ public static class CameraAgentAuthorizationPolicyNames
 {
     public const string OperationsReadV1 = "CameraAgent.Operations.Read.V1";
     public const string OperationsMutateV1 = "CameraAgent.Operations.Mutate.V1";
+    public const string OwnerBootstrapReadV1 = "CameraAgent.OwnerBootstrap.Read.V1";
 }
 
 internal static class CameraAgentAuthorizationServiceCollectionExtensions
@@ -21,31 +22,41 @@ internal static class CameraAgentAuthorizationServiceCollectionExtensions
 
         services.AddAuthorization(options =>
         {
-            AddSiteOwnerPolicy(options, CameraAgentAuthorizationPolicyNames.OperationsReadV1);
-            AddSiteOwnerPolicy(options, CameraAgentAuthorizationPolicyNames.OperationsMutateV1);
+            AddSiteOwnerPolicy(options, CameraAgentAuthorizationPolicyNames.OperationsReadV1, requireReadyOwner: true);
+            AddSiteOwnerPolicy(options, CameraAgentAuthorizationPolicyNames.OperationsMutateV1, requireReadyOwner: true);
+            AddSiteOwnerPolicy(options, CameraAgentAuthorizationPolicyNames.OwnerBootstrapReadV1, requireReadyOwner: false);
         });
         services.AddScoped<IAuthorizationHandler, SiteOwnerAuthorizationHandler>();
 
         return services;
     }
 
-    private static void AddSiteOwnerPolicy(AuthorizationOptions options, string policyName)
+    private static void AddSiteOwnerPolicy(
+        AuthorizationOptions options,
+        string policyName,
+        bool requireReadyOwner)
     {
         options.AddPolicy(policyName, policy =>
         {
             policy.RequireAuthenticatedUser();
-            policy.AddRequirements(SiteOwnerRequirement.Instance);
+            policy.AddRequirements(requireReadyOwner
+                ? SiteOwnerRequirement.ReadyOwner
+                : SiteOwnerRequirement.ConfiguredOwner);
         });
     }
 }
 
 internal sealed class SiteOwnerRequirement : IAuthorizationRequirement
 {
-    public static SiteOwnerRequirement Instance { get; } = new();
+    public static SiteOwnerRequirement ReadyOwner { get; } = new(requireReadyOwner: true);
+    public static SiteOwnerRequirement ConfiguredOwner { get; } = new(requireReadyOwner: false);
 
-    private SiteOwnerRequirement()
+    private SiteOwnerRequirement(bool requireReadyOwner)
     {
+        RequireReadyOwner = requireReadyOwner;
     }
+
+    internal bool RequireReadyOwner { get; }
 }
 
 internal sealed class SiteOwnerAuthorizationHandler(
@@ -68,6 +79,7 @@ internal sealed class SiteOwnerAuthorizationHandler(
 
         var user = await _userManager.GetUserAsync(context.User).ConfigureAwait(false);
         if (user?.IsSiteOwner == true &&
+            (!requirement.RequireReadyOwner || !user.PasswordChangeRequired) &&
             !string.IsNullOrWhiteSpace(user.NormalizedEmail) &&
             string.Equals(user.NormalizedEmail, _configuredNormalizedEmail, StringComparison.Ordinal))
         {
