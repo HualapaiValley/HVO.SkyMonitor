@@ -265,8 +265,6 @@ SELECTED_SHARD=all
 case "${1:-}" in
     '')
         (( $# == 0 )) || { printf 'Unexpected deployment contract arguments.\n' >&2; exit 2; }
-        run_deploy_contract_shards
-        exit $?
         ;;
     --list-shards)
         (( $# == 1 )) || { printf '%s accepts no additional arguments.\n' "$1" >&2; exit 2; }
@@ -3547,7 +3545,8 @@ fi
 
 if shard_enabled smoke; then
 if [[ "$SELECTED_SHARD" == smoke ]]; then FAKE_LIFECYCLE_TRANSIENT_MODE=Hybrid stage_lifecycle_bootstrap; fi
-FAKE_DOWN_TAIL_MODE=healthy
+FAKE_DOWN_TAIL_MODE=off
+[[ "$SELECTED_SHARD" != smoke ]] || FAKE_DOWN_TAIL_MODE=healthy
 export FAKE_DOWN_TAIL_MODE
 FAKE_SLOW_FIRST_AGENT=true FAKE_CAPTURE_TELEMETRY_EMPTY=true run_deploy_mode smoke "$deploy_case" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and .workload.kind == "W0" and (.targets | length) == 2 and all(.targets[];
