@@ -105,6 +105,7 @@ deployment_paths=(
   "scripts/ci:require"
   "scripts/test:ci-classification"
   "scripts/deploy:environment"
+  "scripts/deploy:migrate-product-layout"
   "scripts/deploy/common.sh"
   "scripts/test:deploy-environment"
   "scripts/test:deploy-environment-cli"

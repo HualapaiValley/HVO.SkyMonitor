@@ -3263,6 +3263,52 @@ run_fixture_transport_install "$replacement_fixture_stage" "$replacement_fixture
 test "$(readlink "$replacement_fixture_root/current")" = versions/fixture-replaced
 test ! -e "$replacement_fixture_root/.fixture-candidate-transaction"
 
+# Candidate substitution at the cleanup barrier is retained without touching the external target, then recovers.
+substitution_fixture_root="$TEMP_DIR/remote/substituted-fixture-candidate"
+substitution_fixture_stage="$TEMP_DIR/substituted-fixture-stage"
+substitution_fixture_marker="$TEMP_DIR/substituted-fixture-candidate.marker"
+substitution_fixture_external="$TEMP_DIR/substituted-fixture-external"
+make_fixture_transport_stage "$substitution_fixture_stage" fixture-substituted
+if HVO_FIXTURE_CATALOG_TEST_FAIL_AT=during-candidate-copy \
+  run_fixture_transport_install "$substitution_fixture_stage" "$substitution_fixture_root" fixture-substituted \
+  "$TEMP_DIR/substituted-fixture-initial.out"; then
+  fail 'Fixture candidate setup failpoint unexpectedly completed.'
+fi
+substitution_fixture_candidate="$substitution_fixture_root/versions/.fixture-candidate-fixture-substituted.stage"
+substitution_fixture_saved="$substitution_fixture_candidate.saved"
+mkdir -m 0700 "$substitution_fixture_external"
+printf 'external-manifest\n' > "$substitution_fixture_external/manifest.json"
+printf 'external-database\n' > "$substitution_fixture_external/hyg_v42.sqlite"
+chmod 0440 "$substitution_fixture_external/manifest.json" "$substitution_fixture_external/hyg_v42.sqlite"
+chmod 0550 "$substitution_fixture_external"
+substitution_fixture_before="$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$substitution_fixture_external" \
+  "$substitution_fixture_external/manifest.json" "$substitution_fixture_external/hyg_v42.sqlite")|$(sha256sum \
+  "$substitution_fixture_external/manifest.json" "$substitution_fixture_external/hyg_v42.sqlite")"
+HVO_CATALOG_TEST_LOCK_BARRIER=fixture-candidate-cleanup HVO_CATALOG_TEST_LOCK_MARKER="$substitution_fixture_marker" \
+  run_fixture_transport_install "$substitution_fixture_stage" "$substitution_fixture_root" fixture-substituted \
+  "$TEMP_DIR/substituted-fixture-cleanup.out" &
+FIXTURE_REPLACEMENT_PID=$!
+while [[ ! -e "$substitution_fixture_marker" ]]; do sleep 0.01; kill -0 "$FIXTURE_REPLACEMENT_PID"; done
+FIXTURE_REPLACEMENT_STOPPED_PID="$(<"$substitution_fixture_marker")"
+mv -T -- "$substitution_fixture_candidate" "$substitution_fixture_saved"
+ln -s -- "$substitution_fixture_external" "$substitution_fixture_candidate"
+kill -CONT "$FIXTURE_REPLACEMENT_STOPPED_PID"
+if wait "$FIXTURE_REPLACEMENT_PID"; then
+  fail 'Fixture cleanup accepted a substituted candidate directory.'
+fi
+FIXTURE_REPLACEMENT_PID=""; FIXTURE_REPLACEMENT_STOPPED_PID=""
+test "$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$substitution_fixture_external" \
+  "$substitution_fixture_external/manifest.json" "$substitution_fixture_external/hyg_v42.sqlite")|$(sha256sum \
+  "$substitution_fixture_external/manifest.json" "$substitution_fixture_external/hyg_v42.sqlite")" = "$substitution_fixture_before" ||
+  fail 'Fixture cleanup mutated a substituted external candidate target.'
+test -f "$substitution_fixture_root/.fixture-candidate-transaction"
+rm -f -- "$substitution_fixture_candidate"
+mv -T -- "$substitution_fixture_saved" "$substitution_fixture_candidate"
+run_fixture_transport_install "$substitution_fixture_stage" "$substitution_fixture_root" fixture-substituted \
+  "$TEMP_DIR/substituted-fixture-recovered.out"
+test "$(readlink "$substitution_fixture_root/current")" = versions/fixture-substituted
+test ! -e "$substitution_fixture_root/.fixture-candidate-transaction"
+
 wait_for_fixture_lock() {
   local lock_path="$1" process_id="$2" attempt
   for ((attempt=0; attempt<100; attempt++)); do

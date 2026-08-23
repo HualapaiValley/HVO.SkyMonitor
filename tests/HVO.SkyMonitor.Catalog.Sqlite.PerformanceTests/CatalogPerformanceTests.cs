@@ -47,7 +47,7 @@ public sealed class CatalogPerformanceTests
             fragmentedBytes = memory.FragmentedBytes,
             largeObjectHeapBytes = memory.GenerationInfo[3].SizeAfterBytes,
             databaseLengthBytes = snapshot.DatabaseLength,
-            logicalDatabaseHashPasses = 2,
+            logicalDatabaseHashPasses = 3,
             sqliteIntegrityChecks = 1,
             orderedRowLoadPasses = 1,
             sqliteRowsLoaded = snapshot.RowCount,

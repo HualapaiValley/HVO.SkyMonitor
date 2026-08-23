@@ -225,7 +225,7 @@ jobs:
 
   unit:
     name: Unit Tests
-    needs: changes
+    needs: [changes, catalog-contracts]
     if: needs.changes.outputs.mode == 'full'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 20
@@ -237,6 +237,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Download exact production catalog contracts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hyg-v42-contracts
+          path: ${{ runner.temp }}/hyg-v42-contract-artifact
+      - name: Restore exact legacy production catalog contract
+        run: |
+          catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
+          mkdir -m 700 "$catalog_root"
+          tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
+          printf 'HVO_LEGACY_CATALOG_BUNDLE=%s/hyg-v4.2-p3-s2-r1-legacy.bundle\n' "$catalog_root" >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:

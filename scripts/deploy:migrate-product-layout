@@ -111,7 +111,10 @@ snapshot_tree() {
   done < <({ printf '%s\0' "$root"; find -P "$root" -mindepth 1 -print0; } | sort -z)
 }
 
-content_tree() { cut -f1-4,7-9 "$1"; }
+content_tree() { cut -f1-4,7-9 "$1" || return 1; }
+migration_transform_command_succeeds() {
+  [[ "${HVO_MIGRATION_TEST_MODE:-}" != true || "${HVO_MIGRATION_TEST_FAIL_COMMAND_AT:-}" != "$1" ]]
+}
 capture_tree() {
   local root="$1" output="$2" temporary parent
   parent="$(dirname -- "$output")"; ensure_private_directory "$parent" || return 1
@@ -123,15 +126,24 @@ capture_tree() {
 revalidate_tree() { local root="$1" expected="$2" actual; actual="$(mktemp)" || return 1; snapshot_tree "$root" "$actual" && cmp -s "$expected" "$actual"; local status=$?; rm -f -- "$actual" || return 1; return "$status"; }
 verify_copy() { local source="$1" destination="$2" a b; a="$(mktemp)" || return 1; b="$(mktemp)" || { rm -f -- "$a"; return 1; }; snapshot_tree "$source" "$a" && snapshot_tree "$destination" "$b" && content_tree "$a" > "$a.content" && content_tree "$b" > "$b.content" && cmp -s "$a.content" "$b.content"; local status=$?; rm -f -- "$a" "$b" "$a.content" "$b.content" || return 1; return "$status"; }
 verify_snapshot_copy() { local destination="$1" expected="$2" actual; actual="$(mktemp)" || return 1; snapshot_tree "$destination" "$actual" && content_tree "$expected" > "$actual.expected" && content_tree "$actual" > "$actual.content" && cmp -s "$actual.expected" "$actual.content"; local status=$?; rm -f -- "$actual" "$actual.expected" "$actual.content" || return 1; return "$status"; }
-filter_catalog_payload() { awk -F '\t' '$8 != ".catalog.lock" && $8 != ".catalog-lineage.json"' "$1"; }
+filter_catalog_payload() { awk -F '\t' '$8 != ".catalog.lock" && $8 != ".catalog-lineage.json"' "$1" || return 1; }
 revalidate_catalog_payload() {
   local root="$1" expected="$2" actual expected_payload actual_payload status
   actual="$(mktemp)" || return 1; expected_payload="$(mktemp)" || { rm -f -- "$actual"; return 1; }
   actual_payload="$(mktemp)" || { rm -f -- "$actual" "$expected_payload"; return 1; }
   snapshot_tree "$root" "$actual" || { rm -f -- "$actual" "$expected_payload" "$actual_payload"; return 1; }
-  filter_catalog_payload "$expected" > "$expected_payload"
-  filter_catalog_payload "$actual" > "$actual_payload"
-  cmp -s "$expected_payload" "$actual_payload"; status=$?
+  if ! migration_transform_command_succeeds revalidate-catalog-expected-filter ||
+     ! filter_catalog_payload "$expected" > "$expected_payload"; then
+    rm -f -- "$actual" "$expected_payload" "$actual_payload"
+    return 1
+  fi
+  if ! migration_transform_command_succeeds revalidate-catalog-actual-filter ||
+     ! filter_catalog_payload "$actual" > "$actual_payload"; then
+    rm -f -- "$actual" "$expected_payload" "$actual_payload"
+    return 1
+  fi
+  migration_transform_command_succeeds revalidate-catalog-cmp || { rm -f -- "$actual" "$expected_payload" "$actual_payload"; return 1; }
+  if cmp -s "$expected_payload" "$actual_payload"; then status=0; else status=$?; fi
   rm -f -- "$actual" "$expected_payload" "$actual_payload" || return 1
   return "$status"
 }
@@ -140,10 +152,31 @@ verify_catalog_snapshot_copy() {
   actual="$(mktemp)" || return 1; expected_payload="$(mktemp)" || { rm -f -- "$actual"; return 1; }
   actual_payload="$(mktemp)" || { rm -f -- "$actual" "$expected_payload"; return 1; }
   snapshot_tree "$destination" "$actual" || { rm -f -- "$actual" "$expected_payload" "$actual_payload"; return 1; }
-  filter_catalog_payload "$expected" > "$expected_payload"
-  filter_catalog_payload "$actual" > "$actual_payload"
-  content_tree "$expected_payload" > "$actual.expected"; content_tree "$actual_payload" > "$actual.content"
-  cmp -s "$actual.expected" "$actual.content"; status=$?
+  if ! migration_transform_command_succeeds verify-catalog-expected-filter ||
+     ! filter_catalog_payload "$expected" > "$expected_payload"; then
+    rm -f -- "$actual" "$expected_payload" "$actual_payload"
+    return 1
+  fi
+  if ! migration_transform_command_succeeds verify-catalog-actual-filter ||
+     ! filter_catalog_payload "$actual" > "$actual_payload"; then
+    rm -f -- "$actual" "$expected_payload" "$actual_payload"
+    return 1
+  fi
+  if ! migration_transform_command_succeeds verify-catalog-expected-content ||
+     ! content_tree "$expected_payload" > "$actual.expected"; then
+    rm -f -- "$actual" "$expected_payload" "$actual_payload" "$actual.expected" "$actual.content"
+    return 1
+  fi
+  if ! migration_transform_command_succeeds verify-catalog-actual-content ||
+     ! content_tree "$actual_payload" > "$actual.content"; then
+    rm -f -- "$actual" "$expected_payload" "$actual_payload" "$actual.expected" "$actual.content"
+    return 1
+  fi
+  migration_transform_command_succeeds verify-catalog-cmp || {
+    rm -f -- "$actual" "$expected_payload" "$actual_payload" "$actual.expected" "$actual.content"
+    return 1
+  }
+  if cmp -s "$actual.expected" "$actual.content"; then status=0; else status=$?; fi
   rm -f -- "$actual" "$expected_payload" "$actual_payload" "$actual.expected" "$actual.content" || return 1
   return "$status"
 }

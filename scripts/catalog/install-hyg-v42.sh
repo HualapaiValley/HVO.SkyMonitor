@@ -52,7 +52,9 @@ test_fail_at() {
 }
 
 cleanup_orphan_staging() {
-    local path entry root_device mode
+    local path entry root_device mode identity paths_file scan_file
+    local -A identities=()
+    local -a entries directories
     local -a staging_paths
     shopt -s nullglob dotglob
     staging_paths=("$INSTALL_ROOT"/.staging.* "$INSTALL_ROOT/versions"/.staging.*)
@@ -60,27 +62,54 @@ cleanup_orphan_staging() {
     for path in "${staging_paths[@]}"; do
         [[ -d "$path" && ! -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
         root_device="$(stat -c %d -- "$path")"
+        identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" || return 1
+        identities=(["$path"]="$identity")
+        entries=("$path")
+        directories=("$path")
+        paths_file="$(mktemp)" || return 1
+        scan_file="$(mktemp)" || { rm -f -- "$paths_file"; return 1; }
+        find -P "$path" -xdev -mindepth 1 -print0 > "$paths_file" || {
+            rm -f -- "$paths_file" "$scan_file"
+            return 1
+        }
         while IFS= read -r -d '' entry; do
             [[ "$(stat -c %d -- "$entry")" == "$root_device" ]] || return 1
             if [[ -d "$entry" && ! -L "$entry" ]]; then
                 [[ "$(stat -c %u -- "$entry")" == "$(id -u)" ]] || return 1
                 mode="$(stat -c %a -- "$entry")"
                 (( (8#$mode & 0022) == 0 )) || return 1
+                directories+=("$entry")
             elif [[ -f "$entry" && ! -L "$entry" ]]; then
                 [[ "$(stat -c '%u:%h' -- "$entry")" == "$(id -u):1" ]] || return 1
             else
                 return 1
             fi
-        done < <(find -P "$path" -xdev -mindepth 1 -print0)
-        while IFS= read -r -d '' entry; do
+            identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" || return 1
+            identities["$entry"]="$identity"
+            entries+=("$entry")
+        done < "$paths_file"
+        for entry in "${directories[@]}"; do
             catalog_lock_barrier production-staging-cleanup || return 1
+            [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "${identities[$path]}" &&
+               "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" ]] || return 1
             chmod u+w -- "$entry" || return 1
+            identities["$entry"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" || return 1
             catalog_lock_barrier || return 1
-        done < <(find -P "$path" -xdev -depth -type d -print0)
+        done
         catalog_lock_barrier || return 1
+        find -P "$path" -xdev -print0 > "$scan_file" || return 1
+        local -A seen=()
+        while IFS= read -r -d '' entry; do
+            [[ -n "${identities[$entry]+present}" &&
+               "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" ]] || return 1
+            seen["$entry"]=1
+        done < "$scan_file"
+        [[ ${#seen[@]} -eq ${#entries[@]} ]] || return 1
+        for entry in "${entries[@]}"; do [[ -n "${seen[$entry]+present}" ]] || return 1; done
         rm -rf -- "$path" || return 1
         catalog_lock_barrier || return 1
         [[ ! -e "$path" && ! -L "$path" ]] || return 1
+        rm -f -- "$paths_file" "$scan_file" || return 1
     done
 }
 

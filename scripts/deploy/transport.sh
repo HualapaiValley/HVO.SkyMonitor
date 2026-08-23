@@ -529,15 +529,51 @@ else
     done
   }
   fixture_remove_partial_candidate() {
-    local candidate=$1
+    local candidate=$1 candidate_identity child child_identity
+    local -A child_identities=()
     fixture_validate_partial_candidate "$candidate" || return 1
+    candidate_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$candidate")" || return 1
+    for child in "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"; do
+      if [[ -e "$child" || -L "$child" ]]; then
+        child_identities["$child"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$child")" || return 1
+      else
+        child_identities["$child"]='-'
+      fi
+    done
+    fixture_candidate_identities_match() {
+      local candidate_child expected
+      [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$candidate")" == "$candidate_identity" ]] || return 1
+      for candidate_child in "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"; do
+        expected="${child_identities[$candidate_child]}"
+        if [[ "$expected" == - ]]; then
+          [[ ! -e "$candidate_child" && ! -L "$candidate_child" ]] || return 1
+        else
+          [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$candidate_child")" == "$expected" ]] || return 1
+        fi
+      done
+    }
     fixture_lock_barrier fixture-candidate-cleanup || exit 97
+    fixture_candidate_identities_match || return 1
     chmod 700 -- "$candidate" || exit 97
+    candidate_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$candidate")" || return 1
     fixture_lock_barrier || exit 97
-    chmod 600 -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite" 2>/dev/null || true
-    fixture_lock_barrier || exit 97
-    rm -f -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite" || exit 97
-    fixture_lock_barrier || exit 97
+    for child in "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"; do
+      child_identity="${child_identities[$child]}"
+      if [[ "$child_identity" == - ]]; then
+        fixture_candidate_identities_match || return 1
+        continue
+      fi
+      fixture_candidate_identities_match || return 1
+      chmod 600 -- "$child" || exit 97
+      child_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$child")" || return 1
+      child_identities["$child"]="$child_identity"
+      fixture_lock_barrier || exit 97
+      fixture_candidate_identities_match || return 1
+      rm -f -- "$child" || exit 97
+      child_identities["$child"]='-'
+      fixture_lock_barrier || exit 97
+    done
+    fixture_candidate_identities_match || return 1
     rmdir -- "$candidate" || exit 97
     sync -f "$install_root/versions" || exit 97
     fixture_lock_barrier || exit 97

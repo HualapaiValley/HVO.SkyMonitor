@@ -158,6 +158,25 @@ create_v2_fixture_catalog "$legacy/data/catalog" hyg-v42-production fixture-v1
 printf 'sibling-preserved\n' > "$legacy/data/sibling"
 instance=44444444-4444-4444-8444-444444444444
 args=(--legacy-root "$legacy" --product-root "$migrated" --instance-id "$instance" --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$evidence")
+# Catalog snapshot transform failures remain failures under conditional invocation and cannot publish evidence.
+for transform_failure in revalidate-catalog-expected-filter verify-catalog-expected-content; do
+  transform_legacy="$TEMP_DIR/transform-$transform_failure-legacy"
+  transform_product="$TEMP_DIR/transform-$transform_failure-product"
+  transform_evidence="$TEMP_DIR/transform-$transform_failure.json"
+  mkdir -m 700 "$transform_legacy"
+  cp -a "$legacy/config" "$legacy/data" "$transform_legacy/"
+  transform_args=(--legacy-root "$transform_legacy" --product-root "$transform_product" --instance-id "$instance" \
+    --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$transform_evidence")
+  if HVO_MIGRATION_TEST_MODE=true HVO_MIGRATION_TEST_FAIL_COMMAND_AT="$transform_failure" \
+    "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${transform_args[@]}" >/dev/null 2>&1; then
+    printf 'Migration accepted failed catalog snapshot transform: %s\n' "$transform_failure" >&2
+    exit 149
+  fi
+  test ! -e "$transform_evidence"
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${transform_args[@]}" >/dev/null
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${transform_args[@]}" >/dev/null
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${transform_args[@]}" >/dev/null
+done
 # Every durable action transition revalidates the top-level migration lock and remains recoverable after replacement.
 for replacement_case in apply-evidence verify-complete rollback-deletion rollback-destructive rollback-cleanup \
   finalize-intent finalize-pending finalize-final; do

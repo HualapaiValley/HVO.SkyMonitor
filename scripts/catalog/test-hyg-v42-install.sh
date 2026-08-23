@@ -233,6 +233,36 @@ replacement_publisher_pid=
 [[ -n "$(find "$replacement_root/versions" -maxdepth 1 -name '.staging.*' -print -quit)" ]]
 rm -f -- "$replacement_root/.catalog.lock"
 mv -T -- "$replacement_root/.catalog.lock.original" "$replacement_root/.catalog.lock"
+
+# Replacing an authenticated staging directory at the cleanup barrier cannot redirect chmod or removal externally.
+replacement_staging="$(find "$replacement_root/versions" -maxdepth 1 -name '.staging.*' -print -quit)"
+replacement_staging_saved="$replacement_staging.saved"
+replacement_external="$TEMPORARY_DIRECTORY/replaced-production-cleanup-external"
+replacement_substitution_marker="$TEMPORARY_DIRECTORY/replaced-production-substitution.marker"
+mkdir -m 0700 "$replacement_external"
+printf 'external-preserved\n' > "$replacement_external/payload"
+chmod 0440 "$replacement_external/payload"
+chmod 0550 "$replacement_external"
+replacement_external_before="$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$replacement_external" "$replacement_external/payload")|$(hyg_sha256 "$replacement_external/payload")"
+HVO_CATALOG_TEST_LOCK_BARRIER=production-staging-cleanup HVO_CATALOG_TEST_LOCK_MARKER="$replacement_substitution_marker" \
+    "$SCRIPT_DIR/install-hyg-v42.sh" install "$replacement_bundle" "$replacement_root" >/dev/null 2>&1 &
+replacement_publisher_pid=$!
+while [[ ! -e "$replacement_substitution_marker" ]]; do sleep 0.01; kill -0 "$replacement_publisher_pid"; done
+replacement_stopped_pid="$(<"$replacement_substitution_marker")"
+mv -T -- "$replacement_staging" "$replacement_staging_saved"
+ln -s -- "$replacement_external" "$replacement_staging"
+kill -CONT "$replacement_stopped_pid"
+if wait "$replacement_publisher_pid"; then
+    printf 'production cleanup accepted a substituted staging directory\n' >&2
+    exit 1
+fi
+replacement_publisher_pid=
+[[ "$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$replacement_external" "$replacement_external/payload")|$(hyg_sha256 "$replacement_external/payload")" == "$replacement_external_before" ]] || {
+    printf 'production cleanup mutated a substituted external directory\n' >&2
+    exit 1
+}
+rm -f -- "$replacement_staging"
+mv -T -- "$replacement_staging_saved" "$replacement_staging"
 "$SCRIPT_DIR/install-hyg-v42.sh" install "$replacement_bundle" "$replacement_root" >/dev/null
 assert_current "$replacement_root" 16
 

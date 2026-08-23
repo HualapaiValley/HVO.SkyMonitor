@@ -497,6 +497,54 @@ internal sealed class CatalogSnapshotResolverTests
     }
 
     [TestMethod]
+    public void ResolveRejectsInPlaceDatabaseMutationAfterSqliteLoadAndPreservesOriginalRecovery()
+    {
+        using var installation = CreateInstallation();
+        var originalFingerprint = ReadFingerprint(installation.DatabasePath);
+        using var writer = new FileStream(
+            installation.DatabasePath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.ReadWrite | FileShare.Delete);
+        var offset = writer.Length - 1;
+        writer.Position = offset;
+        var originalByte = writer.ReadByte();
+        var invoked = false;
+        CatalogSnapshotResolver.ValidationTestHook = (path, point) =>
+        {
+            if (point != CatalogSnapshotValidationPoint.AfterSqliteLoad ||
+                !string.Equals(path, installation.DatabasePath, StringComparison.Ordinal))
+            {
+                return;
+            }
+            invoked = true;
+            writer.Position = offset;
+            writer.WriteByte((byte)(originalByte ^ 0xFF));
+            writer.Flush(flushToDisk: true);
+        };
+        try
+        {
+            var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+
+            Assert.AreEqual(!OperatingSystem.IsWindows(), invoked);
+            if (invoked)
+            {
+                StringAssert.Contains(exception.Message, "SHA-256 mismatch", StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            CatalogSnapshotResolver.ValidationTestHook = null;
+            writer.Position = offset;
+            writer.WriteByte((byte)originalByte);
+            writer.Flush(flushToDisk: true);
+        }
+
+        writer.Dispose();
+        Assert.AreEqual(originalFingerprint, ReadFingerprint(installation.DatabasePath));
+    }
+
+    [TestMethod]
     public void ResolveRejectsManifestAndPackageVersionMismatch()
     {
         using var installation = CreateInstallation();
@@ -804,7 +852,7 @@ internal sealed class CatalogSnapshotResolverTests
         }
     }
 
-    private static void CreateHardLink(string source, string destination)
+    internal static void CreateHardLink(string source, string destination)
     {
         var succeeded = OperatingSystem.IsWindows()
             ? CreateHardLinkWindows(destination, source, 0)

@@ -191,8 +191,7 @@ public static class CatalogSnapshotResolver
             manifest.SchemaVersion,
             manifest.PreprocessingVersion,
             manifest.Database.RowCount,
-            manifest.Catalog.Version), databaseFile.Stream, GetSqlitePath(databaseFile));
-        RevalidateFile(databaseFile, "Catalog database");
+            manifest.Catalog.Version), databaseFile);
         if (!string.Equals(catalog.Metadata.Name, manifest.Catalog.Name, StringComparison.Ordinal))
         {
             throw new InvalidDataException(
@@ -689,7 +688,7 @@ public static class CatalogSnapshotResolver
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "Ownership transfers to AuthenticatedFile after identity validation.")]
-    private static AuthenticatedFile AuthenticateFile(string path, string description)
+    internal static AuthenticatedFile AuthenticateFile(string path, string description)
     {
         FileStream? stream = null;
         try
@@ -737,7 +736,7 @@ public static class CatalogSnapshotResolver
         }
     }
 
-    private static void RevalidateFile(AuthenticatedFile file, string description)
+    internal static void RevalidateFile(AuthenticatedFile file, string description)
     {
         var handleIdentity = ReadHandleIdentity(file.Stream.SafeFileHandle);
         ValidateIdentity(handleIdentity, description);
@@ -913,7 +912,7 @@ public static class CatalogSnapshotResolver
             standard.Directory == 0 && (attributes.FileAttributes & (uint)FileAttributes.ReparsePoint) == 0);
     }
 
-    private static string GetSqlitePath(AuthenticatedFile file)
+    internal static string GetSqlitePath(AuthenticatedFile file)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -1133,7 +1132,7 @@ public static class CatalogSnapshotResolver
 
     private sealed record SnapshotPointer(string SnapshotVersion, string SnapshotDirectory);
 
-    private readonly record struct FileIdentity(
+    internal readonly record struct FileIdentity(
         ulong Device,
         ulong FileIdLow,
         ulong FileIdHigh,
@@ -1141,7 +1140,7 @@ public static class CatalogSnapshotResolver
         uint LinkCount,
         bool IsRegularFile);
 
-    private sealed class AuthenticatedFile(string path, FileStream stream, FileIdentity identity) : IDisposable
+    internal sealed class AuthenticatedFile(string path, FileStream stream, FileIdentity identity) : IDisposable
     {
         internal string Path { get; } = path;
 
