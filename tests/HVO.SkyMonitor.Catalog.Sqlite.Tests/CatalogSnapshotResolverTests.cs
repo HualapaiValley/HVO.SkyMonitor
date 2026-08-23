@@ -292,6 +292,10 @@ internal sealed class CatalogSnapshotResolverTests
     [TestMethod]
     public void ResolveRejectsManifestReplacementAfterInitialAuthenticationWithoutMutatingOriginal()
     {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Windows replacement blocking is covered by the manifest ABA test.");
+        }
         using var installation = CreateInstallation();
         var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-original-{Guid.NewGuid():N}");
         FileFingerprint? fingerprint = null;
@@ -326,6 +330,10 @@ internal sealed class CatalogSnapshotResolverTests
     [TestMethod]
     public void ResolveRejectsDatabaseReplacementAfterInitialAuthenticationWithoutMutatingOriginal()
     {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Windows replacement blocking is covered by the SQLite ABA test.");
+        }
         using var installation = CreateInstallation();
         var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-original-{Guid.NewGuid():N}");
         FileFingerprint? fingerprint = null;
@@ -360,10 +368,6 @@ internal sealed class CatalogSnapshotResolverTests
     [TestMethod]
     public void ResolveRejectsHardLinkCreatedAfterInitialAuthenticationWithoutMutatingExternalFingerprint()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Inconclusive("Windows preserves the resolver's existing reparse-point behavior.");
-        }
         using var installation = CreateInstallation();
         var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-external-{Guid.NewGuid():N}");
         FileFingerprint? fingerprint = null;
@@ -376,10 +380,7 @@ internal sealed class CatalogSnapshotResolverTests
                 return;
             }
             invoked = true;
-            if (Link(path, externalPath) != 0)
-            {
-                throw new Win32Exception(Marshal.GetLastPInvokeError());
-            }
+            CreateHardLink(path, externalPath);
             fingerprint = ReadFingerprint(externalPath);
         };
         try
@@ -394,6 +395,104 @@ internal sealed class CatalogSnapshotResolverTests
         {
             CatalogSnapshotResolver.ValidationTestHook = null;
             File.Delete(externalPath);
+        }
+    }
+
+    [TestMethod]
+    public void ResolveConsumesAuthenticatedManifestAcrossAbaPathReplacement()
+    {
+        using var installation = CreateInstallation();
+        var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-original-{Guid.NewGuid():N}");
+        var originalFingerprint = ReadFingerprint(installation.ManifestPath);
+        var swapped = false;
+        var replacementBlocked = false;
+        CatalogSnapshotResolver.ValidationTestHook = (path, point) =>
+        {
+            if (!string.Equals(path, installation.ManifestPath, StringComparison.Ordinal))
+            {
+                return;
+            }
+            if (point == CatalogSnapshotValidationPoint.AfterInitialAuthentication)
+            {
+                try
+                {
+                    File.Move(path, externalPath);
+                    swapped = true;
+                    File.WriteAllText(path, "{");
+                }
+                catch (IOException) when (OperatingSystem.IsWindows())
+                {
+                    replacementBlocked = true;
+                }
+            }
+            else if (point == CatalogSnapshotValidationPoint.AfterManifestRead && swapped)
+            {
+                File.Delete(path);
+                File.Move(externalPath, path);
+                swapped = false;
+            }
+        };
+        try
+        {
+            var result = ResolveFixture(installation.Root);
+
+            Assert.AreEqual(9, result.RowCount);
+            Assert.AreEqual(OperatingSystem.IsWindows(), replacementBlocked);
+            Assert.AreEqual(originalFingerprint, ReadFingerprint(installation.ManifestPath));
+        }
+        finally
+        {
+            CatalogSnapshotResolver.ValidationTestHook = null;
+            RestoreAbaFile(installation.ManifestPath, externalPath, ref swapped);
+        }
+    }
+
+    [TestMethod]
+    public void ResolveLoadsAuthenticatedDatabaseAcrossAbaSqliteOpenReplacement()
+    {
+        using var installation = CreateInstallation();
+        var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-original-{Guid.NewGuid():N}");
+        var originalFingerprint = ReadFingerprint(installation.DatabasePath);
+        var swapped = false;
+        var replacementBlocked = false;
+        CatalogSnapshotResolver.ValidationTestHook = (path, point) =>
+        {
+            if (!string.Equals(path, installation.DatabasePath, StringComparison.Ordinal))
+            {
+                return;
+            }
+            if (point == CatalogSnapshotValidationPoint.BeforeSqliteOpen)
+            {
+                try
+                {
+                    File.Move(path, externalPath);
+                    swapped = true;
+                    File.WriteAllBytes(path, new byte[checked((int)originalFingerprint.Length)]);
+                }
+                catch (IOException) when (OperatingSystem.IsWindows())
+                {
+                    replacementBlocked = true;
+                }
+            }
+            else if (point == CatalogSnapshotValidationPoint.AfterSqliteLoad && swapped)
+            {
+                File.Delete(path);
+                File.Move(externalPath, path);
+                swapped = false;
+            }
+        };
+        try
+        {
+            var result = ResolveFixture(installation.Root);
+
+            Assert.AreEqual(9, result.Catalog.ObjectCount);
+            Assert.AreEqual(OperatingSystem.IsWindows(), replacementBlocked);
+            Assert.AreEqual(originalFingerprint, ReadFingerprint(installation.DatabasePath));
+        }
+        finally
+        {
+            CatalogSnapshotResolver.ValidationTestHook = null;
+            RestoreAbaFile(installation.DatabasePath, externalPath, ref swapped);
         }
     }
 
@@ -672,16 +771,8 @@ internal sealed class CatalogSnapshotResolverTests
 
     private static void AssertHardLinkedRetainedFileRejected(string retainedPath, Action resolve)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Inconclusive("Windows preserves the resolver's existing reparse-point behavior.");
-        }
-
         var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-external-{Guid.NewGuid():N}");
-        if (Link(retainedPath, externalPath) != 0)
-        {
-            throw new Win32Exception(Marshal.GetLastPInvokeError());
-        }
+        CreateHardLink(retainedPath, externalPath);
         var fingerprint = ReadFingerprint(externalPath);
         try
         {
@@ -699,6 +790,31 @@ internal sealed class CatalogSnapshotResolverTests
     private static FileFingerprint ReadFingerprint(string path)
         => new(new FileInfo(path).Length, Checksum(path));
 
+    private static void RestoreAbaFile(string path, string externalPath, ref bool swapped)
+    {
+        if (swapped)
+        {
+            File.Delete(path);
+            File.Move(externalPath, path);
+            swapped = false;
+        }
+        else
+        {
+            File.Delete(externalPath);
+        }
+    }
+
+    private static void CreateHardLink(string source, string destination)
+    {
+        var succeeded = OperatingSystem.IsWindows()
+            ? CreateHardLinkWindows(destination, source, 0)
+            : Link(source, destination) == 0;
+        if (!succeeded)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+        }
+    }
+
     internal sealed record Installation(
         string Root,
         string PointerPath,
@@ -714,5 +830,10 @@ internal sealed class CatalogSnapshotResolverTests
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "link", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int Link(string source, string destination);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLinkWindows(string fileName, string existingFileName, nint securityAttributes);
 #pragma warning restore SYSLIB1054
 }

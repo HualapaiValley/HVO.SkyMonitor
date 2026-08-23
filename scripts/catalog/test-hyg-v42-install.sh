@@ -40,6 +40,20 @@ mkdir -m 700 "$conditional_lineage_root" "$conditional_lineage_root/versions"
     [[ ! -e "$conditional_lineage_root/.catalog-lineage.json" ]]
 )
 
+# A failed durable command remains a failure when the shared publisher is invoked conditionally.
+conditional_command_root="$TEMPORARY_DIRECTORY/conditional-command-lineage"
+mkdir -m 700 "$conditional_command_root" "$conditional_command_root/versions"
+(
+    hyg_catalog_acquire_root_lock "$conditional_command_root"
+    if HVO_CATALOG_TEST_MODE=true HVO_CATALOG_TEST_FAIL_COMMAND_AT=lineage-mv \
+        hyg_catalog_require_lineage "$conditional_command_root" "$HYG_CATALOG_ID" production \
+        "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION"; then
+        exit 92
+    fi
+    [[ ! -e "$conditional_command_root/.catalog-lineage.json" ]]
+    [[ -n "$(find "$conditional_command_root" -maxdepth 1 -name '.catalog-lineage.tmp.*' -print -quit)" ]]
+)
+
 mkdir -p "$TEMPORARY_DIRECTORY/real-root"
 ln -s "$TEMPORARY_DIRECTORY/real-root" "$TEMPORARY_DIRECTORY/symlink-root"
 if "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$TEMPORARY_DIRECTORY/symlink-root" >/dev/null 2>&1; then
@@ -92,7 +106,9 @@ assert_current() {
     }
 }
 
-for boundary in after-copy after-candidate-validation after-staging-fsync after-publish before-activation after-pointer-transaction-temp-fsync after-transaction after-previous-pointer after-current-pointer; do
+for boundary in after-copy after-candidate-validation after-staging-fsync after-publish before-activation \
+    after-pointer-transaction-temp-fsync after-transaction after-previous-pointer-temporary \
+    after-previous-pointer after-current-pointer-temporary after-current-pointer; do
     case "$boundary" in
         after-copy) revision=2 ;;
         after-candidate-validation) revision=3 ;;
@@ -101,7 +117,9 @@ for boundary in after-copy after-candidate-validation after-staging-fsync after-
         before-activation) revision=6 ;;
         after-pointer-transaction-temp-fsync) revision=10 ;;
         after-transaction) revision=7 ;;
+        after-previous-pointer-temporary) revision=17 ;;
         after-previous-pointer) revision=8 ;;
+        after-current-pointer-temporary) revision=18 ;;
         after-current-pointer) revision=9 ;;
     esac
     boundary_root="$TEMPORARY_DIRECTORY/install-$boundary"
@@ -117,17 +135,25 @@ for boundary in after-copy after-candidate-validation after-staging-fsync after-
     else
         assert_current "$boundary_root" 1
     fi
+    case "$boundary" in
+        after-previous-pointer-temporary) [[ -n "$(find "$boundary_root" -maxdepth 1 -name '.previous.tmp.*' -print -quit)" ]] ;;
+        after-current-pointer-temporary) [[ -n "$(find "$boundary_root" -maxdepth 1 -name '.current.tmp.*' -print -quit)" ]] ;;
+    esac
     "$SCRIPT_DIR/install-hyg-v42.sh" install "$candidate" "$boundary_root" >/dev/null
     assert_current "$boundary_root" "$revision"
     [[ "$(readlink "$boundary_root/previous")" == "versions/hyg-v4.2-p3-s2-r1" ]]
     [[ -z "$(find "$boundary_root" -maxdepth 1 -name '.pointer-transaction.tmp.*' -print -quit)" ]]
+    [[ -z "$(find "$boundary_root" -maxdepth 1 \( -name '.current.tmp.*' -o -name '.previous.tmp.*' \) -print -quit)" ]]
 done
 
-for boundary in after-transaction after-previous-pointer after-current-pointer; do
+for boundary in after-transaction after-previous-pointer-temporary after-previous-pointer \
+    after-current-pointer-temporary after-current-pointer; do
     rollback_root="$TEMPORARY_DIRECTORY/rollback-$boundary"
     case "$boundary" in
         after-transaction) rollback_revision=11 ;;
+        after-previous-pointer-temporary) rollback_revision=19 ;;
         after-previous-pointer) rollback_revision=12 ;;
+        after-current-pointer-temporary) rollback_revision=20 ;;
         after-current-pointer) rollback_revision=13 ;;
     esac
     rollback_upgrade="$(make_revision "$rollback_revision")"
@@ -138,9 +164,14 @@ for boundary in after-transaction after-previous-pointer after-current-pointer; 
         printf 'rollback fault injection unexpectedly succeeded at %s\n' "$boundary" >&2
         exit 1
     fi
+    case "$boundary" in
+        after-previous-pointer-temporary) [[ -n "$(find "$rollback_root" -maxdepth 1 -name '.previous.tmp.*' -print -quit)" ]] ;;
+        after-current-pointer-temporary) [[ -n "$(find "$rollback_root" -maxdepth 1 -name '.current.tmp.*' -print -quit)" ]] ;;
+    esac
     "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$rollback_root" >/dev/null
     assert_current "$rollback_root" 1
     [[ "$(readlink "$rollback_root/previous")" == "versions/hyg-v4.2-p3-s2-r$rollback_revision" ]]
+    [[ -z "$(find "$rollback_root" -maxdepth 1 \( -name '.current.tmp.*' -o -name '.previous.tmp.*' \) -print -quit)" ]]
 done
 
 maximum_revision="$(make_revision 2147483647)"
@@ -348,6 +379,31 @@ for hostile_temporary in symlink hardlink mode type malformed unsafe-target ambi
     assert_current "$INSTALL_ROOT" 14
     rm -rf -- "$temporary" "$INSTALL_ROOT/.pointer-transaction.tmp.124.457"
     rm -f -- "$outside"
+done
+
+# Pointer-symlink crash remnants are authenticated before mutation and hostile entries are retained.
+for hostile_pointer in symlink hardlink type mode target; do
+    transaction="$INSTALL_ROOT/.pointer-transaction"
+    temporary="$INSTALL_ROOT/.current.tmp.123.456"
+    printf 'versions/hyg-v4.2-p3-s2-r1\nversions/hyg-v4.2-p3-s2-r14\n' > "$transaction"
+    chmod 600 "$transaction"
+    case "$hostile_pointer" in
+        symlink) ln -s ../outside "$temporary" ;;
+        hardlink)
+            ln -s versions/hyg-v4.2-p3-s2-r1 "$INSTALL_ROOT/.current.tmp.124.457"
+            ln -P "$INSTALL_ROOT/.current.tmp.124.457" "$temporary"
+            ;;
+        type) mkdir -m 700 "$temporary" ;;
+        mode) printf 'preserve\n' > "$temporary"; chmod 640 "$temporary" ;;
+        target) ln -s versions/hyg-v4.2-p3-s2-r14 "$temporary" ;;
+    esac
+    if "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null 2>&1; then
+        printf 'production installer accepted hostile pointer symlink temporary: %s\n' "$hostile_pointer" >&2
+        exit 1
+    fi
+    [[ -e "$temporary" || -L "$temporary" ]] || exit 1
+    assert_current "$INSTALL_ROOT" 14
+    rm -rf -- "$temporary" "$INSTALL_ROOT/.current.tmp.124.457" "$transaction"
 done
 
 for hostile_transaction in symlink hardlink mode type malformed unsafe-target; do

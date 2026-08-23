@@ -78,7 +78,7 @@ ensure_private_directory() {
       (( owner == 0 && (8#$mode & 01000) != 0 )) || return 1
     fi
   done
-  mkdir -m 700 -p -- "$directory"
+  mkdir -m 700 -p -- "$directory" || return 1
   [[ -d "$directory" && ! -L "$directory" && "$(stat -c '%u:%g' -- "$directory")" == "$(id -u):$(id -g)" ]] || return 1
   mode="$(stat -c %a -- "$directory")"; (( (8#$mode & 0022) == 0 ))
 }
@@ -115,58 +115,62 @@ content_tree() { cut -f1-4,7-9 "$1"; }
 capture_tree() {
   local root="$1" output="$2" temporary parent
   parent="$(dirname -- "$output")"; ensure_private_directory "$parent" || return 1
-  temporary="$(mktemp "${output}.tmp.XXXXXX")"; chmod 600 "$temporary"
+  temporary="$(mktemp "${output}.tmp.XXXXXX")" || return 1
+  chmod 600 "$temporary" || return 1
   snapshot_tree "$root" "$temporary" && sync -f "$temporary" && migration_lock_barrier &&
     mv -T -- "$temporary" "$output" && sync -f "$parent" && migration_lock_barrier
 }
-revalidate_tree() { local root="$1" expected="$2" actual; actual="$(mktemp)"; snapshot_tree "$root" "$actual" && cmp -s "$expected" "$actual"; local status=$?; rm -f -- "$actual"; return "$status"; }
-verify_copy() { local source="$1" destination="$2" a b; a="$(mktemp)"; b="$(mktemp)"; snapshot_tree "$source" "$a" && snapshot_tree "$destination" "$b" && content_tree "$a" > "$a.content" && content_tree "$b" > "$b.content" && cmp -s "$a.content" "$b.content"; local status=$?; rm -f -- "$a" "$b" "$a.content" "$b.content"; return "$status"; }
-verify_snapshot_copy() { local destination="$1" expected="$2" actual; actual="$(mktemp)"; snapshot_tree "$destination" "$actual" && content_tree "$expected" > "$actual.expected" && content_tree "$actual" > "$actual.content" && cmp -s "$actual.expected" "$actual.content"; local status=$?; rm -f -- "$actual" "$actual.expected" "$actual.content"; return "$status"; }
+revalidate_tree() { local root="$1" expected="$2" actual; actual="$(mktemp)" || return 1; snapshot_tree "$root" "$actual" && cmp -s "$expected" "$actual"; local status=$?; rm -f -- "$actual" || return 1; return "$status"; }
+verify_copy() { local source="$1" destination="$2" a b; a="$(mktemp)" || return 1; b="$(mktemp)" || { rm -f -- "$a"; return 1; }; snapshot_tree "$source" "$a" && snapshot_tree "$destination" "$b" && content_tree "$a" > "$a.content" && content_tree "$b" > "$b.content" && cmp -s "$a.content" "$b.content"; local status=$?; rm -f -- "$a" "$b" "$a.content" "$b.content" || return 1; return "$status"; }
+verify_snapshot_copy() { local destination="$1" expected="$2" actual; actual="$(mktemp)" || return 1; snapshot_tree "$destination" "$actual" && content_tree "$expected" > "$actual.expected" && content_tree "$actual" > "$actual.content" && cmp -s "$actual.expected" "$actual.content"; local status=$?; rm -f -- "$actual" "$actual.expected" "$actual.content" || return 1; return "$status"; }
 filter_catalog_payload() { awk -F '\t' '$8 != ".catalog.lock" && $8 != ".catalog-lineage.json"' "$1"; }
 revalidate_catalog_payload() {
   local root="$1" expected="$2" actual expected_payload actual_payload status
-  actual="$(mktemp)"; expected_payload="$(mktemp)"; actual_payload="$(mktemp)"
+  actual="$(mktemp)" || return 1; expected_payload="$(mktemp)" || { rm -f -- "$actual"; return 1; }
+  actual_payload="$(mktemp)" || { rm -f -- "$actual" "$expected_payload"; return 1; }
   snapshot_tree "$root" "$actual" || { rm -f -- "$actual" "$expected_payload" "$actual_payload"; return 1; }
   filter_catalog_payload "$expected" > "$expected_payload"
   filter_catalog_payload "$actual" > "$actual_payload"
   cmp -s "$expected_payload" "$actual_payload"; status=$?
-  rm -f -- "$actual" "$expected_payload" "$actual_payload"
+  rm -f -- "$actual" "$expected_payload" "$actual_payload" || return 1
   return "$status"
 }
 verify_catalog_snapshot_copy() {
   local destination="$1" expected="$2" actual expected_payload actual_payload status
-  actual="$(mktemp)"; expected_payload="$(mktemp)"; actual_payload="$(mktemp)"
+  actual="$(mktemp)" || return 1; expected_payload="$(mktemp)" || { rm -f -- "$actual"; return 1; }
+  actual_payload="$(mktemp)" || { rm -f -- "$actual" "$expected_payload"; return 1; }
   snapshot_tree "$destination" "$actual" || { rm -f -- "$actual" "$expected_payload" "$actual_payload"; return 1; }
   filter_catalog_payload "$expected" > "$expected_payload"
   filter_catalog_payload "$actual" > "$actual_payload"
   content_tree "$expected_payload" > "$actual.expected"; content_tree "$actual_payload" > "$actual.content"
   cmp -s "$actual.expected" "$actual.content"; status=$?
-  rm -f -- "$actual" "$expected_payload" "$actual_payload" "$actual.expected" "$actual.content"
+  rm -f -- "$actual" "$expected_payload" "$actual_payload" "$actual.expected" "$actual.content" || return 1
   return "$status"
 }
 validate_snapshot_subset() {
   local root="$1" expected="$2" actual status
-  actual="$(mktemp)"; snapshot_tree "$root" "$actual" || { rm -f -- "$actual"; return 1; }
+  actual="$(mktemp)" || return 1; snapshot_tree "$root" "$actual" || { rm -f -- "$actual"; return 1; }
   awk -F '\t' '
     function comparable(kind, line, f,n) { n=split(line,f,"\t"); return kind=="directory" ? f[1] FS f[2] FS f[3] FS f[4] FS f[5] FS f[6] FS f[8] FS f[9] : line }
     NR==FNR { expected[$8]=comparable($1,$0); next }
     !($8 in expected) || expected[$8] != comparable($1,$0) { exit 1 }
     $8=="." { root_seen=1 }
-    END { if (!root_seen) exit 1 }' "$expected" "$actual"; status=$?; rm -f -- "$actual"; return "$status"
+    END { if (!root_seen) exit 1 }' "$expected" "$actual"; status=$?; rm -f -- "$actual" || return 1; return "$status"
 }
 validate_copy_subset() {
   local root="$1" expected="$2" actual status
-  actual="$(mktemp)"; snapshot_tree "$root" "$actual" || { rm -f -- "$actual"; return 1; }
+  actual="$(mktemp)" || return 1; snapshot_tree "$root" "$actual" || { rm -f -- "$actual"; return 1; }
   awk -F '\t' '
     function comparable(kind, line, f,n) { n=split(line,f,"\t"); return kind=="directory" ? f[1] FS f[2] FS f[3] FS f[4] FS f[8] FS f[9] : f[1] FS f[2] FS f[3] FS f[4] FS f[7] FS f[8] FS f[9] }
     NR==FNR { expected[$8]=comparable($1,$0); next }
     !($8 in expected) || expected[$8] != comparable($1,$0) { exit 1 }
     $8=="." { root_seen=1 }
-    END { if (!root_seen) exit 1 }' "$expected" "$actual"; status=$?; rm -f -- "$actual"; return "$status"
+    END { if (!root_seen) exit 1 }' "$expected" "$actual"; status=$?; rm -f -- "$actual" || return 1; return "$status"
 }
 validate_catalog_copy_subset() {
   local root="$1" expected="$2" actual expected_payload actual_payload status
-  actual="$(mktemp)"; expected_payload="$(mktemp)"; actual_payload="$(mktemp)"
+  actual="$(mktemp)" || return 1; expected_payload="$(mktemp)" || { rm -f -- "$actual"; return 1; }
+  actual_payload="$(mktemp)" || { rm -f -- "$actual" "$expected_payload"; return 1; }
   snapshot_tree "$root" "$actual" || { rm -f -- "$actual" "$expected_payload" "$actual_payload"; return 1; }
   awk -F '\t' '$8 != ".catalog.lock"' "$expected" > "$expected_payload"
   awk -F '\t' '$8 != ".catalog.lock"' "$actual" > "$actual_payload"
@@ -176,7 +180,7 @@ validate_catalog_copy_subset() {
     !($8 in expected) || expected[$8] != comparable($1,$0) { exit 1 }
     $8=="." { root_seen=1 }
     END { if (!root_seen) exit 1 }' "$expected_payload" "$actual_payload"; status=$?
-  rm -f -- "$actual" "$expected_payload" "$actual_payload"
+  rm -f -- "$actual" "$expected_payload" "$actual_payload" || return 1
   return "$status"
 }
 validate_stage_root() {
@@ -220,12 +224,12 @@ validate_instance_tree_for_removal() {
 }
 delete_instance_tree() {
   local root="$1" label="${2:-}" config_expected="${3:-$config_snapshot}" state_expected="${4:-$state_snapshot}" path
-  [[ ! -e "$root/config" ]] || delete_copy_subset "$root/config" "$config_expected"
+  [[ ! -e "$root/config" ]] || delete_copy_subset "$root/config" "$config_expected" || return 1
   [[ -z "$label" ]] || failpoint "after-delete-$label-config"
-  [[ ! -e "$root/state" ]] || delete_copy_subset "$root/state" "$state_expected"
+  [[ ! -e "$root/state" ]] || delete_copy_subset "$root/state" "$state_expected" || return 1
   [[ -z "$label" ]] || failpoint "after-delete-$label-state"
   for path in "$root/instance-manifest.json" "$root/application-identity.json"; do
-    [[ ! -e "$path" && ! -L "$path" ]] || delete_validated_entry "$root" "$path"
+    [[ ! -e "$path" && ! -L "$path" ]] || delete_validated_entry "$root" "$path" || return 1
   done
   migration_lock_barrier || return 1
   rmdir -- "$root" || return 1
@@ -290,8 +294,10 @@ delete_catalog_copy_subset() {
 publish_json() {
   local path="$1" json="$2" temporary parent barrier_label=''
   parent="$(dirname -- "$path")"; ensure_private_directory "$parent" || return 1
-  temporary="$(mktemp "${path}.tmp.XXXXXX")"; chmod 600 "$temporary"
-  printf '%s\n' "$json" > "$temporary"; sync -f "$temporary"
+  temporary="$(mktemp "${path}.tmp.XXXXXX")" || return 1
+  chmod 600 "$temporary" || return 1
+  printf '%s\n' "$json" > "$temporary" || return 1
+  sync -f "$temporary" || return 1
   case "$path" in
     "$evidence")
       case "$(jq -r '.status // empty' <<< "$json")" in
@@ -309,7 +315,8 @@ publish_json() {
     "$intent") barrier_label=finalize-intent-publication ;;
   esac
   migration_lock_barrier "$barrier_label" || return 1
-  mv -Tf -- "$temporary" "$path"; sync -f "$parent"
+  mv -Tf -- "$temporary" "$path" || return 1
+  sync -f "$parent" || return 1
   migration_lock_barrier || return 1
 }
 pin_cutover_evidence() {
@@ -328,17 +335,19 @@ pin_cutover_evidence() {
     return 1
   fi
   parent="$(dirname -- "$output")"; ensure_private_directory "$parent" || { exec {source_fd}<&-; return 1; }
-  temporary="$(mktemp "${output}.tmp.XXXXXX")"; chmod 600 "$temporary"
+  temporary="$(mktemp "${output}.tmp.XXXXXX")" || { exec {source_fd}<&-; return 1; }
+  chmod 600 "$temporary" || { exec {source_fd}<&-; return 1; }
   if cat <&"$source_fd" > "$temporary" && sync -f "$temporary"; then status=0; else status=$?; fi
   exec {source_fd}<&-
   (( status == 0 )) || { rm -f -- "$temporary"; return "$status"; }
   if [[ -e "$output" || -L "$output" ]]; then
     if validate_metadata_file "$output" && cmp -s "$output" "$temporary"; then status=0; else status=$?; fi
-    rm -f -- "$temporary"
+    rm -f -- "$temporary" || return 1
     return "$status"
   fi
   migration_lock_barrier || return 1
-  mv -T -- "$temporary" "$output"; sync -f "$parent"
+  mv -T -- "$temporary" "$output" || return 1
+  sync -f "$parent" || return 1
   migration_lock_barrier || return 1
 }
 failpoint() { [[ "${DEPLOY_MIGRATION_FAILPOINT:-}" != "$1" ]] || exit 75; }
@@ -825,7 +834,9 @@ apply)
     migration_lock_barrier || exit 1
   fi
   [[ -d "$instance_root" && ! -L "$instance_root" && ! -e "$instance_stage" ]] || exit 1
-  verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"; failpoint after-publish-instance
+  verify_copy "$legacy_config" "$instance_root/config" || exit 1
+  verify_copy "$legacy_state" "$instance_root/state" || exit 1
+  failpoint after-publish-instance
   [[ -f "$manifest" && ! -L "$manifest" && -f "$binding" && ! -L "$binding" && "$(stat -c '%u:%h:%a' "$manifest")" == "$(id -u):1:600" && "$(stat -c '%u:%h:%a' "$binding")" == "$(id -u):1:600" ]] || exit 1
   jq -e --arg instance "$instance_id" '.schemaVersion == 1 and .product == "HVO.SkyMonitor" and .component == "cameraAgent" and .instanceId == $instance and .creationProvenance == {migration:"singular-layout-v1"} and .applicationIdentityFile == "application-identity.json"' "$manifest" >/dev/null || exit 1
   jq -e --arg configured "$application_id" --arg bound "$bound_device_id" '.schemaVersion == 1 and .configuredIdentity == $configured and .state == (if $bound == "" then "pre-provisioning" else "bound" end) and .boundIdentity == (if $bound == "" then null else $bound end)' "$binding" >/dev/null || exit 1
@@ -1092,7 +1103,8 @@ finalize)
         migration_lock_barrier || exit 1
       fi
       [[ ! -e "$original" && ! -L "$original" && -d "$tomb" && ! -L "$tomb" ]] || { printf 'Migration tombstone state is inconsistent.\n' >&2; exit 1; }
-      revalidate_tree "$tomb" "$snapshot"; failpoint "after-tombstone-$label"
+      revalidate_tree "$tomb" "$snapshot" || exit 1
+      failpoint "after-tombstone-$label"
     done
   else
     for original in "$legacy_config" "$legacy_state"; do [[ ! -e "$original" && ! -L "$original" ]] || exit 1; done
@@ -1115,9 +1127,10 @@ finalize)
   for spec in "config|$config_tomb|$config_snapshot" "state|$state_tomb|$state_snapshot"; do
     IFS='|' read -r label tomb snapshot <<< "$spec"
     if [[ -e "$tomb" || -L "$tomb" ]]; then
-      validate_snapshot_subset "$tomb" "$snapshot"
+      validate_snapshot_subset "$tomb" "$snapshot" || exit 1
       if [[ "${DEPLOY_MIGRATION_FAILPOINT:-}" == "after-partial-delete-$label" ]]; then partial_delete_one "$tomb"; validate_snapshot_subset "$tomb" "$snapshot"; exit 75; fi
-      delete_snapshot_subset "$tomb" "$snapshot"; sync -f "$(dirname -- "$tomb")"
+      delete_snapshot_subset "$tomb" "$snapshot" || exit 1
+      sync -f "$(dirname -- "$tomb")" || exit 1
     fi
     [[ ! -e "$tomb" && ! -L "$tomb" ]] || exit 1; failpoint "after-remove-$label"
   done

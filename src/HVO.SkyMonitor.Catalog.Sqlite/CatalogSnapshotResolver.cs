@@ -1,9 +1,10 @@
 using System.ComponentModel;
-using Microsoft.Win32.SafeHandles;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.Astronomy;
+using Microsoft.Win32.SafeHandles;
 
 namespace HVO.SkyMonitor.Catalog.Sqlite;
 
@@ -83,12 +84,17 @@ public static class CatalogSnapshotResolver
     private const uint StatxLinkCount = 0x00000004;
     private const uint StatxInode = 0x00000100;
     private const int AtFileDescriptorCurrentWorkingDirectory = -100;
+    private const int AtEmptyPath = 0x1000;
     private const int AtSymbolicLinkNoFollow = 0x100;
     private const uint UnixFileTypeMask = 0xF000;
     private const uint UnixRegularFileType = 0x8000;
     private const uint WindowsOpenExisting = 3;
+    private const uint WindowsGenericRead = 0x80000000;
     private const uint WindowsFileFlagOpenReparsePoint = 0x00200000;
-    private const uint WindowsFileShareReadWriteDelete = 0x00000007;
+    private const uint WindowsFileShareRead = 0x00000001;
+    private const int WindowsFileStandardInformationClass = 1;
+    private const int WindowsFileAttributeTagInformationClass = 9;
+    private const int WindowsFileIdInformationClass = 18;
 
     internal static Action<string, CatalogSnapshotValidationPoint>? ValidationTestHook { get; set; }
 
@@ -105,10 +111,11 @@ public static class CatalogSnapshotResolver
         var snapshotDirectory = pointer.SnapshotDirectory;
 
         var manifestPath = Path.Combine(snapshotDirectory, "manifest.json");
-        var manifestIdentity = AuthenticateFile(manifestPath, "Catalog manifest");
+        using var manifestFile = AuthenticateFile(manifestPath, "Catalog manifest");
         InvokeValidationTestHook(manifestPath, CatalogSnapshotValidationPoint.AfterInitialAuthentication);
-        var manifest = ReadManifest(manifestPath);
-        RevalidateFile(manifestPath, "Catalog manifest", manifestIdentity);
+        var manifest = ReadManifest(manifestFile);
+        InvokeValidationTestHook(manifestPath, CatalogSnapshotValidationPoint.AfterManifestRead);
+        RevalidateFile(manifestFile, "Catalog manifest");
         ValidateCatalogId(manifest.Catalog.Id);
         ValidateCatalogVersion(manifest.Catalog.Version);
         if (!string.Equals(manifest.Catalog.Id, options.ExpectedCatalogId, StringComparison.Ordinal))
@@ -161,17 +168,16 @@ public static class CatalogSnapshotResolver
         var databasePath = GetContainedPath(snapshotDirectory, manifest.Database.RelativePath,
             "Catalog database relative path");
         EnsureParentDirectoriesAreNotLinks(snapshotDirectory, databasePath, "Catalog database relative path");
-        var databaseIdentity = AuthenticateFile(databasePath, "Catalog database");
+        using var databaseFile = AuthenticateFile(databasePath, "Catalog database");
         InvokeValidationTestHook(databasePath, CatalogSnapshotValidationPoint.AfterInitialAuthentication);
-        var databaseInfo = new FileInfo(databasePath);
-        if (databaseInfo.Length != manifest.Database.Length)
+        if (databaseFile.Stream.Length != manifest.Database.Length)
         {
             throw new InvalidDataException(
-                $"Catalog database length mismatch. Expected {manifest.Database.Length}, got {databaseInfo.Length}.");
+                $"Catalog database length mismatch. Expected {manifest.Database.Length}, got {databaseFile.Stream.Length}.");
         }
 
-        var actualSha256 = ComputeSha256(databasePath);
-        RevalidateFile(databasePath, "Catalog database", databaseIdentity);
+        var actualSha256 = ComputeSha256(databaseFile.Stream);
+        RevalidateFile(databaseFile, "Catalog database");
         if (!CryptographicOperations.FixedTimeEquals(
                 Convert.FromHexString(actualSha256), Convert.FromHexString(manifest.Database.Sha256)))
         {
@@ -185,14 +191,8 @@ public static class CatalogSnapshotResolver
             manifest.SchemaVersion,
             manifest.PreprocessingVersion,
             manifest.Database.RowCount,
-            manifest.Catalog.Version));
-        var loadedSha256 = ComputeSha256(databasePath);
-        RevalidateFile(databasePath, "Catalog database", databaseIdentity);
-        if (!CryptographicOperations.FixedTimeEquals(
-                Convert.FromHexString(loadedSha256), Convert.FromHexString(actualSha256)))
-        {
-            throw new InvalidDataException("Catalog database changed while it was being loaded.");
-        }
+            manifest.Catalog.Version), databaseFile.Stream, GetSqlitePath(databaseFile));
+        RevalidateFile(databaseFile, "Catalog database");
         if (!string.Equals(catalog.Metadata.Name, manifest.Catalog.Name, StringComparison.Ordinal))
         {
             throw new InvalidDataException(
@@ -312,17 +312,13 @@ public static class CatalogSnapshotResolver
             throw new InvalidDataException("Catalog production snapshot must contain exactly its four retained files.");
         }
 
-        var license = AuthenticateRetainedFile(snapshotDirectory, manifest.License.File, "Catalog license");
-        var attribution = AuthenticateRetainedFile(
+        using var license = AuthenticateRetainedFile(snapshotDirectory, manifest.License.File, "Catalog license");
+        using var attribution = AuthenticateRetainedFile(
             snapshotDirectory,
             manifest.License.Attribution,
             "Catalog attribution");
-        ValidateRetainedFile(license.Path, license.Identity, manifest.License.File, "Catalog license");
-        ValidateRetainedFile(
-            attribution.Path,
-            attribution.Identity,
-            manifest.License.Attribution,
-            "Catalog attribution");
+        ValidateRetainedFile(license, manifest.License.File, "Catalog license");
+        ValidateRetainedFile(attribution, manifest.License.Attribution, "Catalog attribution");
     }
 
     private static void ValidateFixtureRetainedFiles(string snapshotDirectory)
@@ -382,15 +378,16 @@ public static class CatalogSnapshotResolver
         return new SnapshotPointer(segments[1], snapshotDirectory);
     }
 
-    private static SnapshotManifest ReadManifest(string path)
+    private static SnapshotManifest ReadManifest(AuthenticatedFile file)
     {
-        if (new FileInfo(path).Length > MaximumManifestLength)
+        if (file.Stream.Length > MaximumManifestLength)
         {
             throw new InvalidDataException($"Catalog manifest exceeds the {MaximumManifestLength}-byte limit.");
         }
         try
         {
-            using var document = JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions
+            file.Stream.Position = 0;
+            using var document = JsonDocument.Parse(file.Stream, new JsonDocumentOptions
             {
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,
@@ -690,49 +687,116 @@ public static class CatalogSnapshotResolver
         }
     }
 
-    private static FileIdentity AuthenticateFile(string path, string description)
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
+        Justification = "Ownership transfers to AuthenticatedFile after identity validation.")]
+    private static AuthenticatedFile AuthenticateFile(string path, string description)
     {
-        var info = new FileInfo(path);
-        if (!info.Exists)
-        {
-            throw new FileNotFoundException($"{description} is missing.", path);
-        }
-        if ((info.Attributes & FileAttributes.ReparsePoint) != 0 || info.LinkTarget is not null)
-        {
-            throw new InvalidDataException($"{description} cannot be a symbolic link or reparse point.");
-        }
-
-        FileIdentity identity;
+        FileStream? stream = null;
         try
         {
-            identity = ReadFileIdentity(path);
+            stream = OpenFileNoFollow(path);
+            var handleIdentity = ReadHandleIdentity(stream.SafeFileHandle);
+            ValidateIdentity(handleIdentity, description);
+            var pathIdentity = ReadPathIdentity(path);
+            ValidateIdentity(pathIdentity, description);
+            if (handleIdentity != pathIdentity)
+            {
+                throw new InvalidDataException($"{description} path does not identify the authenticated file handle.");
+            }
+
+            var result = new AuthenticatedFile(path, stream, handleIdentity);
+            return result;
+        }
+        catch (FileNotFoundException)
+        {
+            stream?.Dispose();
+            throw;
         }
         catch (Exception exception) when (exception is not InvalidDataException)
         {
+            stream?.Dispose();
             throw new InvalidDataException($"{description} identity could not be authenticated.", exception);
         }
+        catch
+        {
+            stream?.Dispose();
+            throw;
+        }
+    }
+
+    private static void ValidateIdentity(FileIdentity identity, string description)
+    {
         if (!identity.IsRegularFile)
         {
             throw new InvalidDataException($"{description} must be a regular file.");
         }
-        if (!OperatingSystem.IsWindows() && identity.LinkCount != 1)
+        if (identity.LinkCount != 1)
         {
             throw new InvalidDataException(
                 $"{description} hard-link count must be exactly one; found {identity.LinkCount}.");
         }
-        return identity;
     }
 
-    private static void RevalidateFile(string path, string description, FileIdentity expected)
+    private static void RevalidateFile(AuthenticatedFile file, string description)
     {
-        var actual = AuthenticateFile(path, description);
-        if (actual != expected)
+        var handleIdentity = ReadHandleIdentity(file.Stream.SafeFileHandle);
+        ValidateIdentity(handleIdentity, description);
+        var pathIdentity = ReadPathIdentity(file.Path);
+        ValidateIdentity(pathIdentity, description);
+        if (handleIdentity != file.Identity || pathIdentity != file.Identity)
         {
             throw new InvalidDataException($"{description} identity changed while it was being validated.");
         }
     }
 
-    private static FileIdentity ReadFileIdentity(string path)
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
+        Justification = "The returned FileStream owns the native handle.")]
+    private static FileStream OpenFileNoFollow(string path)
+    {
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            const int linuxOpenFlags = 0x000A0000;
+            const int macOsOpenFlags = 0x01000100;
+            var descriptor = Open(path, OperatingSystem.IsLinux() ? linuxOpenFlags : macOsOpenFlags);
+            if (descriptor < 0)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                if (error == 2)
+                {
+                    throw new FileNotFoundException("Catalog retained file is missing.", path);
+                }
+                throw new Win32Exception(error);
+            }
+            return new FileStream(new SafeFileHandle(descriptor, ownsHandle: true), FileAccess.Read);
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            var handle = CreateFile(
+                path,
+                WindowsGenericRead,
+                WindowsFileShareRead,
+                0,
+                WindowsOpenExisting,
+                WindowsFileFlagOpenReparsePoint,
+                0);
+            if (handle.IsInvalid)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                handle.Dispose();
+                if (error is 2 or 3)
+                {
+                    throw new FileNotFoundException("Catalog retained file is missing.", path);
+                }
+                throw new Win32Exception(error);
+            }
+            return new FileStream(handle, FileAccess.Read);
+        }
+
+        throw new PlatformNotSupportedException("Catalog file authentication is not supported on this platform.");
+    }
+
+    private static FileIdentity ReadPathIdentity(string path)
     {
         if (OperatingSystem.IsLinux())
         {
@@ -753,6 +817,7 @@ public static class CatalogSnapshotResolver
             return new FileIdentity(
                 ((ulong)status.DeviceMajor << 32) | status.DeviceMinor,
                 status.Inode,
+                0,
                 status.Mode & UnixFileTypeMask,
                 status.LinkCount,
                 (status.Mode & UnixFileTypeMask) == UnixRegularFileType);
@@ -767,6 +832,7 @@ public static class CatalogSnapshotResolver
             return new FileIdentity(
                 unchecked((uint)status.Device),
                 status.Inode,
+                0,
                 (uint)status.Mode & UnixFileTypeMask,
                 status.LinkCount,
                 ((uint)status.Mode & UnixFileTypeMask) == UnixRegularFileType);
@@ -774,31 +840,88 @@ public static class CatalogSnapshotResolver
 
         if (OperatingSystem.IsWindows())
         {
-            using var handle = CreateFile(
-                path,
-                0,
-                WindowsFileShareReadWriteDelete,
-                0,
-                WindowsOpenExisting,
-                WindowsFileFlagOpenReparsePoint,
-                0);
-            if (handle.IsInvalid)
+            using var stream = OpenFileNoFollow(path);
+            return ReadWindowsHandleIdentity(stream.SafeFileHandle);
+        }
+
+        throw new PlatformNotSupportedException("Catalog file authentication is not supported on this platform.");
+    }
+
+    private static FileIdentity ReadHandleIdentity(SafeFileHandle handle)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            if (StatX((int)handle.DangerousGetHandle(), string.Empty, AtEmptyPath,
+                    StatxType | StatxLinkCount | StatxInode, out var status) != 0)
             {
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
             }
-            if (!GetFileInformationByHandle(handle, out var status))
+            if ((status.Mask & (StatxType | StatxLinkCount | StatxInode)) !=
+                (StatxType | StatxLinkCount | StatxInode))
+            {
+                throw new InvalidDataException("The file system did not authenticate the file identity.");
+            }
+            return new FileIdentity(
+                ((ulong)status.DeviceMajor << 32) | status.DeviceMinor,
+                status.Inode,
+                0,
+                status.Mode & UnixFileTypeMask,
+                status.LinkCount,
+                (status.Mode & UnixFileTypeMask) == UnixRegularFileType);
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            if (FStat(handle, out var status) != 0)
             {
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
             }
             return new FileIdentity(
-                status.VolumeSerialNumber,
-                ((ulong)status.FileIndexHigh << 32) | status.FileIndexLow,
-                (uint)status.FileAttributes,
-                status.NumberOfLinks,
-                (status.FileAttributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0);
+                unchecked((uint)status.Device),
+                status.Inode,
+                0,
+                (uint)status.Mode & UnixFileTypeMask,
+                status.LinkCount,
+                ((uint)status.Mode & UnixFileTypeMask) == UnixRegularFileType);
         }
 
-        throw new PlatformNotSupportedException("Catalog hard-link validation is not supported on this Unix platform.");
+        if (OperatingSystem.IsWindows())
+        {
+            return ReadWindowsHandleIdentity(handle);
+        }
+
+        throw new PlatformNotSupportedException("Catalog file authentication is not supported on this platform.");
+    }
+
+    private static FileIdentity ReadWindowsHandleIdentity(SafeFileHandle handle)
+    {
+        if (!GetFileInformationByHandleEx(handle, WindowsFileIdInformationClass, out WindowsFileIdInfo fileId,
+                Marshal.SizeOf<WindowsFileIdInfo>()) ||
+            !GetFileInformationByHandleEx(handle, WindowsFileStandardInformationClass, out WindowsFileStandardInfo standard,
+                Marshal.SizeOf<WindowsFileStandardInfo>()) ||
+            !GetFileInformationByHandleEx(handle, WindowsFileAttributeTagInformationClass,
+                out WindowsFileAttributeTagInfo attributes, Marshal.SizeOf<WindowsFileAttributeTagInfo>()))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+        }
+        return new FileIdentity(
+            fileId.VolumeSerialNumber,
+            fileId.FileIdLow,
+            fileId.FileIdHigh,
+            attributes.FileAttributes,
+            standard.NumberOfLinks,
+            standard.Directory == 0 && (attributes.FileAttributes & (uint)FileAttributes.ReparsePoint) == 0);
+    }
+
+    private static string GetSqlitePath(AuthenticatedFile file)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return file.Path;
+        }
+
+        var descriptor = (int)file.Stream.SafeFileHandle.DangerousGetHandle();
+        return OperatingSystem.IsLinux() ? $"/proc/self/fd/{descriptor}" : $"/dev/fd/{descriptor}";
     }
 
     private static void EnsureDirectoryIsNotLink(string path, string description)
@@ -868,27 +991,25 @@ public static class CatalogSnapshotResolver
     {
         var path = GetContainedPath(snapshotDirectory, evidence.RelativePath, $"{description} relative path");
         EnsureParentDirectoriesAreNotLinks(snapshotDirectory, path, $"{description} relative path");
-        var identity = AuthenticateFile(path, description);
+        var file = AuthenticateFile(path, description);
         InvokeValidationTestHook(path, CatalogSnapshotValidationPoint.AfterInitialAuthentication);
-        return new AuthenticatedFile(path, identity);
+        return file;
     }
 
     private static void ValidateRetainedFile(
-        string path,
-        FileIdentity identity,
+        AuthenticatedFile file,
         SnapshotFile evidence,
         string description)
     {
         ValidateSha256(evidence.Sha256, $"{description}.sha256");
-        var info = new FileInfo(path);
-        if (info.Length != evidence.Length)
+        if (file.Stream.Length != evidence.Length)
         {
             throw new InvalidDataException(
-                $"{description} length mismatch. Expected {evidence.Length}, got {info.Length}.");
+                $"{description} length mismatch. Expected {evidence.Length}, got {file.Stream.Length}.");
         }
 
-        var actualSha256 = ComputeSha256(path);
-        RevalidateFile(path, description, identity);
+        var actualSha256 = ComputeSha256(file.Stream);
+        RevalidateFile(file, description);
         if (!CryptographicOperations.FixedTimeEquals(
                 Convert.FromHexString(actualSha256), Convert.FromHexString(evidence.Sha256)))
         {
@@ -906,13 +1027,15 @@ public static class CatalogSnapshotResolver
         }
     }
 
-    private static string ComputeSha256(string path)
+    private static string ComputeSha256(FileStream source)
     {
-        using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        return Convert.ToHexString(SHA256.HashData(source));
+        source.Position = 0;
+        var result = Convert.ToHexString(SHA256.HashData(source));
+        source.Position = 0;
+        return result;
     }
 
-    private static void InvokeValidationTestHook(string path, CatalogSnapshotValidationPoint point)
+    internal static void InvokeValidationTestHook(string path, CatalogSnapshotValidationPoint point)
         => ValidationTestHook?.Invoke(path, point);
 
     private static string PackageKindValue(CatalogSnapshotPackageKind value)
@@ -1012,12 +1135,22 @@ public static class CatalogSnapshotResolver
 
     private readonly record struct FileIdentity(
         ulong Device,
-        ulong Inode,
+        ulong FileIdLow,
+        ulong FileIdHigh,
         uint Type,
         uint LinkCount,
         bool IsRegularFile);
 
-    private readonly record struct AuthenticatedFile(string Path, FileIdentity Identity);
+    private sealed class AuthenticatedFile(string path, FileStream stream, FileIdentity identity) : IDisposable
+    {
+        internal string Path { get; } = path;
+
+        internal FileStream Stream { get; } = stream;
+
+        internal FileIdentity Identity { get; } = identity;
+
+        public void Dispose() => Stream.Dispose();
+    }
 
     [StructLayout(LayoutKind.Explicit, Size = 256)]
     private struct LinuxFileStatus
@@ -1057,19 +1190,29 @@ public static class CatalogSnapshotResolver
         internal ulong Inode;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WindowsFileStatus
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    private struct WindowsFileIdInfo
     {
-        internal FileAttributes FileAttributes;
-        internal System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
-        internal System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
-        internal System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
-        internal uint VolumeSerialNumber;
-        internal uint FileSizeHigh;
-        internal uint FileSizeLow;
+        [FieldOffset(0)] internal ulong VolumeSerialNumber;
+        [FieldOffset(8)] internal ulong FileIdLow;
+        [FieldOffset(16)] internal ulong FileIdHigh;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    private struct WindowsFileStandardInfo
+    {
+        [FieldOffset(16)]
         internal uint NumberOfLinks;
-        internal uint FileIndexHigh;
-        internal uint FileIndexLow;
+
+        [FieldOffset(21)]
+        internal byte Directory;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowsFileAttributeTagInfo
+    {
+        internal uint FileAttributes;
+        internal uint ReparseTag;
     }
 
 #pragma warning disable SYSLIB1054 // These narrow Unix calls avoid enabling unsafe code for source-generated interop.
@@ -1080,6 +1223,14 @@ public static class CatalogSnapshotResolver
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "lstat", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int LStat(string path, out MacOsFileStatus status);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
+    private static extern int FStat(SafeFileHandle handle, out MacOsFileStatus status);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int Open(string path, int flags);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -1095,13 +1246,36 @@ public static class CatalogSnapshotResolver
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetFileInformationByHandle(
+    private static extern bool GetFileInformationByHandleEx(
         SafeFileHandle file,
-        out WindowsFileStatus fileInformation);
+        int fileInformationClass,
+        out WindowsFileIdInfo fileInformation,
+        int bufferSize);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle file,
+        int fileInformationClass,
+        out WindowsFileStandardInfo fileInformation,
+        int bufferSize);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle file,
+        int fileInformationClass,
+        out WindowsFileAttributeTagInfo fileInformation,
+        int bufferSize);
 #pragma warning restore SYSLIB1054
 }
 
 internal enum CatalogSnapshotValidationPoint
 {
-    AfterInitialAuthentication
+    AfterInitialAuthentication,
+    AfterManifestRead,
+    BeforeSqliteOpen,
+    AfterSqliteLoad
 }

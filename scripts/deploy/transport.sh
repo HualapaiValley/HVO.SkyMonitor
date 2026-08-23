@@ -539,7 +539,7 @@ else
     rm -f -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite" || exit 97
     fixture_lock_barrier || exit 97
     rmdir -- "$candidate" || exit 97
-    sync -f "$install_root/versions"
+    sync -f "$install_root/versions" || exit 97
     fixture_lock_barrier || exit 97
   }
   fixture_reconcile_candidate() {
@@ -567,8 +567,8 @@ else
       fixture_remove_partial_candidate "$candidate" || return 1
     fi
     fixture_lock_barrier || exit 97
-    rm -f -- "$intent"
-    sync -f "$install_root"
+    rm -f -- "$intent" || exit 97
+    sync -f "$install_root" || exit 97
     fixture_lock_barrier || exit 97
   }
   install_parent="$(dirname -- "$install_root")"
@@ -581,7 +581,7 @@ else
   else
     mkdir -m 700 -- "$install_root" 2>/dev/null || [[ -d "$install_root" && ! -L "$install_root" ]] || exit 97
     hyg_catalog_safe_mutable_directory "$install_root" || exit 97
-    sync -f "$install_parent"
+    sync -f "$install_parent" || exit 97
   fi
   hyg_catalog_acquire_root_lock "$install_root" || exit 97
   fixture_lock_barrier || exit 97
@@ -594,9 +594,9 @@ else
     hyg_catalog_safe_mutable_directory "$install_root/versions" || exit 97
   else
     fixture_lock_barrier || exit 97
-    mkdir -m 700 -- "$install_root/versions"
+    mkdir -m 700 -- "$install_root/versions" || exit 97
     hyg_catalog_safe_mutable_directory "$install_root/versions" || exit 97
-    sync -f "$install_root"
+    sync -f "$install_root" || exit 97
     fixture_lock_barrier || exit 97
   fi
   hyg_fixture_reconcile_pointer_temporaries "$install_root" || exit 97
@@ -621,31 +621,36 @@ else
     fixture_lock_barrier || exit 97
     chmod 600 "$temporary" || exit 97
     fixture_lock_barrier || exit 97
-    sync -f "$temporary"; fixture_lock_barrier || exit 97
+    sync -f "$temporary" || exit 97; fixture_lock_barrier || exit 97
     fixture_fail_at after-candidate-transaction-temp-fsync
     fixture_lock_barrier || exit 97
-    mv -T -- "$temporary" "$candidate_intent"; sync -f "$install_root"; fixture_lock_barrier || exit 97
-    mkdir -m 700 -- "$candidate"; fixture_lock_barrier || exit 97
+    mv -T -- "$temporary" "$candidate_intent" || exit 97
+    sync -f "$install_root" || exit 97; fixture_lock_barrier || exit 97
+    mkdir -m 700 -- "$candidate" || exit 97; fixture_lock_barrier || exit 97
     fixture_lock_barrier || exit 97
-    (umask 077; cp --no-preserve=mode,ownership -- "$bundle/manifest.json" "$candidate/manifest.json")
+    (umask 077; cp --no-preserve=mode,ownership -- "$bundle/manifest.json" "$candidate/manifest.json") || exit 97
     fixture_lock_barrier || exit 97
-    chmod 600 "$candidate/manifest.json"; fixture_lock_barrier || exit 97
+    chmod 600 "$candidate/manifest.json" || exit 97; fixture_lock_barrier || exit 97
     fixture_fail_at during-candidate-copy
     fixture_lock_barrier || exit 97
-    (umask 077; cp --no-preserve=mode,ownership -- "$bundle/hyg_v42.sqlite" "$candidate/hyg_v42.sqlite")
+    (umask 077; cp --no-preserve=mode,ownership -- "$bundle/hyg_v42.sqlite" "$candidate/hyg_v42.sqlite") || exit 97
     fixture_lock_barrier || exit 97
-    chmod 600 "$candidate/hyg_v42.sqlite"; fixture_lock_barrier || exit 97
+    chmod 600 "$candidate/hyg_v42.sqlite" || exit 97; fixture_lock_barrier || exit 97
     hyg_validate_catalog_contract "$candidate" "$catalog_id" "$kind" "$version" "$schema_version" \
       "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 98
     fixture_lock_barrier || exit 97
-    chmod 444 -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"
+    chmod 444 -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite" || exit 97
     fixture_lock_barrier || exit 97
-    chmod 555 -- "$candidate"
-    sync -f "$candidate/manifest.json"; sync -f "$candidate/hyg_v42.sqlite"; sync -f "$candidate"
+    chmod 555 -- "$candidate" || exit 97
+    sync -f "$candidate/manifest.json" || exit 97
+    sync -f "$candidate/hyg_v42.sqlite" || exit 97
+    sync -f "$candidate" || exit 97
     fixture_lock_barrier fixture-candidate-publication || exit 97
     fixture_fail_at before-candidate-rename
-    mv -T -- "$candidate" "$destination"; sync -f "$install_root/versions"; fixture_lock_barrier || exit 97
-    rm -f -- "$candidate_intent"; sync -f "$install_root"; fixture_lock_barrier || exit 97
+    mv -T -- "$candidate" "$destination" || exit 97
+    sync -f "$install_root/versions" || exit 97; fixture_lock_barrier || exit 97
+    rm -f -- "$candidate_intent" || exit 97
+    sync -f "$install_root" || exit 97; fixture_lock_barrier || exit 97
   else
     existing="$destination/hyg_v42.sqlite"
     [[ -d "$destination" && ! -L "$destination" && -f "$existing" && ! -L "$existing" &&
@@ -655,8 +660,10 @@ else
     [[ "$(sha256sum "$destination/manifest.json" | cut -d' ' -f1)" == "$source_manifest_sha" ]] || exit 98
   hyg_validate_catalog_contract "$destination" "$catalog_id" "$kind" "$version" "$schema_version" \
     "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 98
-  sync -f "$destination/manifest.json"; sync -f "$destination/hyg_v42.sqlite"
-  sync -f "$destination"; sync -f "$install_root/versions"
+  sync -f "$destination/manifest.json" || exit 97
+  sync -f "$destination/hyg_v42.sqlite" || exit 97
+  sync -f "$destination" || exit 97
+  sync -f "$install_root/versions" || exit 97
   fixture_fail_at after-candidate-publication
   if [[ "$old_target" != "versions/$version" ]]; then
     previous_manifest_sha=-
@@ -670,12 +677,13 @@ else
     fixture_lock_barrier || exit 97
     chmod 600 "$temporary" || exit 97
     fixture_lock_barrier || exit 97
-    sync -f "$temporary"; fixture_lock_barrier || exit 97
+    sync -f "$temporary" || exit 97; fixture_lock_barrier || exit 97
     fixture_fail_at after-pointer-transaction-temp-fsync
     fixture_lock_barrier || exit 97
-    mv -T -- "$temporary" "$transaction"; sync -f "$install_root"; fixture_lock_barrier || exit 97
+    mv -T -- "$temporary" "$transaction" || exit 97
+    sync -f "$install_root" || exit 97; fixture_lock_barrier || exit 97
     fixture_fail_at after-pointer-transaction
-    hyg_fixture_reconcile_pointer_transaction "$install_root"
+    hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 97
   fi
   hyg_validate_fixture_installation "$install_root" "$version" "$catalog_id" || exit 98
   fixture_lock_barrier || exit 97
@@ -732,8 +740,8 @@ for _ in {1..16}; do
 done
 [[ -n "$stage" ]] || exit 92
 [[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%d:%a' -- "$stage")" == "$(id -u):$parent_device:700" ]] || exit 92
-mkdir -m 700 -- "$stage/bundle" "$stage/scripts" "$stage/scripts/catalog" "$stage/scripts/infra"
-sync -f "$parent"
+mkdir -m 700 -- "$stage/bundle" "$stage/scripts" "$stage/scripts/catalog" "$stage/scripts/infra" || exit 92
+sync -f "$parent" || exit 92
 printf '%s\n' "$stage"
 REMOTE
 }
@@ -771,12 +779,12 @@ while IFS= read -r -d '' path; do
   fi
 done < <(find -P "$stage" -xdev -mindepth 1 -print0)
 chmod 700 -- "$stage/scripts/catalog/catalog-common.sh" "$stage/scripts/catalog/install-hyg-v42.sh" \
-  "$stage/scripts/infra:operation-lock"
-sync -f "$stage"
+  "$stage/scripts/infra:operation-lock" || exit 94
+sync -f "$stage" || exit 94
 adopted="$parent/.catalog-stage-$run_id-$catalog_id.${stage##*.catalog-transaction-$run_id-$catalog_id.}"
 [[ ! -e "$adopted" && ! -L "$adopted" ]] || exit 95
-mv -T -- "$stage" "$adopted"
-sync -f "$parent"
+mv -T -- "$stage" "$adopted" || exit 95
+sync -f "$parent" || exit 95
 printf '%s\n' "$adopted"
 REMOTE
 }
@@ -804,9 +812,9 @@ while IFS= read -r -d '' path; do
     exit 93
   fi
 done < <(find -P "$stage" -xdev -mindepth 1 -print0)
-find -P "$stage" -xdev -depth -mindepth 1 -delete
-rmdir -- "$stage"
-sync -f "$parent"
+find -P "$stage" -xdev -depth -mindepth 1 -delete || exit 93
+rmdir -- "$stage" || exit 93
+sync -f "$parent" || exit 93
 REMOTE
 }
 
@@ -829,6 +837,7 @@ if [[ "$kind" == fixture ]]; then
   hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 92
 else
   hyg_production_reconcile_pointer_temporaries "$install_root" || exit 92
+  hyg_production_reconcile_pointer_symlink_temporaries "$install_root" || exit 92
   hyg_production_reconcile_pointer_transaction "$install_root" || exit 92
   [[ ! -e "$install_root/.pointer-transaction" && ! -L "$install_root/.pointer-transaction" ]] || exit 92
 fi

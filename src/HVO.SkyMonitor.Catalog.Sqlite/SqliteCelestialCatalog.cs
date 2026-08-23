@@ -17,6 +17,14 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
 
     /// <summary>Creates and fully loads a validated catalog snapshot.</summary>
     public SqliteCelestialCatalog(SqliteCelestialCatalogOptions options)
+        : this(options, null, null)
+    {
+    }
+
+    internal SqliteCelestialCatalog(
+        SqliteCelestialCatalogOptions options,
+        FileStream? authenticatedSource,
+        string? authenticatedDatabasePath)
     {
         ArgumentNullException.ThrowIfNull(options);
         ValidateOptions(options);
@@ -24,17 +32,20 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         Options = options;
         var databasePath = Path.GetFullPath(options.DatabasePath);
         ValidateNoSidecars(databasePath);
-        var actualChecksum = ValidateChecksum(databasePath, options.ExpectedSha256);
+        var actualChecksum = authenticatedSource is null
+            ? ValidateChecksum(databasePath, options.ExpectedSha256)
+            : ValidateChecksum(authenticatedSource, options.ExpectedSha256);
 
         var connectionString = new SqliteConnectionStringBuilder
         {
-            DataSource = new Uri(databasePath).AbsoluteUri + "?immutable=1",
+            DataSource = new Uri(authenticatedDatabasePath ?? databasePath).AbsoluteUri + "?immutable=1",
             Mode = SqliteOpenMode.ReadOnly,
             Cache = SqliteCacheMode.Private,
             Pooling = false
         }.ToString();
 
         using var connection = new SqliteConnection(connectionString);
+        CatalogSnapshotResolver.InvokeValidationTestHook(databasePath, CatalogSnapshotValidationPoint.BeforeSqliteOpen);
         connection.Open();
 
         ValidateIntegrity(connection);
@@ -65,6 +76,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         _objectsByHipparcosId = _objects
             .Where(static item => item.HipparcosId is not null)
             .ToDictionary(static item => item.HipparcosId!, StringComparer.Ordinal);
+        CatalogSnapshotResolver.InvokeValidationTestHook(databasePath, CatalogSnapshotValidationPoint.AfterSqliteLoad);
         ValidateNoSidecars(databasePath);
     }
 
@@ -188,6 +200,21 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     {
         using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         var actual = SHA256.HashData(source);
+        var expected = Convert.FromHexString(expectedChecksum);
+        if (!CryptographicOperations.FixedTimeEquals(actual, expected))
+        {
+            throw new InvalidDataException(
+                $"Catalog snapshot SHA-256 mismatch. Expected {expectedChecksum.ToUpperInvariant()}, got {Convert.ToHexString(actual)}.");
+        }
+
+        return Convert.ToHexString(actual);
+    }
+
+    private static string ValidateChecksum(FileStream source, string expectedChecksum)
+    {
+        source.Position = 0;
+        var actual = SHA256.HashData(source);
+        source.Position = 0;
         var expected = Convert.FromHexString(expectedChecksum);
         if (!CryptographicOperations.FixedTimeEquals(actual, expected))
         {

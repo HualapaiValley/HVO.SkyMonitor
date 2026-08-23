@@ -3176,6 +3176,29 @@ for fixture_boundary in after-candidate-transaction-temp-fsync during-candidate-
   test -z "$(find "$install_root" -maxdepth 1 -name '.current.tmp.*' -print -quit)"
 done
 
+# Conditional fixture recovery propagates failed pointer publication and intent removal commands.
+for fixture_command_failure in fixture-current-pointer-mv fixture-pointer-transaction-rm; do
+  rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
+    "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
+  chmod -R u+w "$install_root" 2>/dev/null || true
+  rm -rf "$install_root"; mkdir -m 700 "$install_root" "$install_root/versions"
+  install_fixture_test_version "$install_root" prior
+  ln -s versions/prior "$install_root/current"
+  if HVO_CATALOG_TEST_MODE=true HVO_CATALOG_TEST_FAIL_COMMAND_AT="$fixture_command_failure" \
+    run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-$fixture_command_failure.log" 2>&1; then
+    fail "Fixture recovery accepted failed durable command: $fixture_command_failure"
+  fi
+  test -e "$install_root/.fixture-pointer-transaction"
+  if [[ "$fixture_command_failure" == fixture-current-pointer-mv ]]; then
+    test "$(readlink "$install_root/current")" = versions/prior
+  else
+    test "$(readlink "$install_root/current")" = versions/fixture-v1
+  fi
+  run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+  test "$(readlink "$install_root/current")" = versions/fixture-v1
+  test ! -e "$install_root/.fixture-pointer-transaction"
+done
+
 make_fixture_transport_stage() {
   local stage_root="$1" package_version="$2"
   mkdir -m 700 -p "$stage_root/bundle" "$stage_root/scripts/catalog"
@@ -3658,8 +3681,11 @@ mv "$legacy_recovery_version/manifest.json.changed" "$legacy_recovery_version/ma
 chmod 444 "$legacy_recovery_version"/*; chmod 555 "$legacy_recovery_version"
 legacy_transaction="$legacy_path_product/catalogs/hyg-v42-production/.pointer-transaction"
 printf 'versions/hyg-v4.2-p3-s2-r1\nversions/hyg-v4.2-p3-s2-r2\n' > "$legacy_transaction"; chmod 600 "$legacy_transaction"
+legacy_pointer_temporary="$legacy_path_product/catalogs/hyg-v42-production/.previous.tmp.123.456"
+ln -s versions/hyg-v4.2-p3-s2-r2 "$legacy_pointer_temporary"
 FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode catalog "$deploy_case" isolated >/dev/null
 test ! -e "$legacy_transaction"; test ! -L "$legacy_transaction"
+test ! -e "$legacy_pointer_temporary"; test ! -L "$legacy_pointer_temporary"
 test "$(readlink "$legacy_path_product/catalogs/hyg-v42-production/current")" = versions/hyg-v4.2-p3-s2-r1
 test "$(readlink "$legacy_path_product/catalogs/hyg-v42-production/previous")" = versions/hyg-v4.2-p3-s2-r2
 for hostile_production_transaction in symlink hardlink mode owner type malformed unsafe-target; do
