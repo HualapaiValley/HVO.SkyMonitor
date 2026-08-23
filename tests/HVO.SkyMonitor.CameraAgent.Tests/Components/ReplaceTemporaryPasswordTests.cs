@@ -60,6 +60,27 @@ public sealed class ReplaceTemporaryPasswordTests
             Times.Never);
     }
 
+    [TestMethod]
+    public void SamePassword_RendersValidationErrorAndDoesNotCompleteBootstrap()
+    {
+        using var fixture = new ComponentFixture();
+        const string temporaryPassword = "TemporaryOwner!418";
+        fixture.Component.Find("#Input\\.CurrentPassword").Change(temporaryPassword);
+        fixture.Component.Find("#Input\\.NewPassword").Change(temporaryPassword);
+        fixture.Component.Find("#Input\\.ConfirmPassword").Change(temporaryPassword);
+
+        fixture.Component.Find("form").Submit();
+
+        fixture.Component.WaitForAssertion(() => StringAssert.Contains(
+            fixture.Component.Markup,
+            "The new password must be different from the current password.",
+            StringComparison.Ordinal));
+        Assert.IsTrue(fixture.Owner.PasswordChangeRequired);
+        fixture.SignInManager.Verify(
+            manager => manager.RefreshSignInAsync(It.IsAny<ApplicationUser>()),
+            Times.Never);
+    }
+
     private static Mock<UserManager<ApplicationUser>> CreateUserManager(ApplicationUser user)
     {
         var manager = new Mock<UserManager<ApplicationUser>>(

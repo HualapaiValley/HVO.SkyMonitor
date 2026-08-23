@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Data;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -13,6 +14,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Authorization;
 [TestCategory("Unit")]
 public sealed class OwnerBootstrapGateMiddlewareTests
 {
+    private const string SecurityStamp = "current-security-stamp";
+
     [TestMethod]
     public async Task PendingOwner_ApiOperationIsDeniedWithStableReason()
     {
@@ -109,14 +112,53 @@ public sealed class OwnerBootstrapGateMiddlewareTests
         Assert.AreEqual(StatusCodes.Status403Forbidden, context.Response.StatusCode);
     }
 
-    private static DefaultHttpContext CreateContext(string path)
+    [TestMethod]
+    public async Task OwnerWithoutSecurityStamp_IsSignedOutAndDenied()
+    {
+        var nextCalled = false;
+        var middleware = new OwnerBootstrapGateMiddleware(
+            _ =>
+            {
+                nextCalled = true;
+                return Task.CompletedTask;
+            },
+            NullLogger<OwnerBootstrapGateMiddleware>.Instance);
+        var context = CreateContext("/api/v1/operations/summary", includeSecurityStamp: false);
+
+        await middleware.InvokeAsync(
+            context,
+            CreateUserManager(passwordChangeRequired: true).Object,
+            Options.Create(new IdentityOptions())).ConfigureAwait(false);
+
+        Assert.IsFalse(nextCalled);
+        Assert.AreEqual(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
+    }
+
+    private static DefaultHttpContext CreateContext(string path, bool includeSecurityStamp = true)
     {
         var context = new DefaultHttpContext();
         context.Request.Path = path;
         context.Response.Body = new MemoryStream();
+        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, "owner") };
+        if (includeSecurityStamp)
+        {
+            claims.Add(new Claim(
+                new IdentityOptions().ClaimsIdentity.SecurityStampClaimType,
+                SecurityStamp));
+        }
         context.User = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, "owner")],
+            claims,
             IdentityConstants.ApplicationScheme));
+        var authentication = new Mock<IAuthenticationService>();
+        authentication.Setup(service => service.SignOutAsync(
+                context,
+                IdentityConstants.ApplicationScheme,
+                It.IsAny<AuthenticationProperties?>()))
+            .Returns(Task.CompletedTask);
+        var services = new Mock<IServiceProvider>();
+        services.Setup(provider => provider.GetService(typeof(IAuthenticationService)))
+            .Returns(authentication.Object);
+        context.RequestServices = services.Object;
         return context;
     }
 
@@ -137,8 +179,11 @@ public sealed class OwnerBootstrapGateMiddlewareTests
             {
                 Id = "owner",
                 IsSiteOwner = true,
-                PasswordChangeRequired = passwordChangeRequired
+                PasswordChangeRequired = passwordChangeRequired,
+                SecurityStamp = SecurityStamp
             });
+        manager.Setup(value => value.GetSecurityStampAsync(It.IsAny<ApplicationUser>()))
+            .ReturnsAsync(SecurityStamp);
         return manager;
     }
 }

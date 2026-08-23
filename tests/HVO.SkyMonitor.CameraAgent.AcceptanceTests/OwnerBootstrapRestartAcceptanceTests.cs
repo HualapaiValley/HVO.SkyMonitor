@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
+using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Data;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
@@ -49,6 +50,10 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
             Assert.AreEqual(HttpStatusCode.Forbidden, denied.StatusCode);
         }
 
+        await AssertSamePasswordRejectedAsync(replacingClient).ConfigureAwait(false);
+        Assert.AreEqual(
+            OwnerBootstrapStates.PasswordChangeRequired,
+            await ReadBootstrapStateAsync(replacingClient).ConfigureAwait(false));
         await ReplacePasswordAsync(replacingClient).ConfigureAwait(false);
         Assert.AreEqual(
             OwnerBootstrapStates.Ready,
@@ -83,7 +88,30 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         Assert.AreEqual(HttpStatusCode.OK, operations.StatusCode);
     }
 
+    private static async Task AssertSamePasswordRejectedAsync(HttpClient client)
+    {
+        using var response = await SubmitPasswordReplacementAsync(
+            client,
+            CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.AreEqual(
+            OwnerBootstrapGateMiddleware.ReplacementPath,
+            response.RequestMessage?.RequestUri?.AbsolutePath);
+        StringAssert.Contains(
+            content,
+            "The new password must be different from the current password.",
+            StringComparison.Ordinal);
+    }
+
     private static async Task ReplacePasswordAsync(HttpClient client)
+    {
+        using var response = await SubmitPasswordReplacementAsync(client, ReplacementPassword).ConfigureAwait(false);
+        Assert.AreEqual("/", response.RequestMessage?.RequestUri?.AbsolutePath);
+    }
+
+    private static async Task<HttpResponseMessage> SubmitPasswordReplacementAsync(
+        HttpClient client,
+        string newPassword)
     {
         using var page = await client.GetAsync(
             new Uri("/Account/ReplaceTemporaryPassword", UriKind.Relative)).ConfigureAwait(false);
@@ -93,14 +121,14 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         {
             ["__RequestVerificationToken"] = token,
             ["Input.CurrentPassword"] = CameraAgentKestrelFixture.OwnerPassword,
-            ["Input.NewPassword"] = ReplacementPassword,
-            ["Input.ConfirmPassword"] = ReplacementPassword,
+            ["Input.NewPassword"] = newPassword,
+            ["Input.ConfirmPassword"] = newPassword,
             ["_handler"] = "replace-temporary-password"
         });
-        using var response = await client.PostAsync(
+        var response = await client.PostAsync(
             new Uri("/Account/ReplaceTemporaryPassword", UriKind.Relative), form).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
-        Assert.AreEqual("/", response.RequestMessage?.RequestUri?.AbsolutePath);
+        return response;
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "HttpClient owns the handler and the caller owns the returned client.")]

@@ -14,6 +14,15 @@ internal sealed class OwnerPasswordReplacementService(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(owner);
+        if (string.Equals(currentPassword, newPassword, StringComparison.Ordinal))
+        {
+            return IdentityResult.Failed(new IdentityError
+            {
+                Code = "PasswordMustChange",
+                Description = "The new password must be different from the current password."
+            });
+        }
+
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
         var passwordResult = await userManager.ChangePasswordAsync(owner, currentPassword, newPassword)

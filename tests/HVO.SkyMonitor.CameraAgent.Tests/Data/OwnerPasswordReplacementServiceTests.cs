@@ -52,6 +52,28 @@ public sealed class OwnerPasswordReplacementServiceTests
     }
 
     [TestMethod]
+    public async Task ReplaceAsync_SamePasswordLeavesBootstrapRequirementAndCredentialUnchanged()
+    {
+        using var fixture = await ReplacementFixture.CreateAsync().ConfigureAwait(false);
+        var securityStamp = fixture.Owner.SecurityStamp;
+
+        var result = await fixture.Service.ReplaceAsync(
+            fixture.Owner,
+            ReplacementFixture.TemporaryPassword,
+            ReplacementFixture.TemporaryPassword).ConfigureAwait(false);
+
+        Assert.IsFalse(result.Succeeded);
+        Assert.AreEqual("PasswordMustChange", result.Errors.Single().Code);
+        Assert.AreEqual(
+            "The new password must be different from the current password.",
+            result.Errors.Single().Description);
+        Assert.IsTrue(fixture.Owner.PasswordChangeRequired);
+        Assert.AreEqual(securityStamp, fixture.Owner.SecurityStamp);
+        Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(
+            fixture.Owner, ReplacementFixture.TemporaryPassword).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task ReplaceAsync_FlagPersistenceFailureRollsBackPasswordAndReloadsOwner()
     {
         using var fixture = await ReplacementFixture.CreateAsync(failPasswordChangeCompletion: true)

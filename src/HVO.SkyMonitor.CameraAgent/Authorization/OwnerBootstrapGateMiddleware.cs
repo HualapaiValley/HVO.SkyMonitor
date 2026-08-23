@@ -98,7 +98,7 @@ internal sealed class OwnerBootstrapGateMiddleware(
         var principalStamp = principal.FindFirstValue(options.ClaimsIdentity.SecurityStampClaimType);
         if (principalStamp is null)
         {
-            return true;
+            return false;
         }
 
         var durableStamp = await userManager.GetSecurityStampAsync(user).ConfigureAwait(false);
