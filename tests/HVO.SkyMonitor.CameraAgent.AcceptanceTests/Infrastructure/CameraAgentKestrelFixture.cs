@@ -119,6 +119,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["LocalIdentity:DatabasePath"] = Path.Combine(root, "identity", "cameraagent_identity.db"),
             ["LocalIdentity:CookieName"] = "CameraAgent.Browser106.Auth",
             ["Catalog:Root"] = catalog.Root,
+            ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
             ["Catalog:RequiredPackageKind"] = "Fixture",
             ["CameraAgent:ConfigFilePath"] = configPath,
             ["CameraAgent:RawIngressRoot"] = root,

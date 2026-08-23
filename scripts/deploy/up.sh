@@ -177,6 +177,7 @@ deploy_up_stage_target() {
             deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__ArtifactBucket "$(jq -r '.deployment.resources.artifactBucket' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__DiagnosticsBucket "$(jq -r '.deployment.resources.diagnosticsBucket' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__Root /app/catalog || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__RequiredCatalogId "$(jq -r '.catalogId' <<< "$target")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__RequiredPackageKind "$(deploy_up_catalog_required_kind "$inventory" "$target")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Smtp__Host "$(jq -r '.deployment.services.smtp.host' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Smtp__Port "$(jq -r '.deployment.services.smtp.ports[0]' "$inventory")" || return 1
@@ -240,6 +241,7 @@ deploy_up_stage_target() {
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" SkyMonitor__BaseUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" SkyMonitor__PublicBaseUrl "$(jq -r '.logicHost.publicEndpoint' "$inventory")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__Root /app/catalog || return 1
+        deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__RequiredCatalogId "$(jq -r '.catalogId' <<< "$target")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" Catalog__RequiredPackageKind "$(deploy_up_catalog_required_kind "$inventory" "$target")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" LocalIdentity__CookieName "$(jq -r '.cookieName' <<< "$target")" || return 1
         deploy_up_stage_value "$target" "$render_root" "$secrets_root" ReverseProxy__Enabled "$(jq -r '(.trustedProxyAddresses | length) > 0' <<< "$target")" || return 1

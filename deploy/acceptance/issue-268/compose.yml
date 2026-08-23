@@ -22,6 +22,7 @@ services:
       CameraAgent__TransientDetection__Mode: "Off"
       CameraAgent__TransientDetection__Required: "false"
       Catalog__Root: /var/lib/hvo/data/catalog
+      Catalog__RequiredCatalogId: hyg-v42-production
       Catalog__RequiredPackageKind: Production
       LocalIdentity__AdminEmail: physical-268@cameraagent.test
       LocalIdentity__CookieName: CameraAgent.Physical268.Auth

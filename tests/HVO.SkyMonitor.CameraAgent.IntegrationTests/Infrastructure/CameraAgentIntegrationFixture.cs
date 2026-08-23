@@ -380,6 +380,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["LocalIdentity:CookieName"] = "CameraAgent.Integration.Auth",
             ["SkyMonitor:BaseUrl"] = apiBase,
             ["Catalog:Root"] = _catalogFixture?.Root,
+            ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
             ["Catalog:RequiredPackageKind"] = "Fixture",
             ["CameraAgent:ConfigFilePath"] = _configurationPath,
             ["CameraAgent:RawIngressRoot"] = _storageRoot,

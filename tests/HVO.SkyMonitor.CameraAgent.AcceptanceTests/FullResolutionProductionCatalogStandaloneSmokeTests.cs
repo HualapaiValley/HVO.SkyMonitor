@@ -448,7 +448,8 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
 
     private static ApprovedCatalogSnapshot ResolveApprovedSnapshot(string catalogRoot)
     {
-        var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(catalogRoot)
+        var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+            catalogRoot, "hyg-v42-production")
         {
             ExpectedPackageKind = CatalogSnapshotPackageKind.Production
         });

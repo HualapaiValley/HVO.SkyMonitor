@@ -163,7 +163,7 @@ installed manifest, phase ledger, or active `current` selection. Resume validate
 package kind/version, catalog ID, schema/preprocessing versions, manifest database
 SHA-256/length/row count, and the actual database bytes and row count.
 The product root must be a nonsymlink and must not be group- or world-writable.
-Configure
+Configure `Catalog:RequiredCatalogId=hyg-v42-production` and
 `Catalog:RequiredPackageKind=Production`. The resolver reads the active pointer
 and all identity, checksum, length, and provenance requirements from the strict
 manifest; there is no independently configurable database path or checksum.

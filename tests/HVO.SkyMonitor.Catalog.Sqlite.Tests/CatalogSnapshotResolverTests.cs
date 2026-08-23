@@ -5,6 +5,8 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 [TestClass]
 internal sealed class CatalogSnapshotResolverTests
 {
+    private const string FixtureCatalogId = "hyg-v42-fixture";
+    private const string ProductionCatalogId = "hyg-v42-production";
     private const string SnapshotVersion = "hyg-v42-fixture-1";
     private static readonly string FixturePath = Path.Combine(
         AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite");
@@ -22,7 +24,8 @@ internal sealed class CatalogSnapshotResolverTests
     {
         using var installation = CreateInstallation();
 
-        var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installation.Root)
+        var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+            installation.Root, FixtureCatalogId)
         {
             ExpectedPackageKind = CatalogSnapshotPackageKind.Fixture
         });
@@ -66,6 +69,24 @@ internal sealed class CatalogSnapshotResolverTests
     }
 
     [TestMethod]
+    public void ResolveRejectsExplicitAndDerivedCatalogIdentityMismatch()
+    {
+        using var explicitInstallation = CreateInstallation();
+        File.WriteAllText(explicitInstallation.ManifestPath, File.ReadAllText(explicitInstallation.ManifestPath)
+            .Replace($"\"id\": \"{FixtureCatalogId}\"", "\"id\": \"alternate-fixture\"",
+                StringComparison.Ordinal));
+
+        var explicitMismatch = Assert.ThrowsExactly<InvalidDataException>(() =>
+            ResolveFixture(explicitInstallation.Root));
+        StringAssert.Contains(explicitMismatch.Message, "Catalog identity mismatch", StringComparison.Ordinal);
+
+        using var legacyInstallation = CreateLegacyFixtureInstallation();
+        var derivedMismatch = Assert.ThrowsExactly<InvalidDataException>(() =>
+            ResolveFixture(legacyInstallation.Root, "alternate-fixture"));
+        StringAssert.Contains(derivedMismatch.Message, "Catalog identity mismatch", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void ResolveLoadsActualLegacyProductionBundleWhenProvided()
     {
         var bundle = Environment.GetEnvironmentVariable("HVO_LEGACY_CATALOG_BUNDLE");
@@ -75,7 +96,8 @@ internal sealed class CatalogSnapshotResolverTests
         }
         using var installation = CreateProductionInstallationFromBundle(bundle!);
 
-        var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installation.Root));
+        var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+            installation.Root, ProductionCatalogId));
 
         Assert.AreEqual(1, result.ManifestVersion);
         Assert.AreEqual("hyg-v42-production", result.CatalogId);
@@ -89,7 +111,8 @@ internal sealed class CatalogSnapshotResolverTests
         using var installation = CreateInstallation();
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
-            CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installation.Root)));
+            CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+                installation.Root, FixtureCatalogId)));
 
         StringAssert.Contains(exception.Message, "package kind mismatch", StringComparison.Ordinal);
     }
@@ -167,13 +190,15 @@ internal sealed class CatalogSnapshotResolverTests
             .Replace("\"version\": \"3.45.1\"", "\"version\": \"3.45.1\", \"unexpected\": true",
                 StringComparison.Ordinal));
         var unknown = Assert.ThrowsExactly<InvalidDataException>(() =>
-            CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installation.Root)));
+            CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+                installation.Root, ProductionCatalogId)));
         StringAssert.Contains(unknown.Message, "unknown property", StringComparison.Ordinal);
 
         File.WriteAllText(installation.ManifestPath,
             CreateProductionManifest(sourceProjectUrl: "https://example.test/wrong"));
         var mismatch = Assert.ThrowsExactly<InvalidDataException>(() =>
-            CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installation.Root)));
+            CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+                installation.Root, ProductionCatalogId)));
         StringAssert.Contains(mismatch.Message, "source.projectUrl mismatch", StringComparison.Ordinal);
     }
 
@@ -183,9 +208,38 @@ internal sealed class CatalogSnapshotResolverTests
         using var installation = CreateProductionInstallation();
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
-            CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installation.Root)));
+            CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+                installation.Root, ProductionCatalogId)));
 
         StringAssert.Contains(exception.Message, "exactly its four retained files", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ResolveRejectsFixtureSnapshotWithExtraEntry()
+    {
+        using var installation = CreateInstallation();
+        var versionDirectory = Path.GetDirectoryName(installation.ManifestPath)!;
+        var unexpectedPath = Path.Combine(versionDirectory, "unexpected");
+        File.WriteAllText(unexpectedPath, "unexpected");
+
+        var extraFile = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+        StringAssert.Contains(extraFile.Message, "exactly its manifest and database files", StringComparison.Ordinal);
+
+        File.Delete(unexpectedPath);
+        Directory.CreateDirectory(unexpectedPath);
+        Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+    }
+
+    [TestMethod]
+    public void ResolveRejectsFixtureSnapshotWithExtraSymbolicLink()
+    {
+        using var installation = CreateInstallation();
+        var versionDirectory = Path.GetDirectoryName(installation.ManifestPath)!;
+        File.CreateSymbolicLink(Path.Combine(versionDirectory, "unexpected"), installation.DatabasePath);
+
+        var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+
+        StringAssert.Contains(exception.Message, "exactly its manifest and database files", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -260,16 +314,23 @@ internal sealed class CatalogSnapshotResolverTests
     public void ResolveValidatesOptionsBeforeReadingTheFileSystem()
     {
         Assert.ThrowsExactly<ArgumentNullException>(() => CatalogSnapshotResolver.Resolve(null!));
-        Assert.ThrowsExactly<ArgumentNullException>(() => CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(null!)));
-        Assert.ThrowsExactly<ArgumentException>(() => CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(" ")));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions("missing")
-        {
-            ExpectedManifestVersion = 0
-        }));
+        Assert.ThrowsExactly<ArgumentNullException>(() => CatalogSnapshotResolver.Resolve(
+            new CatalogSnapshotResolverOptions(null!, FixtureCatalogId)));
+        Assert.ThrowsExactly<ArgumentException>(() => CatalogSnapshotResolver.Resolve(
+            new CatalogSnapshotResolverOptions(" ", FixtureCatalogId)));
+        Assert.ThrowsExactly<ArgumentException>(() => CatalogSnapshotResolver.Resolve(
+            new CatalogSnapshotResolverOptions("missing", " ")));
+        Assert.ThrowsExactly<InvalidDataException>(() => CatalogSnapshotResolver.Resolve(
+            new CatalogSnapshotResolverOptions("missing", "Invalid")));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => CatalogSnapshotResolver.Resolve(
+            new CatalogSnapshotResolverOptions("missing", FixtureCatalogId)
+            {
+                ExpectedManifestVersion = 0
+            }));
     }
 
-    private static CatalogSnapshotResult ResolveFixture(string root)
-        => CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(root)
+    private static CatalogSnapshotResult ResolveFixture(string root, string expectedCatalogId = FixtureCatalogId)
+        => CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(root, expectedCatalogId)
         {
             ExpectedPackageKind = CatalogSnapshotPackageKind.Fixture
         });
@@ -280,7 +341,7 @@ internal sealed class CatalogSnapshotResolverTests
         var versionDirectory = Path.Combine(root, "versions", SnapshotVersion);
         Directory.CreateDirectory(versionDirectory);
         var pointerPath = Path.Combine(root, "current");
-        var databasePath = Path.Combine(versionDirectory, "catalog.sqlite");
+        var databasePath = Path.Combine(versionDirectory, "hyg_v42.sqlite");
         var manifestPath = Path.Combine(versionDirectory, "manifest.json");
         Directory.CreateSymbolicLink(pointerPath, $"versions/{SnapshotVersion}");
         File.Copy(FixturePath, databasePath);
@@ -347,7 +408,7 @@ internal sealed class CatalogSnapshotResolverTests
         string catalogVersion = "4.2-fixture.1",
         string schemaVersion = "2",
         string preprocessingVersion = "3",
-        string relativePath = "catalog.sqlite",
+        string relativePath = "hyg_v42.sqlite",
         string? sha256 = null,
         long? length = null,
         long rowCount = 9,

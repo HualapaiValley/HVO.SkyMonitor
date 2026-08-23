@@ -17,6 +17,7 @@ services:
       CameraAgent__AcceptanceFaultControlRoot: /var/lib/hvo/data/agent/acceptance-faults
       CameraAgent__AcceptanceCentralAttemptLogPath: /var/lib/hvo/data/agent/central-http-attempts.log
       Catalog__Root: /var/lib/hvo/data/catalog
+      Catalog__RequiredCatalogId: hyg-v42-production
       LocalIdentity__AdminEmail: ${CAMERA_AGENT_OWNER_EMAIL:?CAMERA_AGENT_OWNER_EMAIL must be set}
       LocalIdentity__CookieName: CameraAgent.Standalone211.Auth
       LocalIdentity__DatabasePath: /var/lib/hvo/data/agent/identity/cameraagent_identity.db

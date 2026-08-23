@@ -15,7 +15,7 @@ public enum CatalogSnapshotPackageKind
 }
 
 /// <summary>Validation requirements for resolving an installed catalog snapshot.</summary>
-public sealed record CatalogSnapshotResolverOptions(string InstallRoot)
+public sealed record CatalogSnapshotResolverOptions(string InstallRoot, string ExpectedCatalogId)
 {
     /// <summary>Gets the only package kind accepted by the resolver.</summary>
     public CatalogSnapshotPackageKind ExpectedPackageKind { get; init; } = CatalogSnapshotPackageKind.Production;
@@ -94,6 +94,11 @@ public static class CatalogSnapshotResolver
         var manifest = ReadManifest(manifestPath);
         ValidateCatalogId(manifest.Catalog.Id);
         ValidateCatalogVersion(manifest.Catalog.Version);
+        if (!string.Equals(manifest.Catalog.Id, options.ExpectedCatalogId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"Catalog identity mismatch. Expected '{options.ExpectedCatalogId}', got '{manifest.Catalog.Id}'.");
+        }
 
         if (manifest.ManifestVersion != options.ExpectedManifestVersion &&
             !(options.ExpectedManifestVersion == 2 && manifest.ManifestVersion == 1))
@@ -121,6 +126,10 @@ public static class CatalogSnapshotResolver
         {
             ValidateProductionManifest(manifest);
             ValidateProductionRetainedFiles(snapshotDirectory, manifest);
+        }
+        else
+        {
+            ValidateFixtureRetainedFiles(snapshotDirectory);
         }
         ValidateSha256(manifest.Database.Sha256, "database.sha256");
         if (manifest.Database.Length <= 0)
@@ -281,11 +290,30 @@ public static class CatalogSnapshotResolver
         ValidateRetainedFile(snapshotDirectory, manifest.License.Attribution, "Catalog attribution");
     }
 
+    private static void ValidateFixtureRetainedFiles(string snapshotDirectory)
+    {
+        var expectedNames = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "manifest.json",
+            "hyg_v42.sqlite"
+        };
+        var actualNames = Directory.EnumerateFileSystemEntries(snapshotDirectory)
+            .Select(static path => Path.GetFileName(path)!)
+            .ToHashSet(StringComparer.Ordinal);
+        if (!actualNames.SetEquals(expectedNames))
+        {
+            throw new InvalidDataException(
+                "Catalog fixture snapshot must contain exactly its manifest and database files.");
+        }
+    }
+
     private static void ValidateOptions(CatalogSnapshotResolverOptions options)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(options.InstallRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedCatalogId);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedSchemaVersion);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedPreprocessingVersion);
+        ValidateCatalogId(options.ExpectedCatalogId);
         if (options.ExpectedManifestVersion <= 0 || !Enum.IsDefined(options.ExpectedPackageKind))
         {
             throw new ArgumentOutOfRangeException(nameof(options));

@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.Catalog.Sqlite;
 public static partial class InstalledCelestialCatalogServiceCollectionExtensions
 {
     private const string CatalogRootKey = "Catalog:Root";
+    private const string RequiredCatalogIdKey = "Catalog:RequiredCatalogId";
     private const string RequiredPackageKindKey = "Catalog:RequiredPackageKind";
 
     /// <summary>
@@ -27,8 +28,14 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
                 throw new InvalidOperationException($"Configuration value '{CatalogRootKey}' is required.");
             }
 
+            var requiredCatalogId = configuration[RequiredCatalogIdKey];
+            if (string.IsNullOrWhiteSpace(requiredCatalogId))
+            {
+                throw new InvalidOperationException($"Configuration value '{RequiredCatalogIdKey}' is required.");
+            }
+
             var packageKind = ParseRequiredPackageKind(configuration[RequiredPackageKindKey]);
-            var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installRoot)
+            var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installRoot, requiredCatalogId)
             {
                 ExpectedPackageKind = packageKind
             });

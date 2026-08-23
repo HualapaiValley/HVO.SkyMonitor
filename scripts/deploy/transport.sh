@@ -568,6 +568,7 @@ else
     sync -f "$install_parent"
   fi
   hyg_fixture_acquire_install_lock "$install_root" || exit 97
+  hyg_fixture_reconcile_transaction_temporaries "$install_root" || exit 97
   if [[ -e "$install_root/versions" || -L "$install_root/versions" ]]; then
     hyg_fixture_safe_mutable_directory "$install_root/versions" || exit 97
   else
@@ -585,7 +586,8 @@ else
     [[ ! -e "$candidate" && ! -L "$candidate" && ! -e "$candidate_intent" && ! -L "$candidate_intent" ]] || exit 98
     temporary="$(fixture_create_private_temporary .fixture-candidate-transaction.tmp)"
     printf '%s\n%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" "$expected_sha" > "$temporary"
-    chmod 600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$candidate_intent"; sync -f "$install_root"
+    chmod 600 "$temporary"; sync -f "$temporary"; fixture_fail_at after-candidate-transaction-temp-fsync
+    mv -T -- "$temporary" "$candidate_intent"; sync -f "$install_root"
     mkdir -m 700 -- "$candidate"
     (umask 077; cp --no-preserve=mode,ownership -- "$bundle/manifest.json" "$candidate/manifest.json")
     chmod 600 "$candidate/manifest.json"
@@ -615,7 +617,8 @@ else
   [[ ! -e "$transaction" && ! -L "$transaction" ]] || exit 98
   temporary="$(fixture_create_private_temporary .fixture-pointer-transaction.tmp)"
   printf '%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" > "$temporary"
-  chmod 600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$transaction"; sync -f "$install_root"
+  chmod 600 "$temporary"; sync -f "$temporary"; fixture_fail_at after-pointer-transaction-temp-fsync
+  mv -T -- "$temporary" "$transaction"; sync -f "$install_root"
   fixture_fail_at after-pointer-transaction
   hyg_fixture_replace_current "$install_root" "versions/$version"
   fixture_fail_at after-current-pointer
@@ -653,6 +656,7 @@ source "$stage/scripts/catalog/catalog-common.sh"
 [[ -L "$install_root/current" ]] || exit 90
 if [[ "$kind" == fixture ]]; then
   hyg_fixture_acquire_install_lock "$install_root" || exit 92
+  hyg_fixture_reconcile_transaction_temporaries "$install_root" || exit 92
   hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 92
 fi
 current=$(readlink "$install_root/current")

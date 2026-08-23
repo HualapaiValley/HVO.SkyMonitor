@@ -333,6 +333,7 @@ public sealed class IntegrationTestFixture : IDisposable
                         ["Smtp:From"] = TestEmail.FromAddress,
                         ["Smtp:FromDisplayName"] = TestEmail.FromDisplayName,
                         ["Catalog:Root"] = CatalogRoot,
+                        ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
                         ["Catalog:RequiredPackageKind"] = "Fixture",
                         ["DeviceBootstrap:CentralIdentity:ServiceUrl"] = "https://logichost.integration",
                         ["DeviceBootstrap:CentralIdentity:Mode"] = "ClientCredentials",

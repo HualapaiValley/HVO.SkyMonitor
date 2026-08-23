@@ -198,6 +198,26 @@ bash -c 'ln -s "$1" "$2.apply-intent.json.tmp.$$"; shift 2; exec "$@"' _ \
 test "$(<"$TEMP_DIR/publication-target")" = publication-target
 rm -f -- "$evidence.apply-intent.json.tmp."*
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
+# Intent-only rollback accepts safe prefix snapshots without trusting changed sources or touching a shared published catalog.
+partial_catalog_sha="$(sha256sum "$migrated/catalogs/hyg-v42-production/versions/fixture-v1/hyg_v42.sqlite")"
+partial_catalog_pointer="$(readlink "$migrated/catalogs/hyg-v42-production/current")"
+for snapshot_case in config state catalog; do
+  case "$snapshot_case" in
+    config) snapshot_failpoint=after-initial-config-snapshot; changed_path="$legacy/config/cameraagent/identity.db" ;;
+    state) snapshot_failpoint=after-initial-state-snapshot; changed_path="$legacy/data/agent/capture-sequence" ;;
+    catalog) snapshot_failpoint=after-initial-catalog-snapshot; changed_path="$legacy/data/catalog/versions/fixture-v1/manifest.json" ;;
+  esac
+  cp -a "$changed_path" "$TEMP_DIR/partial-$snapshot_case.valid"
+  if DEPLOY_MIGRATION_FAILPOINT="$snapshot_failpoint" "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 112; fi
+  chmod u+w "$changed_path"; printf 'source-drift-after-snapshot\n' >> "$changed_path"
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null
+  test ! -e "$evidence.apply-intent.json"; test ! -e "$evidence.config.snapshot"
+  test ! -e "$evidence.state.snapshot"; test ! -e "$evidence.catalog.snapshot"
+  test ! -e "$migrated/cameraagents/$instance"; test ! -e "$migrated/cameraagents/.hvo-migration-$instance.stage"
+  test "$(sha256sum "$migrated/catalogs/hyg-v42-production/versions/fixture-v1/hyg_v42.sqlite")" = "$partial_catalog_sha"
+  test "$(readlink "$migrated/catalogs/hyg-v42-production/current")" = "$partial_catalog_pointer"
+  cp -a "$TEMP_DIR/partial-$snapshot_case.valid" "$changed_path"
+done
 # Both final pre-publication boundaries retain authenticated snapshots and refuse source drift.
 for evidence_boundary in before-final-evidence-revalidation after-final-evidence-revalidation; do
   if DEPLOY_MIGRATION_FAILPOINT="$evidence_boundary" "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 108; fi
@@ -325,6 +345,8 @@ test -f "$legacy/data/agent/capture-sequence"; test ! -e "$migrated/cameraagents
 if DEPLOY_MIGRATION_FAILPOINT=after-publish-instance "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 90; fi
 test -d "$migrated/cameraagents/$instance"; test ! -e "$evidence"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}"
+printf 'cutover-config-preserved\n' > "$migrated/cameraagents/$instance/config/cutover-state"
+printf '43\n' > "$migrated/cameraagents/$instance/state/capture-sequence"
 cutover="$TEMP_DIR/cutover.json"
 jq -n --arg instance "$instance" '{schemaVersion:1,instanceId:$instance,applicationIdentity:"agent-legacy",imageIdentityVerified:true,
   healthVerified:true,loginVerified:true,provisioningVerified:true,dataProtectionVerified:true,locationHistoryVerified:true,
@@ -354,6 +376,28 @@ for finalize_identity_drift in manifest binding; do
 done
 if DEPLOY_MIGRATION_FAILPOINT=after-tombstone-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 91; fi
 test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent"; test -d "$legacy/data/catalog"
+if DEPLOY_MIGRATION_FAILPOINT=after-pre-pending-destination-barrier "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 113; fi
+test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent.hvo-migration-$instance"
+test -d "$legacy/data/catalog.hvo-migration-$instance"; jq -e '.status == "copied-and-verified"' "$evidence" >/dev/null
+jq -e '(keys | sort) == (["cutoverEvidenceSha256","finalConfigSnapshotSha256","finalStateSnapshotSha256","instanceId","schemaVersion","state","tombstones"] | sort) and
+  .state == "rename-pending" and all(.cutoverEvidenceSha256,.finalConfigSnapshotSha256,.finalStateSnapshotSha256; test("^[0-9a-f]{64}$"))' "$evidence.finalize-intent.json" >/dev/null
+printf 'destination-drift\n' >> "$migrated/cameraagents/$instance/config/cutover-state"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 114; fi
+test -d "$legacy/config/cameraagent.hvo-migration-$instance"; jq -e '.status == "copied-and-verified"' "$evidence" >/dev/null
+printf 'cutover-config-preserved\n' > "$migrated/cameraagents/$instance/config/cutover-state"
+if DEPLOY_MIGRATION_FAILPOINT=after-pre-delete-destination-barrier "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 115; fi
+jq -e '.status == "finalized-removal-pending" and .legacyRetained == false and
+  all(.cutoverEvidenceSha256,.finalConfigSnapshotSha256,.finalStateSnapshotSha256; test("^[0-9a-f]{64}$"))' "$evidence" >/dev/null
+test "$(stat -c '%u:%g:%h:%a' "$evidence.final-config.snapshot")" = "$(id -u):$(id -g):1:600"
+test "$(stat -c '%u:%g:%h:%a' "$evidence.final-state.snapshot")" = "$(id -u):$(id -g):1:600"
+jq -e --arg configSha "$(sha256sum "$evidence.final-config.snapshot" | cut -d' ' -f1)" \
+  --arg stateSha "$(sha256sum "$evidence.final-state.snapshot" | cut -d' ' -f1)" \
+  '.finalConfigSnapshotSha256 == $configSha and .finalStateSnapshotSha256 == $stateSha' "$evidence" >/dev/null
+test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent.hvo-migration-$instance"
+printf '44\n' > "$migrated/cameraagents/$instance/state/capture-sequence"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 116; fi
+jq -e '.status == "finalized-removal-pending"' "$evidence" >/dev/null; test -d "$legacy/data/agent.hvo-migration-$instance"
+printf '43\n' > "$migrated/cameraagents/$instance/state/capture-sequence"
 if DEPLOY_MIGRATION_FAILPOINT=after-partial-delete-state "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 92; fi
 jq -e '.status == "finalized-removal-pending" and .legacyRetained == false' "$evidence" >/dev/null
 test -d "$legacy/data/agent.hvo-migration-$instance"
@@ -373,9 +417,18 @@ printf 'unknown\n' > "$legacy/data/agent.hvo-migration-$instance/unknown"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 95; fi
 rm "$legacy/data/agent.hvo-migration-$instance/unknown"
+if DEPLOY_MIGRATION_FAILPOINT=after-final-destination-barrier "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 117; fi
+test ! -e "$legacy/config/cameraagent.hvo-migration-$instance"; test ! -e "$legacy/data/agent.hvo-migration-$instance"
+jq -e '.status == "finalized-removal-pending"' "$evidence" >/dev/null
+printf 'destination-drift\n' >> "$migrated/cameraagents/$instance/config/cutover-state"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 118; fi
+jq -e '.status == "finalized-removal-pending"' "$evidence" >/dev/null
+printf 'cutover-config-preserved\n' > "$migrated/cameraagents/$instance/config/cutover-state"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover"
 test ! -e "$legacy/config/cameraagent"; test ! -e "$legacy/data/agent"; test ! -e "$legacy/data/catalog"
 jq -e '.status == "finalized" and .legacyRetained == false' "$evidence" >/dev/null
+test "$(<"$migrated/cameraagents/$instance/state/capture-sequence")" = 43
+test "$(<"$migrated/cameraagents/$instance/config/cutover-state")" = cutover-config-preserved
 test "$(<"$legacy/data/sibling")" = sibling-preserved
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
 mkdir "$legacy/config/cameraagent"

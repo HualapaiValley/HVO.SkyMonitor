@@ -2995,6 +2995,44 @@ for hostile_fixture_lock in symlink hardlink mode owner; do
 done
 rm -rf "$install_root"
 
+# Transaction temporaries are removed only when their complete locked recovery contract is authenticated.
+for hostile_transaction_temporary in symlink hardlink mode unknown; do
+  rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
+    "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
+  rm -rf "$install_root"; mkdir -m 700 "$install_root"
+  transaction_temporary="$install_root/.fixture-candidate-transaction.tmp.123.456"
+  case "$hostile_transaction_temporary" in
+    symlink)
+      printf 'preserve\n' > "$TEMP_DIR/fixture-transaction-temp-target"
+      ln -s "$TEMP_DIR/fixture-transaction-temp-target" "$transaction_temporary"
+      ;;
+    hardlink)
+      printf 'preserve\n' > "$TEMP_DIR/fixture-transaction-temp-hardlink"
+      chmod 600 "$TEMP_DIR/fixture-transaction-temp-hardlink"
+      ln "$TEMP_DIR/fixture-transaction-temp-hardlink" "$transaction_temporary"
+      ;;
+    mode)
+      printf 'preserve\n' > "$transaction_temporary"
+      chmod 640 "$transaction_temporary"
+      ;;
+    unknown)
+      transaction_temporary="$install_root/.fixture-candidate-transaction.tmp.unexpected"
+      printf 'preserve\n' > "$transaction_temporary"
+      chmod 600 "$transaction_temporary"
+      ;;
+  esac
+  if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-hostile-transaction-temp-$hostile_transaction_temporary.log" 2>&1; then
+    fail "Catalog accepted hostile fixture transaction temporary: $hostile_transaction_temporary"
+  fi
+  test -e "$transaction_temporary" || test -L "$transaction_temporary" ||
+    fail "Catalog removed hostile fixture transaction temporary: $hostile_transaction_temporary"
+  [[ "$hostile_transaction_temporary" != symlink ]] ||
+    test "$(<"$TEMP_DIR/fixture-transaction-temp-target")" = preserve
+  rm -f "$transaction_temporary" "$TEMP_DIR/fixture-transaction-temp-target" \
+    "$TEMP_DIR/fixture-transaction-temp-hardlink"
+done
+rm -rf "$install_root"
+
 # Unauthenticated or structurally hostile candidate stages are retained for inspection and never adopted or deleted.
 for hostile_candidate in no-intent hostile-intent; do
   rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
@@ -3016,7 +3054,8 @@ rm -rf "$install_root"
 
 # A runtime-owned 0755 catalog parent is safe; activation preserves the old pointer before intent and reconciles on restart.
 test "$(stat -c %a "$catalog_parent")" = 755
-for fixture_boundary in during-candidate-copy before-candidate-rename after-candidate-publication after-pointer-transaction after-current-pointer; do
+for fixture_boundary in after-candidate-transaction-temp-fsync during-candidate-copy before-candidate-rename \
+  after-candidate-publication after-pointer-transaction-temp-fsync after-pointer-transaction after-current-pointer; do
   rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
     "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
   chmod -R u+w "$install_root" 2>/dev/null || true
@@ -3035,6 +3074,7 @@ for fixture_boundary in during-candidate-copy before-candidate-rename after-cand
   test "$(readlink "$install_root/current")" = versions/fixture-v1
   test ! -e "$install_root/.fixture-pointer-transaction"; test ! -e "$install_root/.fixture-candidate-transaction"
   test -z "$(find "$install_root/versions" -maxdepth 1 -name '.fixture-candidate-*.stage' -print -quit)"
+  test -z "$(find "$install_root" -maxdepth 1 \( -name '.fixture-candidate-transaction.tmp.*' -o -name '.fixture-pointer-transaction.tmp.*' \) -print -quit)"
 done
 
 make_fixture_transport_stage() {
@@ -3289,6 +3329,8 @@ test -f "$logic_config/runtime-secrets/ConnectionStrings__skymonitordb"
 test ! -e "$logic_config/initializer-secrets/ConnectionStrings__skymonitordb"
 test "$(<"$logic_config/initializer-secrets/Catalog__Root")" = /app/catalog
 test "$(<"$logic_config/runtime-secrets/Catalog__Root")" = /app/catalog
+test "$(<"$logic_config/initializer-secrets/Catalog__RequiredCatalogId")" = test-fixture
+test "$(<"$logic_config/runtime-secrets/Catalog__RequiredCatalogId")" = test-fixture
 test "$(<"$logic_config/initializer-secrets/Deployment__Mode")" = isolated
 test "$(<"$logic_config/runtime-secrets/Deployment__Mode")" = isolated
 test "$(<"$logic_config/initializer-secrets/Catalog__RequiredPackageKind")" = Fixture
@@ -3305,6 +3347,7 @@ test "$(<"$east_config/secrets/LocalIdentity__AdminPasswordFile")" = /run/hvo-pr
 test "$(<"$east_config/secrets/CameraAgent__ConfigFilePath")" = /app/cameraagent.deploy.json
 test "$(<"$east_config/secrets/SkyMonitor__BaseUrl")" = "https://public.example.test:$HTTP_PORT"
 test "$(<"$east_config/secrets/Catalog__Root")" = /app/catalog
+test "$(<"$east_config/secrets/Catalog__RequiredCatalogId")" = test-fixture
 test "$(<"$east_config/secrets/Catalog__RequiredPackageKind")" = Fixture
 cmp -s "$TEMP_DIR/east-module.json" "$east_config/camera-module.json"
 test -s "$east_config/private/owner-password"

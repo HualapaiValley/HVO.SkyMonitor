@@ -140,11 +140,18 @@ legacy snapshot; unknown or drifted state fails closed. `finalize` also
 requires owner-only JSON cutover evidence for image identity, health, login,
 provisioning, Data Protection, protected location history, artifact checksums,
 non-regressing capture sequence, and a rehearsed rollback. It records that
-evidence file's SHA-256 and performs the same copy verification. Finalization
-first publishes durable intent, atomically renames each exact legacy tree to a
-transaction-scoped tombstone, revalidates every captured identity, and publishes
-`finalized-removal-pending` evidence before deleting any tombstone. Tombstone
-removal is resumable and final evidence is published only after all three are
+evidence file's SHA-256. After collecting the cutover evidence, stop the
+CameraAgent for the short finalization window. Finalization captures strict
+owner-only snapshots of the stopped migrated config and state, requires the
+recorded capture sequence to equal the cutover evidence, and binds both snapshot
+hashes into its exact intent and evidence. Immutable instance identity and catalog
+content remain bound to the initial migration snapshots. Finalization then
+atomically renames each exact legacy tree to a transaction-scoped tombstone,
+revalidates every captured identity and the final migrated snapshots, and publishes
+`finalized-removal-pending` evidence before deleting any tombstone. It revalidates
+the final destination immediately before tombstone deletion and again before
+publishing final evidence. Tombstone removal is resumable and final evidence is
+published only after all three are
 absent. A partially deleted tombstone may resume only when its root identity is
 still pinned and every remaining entry is an exact safe subset of the original
 snapshot; missing entries are allowed, while additions or replacements fail.

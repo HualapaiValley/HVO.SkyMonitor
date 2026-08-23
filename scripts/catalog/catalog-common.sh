@@ -417,6 +417,26 @@ hyg_fixture_acquire_install_lock() {
     fi
 }
 
+hyg_fixture_reconcile_transaction_temporaries() {
+    local install_root="$1"
+    local path name
+    local removed=false
+    local -a temporaries
+    shopt -s nullglob dotglob
+    temporaries=("$install_root"/.fixture-candidate-transaction.tmp.*
+        "$install_root"/.fixture-pointer-transaction.tmp.*)
+    shopt -u nullglob dotglob
+    for path in "${temporaries[@]}"; do
+        name="${path##*/}"
+        [[ "$name" =~ ^[.]fixture-(candidate|pointer)-transaction[.]tmp[.][1-9][0-9]*[.][0-9]{1,5}$ &&
+           -f "$path" && ! -L "$path" &&
+           "$(stat -c '%u:%h:%a' -- "$path")" == "$(id -u):1:600" ]] || return 1
+        rm -f -- "$path"
+        removed=true
+    done
+    [[ "$removed" == false ]] || sync -f "$install_root"
+}
+
 hyg_fixture_validate_ancestor_chain() {
     local path="$1"
     local current=/ component owner mode
@@ -513,7 +533,7 @@ hyg_validate_fixture_installation() {
     local install_root="$1"
     local version="$2"
     local install_parent current
-    local -a candidate_stages
+    local -a candidate_stages transaction_temporaries
     install_parent="$(dirname -- "$install_root")"
     [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
        -d "$install_parent" && ! -L "$install_parent" ]] || return 1
@@ -526,8 +546,10 @@ hyg_validate_fixture_installation() {
        ! -e "$install_root/.fixture-candidate-transaction" && ! -L "$install_root/.fixture-candidate-transaction" ]] || return 1
     shopt -s nullglob dotglob
     candidate_stages=("$install_root/versions"/.fixture-candidate-*.stage)
+    transaction_temporaries=("$install_root"/.fixture-candidate-transaction.tmp.*
+        "$install_root"/.fixture-pointer-transaction.tmp.*)
     shopt -u nullglob dotglob
-    [[ ${#candidate_stages[@]} -eq 0 ]] || return 1
+    [[ ${#candidate_stages[@]} -eq 0 && ${#transaction_temporaries[@]} -eq 0 ]] || return 1
     current="$(readlink "$install_root/current")"
     [[ "$current" == "versions/$version" ]] || return 1
     hyg_validate_fixture_payload "$install_root" "$version"
