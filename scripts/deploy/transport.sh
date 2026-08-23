@@ -681,6 +681,9 @@ if [[ "$kind" == fixture ]]; then
   hyg_fixture_reconcile_transaction_temporaries "$install_root" || exit 92
   hyg_fixture_reconcile_pointer_temporaries "$install_root" || exit 92
   hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 92
+else
+  hyg_production_reconcile_pointer_transaction "$install_root" || exit 92
+  [[ ! -e "$install_root/.pointer-transaction" && ! -L "$install_root/.pointer-transaction" ]] || exit 92
 fi
 current=$(readlink "$install_root/current")
 [[ "$current" == "versions/$expected_version" ]] || exit 91

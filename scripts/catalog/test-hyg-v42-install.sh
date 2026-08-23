@@ -198,6 +198,36 @@ for hardlinked_file in "$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_F
     rm "$outside_link"
 done
 
+# Recovery never changes external inodes while inspecting an untrusted orphan staging tree.
+for hostile_staging in "$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE" \
+    nested-hardlink nested-symlink nested-fifo; do
+    staging="$INSTALL_ROOT/versions/.staging.hostile-$hostile_staging"
+    mkdir -m 700 "$staging"
+    mkdir -m 700 "$staging/nested"
+    outside="$TEMPORARY_DIRECTORY/staging-outside-$hostile_staging"
+    printf 'outside-preserved\n' > "$outside"
+    chmod 0400 "$outside"
+    case "$hostile_staging" in
+        nested-hardlink) ln "$outside" "$staging/nested/hostile" ;;
+        nested-symlink) ln -s "$outside" "$staging/nested/hostile" ;;
+        nested-fifo) mkfifo "$staging/nested/hostile" ;;
+        *) ln "$outside" "$staging/$hostile_staging" ;;
+    esac
+    outside_before="$(stat -c '%d:%i:%u:%h:%a:%s' "$outside")|$(hyg_sha256 "$outside")"
+    if "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null 2>&1; then
+        printf 'production installer accepted hostile orphan staging: %s\n' "$hostile_staging" >&2
+        exit 1
+    fi
+    [[ -d "$staging" ]] || { printf 'production installer removed hostile orphan staging: %s\n' "$hostile_staging" >&2; exit 1; }
+    [[ "$(stat -c '%d:%i:%u:%h:%a:%s' "$outside")|$(hyg_sha256 "$outside")" == "$outside_before" ]] || {
+        printf 'production installer mutated an outside staging inode: %s\n' "$hostile_staging" >&2
+        exit 1
+    }
+    assert_current "$INSTALL_ROOT" 1
+    rm -rf -- "$staging"
+    rm -f -- "$outside"
+done
+
 collision="$TEMPORARY_DIRECTORY/collision.bundle"
 cp -R -- "$SOURCE_BUNDLE" "$collision"
 chmod -R u+w "$collision"
@@ -212,6 +242,34 @@ upgrade="$(make_revision 14)"
 "$SCRIPT_DIR/install-hyg-v42.sh" install "$upgrade" "$INSTALL_ROOT" >/dev/null
 assert_current "$INSTALL_ROOT" 14
 [[ "$(readlink "$INSTALL_ROOT/previous")" == "versions/hyg-v4.2-p3-s2-r1" ]]
+
+for hostile_transaction in symlink hardlink mode type malformed unsafe-target; do
+    transaction="$INSTALL_ROOT/.pointer-transaction"
+    outside="$TEMPORARY_DIRECTORY/production-transaction-$hostile_transaction"
+    printf 'versions/hyg-v4.2-p3-s2-r1\nversions/hyg-v4.2-p3-s2-r14\n' > "$outside"
+    chmod 0600 "$outside"
+    case "$hostile_transaction" in
+        symlink) ln -s "$outside" "$transaction" ;;
+        hardlink) ln "$outside" "$transaction" ;;
+        mode) cp "$outside" "$transaction"; chmod 0640 "$transaction" ;;
+        type) mkdir -m 700 "$transaction" ;;
+        malformed) printf 'versions/hyg-v4.2-p3-s2-r1\n' > "$transaction"; chmod 0600 "$transaction" ;;
+        unsafe-target) printf 'versions/missing\n-\n' > "$transaction"; chmod 0600 "$transaction" ;;
+    esac
+    outside_before="$(stat -c '%d:%i:%u:%h:%a:%s' "$outside")|$(hyg_sha256 "$outside")"
+    if "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null 2>&1; then
+        printf 'production installer accepted hostile pointer transaction: %s\n' "$hostile_transaction" >&2
+        exit 1
+    fi
+    [[ -e "$transaction" || -L "$transaction" ]] || { printf 'hostile pointer transaction was removed: %s\n' "$hostile_transaction" >&2; exit 1; }
+    [[ "$(stat -c '%d:%i:%u:%h:%a:%s' "$outside")|$(hyg_sha256 "$outside")" == "$outside_before" ]] || {
+        printf 'production installer mutated external pointer transaction state: %s\n' "$hostile_transaction" >&2
+        exit 1
+    }
+    assert_current "$INSTALL_ROOT" 14
+    [[ "$(readlink "$INSTALL_ROOT/previous")" == "versions/hyg-v4.2-p3-s2-r1" ]]
+    rm -rf -- "$transaction"; rm -f -- "$outside"
+done
 
 rollback_database="$INSTALL_ROOT/versions/$HYG_PACKAGE_VERSION/$HYG_DATABASE_FILE"
 rollback_outside_link="$TEMPORARY_DIRECTORY/production-rollback-database.hardlink"

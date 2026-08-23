@@ -3563,8 +3563,53 @@ legacy_path_instance=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
   --instance-id "$legacy_path_instance" --application-id legacy-path-agent --catalog-id hyg-v42-production --evidence "$legacy_path_evidence" >/dev/null
 FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode catalog "$deploy_case" isolated >/dev/null
 FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode catalog "$deploy_case" isolated >/dev/null
-FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode up "$deploy_case" isolated >/dev/null
 legacy_installed="$legacy_path_product/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r1"
+legacy_recovery_version="$legacy_path_product/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r2"
+cp -a "$legacy_path_source" "$legacy_recovery_version"
+chmod u+w "$legacy_recovery_version" "$legacy_recovery_version/manifest.json"
+jq '.package.version="hyg-v4.2-p3-s2-r2"' "$legacy_recovery_version/manifest.json" > "$legacy_recovery_version/manifest.json.changed"
+mv "$legacy_recovery_version/manifest.json.changed" "$legacy_recovery_version/manifest.json"
+chmod 444 "$legacy_recovery_version"/*; chmod 555 "$legacy_recovery_version"
+legacy_transaction="$legacy_path_product/catalogs/hyg-v42-production/.pointer-transaction"
+printf 'versions/hyg-v4.2-p3-s2-r1\nversions/hyg-v4.2-p3-s2-r2\n' > "$legacy_transaction"; chmod 600 "$legacy_transaction"
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+test ! -e "$legacy_transaction"; test ! -L "$legacy_transaction"
+test "$(readlink "$legacy_path_product/catalogs/hyg-v42-production/current")" = versions/hyg-v4.2-p3-s2-r1
+test "$(readlink "$legacy_path_product/catalogs/hyg-v42-production/previous")" = versions/hyg-v4.2-p3-s2-r2
+for hostile_production_transaction in symlink hardlink mode owner type malformed unsafe-target; do
+  legacy_transaction_outside="$TEMP_DIR/legacy-transaction-$hostile_production_transaction"
+  printf 'versions/hyg-v4.2-p3-s2-r1\nversions/hyg-v4.2-p3-s2-r2\n' > "$legacy_transaction_outside"
+  chmod 600 "$legacy_transaction_outside"
+  case "$hostile_production_transaction" in
+    symlink) ln -s "$legacy_transaction_outside" "$legacy_transaction" ;;
+    hardlink) ln "$legacy_transaction_outside" "$legacy_transaction" ;;
+    mode) cp "$legacy_transaction_outside" "$legacy_transaction"; chmod 640 "$legacy_transaction" ;;
+    owner)
+      cp "$legacy_transaction_outside" "$legacy_transaction"; chmod 600 "$legacy_transaction"
+      cp "$FAKE_REMOTE_UID_MAP" "$TEMP_DIR/legacy-transaction-uid-map"
+      printf '%s\t99999\n' "$legacy_transaction" >> "$FAKE_REMOTE_UID_MAP"
+      ;;
+    type) mkdir -m 700 "$legacy_transaction" ;;
+    malformed) printf 'versions/hyg-v4.2-p3-s2-r1\n' > "$legacy_transaction"; chmod 600 "$legacy_transaction" ;;
+    unsafe-target) printf 'versions/missing\n-\n' > "$legacy_transaction"; chmod 600 "$legacy_transaction" ;;
+  esac
+  legacy_transaction_before="$(stat -c '%d:%i:%u:%h:%a:%s' "$legacy_transaction_outside")|$(sha256sum "$legacy_transaction_outside")"
+  if FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode catalog "$deploy_case" isolated \
+    > "$TEMP_DIR/legacy-transaction-$hostile_production_transaction.log" 2>&1; then
+    [[ "$hostile_production_transaction" != owner ]] || mv "$TEMP_DIR/legacy-transaction-uid-map" "$FAKE_REMOTE_UID_MAP"
+    fail "Production transport verification accepted hostile pointer transaction: $hostile_production_transaction"
+  fi
+  [[ "$hostile_production_transaction" != owner ]] || mv "$TEMP_DIR/legacy-transaction-uid-map" "$FAKE_REMOTE_UID_MAP"
+  test -e "$legacy_transaction" || test -L "$legacy_transaction" ||
+    fail "Production transport verification removed hostile pointer transaction: $hostile_production_transaction"
+  test "$(stat -c '%d:%i:%u:%h:%a:%s' "$legacy_transaction_outside")|$(sha256sum "$legacy_transaction_outside")" = "$legacy_transaction_before" ||
+    fail "Production transport verification mutated external transaction state: $hostile_production_transaction"
+  test "$(readlink "$legacy_path_product/catalogs/hyg-v42-production/current")" = versions/hyg-v4.2-p3-s2-r1
+  test "$(readlink "$legacy_path_product/catalogs/hyg-v42-production/previous")" = versions/hyg-v4.2-p3-s2-r2
+  rm -rf -- "$legacy_transaction"; rm -f -- "$legacy_transaction_outside"
+  FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+done
+FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode up "$deploy_case" isolated >/dev/null
 test "$(sha256sum "$legacy_installed/manifest.json" | cut -d' ' -f1)" = "$legacy_manifest_sha_before"
 test "$(sha256sum "$legacy_installed/hyg_v42.sqlite" | cut -d' ' -f1)" = "$legacy_database_sha_before"
 jq -e '.manifestVersion == 1 and (.catalog | has("id") | not)' "$legacy_installed/manifest.json" >/dev/null

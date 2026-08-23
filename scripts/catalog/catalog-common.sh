@@ -593,6 +593,58 @@ hyg_catalog_validate_installed_target() {
     fi
 }
 
+hyg_production_validate_pointer_target() {
+    local install_root="$1" target="$2"
+    [[ "$target" =~ ^versions/hyg-v4\.2-p3-s2-r[1-9][0-9]*$ ]] || return 1
+    hyg_catalog_validate_installed_target "$install_root" "$target" "$HYG_CATALOG_ID" production
+}
+
+hyg_production_replace_pointer() {
+    local install_root="$1" pointer="$2" target="$3"
+    local temporary
+    for _ in {1..16}; do
+        temporary="$install_root/.${pointer}.tmp.$$.$RANDOM"
+        if ln -s -- "$target" "$temporary" 2>/dev/null; then
+            break
+        fi
+        temporary=
+    done
+    [[ -n "$temporary" ]] || return 1
+    if ! mv -Tf -- "$temporary" "$install_root/$pointer"; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+    sync -f "$install_root"
+}
+
+hyg_production_reconcile_pointer_transaction() {
+    local install_root="$1" transaction="$1/.pointer-transaction"
+    local current_target previous_target
+    local -a targets
+    [[ -e "$transaction" || -L "$transaction" ]] || return 0
+    [[ -f "$transaction" && ! -L "$transaction" &&
+       "$(stat -c %u -- "$transaction")" == "$(id -u)" &&
+       "$(stat -c '%h:%a' -- "$transaction")" == "1:600" ]] || return 1
+    mapfile -t targets < "$transaction"
+    [[ ${#targets[@]} -eq 2 ]] || return 1
+    current_target="${targets[0]}"; previous_target="${targets[1]}"
+    hyg_production_validate_pointer_target "$install_root" "$current_target" || return 1
+    if [[ "$previous_target" != - ]]; then
+        [[ "$previous_target" != "$current_target" ]] || return 1
+        hyg_production_validate_pointer_target "$install_root" "$previous_target" || return 1
+        hyg_production_replace_pointer "$install_root" previous "$previous_target" || return 1
+    else
+        rm -f -- "$install_root/previous"
+        sync -f "$install_root"
+    fi
+    if declare -F test_fail_at >/dev/null; then test_fail_at after-previous-pointer; fi
+    hyg_production_replace_pointer "$install_root" current "$current_target" || return 1
+    if declare -F test_fail_at >/dev/null; then test_fail_at after-current-pointer; fi
+    rm -f -- "$transaction"
+    sync -f "$install_root"
+    [[ ! -e "$transaction" && ! -L "$transaction" ]]
+}
+
 hyg_catalog_package_lineage() {
     local kind="$1" schema="$2" preprocessing="$3"
     [[ "$schema" == "$HYG_SCHEMA_VERSION" && "$preprocessing" == "$HYG_PREPROCESSING_VERSION" ]] || return 1

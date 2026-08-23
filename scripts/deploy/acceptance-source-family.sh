@@ -57,6 +57,19 @@ phase14_source_hash() {
     printf '%s\n' "${digest%% *}"
 }
 
+phase14_source_validate_catalog_manifest_document() {
+    local manifest="$1" quoted duplicate_count
+    [[ "$(wc -c < "$manifest")" -le 65536 ]] || return 1
+    quoted="${manifest//\'/\'\'}"
+    [[ "$(sqlite3 -batch -noheader ':memory:' \
+      "SELECT json_valid(CAST(readfile('$quoted') AS TEXT));" 2>/dev/null)" == 1 ]] || return 1
+    duplicate_count="$(sqlite3 -batch -noheader ':memory:' \
+      "WITH input(document) AS (SELECT CAST(readfile('$quoted') AS TEXT))
+       SELECT count(*) FROM (SELECT parent, key FROM input, json_tree(document)
+       WHERE key IS NOT NULL GROUP BY parent, key HAVING count(*) > 1);" 2>/dev/null)" || return 1
+    [[ "$duplicate_count" == 0 ]]
+}
+
 phase14_source_method_id() {
     printf '%s' "$1" | sha256sum | cut -c 1-16
 }
@@ -142,7 +155,7 @@ phase14_source_run_issue211() {
 }
 
 phase14_source_catalog_identity() {
-    local root="$1" current resolved manifest database relative expected_sha expected_length actual_sha actual_length
+    local root="$1" current resolved manifest database relative expected_sha expected_length actual_sha actual_length package_version
     current="$root/current"
     [[ -L "$current" ]] || return 1
     resolved="$(readlink -e -- "$current" 2>/dev/null)" || return 1
@@ -150,6 +163,7 @@ phase14_source_catalog_identity() {
     phase14_source_no_symlink_path "$root/versions" "$resolved" || return 1
     manifest="$resolved/manifest.json"
     phase14_source_no_symlink_path "$root/versions" "$manifest" && phase14_source_safe_catalog_file "$manifest" || return 1
+    phase14_source_validate_catalog_manifest_document "$manifest" || return 1
     jq -e '
       def exact($names): type == "object" and ((keys | sort) == ($names | sort));
       def supported_v2_package_version:
@@ -157,6 +171,7 @@ phase14_source_catalog_identity() {
         ((capture("-r(?<revision>[0-9]+)$").revision | tonumber) <= 2147483647);
       .manifestVersion as $manifest_version |
       ($manifest_version == 1 or $manifest_version == 2) and
+      exact(["catalog","database","license","manifestVersion","package","preprocessingVersion","schemaVersion","serializer","source","topology"]) and
       (.package | exact(["kind","version"])) and .package.kind == "production" and
       (.catalog | exact(if $manifest_version == 1 then ["name","version"] else ["id","name","version"] end)) and
       .catalog.name == "HYG 4.2" and .catalog.version == "4.2" and
@@ -164,12 +179,22 @@ phase14_source_catalog_identity() {
       (if $manifest_version == 1 then
          .package.version == "hyg-v4.2-p3-s2-r1" and (.catalog | has("id") | not)
        else
-         .catalog.id == "hyg-v42-production" and (.package.version | supported_v2_package_version)
+          .catalog.id == "hyg-v42-production" and (.package.version | supported_v2_package_version)
        end) and
-      (.database | type == "object") and
+      (.source | exact(["compressed","decompressed","downloadUrl","oid","projectUrl"])) and
+      (.source.compressed | exact(["length","sha256"])) and
+      (.source.decompressed | exact(["length","sha256"])) and
+      (.serializer | exact(["name","version"])) and
+      (.database | exact(["length","relativePath","requiredColumn","rowCount","sha256","solCount"])) and
+      (.license | exact(["attribution","file","identifier","url"])) and
+      (.license.file | exact(["length","relativePath","sha256"])) and
+      (.license.attribution | exact(["length","relativePath","sha256"])) and
+      (.topology | exact(["constellationCount","identity","segmentCount","sha256"])) and
       (.database.relativePath | type == "string" and test("^[A-Za-z0-9._/-]+$") and (startswith("/") | not)) and
       (.database.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
       (.database.length | numbers) > 0 and (.database.length | floor) == .database.length' "$manifest" >/dev/null || return 1
+    package_version="$(jq -r '.package.version' "$manifest")"
+    [[ "${resolved##*/}" == "$package_version" ]] || return 1
     relative="$(jq -r '.database.relativePath' "$manifest")"
     phase14_source_safe_relative_path "$relative" || return 1
     database="$resolved/$relative"

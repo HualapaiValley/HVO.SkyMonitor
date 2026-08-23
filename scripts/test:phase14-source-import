@@ -166,30 +166,48 @@ phase14_source_run_issue211() {
     chmod 600 "$assembly_sha_file"
 }
 
-COLLECT_OUTPUT="$TEMP_DIR/collected-output"; CATALOG="$TEMP_DIR/catalog"
+COLLECT_OUTPUT="$TEMP_DIR/collected-output"; CATALOG="$TEMP_DIR/catalog"; CATALOG_VERSION=hyg-v4.2-p3-s2-r1
 COLLECTOR_IMAGE="collector.invalid/otel@sha256:$(printf 'a%.0s' {1..64})"
-install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG" "$CATALOG/versions" "$CATALOG/versions/catalog-v1"
+install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG" "$CATALOG/versions" "$CATALOG/versions/$CATALOG_VERSION"
 install -m 600 /dev/null "$CATALOG/.catalog.lock"
-printf 'catalog\n' > "$CATALOG/versions/catalog-v1/hyg_v42.sqlite"
-catalog_sha="$(phase14_source_hash "$CATALOG/versions/catalog-v1/hyg_v42.sqlite")"
-jq -S -n --arg sha "$catalog_sha" --argjson length "$(stat -c %s "$CATALOG/versions/catalog-v1/hyg_v42.sqlite")" \
+printf 'catalog\n' > "$CATALOG/versions/$CATALOG_VERSION/hyg_v42.sqlite"
+catalog_sha="$(phase14_source_hash "$CATALOG/versions/$CATALOG_VERSION/hyg_v42.sqlite")"
+jq -S -n --arg sha "$catalog_sha" --argjson length "$(stat -c %s "$CATALOG/versions/$CATALOG_VERSION/hyg_v42.sqlite")" \
   '{manifestVersion:1,package:{kind:"production",version:"hyg-v4.2-p3-s2-r1"},
     catalog:{name:"HYG 4.2",version:"4.2"},schemaVersion:"2",preprocessingVersion:"3",
-    database:{relativePath:"hyg_v42.sqlite",sha256:$sha,length:$length}}' \
-  > "$CATALOG/versions/catalog-v1/manifest.json"
-chmod 400 "$CATALOG/versions/catalog-v1/hyg_v42.sqlite" "$CATALOG/versions/catalog-v1/manifest.json"
-ln -s versions/catalog-v1 "$CATALOG/current"
+    source:{projectUrl:"https://codeberg.org/astronexus/hyg",downloadUrl:"https://codeberg.org/astronexus/hyg.git/info/lfs/objects/test",
+      oid:("a"*64),compressed:{sha256:("a"*64),length:1},decompressed:{sha256:("b"*64),length:1}},
+    serializer:{name:"sqlite3",version:"3.45.1"},
+    database:{relativePath:"hyg_v42.sqlite",sha256:$sha,length:$length,rowCount:1,solCount:0,requiredColumn:"hipparcos_id"},
+    license:{identifier:"CC BY-SA 4.0",url:"https://creativecommons.org/licenses/by-sa/4.0/",
+      file:{relativePath:"LICENSE-HYG.md",sha256:("c"*64),length:1},
+      attribution:{relativePath:"ATTRIBUTION-HYG.md",sha256:("d"*64),length:1}},
+    topology:{identity:"synthetic",sha256:("e"*64),constellationCount:88,segmentCount:743}}' \
+  > "$CATALOG/versions/$CATALOG_VERSION/manifest.json"
+chmod 400 "$CATALOG/versions/$CATALOG_VERSION/hyg_v42.sqlite" "$CATALOG/versions/$CATALOG_VERSION/manifest.json"
+ln -s "versions/$CATALOG_VERSION" "$CATALOG/current"
 PHASE14_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
 PHASE14_ACCEPTANCE_INPUTS="$(phase14_source_catalog_identity "$CATALOG")"
-catalog_manifest="$CATALOG/versions/catalog-v1/manifest.json"
+catalog_manifest="$CATALOG/versions/$CATALOG_VERSION/manifest.json"
 cp "$catalog_manifest" "$TEMP_DIR/catalog-manifest-v1.valid"
 chmod 600 "$catalog_manifest"
 jq '.manifestVersion=2 | .package.version="hyg-v4.2-p3-s2-r2" | .catalog.id="hyg-v42-production"' \
   "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest"
+mv "$CATALOG/versions/$CATALOG_VERSION" "$CATALOG/versions/hyg-v4.2-p3-s2-r2"
+CATALOG_VERSION=hyg-v4.2-p3-s2-r2
+catalog_manifest="$CATALOG/versions/$CATALOG_VERSION/manifest.json"
+ln -sfn "versions/$CATALOG_VERSION" "$CATALOG/current"
 chmod 400 "$catalog_manifest"
 phase14_source_catalog_identity "$CATALOG" >/dev/null || fail 'A canonical explicit v2 production catalog was rejected.'
+cp "$catalog_manifest" "$TEMP_DIR/catalog-manifest-v2.valid"
+manifest_v2_compact="$(jq -c . "$TEMP_DIR/catalog-manifest-v2.valid")"
+catalog_v2_compact="$(jq -c '.catalog' "$TEMP_DIR/catalog-manifest-v2.valid")"
+duplicate_catalog_compact="${catalog_v2_compact/\{/\{\"id\":\"different-production\",}"
+database_v2_compact="$(jq -c '.database' "$TEMP_DIR/catalog-manifest-v2.valid")"
+duplicate_database_compact="${database_v2_compact/\{/\{\"length\":1,}"
 for invalid_catalog_identity in v1-conflicting-id fixture-kind unknown-kind malformed-schema unsupported-manifest \
-  v2-wrong-id v2-missing-id v2-unsupported-package; do
+  v2-wrong-id v2-missing-id v2-unsupported-package unknown-top unknown-catalog unknown-database \
+  duplicate-top duplicate-catalog duplicate-database; do
     chmod 600 "$catalog_manifest"
     case "$invalid_catalog_identity" in
       v1-conflicting-id) jq '.catalog.id="different-production"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
@@ -200,6 +218,12 @@ for invalid_catalog_identity in v1-conflicting-id fixture-kind unknown-kind malf
       v2-wrong-id) jq '.manifestVersion=2 | .package.version="hyg-v4.2-p3-s2-r2" | .catalog.id="different-production"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
       v2-missing-id) jq '.manifestVersion=2 | .package.version="hyg-v4.2-p3-s2-r2"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
       v2-unsupported-package) jq '.manifestVersion=2 | .package.version="hyg-v4.2-p3-s2-r01" | .catalog.id="hyg-v42-production"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
+      unknown-top) jq '.unexpected=true' "$TEMP_DIR/catalog-manifest-v2.valid" > "$catalog_manifest" ;;
+      unknown-catalog) jq '.catalog.unexpected=true' "$TEMP_DIR/catalog-manifest-v2.valid" > "$catalog_manifest" ;;
+      unknown-database) jq '.database.unexpected=true' "$TEMP_DIR/catalog-manifest-v2.valid" > "$catalog_manifest" ;;
+      duplicate-top) printf '{"manifestVersion":1,%s\n' "${manifest_v2_compact#\{}" > "$catalog_manifest" ;;
+      duplicate-catalog) printf '%s\n' "${manifest_v2_compact/\"catalog\":$catalog_v2_compact/\"catalog\":$duplicate_catalog_compact}" > "$catalog_manifest" ;;
+      duplicate-database) printf '%s\n' "${manifest_v2_compact/\"database\":$database_v2_compact/\"database\":$duplicate_database_compact}" > "$catalog_manifest" ;;
     esac
     chmod 400 "$catalog_manifest"
     if phase14_source_catalog_identity "$CATALOG" >/dev/null 2>&1; then
@@ -208,6 +232,10 @@ for invalid_catalog_identity in v1-conflicting-id fixture-kind unknown-kind malf
 done
 chmod 600 "$catalog_manifest"
 cp "$TEMP_DIR/catalog-manifest-v1.valid" "$catalog_manifest"
+mv "$CATALOG/versions/$CATALOG_VERSION" "$CATALOG/versions/hyg-v4.2-p3-s2-r1"
+CATALOG_VERSION=hyg-v4.2-p3-s2-r1
+catalog_manifest="$CATALOG/versions/$CATALOG_VERSION/manifest.json"
+ln -sfn "versions/$CATALOG_VERSION" "$CATALOG/current"
 chmod 400 "$catalog_manifest"
 PHASE14_ACCEPTANCE_INPUTS="$(phase14_source_catalog_identity "$CATALOG")"
 export PHASE14_ACCEPTANCE_INPUTS
@@ -261,7 +289,7 @@ phase14_source_collect "$REPO_ROOT" "$REPEAT_OUTPUT" "$harness_revision" "$CATAL
   fail 'Repeated collection retained auxiliary issue-170 evidence.'
 [[ -e "$REPEAT_OUTPUT/source-import/source-import-index.json" ]] || fail 'Repeated collection did not publish.'
 MUTATED_CATALOG_OUTPUT="$TEMP_DIR/mutated-catalog"; install -d -m 700 "$MUTATED_CATALOG_OUTPUT"
-cp -a "$CATALOG" "$TEMP_DIR/mutable-catalog"; chmod 600 "$TEMP_DIR/mutable-catalog/versions/catalog-v1/manifest.json"
+cp -a "$CATALOG" "$TEMP_DIR/mutable-catalog"; chmod 600 "$TEMP_DIR/mutable-catalog/versions/hyg-v4.2-p3-s2-r1/manifest.json"
 CATALOG="$TEMP_DIR/mutable-catalog"
 export PHASE14_TEST_MUTATE_CATALOG_AFTER_ACCEPTANCE=true
 expect_rejected 'A catalog identity change during acceptance was accepted.' phase14_source_collect \

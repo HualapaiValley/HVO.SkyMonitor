@@ -8,6 +8,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMP_DIR="$(mktemp -d -t hvo-product-layout.XXXXXX)"
 cleanup() {
   [[ -z "${sibling_consumer_pid:-}" ]] || kill "$sibling_consumer_pid" 2>/dev/null || true
+  [[ -z "${catalog_lock_holder_pid:-}" ]] || kill "$catalog_lock_holder_pid" 2>/dev/null || true
+  [[ -z "${catalog_migration_pid:-}" ]] || kill "$catalog_migration_pid" 2>/dev/null || true
   chmod -R u+w "$TEMP_DIR" 2>/dev/null || true
   rm -rf "$TEMP_DIR"
 }
@@ -139,6 +141,7 @@ for legacy_control_case in lock-only lock-and-lineage; do
   "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${control_args[@]}" >/dev/null
   migrated_control_catalog="$control_product/catalogs/hyg-v42-production"
   test -f "$migrated_control_catalog/.catalog.lock"
+  test "$(stat -c '%d:%i' "$control_catalog/.catalog.lock")" != "$(stat -c '%d:%i' "$migrated_control_catalog/.catalog.lock")"
   [[ "$legacy_control_case" != lock-and-lineage ]] || test -f "$migrated_control_catalog/.catalog-lineage.json"
   "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${control_args[@]}" >/dev/null
   control_after="$(sha256sum "$control_catalog/.catalog.lock")|$(stat -c '%u:%g:%h:%a' "$control_catalog/.catalog.lock")"
@@ -150,6 +153,39 @@ for legacy_control_case in lock-only lock-and-lineage; do
   test "$(sha256sum "$migrated_control_catalog/versions/fixture-v1/hyg_v42.sqlite" | cut -d' ' -f1)" = \
     "$(sha256sum "$control_catalog/versions/fixture-v1/hyg_v42.sqlite" | cut -d' ' -f1)"
 done
+# Migration blocks on an existing source lock and authenticates the post-lock payload before publishing anything.
+locked_legacy="$TEMP_DIR/locked-legacy"; locked_product="$TEMP_DIR/locked-product"; locked_evidence="$TEMP_DIR/locked.json"
+mkdir -p "$locked_legacy/config/cameraagent" "$locked_legacy/data/agent"
+printf '{}\n' > "$locked_legacy/config/cameraagent/config.json"; printf 'state\n' > "$locked_legacy/data/agent/state"
+create_v2_fixture_catalog "$locked_legacy/data/catalog" hyg-v42-production fixture-v1
+create_catalog_lock "$locked_legacy/data/catalog"
+locked_args=(--legacy-root "$locked_legacy" --product-root "$locked_product" --instance-id 12121212-1212-4212-8212-121212121212 \
+  --application-id locked-agent --catalog-id hyg-v42-production --evidence "$locked_evidence")
+locked_marker="$TEMP_DIR/catalog-lock-held"; locked_release="$TEMP_DIR/catalog-lock-release"
+(
+  exec 8<> "$locked_legacy/data/catalog/.catalog.lock"
+  flock -x 8
+  : > "$locked_marker"
+  while [[ ! -e "$locked_release" ]]; do sleep 0.01; done
+) &
+catalog_lock_holder_pid=$!
+while [[ ! -e "$locked_marker" ]]; do sleep 0.01; done
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${locked_args[@]}" >/dev/null 2>&1 &
+catalog_migration_pid=$!
+sleep 0.1
+kill -0 "$catalog_migration_pid"
+test ! -e "$locked_evidence.apply-intent.json"
+test ! -e "$locked_product/cameraagents/12121212-1212-4212-8212-121212121212"
+locked_database="$locked_legacy/data/catalog/versions/fixture-v1/hyg_v42.sqlite"
+chmod u+w "$locked_database"; printf 'locked-publisher-drift\n' >> "$locked_database"
+: > "$locked_release"; wait "$catalog_lock_holder_pid"; catalog_lock_holder_pid=
+if wait "$catalog_migration_pid"; then
+  printf 'Migration accepted payload drift published under the source catalog lock.\n' >&2; exit 131
+fi
+catalog_migration_pid=
+test ! -e "$locked_evidence.apply-intent.json"
+test ! -e "$locked_product/cameraagents/12121212-1212-4212-8212-121212121212"
+test ! -e "$locked_product/catalogs/hyg-v42-production"
 # V2 migration authenticates the complete manifest and database, not only catalog.id or self-consistent hashes.
 for invalid_catalog in unknown-manifest-property schema-drift; do
   invalid_legacy="$TEMP_DIR/invalid-catalog-$invalid_catalog"; invalid_product="$TEMP_DIR/invalid-catalog-$invalid_catalog-product"
@@ -357,6 +393,27 @@ done
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
 test "$(<"$migrated/cameraagents/$instance/state/capture-sequence")" = 42
 test "$(readlink "$migrated/catalogs/hyg-v42-production/current")" = versions/fixture-v1
+# Live legacy controls may advance independently after the payload snapshot without being rewritten by migration actions.
+legacy_control_catalog="$legacy/data/catalog"
+create_catalog_lock "$legacy_control_catalog"
+legacy_lock_before="$(sha256sum "$legacy_control_catalog/.catalog.lock")|$(stat -c '%u:%g:%h:%a' "$legacy_control_catalog/.catalog.lock")"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
+test "$(sha256sum "$legacy_control_catalog/.catalog.lock")|$(stat -c '%u:%g:%h:%a' "$legacy_control_catalog/.catalog.lock")" = "$legacy_lock_before"
+write_catalog_lineage "$legacy_control_catalog" hyg-v42-production fixture
+legacy_controls_before="$(catalog_control_fingerprint "$legacy_control_catalog")"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
+test "$(catalog_control_fingerprint "$legacy_control_catalog")" = "$legacy_controls_before"
+printf 'unknown-control\n' > "$legacy_control_catalog/.catalog-unknown"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 132; fi
+rm "$legacy_control_catalog/.catalog-unknown"
+cp "$legacy_control_catalog/.catalog-lineage.json" "$TEMP_DIR/legacy-lineage.valid"
+chmod 640 "$legacy_control_catalog/.catalog-lineage.json"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 133; fi
+cp "$TEMP_DIR/legacy-lineage.valid" "$legacy_control_catalog/.catalog-lineage.json"; chmod 600 "$legacy_control_catalog/.catalog-lineage.json"
+jq '.catalogId="conflicting-catalog"' "$TEMP_DIR/legacy-lineage.valid" > "$legacy_control_catalog/.catalog-lineage.json"
+chmod 600 "$legacy_control_catalog/.catalog-lineage.json"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 134; fi
+cp "$TEMP_DIR/legacy-lineage.valid" "$legacy_control_catalog/.catalog-lineage.json"; chmod 600 "$legacy_control_catalog/.catalog-lineage.json"
 destination_catalog="$migrated/catalogs/hyg-v42-production"
 # A publisher may stop after creating its durable lock and before publishing lineage.
 create_catalog_lock "$destination_catalog"
@@ -499,6 +556,7 @@ mkdir -m 700 "$recovery_legacy"
 cp -a "$legacy/config" "$legacy/data" "$recovery_legacy/"
 recovery_args=(--legacy-root "$recovery_legacy" --product-root "$recovery_product" --instance-id "$instance" \
   --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$recovery_evidence")
+rm -f "$recovery_legacy/data/catalog/.catalog.lock" "$recovery_legacy/data/catalog/.catalog-lineage.json"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${recovery_args[@]}" >/dev/null
 printf 'cutover-config-preserved\n' > "$recovery_product/cameraagents/$instance/config/cutover-state"
 printf '43\n' > "$recovery_product/cameraagents/$instance/state/capture-sequence"
@@ -506,6 +564,7 @@ recovery_cutover="$TEMP_DIR/recovery-cutover.json"
 cp "$cutover" "$recovery_cutover"; chmod 600 "$recovery_cutover"
 if DEPLOY_MIGRATION_FAILPOINT=after-finalize-intent "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize \
   "${recovery_args[@]}" --cutover-evidence "$recovery_cutover" >/dev/null 2>&1; then exit 122; fi
+create_catalog_lock "$recovery_legacy/data/catalog"
 test -f "$recovery_evidence.finalize-intent.json"
 test -d "$recovery_legacy/config/cameraagent"; test -d "$recovery_legacy/data/agent"
 test ! -e "$recovery_legacy/config/cameraagent.hvo-migration-$instance"
@@ -530,10 +589,17 @@ for recovery_metadata in "$recovery_evidence" "$recovery_evidence.apply-intent.j
   "$recovery_evidence.finalize-intent.json" "$recovery_evidence.config.snapshot" "$recovery_evidence.state.snapshot" \
   "$recovery_evidence.catalog.snapshot" "$recovery_evidence.final-config.snapshot" "$recovery_evidence.final-state.snapshot" \
   "$recovery_evidence.cutover.snapshot"; do test ! -e "$recovery_metadata" && test ! -L "$recovery_metadata"; done
+rm -f "$recovery_legacy/data/catalog/.catalog.lock" "$recovery_legacy/data/catalog/.catalog-lineage.json"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${recovery_args[@]}" >/dev/null
 printf 'cutover-config-preserved\n' > "$recovery_product/cameraagents/$instance/config/cutover-state"
 printf '43\n' > "$recovery_product/cameraagents/$instance/state/capture-sequence"
+create_catalog_lock "$recovery_legacy/data/catalog"
+if DEPLOY_MIGRATION_FAILPOINT=after-tombstone-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize \
+  "${recovery_args[@]}" --cutover-evidence "$recovery_cutover" >/dev/null 2>&1; then exit 135; fi
+write_catalog_lineage "$recovery_legacy/data/catalog" hyg-v42-production fixture
+recovery_controls_before="$(catalog_control_fingerprint "$recovery_legacy/data/catalog")"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${recovery_args[@]}" --cutover-evidence "$recovery_cutover" >/dev/null
+test "$(catalog_control_fingerprint "$recovery_legacy/data/catalog")" = "$recovery_controls_before"
 jq -e '.status == "finalized" and .legacyCatalogRetained == true' "$recovery_evidence" >/dev/null
 test ! -e "$recovery_evidence.rollback-intent.json"
 jq -e --arg cutoverSha "$(sha256sum "$recovery_evidence.cutover.snapshot" | cut -d' ' -f1)" \

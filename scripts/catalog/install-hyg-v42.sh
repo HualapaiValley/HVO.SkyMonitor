@@ -16,7 +16,7 @@ Usage:
 USAGE
 }
 
-hyg_require_commands flock id mv readlink realpath sha256sum sqlite3 stat sync wc
+hyg_require_commands find flock id mv readlink realpath sha256sum sqlite3 stat sync wc
 hyg_check_sqlite_version
 
 INSTALL_STAGING=""
@@ -47,14 +47,31 @@ test_fail_at() {
 }
 
 cleanup_orphan_staging() {
-    local path
+    local path entry root_device mode
     local -a staging_paths
     shopt -s nullglob dotglob
     staging_paths=("$INSTALL_ROOT"/.staging.* "$INSTALL_ROOT/versions"/.staging.*)
     shopt -u nullglob dotglob
     for path in "${staging_paths[@]}"; do
-        chmod -R u+w "$path" 2>/dev/null || true
+        [[ -d "$path" && ! -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
+        root_device="$(stat -c %d -- "$path")"
+        while IFS= read -r -d '' entry; do
+            [[ "$(stat -c %d -- "$entry")" == "$root_device" ]] || return 1
+            if [[ -d "$entry" && ! -L "$entry" ]]; then
+                [[ "$(stat -c %u -- "$entry")" == "$(id -u)" ]] || return 1
+                mode="$(stat -c %a -- "$entry")"
+                (( (8#$mode & 0022) == 0 )) || return 1
+            elif [[ -f "$entry" && ! -L "$entry" ]]; then
+                [[ "$(stat -c '%u:%h' -- "$entry")" == "$(id -u):1" ]] || return 1
+            else
+                return 1
+            fi
+        done < <(find -P "$path" -xdev -mindepth 1 -print0)
+        while IFS= read -r -d '' entry; do
+            chmod u+w -- "$entry"
+        done < <(find -P "$path" -xdev -depth -type d -print0)
         rm -rf -- "$path"
+        [[ ! -e "$path" && ! -L "$path" ]] || return 1
     done
 }
 
@@ -116,13 +133,8 @@ commit_pointer_state() {
 }
 
 reconcile_pointer_transaction() {
-    local transaction="$INSTALL_ROOT/.pointer-transaction"
-    local -a targets
-    [[ -e "$transaction" || -L "$transaction" ]] || return 0
-    [[ -f "$transaction" && ! -L "$transaction" ]] || hyg_fail "pointer transaction is not a safe regular file"
-    mapfile -t targets < "$transaction"
-    [[ ${#targets[@]} -eq 2 ]] || hyg_fail "pointer transaction is malformed"
-    commit_pointer_state "${targets[0]}" "${targets[1]}"
+    hyg_production_reconcile_pointer_transaction "$INSTALL_ROOT" ||
+        hyg_fail "pointer transaction is unsafe, malformed, or incompatible"
 }
 
 validate_installed_target() {
@@ -173,7 +185,7 @@ prepare_root() {
             "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION" || hyg_fail "catalog root lineage is missing or incompatible"
     fi
     reconcile_pointer_transaction
-    cleanup_orphan_staging
+    cleanup_orphan_staging || hyg_fail "orphan catalog staging is unsafe and was retained"
     hyg_catalog_require_lineage "$INSTALL_ROOT" "$expected_catalog_id" "$expected_kind" \
         "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION" || hyg_fail "catalog root lineage is missing or incompatible"
 }

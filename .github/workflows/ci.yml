@@ -126,8 +126,22 @@ jobs:
             printf 'Bash 5.1 or newer is required for deployment shard coordination.\n' >&2
             exit 1
           fi
-          ./scripts/test:deploy-environment --list-shards
-          bash -n scripts/deploy:migrate-product-layout scripts/test:product-layout
+           ./scripts/test:deploy-environment --list-shards
+           bash -n scripts/deploy:migrate-product-layout scripts/test:product-layout
+      - name: Build pinned production catalog contracts
+        run: |
+          catalog_build="$RUNNER_TEMP/hyg-v42-contracts"
+          legacy_bundle="$RUNNER_TEMP/hyg-v4.2-p3-s2-r1-legacy.bundle"
+          ./scripts/catalog/build-hyg-v42.sh --fetch "$catalog_build"
+          production_bundle="$catalog_build/hyg-v4.2-p3-s2-r1.bundle"
+          cp -a -- "$production_bundle" "$legacy_bundle"
+          chmod u+w "$legacy_bundle" "$legacy_bundle/manifest.json"
+          jq '.manifestVersion = 1 | del(.catalog.id)' "$legacy_bundle/manifest.json" > "$legacy_bundle/manifest.json.tmp"
+          mv -T -- "$legacy_bundle/manifest.json.tmp" "$legacy_bundle/manifest.json"
+          chmod 0444 "$legacy_bundle"/*
+          chmod 0555 "$legacy_bundle"
+          HVO_LEGACY_CATALOG_BUNDLE="$legacy_bundle" ./scripts/catalog/test-hyg-v42-install.sh "$production_bundle"
+          printf 'HVO_LEGACY_CATALOG_BUNDLE=%s\n' "$legacy_bundle" >> "$GITHUB_ENV"
       - name: Run product layout and migration contracts
         run: ./scripts/test:product-layout
       - name: Run deployment contracts in parallel
