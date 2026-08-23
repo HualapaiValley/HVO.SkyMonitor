@@ -265,6 +265,8 @@ SELECTED_SHARD=all
 case "${1:-}" in
     '')
         (( $# == 0 )) || { printf 'Unexpected deployment contract arguments.\n' >&2; exit 2; }
+        run_deploy_contract_shards
+        exit $?
         ;;
     --list-shards)
         (( $# == 1 )) || { printf '%s accepts no additional arguments.\n' "$1" >&2; exit 2; }
@@ -2926,6 +2928,73 @@ jq --arg bundle "$production_mismatch_bundle" '.catalogs[0].kind="production" | 
   fi
 )
 test ! -s "$LOG" || fail 'Production catalog mismatch reached transport.'
+catalog_parent="$(dirname "$install_root")"
+catalog_alias="$catalog_parent/catalog-alias"
+rm -rf "$install_root" "$catalog_alias"
+catalog_parent_alias="$TEMP_DIR/catalog-parent-alias"; mkdir -m 700 "$catalog_parent_alias"
+rmdir "$catalog_parent"; ln -s "$catalog_parent_alias" "$catalog_parent"
+if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-parent-symlink.log" 2>&1; then
+  fail 'Catalog accepted a symlinked fixture catalog-parent ancestor.'
+fi
+test ! -e "$catalog_parent_alias/test-fixture"
+rm "$catalog_parent"; rmdir "$catalog_parent_alias"; mkdir -m 755 "$catalog_parent"
+mkdir -m 700 "$catalog_alias"
+ln -s "$catalog_alias" "$install_root"
+if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-install-root-symlink.log" 2>&1; then
+  fail 'Catalog accepted a symlinked fixture install root.'
+fi
+test ! -e "$catalog_alias/current"
+rm "$install_root"; rmdir "$catalog_alias"
+mkdir -m 700 "$install_root" "$catalog_alias"
+ln -s "$catalog_alias" "$install_root/versions"
+if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-versions-symlink.log" 2>&1; then
+  fail 'Catalog accepted a symlinked fixture versions directory.'
+fi
+test ! -e "$catalog_alias/fixture-v1"
+rm "$install_root/versions"; rmdir "$catalog_alias"
+mkdir -m 700 "$install_root/versions"
+printf 'hostile\n' > "$install_root/current"
+if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-hostile-current.log" 2>&1; then
+  fail 'Catalog accepted a non-symlink fixture current pointer.'
+fi
+test "$(<"$install_root/current")" = hostile
+rm "$install_root/current"
+for unsafe_catalog_parent_mode in 770 777; do
+  chmod "$unsafe_catalog_parent_mode" "$catalog_parent"
+  if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-writable-parent-$unsafe_catalog_parent_mode.log" 2>&1; then
+    fail "Catalog accepted unsafe fixture parent mode $unsafe_catalog_parent_mode."
+  fi
+  test ! -e "$install_root/current"
+done
+chmod 755 "$catalog_parent"
+rm -rf "$install_root"
+
+# A runtime-owned 0755 catalog parent is safe; activation preserves the old pointer before intent and reconciles on restart.
+test "$(stat -c %a "$catalog_parent")" = 755
+for fixture_boundary in after-candidate-publication after-pointer-transaction after-current-pointer; do
+  rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
+    "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
+  chmod -R u+w "$install_root" 2>/dev/null || true
+  rm -rf "$install_root"; mkdir -m 700 "$install_root" "$install_root/versions" "$install_root/versions/prior"
+  chmod 555 "$install_root/versions/prior"; ln -s versions/prior "$install_root/current"
+  if HVO_FIXTURE_CATALOG_TEST_FAIL_AT="$fixture_boundary" run_deploy_mode catalog "$deploy_case" isolated \
+    > "$TEMP_DIR/catalog-$fixture_boundary.log" 2>&1; then
+    fail "Fixture activation failpoint $fixture_boundary passed."
+  fi
+  if [[ "$fixture_boundary" == after-current-pointer ]]; then
+    test "$(readlink "$install_root/current")" = versions/fixture-v1
+  else
+    test "$(readlink "$install_root/current")" = versions/prior
+  fi
+  run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+  test "$(readlink "$install_root/current")" = versions/fixture-v1
+  test ! -e "$install_root/.fixture-pointer-transaction"
+done
+rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
+  "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
+chmod -R u+w "$install_root" 2>/dev/null || true
+rm -rf "$install_root"
+mkdir -m 700 "$install_root" "$install_root/versions"
 mkdir -p "$install_root/versions/prior" "$install_root/versions/fixture-v1"
 printf 'prior\n' > "$install_root/versions/prior/marker"
 ln -s versions/prior "$install_root/current"
@@ -2939,6 +3008,7 @@ fi
 test "$(readlink "$install_root/current")" = versions/prior || fail 'Catalog replaced current before validating the existing fixture version.'
 chmod 755 "$install_root/versions/fixture-v1"
 rm -rf "$install_root/versions/fixture-v1"
+rm "$install_root/current"; chmod 755 "$install_root/versions/prior"; rm -rf "$install_root/versions/prior"
 run_deploy_mode catalog "$deploy_case" isolated >/dev/null
 installed_catalog_manifest="$install_root/versions/fixture-v1/manifest.json"
 test "$(stat -c %a "$install_root/versions/fixture-v1")" = 555
@@ -2978,7 +3048,7 @@ migrated_east_root="$(jq -r '.cameraAgents[0].runtimeRoot' "$INVENTORY")"
 jq -n --arg instance "$(jq -r '.cameraAgents[0].instanceId' "$INVENTORY")" \
   '{schemaVersion:1,product:"HVO.SkyMonitor",component:"cameraAgent",instanceId:$instance,creationProvenance:{migration:"singular-layout-v1"},applicationIdentityFile:"application-identity.json"}' \
   > "$migrated_east_root/instance-manifest.json"
-jq -n '{schemaVersion:1,state:"pre-provisioning",configuredIdentity:"east-agent",boundIdentity:null}' > "$migrated_east_root/application-identity.json"
+jq -cn '{schemaVersion:1,state:"pre-provisioning",configuredIdentity:"east-agent",boundIdentity:null}' > "$migrated_east_root/application-identity.json"
 chmod 600 "$migrated_east_root/instance-manifest.json" "$migrated_east_root/application-identity.json"
 if DEPLOY_TEST_FAILPOINT=abrupt-after-private-scp-upload run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/up-private-upload-crash.log" 2>&1; then
   fail 'Private SCP interruption failpoint passed.'

@@ -82,16 +82,54 @@ ln -s versions/v1 "$legacy/data/catalog/current"
 printf 'sibling-preserved\n' > "$legacy/data/sibling"
 instance=44444444-4444-4444-8444-444444444444
 args=(--legacy-root "$legacy" --product-root "$migrated" --instance-id "$instance" --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$evidence")
+safe_product_parent="$TEMP_DIR/safe-product-parent"; safe_evidence_parent="$TEMP_DIR/safe-evidence-parent"
+mkdir -m 755 "$safe_product_parent" "$safe_evidence_parent"
+safe_args=(--legacy-root "$legacy" --product-root "$safe_product_parent/skymonitor" --instance-id "$instance" --application-id agent-legacy \
+  --catalog-id hyg-v42-production --evidence "$safe_evidence_parent/migration.json")
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${safe_args[@]}" >/dev/null
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${safe_args[@]}" >/dev/null
+for unsafe_parent_mode in 770 777; do
+  unsafe_evidence_parent="$TEMP_DIR/unsafe-evidence-parent-$unsafe_parent_mode"; mkdir -m "$unsafe_parent_mode" "$unsafe_evidence_parent"
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]/$evidence/$unsafe_evidence_parent/migration.json}" >/dev/null 2>&1; then exit 86; fi
+  test ! -e "$unsafe_evidence_parent/migration.json.apply-intent.json"
+  unsafe_product_parent="$TEMP_DIR/unsafe-product-parent-$unsafe_parent_mode"; mkdir -m "$unsafe_parent_mode" "$unsafe_product_parent"
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]/$migrated/$unsafe_product_parent/skymonitor}" >/dev/null 2>&1; then exit 87; fi
+  test ! -e "$unsafe_product_parent/skymonitor.migration.lock"
+done
+mkdir -m 700 -p "$(dirname "$migrated")"; printf 'lock-target\n' > "$TEMP_DIR/lock-target"
+ln -s "$TEMP_DIR/lock-target" "${migrated}.migration.lock"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 88; fi
+test "$(<"$TEMP_DIR/lock-target")" = lock-target
+rm "${migrated}.migration.lock"
 if DEPLOY_MIGRATION_FAILPOINT=after-instance-stage-mkdir "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 88; fi
 test -d "$migrated/cameraagents/.hvo-migration-$instance.stage"
 test -z "$(find "$migrated/cameraagents/.hvo-migration-$instance.stage" -mindepth 1 -print -quit)"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
 test ! -e "$migrated/cameraagents/.hvo-migration-$instance.stage"
+# A predictable publication symlink cannot redirect the exclusive random metadata temporary.
+printf 'publication-target\n' > "$TEMP_DIR/publication-target"
+bash -c 'ln -s "$1" "$2.apply-intent.json.tmp.$$"; shift 2; exec "$@"' _ \
+  "$TEMP_DIR/publication-target" "$evidence" "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}"
+test "$(<"$TEMP_DIR/publication-target")" = publication-target
+rm -f -- "$evidence.apply-intent.json.tmp."*
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
 if DEPLOY_MIGRATION_FAILPOINT=mid-copy-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 89; fi
 test -f "$evidence.apply-intent.json"; test -d "$migrated/cameraagents/.hvo-migration-$instance.stage"
 test ! -e "$migrated/cameraagents/.hvo-migration-$instance.stage/config/identity.db"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
 test ! -e "$evidence.apply-intent.json"; test ! -e "$migrated/cameraagents/.hvo-migration-$instance.stage"; test -f "$legacy/data/agent/capture-sequence"
+# Resume rejects substituted snapshot metadata before trusting its contents.
+if DEPLOY_MIGRATION_FAILPOINT=after-instance-stage-mkdir "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 89; fi
+cp "$evidence.config.snapshot" "$TEMP_DIR/config.snapshot.valid"
+rm "$evidence.config.snapshot"; ln -s "$TEMP_DIR/config.snapshot.valid" "$evidence.config.snapshot"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 89; fi
+rm "$evidence.config.snapshot"; cp "$TEMP_DIR/config.snapshot.valid" "$evidence.config.snapshot"; chmod 600 "$evidence.config.snapshot"
+ln "$evidence.config.snapshot" "$TEMP_DIR/config.snapshot.hardlink"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 89; fi
+rm "$TEMP_DIR/config.snapshot.hardlink"; chmod 644 "$evidence.config.snapshot"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 89; fi
+chmod 600 "$evidence.config.snapshot"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
 # Unknown or replaced stale-stage content is retained for operator inspection rather than recursively deleted.
 if DEPLOY_MIGRATION_FAILPOINT=after-copy-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 89; fi
 stage="$migrated/cameraagents/.hvo-migration-$instance.stage"

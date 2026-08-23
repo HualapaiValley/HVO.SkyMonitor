@@ -41,6 +41,31 @@ instance_stage="$product_root/cameraagents/.hvo-migration-$instance_id.stage"; c
 config_snapshot="${evidence}.config.snapshot"; state_snapshot="${evidence}.state.snapshot"; catalog_snapshot="${evidence}.catalog.snapshot"
 config_tomb="${legacy_config}.hvo-migration-$instance_id"; state_tomb="${legacy_state}.hvo-migration-$instance_id"; catalog_tomb="${legacy_catalog}.hvo-migration-$instance_id"
 
+ensure_private_directory() {
+  local directory="$1" current=/ component owner mode
+  [[ "$directory" == /* && "$directory" != / ]] || return 1
+  IFS=/ read -r -a components <<< "${directory#/}"
+  for component in "${components[@]}"; do
+    [[ -n "$component" ]] || continue
+    [[ "$current" == / ]] && current="/$component" || current="$current/$component"
+    [[ -e "$current" || -L "$current" ]] || break
+    [[ -d "$current" && ! -L "$current" ]] || return 1
+    owner="$(stat -c %u -- "$current")"; mode="$(stat -c %a -- "$current")"
+    [[ "$owner" == "$(id -u)" || "$owner" == 0 ]] || return 1
+    if (( (8#$mode & 0022) != 0 )); then
+      (( owner == 0 && (8#$mode & 01000) != 0 )) || return 1
+    fi
+  done
+  mkdir -m 700 -p -- "$directory"
+  [[ -d "$directory" && ! -L "$directory" && "$(stat -c '%u:%g' -- "$directory")" == "$(id -u):$(id -g)" ]] || return 1
+  mode="$(stat -c %a -- "$directory")"; (( (8#$mode & 0022) == 0 ))
+}
+
+validate_metadata_file() {
+  local path="$1"
+  [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%g:%h:%a' -- "$path")" == "$(id -u):$(id -g):1:600" ]]
+}
+
 snapshot_tree() {
   local root="$1" output="$2" root_device path relative kind target resolved metadata uid gid mode device inode links
   [[ -d "$root" && ! -L "$root" ]] || return 1
@@ -65,7 +90,13 @@ snapshot_tree() {
 }
 
 content_tree() { cut -f1-4,7-9 "$1"; }
-capture_tree() { local root="$1" output="$2" temporary; temporary="$(mktemp)"; snapshot_tree "$root" "$temporary" && mv -T -- "$temporary" "$output"; }
+capture_tree() {
+  local root="$1" output="$2" temporary parent
+  parent="$(dirname -- "$output")"; ensure_private_directory "$parent" || return 1
+  temporary="$(mktemp "${output}.tmp.XXXXXX")"; chmod 600 "$temporary"
+  snapshot_tree "$root" "$temporary" && sync -f "$temporary" && mv -T -- "$temporary" "$output" &&
+    sync -f "$parent"
+}
 revalidate_tree() { local root="$1" expected="$2" actual; actual="$(mktemp)"; snapshot_tree "$root" "$actual" && cmp -s "$expected" "$actual"; local status=$?; rm -f -- "$actual"; return "$status"; }
 verify_copy() { local source="$1" destination="$2" a b; a="$(mktemp)"; b="$(mktemp)"; snapshot_tree "$source" "$a" && snapshot_tree "$destination" "$b" && content_tree "$a" > "$a.content" && content_tree "$b" > "$b.content" && cmp -s "$a.content" "$b.content"; local status=$?; rm -f -- "$a" "$b" "$a.content" "$b.content"; return "$status"; }
 validate_snapshot_subset() {
@@ -173,7 +204,13 @@ delete_copy_subset() {
   done
   validate_copy_subset "$root" "$expected" && rmdir -- "$root"
 }
-publish_json() { local path="$1" json="$2" temporary; temporary="${path}.tmp.$$"; printf '%s\n' "$json" > "$temporary"; chmod 600 "$temporary"; mv -Tf -- "$temporary" "$path"; sync -f "$path"; sync -f "$(dirname -- "$path")"; }
+publish_json() {
+  local path="$1" json="$2" temporary parent
+  parent="$(dirname -- "$path")"; ensure_private_directory "$parent" || return 1
+  temporary="$(mktemp "${path}.tmp.XXXXXX")"; chmod 600 "$temporary"
+  printf '%s\n' "$json" > "$temporary"; sync -f "$temporary"
+  mv -Tf -- "$temporary" "$path"; sync -f "$parent"
+}
 failpoint() { [[ "${DEPLOY_MIGRATION_FAILPOINT:-}" != "$1" ]] || exit 75; }
 catalog_manifest_identity() {
   local manifest="$1" bundle="$2" manifest_version identity
@@ -189,10 +226,6 @@ catalog_manifest_identity() {
   fi
 }
 
-validate_metadata_file() {
-  local path="$1"
-  [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%g:%h:%a' "$path")" == "$(id -u):$(id -g):1:600" ]]
-}
 validate_apply_intent() {
   local identity_source="$1"
   validate_metadata_file "$apply_intent" && jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg identitySource "$identity_source" --arg legacy "$legacy_root" --arg product "$product_root" --arg instanceStage "$instance_stage" --arg catalogStage "$catalog_stage" '
@@ -202,12 +235,30 @@ validate_apply_intent() {
     .legacyRoot == $legacy and .productRoot == $product and .instanceStage == $instanceStage and .catalogStage == $catalogStage' "$apply_intent" >/dev/null
 }
 validate_rollback_evidence() {
-  validate_metadata_file "$evidence" && jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg legacy "$legacy_root" --arg product "$product_root" '
+  local identity_source="$1"
+  validate_metadata_file "$evidence" && jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg identitySource "$identity_source" --arg legacy "$legacy_root" --arg product "$product_root" '
     (keys | sort) == (["applicationIdentity","boundDeviceIdentity","catalogId","catalogIdentitySource","instanceId","legacyRetained","legacyRoot","productRoot","schemaVersion","status"] | sort) and
     .schemaVersion == 2 and .status == "copied-and-verified" and .legacyRetained == true and
     .instanceId == $instance and .applicationIdentity == $application and
-    .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and
+    .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and .catalogIdentitySource == $identitySource and
     .legacyRoot == $legacy and .productRoot == $product' "$evidence" >/dev/null
+}
+validate_finalize_evidence() {
+  local cutover_sha="$1"
+  validate_metadata_file "$evidence" && jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg legacy "$legacy_root" --arg product "$product_root" --arg cutover "$cutover_sha" '
+    .schemaVersion == 2 and .instanceId == $instance and .applicationIdentity == $application and
+    .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and
+    (.catalogIdentitySource | IN("explicit-manifest-v2","derived-manifest-v1")) and
+    .legacyRoot == $legacy and .productRoot == $product and
+    if .status == "copied-and-verified" then
+      (keys | sort) == (["applicationIdentity","boundDeviceIdentity","catalogId","catalogIdentitySource","instanceId","legacyRetained","legacyRoot","productRoot","schemaVersion","status"] | sort) and .legacyRetained == true
+    elif .status == "finalized-removal-pending" then
+      (keys | sort) == (["applicationIdentity","boundDeviceIdentity","catalogId","catalogIdentitySource","cutoverEvidenceSha256","instanceId","legacyRetained","legacyRoot","productRoot","schemaVersion","status"] | sort) and
+      .legacyRetained == false and .cutoverEvidenceSha256 == $cutover
+    elif .status == "finalized" then
+      (keys | sort) == (["applicationIdentity","boundDeviceIdentity","catalogId","catalogIdentitySource","cutoverEvidenceSha256","instanceId","legacyRetained","legacyRoot","productRoot","schemaVersion","status","tombstonesRemoved"] | sort) and
+      .legacyRetained == false and .cutoverEvidenceSha256 == $cutover and .tombstonesRemoved == true
+    else false end' "$evidence" >/dev/null
 }
 remove_rollback_metadata() {
   local path="$1" label="$2"
@@ -216,7 +267,17 @@ remove_rollback_metadata() {
   fi
 }
 
-mkdir -p -- "$(dirname -- "$lock")"; exec 9>"$lock"; flock -n 9 || { printf 'Another product-layout migration is active.\n' >&2; exit 1; }
+product_parent="$(dirname -- "$product_root")"; evidence_parent="$(dirname -- "$evidence")"; lock_parent="$(dirname -- "$lock")"
+ensure_private_directory "$product_parent" && ensure_private_directory "$evidence_parent" && ensure_private_directory "$lock_parent" ||
+  { printf 'Migration output parents must be owner-private canonical directories.\n' >&2; exit 1; }
+if [[ ! -e "$lock" && ! -L "$lock" ]]; then
+  (set -o noclobber; umask 077; : > "$lock") 2>/dev/null || { printf 'Migration lock creation failed safely.\n' >&2; exit 1; }
+fi
+validate_metadata_file "$lock" || { printf 'Migration lock is unsafe.\n' >&2; exit 1; }
+exec 9<>"$lock"
+flock -n 9 || { printf 'Another product-layout migration is active.\n' >&2; exit 1; }
+validate_metadata_file "$lock" && [[ "$(stat -Lc '%d:%i' -- "$lock")" == "$(stat -Lc '%d:%i' -- /proc/$$/fd/9)" ]] ||
+  { printf 'Migration lock changed while being acquired.\n' >&2; exit 1; }
 case "$action" in
 apply)
   catalog_manifest="$legacy_catalog/current/manifest.json"; catalog_bundle='' catalog_identity='' catalog_identity_source=''
@@ -227,10 +288,8 @@ apply)
   [[ "$catalog_bundle" == "$legacy_catalog/versions/"* && -d "$catalog_bundle" && ! -L "$catalog_bundle" ]] || { printf 'Legacy catalog current target is unsafe.\n' >&2; exit 1; }
   IFS=$'\t' read -r catalog_identity catalog_identity_source < <(catalog_manifest_identity "$catalog_manifest" "$catalog_bundle") || { printf 'Legacy catalog identity is not canonical.\n' >&2; exit 1; }
   [[ "$catalog_identity" == "$catalog_id" ]] || { printf 'Legacy catalog manifest identity mismatch.\n' >&2; exit 1; }
-  if [[ -f "$evidence" && ! -L "$evidence" ]]; then
-    jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg identitySource "$catalog_identity_source" '
-      .schemaVersion == 2 and .status == "copied-and-verified" and .instanceId == $instance and .applicationIdentity == $application and
-      .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and .catalogIdentitySource == $identitySource' "$evidence" >/dev/null || exit 1
+  if [[ -e "$evidence" || -L "$evidence" ]]; then
+    validate_rollback_evidence "$catalog_identity_source" || exit 1
     verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"; verify_copy "$legacy_catalog" "$catalog_root"
     [[ -f "$manifest" && ! -L "$manifest" && -f "$binding" && ! -L "$binding" && "$(stat -c '%u:%h:%a' "$manifest")" == "$(id -u):1:600" && "$(stat -c '%u:%h:%a' "$binding")" == "$(id -u):1:600" ]] || exit 1
     printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"; exit 0
@@ -241,9 +300,9 @@ apply)
       {schemaVersion:1,state:"staging",instanceId:$instance,applicationIdentity:$application,boundDeviceIdentity:(if $bound == "" then null else $bound end),catalogId:$catalog,catalogIdentitySource:$identitySource,legacyRoot:$legacy,productRoot:$product,instanceStage:$instanceStage,catalogStage:$catalogStage}')"
   fi
   validate_apply_intent "$catalog_identity_source" || exit 1
-  if [[ -e "$config_snapshot" ]]; then revalidate_tree "$legacy_config" "$config_snapshot"; else capture_tree "$legacy_config" "$config_snapshot"; fi
-  if [[ -e "$state_snapshot" ]]; then revalidate_tree "$legacy_state" "$state_snapshot"; else capture_tree "$legacy_state" "$state_snapshot"; fi
-  if [[ -e "$catalog_snapshot" ]]; then revalidate_tree "$legacy_catalog" "$catalog_snapshot"; else capture_tree "$legacy_catalog" "$catalog_snapshot"; fi
+  if [[ -e "$config_snapshot" || -L "$config_snapshot" ]]; then validate_metadata_file "$config_snapshot" && revalidate_tree "$legacy_config" "$config_snapshot" || exit 1; else capture_tree "$legacy_config" "$config_snapshot"; fi
+  if [[ -e "$state_snapshot" || -L "$state_snapshot" ]]; then validate_metadata_file "$state_snapshot" && revalidate_tree "$legacy_state" "$state_snapshot" || exit 1; else capture_tree "$legacy_state" "$state_snapshot"; fi
+  if [[ -e "$catalog_snapshot" || -L "$catalog_snapshot" ]]; then validate_metadata_file "$catalog_snapshot" && revalidate_tree "$legacy_catalog" "$catalog_snapshot" || exit 1; else capture_tree "$legacy_catalog" "$catalog_snapshot"; fi
   if [[ -n "$bound_device_id" ]]; then
     [[ -f "$legacy_config/camera-module.json" && -f "$legacy_config/secrets/CameraAgent__AgentId" && "$(<"$legacy_config/secrets/CameraAgent__AgentId")" == "$bound_device_id" ]] || { printf 'Preserved provisioning identity is not present in legacy configuration.\n' >&2; exit 1; }
     module_identity="$(jq -r '.agentId' "$legacy_config/camera-module.json")"; [[ "$module_identity" == "$application_id" || "$module_identity" == "$bound_device_id" ]] || exit 1
@@ -285,10 +344,11 @@ apply)
   publish_json "$evidence" "$(jq -cn --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg identitySource "$catalog_identity_source" --arg legacy "$legacy_root" --arg product "$product_root" '{schemaVersion:2,status:"copied-and-verified",instanceId:$instance,applicationIdentity:$application,boundDeviceIdentity:(if $bound == "" then null else $bound end),catalogId:$catalog,catalogIdentitySource:$identitySource,legacyRoot:$legacy,productRoot:$product,legacyRetained:true}')"
   ;;
 verify)
+  validate_metadata_file "$evidence" || exit 1
   jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" '.schemaVersion == 2 and .instanceId == $instance and .applicationIdentity == $application and .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and (.status | IN("copied-and-verified","finalized-removal-pending","finalized"))' "$evidence" >/dev/null
-  if [[ -d "$legacy_config" ]]; then revalidate_tree "$legacy_config" "$config_snapshot"; verify_copy "$legacy_config" "$instance_root/config"; fi
-  if [[ -d "$legacy_state" ]]; then revalidate_tree "$legacy_state" "$state_snapshot"; verify_copy "$legacy_state" "$instance_root/state"; fi
-  if [[ -d "$legacy_catalog" ]]; then revalidate_tree "$legacy_catalog" "$catalog_snapshot"; verify_copy "$legacy_catalog" "$catalog_root"; fi
+  if [[ -d "$legacy_config" ]]; then validate_metadata_file "$config_snapshot"; revalidate_tree "$legacy_config" "$config_snapshot"; verify_copy "$legacy_config" "$instance_root/config"; fi
+  if [[ -d "$legacy_state" ]]; then validate_metadata_file "$state_snapshot"; revalidate_tree "$legacy_state" "$state_snapshot"; verify_copy "$legacy_state" "$instance_root/state"; fi
+  if [[ -d "$legacy_catalog" ]]; then validate_metadata_file "$catalog_snapshot"; revalidate_tree "$legacy_catalog" "$catalog_snapshot"; verify_copy "$legacy_catalog" "$catalog_root"; fi
   ;;
 rollback)
   catalog_manifest="$legacy_catalog/current/manifest.json"; catalog_bundle='' catalog_identity='' catalog_identity_source=''
@@ -316,15 +376,16 @@ rollback)
       elif [[ "$cleanup_seen_present" == true ]]; then exit 1
       fi
     done
-    [[ ! -e "$evidence" && ! -L "$evidence" ]] || validate_rollback_evidence || exit 1
+    [[ ! -e "$evidence" && ! -L "$evidence" ]] || validate_rollback_evidence "$catalog_identity_source" || exit 1
     [[ ! -e "$config_snapshot" && ! -L "$config_snapshot" ]] || revalidate_tree "$legacy_config" "$config_snapshot"
     [[ ! -e "$state_snapshot" && ! -L "$state_snapshot" ]] || revalidate_tree "$legacy_state" "$state_snapshot"
     [[ ! -e "$catalog_snapshot" && ! -L "$catalog_snapshot" ]] || revalidate_tree "$legacy_catalog" "$catalog_snapshot"
     [[ ! -e "$apply_intent" && ! -L "$apply_intent" ]] || validate_apply_intent "$catalog_identity_source"
   else
     validate_apply_intent "$catalog_identity_source" || { printf 'Migration apply intent is missing or invalid.\n' >&2; exit 1; }
+    validate_metadata_file "$config_snapshot" && validate_metadata_file "$state_snapshot" && validate_metadata_file "$catalog_snapshot" || exit 1
     revalidate_tree "$legacy_config" "$config_snapshot"; revalidate_tree "$legacy_state" "$state_snapshot"; revalidate_tree "$legacy_catalog" "$catalog_snapshot"
-    if [[ -e "$evidence" || -L "$evidence" ]]; then validate_rollback_evidence || { printf 'Finalized or mismatched migration cannot be rolled back.\n' >&2; exit 1; }; fi
+    if [[ -e "$evidence" || -L "$evidence" ]]; then validate_rollback_evidence "$catalog_identity_source" || { printf 'Finalized or mismatched migration cannot be rolled back.\n' >&2; exit 1; }; fi
   fi
   if [[ "$rollback_state" != cleanup-pending ]]; then
   if [[ -e "$instance_root" || -L "$instance_root" ]]; then
@@ -357,26 +418,27 @@ rollback)
   rm -f -- "$rollback_intent"; sync -f "$(dirname -- "$rollback_intent")"
   ;;
 finalize)
-  [[ -f "$cutover_evidence" && ! -L "$cutover_evidence" && "$(stat -c '%u:%h:%a' "$cutover_evidence")" == "$(id -u):1:600" ]] || { printf 'Owner-only cutover evidence is required for finalization.\n' >&2; exit 1; }
+  validate_metadata_file "$cutover_evidence" || { printf 'Owner-only cutover evidence is required for finalization.\n' >&2; exit 1; }
+  validate_metadata_file "$evidence" && validate_metadata_file "$config_snapshot" && validate_metadata_file "$state_snapshot" &&
+    validate_metadata_file "$catalog_snapshot" || exit 1
   jq -e --arg instance "$instance_id" --arg application "$application_id" '(keys | sort) == (["applicationIdentity","artifactChecksumsVerified","captureSequenceAfter","captureSequenceBefore","dataProtectionVerified","healthVerified","imageIdentityVerified","instanceId","locationHistoryVerified","loginVerified","provisioningVerified","rollbackRehearsed","schemaVersion"] | sort) and .schemaVersion == 1 and .instanceId == $instance and .applicationIdentity == $application and all(.artifactChecksumsVerified,.dataProtectionVerified,.healthVerified,.imageIdentityVerified,.locationHistoryVerified,.loginVerified,.provisioningVerified,.rollbackRehearsed; . == true) and .captureSequenceBefore as $before | ($before | type == "number" and floor == . and . >= 0) and (.captureSequenceAfter | type == "number" and floor == . and . >= $before)' "$cutover_evidence" >/dev/null || { printf 'Cutover evidence is invalid or incomplete.\n' >&2; exit 1; }
   cutover_sha="$(sha256sum "$cutover_evidence" | cut -d' ' -f1)"
-  jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg legacy "$legacy_root" --arg product "$product_root" --arg cutover "$cutover_sha" '
-    .schemaVersion == 2 and .instanceId == $instance and .applicationIdentity == $application and
-    .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and
-    .legacyRoot == $legacy and .productRoot == $product and
-    ((.status == "copied-and-verified") or
-     ((.status == "finalized-removal-pending" or .status == "finalized") and .cutoverEvidenceSha256 == $cutover))' "$evidence" >/dev/null
+  validate_finalize_evidence "$cutover_sha" || exit 1
   migration_status="$(jq -r '.status' "$evidence")"
   if [[ "$migration_status" == finalized ]]; then
     for path in "$legacy_config" "$legacy_state" "$legacy_catalog" "$config_tomb" "$state_tomb" "$catalog_tomb"; do [[ ! -e "$path" && ! -L "$path" ]] || exit 1; done
     printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"; exit 0
   fi
-  if [[ ! -e "$intent" ]]; then
+  if [[ ! -e "$intent" && ! -L "$intent" ]]; then
     revalidate_tree "$legacy_config" "$config_snapshot"; revalidate_tree "$legacy_state" "$state_snapshot"; revalidate_tree "$legacy_catalog" "$catalog_snapshot"
     verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"; verify_copy "$legacy_catalog" "$catalog_root"
     publish_json "$intent" "$(jq -cn --arg instance "$instance_id" --arg c "$config_tomb" --arg s "$state_tomb" --arg k "$catalog_tomb" '{schemaVersion:1,state:"rename-pending",instanceId:$instance,tombstones:{config:$c,state:$s,catalog:$k}}')"
   fi
-  jq -e --arg instance "$instance_id" --arg c "$config_tomb" --arg s "$state_tomb" --arg k "$catalog_tomb" '.schemaVersion == 1 and .instanceId == $instance and .tombstones == {config:$c,state:$s,catalog:$k}' "$intent" >/dev/null
+  validate_metadata_file "$intent" || exit 1
+  jq -e --arg instance "$instance_id" --arg c "$config_tomb" --arg s "$state_tomb" --arg k "$catalog_tomb" '
+    (keys | sort) == (["instanceId","schemaVersion","state","tombstones"] | sort) and
+    .schemaVersion == 1 and .state == "rename-pending" and .instanceId == $instance and
+    (.tombstones | keys | sort) == (["catalog","config","state"] | sort) and .tombstones == {config:$c,state:$s,catalog:$k}' "$intent" >/dev/null
   if [[ "$migration_status" == copied-and-verified ]]; then
     for spec in "config|$legacy_config|$config_tomb|$config_snapshot" "state|$legacy_state|$state_tomb|$state_snapshot" "catalog|$legacy_catalog|$catalog_tomb|$catalog_snapshot"; do
       IFS='|' read -r label original tomb snapshot <<< "$spec"
