@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+if ! declare -F hyg_resolve_catalog_identity >/dev/null; then
+    # shellcheck source=scripts/catalog/catalog-common.sh
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/catalog/catalog-common.sh"
+fi
+
 phase14_source_fail() {
     deploy_fail source-import "$1" "$2"
 }
@@ -55,19 +60,6 @@ phase14_source_hash() {
     local digest
     digest="$(sha256sum -- "$1")" || return 1
     printf '%s\n' "${digest%% *}"
-}
-
-phase14_source_validate_catalog_manifest_document() {
-    local manifest="$1" quoted duplicate_count
-    [[ "$(wc -c < "$manifest")" -le 65536 ]] || return 1
-    quoted="${manifest//\'/\'\'}"
-    [[ "$(sqlite3 -batch -noheader ':memory:' \
-      "SELECT json_valid(CAST(readfile('$quoted') AS TEXT));" 2>/dev/null)" == 1 ]] || return 1
-    duplicate_count="$(sqlite3 -batch -noheader ':memory:' \
-      "WITH input(document) AS (SELECT CAST(readfile('$quoted') AS TEXT))
-       SELECT count(*) FROM (SELECT parent, key FROM input, json_tree(document)
-       WHERE key IS NOT NULL GROUP BY parent, key HAVING count(*) > 1);" 2>/dev/null)" || return 1
-    [[ "$duplicate_count" == 0 ]]
 }
 
 phase14_source_method_id() {
@@ -154,8 +146,10 @@ phase14_source_run_issue211() {
       HVO_PHASE14_SOURCE_TREE="$PHASE14_PRODUCT_TREE" "$repo/scripts/test:cameraagent-standalone-211" >/dev/null
 }
 
-phase14_source_catalog_identity() {
-    local root="$1" current resolved manifest database relative expected_sha expected_length actual_sha actual_length package_version
+phase14_source_catalog_inputs() {
+    local root="$1" expected_id="$2" expected_kind="$3" current resolved manifest database relative
+    local actual_id actual_sha actual_length package_version path
+    local -a payload_files
     current="$root/current"
     [[ -L "$current" ]] || return 1
     resolved="$(readlink -e -- "$current" 2>/dev/null)" || return 1
@@ -163,49 +157,36 @@ phase14_source_catalog_identity() {
     phase14_source_no_symlink_path "$root/versions" "$resolved" || return 1
     manifest="$resolved/manifest.json"
     phase14_source_no_symlink_path "$root/versions" "$manifest" && phase14_source_safe_catalog_file "$manifest" || return 1
-    phase14_source_validate_catalog_manifest_document "$manifest" || return 1
-    jq -e '
-      def exact($names): type == "object" and ((keys | sort) == ($names | sort));
-      def supported_v2_package_version:
-        type == "string" and test("^hyg-v4[.]2-p3-s2-r[1-9][0-9]*$") and
-        ((capture("-r(?<revision>[0-9]+)$").revision | tonumber) <= 2147483647);
-      .manifestVersion as $manifest_version |
-      ($manifest_version == 1 or $manifest_version == 2) and
-      exact(["catalog","database","license","manifestVersion","package","preprocessingVersion","schemaVersion","serializer","source","topology"]) and
-      (.package | exact(["kind","version"])) and .package.kind == "production" and
-      (.catalog | exact(if $manifest_version == 1 then ["name","version"] else ["id","name","version"] end)) and
-      .catalog.name == "HYG 4.2" and .catalog.version == "4.2" and
-      .schemaVersion == "2" and .preprocessingVersion == "3" and
-      (if $manifest_version == 1 then
-         .package.version == "hyg-v4.2-p3-s2-r1" and (.catalog | has("id") | not)
-       else
-          .catalog.id == "hyg-v42-production" and (.package.version | supported_v2_package_version)
-       end) and
-      (.source | exact(["compressed","decompressed","downloadUrl","oid","projectUrl"])) and
-      (.source.compressed | exact(["length","sha256"])) and
-      (.source.decompressed | exact(["length","sha256"])) and
-      (.serializer | exact(["name","version"])) and
-      (.database | exact(["length","relativePath","requiredColumn","rowCount","sha256","solCount"])) and
-      (.license | exact(["attribution","file","identifier","url"])) and
-      (.license.file | exact(["length","relativePath","sha256"])) and
-      (.license.attribution | exact(["length","relativePath","sha256"])) and
-      (.topology | exact(["constellationCount","identity","segmentCount","sha256"])) and
-      (.database.relativePath | type == "string" and test("^[A-Za-z0-9._/-]+$") and (startswith("/") | not)) and
-      (.database.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
-      (.database.length | numbers) > 0 and (.database.length | floor) == .database.length' "$manifest" >/dev/null || return 1
-    package_version="$(jq -r '.package.version' "$manifest")"
+    hyg_validate_manifest_document "$manifest" || return 1
+    package_version="$(hyg_json_value "$manifest" '$.package.version')" || return 1
     [[ "${resolved##*/}" == "$package_version" ]] || return 1
-    relative="$(jq -r '.database.relativePath' "$manifest")"
+    [[ "$(hyg_json_value "$manifest" '$.package.kind')" == "$expected_kind" ]] || return 1
+    if [[ "$expected_kind" == production ]]; then
+        payload_files=("$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE")
+    elif [[ "$expected_kind" == fixture ]]; then
+        payload_files=("$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE")
+    else
+        return 1
+    fi
+    for path in "${payload_files[@]}"; do
+        path="$resolved/$path"
+        phase14_source_no_symlink_path "$root/versions" "$path" && phase14_source_safe_catalog_file "$path" || return 1
+    done
+    actual_id="$(hyg_resolve_catalog_identity "$resolved")" || return 1
+    [[ "$actual_id" == "$expected_id" ]] || return 1
+    relative="$(hyg_json_value "$manifest" '$.database.relativePath')" || return 1
     phase14_source_safe_relative_path "$relative" || return 1
     database="$resolved/$relative"
     phase14_source_no_symlink_path "$root/versions" "$database" && phase14_source_safe_catalog_file "$database" || return 1
-    expected_sha="$(jq -r '.database.sha256' "$manifest")"; expected_length="$(jq -r '.database.length' "$manifest")"
     actual_sha="$(phase14_source_hash "$database")"; actual_length="$(stat -c %s -- "$database")"
-    [[ "$actual_sha" == "$expected_sha" && "$actual_length" == "$expected_length" ]] || return 1
     jq -cn --arg collectorImage "$PHASE14_COLLECTOR_IMAGE" --arg manifestSha256 "$(phase14_source_hash "$manifest")" \
       --arg databaseSha256 "$actual_sha" --argjson databaseByteLength "$actual_length" \
       '{collectorImage:$collectorImage,catalogManifestSha256:$manifestSha256,
         catalogDatabaseSha256:$databaseSha256,catalogDatabaseByteLength:$databaseByteLength}'
+}
+
+phase14_source_catalog_identity() {
+    phase14_source_catalog_inputs "$1" "$HYG_CATALOG_ID" production
 }
 
 phase14_source_validate_contract() {

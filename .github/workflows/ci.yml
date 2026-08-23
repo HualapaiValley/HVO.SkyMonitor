@@ -57,6 +57,8 @@ jobs:
           dotnet tool restore
           dotnet restore HVO.SkyMonitor.v9.slnx
           dotnet restore scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj
+      - name: Prepare exact production catalog contracts
+        run: ./scripts/catalog/prepare-hyg-v42-contracts.sh "$RUNNER_TEMP/hyg-v42-quality-contracts" >> "$GITHUB_ENV"
       - name: Verify formatting
         run: |
           dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
@@ -101,7 +103,10 @@ jobs:
           ./scripts/test:phase14-normal-campaign
           dotnet build scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj --no-restore --configuration Release -warnaserror
           ./scripts/test:phase14-component
-          ./scripts/test:phase14-source-import
+          HVO_PHASE14_CATALOG_MANIFEST_VERSION=1 ./scripts/test:phase14-source-import
+          HVO_PHASE14_CATALOG_MANIFEST_VERSION=2 ./scripts/test:phase14-source-import
+          env -u HVO_PHASE14_PRODUCTION_CATALOG_BUNDLE -u HVO_PHASE14_LEGACY_PRODUCTION_CATALOG_BUNDLE \
+            ./scripts/test:phase14-source-import
 
   deployment-contracts:
     name: Deployment Contracts
@@ -130,18 +135,14 @@ jobs:
            bash -n scripts/deploy:migrate-product-layout scripts/test:product-layout
       - name: Build pinned production catalog contracts
         run: |
-          catalog_build="$RUNNER_TEMP/hyg-v42-contracts"
-          legacy_bundle="$RUNNER_TEMP/hyg-v4.2-p3-s2-r1-legacy.bundle"
-          ./scripts/catalog/build-hyg-v42.sh --fetch "$catalog_build"
-          production_bundle="$catalog_build/hyg-v4.2-p3-s2-r1.bundle"
-          cp -a -- "$production_bundle" "$legacy_bundle"
-          chmod u+w "$legacy_bundle" "$legacy_bundle/manifest.json"
-          jq '.manifestVersion = 1 | del(.catalog.id)' "$legacy_bundle/manifest.json" > "$legacy_bundle/manifest.json.tmp"
-          mv -T -- "$legacy_bundle/manifest.json.tmp" "$legacy_bundle/manifest.json"
-          chmod 0444 "$legacy_bundle"/*
-          chmod 0555 "$legacy_bundle"
-          HVO_LEGACY_CATALOG_BUNDLE="$legacy_bundle" ./scripts/catalog/test-hyg-v42-install.sh "$production_bundle"
-          printf 'HVO_LEGACY_CATALOG_BUNDLE=%s\n' "$legacy_bundle" >> "$GITHUB_ENV"
+          bundle_environment="$RUNNER_TEMP/hyg-v42-deployment-contracts.env"
+          bundle_root="$RUNNER_TEMP/hyg-v42-deployment-contracts"
+          ./scripts/catalog/prepare-hyg-v42-contracts.sh "$bundle_root" > "$bundle_environment"
+          production_bundle="$bundle_root/build/hyg-v4.2-p3-s2-r1.bundle"
+          legacy_bundle="$bundle_root/hyg-v4.2-p3-s2-r1-legacy.bundle"
+          HVO_LEGACY_CATALOG_BUNDLE="$legacy_bundle" \
+            ./scripts/catalog/test-hyg-v42-install.sh "$production_bundle"
+          cat "$bundle_environment" >> "$GITHUB_ENV"
       - name: Run product layout and migration contracts
         run: ./scripts/test:product-layout
       - name: Run deployment contracts in parallel

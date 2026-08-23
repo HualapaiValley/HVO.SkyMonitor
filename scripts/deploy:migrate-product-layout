@@ -164,6 +164,21 @@ validate_copy_subset() {
     $8=="." { root_seen=1 }
     END { if (!root_seen) exit 1 }' "$expected" "$actual"; status=$?; rm -f -- "$actual"; return "$status"
 }
+validate_catalog_copy_subset() {
+  local root="$1" expected="$2" actual expected_payload actual_payload status
+  actual="$(mktemp)"; expected_payload="$(mktemp)"; actual_payload="$(mktemp)"
+  snapshot_tree "$root" "$actual" || { rm -f -- "$actual" "$expected_payload" "$actual_payload"; return 1; }
+  awk -F '\t' '$8 != ".catalog.lock"' "$expected" > "$expected_payload"
+  awk -F '\t' '$8 != ".catalog.lock"' "$actual" > "$actual_payload"
+  awk -F '\t' '
+    function comparable(kind, line, f,n) { n=split(line,f,"\t"); return kind=="directory" ? f[1] FS f[2] FS f[3] FS f[4] FS f[8] FS f[9] : f[1] FS f[2] FS f[3] FS f[4] FS f[7] FS f[8] FS f[9] }
+    NR==FNR { expected[$8]=comparable($1,$0); next }
+    !($8 in expected) || expected[$8] != comparable($1,$0) { exit 1 }
+    $8=="." { root_seen=1 }
+    END { if (!root_seen) exit 1 }' "$expected_payload" "$actual_payload"; status=$?
+  rm -f -- "$actual" "$expected_payload" "$actual_payload"
+  return "$status"
+}
 validate_stage_root() {
   local stage="$1" parent="$2" mode
   [[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%g:%d' "$stage")" == "$(id -u):$(id -g):$(stat -c %d "$parent")" ]] || return 1
@@ -249,6 +264,18 @@ delete_copy_subset() {
     delete_validated_entry "$root" "$victim" || return 1
   done
   validate_copy_subset "$root" "$expected" && rmdir -- "$root"
+}
+delete_catalog_copy_subset() {
+  local root="$1" expected="$2" victim lock_path="$1/.catalog.lock"
+  while :; do
+    validate_catalog_copy_subset "$root" "$expected" || return 1
+    victim="$(find -P "$root" -xdev -depth -mindepth 1 ! -path "$lock_path" -print -quit)"
+    [[ -n "$victim" ]] || break
+    [[ "$victim" == "$root"/* ]] || return 1
+    delete_validated_entry "$root" "$victim" || return 1
+  done
+  validate_catalog_copy_subset "$root" "$expected" && revalidate_staged_catalog_lock &&
+    delete_validated_entry "$root" "$lock_path" && rmdir -- "$root"
 }
 publish_json() {
   local path="$1" json="$2" temporary parent
@@ -362,20 +389,89 @@ revalidate_legacy_catalog_lock() {
   fi
 }
 
-acquire_staged_catalog_lock() {
-  local lock_path="$catalog_stage/.catalog.lock" path_identity fd_identity path_metadata fd_metadata
-  staged_catalog_lock_fd=''
-  [[ -e "$lock_path" || -L "$lock_path" ]] || return 0
+staged_catalog_lock_fd=''
+staged_catalog_lock_identity=''
+staged_catalog_lock_metadata=''
+published_catalog_lock_fd=''
+published_catalog_lock_identity=''
+published_catalog_lock_metadata=''
+acquire_catalog_root_lock() {
+  local root="$1" fd_name="$2" identity_name="$3" metadata_name="$4"
+  local lock_path="$root/.catalog.lock" fd path_identity fd_identity path_metadata fd_metadata
+  [[ -d "$root" && ! -L "$root" && "$(stat -c %u -- "$root")" == "$(id -u)" ]] || return 1
+  if [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
+    (set -o noclobber; umask 077; : > "$lock_path") 2>/dev/null || true
+  fi
   [[ -f "$lock_path" && ! -L "$lock_path" &&
      "$(stat -c '%u:%h:%a' -- "$lock_path")" == "$(id -u):1:600" ]] || return 1
-  exec {staged_catalog_lock_fd}<>"$lock_path" || return 1
-  flock -x "$staged_catalog_lock_fd" || return 1
+  exec {fd}<>"$lock_path" || return 1
+  if ! flock -x "$fd"; then exec {fd}>&-; return 1; fi
+  if [[ ! -f "$lock_path" || -L "$lock_path" ||
+        "$(stat -c '%u:%h:%a' -- "$lock_path")" != "$(id -u):1:600" ||
+        "$(stat -Lc '%u:%h:%a' -- "/proc/$$/fd/$fd")" != "$(id -u):1:600" ]]; then
+    exec {fd}>&-
+    return 1
+  fi
   path_identity="$(stat -Lc '%d:%i' -- "$lock_path")"
-  fd_identity="$(stat -Lc '%d:%i' -- "/proc/$$/fd/$staged_catalog_lock_fd")"
+  fd_identity="$(stat -Lc '%d:%i' -- "/proc/$$/fd/$fd")"
   path_metadata="$(stat -Lc '%u:%g:%h:%a' -- "$lock_path")"
-  fd_metadata="$(stat -Lc '%u:%g:%h:%a' -- "/proc/$$/fd/$staged_catalog_lock_fd")"
-  [[ "$path_identity" == "$fd_identity" && "$path_metadata" == "$fd_metadata" &&
-     "$(stat -Lc '%u:%h:%a' -- "/proc/$$/fd/$staged_catalog_lock_fd")" == "$(id -u):1:600" ]]
+  fd_metadata="$(stat -Lc '%u:%g:%h:%a' -- "/proc/$$/fd/$fd")"
+  if [[ "$path_identity" != "$fd_identity" || "$path_metadata" != "$fd_metadata" ]]; then
+    exec {fd}>&-
+    return 1
+  fi
+  printf -v "$fd_name" '%s' "$fd"
+  printf -v "$identity_name" '%s' "$fd_identity"
+  printf -v "$metadata_name" '%s' "$fd_metadata"
+}
+
+revalidate_catalog_root_lock() {
+  local root="$1" fd="$2" identity="$3" metadata="$4" lock_path
+  lock_path="$root/.catalog.lock"
+  [[ -n "$fd" && -f "$lock_path" && ! -L "$lock_path" &&
+     "$(stat -Lc '%d:%i' -- "$lock_path")" == "$identity" &&
+     "$(stat -Lc '%d:%i' -- "/proc/$$/fd/$fd")" == "$identity" &&
+     "$(stat -Lc '%u:%g:%h:%a' -- "$lock_path")" == "$metadata" &&
+     "$(stat -Lc '%u:%g:%h:%a' -- "/proc/$$/fd/$fd")" == "$metadata" ]]
+}
+
+acquire_staged_catalog_lock() {
+  if [[ -n "$staged_catalog_lock_fd" ]]; then
+    revalidate_catalog_root_lock "$catalog_stage" "$staged_catalog_lock_fd" "$staged_catalog_lock_identity" "$staged_catalog_lock_metadata"
+    return
+  fi
+  validate_stage_root "$catalog_stage" "$product_root/catalogs" &&
+    acquire_catalog_root_lock "$catalog_stage" staged_catalog_lock_fd staged_catalog_lock_identity staged_catalog_lock_metadata
+}
+
+revalidate_staged_catalog_lock() {
+  revalidate_catalog_root_lock "$catalog_stage" "$staged_catalog_lock_fd" "$staged_catalog_lock_identity" "$staged_catalog_lock_metadata"
+}
+
+release_staged_catalog_lock() {
+  [[ -z "$staged_catalog_lock_fd" ]] || exec {staged_catalog_lock_fd}>&-
+  staged_catalog_lock_fd=''; staged_catalog_lock_identity=''; staged_catalog_lock_metadata=''
+}
+
+acquire_published_catalog_lock() {
+  if [[ -n "$published_catalog_lock_fd" ]]; then
+    revalidate_catalog_root_lock "$catalog_root" "$published_catalog_lock_fd" "$published_catalog_lock_identity" "$published_catalog_lock_metadata"
+    return
+  fi
+  validate_stage_root "$catalog_root" "$product_root/catalogs" &&
+    acquire_catalog_root_lock "$catalog_root" published_catalog_lock_fd published_catalog_lock_identity published_catalog_lock_metadata
+}
+
+revalidate_published_catalog_lock() {
+  revalidate_catalog_root_lock "$catalog_root" "$published_catalog_lock_fd" "$published_catalog_lock_identity" "$published_catalog_lock_metadata"
+}
+
+promote_staged_catalog_lock() {
+  published_catalog_lock_fd="$staged_catalog_lock_fd"
+  published_catalog_lock_identity="$staged_catalog_lock_identity"
+  published_catalog_lock_metadata="$staged_catalog_lock_metadata"
+  staged_catalog_lock_fd=''; staged_catalog_lock_identity=''; staged_catalog_lock_metadata=''
+  revalidate_published_catalog_lock
 }
 
 validate_legacy_catalog_snapshot() {
@@ -531,6 +627,13 @@ validate_finalize_filesystem_state() {
 }
 verify_catalog_destination() {
   local root="$1" snapshot="$2" expected_identity_source="$3" catalog_manifest catalog_bundle catalog_identity catalog_identity_source kind schema preprocessing
+  if [[ "$root" == "$catalog_stage" ]]; then
+    acquire_staged_catalog_lock || return 1
+  elif [[ "$root" == "$catalog_root" ]]; then
+    acquire_published_catalog_lock || return 1
+  else
+    return 1
+  fi
   validate_stage_root "$root" "$product_root/catalogs" || return 1
   catalog_manifest="$root/current/manifest.json"
   [[ -f "$catalog_manifest" && ! -L "$catalog_manifest" ]] || return 1
@@ -543,7 +646,8 @@ verify_catalog_destination() {
   preprocessing="$(hyg_json_value "$catalog_manifest" '$.preprocessingVersion')"
   validate_catalog_control_files "$legacy_catalog" "$catalog_identity" "$kind" "$schema" "$preprocessing" &&
     validate_catalog_control_files "$root" "$catalog_identity" "$kind" "$schema" "$preprocessing" &&
-    verify_catalog_snapshot_copy "$root" "$snapshot"
+    verify_catalog_snapshot_copy "$root" "$snapshot" &&
+    if [[ "$root" == "$catalog_stage" ]]; then revalidate_staged_catalog_lock; else revalidate_published_catalog_lock; fi
 }
 verify_migration_destination_for_identity() {
   local expected_identity_source="$1" expected_config="${2:-$config_snapshot}" expected_state="${3:-$state_snapshot}"
@@ -661,16 +765,22 @@ apply)
   jq -e --arg instance "$instance_id" '.schemaVersion == 1 and .product == "HVO.SkyMonitor" and .component == "cameraAgent" and .instanceId == $instance and .creationProvenance == {migration:"singular-layout-v1"} and .applicationIdentityFile == "application-identity.json"' "$manifest" >/dev/null || exit 1
   jq -e --arg configured "$application_id" --arg bound "$bound_device_id" '.schemaVersion == 1 and .configuredIdentity == $configured and .state == (if $bound == "" then "pre-provisioning" else "bound" end) and .boundIdentity == (if $bound == "" then null else $bound end)' "$binding" >/dev/null || exit 1
   if [[ ! -e "$catalog_root" && ! -L "$catalog_root" ]]; then
-    if [[ -d "$catalog_stage" && ! -L "$catalog_stage" ]] && ! verify_catalog_destination "$catalog_stage" "$catalog_snapshot" "$catalog_identity_source"; then
-      validate_stage_root "$catalog_stage" "$product_root/catalogs" && validate_copy_subset "$catalog_stage" "$catalog_snapshot" ||
+    if [[ -d "$catalog_stage" && ! -L "$catalog_stage" ]]; then
+      acquire_staged_catalog_lock || { printf 'Staged catalog lock is unsafe or could not be acquired.\n' >&2; exit 1; }
+    fi
+    if [[ -n "$staged_catalog_lock_fd" ]] && ! verify_catalog_destination "$catalog_stage" "$catalog_snapshot" "$catalog_identity_source"; then
+      revalidate_staged_catalog_lock || { printf 'Staged catalog lock changed while being held.\n' >&2; exit 1; }
+      validate_stage_root "$catalog_stage" "$product_root/catalogs" && validate_catalog_copy_subset "$catalog_stage" "$catalog_snapshot" ||
         { printf 'Stale catalog stage is unsafe.\n' >&2; exit 1; }
-      delete_copy_subset "$catalog_stage" "$catalog_snapshot"
+      delete_catalog_copy_subset "$catalog_stage" "$catalog_snapshot"
+      release_staged_catalog_lock
     fi
     if [[ ! -e "$catalog_stage" && ! -L "$catalog_stage" ]]; then cp -a -- "$legacy_catalog" "$catalog_stage"; failpoint after-copy-catalog; fi
     acquire_staged_catalog_lock || { printf 'Staged catalog lock is unsafe or could not be acquired.\n' >&2; exit 1; }
     verify_catalog_destination "$catalog_stage" "$catalog_snapshot" "$catalog_identity_source" || { printf 'Staged catalog did not verify.\n' >&2; exit 1; }
     validate_legacy_catalog_snapshot "$catalog_snapshot" || { printf 'Legacy catalog changed before publication.\n' >&2; exit 1; }
     mv -T -- "$catalog_stage" "$catalog_root"; sync -f "$product_root/catalogs"
+    promote_staged_catalog_lock || { printf 'Published catalog lock changed during publication.\n' >&2; exit 1; }
   fi
   [[ -d "$catalog_root" && ! -L "$catalog_root" && ! -e "$catalog_stage" ]] || exit 1
   verify_catalog_destination "$catalog_root" "$catalog_snapshot" "$catalog_identity_source"
@@ -679,7 +789,9 @@ apply)
     validate_legacy_catalog_snapshot "$catalog_snapshot" &&
     verify_migration_destination_for_identity "$catalog_identity_source" || { printf 'Migration source or destination changed before evidence publication.\n' >&2; exit 1; }
   failpoint after-final-evidence-revalidation
+  revalidate_published_catalog_lock || { printf 'Published catalog lock changed before evidence publication.\n' >&2; exit 1; }
   publish_json "$evidence" "$(jq -cn --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg identitySource "$catalog_identity_source" --arg legacy "$legacy_root" --arg product "$product_root" '{schemaVersion:2,status:"copied-and-verified",instanceId:$instance,applicationIdentity:$application,boundDeviceIdentity:(if $bound == "" then null else $bound end),catalogId:$catalog,catalogIdentitySource:$identitySource,legacyRoot:$legacy,productRoot:$product,legacyRetained:true,legacyCatalogRetained:true}')"
+  revalidate_published_catalog_lock || { printf 'Published catalog lock changed during evidence publication.\n' >&2; exit 1; }
   ;;
 verify)
   validate_migration_evidence || exit 1
@@ -706,7 +818,7 @@ rollback)
     [[ "$metadata_identity_source" == explicit-manifest-v2 || "$metadata_identity_source" == derived-manifest-v1 ]] || exit 1
     validate_apply_intent "$metadata_identity_source" || exit 1
     catalog_preexisting="$(jq -r '.catalogPreexisting' "$apply_intent")"
-    if [[ "$catalog_preexisting" == true ]]; then [[ -d "$catalog_root" && ! -L "$catalog_root" ]] || exit 1
+    if [[ "$catalog_preexisting" == true ]]; then acquire_published_catalog_lock || exit 1
     else [[ ! -e "$catalog_root" && ! -L "$catalog_root" ]] || exit 1; fi
     snapshot_gap=false
     for path in "$config_snapshot" "$state_snapshot" "$catalog_snapshot"; do
@@ -767,7 +879,7 @@ rollback)
     [[ ! -e "$apply_intent" && ! -L "$apply_intent" ]] || validate_apply_intent "$catalog_identity_source"
     if [[ -e "$catalog_root" || -L "$catalog_root" ]]; then
       if [[ -e "$catalog_snapshot" ]]; then verify_catalog_destination "$catalog_root" "$catalog_snapshot" "$catalog_identity_source"
-      else [[ -d "$catalog_root" && ! -L "$catalog_root" ]]; fi
+      else acquire_published_catalog_lock; fi
     fi
   else
     validate_apply_intent "$catalog_identity_source" || { printf 'Migration apply intent is missing or invalid.\n' >&2; exit 1; }
@@ -805,7 +917,9 @@ rollback)
       verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"
     fi
   fi
-  if [[ -e "$catalog_stage" || -L "$catalog_stage" ]]; then validate_stage_root "$catalog_stage" "$product_root/catalogs" && validate_copy_subset "$catalog_stage" "$catalog_snapshot" || exit 1; fi
+  if [[ -e "$catalog_stage" || -L "$catalog_stage" ]]; then
+    acquire_staged_catalog_lock && validate_catalog_copy_subset "$catalog_stage" "$catalog_snapshot" && revalidate_staged_catalog_lock || exit 1
+  fi
   if [[ -e "$catalog_root" || -L "$catalog_root" ]]; then
     verify_catalog_destination "$catalog_root" "$catalog_snapshot" "$catalog_identity_source" || exit 1
   fi
@@ -816,7 +930,10 @@ rollback)
   if [[ -e "$instance_root" || -L "$instance_root" ]]; then
     delete_instance_tree "$instance_root" rollback-instance "${rollback_config_expected:-$config_snapshot}" "${rollback_state_expected:-$state_snapshot}"
   fi
-  if [[ -e "$catalog_stage" || -L "$catalog_stage" ]]; then delete_copy_subset "$catalog_stage" "$catalog_snapshot"; fi
+  if [[ -e "$catalog_stage" || -L "$catalog_stage" ]]; then
+    revalidate_staged_catalog_lock && delete_catalog_copy_subset "$catalog_stage" "$catalog_snapshot" || exit 1
+    release_staged_catalog_lock
+  fi
   publish_json "$rollback_intent" "$(rollback_intent_json cleanup-pending "$rollback_cutover_sha" "$rollback_config_sha" "$rollback_state_sha")"
   failpoint after-rollback-cleanup-intent
   fi
@@ -897,9 +1014,11 @@ finalize)
     validate_final_capture_sequence "$capture_sequence_after" || exit 1
   failpoint after-pre-pending-destination-barrier
   if [[ "$migration_status" == copied-and-verified ]]; then
+    revalidate_published_catalog_lock || { printf 'Published catalog lock changed before pending evidence publication.\n' >&2; exit 1; }
     publish_json "$evidence" "$(jq --arg sha "$cutover_sha" --arg configSha "$final_config_sha" --arg stateSha "$final_state_sha" \
       '.status="finalized-removal-pending" | .legacyRetained=false | .legacyCatalogRetained=true | .cutoverEvidenceSha256=$sha |
        .finalConfigSnapshotSha256=$configSha | .finalStateSnapshotSha256=$stateSha' "$evidence")"
+    revalidate_published_catalog_lock || { printf 'Published catalog lock changed during pending evidence publication.\n' >&2; exit 1; }
   fi
   failpoint after-finalized-evidence
   verify_final_destination "$expected_identity_source" "$final_config_sha" "$final_state_sha" &&
@@ -917,7 +1036,9 @@ finalize)
   verify_final_destination "$expected_identity_source" "$final_config_sha" "$final_state_sha" &&
     validate_final_capture_sequence "$capture_sequence_after" || exit 1
   failpoint after-final-destination-barrier
+  revalidate_published_catalog_lock || { printf 'Published catalog lock changed before final evidence publication.\n' >&2; exit 1; }
   publish_json "$evidence" "$(jq '.status="finalized" | .legacyRetained=false | .legacyCatalogRetained=true | .tombstonesRemoved=true' "$evidence")"
+  revalidate_published_catalog_lock || { printf 'Published catalog lock changed during final evidence publication.\n' >&2; exit 1; }
   ;;
 esac
 printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"

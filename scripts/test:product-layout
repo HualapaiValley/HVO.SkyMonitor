@@ -10,6 +10,9 @@ cleanup() {
   [[ -z "${sibling_consumer_pid:-}" ]] || kill "$sibling_consumer_pid" 2>/dev/null || true
   [[ -z "${catalog_lock_holder_pid:-}" ]] || kill "$catalog_lock_holder_pid" 2>/dev/null || true
   [[ -z "${catalog_migration_pid:-}" ]] || kill "$catalog_migration_pid" 2>/dev/null || true
+  [[ -z "${destination_publisher_pid:-}" ]] || kill "$destination_publisher_pid" 2>/dev/null || true
+  [[ -z "${stage_migration_pid:-}" ]] || kill "$stage_migration_pid" 2>/dev/null || true
+  [[ -z "${rollback_migration_pid:-}" ]] || kill "$rollback_migration_pid" 2>/dev/null || true
   chmod -R u+w "$TEMP_DIR" 2>/dev/null || true
   rm -rf "$TEMP_DIR"
 }
@@ -186,6 +189,118 @@ catalog_migration_pid=
 test ! -e "$locked_evidence.apply-intent.json"
 test ! -e "$locked_product/cameraagents/12121212-1212-4212-8212-121212121212"
 test ! -e "$locked_product/catalogs/hyg-v42-production"
+# Existing published roots are locked before verification, and that lock remains held through evidence publication.
+destination_legacy="$TEMP_DIR/destination-lock-legacy"; destination_product="$TEMP_DIR/destination-lock-product"
+destination_evidence="$TEMP_DIR/destination-lock.json"; destination_instance=13131313-1313-4313-8313-131313131313
+mkdir -p "$destination_legacy/config/cameraagent" "$destination_legacy/data/agent"
+printf '{}\n' > "$destination_legacy/config/cameraagent/config.json"; printf 'state\n' > "$destination_legacy/data/agent/state"
+create_v2_fixture_catalog "$destination_legacy/data/catalog" hyg-v42-production fixture-v1
+create_catalog_lock "$destination_legacy/data/catalog"
+destination_args=(--legacy-root "$destination_legacy" --product-root "$destination_product" --instance-id "$destination_instance" \
+  --application-id destination-agent --catalog-id hyg-v42-production --evidence "$destination_evidence")
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${destination_args[@]}" >/dev/null
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${destination_args[@]}" >/dev/null
+destination_catalog="$destination_product/catalogs/hyg-v42-production"
+destination_database="$destination_catalog/versions/fixture-v1/hyg_v42.sqlite"
+cp "$destination_database" "$TEMP_DIR/destination-database.valid"
+destination_lock_marker="$TEMP_DIR/destination-lock-held"; destination_lock_release="$TEMP_DIR/destination-lock-release"
+(
+  exec 8<> "$destination_catalog/.catalog.lock"; flock -x 8; : > "$destination_lock_marker"
+  while [[ ! -e "$destination_lock_release" ]]; do sleep 0.01; done
+) &
+catalog_lock_holder_pid=$!
+while [[ ! -e "$destination_lock_marker" ]]; do sleep 0.01; done
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${destination_args[@]}" >/dev/null 2>&1 &
+catalog_migration_pid=$!
+sleep 0.1; kill -0 "$catalog_migration_pid"
+test ! -e "$destination_evidence"; test ! -e "$destination_product/cameraagents/$destination_instance"
+chmod u+w "$destination_database"; printf 'publisher-drift\n' >> "$destination_database"
+: > "$destination_lock_release"; wait "$catalog_lock_holder_pid"; catalog_lock_holder_pid=
+if wait "$catalog_migration_pid"; then
+  printf 'Migration accepted drift committed by the published-root lock holder.\n' >&2; exit 136
+fi
+catalog_migration_pid=
+test ! -e "$destination_evidence"; test ! -e "$destination_product/cameraagents/$destination_instance"
+cp "$TEMP_DIR/destination-database.valid" "$destination_database"; chmod 444 "$destination_database"
+mkdir -m 700 "$TEMP_DIR/fake-evidence-bin"
+real_mv="$(command -v mv)"
+cat > "$TEMP_DIR/fake-evidence-bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${*: -1}" == "$HVO_MIGRATION_EVIDENCE_PATH" ]]; then
+  : > "$HVO_MIGRATION_EVIDENCE_MARKER"
+  while [[ ! -e "$HVO_MIGRATION_EVIDENCE_RELEASE" ]]; do sleep 0.01; done
+fi
+exec "$HVO_REAL_MV" "$@"
+EOF
+chmod 700 "$TEMP_DIR/fake-evidence-bin/mv"
+evidence_marker="$TEMP_DIR/evidence-publication-held"; evidence_release="$TEMP_DIR/evidence-publication-release"
+PATH="$TEMP_DIR/fake-evidence-bin:$PATH" HVO_REAL_MV="$real_mv" HVO_MIGRATION_EVIDENCE_PATH="$destination_evidence" \
+  HVO_MIGRATION_EVIDENCE_MARKER="$evidence_marker" HVO_MIGRATION_EVIDENCE_RELEASE="$evidence_release" \
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${destination_args[@]}" >/dev/null 2>&1 &
+catalog_migration_pid=$!
+while [[ ! -e "$evidence_marker" ]]; do sleep 0.01; kill -0 "$catalog_migration_pid"; done
+if flock -n "$destination_catalog/.catalog.lock" true; then
+  printf 'Published catalog lock was released before migration evidence publication.\n' >&2; exit 137
+fi
+destination_publisher_marker="$TEMP_DIR/destination-publisher-acquired"
+(exec 8<> "$destination_catalog/.catalog.lock"; flock -x 8; : > "$destination_publisher_marker") &
+destination_publisher_pid=$!
+sleep 0.1; test ! -e "$destination_publisher_marker"; test ! -e "$destination_evidence"
+: > "$evidence_release"; wait "$catalog_migration_pid"; catalog_migration_pid=
+wait "$destination_publisher_pid"; destination_publisher_pid=
+test -e "$destination_evidence"; test -e "$destination_publisher_marker"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${destination_args[@]}" >/dev/null
+
+# Stale-stage recovery waits for and pins the stage lock before inspection; drift is retained rather than deleted.
+stage_legacy="$TEMP_DIR/stage-lock-legacy"; stage_product="$TEMP_DIR/stage-lock-product"; stage_evidence="$TEMP_DIR/stage-lock.json"
+stage_instance=14141414-1414-4414-8414-141414141414
+mkdir -p "$stage_legacy/config/cameraagent" "$stage_legacy/data/agent"
+printf '{}\n' > "$stage_legacy/config/cameraagent/config.json"; printf 'state\n' > "$stage_legacy/data/agent/state"
+create_v2_fixture_catalog "$stage_legacy/data/catalog" hyg-v42-production fixture-v1; create_catalog_lock "$stage_legacy/data/catalog"
+stage_args=(--legacy-root "$stage_legacy" --product-root "$stage_product" --instance-id "$stage_instance" \
+  --application-id stage-agent --catalog-id hyg-v42-production --evidence "$stage_evidence")
+if DEPLOY_MIGRATION_FAILPOINT=after-copy-catalog "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${stage_args[@]}" >/dev/null 2>&1; then exit 138; fi
+catalog_stage="$stage_product/catalogs/.hvo-migration-$stage_instance.stage"
+stage_lock_marker="$TEMP_DIR/stage-lock-held"; stage_lock_release="$TEMP_DIR/stage-lock-release"
+(
+  exec 8<> "$catalog_stage/.catalog.lock"; flock -x 8; : > "$stage_lock_marker"
+  while [[ ! -e "$stage_lock_release" ]]; do sleep 0.01; done
+) &
+catalog_lock_holder_pid=$!
+while [[ ! -e "$stage_lock_marker" ]]; do sleep 0.01; done
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${stage_args[@]}" >/dev/null 2>&1 &
+stage_migration_pid=$!
+sleep 0.1; kill -0 "$stage_migration_pid"; test -d "$catalog_stage"
+printf 'hostile-stage-drift\n' > "$catalog_stage/unknown"
+: > "$stage_lock_release"; wait "$catalog_lock_holder_pid"; catalog_lock_holder_pid=
+if wait "$stage_migration_pid"; then
+  printf 'Migration deleted or adopted a drifted locked catalog stage.\n' >&2; exit 139
+fi
+stage_migration_pid=
+test -f "$catalog_stage/unknown"; test ! -e "$stage_evidence"
+rm "$catalog_stage/unknown"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${stage_args[@]}" >/dev/null
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${stage_args[@]}" >/dev/null
+
+# Rollback also waits for the stage lock and retains all candidate state until that lock is acquired.
+chmod -R u+w "$stage_product/catalogs/hyg-v42-production"; rm -rf "$stage_product/catalogs/hyg-v42-production"
+if DEPLOY_MIGRATION_FAILPOINT=after-copy-catalog "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${stage_args[@]}" >/dev/null 2>&1; then exit 140; fi
+catalog_stage="$stage_product/catalogs/.hvo-migration-$stage_instance.stage"
+rollback_lock_marker="$TEMP_DIR/rollback-stage-lock-held"; rollback_lock_release="$TEMP_DIR/rollback-stage-lock-release"
+(
+  exec 8<> "$catalog_stage/.catalog.lock"; flock -x 8; : > "$rollback_lock_marker"
+  while [[ ! -e "$rollback_lock_release" ]]; do sleep 0.01; done
+) &
+catalog_lock_holder_pid=$!
+while [[ ! -e "$rollback_lock_marker" ]]; do sleep 0.01; done
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${stage_args[@]}" >/dev/null 2>&1 &
+rollback_migration_pid=$!
+sleep 0.1; kill -0 "$rollback_migration_pid"
+test -d "$catalog_stage"; test -d "$stage_product/cameraagents/$stage_instance"; test ! -e "$stage_evidence.rollback-intent.json"
+: > "$rollback_lock_release"; wait "$catalog_lock_holder_pid"; catalog_lock_holder_pid=
+wait "$rollback_migration_pid"; rollback_migration_pid=
+test ! -e "$catalog_stage"; test ! -e "$stage_product/cameraagents/$stage_instance"
 # V2 migration authenticates the complete manifest and database, not only catalog.id or self-consistent hashes.
 for invalid_catalog in unknown-manifest-property schema-drift; do
   invalid_legacy="$TEMP_DIR/invalid-catalog-$invalid_catalog"; invalid_product="$TEMP_DIR/invalid-catalog-$invalid_catalog-product"
@@ -430,10 +545,8 @@ destination_lineage_before="$(sha256sum "$destination_catalog/.catalog-lineage.j
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
 test "$(sha256sum "$destination_catalog/.catalog-lineage.json")|$(stat -c '%u:%g:%h:%a' "$destination_catalog/.catalog-lineage.json")" = "$destination_lineage_before"
 rm "$destination_catalog/.catalog.lock"
-if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then
-  printf 'Migration accepted destination lineage without its catalog lock.\n' >&2; exit 128
-fi
-create_catalog_lock "$destination_catalog"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
+test "$(stat -c '%u:%g:%h:%a' "$destination_catalog/.catalog.lock")" = "$(id -u):$(id -g):1:600"
 cp "$destination_catalog/.catalog-lineage.json" "$TEMP_DIR/destination-lineage.valid"
 jq '.catalogId="conflicting-catalog"' "$TEMP_DIR/destination-lineage.valid" > "$destination_catalog/.catalog-lineage.json"
 chmod 600 "$destination_catalog/.catalog-lineage.json"
