@@ -52,7 +52,7 @@ public static class CatalogSnapshotResolver
 {
     private const int Sha256HexLength = 64;
     private const int MaximumManifestLength = 65_536;
-    private const int MaximumCatalogIdLength = 64;
+    private const int MaximumCatalogIdLength = 32;
     private const int MaximumCatalogVersionLength = 64;
     private const string ProductionCatalogId = "hyg-v42-production";
     private const string FixtureCatalogId = "hyg-v42-fixture";

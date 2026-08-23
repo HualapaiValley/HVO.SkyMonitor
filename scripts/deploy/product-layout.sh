@@ -5,7 +5,7 @@ deploy_is_canonical_uuid() {
 }
 
 deploy_is_catalog_id() {
-    [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]
+    [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]
 }
 
 deploy_component_directory() {

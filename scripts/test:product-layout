@@ -55,6 +55,7 @@ jq '.cameraAgents[1].instanceId=.cameraAgents[0].instanceId' "$inventory" > "$TE
 jq '.cameraAgents[1].runtimeRoot=.cameraAgents[0].runtimeRoot' "$inventory" > "$TEMP_DIR/invalid.json"; reject_layout "$TEMP_DIR/invalid.json" mutable-root-collision
 jq '.cameraAgents[1].catalogId="missing"' "$inventory" > "$TEMP_DIR/invalid.json"; reject_layout "$TEMP_DIR/invalid.json" unknown-catalog
 jq '.catalogs[1].catalogId="Shared"' "$inventory" > "$TEMP_DIR/invalid.json"; reject_layout "$TEMP_DIR/invalid.json" invalid-catalog-id
+jq '.catalogs[1].catalogId=("a" * 33) | .cameraAgents[1].catalogId=("a" * 33) | .productRoot as $root | .catalogs[1].installRoot=($root+"/catalogs/"+.catalogs[1].catalogId)' "$inventory" > "$TEMP_DIR/invalid.json"; reject_layout "$TEMP_DIR/invalid.json" overlong-catalog-id
 jq '.catalogs[1].installRoot=.cameraAgents[0].runtimeRoot+"/catalog"' "$inventory" > "$TEMP_DIR/invalid.json"; reject_layout "$TEMP_DIR/invalid.json" unsafe-ancestry
 jq '.logicHost.runtimeRoot="/var/lib/hvo/skymonitor/logichosts/11111111-1111-4111-8111-111111111111" |
   .cameraAgents[0].runtimeRoot="/var/lib/hvo/skymonitor/cameraagents/22222222-2222-4222-8222-222222222222" |
@@ -81,6 +82,11 @@ ln -s versions/v1 "$legacy/data/catalog/current"
 printf 'sibling-preserved\n' > "$legacy/data/sibling"
 instance=44444444-4444-4444-8444-444444444444
 args=(--legacy-root "$legacy" --product-root "$migrated" --instance-id "$instance" --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$evidence")
+if DEPLOY_MIGRATION_FAILPOINT=after-instance-stage-mkdir "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 88; fi
+test -d "$migrated/cameraagents/.hvo-migration-$instance.stage"
+test -z "$(find "$migrated/cameraagents/.hvo-migration-$instance.stage" -mindepth 1 -print -quit)"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
+test ! -e "$migrated/cameraagents/.hvo-migration-$instance.stage"
 if DEPLOY_MIGRATION_FAILPOINT=mid-copy-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 89; fi
 test -f "$evidence.apply-intent.json"; test -d "$migrated/cameraagents/.hvo-migration-$instance.stage"
 test ! -e "$migrated/cameraagents/.hvo-migration-$instance.stage/config/identity.db"
@@ -99,6 +105,15 @@ test "$(<"$stage/config/identity.db")" = replaced
 cp "$legacy/config/cameraagent/identity.db" "$stage/config/identity.db"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
 if DEPLOY_MIGRATION_FAILPOINT=after-copy-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 89; fi
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
+if DEPLOY_MIGRATION_FAILPOINT=after-delete-rollback-instance-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null 2>&1; then exit 102; fi
+test -f "$evidence.rollback-intent.json"
+test ! -e "$migrated/cameraagents/$instance/config"
+test -d "$migrated/cameraagents/$instance/state"
+test -f "$migrated/catalogs/hyg-v42-production/versions/v1/catalog.sqlite"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
+test ! -e "$evidence.rollback-intent.json"; test ! -e "$migrated/cameraagents/$instance"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
 test "$(<"$migrated/cameraagents/$instance/state/capture-sequence")" = 42
@@ -125,12 +140,18 @@ jq -n --arg instance "$instance" '{schemaVersion:1,instanceId:$instance,applicat
   healthVerified:true,loginVerified:true,provisioningVerified:true,dataProtectionVerified:true,locationHistoryVerified:true,
   artifactChecksumsVerified:true,rollbackRehearsed:true,captureSequenceBefore:42,captureSequenceAfter:43}' > "$cutover"
 chmod 600 "$cutover"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]/hyg-v42-production/alternate-catalog}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 103; fi
+test -d "$legacy/config/cameraagent"; test -d "$legacy/data/agent"; test -d "$legacy/data/catalog"
 if DEPLOY_MIGRATION_FAILPOINT=after-tombstone-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 91; fi
 test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent"; test -d "$legacy/data/catalog"
 if DEPLOY_MIGRATION_FAILPOINT=after-partial-delete-state "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 92; fi
 jq -e '.status == "finalized-removal-pending" and .legacyRetained == false' "$evidence" >/dev/null
 test -d "$legacy/data/agent.hvo-migration-$instance"
 test "$(find "$legacy/data/agent.hvo-migration-$instance" -type f | wc -l)" -lt 2
+cp "$cutover" "$cutover.valid"
+jq '.captureSequenceAfter=44' "$cutover.valid" > "$cutover"; chmod 600 "$cutover"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 104; fi
+mv "$cutover.valid" "$cutover"; chmod 600 "$cutover"
 printf 'unknown\n' > "$legacy/data/agent.hvo-migration-$instance/unknown"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 95; fi
 rm "$legacy/data/agent.hvo-migration-$instance/unknown"
@@ -138,6 +159,10 @@ rm "$legacy/data/agent.hvo-migration-$instance/unknown"
 test ! -e "$legacy/config/cameraagent"; test ! -e "$legacy/data/agent"; test ! -e "$legacy/data/catalog"
 jq -e '.status == "finalized" and .legacyRetained == false' "$evidence" >/dev/null
 test "$(<"$legacy/data/sibling")" = sibling-preserved
+cp "$cutover" "$cutover.valid"
+jq '.captureSequenceAfter=45' "$cutover.valid" > "$cutover"; chmod 600 "$cutover"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 105; fi
+mv "$cutover.valid" "$cutover"; chmod 600 "$cutover"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null 2>&1; then
     printf 'Finalized migration unexpectedly rolled back.\n' >&2; exit 1
@@ -221,7 +246,7 @@ fi
 exec /usr/bin/stat "$@"
 EOF
 chmod 700 "$TEMP_DIR/fake-bin/stat"
-for unsafe in absolute-link escaping-link fifo device-crossing ownership-drift; do
+for unsafe in absolute-link escaping-link fifo device-crossing ownership-drift tab-name newline-name tab-link-target newline-link-target; do
   root="$TEMP_DIR/unsafe-$unsafe"; destination="$TEMP_DIR/unsafe-$unsafe-product"; unsafe_evidence="$TEMP_DIR/unsafe-$unsafe.json"
   mkdir -p "$root/config/cameraagent" "$root/data/agent" "$root/data/catalog/versions/v1"
   printf '{}\n' > "$root/config/cameraagent/config.json"; printf 'state\n' > "$root/data/agent/state"
@@ -233,6 +258,10 @@ for unsafe in absolute-link escaping-link fifo device-crossing ownership-drift; 
     fifo) mkfifo "$root/data/agent/unsafe" ;;
     device-crossing) mkdir "$root/data/agent/nested-device" ;;
     ownership-drift) chmod 755 "$root/data/agent" ;;
+    tab-name) printf 'unsafe\n' > "$root/data/agent/"$'tab\tname' ;;
+    newline-name) printf 'unsafe\n' > "$root/data/agent/"$'newline\nname' ;;
+    tab-link-target) ln -s $'identity/tab\ttarget' "$root/data/agent/unsafe" ;;
+    newline-link-target) ln -s $'identity/newline\ntarget' "$root/data/agent/unsafe" ;;
   esac
   unsafe_args=(--legacy-root "$root" --product-root "$destination" --instance-id 55555555-5555-4555-8555-555555555555 --application-id unsafe-agent --catalog-id hyg-v42-production --evidence "$unsafe_evidence")
   if [[ "$unsafe" == ownership-drift ]]; then

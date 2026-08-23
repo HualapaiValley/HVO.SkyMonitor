@@ -81,7 +81,7 @@ One command can build, bundle, and install:
 
 The self-contained bundle contains only:
 
-- `manifest.json`, the UTF-8 JSON v1 manifest consumed by both the installer and
+- `manifest.json`, the UTF-8 JSON v2 manifest consumed by both the installer and
   `CatalogSnapshotResolver`.
 - `hyg_v42.sqlite`, the production database.
 - `LICENSE-HYG.md`, the retained upstream license notice.

@@ -488,11 +488,15 @@ else
   mkdir -p -- "$install_root/versions"
   if [[ ! -e "$destination" ]]; then
     mkdir -m 755 -- "$destination"; cp -a -- "$bundle/." "$destination/"
+    chmod 444 -- "$destination/manifest.json" "$destination/hyg_v42.sqlite"
+    chmod 555 -- "$destination"
   else
     existing="$destination/hyg_v42.sqlite"
     [[ -d "$destination" && ! -L "$destination" && -f "$existing" && ! -L "$existing" &&
        "$(sha256sum "$existing" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$existing")" == "$expected_length" ]] || exit 98
   fi
+  [[ "$(stat -c %a "$destination")" == 555 && "$(stat -c %a "$destination/manifest.json")" == 444 &&
+     "$(stat -c %a "$destination/hyg_v42.sqlite")" == 444 ]] || exit 98
   temporary="$install_root/.current.tmp.$$"
   ln -s "versions/$version" "$temporary"; mv -Tf -- "$temporary" "$install_root/current"
 fi

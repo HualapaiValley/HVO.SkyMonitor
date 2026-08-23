@@ -2928,8 +2928,12 @@ jq --arg bundle "$production_mismatch_bundle" '.catalogs[0].kind="production" | 
 test ! -s "$LOG" || fail 'Production catalog mismatch reached transport.'
 run_deploy_mode catalog "$deploy_case" isolated >/dev/null
 installed_catalog_manifest="$install_root/versions/fixture-v1/manifest.json"
+test "$(stat -c %a "$install_root/versions/fixture-v1")" = 555
+test "$(stat -c %a "$installed_catalog_manifest")" = 444
+test "$(stat -c %a "$install_root/versions/fixture-v1/hyg_v42.sqlite")" = 444
 cp "$installed_catalog_manifest" "$TEMP_DIR/installed-catalog.valid"
 for installed_drift in kind version id schema preprocessing database-sha database-length database-rows; do
+  chmod 644 "$installed_catalog_manifest"
   case "$installed_drift" in
     kind) jq '.package.kind="production"' "$TEMP_DIR/installed-catalog.valid" > "$installed_catalog_manifest" ;;
     version) jq '.package.version="other"' "$TEMP_DIR/installed-catalog.valid" > "$installed_catalog_manifest" ;;
@@ -2942,15 +2946,21 @@ for installed_drift in kind version id schema preprocessing database-sha databas
   esac
   if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/installed-catalog-$installed_drift.log" 2>&1; then fail "Catalog accepted installed $installed_drift lineage drift."; fi
   cp "$TEMP_DIR/installed-catalog.valid" "$installed_catalog_manifest"
+  chmod 444 "$installed_catalog_manifest"
 done
 installed_database="$install_root/versions/fixture-v1/hyg_v42.sqlite"; cp "$installed_database" "$TEMP_DIR/installed-database.valid"
+chmod 644 "$installed_database"
 printf 'drift\n' >> "$installed_database"
 if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/installed-catalog-bytes.log" 2>&1; then fail 'Catalog accepted installed database byte drift.'; fi
 cp "$TEMP_DIR/installed-database.valid" "$installed_database"
+chmod 444 "$installed_database"
 ln -sfn versions/missing "$install_root/current"
 if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/installed-catalog-current.log" 2>&1; then fail 'Catalog accepted conflicting current selection.'; fi
 ln -sfn versions/fixture-v1 "$install_root/current"
 run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+test "$(stat -c %a "$install_root/versions/fixture-v1")" = 555
+test "$(stat -c %a "$installed_catalog_manifest")" = 444
+test "$(stat -c %a "$installed_database")" = 444
 migrated_east_root="$(jq -r '.cameraAgents[0].runtimeRoot' "$INVENTORY")"
 jq -n --arg instance "$(jq -r '.cameraAgents[0].instanceId' "$INVENTORY")" \
   '{schemaVersion:1,product:"HVO.SkyMonitor",component:"cameraAgent",instanceId:$instance,creationProvenance:{migration:"singular-layout-v1"},applicationIdentityFile:"application-identity.json"}' \

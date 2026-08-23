@@ -207,6 +207,10 @@ internal sealed class CatalogSnapshotResolverTests
             .Replace("\"id\": \"hyg-v42-fixture\"", "\"id\": \"HYG-invalid\"", StringComparison.Ordinal));
         Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
+        File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath)
+            .Replace("\"id\": \"hyg-v42-fixture\"", $"\"id\": \"{new string('a', 33)}\"", StringComparison.Ordinal));
+        Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+
         File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, schemaVersion: "1"));
         Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
