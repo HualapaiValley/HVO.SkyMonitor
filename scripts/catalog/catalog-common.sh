@@ -437,6 +437,29 @@ hyg_fixture_reconcile_transaction_temporaries() {
     [[ "$removed" == false ]] || sync -f "$install_root"
 }
 
+hyg_fixture_reconcile_current_temporaries() {
+    local install_root="$1"
+    local path name target
+    local removed=false
+    local -a temporaries
+    hyg_fixture_safe_mutable_directory "$install_root/versions" || return 1
+    shopt -s nullglob dotglob
+    temporaries=("$install_root"/.current.tmp.*)
+    shopt -u nullglob dotglob
+    for path in "${temporaries[@]}"; do
+        name="${path##*/}"
+        [[ "$name" =~ ^[.]current[.]tmp[.][1-9][0-9]*[.][0-9]{1,5}$ &&
+           -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" &&
+           "$(stat -c %h -- "$path")" == 1 ]] || return 1
+        target="$(readlink "$path")"
+        [[ "$target" =~ ^versions/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+        hyg_fixture_validate_pointer "$install_root" "$path" || return 1
+        rm -f -- "$path"
+        removed=true
+    done
+    [[ "$removed" == false ]] || sync -f "$install_root"
+}
+
 hyg_fixture_validate_ancestor_chain() {
     local path="$1"
     local current=/ component owner mode
@@ -476,6 +499,7 @@ hyg_fixture_replace_current() {
     for attempt in {1..16}; do
         temporary="$install_root/.current.tmp.$$.$RANDOM"
         if ln -s -- "$target" "$temporary" 2>/dev/null; then
+            [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" != after-current-pointer-temporary ]] || exit 75
             break
         fi
         temporary=
@@ -533,7 +557,7 @@ hyg_validate_fixture_installation() {
     local install_root="$1"
     local version="$2"
     local install_parent current
-    local -a candidate_stages transaction_temporaries
+    local -a candidate_stages transaction_temporaries current_temporaries
     install_parent="$(dirname -- "$install_root")"
     [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
        -d "$install_parent" && ! -L "$install_parent" ]] || return 1
@@ -548,8 +572,10 @@ hyg_validate_fixture_installation() {
     candidate_stages=("$install_root/versions"/.fixture-candidate-*.stage)
     transaction_temporaries=("$install_root"/.fixture-candidate-transaction.tmp.*
         "$install_root"/.fixture-pointer-transaction.tmp.*)
+    current_temporaries=("$install_root"/.current.tmp.*)
     shopt -u nullglob dotglob
-    [[ ${#candidate_stages[@]} -eq 0 && ${#transaction_temporaries[@]} -eq 0 ]] || return 1
+    [[ ${#candidate_stages[@]} -eq 0 && ${#transaction_temporaries[@]} -eq 0 &&
+       ${#current_temporaries[@]} -eq 0 ]] || return 1
     current="$(readlink "$install_root/current")"
     [[ "$current" == "versions/$version" ]] || return 1
     hyg_validate_fixture_payload "$install_root" "$version"

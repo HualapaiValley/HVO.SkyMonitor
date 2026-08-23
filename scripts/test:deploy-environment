@@ -3033,6 +3033,41 @@ for hostile_transaction_temporary in symlink hardlink mode unknown; do
 done
 rm -rf "$install_root"
 
+# Orphan current-pointer temporaries are removed only when their complete locked symlink contract is authenticated.
+for hostile_current_temporary in regular hardlink owner malformed unsafe-target; do
+  rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
+    "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
+  rm -rf "$install_root"; mkdir -m 700 "$install_root" "$install_root/versions"
+  mkdir -m 555 "$install_root/versions/fixture-v1"
+  current_temporary="$install_root/.current.tmp.123.456"
+  case "$hostile_current_temporary" in
+    regular) printf 'preserve\n' > "$current_temporary" ;;
+    hardlink)
+      printf 'preserve\n' > "$TEMP_DIR/fixture-current-temp-hardlink"
+      ln "$TEMP_DIR/fixture-current-temp-hardlink" "$current_temporary"
+      ;;
+    owner)
+      ln -s versions/fixture-v1 "$current_temporary"
+      cp "$FAKE_REMOTE_UID_MAP" "$TEMP_DIR/fixture-current-temp-uid-map"
+      printf '%s\t99999\n' "$current_temporary" >> "$FAKE_REMOTE_UID_MAP"
+      ;;
+    malformed)
+      current_temporary="$install_root/.current.tmp.unexpected"
+      ln -s versions/fixture-v1 "$current_temporary"
+      ;;
+    unsafe-target) ln -s ../outside "$current_temporary" ;;
+  esac
+  if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-hostile-current-temp-$hostile_current_temporary.log" 2>&1; then
+    [[ "$hostile_current_temporary" != owner ]] || mv "$TEMP_DIR/fixture-current-temp-uid-map" "$FAKE_REMOTE_UID_MAP"
+    fail "Catalog accepted hostile fixture current-pointer temporary: $hostile_current_temporary"
+  fi
+  [[ "$hostile_current_temporary" != owner ]] || mv "$TEMP_DIR/fixture-current-temp-uid-map" "$FAKE_REMOTE_UID_MAP"
+  test -e "$current_temporary" || test -L "$current_temporary" ||
+    fail "Catalog removed hostile fixture current-pointer temporary: $hostile_current_temporary"
+  rm -f "$current_temporary" "$TEMP_DIR/fixture-current-temp-hardlink"
+done
+rm -rf "$install_root"
+
 # Unauthenticated or structurally hostile candidate stages are retained for inspection and never adopted or deleted.
 for hostile_candidate in no-intent hostile-intent; do
   rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
@@ -3055,7 +3090,8 @@ rm -rf "$install_root"
 # A runtime-owned 0755 catalog parent is safe; activation preserves the old pointer before intent and reconciles on restart.
 test "$(stat -c %a "$catalog_parent")" = 755
 for fixture_boundary in after-candidate-transaction-temp-fsync during-candidate-copy before-candidate-rename \
-  after-candidate-publication after-pointer-transaction-temp-fsync after-pointer-transaction after-current-pointer; do
+  after-candidate-publication after-pointer-transaction-temp-fsync after-pointer-transaction \
+  after-current-pointer-temporary after-current-pointer; do
   rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
     "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
   chmod -R u+w "$install_root" 2>/dev/null || true
@@ -3070,11 +3106,21 @@ for fixture_boundary in after-candidate-transaction-temp-fsync during-candidate-
   else
     test "$(readlink "$install_root/current")" = versions/prior
   fi
+  if [[ "$fixture_boundary" == after-current-pointer-temporary ]]; then
+    test "$(find "$install_root" -maxdepth 1 -name '.current.tmp.*' -print | wc -l)" = 1
+    if HVO_FIXTURE_CATALOG_TEST_FAIL_AT="$fixture_boundary" run_deploy_mode catalog "$deploy_case" isolated \
+      > "$TEMP_DIR/catalog-$fixture_boundary-repeat.log" 2>&1; then
+      fail "Repeated fixture activation failpoint $fixture_boundary passed."
+    fi
+    test "$(find "$install_root" -maxdepth 1 -name '.current.tmp.*' -print | wc -l)" = 1
+    test "$(readlink "$install_root/current")" = versions/prior
+  fi
   run_deploy_mode catalog "$deploy_case" isolated >/dev/null
   test "$(readlink "$install_root/current")" = versions/fixture-v1
   test ! -e "$install_root/.fixture-pointer-transaction"; test ! -e "$install_root/.fixture-candidate-transaction"
   test -z "$(find "$install_root/versions" -maxdepth 1 -name '.fixture-candidate-*.stage' -print -quit)"
   test -z "$(find "$install_root" -maxdepth 1 \( -name '.fixture-candidate-transaction.tmp.*' -o -name '.fixture-pointer-transaction.tmp.*' \) -print -quit)"
+  test -z "$(find "$install_root" -maxdepth 1 -name '.current.tmp.*' -print -quit)"
 done
 
 make_fixture_transport_stage() {

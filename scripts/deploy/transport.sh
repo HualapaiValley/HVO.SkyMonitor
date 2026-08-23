@@ -576,6 +576,7 @@ else
     hyg_fixture_safe_mutable_directory "$install_root/versions" || exit 97
     sync -f "$install_root"
   fi
+  hyg_fixture_reconcile_current_temporaries "$install_root" || exit 97
   if [[ -e "$install_root/current" || -L "$install_root/current" ]]; then
     hyg_fixture_validate_pointer "$install_root" "$install_root/current" || exit 97
   fi
@@ -657,6 +658,7 @@ source "$stage/scripts/catalog/catalog-common.sh"
 if [[ "$kind" == fixture ]]; then
   hyg_fixture_acquire_install_lock "$install_root" || exit 92
   hyg_fixture_reconcile_transaction_temporaries "$install_root" || exit 92
+  hyg_fixture_reconcile_current_temporaries "$install_root" || exit 92
   hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 92
 fi
 current=$(readlink "$install_root/current")

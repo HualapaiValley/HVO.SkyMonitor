@@ -140,18 +140,29 @@ legacy snapshot; unknown or drifted state fails closed. `finalize` also
 requires owner-only JSON cutover evidence for image identity, health, login,
 provisioning, Data Protection, protected location history, artifact checksums,
 non-regressing capture sequence, and a rehearsed rollback. It records that
-evidence file's SHA-256. After collecting the cutover evidence, stop the
+evidence file's SHA-256. Finalization safely opens the supplied evidence once,
+pins its device and inode, and copies that descriptor into an owner-only
+`<evidence>.cutover.snapshot`. JSON validation, hashing, and capture-sequence
+extraction use only that immutable snapshot. A resume safely pins the supplied
+source again and requires it to match the retained snapshot exactly. After
+collecting the cutover evidence, stop the
 CameraAgent for the short finalization window. Finalization captures strict
 owner-only snapshots of the stopped migrated config and state, requires the
 recorded capture sequence to equal the cutover evidence, and binds both snapshot
 hashes into its exact intent and evidence. Immutable instance identity and catalog
-content remain bound to the initial migration snapshots. Finalization then
-atomically renames each exact legacy tree to a transaction-scoped tombstone,
+content remain bound to the initial migration snapshots. Finalization never
+renames or deletes `<legacy-root>/data/catalog`; a co-located LogicHost or sibling
+consumer may still mount that exact path. It continuously verifies the retained
+legacy catalog's path, active pointer, metadata, and bytes through pending and
+finalized states. Exact intent and evidence record `legacyCatalogRetained:true`;
+`legacyRetained:false` means only mutable legacy CameraAgent config and state were
+removed. Finalization then atomically renames the exact legacy CameraAgent config
+and state trees to transaction-scoped tombstones,
 revalidates every captured identity and the final migrated snapshots, and publishes
 `finalized-removal-pending` evidence before deleting any tombstone. It revalidates
 the final destination immediately before tombstone deletion and again before
 publishing final evidence. Tombstone removal is resumable and final evidence is
-published only after all three are
+published only after both mutable tombstones are
 absent. A partially deleted tombstone may resume only when its root identity is
 still pinned and every remaining entry is an exact safe subset of the original
 snapshot; missing entries are allowed, while additions or replacements fail.
