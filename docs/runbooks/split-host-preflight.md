@@ -759,14 +759,17 @@ requires every fragment to bind the exact inventory selector in addition to the
 method-level TRX. Sanitizer and admissibility identities live in the separate
 campaign-index envelope; the existing runtime artifact schema remains unchanged.
 
-Run the focused contract test with:
+Current protected CI retains the focused acceptance inventory and supported
+campaign contracts:
 
 ```bash
 ./scripts/test:phase14-acceptance
 ./scripts/test:phase14-campaign
 ./scripts/test:phase14-normal-campaign
-./scripts/test:phase14-source-import
 ```
+
+The source importer below is historical reproducibility tooling for the closed,
+post-milestone campaign. It is not a protected-CI gate.
 
 The campaign contract uses stateful fake transport boundaries to validate
 orchestration and sanitized artifact shape. It is not a substitute for the real
@@ -824,7 +827,8 @@ without overwrite. The index status is `recorded` and campaign status remains
 `not-run`; #319 does not perform #321 admissibility, publish campaign completion,
 or claim `GATE-P14`.
 
-Run the Docker-free collector/importer contract with:
+When reproducing the historical source evidence, run the Docker-free
+collector/importer contract with:
 
 ```bash
 ./scripts/test:phase14-source-import
@@ -973,7 +977,8 @@ using `not-run -> recording -> recorded`; it does not promote a scenario or
 classification to `passed` and does not claim `GATE-P14` or split-host dependency
 fault coverage.
 
-Run the importer contract without service containers with:
+When reproducing the historical component evidence, run the importer contract
+without service containers with:
 
 ```bash
 ./scripts/test:phase14-component

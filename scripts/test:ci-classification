@@ -110,6 +110,8 @@ deployment_paths=(
   "scripts/test:deploy-environment"
   "scripts/test:deploy-environment-cli"
   "scripts/test:product-layout"
+  "scripts/test:phase14-campaign"
+  "scripts/test:phase14-normal-campaign"
   "scripts/catalog/install-hyg-v42.sh"
   "scripts/catalog:install"
   "scripts/infra:operation-lock"
