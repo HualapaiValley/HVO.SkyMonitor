@@ -685,6 +685,7 @@ fi
 current=$(readlink "$install_root/current")
 [[ "$current" == "versions/$expected_version" ]] || exit 91
 database="$install_root/$current/hyg_v42.sqlite"
+hyg_catalog_validate_installed_target "$install_root" "$current" "$catalog_id" "$kind" || exit 92
 if [[ "$kind" == fixture ]]; then
   hyg_validate_fixture_installation "$install_root" "$expected_version" "$catalog_id" || exit 92
 fi

@@ -127,19 +127,8 @@ reconcile_pointer_transaction() {
 
 validate_installed_target() {
     local target="$1"
-    local file
-    local manifest_version
-    manifest_version="$(hyg_json_value "$INSTALL_ROOT/$target/$HYG_MANIFEST_FILE" '$.manifestVersion')"
-    if [[ "$manifest_version" == 1 ]]; then
-        hyg_validate_legacy_production_bundle "$INSTALL_ROOT/$target"
-    else
-        hyg_validate_bundle "$INSTALL_ROOT/$target"
-    fi
-    [[ "$target" == "versions/$HYG_MANIFEST_PACKAGE_VERSION" ]] || hyg_fail "version directory does not match its manifest package version"
-    [[ "$(stat -c '%a' "$INSTALL_ROOT/$target")" == "555" ]] || hyg_fail "installed version directory is not immutable"
-    for file in "$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE"; do
-        [[ "$(stat -c '%a' "$INSTALL_ROOT/$target/$file")" == "444" ]] || hyg_fail "installed payload is not read-only: $file"
-    done
+    hyg_catalog_validate_installed_target "$INSTALL_ROOT" "$target" "$HYG_CATALOG_ID" production ||
+        hyg_fail "installed production catalog target is unsafe or incompatible: $target"
 }
 
 prepare_root() {

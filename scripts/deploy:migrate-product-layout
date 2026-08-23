@@ -123,18 +123,14 @@ revalidate_tree() { local root="$1" expected="$2" actual; actual="$(mktemp)"; sn
 verify_copy() { local source="$1" destination="$2" a b; a="$(mktemp)"; b="$(mktemp)"; snapshot_tree "$source" "$a" && snapshot_tree "$destination" "$b" && content_tree "$a" > "$a.content" && content_tree "$b" > "$b.content" && cmp -s "$a.content" "$b.content"; local status=$?; rm -f -- "$a" "$b" "$a.content" "$b.content"; return "$status"; }
 verify_snapshot_copy() { local destination="$1" expected="$2" actual; actual="$(mktemp)"; snapshot_tree "$destination" "$actual" && content_tree "$expected" > "$actual.expected" && content_tree "$actual" > "$actual.content" && cmp -s "$actual.expected" "$actual.content"; local status=$?; rm -f -- "$actual" "$actual.expected" "$actual.content"; return "$status"; }
 verify_catalog_snapshot_copy() {
-  local destination="$1" expected="$2" actual filtered status
-  if verify_snapshot_copy "$destination" "$expected"; then return 0; fi
-  [[ -f "$destination/.catalog.lock" && ! -L "$destination/.catalog.lock" &&
-     "$(stat -c '%u:%h:%a' -- "$destination/.catalog.lock")" == "$(id -u):1:600" &&
-     -f "$destination/.catalog-lineage.json" && ! -L "$destination/.catalog-lineage.json" &&
-     "$(stat -c '%u:%h:%a' -- "$destination/.catalog-lineage.json")" == "$(id -u):1:600" ]] || return 1
-  actual="$(mktemp)"; filtered="$(mktemp)"
-  snapshot_tree "$destination" "$actual" || { rm -f -- "$actual" "$filtered"; return 1; }
-  awk -F '\t' '$8 != ".catalog.lock" && $8 != ".catalog-lineage.json"' "$actual" > "$filtered"
-  content_tree "$expected" > "$actual.expected"; content_tree "$filtered" > "$actual.content"
+  local destination="$1" expected="$2" actual expected_payload actual_payload status
+  actual="$(mktemp)"; expected_payload="$(mktemp)"; actual_payload="$(mktemp)"
+  snapshot_tree "$destination" "$actual" || { rm -f -- "$actual" "$expected_payload" "$actual_payload"; return 1; }
+  awk -F '\t' '$8 != ".catalog.lock" && $8 != ".catalog-lineage.json"' "$expected" > "$expected_payload"
+  awk -F '\t' '$8 != ".catalog.lock" && $8 != ".catalog-lineage.json"' "$actual" > "$actual_payload"
+  content_tree "$expected_payload" > "$actual.expected"; content_tree "$actual_payload" > "$actual.content"
   cmp -s "$actual.expected" "$actual.content"; status=$?
-  rm -f -- "$actual" "$filtered" "$actual.expected" "$actual.content"
+  rm -f -- "$actual" "$expected_payload" "$actual_payload" "$actual.expected" "$actual.content"
   return "$status"
 }
 validate_snapshot_subset() {
@@ -293,6 +289,28 @@ catalog_manifest_identity() {
     return 1
   fi
 }
+validate_catalog_control_files() {
+  local root="$1" expected_id="$2" expected_kind="$3" expected_schema="$4" expected_preprocessing="$5"
+  local lock="$root/.catalog.lock" lineage="$root/.catalog-lineage.json" path name expected_package_lineage
+  while IFS= read -r -d '' path; do
+    name="${path##*/}"
+    [[ "$name" == .catalog.lock || "$name" == .catalog-lineage.json ]] || return 1
+  done < <(find -P "$root" -mindepth 1 -maxdepth 1 -name '.catalog*' -print0)
+  if [[ -e "$lock" || -L "$lock" ]]; then
+    [[ -f "$lock" && ! -L "$lock" &&
+       "$(stat -c '%u:%h:%a' -- "$lock")" == "$(id -u):1:600" ]] || return 1
+  fi
+  if [[ -e "$lineage" || -L "$lineage" ]]; then
+    [[ -f "$lock" && ! -L "$lock" && -f "$lineage" && ! -L "$lineage" &&
+       "$(stat -c '%u:%h:%a' -- "$lineage")" == "$(id -u):1:600" ]] || return 1
+    hyg_validate_manifest_document "$lineage" || return 1
+    expected_package_lineage="$(hyg_catalog_package_lineage "$expected_kind" "$expected_schema" "$expected_preprocessing")" || return 1
+    jq -e --arg id "$expected_id" --arg kind "$expected_kind" --arg packageLineage "$expected_package_lineage" '
+      (keys | sort) == (["catalogId","packageKind","packageLineage","schemaVersion"] | sort) and
+      .schemaVersion == 1 and .catalogId == $id and .packageKind == $kind and .packageLineage == $packageLineage' \
+      "$lineage" >/dev/null || return 1
+  fi
+}
 
 validate_apply_intent() {
   local identity_source="$1"
@@ -432,19 +450,19 @@ validate_finalize_filesystem_state() {
 }
 verify_catalog_destination() {
   local root="$1" snapshot="$2" expected_identity_source="$3" catalog_manifest catalog_bundle catalog_identity catalog_identity_source kind schema preprocessing
-  validate_stage_root "$root" "$product_root/catalogs" && verify_catalog_snapshot_copy "$root" "$snapshot" || return 1
+  validate_stage_root "$root" "$product_root/catalogs" || return 1
   catalog_manifest="$root/current/manifest.json"
   [[ -f "$catalog_manifest" && ! -L "$catalog_manifest" ]] || return 1
   catalog_bundle="$(realpath -- "$root/current")"
   [[ "$catalog_bundle" == "$root/versions/"* && -d "$catalog_bundle" && ! -L "$catalog_bundle" ]] || return 1
   IFS=$'\t' read -r catalog_identity catalog_identity_source < <(catalog_manifest_identity "$catalog_manifest" "$catalog_bundle") || return 1
   [[ "$catalog_identity" == "$catalog_id" && "$catalog_identity_source" == "$expected_identity_source" ]] || return 1
-  if [[ -e "$root/.catalog-lineage.json" || -L "$root/.catalog-lineage.json" ]]; then
-    kind="$(hyg_json_value "$catalog_manifest" '$.package.kind')"
-    schema="$(hyg_json_value "$catalog_manifest" '$.schemaVersion')"
-    preprocessing="$(hyg_json_value "$catalog_manifest" '$.preprocessingVersion')"
-    hyg_catalog_require_lineage "$root" "$catalog_identity" "$kind" "$schema" "$preprocessing"
-  fi
+  kind="$(hyg_json_value "$catalog_manifest" '$.package.kind')"
+  schema="$(hyg_json_value "$catalog_manifest" '$.schemaVersion')"
+  preprocessing="$(hyg_json_value "$catalog_manifest" '$.preprocessingVersion')"
+  validate_catalog_control_files "$legacy_catalog" "$catalog_identity" "$kind" "$schema" "$preprocessing" &&
+    validate_catalog_control_files "$root" "$catalog_identity" "$kind" "$schema" "$preprocessing" &&
+    verify_catalog_snapshot_copy "$root" "$snapshot"
 }
 verify_migration_destination_for_identity() {
   local expected_identity_source="$1" expected_config="${2:-$config_snapshot}" expected_state="${3:-$state_snapshot}"

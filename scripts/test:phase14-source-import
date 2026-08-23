@@ -170,14 +170,45 @@ COLLECT_OUTPUT="$TEMP_DIR/collected-output"; CATALOG="$TEMP_DIR/catalog"
 COLLECTOR_IMAGE="collector.invalid/otel@sha256:$(printf 'a%.0s' {1..64})"
 install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG" "$CATALOG/versions" "$CATALOG/versions/catalog-v1"
 install -m 600 /dev/null "$CATALOG/.catalog.lock"
-printf 'catalog\n' > "$CATALOG/versions/catalog-v1/catalog.sqlite"
-catalog_sha="$(phase14_source_hash "$CATALOG/versions/catalog-v1/catalog.sqlite")"
-jq -S -n --arg sha "$catalog_sha" --argjson length "$(stat -c %s "$CATALOG/versions/catalog-v1/catalog.sqlite")" \
-  '{manifestVersion:1,package:{kind:"production",version:"catalog-v1"},database:{relativePath:"catalog.sqlite",sha256:$sha,length:$length}}' \
+printf 'catalog\n' > "$CATALOG/versions/catalog-v1/hyg_v42.sqlite"
+catalog_sha="$(phase14_source_hash "$CATALOG/versions/catalog-v1/hyg_v42.sqlite")"
+jq -S -n --arg sha "$catalog_sha" --argjson length "$(stat -c %s "$CATALOG/versions/catalog-v1/hyg_v42.sqlite")" \
+  '{manifestVersion:1,package:{kind:"production",version:"hyg-v4.2-p3-s2-r1"},
+    catalog:{name:"HYG 4.2",version:"4.2"},schemaVersion:"2",preprocessingVersion:"3",
+    database:{relativePath:"hyg_v42.sqlite",sha256:$sha,length:$length}}' \
   > "$CATALOG/versions/catalog-v1/manifest.json"
-chmod 400 "$CATALOG/versions/catalog-v1/catalog.sqlite" "$CATALOG/versions/catalog-v1/manifest.json"
+chmod 400 "$CATALOG/versions/catalog-v1/hyg_v42.sqlite" "$CATALOG/versions/catalog-v1/manifest.json"
 ln -s versions/catalog-v1 "$CATALOG/current"
 PHASE14_COLLECTOR_IMAGE="$COLLECTOR_IMAGE"
+PHASE14_ACCEPTANCE_INPUTS="$(phase14_source_catalog_identity "$CATALOG")"
+catalog_manifest="$CATALOG/versions/catalog-v1/manifest.json"
+cp "$catalog_manifest" "$TEMP_DIR/catalog-manifest-v1.valid"
+chmod 600 "$catalog_manifest"
+jq '.manifestVersion=2 | .package.version="hyg-v4.2-p3-s2-r2" | .catalog.id="hyg-v42-production"' \
+  "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest"
+chmod 400 "$catalog_manifest"
+phase14_source_catalog_identity "$CATALOG" >/dev/null || fail 'A canonical explicit v2 production catalog was rejected.'
+for invalid_catalog_identity in v1-conflicting-id fixture-kind unknown-kind malformed-schema unsupported-manifest \
+  v2-wrong-id v2-missing-id v2-unsupported-package; do
+    chmod 600 "$catalog_manifest"
+    case "$invalid_catalog_identity" in
+      v1-conflicting-id) jq '.catalog.id="different-production"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
+      fixture-kind) jq '.package.kind="fixture"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
+      unknown-kind) jq '.package.kind="unknown"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
+      malformed-schema) jq '.schemaVersion=2' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
+      unsupported-manifest) jq '.manifestVersion=3' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
+      v2-wrong-id) jq '.manifestVersion=2 | .package.version="hyg-v4.2-p3-s2-r2" | .catalog.id="different-production"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
+      v2-missing-id) jq '.manifestVersion=2 | .package.version="hyg-v4.2-p3-s2-r2"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
+      v2-unsupported-package) jq '.manifestVersion=2 | .package.version="hyg-v4.2-p3-s2-r01" | .catalog.id="hyg-v42-production"' "$TEMP_DIR/catalog-manifest-v1.valid" > "$catalog_manifest" ;;
+    esac
+    chmod 400 "$catalog_manifest"
+    if phase14_source_catalog_identity "$CATALOG" >/dev/null 2>&1; then
+      fail "Catalog identity validation accepted $invalid_catalog_identity."
+    fi
+done
+chmod 600 "$catalog_manifest"
+cp "$TEMP_DIR/catalog-manifest-v1.valid" "$catalog_manifest"
+chmod 400 "$catalog_manifest"
 PHASE14_ACCEPTANCE_INPUTS="$(phase14_source_catalog_identity "$CATALOG")"
 export PHASE14_ACCEPTANCE_INPUTS
 export HVO_DERIVATIVE_PERF_SMOKE=1 HVO_DERIVATIVE_P5_DIAGNOSTIC_TRIAL=1 \

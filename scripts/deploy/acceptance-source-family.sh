@@ -150,9 +150,25 @@ phase14_source_catalog_identity() {
     phase14_source_no_symlink_path "$root/versions" "$resolved" || return 1
     manifest="$resolved/manifest.json"
     phase14_source_no_symlink_path "$root/versions" "$manifest" && phase14_source_safe_catalog_file "$manifest" || return 1
-    jq -e '.manifestVersion == 2 and .catalog.id == "hyg-v42-production" and .package.kind == "production" and
+    jq -e '
+      def exact($names): type == "object" and ((keys | sort) == ($names | sort));
+      def supported_v2_package_version:
+        type == "string" and test("^hyg-v4[.]2-p3-s2-r[1-9][0-9]*$") and
+        ((capture("-r(?<revision>[0-9]+)$").revision | tonumber) <= 2147483647);
+      .manifestVersion as $manifest_version |
+      ($manifest_version == 1 or $manifest_version == 2) and
+      (.package | exact(["kind","version"])) and .package.kind == "production" and
+      (.catalog | exact(if $manifest_version == 1 then ["name","version"] else ["id","name","version"] end)) and
+      .catalog.name == "HYG 4.2" and .catalog.version == "4.2" and
+      .schemaVersion == "2" and .preprocessingVersion == "3" and
+      (if $manifest_version == 1 then
+         .package.version == "hyg-v4.2-p3-s2-r1" and (.catalog | has("id") | not)
+       else
+         .catalog.id == "hyg-v42-production" and (.package.version | supported_v2_package_version)
+       end) and
+      (.database | type == "object") and
       (.database.relativePath | type == "string" and test("^[A-Za-z0-9._/-]+$") and (startswith("/") | not)) and
-      (.database.sha256 | test("^[0-9a-f]{64}$")) and
+      (.database.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
       (.database.length | numbers) > 0 and (.database.length | floor) == .database.length' "$manifest" >/dev/null || return 1
     relative="$(jq -r '.database.relativePath' "$manifest")"
     phase14_source_safe_relative_path "$relative" || return 1

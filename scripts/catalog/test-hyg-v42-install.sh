@@ -180,6 +180,24 @@ for conflict in id kind; do
     chmod 600 "$INSTALL_ROOT/.catalog-lineage.json"
 done
 
+# Every immutable production payload must remain privately linked; rejection must not mutate the outside link.
+for hardlinked_file in "$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE"; do
+    installed_file="$INSTALL_ROOT/versions/$HYG_PACKAGE_VERSION/$hardlinked_file"
+    outside_link="$TEMPORARY_DIRECTORY/production-$(basename "$hardlinked_file").hardlink"
+    ln "$installed_file" "$outside_link"
+    outside_before="$(stat -c '%d:%i:%u:%h:%a:%s' "$outside_link")|$(hyg_sha256 "$outside_link")"
+    if "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null 2>&1; then
+        printf 'production installer accepted hardlinked payload: %s\n' "$hardlinked_file" >&2
+        exit 1
+    fi
+    [[ "$(stat -c '%d:%i:%u:%h:%a:%s' "$outside_link")|$(hyg_sha256 "$outside_link")" == "$outside_before" ]] || {
+        printf 'production installer mutated outside hardlink: %s\n' "$hardlinked_file" >&2
+        exit 1
+    }
+    assert_current "$INSTALL_ROOT" 1
+    rm "$outside_link"
+done
+
 collision="$TEMPORARY_DIRECTORY/collision.bundle"
 cp -R -- "$SOURCE_BUNDLE" "$collision"
 chmod -R u+w "$collision"
@@ -194,6 +212,22 @@ upgrade="$(make_revision 14)"
 "$SCRIPT_DIR/install-hyg-v42.sh" install "$upgrade" "$INSTALL_ROOT" >/dev/null
 assert_current "$INSTALL_ROOT" 14
 [[ "$(readlink "$INSTALL_ROOT/previous")" == "versions/hyg-v4.2-p3-s2-r1" ]]
+
+rollback_database="$INSTALL_ROOT/versions/$HYG_PACKAGE_VERSION/$HYG_DATABASE_FILE"
+rollback_outside_link="$TEMPORARY_DIRECTORY/production-rollback-database.hardlink"
+ln "$rollback_database" "$rollback_outside_link"
+rollback_outside_before="$(stat -c '%d:%i:%u:%h:%a:%s' "$rollback_outside_link")|$(hyg_sha256 "$rollback_outside_link")"
+if "$SCRIPT_DIR/rollback-hyg-v42.sh" "$INSTALL_ROOT" >/dev/null 2>&1; then
+    printf 'production rollback accepted a hardlinked previous database\n' >&2
+    exit 1
+fi
+[[ "$(stat -c '%d:%i:%u:%h:%a:%s' "$rollback_outside_link")|$(hyg_sha256 "$rollback_outside_link")" == "$rollback_outside_before" ]] || {
+    printf 'production rollback mutated an outside database hardlink\n' >&2
+    exit 1
+}
+assert_current "$INSTALL_ROOT" 14
+[[ "$(readlink "$INSTALL_ROOT/previous")" == "versions/hyg-v4.2-p3-s2-r1" ]]
+rm "$rollback_outside_link"
 
 corrupt="$(make_revision 15)"
 chmod u+w "$corrupt/hyg_v42.sqlite"
