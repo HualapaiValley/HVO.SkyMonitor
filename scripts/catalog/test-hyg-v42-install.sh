@@ -266,6 +266,88 @@ mv -T -- "$replacement_staging_saved" "$replacement_staging"
 "$SCRIPT_DIR/install-hyg-v42.sh" install "$replacement_bundle" "$replacement_root" >/dev/null
 assert_current "$replacement_root" 16
 
+# A same-UID directory swap after the complete orphan map is captured cannot redirect chmod or deletion.
+directory_swap_bundle="$(make_revision 21)"
+directory_swap_setup_marker="$TEMPORARY_DIRECTORY/production-orphan-directory-swap-setup.marker"
+HVO_CATALOG_TEST_LOCK_BARRIER=production-version-publication HVO_CATALOG_TEST_LOCK_MARKER="$directory_swap_setup_marker" \
+    "$SCRIPT_DIR/install-hyg-v42.sh" install "$directory_swap_bundle" "$replacement_root" >/dev/null 2>&1 &
+replacement_publisher_pid=$!
+while [[ ! -e "$directory_swap_setup_marker" ]]; do sleep 0.01; kill -0 "$replacement_publisher_pid"; done
+replacement_stopped_pid="$(<"$directory_swap_setup_marker")"
+mv -T -- "$replacement_root/.catalog.lock" "$replacement_root/.catalog.lock.original"
+: > "$replacement_root/.catalog.lock"; chmod 600 "$replacement_root/.catalog.lock"
+kill -CONT "$replacement_stopped_pid"
+if wait "$replacement_publisher_pid"; then
+    printf 'production directory-swap setup unexpectedly succeeded\n' >&2
+    exit 1
+fi
+replacement_publisher_pid=
+rm -f -- "$replacement_root/.catalog.lock"
+mv -T -- "$replacement_root/.catalog.lock.original" "$replacement_root/.catalog.lock"
+directory_swap_staging="$(find "$replacement_root/versions" -maxdepth 1 -name '.staging.*' -print -quit)"
+[[ -n "$directory_swap_staging" ]] || { printf 'production directory-swap setup retained no staging tree\n' >&2; exit 1; }
+directory_swap_saved="$directory_swap_staging.saved"
+directory_swap_external="$TEMPORARY_DIRECTORY/production-orphan-directory-swap-external"
+directory_swap_marker="$TEMPORARY_DIRECTORY/production-orphan-directory-swap.marker"
+mkdir -m 0750 "$directory_swap_external"
+printf 'external-preserved\n' > "$directory_swap_external/payload"
+chmod 0440 "$directory_swap_external/payload"
+directory_swap_before="$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$directory_swap_external" "$directory_swap_external/payload")|$(hyg_sha256 "$directory_swap_external/payload")"
+HVO_CATALOG_TEST_LOCK_BARRIER=production-staging-cleanup HVO_CATALOG_TEST_LOCK_MARKER="$directory_swap_marker" \
+    "$SCRIPT_DIR/install-hyg-v42.sh" install "$directory_swap_bundle" "$replacement_root" >/dev/null 2>&1 &
+replacement_publisher_pid=$!
+while [[ ! -e "$directory_swap_marker" ]]; do sleep 0.01; kill -0 "$replacement_publisher_pid"; done
+replacement_stopped_pid="$(<"$directory_swap_marker")"
+mv -T -- "$directory_swap_staging" "$directory_swap_saved"
+mv -T -- "$directory_swap_external" "$directory_swap_staging"
+kill -CONT "$replacement_stopped_pid"
+if wait "$replacement_publisher_pid"; then
+    printf 'production orphan cleanup accepted a same-UID directory swap\n' >&2
+    exit 1
+fi
+replacement_publisher_pid=
+[[ "$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$directory_swap_staging" "$directory_swap_staging/payload")|$(hyg_sha256 "$directory_swap_staging/payload")" == "$directory_swap_before" ]] || {
+    printf 'production orphan cleanup mutated a swapped external directory\n' >&2
+    exit 1
+}
+mv -T -- "$directory_swap_staging" "$directory_swap_external"
+mv -T -- "$directory_swap_saved" "$directory_swap_staging"
+"$SCRIPT_DIR/install-hyg-v42.sh" install "$directory_swap_bundle" "$replacement_root" >/dev/null
+assert_current "$replacement_root" 21
+
+# The installer EXIT cleanup uses the same identity-bound remover and retains a swapped candidate.
+exit_swap_bundle="$(make_revision 22)"
+exit_swap_external="$TEMPORARY_DIRECTORY/production-exit-directory-swap-external"
+exit_swap_marker="$TEMPORARY_DIRECTORY/production-exit-directory-swap.marker"
+mkdir -m 0750 "$exit_swap_external"
+printf 'exit-external-preserved\n' > "$exit_swap_external/payload"
+chmod 0440 "$exit_swap_external/payload"
+exit_swap_before="$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$exit_swap_external" "$exit_swap_external/payload")|$(hyg_sha256 "$exit_swap_external/payload")"
+HVO_CATALOG_TEST_FAIL_AT=after-copy HVO_CATALOG_TEST_LOCK_BARRIER=production-exit-staging-cleanup \
+    HVO_CATALOG_TEST_LOCK_MARKER="$exit_swap_marker" \
+    "$SCRIPT_DIR/install-hyg-v42.sh" install "$exit_swap_bundle" "$replacement_root" >/dev/null 2>&1 &
+replacement_publisher_pid=$!
+while [[ ! -e "$exit_swap_marker" ]]; do sleep 0.01; kill -0 "$replacement_publisher_pid"; done
+replacement_stopped_pid="$(<"$exit_swap_marker")"
+exit_swap_staging="$(find "$replacement_root/versions" -maxdepth 1 -name '.staging.*' -print -quit)"
+exit_swap_saved="$exit_swap_staging.saved"
+mv -T -- "$exit_swap_staging" "$exit_swap_saved"
+mv -T -- "$exit_swap_external" "$exit_swap_staging"
+kill -CONT "$replacement_stopped_pid"
+if wait "$replacement_publisher_pid"; then
+    printf 'production exit-cleanup fault unexpectedly succeeded\n' >&2
+    exit 1
+fi
+replacement_publisher_pid=
+[[ "$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$exit_swap_staging" "$exit_swap_staging/payload")|$(hyg_sha256 "$exit_swap_staging/payload")" == "$exit_swap_before" ]] || {
+    printf 'production exit cleanup mutated a swapped external directory\n' >&2
+    exit 1
+}
+mv -T -- "$exit_swap_staging" "$exit_swap_external"
+mv -T -- "$exit_swap_saved" "$exit_swap_staging"
+"$SCRIPT_DIR/install-hyg-v42.sh" install "$exit_swap_bundle" "$replacement_root" >/dev/null
+assert_current "$replacement_root" 22
+
 # A fixture-side holder and the production installer contend on the same root lock.
 HVO_CATALOG_TEST_MODE=true HVO_CATALOG_TEST_LOCK_HOLD_SECONDS=2 bash -c \
     'source "$1"; hyg_catalog_acquire_root_lock "$2"' _ "$SCRIPT_DIR/catalog-common.sh" "$INSTALL_ROOT" &

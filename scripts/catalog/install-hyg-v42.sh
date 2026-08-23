@@ -51,65 +51,85 @@ test_fail_at() {
     fi
 }
 
-cleanup_orphan_staging() {
-    local path entry root_device mode identity paths_file scan_file
+remove_authenticated_staging_tree() (
+    local path="$1" boundary="${2:-}" entry parent root_device mode identity paths_file directory_fd
+    local root_identity
     local -A identities=()
-    local -a entries directories
+    local -a entries=() directories=()
+    paths_file="$(mktemp)" || return 1
+    trap 'rm -f -- "$paths_file"' EXIT
+    [[ -d "$path" && ! -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
+    root_device="$(stat -c %d -- "$path")" || return 1
+    root_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" || return 1
+    identities["$path"]="$root_identity"
+    directories=("$path")
+    find -P "$path" -xdev -depth -mindepth 1 -print0 > "$paths_file" || return 1
+    while IFS= read -r -d '' entry; do
+        [[ "$(stat -c %d -- "$entry")" == "$root_device" ]] || return 1
+        if [[ -d "$entry" && ! -L "$entry" ]]; then
+            [[ "$(stat -c %u -- "$entry")" == "$(id -u)" ]] || return 1
+            mode="$(stat -c %a -- "$entry")"
+            (( (8#$mode & 0022) == 0 )) || return 1
+            directories+=("$entry")
+        elif [[ -f "$entry" && ! -L "$entry" ]]; then
+            [[ "$(stat -c '%u:%h' -- "$entry")" == "$(id -u):1" ]] || return 1
+        else
+            return 1
+        fi
+        identities["$entry"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" || return 1
+        entries+=("$entry")
+    done < "$paths_file"
+
+    for entry in "${directories[@]}"; do
+        catalog_lock_barrier "$boundary" || return 1
+        boundary=''
+        [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "$root_identity" &&
+           "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" &&
+           -d "$entry" && ! -L "$entry" ]] || return 1
+        exec {directory_fd}<"$entry" || return 1
+        [[ "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$directory_fd")" == "${identities[$entry]}" ]] || return 1
+        chmod u+w -- "/proc/$BASHPID/fd/$directory_fd" || return 1
+        identities["$entry"]="$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$directory_fd")" || return 1
+        [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" ]] || return 1
+        exec {directory_fd}<&-
+        [[ "$entry" != "$path" ]] || root_identity="${identities[$entry]}"
+        catalog_lock_barrier || return 1
+    done
+
+    for entry in "${entries[@]}"; do
+        catalog_lock_barrier || return 1
+        [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "$root_identity" &&
+           "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" ]] || return 1
+        if [[ -d "$entry" && ! -L "$entry" ]]; then
+            rmdir -- "$entry" || return 1
+        elif [[ -f "$entry" && ! -L "$entry" ]]; then
+            rm -f -- "$entry" || return 1
+        else
+            return 1
+        fi
+        [[ ! -e "$entry" && ! -L "$entry" ]] || return 1
+        parent="$(dirname -- "$entry")"
+        if [[ -n "${identities[$parent]+present}" ]]; then
+            identities["$parent"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$parent")" || return 1
+            [[ "$parent" != "$path" ]] || root_identity="${identities[$parent]}"
+        fi
+        catalog_lock_barrier || return 1
+    done
+    catalog_lock_barrier || return 1
+    [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "$root_identity" && -d "$path" && ! -L "$path" ]] || return 1
+    rmdir -- "$path" || return 1
+    sync -f "$(dirname -- "$path")" || return 1
+    catalog_lock_barrier || return 1
+)
+
+cleanup_orphan_staging() {
+    local path
     local -a staging_paths
     shopt -s nullglob dotglob
     staging_paths=("$INSTALL_ROOT"/.staging.* "$INSTALL_ROOT/versions"/.staging.*)
     shopt -u nullglob dotglob
     for path in "${staging_paths[@]}"; do
-        [[ -d "$path" && ! -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
-        root_device="$(stat -c %d -- "$path")"
-        identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" || return 1
-        identities=(["$path"]="$identity")
-        entries=("$path")
-        directories=("$path")
-        paths_file="$(mktemp)" || return 1
-        scan_file="$(mktemp)" || { rm -f -- "$paths_file"; return 1; }
-        find -P "$path" -xdev -mindepth 1 -print0 > "$paths_file" || {
-            rm -f -- "$paths_file" "$scan_file"
-            return 1
-        }
-        while IFS= read -r -d '' entry; do
-            [[ "$(stat -c %d -- "$entry")" == "$root_device" ]] || return 1
-            if [[ -d "$entry" && ! -L "$entry" ]]; then
-                [[ "$(stat -c %u -- "$entry")" == "$(id -u)" ]] || return 1
-                mode="$(stat -c %a -- "$entry")"
-                (( (8#$mode & 0022) == 0 )) || return 1
-                directories+=("$entry")
-            elif [[ -f "$entry" && ! -L "$entry" ]]; then
-                [[ "$(stat -c '%u:%h' -- "$entry")" == "$(id -u):1" ]] || return 1
-            else
-                return 1
-            fi
-            identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" || return 1
-            identities["$entry"]="$identity"
-            entries+=("$entry")
-        done < "$paths_file"
-        for entry in "${directories[@]}"; do
-            catalog_lock_barrier production-staging-cleanup || return 1
-            [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "${identities[$path]}" &&
-               "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" ]] || return 1
-            chmod u+w -- "$entry" || return 1
-            identities["$entry"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" || return 1
-            catalog_lock_barrier || return 1
-        done
-        catalog_lock_barrier || return 1
-        find -P "$path" -xdev -print0 > "$scan_file" || return 1
-        local -A seen=()
-        while IFS= read -r -d '' entry; do
-            [[ -n "${identities[$entry]+present}" &&
-               "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" ]] || return 1
-            seen["$entry"]=1
-        done < "$scan_file"
-        [[ ${#seen[@]} -eq ${#entries[@]} ]] || return 1
-        for entry in "${entries[@]}"; do [[ -n "${seen[$entry]+present}" ]] || return 1; done
-        rm -rf -- "$path" || return 1
-        catalog_lock_barrier || return 1
-        [[ ! -e "$path" && ! -L "$path" ]] || return 1
-        rm -f -- "$paths_file" "$scan_file" || return 1
+        remove_authenticated_staging_tree "$path" production-staging-cleanup || return 1
     done
 }
 
@@ -318,11 +338,7 @@ install_bundle() {
             local status=$?
             trap - EXIT
             if [[ -n "${INSTALL_STAGING:-}" ]] && hyg_catalog_revalidate_root_lock "$INSTALL_ROOT"; then
-                chmod -R u+w "$INSTALL_STAGING" 2>/dev/null || true
-                if hyg_catalog_revalidate_root_lock "$INSTALL_ROOT"; then
-                    rm -rf -- "$INSTALL_STAGING"
-                    hyg_catalog_revalidate_root_lock "$INSTALL_ROOT" || true
-                fi
+                remove_authenticated_staging_tree "$INSTALL_STAGING" production-exit-staging-cleanup || true
             fi
             exit "$status"
         }

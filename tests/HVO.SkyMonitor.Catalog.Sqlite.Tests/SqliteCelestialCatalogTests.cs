@@ -290,6 +290,62 @@ internal sealed class SqliteCelestialCatalogTests
     }
 
     [TestMethod]
+    public void ConstructorNeverCachesValidRowsMutatedAndRestoredDuringSqliteLoad()
+    {
+        var path = CopyFixture();
+        var originalBytes = File.ReadAllBytes(path);
+        var expectedDisplayName = CatalogSnapshotResolverTests.ReadDisplayName(path);
+        var modifiedBytes = CatalogSnapshotResolverTests.CreateModifiedFixtureBytes();
+        var mutationAttempted = false;
+        var mutationSucceeded = false;
+        var sourceMutated = false;
+        CatalogSnapshotResolver.ValidationTestHook = (hookPath, point) =>
+        {
+            if (!string.Equals(hookPath, path, StringComparison.Ordinal))
+            {
+                return;
+            }
+            if (point == CatalogSnapshotValidationPoint.BeforeSqliteOpen)
+            {
+                mutationAttempted = true;
+                try
+                {
+                    CatalogSnapshotResolverTests.OverwriteFile(path, modifiedBytes);
+                    mutationSucceeded = true;
+                    sourceMutated = true;
+                }
+                catch (IOException) when (OperatingSystem.IsWindows())
+                {
+                }
+            }
+            else if (point == CatalogSnapshotValidationPoint.AfterSqliteLoad && sourceMutated)
+            {
+                CatalogSnapshotResolverTests.OverwriteFile(path, originalBytes);
+                sourceMutated = false;
+            }
+        };
+        try
+        {
+            var catalog = new SqliteCelestialCatalog(CreateOptions(path, Checksum(path)));
+
+            Assert.IsTrue(mutationAttempted);
+            Assert.AreEqual(!OperatingSystem.IsWindows(), mutationSucceeded);
+            Assert.AreEqual(expectedDisplayName,
+                catalog.Query(new CatalogQuery(1, 100)).Single(item => item.Id == "32263").DisplayName);
+        }
+        finally
+        {
+            CatalogSnapshotResolver.ValidationTestHook = null;
+            if (sourceMutated)
+            {
+                CatalogSnapshotResolverTests.OverwriteFile(path, originalBytes);
+            }
+            CollectionAssert.AreEqual(originalBytes, File.ReadAllBytes(path));
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
     public void ConstructorRejectsIncompatibleSchemaIndexSolAndHipparcosIdentity()
     {
         AssertGeneratedCatalogThrows<InvalidDataException>("CREATE TABLE unexpected(value TEXT);");

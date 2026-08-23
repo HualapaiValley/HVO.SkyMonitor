@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Security.Cryptography;
 using HVO.SkyMonitor.Astronomy;
 using Microsoft.Data.Sqlite;
 
@@ -20,20 +19,22 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The chained constructor disposes the authenticated source in its finally block.")]
     public SqliteCelestialCatalog(SqliteCelestialCatalogOptions options)
-        : this(options, AuthenticateDatabase(options), ownsAuthenticatedSource: true)
+        : this(options, AuthenticateDatabase(options), expectedDatabaseLength: null, ownsAuthenticatedSource: true)
     {
     }
 
     internal SqliteCelestialCatalog(
         SqliteCelestialCatalogOptions options,
-        CatalogSnapshotResolver.AuthenticatedFile authenticatedSource)
-        : this(options, authenticatedSource, ownsAuthenticatedSource: false)
+        CatalogSnapshotResolver.AuthenticatedFile authenticatedSource,
+        long expectedDatabaseLength)
+        : this(options, authenticatedSource, expectedDatabaseLength, ownsAuthenticatedSource: false)
     {
     }
 
     private SqliteCelestialCatalog(
         SqliteCelestialCatalogOptions options,
         CatalogSnapshotResolver.AuthenticatedFile authenticatedSource,
+        long? expectedDatabaseLength,
         bool ownsAuthenticatedSource)
     {
         try
@@ -45,12 +46,16 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             Options = options;
             var databasePath = Path.GetFullPath(options.DatabasePath);
             ValidateNoSidecars(databasePath);
-            var actualChecksum = ValidateChecksum(authenticatedSource.Stream, options.ExpectedSha256);
+            using var privateSnapshot = PrivateSqliteSnapshot.Create(
+                authenticatedSource.Stream,
+                expectedDatabaseLength ?? authenticatedSource.Stream.Length,
+                options.ExpectedSha256);
+            CatalogSnapshotResolver.RevalidateFile(authenticatedSource, "Catalog database");
 
             var connectionString = new SqliteConnectionStringBuilder
             {
-                DataSource = new Uri(CatalogSnapshotResolver.GetSqlitePath(authenticatedSource)).AbsoluteUri + "?immutable=1",
-                Mode = SqliteOpenMode.ReadOnly,
+                DataSource = ":memory:",
+                Mode = SqliteOpenMode.Memory,
                 Cache = SqliteCacheMode.Private,
                 Pooling = false
             }.ToString();
@@ -58,6 +63,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             using var connection = new SqliteConnection(connectionString);
             CatalogSnapshotResolver.InvokeValidationTestHook(databasePath, CatalogSnapshotValidationPoint.BeforeSqliteOpen);
             connection.Open();
+            privateSnapshot.Load(connection);
 
             ValidateIntegrity(connection);
             ValidateSchema(connection);
@@ -74,7 +80,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
                 RequiredMetadata(metadata, "name"),
                 RequiredMetadata(metadata, "catalog_version"),
                 new Uri(RequiredMetadata(metadata, "source_url"), UriKind.Absolute),
-                actualChecksum,
+                privateSnapshot.Sha256,
                 RequiredMetadata(metadata, "license"),
                 RequiredMetadata(metadata, "schema_version"));
             PreprocessingVersion = RequiredMetadata(metadata, "preprocessing_version");
@@ -88,8 +94,6 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
                 .Where(static item => item.HipparcosId is not null)
                 .ToDictionary(static item => item.HipparcosId!, StringComparer.Ordinal);
             CatalogSnapshotResolver.InvokeValidationTestHook(databasePath, CatalogSnapshotValidationPoint.AfterSqliteLoad);
-            _ = ValidateChecksum(authenticatedSource.Stream, options.ExpectedSha256);
-            CatalogSnapshotResolver.RevalidateFile(authenticatedSource, "Catalog database");
             ValidateNoSidecars(databasePath);
         }
         finally
@@ -225,21 +229,6 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         var databasePath = Path.GetFullPath(options.DatabasePath);
         ValidateNoSidecars(databasePath);
         return CatalogSnapshotResolver.AuthenticateFile(databasePath, "Catalog database");
-    }
-
-    private static string ValidateChecksum(FileStream source, string expectedChecksum)
-    {
-        source.Position = 0;
-        var actual = SHA256.HashData(source);
-        source.Position = 0;
-        var expected = Convert.FromHexString(expectedChecksum);
-        if (!CryptographicOperations.FixedTimeEquals(actual, expected))
-        {
-            throw new InvalidDataException(
-                $"Catalog snapshot SHA-256 mismatch. Expected {expectedChecksum.ToUpperInvariant()}, got {Convert.ToHexString(actual)}.");
-        }
-
-        return Convert.ToHexString(actual);
     }
 
     private static Dictionary<string, string> ReadMetadata(SqliteConnection connection)

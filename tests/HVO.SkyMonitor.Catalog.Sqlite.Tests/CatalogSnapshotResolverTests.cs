@@ -497,51 +497,59 @@ internal sealed class CatalogSnapshotResolverTests
     }
 
     [TestMethod]
-    public void ResolveRejectsInPlaceDatabaseMutationAfterSqliteLoadAndPreservesOriginalRecovery()
+    public void ResolveNeverCachesValidRowsMutatedAndRestoredDuringSqliteLoad()
     {
         using var installation = CreateInstallation();
-        var originalFingerprint = ReadFingerprint(installation.DatabasePath);
-        using var writer = new FileStream(
-            installation.DatabasePath,
-            FileMode.Open,
-            FileAccess.ReadWrite,
-            FileShare.ReadWrite | FileShare.Delete);
-        var offset = writer.Length - 1;
-        writer.Position = offset;
-        var originalByte = writer.ReadByte();
-        var invoked = false;
+        var originalBytes = File.ReadAllBytes(installation.DatabasePath);
+        var expectedDisplayName = ReadDisplayName(installation.DatabasePath);
+        var modifiedBytes = CreateModifiedFixtureBytes();
+        var mutationAttempted = false;
+        var mutationSucceeded = false;
+        var sourceMutated = false;
         CatalogSnapshotResolver.ValidationTestHook = (path, point) =>
         {
-            if (point != CatalogSnapshotValidationPoint.AfterSqliteLoad ||
-                !string.Equals(path, installation.DatabasePath, StringComparison.Ordinal))
+            if (!string.Equals(path, installation.DatabasePath, StringComparison.Ordinal))
             {
                 return;
             }
-            invoked = true;
-            writer.Position = offset;
-            writer.WriteByte((byte)(originalByte ^ 0xFF));
-            writer.Flush(flushToDisk: true);
+            if (point == CatalogSnapshotValidationPoint.BeforeSqliteOpen)
+            {
+                mutationAttempted = true;
+                try
+                {
+                    OverwriteFile(path, modifiedBytes);
+                    mutationSucceeded = true;
+                    sourceMutated = true;
+                }
+                catch (IOException) when (OperatingSystem.IsWindows())
+                {
+                }
+            }
+            else if (point == CatalogSnapshotValidationPoint.AfterSqliteLoad && sourceMutated)
+            {
+                OverwriteFile(path, originalBytes);
+                sourceMutated = false;
+            }
         };
         try
         {
-            var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+            var result = ResolveFixture(installation.Root);
 
-            Assert.AreEqual(!OperatingSystem.IsWindows(), invoked);
-            if (invoked)
-            {
-                StringAssert.Contains(exception.Message, "SHA-256 mismatch", StringComparison.Ordinal);
-            }
+            Assert.IsTrue(mutationAttempted);
+            Assert.AreEqual(!OperatingSystem.IsWindows(), mutationSucceeded);
+            Assert.AreEqual(expectedDisplayName,
+                result.Catalog.Query(new HVO.SkyMonitor.Astronomy.CatalogQuery(1, 100))
+                    .Single(item => item.Id == "32263").DisplayName);
         }
         finally
         {
             CatalogSnapshotResolver.ValidationTestHook = null;
-            writer.Position = offset;
-            writer.WriteByte((byte)originalByte);
-            writer.Flush(flushToDisk: true);
+            if (sourceMutated)
+            {
+                OverwriteFile(installation.DatabasePath, originalBytes);
+            }
         }
-
-        writer.Dispose();
-        Assert.AreEqual(originalFingerprint, ReadFingerprint(installation.DatabasePath));
+        CollectionAssert.AreEqual(originalBytes, File.ReadAllBytes(installation.DatabasePath));
     }
 
     [TestMethod]
@@ -837,6 +845,53 @@ internal sealed class CatalogSnapshotResolverTests
 
     private static FileFingerprint ReadFingerprint(string path)
         => new(new FileInfo(path).Length, Checksum(path));
+
+    private const string InjectedDisplayName = "UNTRUSTED-CACHE";
+
+    internal static byte[] CreateModifiedFixtureBytes()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"hvo-catalog-modified-{Guid.NewGuid():N}.sqlite");
+        File.Copy(FixturePath, path);
+        try
+        {
+            using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    "UPDATE celestial_objects SET display_name = $displayName WHERE id = '32263'";
+                command.Parameters.AddWithValue("$displayName", InjectedDisplayName);
+                Assert.AreEqual(1, command.ExecuteNonQuery());
+            }
+            Assert.AreEqual(new FileInfo(FixturePath).Length, new FileInfo(path).Length);
+            return File.ReadAllBytes(path);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    internal static void OverwriteFile(string path, byte[] bytes)
+    {
+        using var writer = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Write,
+            FileShare.ReadWrite | FileShare.Delete);
+        writer.SetLength(bytes.Length);
+        writer.Write(bytes);
+        writer.Flush(flushToDisk: true);
+    }
+
+    internal static string ReadDisplayName(string path)
+    {
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Mode=ReadOnly");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT display_name FROM celestial_objects WHERE id = '32263'";
+        return (string)command.ExecuteScalar()!;
+    }
 
     private static void RestoreAbaFile(string path, string externalPath, ref bool swapped)
     {

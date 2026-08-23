@@ -158,8 +158,28 @@ create_v2_fixture_catalog "$legacy/data/catalog" hyg-v42-production fixture-v1
 printf 'sibling-preserved\n' > "$legacy/data/sibling"
 instance=44444444-4444-4444-8444-444444444444
 args=(--legacy-root "$legacy" --product-root "$migrated" --instance-id "$instance" --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$evidence")
+# Discovery, ordering, metadata, and hashing failures cannot publish a truncated source snapshot.
+for snapshot_failure in snapshot-root-stat snapshot-find snapshot-sort snapshot-entry-device-stat snapshot-entry-stat snapshot-file-hash snapshot-output; do
+  snapshot_legacy="$TEMP_DIR/snapshot-$snapshot_failure-legacy"
+  snapshot_product="$TEMP_DIR/snapshot-$snapshot_failure-product"
+  snapshot_evidence="$TEMP_DIR/snapshot-$snapshot_failure.json"
+  mkdir -m 700 "$snapshot_legacy"
+  cp -a "$legacy/config" "$legacy/data" "$snapshot_legacy/"
+  snapshot_args=(--legacy-root "$snapshot_legacy" --product-root "$snapshot_product" --instance-id "$instance" \
+    --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$snapshot_evidence")
+  if HVO_MIGRATION_TEST_MODE=true HVO_MIGRATION_TEST_FAIL_COMMAND_AT="$snapshot_failure" \
+    "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${snapshot_args[@]}" >/dev/null 2>&1; then
+    printf 'Migration accepted failed snapshot command: %s\n' "$snapshot_failure" >&2
+    exit 150
+  fi
+  test ! -e "$snapshot_evidence"
+  test ! -e "$snapshot_evidence.config.snapshot"
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${snapshot_args[@]}" >/dev/null
+done
 # Catalog snapshot transform failures remain failures under conditional invocation and cannot publish evidence.
-for transform_failure in revalidate-catalog-expected-filter verify-catalog-expected-content; do
+for transform_failure in revalidate-catalog-expected-filter revalidate-catalog-actual-filter revalidate-catalog-cmp \
+  verify-catalog-expected-filter verify-catalog-actual-filter verify-catalog-expected-content \
+  verify-catalog-actual-content verify-catalog-cmp; do
   transform_legacy="$TEMP_DIR/transform-$transform_failure-legacy"
   transform_product="$TEMP_DIR/transform-$transform_failure-product"
   transform_evidence="$TEMP_DIR/transform-$transform_failure.json"

@@ -743,11 +743,30 @@ parent=$1; run_id=$2; catalog_id=$3
 [[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%a' -- "$parent")" == "$(id -u):700" ]] || exit 91
 parent_device="$(stat -c %d -- "$parent")"
 safe_remove() {
-  local root=$1 path mode
+  local root=$1 boundary=${2:-catalog-remnant-cleanup-final} path path_parent mode root_identity paths_file map_identity
+  local map_fd read_fd attempt
+  local -A identities=()
+  local -a entries=()
   [[ -d "$root" && ! -L "$root" &&
      "$(stat -c '%u:%d' -- "$root")" == "$(id -u):$parent_device" ]] || return 1
   mode="$(stat -c %a -- "$root")"; (( (8#$mode & 0022) == 0 )) || return 1
-  find -P "$root" -xdev -mindepth 1 -print0 >/dev/null || return 1
+  root_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$root")" || return 1
+  identities["$root"]="$root_identity"
+  paths_file=''
+  for attempt in {1..16}; do
+    paths_file="${root%/*}/.catalog-cleanup-map.$$.$RANDOM.$RANDOM"
+    if (set -o noclobber; umask 077; : > "$paths_file") 2>/dev/null; then break; fi
+    paths_file=''
+  done
+  [[ -n "$paths_file" ]] || return 1
+  exec {map_fd}<>"$paths_file" || { rm -f -- "$paths_file"; return 1; }
+  map_identity="$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$map_fd")" || return 1
+  [[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "$paths_file")" ]] || return 1
+  exec {read_fd}<"$paths_file" || return 1
+  [[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$read_fd")" ]] || return 1
+  rm -f -- "$paths_file" || return 1
+  find -P "$root" -xdev -depth -mindepth 1 -print0 > "/proc/$BASHPID/fd/$map_fd" || return 1
+  exec {map_fd}>&-
   while IFS= read -r -d '' path; do
     [[ "$(stat -c %d -- "$path")" == "$parent_device" ]] || return 1
     if [[ -d "$path" && ! -L "$path" ]]; then
@@ -758,8 +777,30 @@ safe_remove() {
     else
       return 1
     fi
-  done < <(find -P "$root" -xdev -mindepth 1 -print0)
-  find -P "$root" -xdev -depth -mindepth 1 -delete && rmdir -- "$root"
+    identities["$path"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" || return 1
+    entries+=("$path")
+  done <&"$read_fd"
+  exec {read_fd}<&-
+  if [[ "${HVO_CATALOG_TEST_MODE:-}" == true && "${HVO_CATALOG_TEST_LOCK_BARRIER:-}" == "$boundary" ]]; then
+    [[ -n "${HVO_CATALOG_TEST_LOCK_MARKER:-}" ]] || return 1
+    printf '%s\n' "$BASHPID" > "$HVO_CATALOG_TEST_LOCK_MARKER"
+    kill -STOP "$BASHPID"
+  fi
+  for path in "${entries[@]}"; do
+    [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$root")" == "$root_identity" && -d "$root" && ! -L "$root" &&
+       "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "${identities[$path]}" ]] || return 1
+    if [[ -d "$path" && ! -L "$path" ]]; then rmdir -- "$path" || return 1
+    elif [[ -f "$path" && ! -L "$path" ]]; then rm -f -- "$path" || return 1
+    else return 1; fi
+    [[ ! -e "$path" && ! -L "$path" ]] || return 1
+    path_parent="${path%/*}"
+    if [[ -n "${identities[$path_parent]+present}" ]]; then
+      identities["$path_parent"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path_parent")" || return 1
+      [[ "$path_parent" != "$root" ]] || root_identity="${identities[$path_parent]}"
+    fi
+  done
+  [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$root")" == "$root_identity" && -d "$root" && ! -L "$root" ]] || return 1
+  rmdir -- "$root"
 }
 shopt -s nullglob dotglob
 remnants=("$parent/.catalog-transaction-$run_id-$catalog_id."* "$parent/.catalog-stage-$run_id-$catalog_id."*)
@@ -836,7 +877,25 @@ stage=$1; run_id=$2; catalog_id=$3; parent=${stage%/*}
 [[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%a' -- "$parent")" == "$(id -u):700" ]] || exit 91
 device="$(stat -c %d -- "$parent")"
 [[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%d' -- "$stage")" == "$(id -u):$device" ]] || exit 92
-find -P "$stage" -xdev -mindepth 1 -print0 >/dev/null || exit 93
+stage_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$stage")" || exit 93
+paths_file=''; map_fd=''; read_fd=''
+declare -A identities=()
+declare -a entries=()
+identities["$stage"]="$stage_identity"
+for attempt in {1..16}; do
+  paths_file="$parent/.catalog-cleanup-map.$$.$RANDOM.$RANDOM"
+  if (set -o noclobber; umask 077; : > "$paths_file") 2>/dev/null; then break; fi
+  paths_file=''
+done
+[[ -n "$paths_file" ]] || exit 93
+exec {map_fd}<>"$paths_file" || { rm -f -- "$paths_file"; exit 93; }
+map_identity="$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$map_fd")" || exit 93
+[[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "$paths_file")" ]] || exit 93
+exec {read_fd}<"$paths_file" || exit 93
+[[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$read_fd")" ]] || exit 93
+rm -f -- "$paths_file" || exit 93
+find -P "$stage" -xdev -depth -mindepth 1 -print0 > "/proc/$BASHPID/fd/$map_fd" || exit 93
+exec {map_fd}>&-
 while IFS= read -r -d '' path; do
   [[ "$(stat -c %d -- "$path")" == "$device" ]] || exit 93
   if [[ -d "$path" && ! -L "$path" ]]; then
@@ -847,8 +906,29 @@ while IFS= read -r -d '' path; do
   else
     exit 93
   fi
-done < <(find -P "$stage" -xdev -mindepth 1 -print0)
-find -P "$stage" -xdev -depth -mindepth 1 -delete || exit 93
+  identities["$path"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" || exit 93
+  entries+=("$path")
+done <&"$read_fd"
+exec {read_fd}<&-
+if [[ "${HVO_CATALOG_TEST_MODE:-}" == true && "${HVO_CATALOG_TEST_LOCK_BARRIER:-}" == catalog-stage-cleanup-final ]]; then
+  [[ -n "${HVO_CATALOG_TEST_LOCK_MARKER:-}" ]] || exit 93
+  printf '%s\n' "$BASHPID" > "$HVO_CATALOG_TEST_LOCK_MARKER"
+  kill -STOP "$BASHPID"
+fi
+for path in "${entries[@]}"; do
+  [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$stage")" == "$stage_identity" && -d "$stage" && ! -L "$stage" &&
+     "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "${identities[$path]}" ]] || exit 93
+  if [[ -d "$path" && ! -L "$path" ]]; then rmdir -- "$path" || exit 93
+  elif [[ -f "$path" && ! -L "$path" ]]; then rm -f -- "$path" || exit 93
+  else exit 93; fi
+  [[ ! -e "$path" && ! -L "$path" ]] || exit 93
+  path_parent="${path%/*}"
+  if [[ -n "${identities[$path_parent]+present}" ]]; then
+    identities["$path_parent"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path_parent")" || exit 93
+    [[ "$path_parent" != "$stage" ]] || stage_identity="${identities[$path_parent]}"
+  fi
+done
+[[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$stage")" == "$stage_identity" && -d "$stage" && ! -L "$stage" ]] || exit 93
 rmdir -- "$stage" || exit 93
 sync -f "$parent" || exit 93
 REMOTE

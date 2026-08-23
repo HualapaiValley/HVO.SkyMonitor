@@ -191,7 +191,7 @@ public static class CatalogSnapshotResolver
             manifest.SchemaVersion,
             manifest.PreprocessingVersion,
             manifest.Database.RowCount,
-            manifest.Catalog.Version), databaseFile);
+            manifest.Catalog.Version), databaseFile, manifest.Database.Length);
         if (!string.Equals(catalog.Metadata.Name, manifest.Catalog.Name, StringComparison.Ordinal))
         {
             throw new InvalidDataException(
@@ -910,17 +910,6 @@ public static class CatalogSnapshotResolver
             attributes.FileAttributes,
             standard.NumberOfLinks,
             standard.Directory == 0 && (attributes.FileAttributes & (uint)FileAttributes.ReparsePoint) == 0);
-    }
-
-    internal static string GetSqlitePath(AuthenticatedFile file)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return file.Path;
-        }
-
-        var descriptor = (int)file.Stream.SafeFileHandle.DangerousGetHandle();
-        return OperatingSystem.IsLinux() ? $"/proc/self/fd/{descriptor}" : $"/dev/fd/{descriptor}";
     }
 
     private static void EnsureDirectoryIsNotLink(string path, string description)

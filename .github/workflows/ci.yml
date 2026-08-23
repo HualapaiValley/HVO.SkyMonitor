@@ -54,7 +54,7 @@ jobs:
           ./scripts/catalog/prepare-hyg-v42-contracts.sh "$catalog_root" >/dev/null
           tar -czf "$RUNNER_TEMP/hyg-v42-contracts.tar.gz" -C "$catalog_root" .
       - name: Upload exact production catalog contracts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0 # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hyg-v42-contracts
           path: ${{ runner.temp }}/hyg-v42-contracts.tar.gz

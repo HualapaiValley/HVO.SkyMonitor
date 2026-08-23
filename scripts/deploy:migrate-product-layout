@@ -88,33 +88,59 @@ validate_metadata_file() {
   [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%g:%h:%a' -- "$path")" == "$(id -u):$(id -g):1:600" ]]
 }
 
-snapshot_tree() {
-  local root="$1" output="$2" root_device path relative kind target resolved metadata uid gid mode device inode links
-  [[ -d "$root" && ! -L "$root" ]] || return 1
-  root_device="$(stat -c %d -- "$root")"; : > "$output"
-  while IFS= read -r -d '' path; do
-    [[ "$(stat -c %d -- "$path")" == "$root_device" ]] || { printf 'Nested device or mount crossing rejected: %s\n' "$path" >&2; return 1; }
-    relative=.; [[ "$path" == "$root" ]] || relative="${path#"$root"/}"
-    [[ "$relative" != *$'\t'* && "$relative" != *$'\n'* ]] || { printf 'Tab or newline in migration path rejected: %q\n' "$path" >&2; return 1; }
-    read -r uid gid mode device inode links < <(stat -c '%u %g %a %d %i %h' -- "$path")
-    printf -v metadata '%s\t%s\t%s\t%s\t%s\t%s' "$uid" "$gid" "$mode" "$device" "$inode" "$links"
-    if [[ -L "$path" ]]; then
-      IFS= read -r -d '' target < <(readlink -z -- "$path") || return 1
-      [[ "$target" != *$'\t'* && "$target" != *$'\n'* ]] || { printf 'Tab or newline in symlink target rejected: %q\n' "$path" >&2; return 1; }
-      [[ "$target" != /* ]] || { printf 'Absolute symlink rejected: %s\n' "$path" >&2; return 1; }
-      resolved="$(realpath -m -- "$(dirname -- "$path")/$target")"
-      [[ "$resolved" == "$root" || "$resolved" == "$root"/* ]] || { printf 'Escaping symlink rejected: %s\n' "$path" >&2; return 1; }
-      kind=link; printf '%s\t%s\t%s\t%s\n' "$kind" "$metadata" "$relative" "$target" >> "$output"
-    elif [[ -d "$path" ]]; then kind=directory; printf '%s\t%s\t%s\t-\n' "$kind" "$metadata" "$relative" >> "$output"
-    elif [[ -f "$path" && "$(stat -c %h -- "$path")" == 1 ]]; then kind=file; printf '%s\t%s\t%s\t%s\n' "$kind" "$metadata" "$relative" "$(sha256sum -- "$path" | cut -d' ' -f1)" >> "$output"
-    else printf 'Special or multiply-linked migration entry rejected: %s\n' "$path" >&2; return 1; fi
-  done < <({ printf '%s\0' "$root"; find -P "$root" -mindepth 1 -print0; } | sort -z)
-}
-
-content_tree() { cut -f1-4,7-9 "$1" || return 1; }
 migration_transform_command_succeeds() {
   [[ "${HVO_MIGRATION_TEST_MODE:-}" != true || "${HVO_MIGRATION_TEST_FAIL_COMMAND_AT:-}" != "$1" ]]
 }
+snapshot_tree() {
+  local root="$1" output="$2" root_device path relative kind target resolved metadata uid gid mode device inode links hash
+  local traversal sorted records
+  [[ -d "$root" && ! -L "$root" ]] || return 1
+  traversal="$(mktemp)" || return 1
+  sorted="$(mktemp)" || { rm -f -- "$traversal"; return 1; }
+  records="$(mktemp)" || { rm -f -- "$traversal" "$sorted"; return 1; }
+  if ! migration_transform_command_succeeds snapshot-root-stat ||
+     ! root_device="$(stat -c %d -- "$root")"; then
+    rm -f -- "$traversal" "$sorted" "$records"
+    return 1
+  fi
+  if ! migration_transform_command_succeeds snapshot-find ||
+     ! { printf '%s\0' "$root"; find -P "$root" -mindepth 1 -print0; } > "$traversal"; then
+    rm -f -- "$traversal" "$sorted" "$records"
+    return 1
+  fi
+  if ! migration_transform_command_succeeds snapshot-sort || ! sort -z "$traversal" > "$sorted"; then
+    rm -f -- "$traversal" "$sorted" "$records"
+    return 1
+  fi
+  while IFS= read -r -d '' path; do
+    migration_transform_command_succeeds snapshot-entry-device-stat || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+    [[ "$(stat -c %d -- "$path")" == "$root_device" ]] || { printf 'Nested device or mount crossing rejected: %s\n' "$path" >&2; rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+    relative=.; [[ "$path" == "$root" ]] || relative="${path#"$root"/}"
+    [[ "$relative" != *$'\t'* && "$relative" != *$'\n'* ]] || { printf 'Tab or newline in migration path rejected: %q\n' "$path" >&2; rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+    migration_transform_command_succeeds snapshot-entry-stat || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+    read -r uid gid mode device inode links < <(stat -c '%u %g %a %d %i %h' -- "$path") || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+    printf -v metadata '%s\t%s\t%s\t%s\t%s\t%s' "$uid" "$gid" "$mode" "$device" "$inode" "$links"
+    if [[ -L "$path" ]]; then
+      IFS= read -r -d '' target < <(readlink -z -- "$path") || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+      [[ "$target" != *$'\t'* && "$target" != *$'\n'* ]] || { printf 'Tab or newline in symlink target rejected: %q\n' "$path" >&2; rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+      [[ "$target" != /* ]] || { printf 'Absolute symlink rejected: %s\n' "$path" >&2; rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+      resolved="$(realpath -m -- "$(dirname -- "$path")/$target")" || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+      [[ "$resolved" == "$root" || "$resolved" == "$root"/* ]] || { printf 'Escaping symlink rejected: %s\n' "$path" >&2; rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+      kind=link; printf '%s\t%s\t%s\t%s\n' "$kind" "$metadata" "$relative" "$target" >> "$records" || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+    elif [[ -d "$path" ]]; then kind=directory; printf '%s\t%s\t%s\t-\n' "$kind" "$metadata" "$relative" >> "$records" || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+    elif [[ -f "$path" && "$links" == 1 ]]; then
+      migration_transform_command_succeeds snapshot-file-hash || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+      hash="$(sha256sum -- "$path")" || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+      hash="${hash%% *}"
+      kind=file; printf '%s\t%s\t%s\t%s\n' "$kind" "$metadata" "$relative" "$hash" >> "$records" || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+    else printf 'Special or multiply-linked migration entry rejected: %s\n' "$path" >&2; rm -f -- "$traversal" "$sorted" "$records"; return 1; fi
+  done < "$sorted"
+  migration_transform_command_succeeds snapshot-output || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+  cat -- "$records" > "$output" || { rm -f -- "$traversal" "$sorted" "$records"; return 1; }
+  rm -f -- "$traversal" "$sorted" "$records"
+}
+
+content_tree() { cut -f1-4,7-9 "$1" || return 1; }
 capture_tree() {
   local root="$1" output="$2" temporary parent
   parent="$(dirname -- "$output")"; ensure_private_directory "$parent" || return 1
@@ -205,14 +231,26 @@ validate_catalog_copy_subset() {
   actual="$(mktemp)" || return 1; expected_payload="$(mktemp)" || { rm -f -- "$actual"; return 1; }
   actual_payload="$(mktemp)" || { rm -f -- "$actual" "$expected_payload"; return 1; }
   snapshot_tree "$root" "$actual" || { rm -f -- "$actual" "$expected_payload" "$actual_payload"; return 1; }
-  awk -F '\t' '$8 != ".catalog.lock"' "$expected" > "$expected_payload"
-  awk -F '\t' '$8 != ".catalog.lock"' "$actual" > "$actual_payload"
-  awk -F '\t' '
+  if ! migration_transform_command_succeeds validate-catalog-expected-filter ||
+     ! awk -F '\t' '$8 != ".catalog.lock"' "$expected" > "$expected_payload"; then
+    rm -f -- "$actual" "$expected_payload" "$actual_payload"
+    return 1
+  fi
+  if ! migration_transform_command_succeeds validate-catalog-actual-filter ||
+     ! awk -F '\t' '$8 != ".catalog.lock"' "$actual" > "$actual_payload"; then
+    rm -f -- "$actual" "$expected_payload" "$actual_payload"
+    return 1
+  fi
+  migration_transform_command_succeeds validate-catalog-subset || {
+    rm -f -- "$actual" "$expected_payload" "$actual_payload"
+    return 1
+  }
+  if awk -F '\t' '
     function comparable(kind, line, f,n) { n=split(line,f,"\t"); return kind=="directory" ? f[1] FS f[2] FS f[3] FS f[4] FS f[8] FS f[9] : f[1] FS f[2] FS f[3] FS f[4] FS f[7] FS f[8] FS f[9] }
     NR==FNR { expected[$8]=comparable($1,$0); next }
     !($8 in expected) || expected[$8] != comparable($1,$0) { exit 1 }
     $8=="." { root_seen=1 }
-    END { if (!root_seen) exit 1 }' "$expected_payload" "$actual_payload"; status=$?
+    END { if (!root_seen) exit 1 }' "$expected_payload" "$actual_payload"; then status=0; else status=$?; fi
   rm -f -- "$actual" "$expected_payload" "$actual_payload" || return 1
   return "$status"
 }

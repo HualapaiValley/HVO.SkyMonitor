@@ -3217,6 +3217,87 @@ run_fixture_transport_install() {
   )
 }
 
+# Authenticated remote stage cleanup rejects a same-UID directory swap after its final inode map.
+transport_cleanup_parent="$TEMP_DIR/remote/catalog-cleanup-parent"
+transport_cleanup_stage="$transport_cleanup_parent/.catalog-stage-cleanup-test-test-fixture.123.456.789"
+transport_cleanup_saved="$transport_cleanup_stage.saved"
+transport_cleanup_external="$TEMP_DIR/catalog-cleanup-external"
+transport_cleanup_marker="$TEMP_DIR/catalog-cleanup-directory-swap.marker"
+mkdir -m 700 "$transport_cleanup_parent"
+mkdir -m 700 -p "$transport_cleanup_stage/nested" "$transport_cleanup_external/nested"
+printf 'stage\n' > "$transport_cleanup_stage/nested/payload"
+printf 'external-preserved\n' > "$transport_cleanup_external/nested/payload"
+chmod 0750 "$transport_cleanup_external" "$transport_cleanup_external/nested"
+chmod 0440 "$transport_cleanup_external/nested/payload"
+transport_cleanup_before="$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$transport_cleanup_external" \
+  "$transport_cleanup_external/nested" "$transport_cleanup_external/nested/payload")|$(sha256sum "$transport_cleanup_external/nested/payload" | cut -d' ' -f1)"
+(
+  source "$REPO_ROOT/scripts/deploy/transport.sh"
+  HVO_CATALOG_TEST_MODE=true HVO_CATALOG_TEST_LOCK_BARRIER=catalog-stage-cleanup-final \
+    HVO_CATALOG_TEST_LOCK_MARKER="$transport_cleanup_marker" \
+    PATH="$BIN:$PATH" deploy_transport_catalog_cleanup_stage logic@example "$transport_cleanup_stage" cleanup-test test-fixture
+) >/dev/null 2>&1 &
+FIXTURE_REPLACEMENT_PID=$!
+while [[ ! -e "$transport_cleanup_marker" ]]; do sleep 0.01; kill -0 "$FIXTURE_REPLACEMENT_PID"; done
+FIXTURE_REPLACEMENT_STOPPED_PID="$(<"$transport_cleanup_marker")"
+mv -T -- "$transport_cleanup_stage" "$transport_cleanup_saved"
+mv -T -- "$transport_cleanup_external" "$transport_cleanup_stage"
+kill -CONT "$FIXTURE_REPLACEMENT_STOPPED_PID"
+if wait "$FIXTURE_REPLACEMENT_PID"; then
+  fail 'Remote catalog-stage cleanup accepted a same-UID directory swap.'
+fi
+FIXTURE_REPLACEMENT_PID=""; FIXTURE_REPLACEMENT_STOPPED_PID=""
+transport_cleanup_after="$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$transport_cleanup_stage" \
+  "$transport_cleanup_stage/nested" "$transport_cleanup_stage/nested/payload")|$(sha256sum "$transport_cleanup_stage/nested/payload" | cut -d' ' -f1)"
+test "$transport_cleanup_after" = "$transport_cleanup_before" || fail 'Remote catalog-stage cleanup mutated a swapped external tree.'
+mv -T -- "$transport_cleanup_stage" "$transport_cleanup_external"
+mv -T -- "$transport_cleanup_saved" "$transport_cleanup_stage"
+(
+  source "$REPO_ROOT/scripts/deploy/transport.sh"
+  PATH="$BIN:$PATH" deploy_transport_catalog_cleanup_stage logic@example "$transport_cleanup_stage" cleanup-test test-fixture
+)
+test ! -e "$transport_cleanup_stage"
+
+# Crash-remnant cleanup also binds deletion to the mapped root and retains a substituted tree.
+transport_remnant_parent="$TEMP_DIR/remote/catalog-remnant-parent"
+transport_remnant="$transport_remnant_parent/.catalog-transaction-remnant-test-test-fixture.123.456.789"
+transport_remnant_saved="$transport_remnant.saved"
+transport_remnant_external="$TEMP_DIR/catalog-remnant-external"
+transport_remnant_marker="$TEMP_DIR/catalog-remnant-directory-swap.marker"
+mkdir -m 700 "$transport_remnant_parent"
+mkdir -m 700 -p "$transport_remnant/nested" "$transport_remnant_external/nested"
+printf 'remnant\n' > "$transport_remnant/nested/payload"
+printf 'remnant-external-preserved\n' > "$transport_remnant_external/nested/payload"
+chmod 0750 "$transport_remnant_external" "$transport_remnant_external/nested"
+chmod 0440 "$transport_remnant_external/nested/payload"
+transport_remnant_before="$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$transport_remnant_external" \
+  "$transport_remnant_external/nested" "$transport_remnant_external/nested/payload")|$(sha256sum "$transport_remnant_external/nested/payload" | cut -d' ' -f1)"
+(
+  source "$REPO_ROOT/scripts/deploy/transport.sh"
+  HVO_CATALOG_TEST_MODE=true HVO_CATALOG_TEST_LOCK_BARRIER=catalog-remnant-cleanup-final \
+    HVO_CATALOG_TEST_LOCK_MARKER="$transport_remnant_marker" \
+    PATH="$BIN:$PATH" deploy_transport_catalog_create_stage logic@example "$transport_remnant_parent" remnant-test test-fixture
+) > "$TEMP_DIR/catalog-remnant-created-stage.out" 2>/dev/null &
+FIXTURE_REPLACEMENT_PID=$!
+while [[ ! -e "$transport_remnant_marker" ]]; do sleep 0.01; kill -0 "$FIXTURE_REPLACEMENT_PID"; done
+FIXTURE_REPLACEMENT_STOPPED_PID="$(<"$transport_remnant_marker")"
+mv -T -- "$transport_remnant" "$transport_remnant_saved"
+mv -T -- "$transport_remnant_external" "$transport_remnant"
+kill -CONT "$FIXTURE_REPLACEMENT_STOPPED_PID"
+wait "$FIXTURE_REPLACEMENT_PID"
+FIXTURE_REPLACEMENT_PID=""; FIXTURE_REPLACEMENT_STOPPED_PID=""
+test "$(stat -c '%d:%i:%u:%g:%h:%a:%s' "$transport_remnant" \
+  "$transport_remnant/nested" "$transport_remnant/nested/payload")|$(sha256sum "$transport_remnant/nested/payload" | cut -d' ' -f1)" = \
+  "$transport_remnant_before" || fail 'Remote catalog-remnant cleanup mutated a swapped external tree.'
+mv -T -- "$transport_remnant" "$transport_remnant_external"
+mv -T -- "$transport_remnant_saved" "$transport_remnant"
+transport_created_stage="$(<"$TEMP_DIR/catalog-remnant-created-stage.out")"
+(
+  source "$REPO_ROOT/scripts/deploy/transport.sh"
+  PATH="$BIN:$PATH" deploy_transport_catalog_cleanup_stage logic@example "$transport_created_stage" remnant-test test-fixture
+)
+rm -rf -- "$transport_remnant"
+
 # Fixture publication fails before candidate rename when the shared lock pathname stops naming the held descriptor.
 replacement_fixture_root="$TEMP_DIR/remote/replaced-fixture-lock"
 replacement_fixture_stage="$TEMP_DIR/replaced-fixture-stage"
