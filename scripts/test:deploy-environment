@@ -1528,7 +1528,7 @@ fi
 exec /usr/bin/find "$@"
 EOF
 chmod +x "$REMOTE_BIN/find"
-for tool in bash basename date df dirname grep timeout chmod flock mkdir mv cp ln readlink realpath rmdir sha256sum sqlite3 sync wc cut seq sleep jq; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
+for tool in bash basename cmp date df dirname grep timeout chmod flock mkdir mv cp ln readlink realpath rmdir sha256sum sqlite3 sync wc cut seq sleep jq; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
 for entry in "$REMOTE_BIN/"*; do
     [[ "$(basename "$entry")" == ss ]] || ln -s "$entry" "$REMOTE_BIN_NO_SS/$(basename "$entry")"
     [[ "$(basename "$entry")" == curl ]] || ln -s "$entry" "$REMOTE_BIN_NO_CURL/$(basename "$entry")"
@@ -2883,6 +2883,42 @@ if shard_enabled existing-catalog-up; then
     fail 'Catalog deployment invokes a production catalog builder.'
   fi
   stage_lifecycle_images
+
+# Catalog transfer never writes into the former deterministic stage. Every historical destination may be hostile
+# without redirecting script or bundle bytes, and a hostile crash remnant cannot block a fresh transaction.
+set_lifecycle_paths
+catalog_transport_external="$TEMP_DIR/catalog-transport-external"
+mkdir -m 700 "$catalog_transport_external"
+for target_root in "$lifecycle_logic_root" "$lifecycle_east_root" "$lifecycle_west_root"; do
+  stale_stage="$target_root/.hvo-deploy/catalog-$deploy_case-test-fixture"
+  mkdir -m 700 -p "$stale_stage/bundle" "$stale_stage/scripts/catalog" "$stale_stage/scripts/infra"
+  for relative in bundle/manifest.json bundle/hyg_v42.sqlite bundle/LICENSE-HYG.md bundle/ATTRIBUTION-HYG.md \
+    scripts/catalog/catalog-common.sh scripts/catalog/install-hyg-v42.sh scripts/infra:operation-lock; do
+    external_name="$(printf '%s/%s-%s' "$catalog_transport_external" "${target_root##*/}" "${relative//\//-}")"
+    printf 'external-preserved:%s\n' "$relative" > "$external_name"
+    ln -s "$external_name" "$stale_stage/$relative"
+  done
+  hostile_remnant="$target_root/.hvo-deploy/.catalog-transaction-$deploy_case-test-fixture.123.456.789"
+  mkdir -m 700 "$hostile_remnant"
+  printf 'remnant-external-preserved\n' > "$catalog_transport_external/${target_root##*/}-remnant"
+  ln "$catalog_transport_external/${target_root##*/}-remnant" "$hostile_remnant/manifest.json"
+done
+run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+while IFS= read -r external_file; do
+  [[ "$(<"$external_file")" == external-preserved:* || "$(<"$external_file")" == remnant-external-preserved ]] ||
+    fail "Catalog transfer overwrote external file: $external_file"
+done < <(find "$catalog_transport_external" -type f -print)
+for target_root in "$lifecycle_logic_root" "$lifecycle_east_root" "$lifecycle_west_root"; do
+  stale_stage="$target_root/.hvo-deploy/catalog-$deploy_case-test-fixture"
+  test -L "$stale_stage/bundle/manifest.json"
+  hostile_remnant="$target_root/.hvo-deploy/.catalog-transaction-$deploy_case-test-fixture.123.456.789"
+  test -f "$hostile_remnant/manifest.json"
+  rm -rf -- "$stale_stage" "$hostile_remnant"
+done
+chmod -R u+w "$install_root" 2>/dev/null || true
+rm -rf -- "$install_root"
+rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
+  "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
 
 # Fixture manifest identity and shape mismatches fail before SSH, SCP, or installation.
 cp "$bundle/manifest.json" "$TEMP_DIR/fixture-manifest.valid"

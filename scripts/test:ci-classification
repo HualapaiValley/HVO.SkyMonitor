@@ -108,6 +108,7 @@ deployment_paths=(
   "scripts/deploy/common.sh"
   "scripts/test:deploy-environment"
   "scripts/test:deploy-environment-cli"
+  "scripts/test:product-layout"
   "scripts/catalog/install-hyg-v42.sh"
   "scripts/catalog:install"
   "scripts/infra:operation-lock"

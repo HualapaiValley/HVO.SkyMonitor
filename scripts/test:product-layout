@@ -112,6 +112,40 @@ catalog_control_fingerprint() {
   stat -c '%n|%u:%g:%h:%a' "$catalog_root/.catalog.lock" "$catalog_root/.catalog-lineage.json"
 }
 
+wait_for_process_marker() {
+  local pid="$1" marker="$2"
+  while [[ ! -e "$marker" ]]; do sleep 0.01; kill -0 "$pid"; done
+}
+
+mkdir -m 700 "$TEMP_DIR/fake-lock-bin"
+real_flock="$(command -v flock)"
+cat > "$TEMP_DIR/fake-lock-bin/flock" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+"$HVO_REAL_FLOCK" "$@"
+fd="${*: -1}"
+if [[ "$fd" =~ ^[0-9]+$ && "$(readlink "/proc/$$/fd/$fd")" == "$HVO_MIGRATION_LOCK_PATH" ]]; then
+  : > "$HVO_MIGRATION_LOCK_MARKER"
+  while [[ ! -e "$HVO_MIGRATION_LOCK_RELEASE" ]]; do sleep 0.01; done
+fi
+EOF
+chmod 700 "$TEMP_DIR/fake-lock-bin/flock"
+
+replace_acquired_catalog_lock() {
+  local pid="$1" lock_path="$2" marker="$3" release="$4" original
+  original="$lock_path.replaced-original"
+  wait_for_process_marker "$pid" "$marker"
+  mv -T -- "$lock_path" "$original"
+  create_catalog_lock "$(dirname -- "$lock_path")"
+  : > "$release"
+  if wait "$pid"; then
+    printf 'Migration accepted a replaced acquired catalog lock: %s\n' "$lock_path" >&2
+    exit 141
+  fi
+  rm -f -- "$lock_path"
+  mv -T -- "$original" "$lock_path"
+}
+
 # Exercise guarded singular-layout migration only beneath a disposable root.
 legacy="$TEMP_DIR/legacy"; migrated="$TEMP_DIR/migrated/skymonitor"; evidence="$TEMP_DIR/migration.json"
 mkdir -p "$legacy/config/cameraagent" "$legacy/data/agent/identity" "$legacy/data/agent/provisioning"
@@ -155,6 +189,59 @@ for legacy_control_case in lock-only lock-and-lineage; do
   test -f "$migrated_control_catalog/.catalog.lock"
   test "$(sha256sum "$migrated_control_catalog/versions/fixture-v1/hyg_v42.sqlite" | cut -d' ' -f1)" = \
     "$(sha256sum "$control_catalog/versions/fixture-v1/hyg_v42.sqlite" | cut -d' ' -f1)"
+done
+# Source, stage, and published lock descriptors remain bound to the pathname acquired under flock.
+for replacement_case in source stage published; do
+  replacement_legacy="$TEMP_DIR/replaced-$replacement_case-legacy"
+  replacement_product="$TEMP_DIR/replaced-$replacement_case-product"
+  replacement_evidence="$TEMP_DIR/replaced-$replacement_case.json"
+  replacement_instance="15151515-1515-4515-8515-15151515151${#replacement_case}"
+  mkdir -p "$replacement_legacy/config/cameraagent" "$replacement_legacy/data/agent"
+  printf '{}\n' > "$replacement_legacy/config/cameraagent/config.json"
+  printf 'state\n' > "$replacement_legacy/data/agent/state"
+  create_v2_fixture_catalog "$replacement_legacy/data/catalog" hyg-v42-production fixture-v1
+  create_catalog_lock "$replacement_legacy/data/catalog"
+  replacement_args=(--legacy-root "$replacement_legacy" --product-root "$replacement_product" --instance-id "$replacement_instance" \
+    --application-id "replacement-$replacement_case-agent" --catalog-id hyg-v42-production --evidence "$replacement_evidence")
+  case "$replacement_case" in
+    source)
+      replacement_lock="$replacement_legacy/data/catalog/.catalog.lock"
+      ;;
+    stage)
+      if DEPLOY_MIGRATION_FAILPOINT=after-copy-catalog "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply \
+        "${replacement_args[@]}" >/dev/null 2>&1; then exit 142; fi
+      replacement_lock="$replacement_product/catalogs/.hvo-migration-$replacement_instance.stage/.catalog.lock"
+      ;;
+    published)
+      "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${replacement_args[@]}" >/dev/null
+      "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${replacement_args[@]}" >/dev/null
+      replacement_lock="$replacement_product/catalogs/hyg-v42-production/.catalog.lock"
+      ;;
+  esac
+  replacement_marker="$TEMP_DIR/replaced-$replacement_case.marker"
+  replacement_release="$TEMP_DIR/replaced-$replacement_case.release"
+  replacement_database="${replacement_lock%/.catalog.lock}/versions/fixture-v1/hyg_v42.sqlite"
+  replacement_database_sha="$(sha256sum "$replacement_database" 2>/dev/null || true)"
+  PATH="$TEMP_DIR/fake-lock-bin:$PATH" HVO_REAL_FLOCK="$real_flock" HVO_MIGRATION_LOCK_PATH="$replacement_lock" \
+    HVO_MIGRATION_LOCK_MARKER="$replacement_marker" HVO_MIGRATION_LOCK_RELEASE="$replacement_release" \
+    "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${replacement_args[@]}" >/dev/null 2>&1 &
+  catalog_migration_pid=$!
+  replace_acquired_catalog_lock "$catalog_migration_pid" "$replacement_lock" "$replacement_marker" "$replacement_release"
+  catalog_migration_pid=
+  test ! -e "$replacement_evidence"
+  [[ -z "$replacement_database_sha" ]] || test "$(sha256sum "$replacement_database")" = "$replacement_database_sha"
+  if [[ "$replacement_case" == source ]]; then
+    test ! -e "$replacement_evidence.apply-intent.json"
+    test ! -e "$replacement_product/cameraagents/$replacement_instance"
+  elif [[ "$replacement_case" == stage ]]; then
+    test -d "$replacement_product/catalogs/.hvo-migration-$replacement_instance.stage"
+  else
+    test ! -e "$replacement_product/cameraagents/$replacement_instance"
+  fi
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${replacement_args[@]}" >/dev/null
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${replacement_args[@]}" >/dev/null
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${replacement_args[@]}" >/dev/null
+  test ! -e "$replacement_product/cameraagents/$replacement_instance"
 done
 # Migration blocks on an existing source lock and authenticates the post-lock payload before publishing anything.
 locked_legacy="$TEMP_DIR/locked-legacy"; locked_product="$TEMP_DIR/locked-product"; locked_evidence="$TEMP_DIR/locked.json"
@@ -746,7 +833,35 @@ printf 'destination-drift\n' >> "$migrated/cameraagents/$instance/config/cutover
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 114; fi
 test -d "$legacy/config/cameraagent.hvo-migration-$instance"; jq -e '.status == "copied-and-verified"' "$evidence" >/dev/null
 printf 'cutover-config-preserved\n' > "$migrated/cameraagents/$instance/config/cutover-state"
-if DEPLOY_MIGRATION_FAILPOINT=after-pre-delete-destination-barrier "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 115; fi
+# Pending evidence cannot advance until the published catalog lock remains pinned through its atomic rename.
+pending_marker="$TEMP_DIR/pending-evidence-publication-held"; pending_release="$TEMP_DIR/pending-evidence-publication-release"
+pending_publisher_marker="$TEMP_DIR/pending-publisher-acquired"
+pending_catalog_sha="$(sha256sum "$destination_catalog/versions/fixture-v1/hyg_v42.sqlite")"
+PATH="$TEMP_DIR/fake-evidence-bin:$PATH" HVO_REAL_MV="$real_mv" HVO_MIGRATION_EVIDENCE_PATH="$evidence" \
+  HVO_MIGRATION_EVIDENCE_MARKER="$pending_marker" HVO_MIGRATION_EVIDENCE_RELEASE="$pending_release" \
+  DEPLOY_MIGRATION_FAILPOINT=after-finalized-evidence \
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1 &
+catalog_migration_pid=$!
+wait_for_process_marker "$catalog_migration_pid" "$pending_marker"
+jq -e '.status == "copied-and-verified"' "$evidence" >/dev/null
+test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent.hvo-migration-$instance"
+test "$(sha256sum "$destination_catalog/versions/fixture-v1/hyg_v42.sqlite")" = "$pending_catalog_sha"
+if flock -n "$destination_catalog/.catalog.lock" true; then
+  printf 'Published catalog lock was released during pending evidence publication.\n' >&2; exit 143
+fi
+(exec 8<> "$destination_catalog/.catalog.lock"; flock -x 8; : > "$pending_publisher_marker") &
+destination_publisher_pid=$!
+sleep 0.1; test ! -e "$pending_publisher_marker"; jq -e '.status == "copied-and-verified"' "$evidence" >/dev/null
+: > "$pending_release"
+if wait "$catalog_migration_pid"; then
+  printf 'Pending evidence crash boundary unexpectedly completed.\n' >&2; exit 144
+fi
+catalog_migration_pid=
+wait "$destination_publisher_pid"; destination_publisher_pid=
+test -e "$pending_publisher_marker"
+jq -e '.status == "finalized-removal-pending"' "$evidence" >/dev/null
+test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent.hvo-migration-$instance"
+test "$(sha256sum "$destination_catalog/versions/fixture-v1/hyg_v42.sqlite")" = "$pending_catalog_sha"
 jq -e '.status == "finalized-removal-pending" and .legacyRetained == false and .legacyCatalogRetained == true and
   all(.cutoverEvidenceSha256,.finalConfigSnapshotSha256,.finalStateSnapshotSha256; test("^[0-9a-f]{64}$"))' "$evidence" >/dev/null
 test "$(stat -c '%u:%g:%h:%a' "$evidence.final-config.snapshot")" = "$(id -u):$(id -g):1:600"
@@ -786,7 +901,31 @@ printf 'destination-drift\n' >> "$migrated/cameraagents/$instance/config/cutover
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 118; fi
 jq -e '.status == "finalized-removal-pending"' "$evidence" >/dev/null
 printf 'cutover-config-preserved\n' > "$migrated/cameraagents/$instance/config/cutover-state"
-"$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover"
+# Final evidence likewise remains pending while a competing publisher waits on the pinned descriptor.
+final_marker="$TEMP_DIR/final-evidence-publication-held"; final_release="$TEMP_DIR/final-evidence-publication-release"
+final_publisher_marker="$TEMP_DIR/final-publisher-acquired"
+final_catalog_sha="$(sha256sum "$destination_catalog/versions/fixture-v1/hyg_v42.sqlite")"
+PATH="$TEMP_DIR/fake-evidence-bin:$PATH" HVO_REAL_MV="$real_mv" HVO_MIGRATION_EVIDENCE_PATH="$evidence" \
+  HVO_MIGRATION_EVIDENCE_MARKER="$final_marker" HVO_MIGRATION_EVIDENCE_RELEASE="$final_release" \
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1 &
+catalog_migration_pid=$!
+wait_for_process_marker "$catalog_migration_pid" "$final_marker"
+jq -e '.status == "finalized-removal-pending"' "$evidence" >/dev/null
+test ! -e "$legacy/config/cameraagent.hvo-migration-$instance"; test ! -e "$legacy/data/agent.hvo-migration-$instance"
+test "$(sha256sum "$destination_catalog/versions/fixture-v1/hyg_v42.sqlite")" = "$final_catalog_sha"
+if flock -n "$destination_catalog/.catalog.lock" true; then
+  printf 'Published catalog lock was released during final evidence publication.\n' >&2; exit 145
+fi
+(exec 8<> "$destination_catalog/.catalog.lock"; flock -x 8; : > "$final_publisher_marker") &
+destination_publisher_pid=$!
+sleep 0.1; test ! -e "$final_publisher_marker"; jq -e '.status == "finalized-removal-pending"' "$evidence" >/dev/null
+: > "$final_release"
+wait "$catalog_migration_pid"; catalog_migration_pid=
+wait "$destination_publisher_pid"; destination_publisher_pid=
+test -e "$final_publisher_marker"
+jq -e '.status == "finalized"' "$evidence" >/dev/null
+test "$(sha256sum "$destination_catalog/versions/fixture-v1/hyg_v42.sqlite")" = "$final_catalog_sha"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null
 test ! -e "$legacy/config/cameraagent"; test ! -e "$legacy/data/agent"; test -d "$legacy/data/catalog"
 test "$(catalog_control_fingerprint "$destination_catalog")" = "$destination_controls_before"
 test "$(readlink "$legacy/data/catalog/current")" = "$legacy_catalog_pointer"

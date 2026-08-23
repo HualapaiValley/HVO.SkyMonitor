@@ -652,16 +652,125 @@ printf 'installed\t%s\t%s\n' "$current" "$expected_sha"
 REMOTE
 }
 
-deploy_transport_catalog_prepare_scripts() {
-    local ssh_host="$1" stage="$2"
-    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$stage" 2>/dev/null <<'REMOTE'
+deploy_transport_catalog_create_stage() {
+    local ssh_host="$1" parent="$2" run_id="$3" catalog_id="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
+      "$parent" "$run_id" "$catalog_id" 2>/dev/null <<'REMOTE'
 set -euo pipefail
-stage=$1
-[[ "$stage" == /* && -d "$stage/scripts/catalog" && ! -L "$stage/scripts" && ! -L "$stage/scripts/catalog" ]] || exit 90
-for path in "$stage/scripts/catalog/catalog-common.sh" "$stage/scripts/catalog/install-hyg-v42.sh" "$stage/scripts/infra:operation-lock"; do
-  [[ -f "$path" && ! -L "$path" && "$(stat -c %h "$path")" == 1 ]] || exit 91
-  chmod 700 "$path"
+parent=$1; run_id=$2; catalog_id=$3
+[[ "$parent" == /* && "$parent" != / && "$parent" != *//* && "$parent" != */../* && "$parent" != */./* &&
+   "$run_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && "$catalog_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || exit 90
+[[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%a' -- "$parent")" == "$(id -u):700" ]] || exit 91
+parent_device="$(stat -c %d -- "$parent")"
+safe_remove() {
+  local root=$1 path mode
+  [[ -d "$root" && ! -L "$root" &&
+     "$(stat -c '%u:%d' -- "$root")" == "$(id -u):$parent_device" ]] || return 1
+  mode="$(stat -c %a -- "$root")"; (( (8#$mode & 0022) == 0 )) || return 1
+  find -P "$root" -xdev -mindepth 1 -print0 >/dev/null || return 1
+  while IFS= read -r -d '' path; do
+    [[ "$(stat -c %d -- "$path")" == "$parent_device" ]] || return 1
+    if [[ -d "$path" && ! -L "$path" ]]; then
+      [[ "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
+      mode="$(stat -c %a -- "$path")"; (( (8#$mode & 0022) == 0 )) || return 1
+    elif [[ -f "$path" && ! -L "$path" ]]; then
+      [[ "$(stat -c '%u:%h' -- "$path")" == "$(id -u):1" ]] || return 1
+    else
+      return 1
+    fi
+  done < <(find -P "$root" -xdev -mindepth 1 -print0)
+  find -P "$root" -xdev -depth -mindepth 1 -delete && rmdir -- "$root"
+}
+shopt -s nullglob dotglob
+remnants=("$parent/.catalog-transaction-$run_id-$catalog_id."* "$parent/.catalog-stage-$run_id-$catalog_id."*)
+shopt -u nullglob dotglob
+for remnant in "${remnants[@]}"; do
+  [[ "${remnant##*/}" =~ ^[.]catalog-(transaction|stage)-${run_id}-${catalog_id}[.][1-9][0-9]*[.][0-9]{1,5}[.][0-9]{1,5}$ ]] || continue
+  safe_remove "$remnant" >/dev/null 2>&1 || true
 done
+umask 077
+stage=''
+for _ in {1..16}; do
+  candidate="$parent/.catalog-transaction-$run_id-$catalog_id.$$.$RANDOM.$RANDOM"
+  if mkdir -m 700 -- "$candidate" 2>/dev/null; then stage=$candidate; break; fi
+done
+[[ -n "$stage" ]] || exit 92
+[[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%d:%a' -- "$stage")" == "$(id -u):$parent_device:700" ]] || exit 92
+mkdir -m 700 -- "$stage/bundle" "$stage/scripts" "$stage/scripts/catalog" "$stage/scripts/infra"
+sync -f "$parent"
+printf '%s\n' "$stage"
+REMOTE
+}
+
+deploy_transport_catalog_authenticate_stage() {
+    local ssh_host="$1" stage="$2" run_id="$3" catalog_id="$4" kind="$5"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
+      "$stage" "$run_id" "$catalog_id" "$kind" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+stage=$1; run_id=$2; catalog_id=$3; kind=$4; parent=${stage%/*}
+[[ "$stage" == /* && "$stage" != *//* && "$stage" != */../* && "$stage" != */./* &&
+   "${stage##*/}" =~ ^[.]catalog-transaction-${run_id}-${catalog_id}[.][1-9][0-9]*[.][0-9]{1,5}[.][0-9]{1,5}$ &&
+   ( "$kind" == production || "$kind" == fixture ) ]] || exit 90
+[[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%a' -- "$parent")" == "$(id -u):700" ]] || exit 91
+device="$(stat -c %d -- "$parent")"
+[[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%d:%a' -- "$stage")" == "$(id -u):$device:700" ]] || exit 92
+expected_count=9; [[ "$kind" != production ]] || expected_count=11
+[[ "$(find -P "$stage" -xdev -mindepth 1 -printf '.\n' | wc -l)" == "$expected_count" ]] || exit 93
+while IFS= read -r -d '' path; do
+  relative="${path#"$stage"/}"
+  case "$relative" in
+    bundle|scripts|scripts/catalog|scripts/infra|bundle/manifest.json|bundle/hyg_v42.sqlite|scripts/catalog/catalog-common.sh|scripts/catalog/install-hyg-v42.sh|scripts/infra:operation-lock) ;;
+    bundle/LICENSE-HYG.md|bundle/ATTRIBUTION-HYG.md) [[ "$kind" == production ]] || exit 93 ;;
+    *) exit 93 ;;
+  esac
+  path="$stage/$relative"
+  [[ "$(stat -c %d -- "$path")" == "$device" ]] || exit 94
+  if [[ -d "$path" && ! -L "$path" ]]; then
+    [[ "$(stat -c '%u:%a' -- "$path")" == "$(id -u):700" ]] || exit 94
+  elif [[ -f "$path" && ! -L "$path" ]]; then
+    [[ "$(stat -c '%u:%h' -- "$path")" == "$(id -u):1" ]] || exit 94
+    mode="$(stat -c %a -- "$path")"; (( (8#$mode & 0022) == 0 )) || exit 94
+  else
+    exit 94
+  fi
+done < <(find -P "$stage" -xdev -mindepth 1 -print0)
+chmod 700 -- "$stage/scripts/catalog/catalog-common.sh" "$stage/scripts/catalog/install-hyg-v42.sh" \
+  "$stage/scripts/infra:operation-lock"
+sync -f "$stage"
+adopted="$parent/.catalog-stage-$run_id-$catalog_id.${stage##*.catalog-transaction-$run_id-$catalog_id.}"
+[[ ! -e "$adopted" && ! -L "$adopted" ]] || exit 95
+mv -T -- "$stage" "$adopted"
+sync -f "$parent"
+printf '%s\n' "$adopted"
+REMOTE
+}
+
+deploy_transport_catalog_cleanup_stage() {
+    local ssh_host="$1" stage="$2" run_id="$3" catalog_id="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
+      "$stage" "$run_id" "$catalog_id" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+stage=$1; run_id=$2; catalog_id=$3; parent=${stage%/*}
+[[ "$stage" == /* && "$stage" != *//* && "$stage" != */../* && "$stage" != */./* &&
+   "${stage##*/}" =~ ^[.]catalog-(transaction|stage)-${run_id}-${catalog_id}[.][1-9][0-9]*[.][0-9]{1,5}[.][0-9]{1,5}$ ]] || exit 90
+[[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%a' -- "$parent")" == "$(id -u):700" ]] || exit 91
+device="$(stat -c %d -- "$parent")"
+[[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%d' -- "$stage")" == "$(id -u):$device" ]] || exit 92
+find -P "$stage" -xdev -mindepth 1 -print0 >/dev/null || exit 93
+while IFS= read -r -d '' path; do
+  [[ "$(stat -c %d -- "$path")" == "$device" ]] || exit 93
+  if [[ -d "$path" && ! -L "$path" ]]; then
+    [[ "$(stat -c %u -- "$path")" == "$(id -u)" ]] || exit 93
+    mode="$(stat -c %a -- "$path")"; (( (8#$mode & 0022) == 0 )) || exit 93
+  elif [[ -f "$path" && ! -L "$path" ]]; then
+    [[ "$(stat -c '%u:%h' -- "$path")" == "$(id -u):1" ]] || exit 93
+  else
+    exit 93
+  fi
+done < <(find -P "$stage" -xdev -mindepth 1 -print0)
+find -P "$stage" -xdev -depth -mindepth 1 -delete
+rmdir -- "$stage"
+sync -f "$parent"
 REMOTE
 }
 
@@ -682,6 +791,7 @@ if [[ "$kind" == fixture ]]; then
   hyg_fixture_reconcile_pointer_temporaries "$install_root" || exit 92
   hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 92
 else
+  hyg_production_reconcile_pointer_temporaries "$install_root" || exit 92
   hyg_production_reconcile_pointer_transaction "$install_root" || exit 92
   [[ ! -e "$install_root/.pointer-transaction" && ! -L "$install_root/.pointer-transaction" ]] || exit 92
 fi

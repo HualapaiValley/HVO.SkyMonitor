@@ -39,8 +39,31 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: ./scripts/ci:classify "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
+  catalog-contracts:
+    name: Catalog Contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build exact production catalog contracts
+        run: |
+          catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
+          ./scripts/catalog/prepare-hyg-v42-contracts.sh "$catalog_root" >/dev/null
+          tar -czf "$RUNNER_TEMP/hyg-v42-contracts.tar.gz" -C "$catalog_root" .
+      - name: Upload exact production catalog contracts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0 # v7
+        with:
+          name: hyg-v42-contracts
+          path: ${{ runner.temp }}/hyg-v42-contracts.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   quality:
     name: Quality
+    needs: catalog-contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -48,6 +71,20 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Download exact production catalog contracts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hyg-v42-contracts
+          path: ${{ runner.temp }}/hyg-v42-contract-artifact
+      - name: Restore exact production catalog contracts
+        run: |
+          catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
+          mkdir -m 700 "$catalog_root"
+          tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
+          {
+            printf 'HVO_PHASE14_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root"
+            printf 'HVO_PHASE14_LEGACY_PRODUCTION_CATALOG_BUNDLE=%s/hyg-v4.2-p3-s2-r1-legacy.bundle\n' "$catalog_root"
+          } >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -57,8 +94,6 @@ jobs:
           dotnet tool restore
           dotnet restore HVO.SkyMonitor.v9.slnx
           dotnet restore scripts/acceptance-trx/HVO.SkyMonitor.AcceptanceTrx.csproj
-      - name: Prepare exact production catalog contracts
-        run: ./scripts/catalog/prepare-hyg-v42-contracts.sh "$RUNNER_TEMP/hyg-v42-quality-contracts" >> "$GITHUB_ENV"
       - name: Verify formatting
         run: |
           dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
@@ -79,7 +114,6 @@ jobs:
           bash ./scripts/test:opencode
           bash ./scripts/test:ci-classification
           ./scripts/catalog/smoke-test.sh
-          ./scripts/test:product-layout
           SQLSERVER_PASSWORD=validation-only REDIS_PASSWORD=validation-only MINIO_ACCESS_KEY=validation-only MINIO_SECRET_KEY=validation-only CAMERA_AGENT_ADMIN_PASSWORD=validation-only-password CAMERA_AGENT_OAUTH_CLIENT_SECRET=validation-only-oauth-secret docker compose --env-file .env.template -f docker-compose.apps.yml config --quiet
           MINIO_ROOT_USER=validation-only MINIO_ROOT_PASSWORD=validation-only REDIS_PASSWORD=validation-only docker compose --env-file .env.template -f deploy/hvo-docker/docker-compose.shared-services.yml config --quiet
           HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_RUNTIME_UID=1000 HVO_RUNTIME_GID=1000 HVO_SQL_MEMORY=4G MSSQL_MEMORY_LIMIT_MB=3072 SQLSERVER_PORT=1433 REDIS_PORT=6379 MINIO_PORT=9000 SMTP_PORT=1025 MAILPIT_HTTP_PORT=8025 SQLSERVER_IMAGE=example/sql@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa REDIS_IMAGE=example/redis@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb MINIO_IMAGE=example/minio@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc MINIO_CLIENT_IMAGE=example/mc@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd MAILPIT_IMAGE=example/mailpit@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee SQL_DATABASE=hvo-test SQL_ADMIN_USER=sa SQL_INITIALIZER_USER=hvo-init SQL_RUNTIME_USER=hvo-runtime REDIS_RUNTIME_USER=hvo-runtime REDIS_PREFIX=hvo-test: MINIO_ARTIFACT_BUCKET=hvo-test-artifacts MINIO_DIAGNOSTICS_BUCKET=hvo-test-diagnostics docker compose -f deploy/split-host/compose.shared-services.yml --profile provision --profile test-smtp config --quiet
@@ -110,7 +144,7 @@ jobs:
 
   deployment-contracts:
     name: Deployment Contracts
-    needs: changes
+    needs: [changes, catalog-contracts]
     if: needs.changes.outputs.deployment == 'true'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
     timeout-minutes: 30
@@ -119,6 +153,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Download exact production catalog contracts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hyg-v42-contracts
+          path: ${{ runner.temp }}/hyg-v42-contract-artifact
+      - name: Restore exact production catalog contracts
+        run: |
+          catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
+          mkdir -m 700 "$catalog_root"
+          tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact/hyg-v42-contracts.tar.gz" -C "$catalog_root"
+          {
+            printf 'HVO_PHASE14_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root"
+            printf 'HVO_PHASE14_LEGACY_PRODUCTION_CATALOG_BUNDLE=%s/hyg-v4.2-p3-s2-r1-legacy.bundle\n' "$catalog_root"
+            printf 'HVO_LEGACY_CATALOG_BUNDLE=%s/hyg-v4.2-p3-s2-r1-legacy.bundle\n' "$catalog_root"
+          } >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -135,14 +184,8 @@ jobs:
            bash -n scripts/deploy:migrate-product-layout scripts/test:product-layout
       - name: Build pinned production catalog contracts
         run: |
-          bundle_environment="$RUNNER_TEMP/hyg-v42-deployment-contracts.env"
-          bundle_root="$RUNNER_TEMP/hyg-v42-deployment-contracts"
-          ./scripts/catalog/prepare-hyg-v42-contracts.sh "$bundle_root" > "$bundle_environment"
-          production_bundle="$bundle_root/build/hyg-v4.2-p3-s2-r1.bundle"
-          legacy_bundle="$bundle_root/hyg-v4.2-p3-s2-r1-legacy.bundle"
-          HVO_LEGACY_CATALOG_BUNDLE="$legacy_bundle" \
-            ./scripts/catalog/test-hyg-v42-install.sh "$production_bundle"
-          cat "$bundle_environment" >> "$GITHUB_ENV"
+          ./scripts/catalog/test-hyg-v42-install.sh \
+            "$RUNNER_TEMP/hyg-v42-contracts/build/hyg-v4.2-p3-s2-r1.bundle"
       - name: Run product layout and migration contracts
         run: ./scripts/test:product-layout
       - name: Run deployment contracts in parallel

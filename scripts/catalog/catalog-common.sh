@@ -617,6 +617,52 @@ hyg_production_replace_pointer() {
     sync -f "$install_root"
 }
 
+hyg_production_reconcile_pointer_temporaries() {
+    local install_root="$1" transaction="$1/.pointer-transaction"
+    local path name selected='' current_target previous_target removed=false
+    local -a temporaries fields
+    shopt -s nullglob dotglob
+    temporaries=("$install_root"/.pointer-transaction.tmp.*)
+    shopt -u nullglob dotglob
+    for path in "${temporaries[@]}"; do
+        name="${path##*/}"
+        [[ "$name" =~ ^[.]pointer-transaction[.]tmp[.][1-9][0-9]*[.][0-9]{1,5}$ &&
+           -f "$path" && ! -L "$path" &&
+           "$(stat -c '%u:%h:%a' -- "$path")" == "$(id -u):1:600" ]] || return 1
+        mapfile -t fields < "$path"
+        [[ ${#fields[@]} -eq 2 ]] || return 1
+        current_target="${fields[0]}"; previous_target="${fields[1]}"
+        hyg_production_validate_pointer_target "$install_root" "$current_target" || return 1
+        if [[ "$previous_target" != - ]]; then
+            [[ "$previous_target" != "$current_target" ]] || return 1
+            hyg_production_validate_pointer_target "$install_root" "$previous_target" || return 1
+        fi
+        if [[ -z "$selected" ]]; then
+            selected="$path"
+        elif ! cmp -s -- "$selected" "$path"; then
+            return 1
+        fi
+    done
+    [[ -n "$selected" ]] || return 0
+    if [[ -e "$transaction" || -L "$transaction" ]]; then
+        [[ -f "$transaction" && ! -L "$transaction" &&
+           "$(stat -c '%u:%h:%a' -- "$transaction")" == "$(id -u):1:600" ]] &&
+            cmp -s -- "$selected" "$transaction" || return 1
+    else
+        mv -T -- "$selected" "$transaction"
+        sync -f "$install_root"
+        selected=''
+    fi
+    for path in "${temporaries[@]}"; do
+        [[ "$path" == "$selected" ]] || { rm -f -- "$path"; removed=true; }
+    done
+    if [[ -n "$selected" ]]; then
+        rm -f -- "$selected"
+        removed=true
+    fi
+    [[ "$removed" == false ]] || sync -f "$install_root"
+}
+
 hyg_production_reconcile_pointer_transaction() {
     local install_root="$1" transaction="$1/.pointer-transaction"
     local current_target previous_target

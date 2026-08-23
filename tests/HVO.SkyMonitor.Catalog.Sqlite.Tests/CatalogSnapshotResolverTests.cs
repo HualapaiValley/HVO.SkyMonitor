@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
@@ -243,6 +245,50 @@ internal sealed class CatalogSnapshotResolverTests
     }
 
     [TestMethod]
+    public void ResolveRejectsHardLinkedManifestWithoutMutatingExternalFingerprint()
+    {
+        using var installation = CreateInstallation();
+
+        AssertHardLinkedRetainedFileRejected(
+            installation.ManifestPath,
+            () => ResolveFixture(installation.Root));
+    }
+
+    [TestMethod]
+    public void ResolveRejectsHardLinkedDatabaseWithoutMutatingExternalFingerprint()
+    {
+        using var installation = CreateInstallation();
+
+        AssertHardLinkedRetainedFileRejected(
+            installation.DatabasePath,
+            () => ResolveFixture(installation.Root));
+    }
+
+    [TestMethod]
+    public void ResolveRejectsHardLinkedLicenseWithoutMutatingExternalFingerprint()
+    {
+        using var installation = CreateProductionInstallationWithRetainedFiles();
+        var licensePath = Path.Combine(Path.GetDirectoryName(installation.ManifestPath)!, "LICENSE-HYG.md");
+
+        AssertHardLinkedRetainedFileRejected(
+            licensePath,
+            () => CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+                installation.Root, ProductionCatalogId)));
+    }
+
+    [TestMethod]
+    public void ResolveRejectsHardLinkedAttributionWithoutMutatingExternalFingerprint()
+    {
+        using var installation = CreateProductionInstallationWithRetainedFiles();
+        var attributionPath = Path.Combine(Path.GetDirectoryName(installation.ManifestPath)!, "ATTRIBUTION-HYG.md");
+
+        AssertHardLinkedRetainedFileRejected(
+            attributionPath,
+            () => CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+                installation.Root, ProductionCatalogId)));
+    }
+
+    [TestMethod]
     public void ResolveRejectsManifestAndPackageVersionMismatch()
     {
         using var installation = CreateInstallation();
@@ -401,6 +447,15 @@ internal sealed class CatalogSnapshotResolverTests
         return new Installation(root, pointerPath, manifestPath, databasePath);
     }
 
+    private static Installation CreateProductionInstallationWithRetainedFiles()
+    {
+        var installation = CreateProductionInstallation();
+        var versionDirectory = Path.GetDirectoryName(installation.ManifestPath)!;
+        File.WriteAllBytes(Path.Combine(versionDirectory, "LICENSE-HYG.md"), new byte[423]);
+        File.WriteAllBytes(Path.Combine(versionDirectory, "ATTRIBUTION-HYG.md"), new byte[1_361]);
+        return installation;
+    }
+
     private static string CreateManifest(
         string databasePath,
         int manifestVersion = 2,
@@ -506,6 +561,35 @@ internal sealed class CatalogSnapshotResolverTests
         return Convert.ToHexString(SHA256.HashData(source));
     }
 
+    private static void AssertHardLinkedRetainedFileRejected(string retainedPath, Action resolve)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Windows preserves the resolver's existing reparse-point behavior.");
+        }
+
+        var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-external-{Guid.NewGuid():N}");
+        if (Link(retainedPath, externalPath) != 0)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+        }
+        var fingerprint = ReadFingerprint(externalPath);
+        try
+        {
+            var exception = Assert.ThrowsExactly<InvalidDataException>(resolve);
+
+            Assert.AreEqual(fingerprint, ReadFingerprint(externalPath));
+            StringAssert.Contains(exception.Message, "hard-link", StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(externalPath);
+        }
+    }
+
+    private static FileFingerprint ReadFingerprint(string path)
+        => new(new FileInfo(path).Length, Checksum(path));
+
     internal sealed record Installation(
         string Root,
         string PointerPath,
@@ -514,4 +598,12 @@ internal sealed class CatalogSnapshotResolverTests
     {
         public void Dispose() => Directory.Delete(Root, recursive: true);
     }
+
+    private sealed record FileFingerprint(long Length, string Sha256);
+
+#pragma warning disable SYSLIB1054 // Test-only Unix hardlink setup does not warrant enabling unsafe interop generation.
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "link", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int Link(string source, string destination);
+#pragma warning restore SYSLIB1054
 }

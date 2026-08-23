@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.Astronomy;
@@ -76,6 +78,10 @@ public static class CatalogSnapshotResolver
         "e3addc3480a0d0f07129f332b0dea592fa315373f21111d54ac8e2aebd03b5f1";
     private const string ProductionTopologySha256 =
         "70c253a00e0909ae0236dec0411afe837ebf8e493b2be7f84373b63c95c91621";
+    private const uint StatxType = 0x00000001;
+    private const uint StatxLinkCount = 0x00000004;
+    private const int AtFileDescriptorCurrentWorkingDirectory = -100;
+    private const int AtSymbolicLinkNoFollow = 0x100;
 
     /// <summary>Resolves the active snapshot and loads its validated immutable catalog.</summary>
     public static CatalogSnapshotResult Resolve(CatalogSnapshotResolverOptions options)
@@ -286,6 +292,8 @@ public static class CatalogSnapshotResolver
             throw new InvalidDataException("Catalog production snapshot must contain exactly its four retained files.");
         }
 
+        EnsureRetainedFileIsNotLink(snapshotDirectory, manifest.License!.File, "Catalog license");
+        EnsureRetainedFileIsNotLink(snapshotDirectory, manifest.License.Attribution, "Catalog attribution");
         ValidateRetainedFile(snapshotDirectory, manifest.License.File, "Catalog license");
         ValidateRetainedFile(snapshotDirectory, manifest.License.Attribution, "Catalog attribution");
     }
@@ -666,6 +674,57 @@ public static class CatalogSnapshotResolver
         {
             throw new InvalidDataException($"{description} cannot be a symbolic link or reparse point.");
         }
+
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        uint linkCount;
+        try
+        {
+            linkCount = ReadUnixLinkCount(path);
+        }
+        catch (Exception exception) when (exception is not InvalidDataException)
+        {
+            throw new InvalidDataException($"{description} hard-link count could not be authenticated.", exception);
+        }
+        if (linkCount != 1)
+        {
+            throw new InvalidDataException($"{description} hard-link count must be exactly one; found {linkCount}.");
+        }
+    }
+
+    private static uint ReadUnixLinkCount(string path)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            if (StatX(
+                    AtFileDescriptorCurrentWorkingDirectory,
+                    path,
+                    AtSymbolicLinkNoFollow,
+                    StatxType | StatxLinkCount,
+                    out var status) != 0)
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            }
+            if ((status.Mask & StatxLinkCount) == 0)
+            {
+                throw new InvalidDataException("The file system did not authenticate the hard-link count.");
+            }
+            return status.LinkCount;
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            if (LStat(path, out var status) != 0)
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            }
+            return status.LinkCount;
+        }
+
+        throw new PlatformNotSupportedException("Catalog hard-link validation is not supported on this Unix platform.");
     }
 
     private static void EnsureDirectoryIsNotLink(string path, string description)
@@ -748,6 +807,16 @@ public static class CatalogSnapshotResolver
             throw new InvalidDataException(
                 $"{description} SHA-256 mismatch. Expected {evidence.Sha256.ToUpperInvariant()}, got {actualSha256}.");
         }
+    }
+
+    private static void EnsureRetainedFileIsNotLink(
+        string snapshotDirectory,
+        SnapshotFile evidence,
+        string description)
+    {
+        var path = GetContainedPath(snapshotDirectory, evidence.RelativePath, $"{description} relative path");
+        EnsureParentDirectoriesAreNotLinks(snapshotDirectory, path, $"{description} relative path");
+        EnsureFileIsNotLink(path, description);
     }
 
     private static void ValidateSha256(string value, string propertyName)
@@ -859,4 +928,31 @@ public static class CatalogSnapshotResolver
     private sealed record SnapshotTopology(string Identity, string Sha256, long ConstellationCount, long SegmentCount);
 
     private sealed record SnapshotPointer(string SnapshotVersion, string SnapshotDirectory);
+
+    [StructLayout(LayoutKind.Explicit, Size = 256)]
+    private struct LinuxFileStatus
+    {
+        [FieldOffset(0)]
+        internal uint Mask;
+
+        [FieldOffset(16)]
+        internal uint LinkCount;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 144)]
+    private struct MacOsFileStatus
+    {
+        [FieldOffset(6)]
+        internal ushort LinkCount;
+    }
+
+#pragma warning disable SYSLIB1054 // These narrow Unix calls avoid enabling unsafe code for source-generated interop.
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "statx", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int StatX(int directoryFileDescriptor, string path, int flags, uint mask, out LinuxFileStatus status);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "lstat", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int LStat(string path, out MacOsFileStatus status);
+#pragma warning restore SYSLIB1054
 }

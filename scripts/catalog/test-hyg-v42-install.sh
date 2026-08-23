@@ -76,13 +76,14 @@ assert_current() {
     }
 }
 
-for boundary in after-copy after-candidate-validation after-staging-fsync after-publish before-activation after-transaction after-previous-pointer after-current-pointer; do
+for boundary in after-copy after-candidate-validation after-staging-fsync after-publish before-activation after-pointer-transaction-temp-fsync after-transaction after-previous-pointer after-current-pointer; do
     case "$boundary" in
         after-copy) revision=2 ;;
         after-candidate-validation) revision=3 ;;
         after-staging-fsync) revision=4 ;;
         after-publish) revision=5 ;;
         before-activation) revision=6 ;;
+        after-pointer-transaction-temp-fsync) revision=10 ;;
         after-transaction) revision=7 ;;
         after-previous-pointer) revision=8 ;;
         after-current-pointer) revision=9 ;;
@@ -103,6 +104,7 @@ for boundary in after-copy after-candidate-validation after-staging-fsync after-
     "$SCRIPT_DIR/install-hyg-v42.sh" install "$candidate" "$boundary_root" >/dev/null
     assert_current "$boundary_root" "$revision"
     [[ "$(readlink "$boundary_root/previous")" == "versions/hyg-v4.2-p3-s2-r1" ]]
+    [[ -z "$(find "$boundary_root" -maxdepth 1 -name '.pointer-transaction.tmp.*' -print -quit)" ]]
 done
 
 for boundary in after-transaction after-previous-pointer after-current-pointer; do
@@ -242,6 +244,51 @@ upgrade="$(make_revision 14)"
 "$SCRIPT_DIR/install-hyg-v42.sh" install "$upgrade" "$INSTALL_ROOT" >/dev/null
 assert_current "$INSTALL_ROOT" 14
 [[ "$(readlink "$INSTALL_ROOT/previous")" == "versions/hyg-v4.2-p3-s2-r1" ]]
+
+# A complete crash temporary is adopted under the root lock before the next requested operation.
+valid_pointer_temporary="$INSTALL_ROOT/.pointer-transaction.tmp.123.456"
+printf 'versions/hyg-v4.2-p3-s2-r1\nversions/hyg-v4.2-p3-s2-r14\n' > "$valid_pointer_temporary"
+chmod 600 "$valid_pointer_temporary"
+"$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null
+assert_current "$INSTALL_ROOT" 1
+[[ "$(readlink "$INSTALL_ROOT/previous")" == "versions/hyg-v4.2-p3-s2-r14" ]]
+[[ ! -e "$valid_pointer_temporary" && ! -e "$INSTALL_ROOT/.pointer-transaction" ]]
+"$SCRIPT_DIR/install-hyg-v42.sh" install "$upgrade" "$INSTALL_ROOT" >/dev/null
+assert_current "$INSTALL_ROOT" 14
+
+# Hostile or ambiguous crash temporaries are retained without changing external inodes or pointer state.
+for hostile_temporary in symlink hardlink mode type malformed unsafe-target ambiguous; do
+    temporary="$INSTALL_ROOT/.pointer-transaction.tmp.123.456"
+    outside="$TEMPORARY_DIRECTORY/pointer-temporary-$hostile_temporary.outside"
+    printf 'outside-preserved\n' > "$outside"
+    chmod 600 "$outside"
+    case "$hostile_temporary" in
+        symlink) ln -s "$outside" "$temporary" ;;
+        hardlink) ln "$outside" "$temporary" ;;
+        mode) printf 'preserve\n' > "$temporary"; chmod 640 "$temporary" ;;
+        type) mkdir -m 700 "$temporary" ;;
+        malformed) printf 'versions/hyg-v4.2-p3-s2-r1\n' > "$temporary"; chmod 600 "$temporary" ;;
+        unsafe-target) printf 'versions/missing\n-\n' > "$temporary"; chmod 600 "$temporary" ;;
+        ambiguous)
+            printf 'versions/hyg-v4.2-p3-s2-r1\nversions/hyg-v4.2-p3-s2-r14\n' > "$temporary"
+            printf 'versions/hyg-v4.2-p3-s2-r14\nversions/hyg-v4.2-p3-s2-r1\n' > "$INSTALL_ROOT/.pointer-transaction.tmp.124.457"
+            chmod 600 "$temporary" "$INSTALL_ROOT/.pointer-transaction.tmp.124.457"
+            ;;
+    esac
+    outside_before="$(stat -c '%d:%i:%u:%h:%a:%s' "$outside")|$(hyg_sha256 "$outside")"
+    if "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null 2>&1; then
+        printf 'production installer accepted hostile pointer temporary: %s\n' "$hostile_temporary" >&2
+        exit 1
+    fi
+    [[ -e "$temporary" || -L "$temporary" ]] || { printf 'hostile pointer temporary was removed: %s\n' "$hostile_temporary" >&2; exit 1; }
+    [[ "$(stat -c '%d:%i:%u:%h:%a:%s' "$outside")|$(hyg_sha256 "$outside")" == "$outside_before" ]] || {
+        printf 'production installer mutated external pointer temporary state: %s\n' "$hostile_temporary" >&2
+        exit 1
+    }
+    assert_current "$INSTALL_ROOT" 14
+    rm -rf -- "$temporary" "$INSTALL_ROOT/.pointer-transaction.tmp.124.457"
+    rm -f -- "$outside"
+done
 
 for hostile_transaction in symlink hardlink mode type malformed unsafe-target; do
     transaction="$INSTALL_ROOT/.pointer-transaction"

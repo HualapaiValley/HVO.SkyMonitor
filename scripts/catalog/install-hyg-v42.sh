@@ -16,7 +16,7 @@ Usage:
 USAGE
 }
 
-hyg_require_commands find flock id mv readlink realpath sha256sum sqlite3 stat sync wc
+hyg_require_commands cmp find flock id mv readlink realpath sha256sum sqlite3 stat sync wc
 hyg_check_sqlite_version
 
 INSTALL_STAGING=""
@@ -106,15 +106,35 @@ validate_pointer_target() {
 commit_pointer_state() {
     local current_target="$1"
     local previous_target="${2:--}"
-    local temporary="$INSTALL_ROOT/.pointer-transaction.tmp.$$.$RANDOM"
+    local temporary='' transaction_fd attempt
 
     validate_pointer_target "$current_target"
     if [[ "$previous_target" != "-" ]]; then
         validate_pointer_target "$previous_target"
     fi
-    printf '%s\n%s\n' "$current_target" "$previous_target" > "$temporary"
-    chmod 0600 "$temporary"
+    for attempt in {1..16}; do
+        temporary="$INSTALL_ROOT/.pointer-transaction.tmp.$$.$RANDOM"
+        if (set -o noclobber; umask 077; printf '%s\n%s\n' "$current_target" "$previous_target" > "$temporary") 2>/dev/null; then
+            break
+        fi
+        temporary=''
+    done
+    [[ -n "$temporary" ]] || hyg_fail "could not allocate an exclusive pointer transaction temporary"
+    [[ -f "$temporary" && ! -L "$temporary" &&
+       "$(stat -c '%u:%h:%a' -- "$temporary")" == "$(id -u):1:600" ]] ||
+        hyg_fail "pointer transaction temporary is unsafe"
+    exec {transaction_fd}<>"$temporary" || hyg_fail "pointer transaction temporary could not be pinned"
+    [[ "$(stat -Lc '%d:%i:%u:%h:%a' -- "$temporary")" == \
+       "$(stat -Lc '%d:%i:%u:%h:%a' -- "/proc/$BASHPID/fd/$transaction_fd")" ]] ||
+        hyg_fail "pointer transaction temporary changed while being pinned"
     sync -f "$temporary"
+    [[ "$(stat -Lc '%d:%i:%u:%h:%a' -- "$temporary")" == \
+       "$(stat -Lc '%d:%i:%u:%h:%a' -- "/proc/$BASHPID/fd/$transaction_fd")" ]] ||
+        hyg_fail "pointer transaction temporary changed before publication"
+    exec {transaction_fd}>&-
+    test_fail_at after-pointer-transaction-temp-fsync
+    [[ ! -e "$INSTALL_ROOT/.pointer-transaction" && ! -L "$INSTALL_ROOT/.pointer-transaction" ]] ||
+        hyg_fail "pointer transaction already exists"
     mv -Tf -- "$temporary" "$INSTALL_ROOT/.pointer-transaction"
     sync -f "$INSTALL_ROOT"
     test_fail_at after-transaction
@@ -133,6 +153,8 @@ commit_pointer_state() {
 }
 
 reconcile_pointer_transaction() {
+    hyg_production_reconcile_pointer_temporaries "$INSTALL_ROOT" ||
+        hyg_fail "pointer transaction temporary is unsafe, malformed, or ambiguous"
     hyg_production_reconcile_pointer_transaction "$INSTALL_ROOT" ||
         hyg_fail "pointer transaction is unsafe, malformed, or incompatible"
 }
