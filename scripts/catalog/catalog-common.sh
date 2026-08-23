@@ -354,6 +354,82 @@ hyg_resolve_legacy_catalog_identity() {
     esac
 }
 
+hyg_fixture_safe_mutable_directory() {
+    local path="$1"
+    local mode
+    [[ -d "$path" && ! -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
+    mode="$(stat -c %a -- "$path")"
+    (( (8#$mode & 0022) == 0 ))
+}
+
+hyg_fixture_validate_ancestor_chain() {
+    local path="$1"
+    local current=/ component owner mode
+    [[ "$path" == /* && "$path" != / ]] || return 1
+    IFS=/ read -r -a components <<< "${path#/}"
+    for component in "${components[@]}"; do
+        [[ -n "$component" ]] || continue
+        [[ "$current" == / ]] && current="/$component" || current="$current/$component"
+        [[ -e "$current" || -L "$current" ]] || break
+        [[ -d "$current" && ! -L "$current" ]] || return 1
+        owner="$(stat -c %u -- "$current")"
+        mode="$(stat -c %a -- "$current")"
+        [[ "$owner" == "$(id -u)" || "$owner" == 0 ]] || return 1
+        if (( (8#$mode & 0022) != 0 )); then
+            (( owner == 0 && (8#$mode & 01000) != 0 )) || return 1
+        fi
+    done
+}
+
+hyg_fixture_validate_pointer() {
+    local install_root="$1"
+    local pointer="$2"
+    local target mode
+    [[ -L "$pointer" && "$(stat -c %u -- "$pointer")" == "$(id -u)" ]] || return 1
+    target="$(readlink "$pointer")"
+    [[ "$target" =~ ^versions/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ &&
+       -d "$install_root/$target" && ! -L "$install_root/$target" &&
+       "$(stat -c %u -- "$install_root/$target")" == "$(id -u)" ]] || return 1
+    mode="$(stat -c %a -- "$install_root/$target")"
+    (( (8#$mode & 0022) == 0 ))
+}
+
+hyg_validate_fixture_payload() {
+    local install_root="$1"
+    local version="$2"
+    local destination="$install_root/versions/$version"
+    local path
+    local -a entries
+    [[ -d "$destination" && ! -L "$destination" &&
+       "$(stat -c '%u:%a' -- "$destination")" == "$(id -u):555" ]] || return 1
+    shopt -s nullglob dotglob
+    entries=("$destination"/*)
+    shopt -u nullglob dotglob
+    [[ ${#entries[@]} -eq 2 ]] || return 1
+    for path in "$destination/$HYG_MANIFEST_FILE" "$destination/$HYG_DATABASE_FILE"; do
+        [[ -f "$path" && ! -L "$path" &&
+           "$(stat -c '%u:%h:%a' -- "$path")" == "$(id -u):1:444" ]] || return 1
+    done
+}
+
+hyg_validate_fixture_installation() {
+    local install_root="$1"
+    local version="$2"
+    local install_parent current
+    install_parent="$(dirname -- "$install_root")"
+    [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
+       -d "$install_parent" && ! -L "$install_parent" ]] || return 1
+    hyg_fixture_validate_ancestor_chain "$install_parent" &&
+        hyg_fixture_safe_mutable_directory "$install_parent" &&
+        hyg_fixture_safe_mutable_directory "$install_root" &&
+        hyg_fixture_safe_mutable_directory "$install_root/versions" &&
+        hyg_fixture_validate_pointer "$install_root" "$install_root/current" || return 1
+    [[ ! -e "$install_root/.fixture-pointer-transaction" && ! -L "$install_root/.fixture-pointer-transaction" ]] || return 1
+    current="$(readlink "$install_root/current")"
+    [[ "$current" == "versions/$version" ]] || return 1
+    hyg_validate_fixture_payload "$install_root" "$version"
+}
+
 hyg_validate_catalog_contract() {
     local bundle="$1" expected_id="$2" expected_kind="$3" expected_version="$4"
     local expected_schema="$5" expected_preprocessing="$6" expected_sha="$7" expected_length="$8" expected_rows="$9"

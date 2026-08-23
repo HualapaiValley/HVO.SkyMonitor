@@ -488,36 +488,6 @@ else
   source_manifest_sha="$(sha256sum "$bundle/manifest.json" | cut -d' ' -f1)"
   transaction="$install_root/.fixture-pointer-transaction"
   fixture_fail_at() { [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" != "$1" ]] || exit 75; }
-  fixture_safe_mutable_directory() {
-    local path=$1 mode
-    [[ -d "$path" && ! -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
-    mode="$(stat -c %a -- "$path")"; (( (8#$mode & 0022) == 0 ))
-  }
-  fixture_validate_ancestor_chain() {
-    local path=$1 current=/ component owner mode
-    [[ "$path" == /* && "$path" != / ]] || return 1
-    IFS=/ read -r -a components <<< "${path#/}"
-    for component in "${components[@]}"; do
-      [[ -n "$component" ]] || continue
-      [[ "$current" == / ]] && current="/$component" || current="$current/$component"
-      [[ -e "$current" || -L "$current" ]] || break
-      [[ -d "$current" && ! -L "$current" ]] || return 1
-      owner="$(stat -c %u -- "$current")"; mode="$(stat -c %a -- "$current")"
-      [[ "$owner" == "$(id -u)" || "$owner" == 0 ]] || return 1
-      if (( (8#$mode & 0022) != 0 )); then
-        (( owner == 0 && (8#$mode & 01000) != 0 )) || return 1
-      fi
-    done
-  }
-  fixture_validate_pointer() {
-    local pointer=$1 target mode
-    [[ -L "$pointer" && "$(stat -c %u -- "$pointer")" == "$(id -u)" ]] || return 1
-    target="$(readlink "$pointer")"
-    [[ "$target" =~ ^versions/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ &&
-       -d "$install_root/$target" && ! -L "$install_root/$target" &&
-       "$(stat -c %u -- "$install_root/$target")" == "$(id -u)" ]] || return 1
-    mode="$(stat -c %a -- "$install_root/$target")"; (( (8#$mode & 0022) == 0 ))
-  }
   fixture_replace_current() {
     local target=$1 temporary attempt
     for attempt in {1..16}; do
@@ -542,24 +512,24 @@ else
   install_parent="$(dirname -- "$install_root")"
   [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
      -d "$install_parent" && ! -L "$install_parent" ]] || exit 97
-  fixture_validate_ancestor_chain "$install_parent" || exit 97
-  fixture_safe_mutable_directory "$install_parent" || exit 97
+  hyg_fixture_validate_ancestor_chain "$install_parent" || exit 97
+  hyg_fixture_safe_mutable_directory "$install_parent" || exit 97
   if [[ -e "$install_root" || -L "$install_root" ]]; then
-    fixture_safe_mutable_directory "$install_root" || exit 97
+    hyg_fixture_safe_mutable_directory "$install_root" || exit 97
   else
     mkdir -m 700 -- "$install_root"
-    fixture_safe_mutable_directory "$install_root" || exit 97
+    hyg_fixture_safe_mutable_directory "$install_root" || exit 97
     sync -f "$install_parent"
   fi
   if [[ -e "$install_root/versions" || -L "$install_root/versions" ]]; then
-    fixture_safe_mutable_directory "$install_root/versions" || exit 97
+    hyg_fixture_safe_mutable_directory "$install_root/versions" || exit 97
   else
     mkdir -m 700 -- "$install_root/versions"
-    fixture_safe_mutable_directory "$install_root/versions" || exit 97
+    hyg_fixture_safe_mutable_directory "$install_root/versions" || exit 97
     sync -f "$install_root"
   fi
   if [[ -e "$install_root/current" || -L "$install_root/current" ]]; then
-    fixture_validate_pointer "$install_root/current" || exit 97
+    hyg_fixture_validate_pointer "$install_root" "$install_root/current" || exit 97
   fi
   if [[ -e "$transaction" || -L "$transaction" ]]; then
     [[ -f "$transaction" && ! -L "$transaction" &&
@@ -575,12 +545,8 @@ else
     [[ -d "$destination" && ! -L "$destination" && -f "$existing" && ! -L "$existing" &&
        "$(sha256sum "$existing" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$existing")" == "$expected_length" ]] || exit 98
   fi
-  shopt -s nullglob dotglob; entries=("$destination"/*); shopt -u nullglob dotglob
-  [[ ${#entries[@]} -eq 2 && -f "$destination/manifest.json" && ! -L "$destination/manifest.json" &&
-     -f "$destination/hyg_v42.sqlite" && ! -L "$destination/hyg_v42.sqlite" &&
-     "$(sha256sum "$destination/manifest.json" | cut -d' ' -f1)" == "$source_manifest_sha" &&
-     "$(stat -c %a "$destination")" == 555 && "$(stat -c %a "$destination/manifest.json")" == 444 &&
-     "$(stat -c %a "$destination/hyg_v42.sqlite")" == 444 ]] || exit 98
+  hyg_validate_fixture_payload "$install_root" "$version" &&
+    [[ "$(sha256sum "$destination/manifest.json" | cut -d' ' -f1)" == "$source_manifest_sha" ]] || exit 98
   hyg_validate_catalog_contract "$destination" "$catalog_id" "$kind" "$version" "$schema_version" \
     "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 98
   sync -f "$destination/manifest.json"; sync -f "$destination/hyg_v42.sqlite"
@@ -595,6 +561,7 @@ else
   fixture_replace_current "versions/$version"
   fixture_fail_at after-current-pointer
   rm -f -- "$transaction"; sync -f "$install_root"
+  hyg_validate_fixture_installation "$install_root" "$version" || exit 98
 fi
 current="$(readlink "$install_root/current")"; installed="$install_root/$current/hyg_v42.sqlite"
 hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$version" "$schema_version" \
@@ -628,6 +595,9 @@ source "$stage/scripts/catalog/catalog-common.sh"
 current=$(readlink "$install_root/current")
 [[ "$current" == "versions/$expected_version" ]] || exit 91
 database="$install_root/$current/hyg_v42.sqlite"
+if [[ "$kind" == fixture ]]; then
+  hyg_validate_fixture_installation "$install_root" "$expected_version" || exit 92
+fi
 hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$expected_version" "$schema_version" \
   "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 92
 printf 'verified\t%s\t%s\n' "$current" "$expected_sha"

@@ -3042,6 +3042,59 @@ run_deploy_mode catalog "$deploy_case" isolated >/dev/null
 test "$(stat -c %a "$install_root/versions/fixture-v1")" = 555
 test "$(stat -c %a "$installed_catalog_manifest")" = 444
 test "$(stat -c %a "$installed_database")" = 444
+
+expect_fixture_resume_failure() {
+  local label="$1"
+  if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-resume-$label.log" 2>&1; then
+    fail "Catalog resume accepted fixture installation drift: $label"
+  fi
+}
+
+# Resume revalidates the complete fixture installation boundary before returning verified.
+resume_catalog_parent="$TEMP_DIR/catalog-resume-parent"
+mv "$catalog_parent" "$resume_catalog_parent"; ln -s "$resume_catalog_parent" "$catalog_parent"
+expect_fixture_resume_failure symlinked-ancestor
+rm "$catalog_parent"; mv "$resume_catalog_parent" "$catalog_parent"
+
+resume_versions="$TEMP_DIR/catalog-resume-versions"
+mv "$install_root/versions" "$resume_versions"; ln -s "$resume_versions" "$install_root/versions"
+expect_fixture_resume_failure symlinked-versions
+rm "$install_root/versions"; mv "$resume_versions" "$install_root/versions"
+
+for writable_fixture_path in "$install_root" "$install_root/versions" "$install_root/versions/fixture-v1"; do
+  original_mode="$(stat -c %a "$writable_fixture_path")"
+  chmod g+w "$writable_fixture_path"
+  expect_fixture_resume_failure "writable-$(basename "$writable_fixture_path")-$original_mode"
+  chmod "$original_mode" "$writable_fixture_path"
+done
+for writable_payload in "$installed_catalog_manifest" "$installed_database"; do
+  chmod 644 "$writable_payload"
+  expect_fixture_resume_failure "writable-$(basename "$writable_payload")"
+  chmod 444 "$writable_payload"
+done
+
+for hardlinked_payload in "$installed_catalog_manifest" "$installed_database"; do
+  payload_hardlink="$TEMP_DIR/$(basename "$hardlinked_payload").hardlink"
+  ln "$hardlinked_payload" "$payload_hardlink"
+  expect_fixture_resume_failure "hardlinked-$(basename "$hardlinked_payload")"
+  rm "$payload_hardlink"
+done
+
+chmod 755 "$install_root/versions/fixture-v1"
+printf 'unexpected\n' > "$install_root/versions/fixture-v1/unexpected"
+chmod 555 "$install_root/versions/fixture-v1"
+expect_fixture_resume_failure extra-payload
+chmod 755 "$install_root/versions/fixture-v1"; rm "$install_root/versions/fixture-v1/unexpected"; chmod 555 "$install_root/versions/fixture-v1"
+
+rm "$install_root/current"; printf 'hostile\n' > "$install_root/current"
+expect_fixture_resume_failure hostile-current
+rm "$install_root/current"; ln -s ../outside "$install_root/current"
+expect_fixture_resume_failure hostile-current-target
+rm "$install_root/current"; ln -s versions/fixture-v1 "$install_root/current"
+printf 'versions/fixture-v1\n' > "$install_root/.fixture-pointer-transaction"; chmod 600 "$install_root/.fixture-pointer-transaction"
+expect_fixture_resume_failure leftover-pointer-transaction
+rm "$install_root/.fixture-pointer-transaction"
+run_deploy_mode catalog "$deploy_case" isolated >/dev/null
 migrated_east_root="$(jq -r '.cameraAgents[0].runtimeRoot' "$INVENTORY")"
 jq -n --arg instance "$(jq -r '.cameraAgents[0].instanceId' "$INVENTORY")" \
   '{schemaVersion:1,product:"HVO.SkyMonitor",component:"cameraAgent",instanceId:$instance,creationProvenance:{migration:"singular-layout-v1"},applicationIdentityFile:"application-identity.json"}' \

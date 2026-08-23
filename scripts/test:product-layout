@@ -183,6 +183,12 @@ test "$(readlink "$migrated/catalogs/hyg-v42-production/current")" = versions/v1
 jq -e --arg instance "$instance" '.schemaVersion == 2 and .status == "copied-and-verified" and .legacyRetained == true and .instanceId == $instance' "$evidence" >/dev/null
 jq -e --arg instance "$instance" '.component == "cameraAgent" and .instanceId == $instance and .applicationIdentityFile == "application-identity.json" and (has("applicationIdentity") | not)' "$migrated/cameraagents/$instance/instance-manifest.json" >/dev/null
 jq -e '.state == "pre-provisioning" and .configuredIdentity == "agent-legacy" and .boundIdentity == null' "$migrated/cameraagents/$instance/application-identity.json" >/dev/null
+cp "$evidence" "$evidence.valid"; jq '.unexpected=true' "$evidence.valid" > "$evidence"; chmod 600 "$evidence"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
+mv "$evidence.valid" "$evidence"; chmod 600 "$evidence"
+mv "$legacy/config/cameraagent" "$TEMP_DIR/copied-config.valid"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
+mv "$TEMP_DIR/copied-config.valid" "$legacy/config/cameraagent"
 # Rollback prevalidates every candidate root before deleting any sibling.
 printf 'unknown\n' > "$migrated/cameraagents/$instance/unknown"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null 2>&1; then exit 98; fi
@@ -210,17 +216,60 @@ if DEPLOY_MIGRATION_FAILPOINT=after-partial-delete-state "$REPO_ROOT/scripts/dep
 jq -e '.status == "finalized-removal-pending" and .legacyRetained == false' "$evidence" >/dev/null
 test -d "$legacy/data/agent.hvo-migration-$instance"
 test "$(find "$legacy/data/agent.hvo-migration-$instance" -type f | wc -l)" -lt 2
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
+mkdir "$legacy/config/cameraagent"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
+rmdir "$legacy/config/cameraagent"
+cp "$evidence" "$evidence.valid"; jq '.cutoverEvidenceSha256="invalid"' "$evidence.valid" > "$evidence"; chmod 600 "$evidence"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
+mv "$evidence.valid" "$evidence"; chmod 600 "$evidence"
 cp "$cutover" "$cutover.valid"
 jq '.captureSequenceAfter=44' "$cutover.valid" > "$cutover"; chmod 600 "$cutover"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 104; fi
 mv "$cutover.valid" "$cutover"; chmod 600 "$cutover"
 printf 'unknown\n' > "$legacy/data/agent.hvo-migration-$instance/unknown"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 95; fi
 rm "$legacy/data/agent.hvo-migration-$instance/unknown"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover"
 test ! -e "$legacy/config/cameraagent"; test ! -e "$legacy/data/agent"; test ! -e "$legacy/data/catalog"
 jq -e '.status == "finalized" and .legacyRetained == false' "$evidence" >/dev/null
 test "$(<"$legacy/data/sibling")" = sibling-preserved
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
+mkdir "$legacy/config/cameraagent"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
+rmdir "$legacy/config/cameraagent"
+mkdir "$legacy/config/cameraagent.hvo-migration-$instance"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
+rmdir "$legacy/config/cameraagent.hvo-migration-$instance"
+cp "$evidence" "$evidence.valid"; jq '.tombstonesRemoved=false' "$evidence.valid" > "$evidence"; chmod 600 "$evidence"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then exit 106; fi
+mv "$evidence.valid" "$evidence"; chmod 600 "$evidence"
+final_instance="$migrated/cameraagents/$instance"; final_catalog="$migrated/catalogs/hyg-v42-production"
+cp -a "$final_instance" "$TEMP_DIR/final-instance.valid"
+cp -a "$final_catalog" "$TEMP_DIR/final-catalog.valid"
+restore_finalized_destinations() {
+  chmod -R u+w "$final_instance" "$final_catalog" 2>/dev/null || true
+  rm -rf -- "$final_instance" "$final_catalog"
+  cp -a "$TEMP_DIR/final-instance.valid" "$final_instance"
+  cp -a "$TEMP_DIR/final-catalog.valid" "$final_catalog"
+}
+for finalized_drift in missing-instance missing-config corrupt-state corrupt-manifest corrupt-binding missing-catalog corrupt-catalog; do
+  case "$finalized_drift" in
+    missing-instance) chmod -R u+w "$final_instance"; rm -rf "$final_instance" ;;
+    missing-config) chmod -R u+w "$final_instance/config"; rm -rf "$final_instance/config" ;;
+    corrupt-state) printf 'corrupt\n' >> "$final_instance/state/capture-sequence" ;;
+    corrupt-manifest) jq '.instanceId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"' "$final_instance/instance-manifest.json" > "$final_instance/instance-manifest.json.changed"; mv "$final_instance/instance-manifest.json.changed" "$final_instance/instance-manifest.json"; chmod 600 "$final_instance/instance-manifest.json" ;;
+    corrupt-binding) jq '.configuredIdentity="corrupt"' "$final_instance/application-identity.json" > "$final_instance/application-identity.json.changed"; mv "$final_instance/application-identity.json.changed" "$final_instance/application-identity.json"; chmod 600 "$final_instance/application-identity.json" ;;
+    missing-catalog) chmod -R u+w "$final_catalog"; rm -rf "$final_catalog" ;;
+    corrupt-catalog) chmod u+w "$final_catalog/versions/v1/catalog.sqlite"; printf 'corrupt\n' >> "$final_catalog/versions/v1/catalog.sqlite" ;;
+  esac
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then
+    printf 'Finalized migration verify accepted destination drift: %s\n' "$finalized_drift" >&2; exit 106
+  fi
+  restore_finalized_destinations
+done
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
 cp "$cutover" "$cutover.valid"
 jq '.captureSequenceAfter=45' "$cutover.valid" > "$cutover"; chmod 600 "$cutover"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 105; fi
