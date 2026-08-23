@@ -79,7 +79,7 @@ is_deployment_path() {
     scripts/deploy:environment | scripts/deploy:migrate-product-layout | scripts/deploy/*)
       return 0
       ;;
-    scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:product-layout)
+    scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:product-layout | scripts/test:phase14-campaign | scripts/test:phase14-normal-campaign)
       return 0
       ;;
     scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
