@@ -369,8 +369,12 @@ readonly REAL_GREP
 REAL_GIT="$(command -v git)"
 readonly REAL_GIT
 SERVER_PID=""
+FIXTURE_REPLACEMENT_PID=""
+FIXTURE_REPLACEMENT_STOPPED_PID=""
 
 cleanup() {
+    [[ -z "$FIXTURE_REPLACEMENT_STOPPED_PID" ]] || kill -CONT "$FIXTURE_REPLACEMENT_STOPPED_PID" 2>/dev/null || true
+    [[ -z "$FIXTURE_REPLACEMENT_PID" ]] || kill "$FIXTURE_REPLACEMENT_PID" 2>/dev/null || true
     if [[ -n "$SERVER_PID" ]]; then
         local cleanup_poll ignored state ignored_rest
         kill "$SERVER_PID" 2>/dev/null || true
@@ -3189,6 +3193,52 @@ run_fixture_transport_install() {
       "$package_version" 2 3 "$expected_sha" "$expected_length" "$expected_rows" > "$output"
   )
 }
+
+# Fixture publication fails before candidate rename when the shared lock pathname stops naming the held descriptor.
+replacement_fixture_root="$TEMP_DIR/remote/replaced-fixture-lock"
+replacement_fixture_stage="$TEMP_DIR/replaced-fixture-stage"
+replacement_fixture_marker="$TEMP_DIR/replaced-fixture-lock.marker"
+make_fixture_transport_stage "$replacement_fixture_stage" fixture-replaced
+HVO_CATALOG_TEST_LOCK_BARRIER=fixture-candidate-publication HVO_CATALOG_TEST_LOCK_MARKER="$replacement_fixture_marker" \
+  run_fixture_transport_install "$replacement_fixture_stage" "$replacement_fixture_root" fixture-replaced \
+  "$TEMP_DIR/replaced-fixture.out" &
+FIXTURE_REPLACEMENT_PID=$!
+while [[ ! -e "$replacement_fixture_marker" ]]; do sleep 0.01; kill -0 "$FIXTURE_REPLACEMENT_PID"; done
+FIXTURE_REPLACEMENT_STOPPED_PID="$(<"$replacement_fixture_marker")"
+mv -T -- "$replacement_fixture_root/.catalog.lock" "$replacement_fixture_root/.catalog.lock.original"
+: > "$replacement_fixture_root/.catalog.lock"; chmod 600 "$replacement_fixture_root/.catalog.lock"
+kill -CONT "$FIXTURE_REPLACEMENT_STOPPED_PID"
+if wait "$FIXTURE_REPLACEMENT_PID"; then
+  fail 'Fixture publisher accepted a replaced shared catalog lock.'
+fi
+FIXTURE_REPLACEMENT_PID=""; FIXTURE_REPLACEMENT_STOPPED_PID=""
+test ! -e "$replacement_fixture_root/versions/fixture-replaced"
+test -d "$replacement_fixture_root/versions/.fixture-candidate-fixture-replaced.stage"
+test -f "$replacement_fixture_root/.fixture-candidate-transaction"
+rm -f -- "$replacement_fixture_root/.catalog.lock"
+mv -T -- "$replacement_fixture_root/.catalog.lock.original" "$replacement_fixture_root/.catalog.lock"
+replacement_fixture_cleanup_marker="$TEMP_DIR/replaced-fixture-cleanup.marker"
+HVO_CATALOG_TEST_LOCK_BARRIER=fixture-candidate-cleanup HVO_CATALOG_TEST_LOCK_MARKER="$replacement_fixture_cleanup_marker" \
+  run_fixture_transport_install "$replacement_fixture_stage" "$replacement_fixture_root" fixture-replaced \
+  "$TEMP_DIR/replaced-fixture-cleanup.out" &
+FIXTURE_REPLACEMENT_PID=$!
+while [[ ! -e "$replacement_fixture_cleanup_marker" ]]; do sleep 0.01; kill -0 "$FIXTURE_REPLACEMENT_PID"; done
+FIXTURE_REPLACEMENT_STOPPED_PID="$(<"$replacement_fixture_cleanup_marker")"
+mv -T -- "$replacement_fixture_root/.catalog.lock" "$replacement_fixture_root/.catalog.lock.original"
+: > "$replacement_fixture_root/.catalog.lock"; chmod 600 "$replacement_fixture_root/.catalog.lock"
+kill -CONT "$FIXTURE_REPLACEMENT_STOPPED_PID"
+if wait "$FIXTURE_REPLACEMENT_PID"; then
+  fail 'Conditional fixture candidate cleanup accepted a replaced shared catalog lock.'
+fi
+FIXTURE_REPLACEMENT_PID=""; FIXTURE_REPLACEMENT_STOPPED_PID=""
+test -d "$replacement_fixture_root/versions/.fixture-candidate-fixture-replaced.stage"
+test -f "$replacement_fixture_root/.fixture-candidate-transaction"
+rm -f -- "$replacement_fixture_root/.catalog.lock"
+mv -T -- "$replacement_fixture_root/.catalog.lock.original" "$replacement_fixture_root/.catalog.lock"
+run_fixture_transport_install "$replacement_fixture_stage" "$replacement_fixture_root" fixture-replaced \
+  "$TEMP_DIR/replaced-fixture-recovered.out"
+test "$(readlink "$replacement_fixture_root/current")" = versions/fixture-replaced
+test ! -e "$replacement_fixture_root/.fixture-candidate-transaction"
 
 wait_for_fixture_lock() {
   local lock_path="$1" process_id="$2" attempt

@@ -388,6 +388,27 @@ hyg_catalog_safe_mutable_directory() {
     (( (8#$mode & 0022) == 0 ))
 }
 
+HYG_CATALOG_ROOT_LOCK_FD=''
+HYG_CATALOG_ROOT_LOCK_ROOT=''
+HYG_CATALOG_ROOT_LOCK_IDENTITY=''
+
+hyg_catalog_revalidate_root_lock() {
+    local install_root="${1:-$HYG_CATALOG_ROOT_LOCK_ROOT}"
+    local label="${2:-}"
+    local lock_path="$install_root/.catalog.lock"
+    if [[ -n "$label" && "${HVO_CATALOG_TEST_LOCK_BARRIER:-}" == "$label" ]]; then
+        [[ -n "${HVO_CATALOG_TEST_LOCK_MARKER:-}" ]] || return 1
+        printf '%s\n' "$BASHPID" > "$HVO_CATALOG_TEST_LOCK_MARKER"
+        kill -STOP "$BASHPID"
+    fi
+    [[ -n "$install_root" && "$install_root" == "$HYG_CATALOG_ROOT_LOCK_ROOT" &&
+       -n "$HYG_CATALOG_ROOT_LOCK_FD" && -n "$HYG_CATALOG_ROOT_LOCK_IDENTITY" &&
+       -f "$lock_path" && ! -L "$lock_path" &&
+       "$(stat -Lc '%d:%i:%u:%g:%h:%a' -- "$lock_path")" == "$HYG_CATALOG_ROOT_LOCK_IDENTITY" &&
+       "$(stat -Lc '%d:%i:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$HYG_CATALOG_ROOT_LOCK_FD")" == \
+         "$HYG_CATALOG_ROOT_LOCK_IDENTITY" ]]
+}
+
 hyg_catalog_acquire_root_lock() {
     local install_root="$1"
     local lock_path="$install_root/.catalog.lock"
@@ -399,6 +420,11 @@ hyg_catalog_acquire_root_lock() {
     hyg_catalog_validate_ancestor_chain "$install_parent" &&
         hyg_catalog_safe_mutable_directory "$install_parent" &&
         hyg_catalog_safe_mutable_directory "$install_root" || return 1
+    if [[ -n "$HYG_CATALOG_ROOT_LOCK_FD" ]]; then
+        [[ "$install_root" == "$HYG_CATALOG_ROOT_LOCK_ROOT" ]] || return 1
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
+        return 0
+    fi
     if [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
         (set -o noclobber; umask 077; : > "$lock_path") 2>/dev/null || true
     fi
@@ -407,13 +433,21 @@ hyg_catalog_acquire_root_lock() {
        "$(stat -c '%h:%a' -- "$lock_path")" == "1:600" ]] || return 1
     exec {HYG_CATALOG_ROOT_LOCK_FD}<>"$lock_path" || return 1
     flock -x "$HYG_CATALOG_ROOT_LOCK_FD" || return 1
-    [[ -f "$lock_path" && ! -L "$lock_path" &&
-       "$(stat -c %u -- "$lock_path")" == "$(id -u)" &&
-       "$(stat -c '%h:%a' -- "$lock_path")" == "1:600" &&
-       "$(stat -Lc '%d:%i' -- "$lock_path")" == "$(stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/$HYG_CATALOG_ROOT_LOCK_FD")" ]] || return 1
+    if [[ ! -f "$lock_path" || -L "$lock_path" ||
+          "$(stat -c %u -- "$lock_path")" != "$(id -u)" ||
+          "$(stat -c '%h:%a' -- "$lock_path")" != "1:600" ||
+          "$(stat -Lc '%d:%i' -- "$lock_path")" != "$(stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/$HYG_CATALOG_ROOT_LOCK_FD")" ]]; then
+        exec {HYG_CATALOG_ROOT_LOCK_FD}>&-
+        HYG_CATALOG_ROOT_LOCK_FD=''
+        return 1
+    fi
+    HYG_CATALOG_ROOT_LOCK_ROOT="$install_root"
+    HYG_CATALOG_ROOT_LOCK_IDENTITY="$(stat -Lc '%d:%i:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$HYG_CATALOG_ROOT_LOCK_FD")"
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
     if [[ -n "$hold_seconds" ]]; then
         [[ "${HVO_CATALOG_TEST_MODE:-}" == true && "$hold_seconds" =~ ^[1-9]$ ]] || return 1
         sleep "$hold_seconds"
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
     fi
 }
 
@@ -428,7 +462,9 @@ hyg_catalog_reconcile_lineage_temporaries() {
         [[ "$name" =~ ^[.]catalog-lineage[.]tmp[.][1-9][0-9]*[.][0-9]{1,5}$ &&
            -f "$path" && ! -L "$path" &&
            "$(stat -c '%u:%h:%a' -- "$path")" == "$(id -u):1:600" ]] || return 1
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         rm -f -- "$path"
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         removed=true
     done
     [[ "$removed" == false ]] || sync -f "$install_root"
@@ -448,7 +484,9 @@ hyg_fixture_reconcile_transaction_temporaries() {
         [[ "$name" =~ ^[.]fixture-(candidate|pointer)-transaction[.]tmp[.][1-9][0-9]*[.][0-9]{1,5}$ &&
            -f "$path" && ! -L "$path" &&
            "$(stat -c '%u:%h:%a' -- "$path")" == "$(id -u):1:600" ]] || return 1
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         rm -f -- "$path"
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         removed=true
     done
     [[ "$removed" == false ]] || sync -f "$install_root"
@@ -471,7 +509,9 @@ hyg_fixture_reconcile_pointer_temporaries() {
         target="$(readlink "$path")"
         [[ "$target" =~ ^versions/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
         hyg_fixture_validate_pointer "$install_root" "$path" || return 1
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         rm -f -- "$path"
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         removed=true
     done
     [[ "$removed" == false ]] || sync -f "$install_root"
@@ -514,6 +554,7 @@ hyg_fixture_replace_pointer() {
     local pointer="$2"
     local target="$3"
     local temporary attempt
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
     for attempt in {1..16}; do
         temporary="$install_root/.${pointer}.tmp.$$.$RANDOM"
         if ln -s -- "$target" "$temporary" 2>/dev/null; then
@@ -526,8 +567,10 @@ hyg_fixture_replace_pointer() {
         temporary=
     done
     [[ -n "$temporary" ]] || return 1
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
     mv -Tf -- "$temporary" "$install_root/$pointer"
     sync -f "$install_root"
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
 }
 
 hyg_fixture_reconcile_pointer_transaction() {
@@ -547,8 +590,10 @@ hyg_fixture_reconcile_pointer_transaction() {
     hyg_catalog_validate_installed_target "$install_root" "$target" "$catalog_id" fixture "$manifest_sha" || return 1
     if [[ "$previous_target" == - ]]; then
         [[ "$previous_manifest_sha" == - ]] || return 1
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         rm -f -- "$install_root/previous"
         sync -f "$install_root"
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
     else
         [[ "$previous_target" =~ ^versions/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ &&
            "$previous_manifest_sha" =~ ^[0-9a-f]{64}$ && "$previous_target" != "$target" ]] || return 1
@@ -565,8 +610,10 @@ hyg_fixture_reconcile_pointer_transaction() {
         exec {HYG_CATALOG_ROOT_LOCK_FD}>&-
         exit 75
     fi
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
     rm -f -- "$transaction"
     sync -f "$install_root"
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
 }
 
 hyg_catalog_validate_installed_target() {
@@ -602,6 +649,7 @@ hyg_production_validate_pointer_target() {
 hyg_production_replace_pointer() {
     local install_root="$1" pointer="$2" target="$3"
     local temporary
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
     for _ in {1..16}; do
         temporary="$install_root/.${pointer}.tmp.$$.$RANDOM"
         if ln -s -- "$target" "$temporary" 2>/dev/null; then
@@ -610,11 +658,13 @@ hyg_production_replace_pointer() {
         temporary=
     done
     [[ -n "$temporary" ]] || return 1
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
     if ! mv -Tf -- "$temporary" "$install_root/$pointer"; then
         rm -f -- "$temporary"
         return 1
     fi
     sync -f "$install_root"
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
 }
 
 hyg_production_reconcile_pointer_temporaries() {
@@ -649,15 +699,24 @@ hyg_production_reconcile_pointer_temporaries() {
            "$(stat -c '%u:%h:%a' -- "$transaction")" == "$(id -u):1:600" ]] &&
             cmp -s -- "$selected" "$transaction" || return 1
     else
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         mv -T -- "$selected" "$transaction"
         sync -f "$install_root"
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         selected=''
     fi
     for path in "${temporaries[@]}"; do
-        [[ "$path" == "$selected" ]] || { rm -f -- "$path"; removed=true; }
+        if [[ "$path" != "$selected" ]]; then
+            hyg_catalog_revalidate_root_lock "$install_root" || return 1
+            rm -f -- "$path"
+            hyg_catalog_revalidate_root_lock "$install_root" || return 1
+            removed=true
+        fi
     done
     if [[ -n "$selected" ]]; then
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         rm -f -- "$selected"
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         removed=true
     fi
     [[ "$removed" == false ]] || sync -f "$install_root"
@@ -680,14 +739,18 @@ hyg_production_reconcile_pointer_transaction() {
         hyg_production_validate_pointer_target "$install_root" "$previous_target" || return 1
         hyg_production_replace_pointer "$install_root" previous "$previous_target" || return 1
     else
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
         rm -f -- "$install_root/previous"
         sync -f "$install_root"
+        hyg_catalog_revalidate_root_lock "$install_root" || return 1
     fi
     if declare -F test_fail_at >/dev/null; then test_fail_at after-previous-pointer; fi
     hyg_production_replace_pointer "$install_root" current "$current_target" || return 1
     if declare -F test_fail_at >/dev/null; then test_fail_at after-current-pointer; fi
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
     rm -f -- "$transaction"
     sync -f "$install_root"
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
     [[ ! -e "$transaction" && ! -L "$transaction" ]]
 }
 
@@ -732,12 +795,15 @@ hyg_catalog_require_lineage() {
         [[ ${#versions[@]} -eq 0 ]] || return 1
     fi
 
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
     temporary="$install_root/.catalog-lineage.tmp.$$.$RANDOM"
     (set -o noclobber; umask 077; printf '{"schemaVersion":1,"catalogId":"%s","packageKind":"%s","packageLineage":"%s"}\n' \
         "$expected_id" "$expected_kind" "$lineage" > "$temporary") || return 1
     sync -f "$temporary"
+    hyg_catalog_revalidate_root_lock "$install_root" lineage-publication || return 1
     mv -T -- "$temporary" "$binding"
     sync -f "$install_root"
+    hyg_catalog_revalidate_root_lock "$install_root" || return 1
 }
 
 hyg_validate_fixture_payload() {

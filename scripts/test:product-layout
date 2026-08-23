@@ -13,6 +13,8 @@ cleanup() {
   [[ -z "${destination_publisher_pid:-}" ]] || kill "$destination_publisher_pid" 2>/dev/null || true
   [[ -z "${stage_migration_pid:-}" ]] || kill "$stage_migration_pid" 2>/dev/null || true
   [[ -z "${rollback_migration_pid:-}" ]] || kill "$rollback_migration_pid" 2>/dev/null || true
+  [[ -z "${migration_replacement_pid:-}" ]] || kill -CONT "$migration_replacement_pid" 2>/dev/null || true
+  [[ -z "${migration_replacement_pid:-}" ]] || kill "$migration_replacement_pid" 2>/dev/null || true
   chmod -R u+w "$TEMP_DIR" 2>/dev/null || true
   rm -rf "$TEMP_DIR"
 }
@@ -156,6 +158,73 @@ create_v2_fixture_catalog "$legacy/data/catalog" hyg-v42-production fixture-v1
 printf 'sibling-preserved\n' > "$legacy/data/sibling"
 instance=44444444-4444-4444-8444-444444444444
 args=(--legacy-root "$legacy" --product-root "$migrated" --instance-id "$instance" --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$evidence")
+# Every durable action transition revalidates the top-level migration lock and remains recoverable after replacement.
+for replacement_case in apply-evidence verify-complete rollback-deletion rollback-destructive rollback-cleanup \
+  finalize-intent finalize-pending finalize-final; do
+  case "$replacement_case" in
+    apply-evidence) replacement_action=apply; action_barrier=apply-evidence-publication ;;
+    verify-complete) replacement_action=verify; action_barrier=verify-complete ;;
+    rollback-deletion) replacement_action=rollback; action_barrier=rollback-deletion-intent-publication ;;
+    rollback-destructive) replacement_action=rollback; action_barrier=migration-destructive-entry ;;
+    rollback-cleanup) replacement_action=rollback; action_barrier=rollback-cleanup-intent-publication ;;
+    finalize-intent) replacement_action=finalize; action_barrier=finalize-intent-publication ;;
+    finalize-pending) replacement_action=finalize; action_barrier=finalize-pending-evidence-publication ;;
+    finalize-final) replacement_action=finalize; action_barrier=finalize-final-evidence-publication ;;
+  esac
+  action_legacy="$TEMP_DIR/action-lock-$replacement_case-legacy"
+  action_product="$TEMP_DIR/action-lock-$replacement_case-product"
+  action_evidence="$TEMP_DIR/action-lock-$replacement_case.json"
+  mkdir -m 700 "$action_legacy"
+  cp -a "$legacy/config" "$legacy/data" "$action_legacy/"
+  action_args=(--legacy-root "$action_legacy" --product-root "$action_product" --instance-id "$instance" \
+    --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$action_evidence")
+  if [[ "$replacement_action" != apply ]]; then
+    "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${action_args[@]}" >/dev/null
+  fi
+  action_cutover=()
+  if [[ "$replacement_action" == finalize ]]; then
+    printf '43\n' > "$action_product/cameraagents/$instance/state/capture-sequence"
+    action_cutover_path="$TEMP_DIR/action-lock-finalize-cutover.json"
+    jq -n --arg instance "$instance" '{schemaVersion:1,instanceId:$instance,applicationIdentity:"agent-legacy",imageIdentityVerified:true,
+      healthVerified:true,loginVerified:true,provisioningVerified:true,dataProtectionVerified:true,locationHistoryVerified:true,
+      artifactChecksumsVerified:true,rollbackRehearsed:true,captureSequenceBefore:42,captureSequenceAfter:43}' > "$action_cutover_path"
+    chmod 600 "$action_cutover_path"
+    action_cutover=(--cutover-evidence "$action_cutover_path")
+  fi
+  if [[ "$replacement_case" == rollback-cleanup ]]; then
+    if DEPLOY_MIGRATION_FAILPOINT=after-delete-rollback-instance-config \
+      "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${action_args[@]}" >/dev/null 2>&1; then exit 147; fi
+  elif [[ "$replacement_case" == finalize-final ]]; then
+    if DEPLOY_MIGRATION_FAILPOINT=after-finalized-evidence \
+      "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${action_args[@]}" "${action_cutover[@]}" >/dev/null 2>&1; then exit 148; fi
+  fi
+  action_marker="$TEMP_DIR/action-lock-$replacement_case.marker"
+  DEPLOY_MIGRATION_TEST_LOCK_BARRIER="$action_barrier" DEPLOY_MIGRATION_TEST_LOCK_MARKER="$action_marker" \
+    "$REPO_ROOT/scripts/deploy:migrate-product-layout" "$replacement_action" "${action_args[@]}" "${action_cutover[@]}" \
+    >/dev/null 2>&1 &
+  migration_replacement_pid=$!
+  wait_for_process_marker "$migration_replacement_pid" "$action_marker"
+  action_stopped_pid="$(<"$action_marker")"
+  action_lock="${action_product}.migration.lock"
+  mv -T -- "$action_lock" "$action_lock.original"
+  : > "$action_lock"; chmod 600 "$action_lock"
+  kill -CONT "$action_stopped_pid"
+  if wait "$migration_replacement_pid"; then
+    printf 'Migration transition accepted a replaced top-level lock: %s\n' "$replacement_case" >&2
+    exit 146
+  fi
+  migration_replacement_pid=
+  rm -f -- "$action_lock"; mv -T -- "$action_lock.original" "$action_lock"
+  case "$replacement_case" in
+    apply-evidence) test ! -e "$action_evidence"; test -e "$action_product/cameraagents/$instance" ;;
+    verify-complete|rollback-deletion|rollback-destructive) test -e "$action_evidence"; test -e "$action_product/cameraagents/$instance" ;;
+    rollback-cleanup) test -e "$action_evidence.rollback-intent.json"; test ! -e "$action_product/cameraagents/$instance" ;;
+    finalize-intent) test -d "$action_legacy/config/cameraagent"; test -d "$action_legacy/data/agent" ;;
+    finalize-pending) test -d "$action_legacy/config/cameraagent.hvo-migration-$instance"; test -d "$action_legacy/data/agent.hvo-migration-$instance" ;;
+    finalize-final) jq -e '.status == "finalized-removal-pending"' "$action_evidence" >/dev/null ;;
+  esac
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" "$replacement_action" "${action_args[@]}" "${action_cutover[@]}" >/dev/null
+done
 # Legacy control files are authenticated independently from payload equivalence and remain untouched.
 for legacy_control_case in lock-only lock-and-lineage; do
   control_legacy="$TEMP_DIR/control-$legacy_control_case-legacy"

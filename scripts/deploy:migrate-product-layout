@@ -116,8 +116,8 @@ capture_tree() {
   local root="$1" output="$2" temporary parent
   parent="$(dirname -- "$output")"; ensure_private_directory "$parent" || return 1
   temporary="$(mktemp "${output}.tmp.XXXXXX")"; chmod 600 "$temporary"
-  snapshot_tree "$root" "$temporary" && sync -f "$temporary" && mv -T -- "$temporary" "$output" &&
-    sync -f "$parent"
+  snapshot_tree "$root" "$temporary" && sync -f "$temporary" && migration_lock_barrier &&
+    mv -T -- "$temporary" "$output" && sync -f "$parent" && migration_lock_barrier
 }
 revalidate_tree() { local root="$1" expected="$2" actual; actual="$(mktemp)"; snapshot_tree "$root" "$actual" && cmp -s "$expected" "$actual"; local status=$?; rm -f -- "$actual"; return "$status"; }
 verify_copy() { local source="$1" destination="$2" a b; a="$(mktemp)"; b="$(mktemp)"; snapshot_tree "$source" "$a" && snapshot_tree "$destination" "$b" && content_tree "$a" > "$a.content" && content_tree "$b" > "$b.content" && cmp -s "$a.content" "$b.content"; local status=$?; rm -f -- "$a" "$b" "$a.content" "$b.content"; return "$status"; }
@@ -227,21 +227,31 @@ delete_instance_tree() {
   for path in "$root/instance-manifest.json" "$root/application-identity.json"; do
     [[ ! -e "$path" && ! -L "$path" ]] || delete_validated_entry "$root" "$path"
   done
-  rmdir -- "$root"
+  migration_lock_barrier || return 1
+  rmdir -- "$root" || return 1
+  migration_lock_barrier || return 1
 }
 partial_delete_one() {
   local root="$1" victim
   victim="$(find -P "$root" -xdev -depth -mindepth 1 ! -type d -print -quit)"; [[ -n "$victim" ]] || return 1
-  [[ "$victim" == "$root"/* && ! -d "$victim" ]] || return 1; rm -f -- "$victim"; sync -f "$root"
+  [[ "$victim" == "$root"/* && ! -d "$victim" ]] || return 1
+  migration_lock_barrier && rm -f -- "$victim" && sync -f "$root" && migration_lock_barrier
 }
 delete_validated_entry() {
   local root="$1" victim="$2" parent mode status
   parent="$(dirname -- "$victim")"
   [[ "$parent" == "$root" || "$parent" == "$root"/* ]] || return 1
   [[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%d' -- "$parent")" == "$(id -u):$(stat -c %d -- "$root")" ]] || return 1
-  mode="$(stat -c %a -- "$parent")"; chmod u+w -- "$parent"
+  mode="$(stat -c %a -- "$parent")"
+  migration_lock_barrier || return 1
+  chmod u+w -- "$parent" || return 1
+  migration_lock_barrier migration-destructive-entry || return 1
   if [[ -d "$victim" && ! -L "$victim" ]]; then rmdir -- "$victim"; else rm -f -- "$victim"; fi
-  status=$?; chmod "$mode" -- "$parent" || return 1; return "$status"
+  status=$?
+  migration_lock_barrier || return 1
+  chmod "$mode" -- "$parent" || return 1
+  migration_lock_barrier || return 1
+  return "$status"
 }
 delete_snapshot_subset() {
   local root="$1" expected="$2" victim
@@ -252,7 +262,7 @@ delete_snapshot_subset() {
     [[ "$victim" == "$root"/* ]] || return 1
     delete_validated_entry "$root" "$victim" || return 1
   done
-  validate_snapshot_subset "$root" "$expected" && rmdir -- "$root"
+  validate_snapshot_subset "$root" "$expected" && migration_lock_barrier && rmdir -- "$root" && migration_lock_barrier
 }
 delete_copy_subset() {
   local root="$1" expected="$2" victim
@@ -263,7 +273,7 @@ delete_copy_subset() {
     [[ "$victim" == "$root"/* ]] || return 1
     delete_validated_entry "$root" "$victim" || return 1
   done
-  validate_copy_subset "$root" "$expected" && rmdir -- "$root"
+  validate_copy_subset "$root" "$expected" && migration_lock_barrier && rmdir -- "$root" && migration_lock_barrier
 }
 delete_catalog_copy_subset() {
   local root="$1" expected="$2" victim lock_path="$1/.catalog.lock"
@@ -275,14 +285,32 @@ delete_catalog_copy_subset() {
     delete_validated_entry "$root" "$victim" || return 1
   done
   validate_catalog_copy_subset "$root" "$expected" && revalidate_staged_catalog_lock &&
-    delete_validated_entry "$root" "$lock_path" && rmdir -- "$root"
+    delete_validated_entry "$root" "$lock_path" && migration_lock_barrier && rmdir -- "$root" && migration_lock_barrier
 }
 publish_json() {
-  local path="$1" json="$2" temporary parent
+  local path="$1" json="$2" temporary parent barrier_label=''
   parent="$(dirname -- "$path")"; ensure_private_directory "$parent" || return 1
   temporary="$(mktemp "${path}.tmp.XXXXXX")"; chmod 600 "$temporary"
   printf '%s\n' "$json" > "$temporary"; sync -f "$temporary"
+  case "$path" in
+    "$evidence")
+      case "$(jq -r '.status // empty' <<< "$json")" in
+        copied-and-verified) barrier_label=apply-evidence-publication ;;
+        finalized-removal-pending) barrier_label=finalize-pending-evidence-publication ;;
+        finalized) barrier_label=finalize-final-evidence-publication ;;
+      esac
+      ;;
+    "$rollback_intent")
+      case "$(jq -r '.state // empty' <<< "$json")" in
+        deletion-pending) barrier_label=rollback-deletion-intent-publication ;;
+        cleanup-pending) barrier_label=rollback-cleanup-intent-publication ;;
+      esac
+      ;;
+    "$intent") barrier_label=finalize-intent-publication ;;
+  esac
+  migration_lock_barrier "$barrier_label" || return 1
   mv -Tf -- "$temporary" "$path"; sync -f "$parent"
+  migration_lock_barrier || return 1
 }
 pin_cutover_evidence() {
   local source="$1" output="$2" source_fd source_identity fd_identity temporary parent status
@@ -309,7 +337,9 @@ pin_cutover_evidence() {
     rm -f -- "$temporary"
     return "$status"
   fi
+  migration_lock_barrier || return 1
   mv -T -- "$temporary" "$output"; sync -f "$parent"
+  migration_lock_barrier || return 1
 }
 failpoint() { [[ "${DEPLOY_MIGRATION_FAILPOINT:-}" != "$1" ]] || exit 75; }
 catalog_manifest_identity() {
@@ -688,7 +718,11 @@ verify_migration_destination() {
 remove_rollback_metadata() {
   local path="$1" label="$2"
   if [[ -e "$path" || -L "$path" ]]; then
-    rm -f -- "$path"; sync -f "$(dirname -- "$path")"; failpoint "after-rollback-cleanup-$label"
+    migration_lock_barrier || return 1
+    rm -f -- "$path" || return 1
+    sync -f "$(dirname -- "$path")" || return 1
+    migration_lock_barrier || return 1
+    failpoint "after-rollback-cleanup-$label"
   fi
 }
 
@@ -703,11 +737,28 @@ exec 9<>"$lock"
 flock -n 9 || { printf 'Another product-layout migration is active.\n' >&2; exit 1; }
 validate_metadata_file "$lock" && [[ "$(stat -Lc '%d:%i' -- "$lock")" == "$(stat -Lc '%d:%i' -- /proc/$$/fd/9)" ]] ||
   { printf 'Migration lock changed while being acquired.\n' >&2; exit 1; }
+migration_lock_identity="$(stat -Lc '%d:%i:%u:%g:%h:%a' -- /proc/$$/fd/9)"
+migration_lock_barrier() {
+  local label="${1:-}"
+  if [[ -n "$label" && "${DEPLOY_MIGRATION_TEST_LOCK_BARRIER:-}" == "$label" ]]; then
+    [[ -n "${DEPLOY_MIGRATION_TEST_LOCK_MARKER:-}" ]] || return 1
+    printf '%s\n' "$BASHPID" > "$DEPLOY_MIGRATION_TEST_LOCK_MARKER"
+    kill -STOP "$BASHPID"
+  fi
+  validate_metadata_file "$lock" &&
+    [[ "$(stat -Lc '%d:%i:%u:%g:%h:%a' -- "$lock")" == "$migration_lock_identity" &&
+       "$(stat -Lc '%d:%i:%u:%g:%h:%a' -- /proc/$$/fd/9)" == "$migration_lock_identity" ]] || {
+    printf 'Migration lock descriptor no longer matches its pathname.\n' >&2
+    return 1
+  }
+}
+migration_lock_barrier || exit 1
 if [[ -d "$legacy_catalog" && ! -L "$legacy_catalog" ]]; then
   acquire_legacy_catalog_lock || { printf 'Legacy catalog lock is unsafe or could not be acquired.\n' >&2; exit 1; }
 fi
 case "$action" in
 apply)
+  migration_lock_barrier apply-start || exit 1
   catalog_manifest="$legacy_catalog/current/manifest.json"; catalog_bundle='' catalog_identity='' catalog_identity_source=''
   [[ -d "$legacy_config" && ! -L "$legacy_config" && -d "$legacy_state" && ! -L "$legacy_state" && -d "$legacy_catalog" && ! -L "$legacy_catalog" ]] || { printf 'The exact singular legacy layout is not present.\n' >&2; exit 1; }
   [[ "$(stat -c %d -- "$legacy_root")" == "$(stat -c %d -- "$(dirname -- "$product_root")")" ]] || { printf 'Migration requires one filesystem for guarded publication.\n' >&2; exit 1; }
@@ -721,6 +772,7 @@ apply)
     validate_metadata_file "$config_snapshot" && validate_metadata_file "$state_snapshot" &&
       validate_metadata_file "$catalog_snapshot" || exit 1
     validate_migration_filesystem_state && verify_migration_destination || exit 1
+    migration_lock_barrier || exit 1
     printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"; exit 0
   fi
   if [[ ! -e "$apply_intent" && ! -L "$apply_intent" ]]; then
@@ -738,7 +790,9 @@ apply)
     [[ -f "$legacy_config/camera-module.json" && -f "$legacy_config/secrets/CameraAgent__AgentId" && "$(<"$legacy_config/secrets/CameraAgent__AgentId")" == "$bound_device_id" ]] || { printf 'Preserved provisioning identity is not present in legacy configuration.\n' >&2; exit 1; }
     module_identity="$(jq -r '.agentId' "$legacy_config/camera-module.json")"; [[ "$module_identity" == "$application_id" || "$module_identity" == "$bound_device_id" ]] || exit 1
   fi
-  mkdir -m 700 -p -- "$product_root/cameraagents" "$product_root/catalogs"
+  migration_lock_barrier || exit 1
+  mkdir -m 700 -p -- "$product_root/cameraagents" "$product_root/catalogs" || exit 1
+  migration_lock_barrier || exit 1
   if [[ -e "$catalog_root" || -L "$catalog_root" ]]; then
     verify_catalog_destination "$catalog_root" "$catalog_snapshot" "$catalog_identity_source" ||
       { printf 'Preexisting published catalog does not exactly match the authenticated legacy catalog.\n' >&2; exit 1; }
@@ -749,15 +803,26 @@ apply)
       delete_instance_tree "$instance_stage"
     fi
     if [[ ! -e "$instance_stage" && ! -L "$instance_stage" ]]; then
-      mkdir -m 700 -- "$instance_stage"; failpoint after-instance-stage-mkdir
-      cp -a -- "$legacy_config" "$instance_stage/config"
+      migration_lock_barrier || exit 1
+      mkdir -m 700 -- "$instance_stage" || exit 1
+      migration_lock_barrier || exit 1
+      failpoint after-instance-stage-mkdir
+      migration_lock_barrier || exit 1
+      cp -a -- "$legacy_config" "$instance_stage/config" || exit 1
+      migration_lock_barrier || exit 1
       if [[ "${DEPLOY_MIGRATION_FAILPOINT:-}" == mid-copy-config ]]; then partial_delete_one "$instance_stage/config"; exit 75; fi
-      failpoint after-copy-config; cp -a -- "$legacy_state" "$instance_stage/state"
+      failpoint after-copy-config
+      migration_lock_barrier || exit 1
+      cp -a -- "$legacy_state" "$instance_stage/state" || exit 1
+      migration_lock_barrier || exit 1
     fi
     verify_copy "$legacy_config" "$instance_stage/config" && verify_copy "$legacy_state" "$instance_stage/state" || { printf 'Staged instance state did not verify.\n' >&2; exit 1; }
     publish_json "$instance_stage/instance-manifest.json" "$(jq -cn --arg instance "$instance_id" '{schemaVersion:1,product:"HVO.SkyMonitor",component:"cameraAgent",instanceId:$instance,creationProvenance:{migration:"singular-layout-v1"},applicationIdentityFile:"application-identity.json"}')"
     publish_json "$instance_stage/application-identity.json" "$(jq -cn --arg configured "$application_id" --arg bound "$bound_device_id" '{schemaVersion:1,state:(if $bound == "" then "pre-provisioning" else "bound" end),configuredIdentity:$configured,boundIdentity:(if $bound == "" then null else $bound end)}')"
-    mv -T -- "$instance_stage" "$instance_root"; sync -f "$product_root/cameraagents"
+    migration_lock_barrier || exit 1
+    mv -T -- "$instance_stage" "$instance_root" || exit 1
+    sync -f "$product_root/cameraagents" || exit 1
+    migration_lock_barrier || exit 1
   fi
   [[ -d "$instance_root" && ! -L "$instance_root" && ! -e "$instance_stage" ]] || exit 1
   verify_copy "$legacy_config" "$instance_root/config"; verify_copy "$legacy_state" "$instance_root/state"; failpoint after-publish-instance
@@ -775,11 +840,19 @@ apply)
       delete_catalog_copy_subset "$catalog_stage" "$catalog_snapshot"
       release_staged_catalog_lock
     fi
-    if [[ ! -e "$catalog_stage" && ! -L "$catalog_stage" ]]; then cp -a -- "$legacy_catalog" "$catalog_stage"; failpoint after-copy-catalog; fi
+    if [[ ! -e "$catalog_stage" && ! -L "$catalog_stage" ]]; then
+      migration_lock_barrier || exit 1
+      cp -a -- "$legacy_catalog" "$catalog_stage" || exit 1
+      migration_lock_barrier || exit 1
+      failpoint after-copy-catalog
+    fi
     acquire_staged_catalog_lock || { printf 'Staged catalog lock is unsafe or could not be acquired.\n' >&2; exit 1; }
     verify_catalog_destination "$catalog_stage" "$catalog_snapshot" "$catalog_identity_source" || { printf 'Staged catalog did not verify.\n' >&2; exit 1; }
     validate_legacy_catalog_snapshot "$catalog_snapshot" || { printf 'Legacy catalog changed before publication.\n' >&2; exit 1; }
-    mv -T -- "$catalog_stage" "$catalog_root"; sync -f "$product_root/catalogs"
+    migration_lock_barrier || exit 1
+    mv -T -- "$catalog_stage" "$catalog_root" || exit 1
+    sync -f "$product_root/catalogs" || exit 1
+    migration_lock_barrier || exit 1
     promote_staged_catalog_lock || { printf 'Published catalog lock changed during publication.\n' >&2; exit 1; }
   fi
   [[ -d "$catalog_root" && ! -L "$catalog_root" && ! -e "$catalog_stage" ]] || exit 1
@@ -794,6 +867,7 @@ apply)
   revalidate_published_catalog_lock || { printf 'Published catalog lock changed during evidence publication.\n' >&2; exit 1; }
   ;;
 verify)
+  migration_lock_barrier verify-start || exit 1
   validate_migration_evidence || exit 1
   validate_metadata_file "$config_snapshot" && validate_metadata_file "$state_snapshot" &&
     validate_metadata_file "$catalog_snapshot" || exit 1
@@ -806,8 +880,10 @@ verify)
     validate_metadata_file "$cutover_snapshot" &&
       [[ "$(sha256sum "$cutover_snapshot" | cut -d' ' -f1)" == "$(jq -r '.cutoverEvidenceSha256' "$evidence")" ]] || exit 1
   fi
+  migration_lock_barrier verify-complete || exit 1
   ;;
 rollback)
+  migration_lock_barrier rollback-start || exit 1
   if [[ -e "$apply_intent" || -L "$apply_intent" ]] &&
     [[ ! -e "$evidence" && ! -L "$evidence" && ! -e "$instance_stage" && ! -L "$instance_stage" &&
        ! -e "$instance_root" && ! -L "$instance_root" && ! -e "$catalog_stage" && ! -L "$catalog_stage" &&
@@ -832,6 +908,7 @@ rollback)
     remove_rollback_metadata "$state_snapshot" partial-state-snapshot
     remove_rollback_metadata "$config_snapshot" partial-config-snapshot
     remove_rollback_metadata "$apply_intent" partial-apply-intent
+    migration_lock_barrier || exit 1
     printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"
     exit 0
   fi
@@ -946,9 +1023,13 @@ rollback)
   remove_rollback_metadata "$state_snapshot" state-snapshot
   remove_rollback_metadata "$catalog_snapshot" catalog-snapshot
   remove_rollback_metadata "$apply_intent" apply-intent
-  rm -f -- "$rollback_intent"; sync -f "$(dirname -- "$rollback_intent")"
+  migration_lock_barrier || exit 1
+  rm -f -- "$rollback_intent" || exit 1
+  sync -f "$(dirname -- "$rollback_intent")" || exit 1
+  migration_lock_barrier || exit 1
   ;;
 finalize)
+  migration_lock_barrier finalize-start || exit 1
   validate_metadata_file "$evidence" && validate_metadata_file "$config_snapshot" && validate_metadata_file "$state_snapshot" &&
     validate_metadata_file "$catalog_snapshot" && validate_migration_evidence || exit 1
   [[ -n "$cutover_evidence" ]] && pin_cutover_evidence "$cutover_evidence" "$cutover_snapshot" ||
@@ -961,6 +1042,7 @@ finalize)
   capture_sequence_after="$(jq -r '.captureSequenceAfter | tostring' "$cutover_snapshot")"
   if [[ "$migration_status" == finalized ]]; then
     validate_migration_filesystem_state && verify_migration_destination && validate_final_capture_sequence "$capture_sequence_after" || exit 1
+    migration_lock_barrier || exit 1
     printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"; exit 0
   fi
   if [[ "$migration_status" == copied-and-verified ]]; then
@@ -1002,7 +1084,13 @@ finalize)
   if [[ "$migration_status" == copied-and-verified ]]; then
     for spec in "config|$legacy_config|$config_tomb|$config_snapshot" "state|$legacy_state|$state_tomb|$state_snapshot"; do
       IFS='|' read -r label original tomb snapshot <<< "$spec"
-      if [[ -d "$original" && ! -L "$original" && ! -e "$tomb" && ! -L "$tomb" ]]; then revalidate_tree "$original" "$snapshot"; mv -T -- "$original" "$tomb"; sync -f "$(dirname -- "$original")"; fi
+      if [[ -d "$original" && ! -L "$original" && ! -e "$tomb" && ! -L "$tomb" ]]; then
+        revalidate_tree "$original" "$snapshot" || exit 1
+        migration_lock_barrier || exit 1
+        mv -T -- "$original" "$tomb" || exit 1
+        sync -f "$(dirname -- "$original")" || exit 1
+        migration_lock_barrier || exit 1
+      fi
       [[ ! -e "$original" && ! -L "$original" && -d "$tomb" && ! -L "$tomb" ]] || { printf 'Migration tombstone state is inconsistent.\n' >&2; exit 1; }
       revalidate_tree "$tomb" "$snapshot"; failpoint "after-tombstone-$label"
     done
@@ -1041,4 +1129,5 @@ finalize)
   revalidate_published_catalog_lock || { printf 'Published catalog lock changed during final evidence publication.\n' >&2; exit 1; }
   ;;
 esac
+migration_lock_barrier || exit 1
 printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"

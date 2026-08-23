@@ -21,6 +21,11 @@ hyg_check_sqlite_version
 
 INSTALL_STAGING=""
 
+catalog_lock_barrier() {
+    hyg_catalog_revalidate_root_lock "$INSTALL_ROOT" "${1:-}" ||
+        hyg_fail "catalog root lock descriptor no longer matches its pathname"
+}
+
 acquire_application_state_lock() {
     local requested_root="$1"
     local canonical_root
@@ -68,9 +73,13 @@ cleanup_orphan_staging() {
             fi
         done < <(find -P "$path" -xdev -mindepth 1 -print0)
         while IFS= read -r -d '' entry; do
-            chmod u+w -- "$entry"
+            catalog_lock_barrier production-staging-cleanup || return 1
+            chmod u+w -- "$entry" || return 1
+            catalog_lock_barrier || return 1
         done < <(find -P "$path" -xdev -depth -type d -print0)
-        rm -rf -- "$path"
+        catalog_lock_barrier || return 1
+        rm -rf -- "$path" || return 1
+        catalog_lock_barrier || return 1
         [[ ! -e "$path" && ! -L "$path" ]] || return 1
     done
 }
@@ -89,12 +98,17 @@ replace_pointer() {
     local pointer="$1"
     local target="$2"
     local temporary="$INSTALL_ROOT/.${pointer}.tmp.$$.$RANDOM"
-    ln -s -- "$target" "$temporary"
+    catalog_lock_barrier || return 1
+    ln -s -- "$target" "$temporary" || return 1
+    catalog_lock_barrier || return 1
     if ! mv -Tf -- "$temporary" "$INSTALL_ROOT/$pointer"; then
-        rm -f -- "$temporary"
+        catalog_lock_barrier || return 1
+        rm -f -- "$temporary" || return 1
+        catalog_lock_barrier || return 1
         return 1
     fi
     sync -f "$INSTALL_ROOT"
+    catalog_lock_barrier || return 1
 }
 
 validate_pointer_target() {
@@ -112,6 +126,7 @@ commit_pointer_state() {
     if [[ "$previous_target" != "-" ]]; then
         validate_pointer_target "$previous_target"
     fi
+    catalog_lock_barrier || return 1
     for attempt in {1..16}; do
         temporary="$INSTALL_ROOT/.pointer-transaction.tmp.$$.$RANDOM"
         if (set -o noclobber; umask 077; printf '%s\n%s\n' "$current_target" "$previous_target" > "$temporary") 2>/dev/null; then
@@ -120,6 +135,7 @@ commit_pointer_state() {
         temporary=''
     done
     [[ -n "$temporary" ]] || hyg_fail "could not allocate an exclusive pointer transaction temporary"
+    catalog_lock_barrier || return 1
     [[ -f "$temporary" && ! -L "$temporary" &&
        "$(stat -c '%u:%h:%a' -- "$temporary")" == "$(id -u):1:600" ]] ||
         hyg_fail "pointer transaction temporary is unsafe"
@@ -132,24 +148,31 @@ commit_pointer_state() {
        "$(stat -Lc '%d:%i:%u:%h:%a' -- "/proc/$BASHPID/fd/$transaction_fd")" ]] ||
         hyg_fail "pointer transaction temporary changed before publication"
     exec {transaction_fd}>&-
+    catalog_lock_barrier || return 1
     test_fail_at after-pointer-transaction-temp-fsync
     [[ ! -e "$INSTALL_ROOT/.pointer-transaction" && ! -L "$INSTALL_ROOT/.pointer-transaction" ]] ||
         hyg_fail "pointer transaction already exists"
+    catalog_lock_barrier || return 1
     mv -Tf -- "$temporary" "$INSTALL_ROOT/.pointer-transaction"
     sync -f "$INSTALL_ROOT"
+    catalog_lock_barrier || return 1
     test_fail_at after-transaction
 
     if [[ "$previous_target" == "-" ]]; then
+        catalog_lock_barrier || return 1
         rm -f -- "$INSTALL_ROOT/previous"
         sync -f "$INSTALL_ROOT"
+        catalog_lock_barrier || return 1
     else
         replace_pointer previous "$previous_target"
     fi
     test_fail_at after-previous-pointer
     replace_pointer current "$current_target"
     test_fail_at after-current-pointer
+    catalog_lock_barrier || return 1
     rm -f -- "$INSTALL_ROOT/.pointer-transaction"
     sync -f "$INSTALL_ROOT"
+    catalog_lock_barrier || return 1
 }
 
 reconcile_pointer_transaction() {
@@ -197,10 +220,14 @@ prepare_root() {
     [[ -d "$INSTALL_ROOT" && ! -L "$INSTALL_ROOT" ]] || hyg_fail "install root is not a safe directory: $INSTALL_ROOT"
     [[ "$(stat -c '%u' "$INSTALL_ROOT")" == "$current_uid" ]] || hyg_fail "install root must be owned by the installing user"
     chmod 0700 "$INSTALL_ROOT"
-    mkdir -p "$INSTALL_ROOT/versions"
-    [[ -d "$INSTALL_ROOT/versions" && ! -L "$INSTALL_ROOT/versions" ]] || hyg_fail "versions path is not a safe directory"
-    chmod 0700 "$INSTALL_ROOT/versions"
     hyg_catalog_acquire_root_lock "$INSTALL_ROOT" || hyg_fail "catalog root lock is unsafe or unavailable"
+    catalog_lock_barrier || return 1
+    mkdir -p "$INSTALL_ROOT/versions" || return 1
+    catalog_lock_barrier || return 1
+    [[ -d "$INSTALL_ROOT/versions" && ! -L "$INSTALL_ROOT/versions" ]] || hyg_fail "versions path is not a safe directory"
+    catalog_lock_barrier || return 1
+    chmod 0700 "$INSTALL_ROOT/versions" || return 1
+    catalog_lock_barrier || return 1
     hyg_catalog_reconcile_lineage_temporaries "$INSTALL_ROOT" || hyg_fail "catalog lineage temporary is unsafe"
     if [[ -e "$INSTALL_ROOT/.catalog-lineage.json" || -L "$INSTALL_ROOT/.catalog-lineage.json" ]]; then
         hyg_catalog_require_lineage "$INSTALL_ROOT" "$expected_catalog_id" "$expected_kind" \
@@ -252,47 +279,66 @@ install_bundle() {
                 hyg_fail "installed package version has different immutable bundle contents"
         fi
     else
+        catalog_lock_barrier || return 1
         INSTALL_STAGING="$(mktemp -d "$INSTALL_ROOT/versions/.staging.XXXXXX")"
+        catalog_lock_barrier || return 1
         cleanup_candidate() {
             local status=$?
             trap - EXIT
-            if [[ -n "${INSTALL_STAGING:-}" ]]; then
+            if [[ -n "${INSTALL_STAGING:-}" ]] && hyg_catalog_revalidate_root_lock "$INSTALL_ROOT"; then
                 chmod -R u+w "$INSTALL_STAGING" 2>/dev/null || true
-                rm -rf -- "$INSTALL_STAGING"
+                if hyg_catalog_revalidate_root_lock "$INSTALL_ROOT"; then
+                    rm -rf -- "$INSTALL_STAGING"
+                    hyg_catalog_revalidate_root_lock "$INSTALL_ROOT" || true
+                fi
             fi
-            rm -f -- "$INSTALL_ROOT"/.current.tmp.$$.* "$INSTALL_ROOT"/.previous.tmp.$$.*
+            if hyg_catalog_revalidate_root_lock "$INSTALL_ROOT"; then
+                rm -f -- "$INSTALL_ROOT"/.current.tmp.$$.* "$INSTALL_ROOT"/.previous.tmp.$$.*
+                hyg_catalog_revalidate_root_lock "$INSTALL_ROOT" || true
+            fi
             exit "$status"
         }
         trap cleanup_candidate EXIT
 
+        catalog_lock_barrier || return 1
         for file in "$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE"; do
-            cp -- "$bundle/$file" "$INSTALL_STAGING/$file"
+            catalog_lock_barrier || return 1
+            cp -- "$bundle/$file" "$INSTALL_STAGING/$file" || return 1
+            catalog_lock_barrier || return 1
         done
+        catalog_lock_barrier || return 1
         test_fail_at after-copy
         hyg_validate_bundle "$INSTALL_STAGING"
         test_fail_at after-candidate-validation
-        chmod 0444 "$INSTALL_STAGING"/*
-        chmod 0555 "$INSTALL_STAGING"
+        catalog_lock_barrier || return 1
+        chmod 0444 "$INSTALL_STAGING"/* || return 1
+        catalog_lock_barrier || return 1
+        chmod 0555 "$INSTALL_STAGING" || return 1
         sync -f "$INSTALL_STAGING/$HYG_MANIFEST_FILE"
         sync -f "$INSTALL_STAGING/$HYG_DATABASE_FILE"
         sync -f "$INSTALL_STAGING/$HYG_LICENSE_FILE"
         sync -f "$INSTALL_STAGING/$HYG_ATTRIBUTION_FILE"
         sync -f "$INSTALL_STAGING"
+        catalog_lock_barrier || return 1
         test_fail_at after-staging-fsync
-        mv -T -- "$INSTALL_STAGING" "$target_path"
+        catalog_lock_barrier production-version-publication || return 1
+        mv -T -- "$INSTALL_STAGING" "$target_path" || return 1
         INSTALL_STAGING=""
         sync -f "$INSTALL_ROOT/versions"
+        catalog_lock_barrier || return 1
         validate_installed_target "$target"
         test_fail_at after-publish
     fi
 
     if [[ "$old_target" == "$target" ]]; then
+        catalog_lock_barrier || return 1
         trap - EXIT
         printf 'Catalog version is already active: %s\n' "$target_path"
         return 0
     fi
     test_fail_at before-activation
     commit_pointer_state "$target" "${old_target:--}"
+    catalog_lock_barrier || return 1
     trap - EXIT
 
     printf 'Installed HYG production catalog: %s\n' "$target_path"
@@ -318,6 +364,7 @@ rollback_catalog() {
     [[ "$previous_target" != "$current_target" ]] || hyg_fail "previous catalog is already active"
 
     commit_pointer_state "$previous_target" "${current_target:--}"
+    catalog_lock_barrier || return 1
 
     printf 'Rolled back active catalog to: %s/%s\n' "$INSTALL_ROOT" "$previous_target"
 }

@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 [TestClass]
+[DoNotParallelize]
 internal sealed class CatalogSnapshotResolverTests
 {
     private const string FixtureCatalogId = "hyg-v42-fixture";
@@ -286,6 +287,114 @@ internal sealed class CatalogSnapshotResolverTests
             attributionPath,
             () => CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
                 installation.Root, ProductionCatalogId)));
+    }
+
+    [TestMethod]
+    public void ResolveRejectsManifestReplacementAfterInitialAuthenticationWithoutMutatingOriginal()
+    {
+        using var installation = CreateInstallation();
+        var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-original-{Guid.NewGuid():N}");
+        FileFingerprint? fingerprint = null;
+        var invoked = false;
+        CatalogSnapshotResolver.ValidationTestHook = (path, point) =>
+        {
+            if (invoked || point != CatalogSnapshotValidationPoint.AfterInitialAuthentication ||
+                !string.Equals(path, installation.ManifestPath, StringComparison.Ordinal))
+            {
+                return;
+            }
+            invoked = true;
+            File.Move(path, externalPath);
+            fingerprint = ReadFingerprint(externalPath);
+            File.Copy(externalPath, path);
+        };
+        try
+        {
+            var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+
+            Assert.IsTrue(invoked);
+            Assert.AreEqual(fingerprint, ReadFingerprint(externalPath));
+            StringAssert.Contains(exception.Message, "identity changed", StringComparison.Ordinal);
+        }
+        finally
+        {
+            CatalogSnapshotResolver.ValidationTestHook = null;
+            File.Delete(externalPath);
+        }
+    }
+
+    [TestMethod]
+    public void ResolveRejectsDatabaseReplacementAfterInitialAuthenticationWithoutMutatingOriginal()
+    {
+        using var installation = CreateInstallation();
+        var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-original-{Guid.NewGuid():N}");
+        FileFingerprint? fingerprint = null;
+        var invoked = false;
+        CatalogSnapshotResolver.ValidationTestHook = (path, point) =>
+        {
+            if (invoked || point != CatalogSnapshotValidationPoint.AfterInitialAuthentication ||
+                !string.Equals(path, installation.DatabasePath, StringComparison.Ordinal))
+            {
+                return;
+            }
+            invoked = true;
+            File.Move(path, externalPath);
+            fingerprint = ReadFingerprint(externalPath);
+            File.Copy(externalPath, path);
+        };
+        try
+        {
+            var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+
+            Assert.IsTrue(invoked);
+            Assert.AreEqual(fingerprint, ReadFingerprint(externalPath));
+            StringAssert.Contains(exception.Message, "identity changed", StringComparison.Ordinal);
+        }
+        finally
+        {
+            CatalogSnapshotResolver.ValidationTestHook = null;
+            File.Delete(externalPath);
+        }
+    }
+
+    [TestMethod]
+    public void ResolveRejectsHardLinkCreatedAfterInitialAuthenticationWithoutMutatingExternalFingerprint()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Windows preserves the resolver's existing reparse-point behavior.");
+        }
+        using var installation = CreateInstallation();
+        var externalPath = Path.Combine(Path.GetTempPath(), $"hvo-catalog-external-{Guid.NewGuid():N}");
+        FileFingerprint? fingerprint = null;
+        var invoked = false;
+        CatalogSnapshotResolver.ValidationTestHook = (path, point) =>
+        {
+            if (invoked || point != CatalogSnapshotValidationPoint.AfterInitialAuthentication ||
+                !string.Equals(path, installation.DatabasePath, StringComparison.Ordinal))
+            {
+                return;
+            }
+            invoked = true;
+            if (Link(path, externalPath) != 0)
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            }
+            fingerprint = ReadFingerprint(externalPath);
+        };
+        try
+        {
+            var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+
+            Assert.IsTrue(invoked);
+            Assert.AreEqual(fingerprint, ReadFingerprint(externalPath));
+            StringAssert.Contains(exception.Message, "hard-link", StringComparison.Ordinal);
+        }
+        finally
+        {
+            CatalogSnapshotResolver.ValidationTestHook = null;
+            File.Delete(externalPath);
+        }
     }
 
     [TestMethod]

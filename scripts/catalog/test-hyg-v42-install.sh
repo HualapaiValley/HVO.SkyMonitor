@@ -10,6 +10,8 @@ readonly TEMPORARY_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/hvo-catalog-install-t
 cleanup() {
     local status=$?
     trap - EXIT
+    [[ -z "${replacement_publisher_pid:-}" ]] || kill -CONT "$replacement_publisher_pid" 2>/dev/null || true
+    [[ -z "${replacement_publisher_pid:-}" ]] || kill "$replacement_publisher_pid" 2>/dev/null || true
     chmod -R u+w "$TEMPORARY_DIRECTORY" 2>/dev/null || true
     rm -rf -- "$TEMPORARY_DIRECTORY"
     exit "$status"
@@ -23,6 +25,20 @@ fi
 
 readonly SOURCE_BUNDLE="$(realpath "$1")"
 readonly INSTALL_ROOT="$TEMPORARY_DIRECTORY/install"
+
+# A lineage publisher invoked in a conditional cannot continue after its held lock descriptor is replaced.
+conditional_lineage_root="$TEMPORARY_DIRECTORY/conditional-lineage"
+mkdir -m 700 "$conditional_lineage_root" "$conditional_lineage_root/versions"
+(
+    hyg_catalog_acquire_root_lock "$conditional_lineage_root"
+    mv -T -- "$conditional_lineage_root/.catalog.lock" "$conditional_lineage_root/.catalog.lock.original"
+    : > "$conditional_lineage_root/.catalog.lock"; chmod 600 "$conditional_lineage_root/.catalog.lock"
+    if hyg_catalog_require_lineage "$conditional_lineage_root" "$HYG_CATALOG_ID" production \
+        "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION"; then
+        exit 91
+    fi
+    [[ ! -e "$conditional_lineage_root/.catalog-lineage.json" ]]
+)
 
 mkdir -p "$TEMPORARY_DIRECTORY/real-root"
 ln -s "$TEMPORARY_DIRECTORY/real-root" "$TEMPORARY_DIRECTORY/symlink-root"
@@ -144,6 +160,50 @@ assert_current "$INSTALL_ROOT" 1
 [[ "$(stat -c '%u:%h:%a' "$INSTALL_ROOT/.catalog-lineage.json")" == "$(id -u):1:600" ]]
 [[ "$(hyg_json_value "$INSTALL_ROOT/.catalog-lineage.json" '$.catalogId')" == "$HYG_CATALOG_ID" ]]
 [[ "$(hyg_json_value "$INSTALL_ROOT/.catalog-lineage.json" '$.packageKind')" == production ]]
+
+# Replacing the shared lock at version publication retains the candidate and publishes nothing until the original inode is restored.
+replacement_root="$TEMPORARY_DIRECTORY/replaced-production-lock"
+replacement_bundle="$(make_revision 16)"
+replacement_marker="$TEMPORARY_DIRECTORY/replaced-production-lock.marker"
+"$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$replacement_root" >/dev/null
+HVO_CATALOG_TEST_LOCK_BARRIER=production-version-publication HVO_CATALOG_TEST_LOCK_MARKER="$replacement_marker" \
+    "$SCRIPT_DIR/install-hyg-v42.sh" install "$replacement_bundle" "$replacement_root" >/dev/null 2>&1 &
+replacement_publisher_pid=$!
+while [[ ! -e "$replacement_marker" ]]; do sleep 0.01; kill -0 "$replacement_publisher_pid"; done
+replacement_stopped_pid="$(<"$replacement_marker")"
+mv -T -- "$replacement_root/.catalog.lock" "$replacement_root/.catalog.lock.original"
+: > "$replacement_root/.catalog.lock"; chmod 600 "$replacement_root/.catalog.lock"
+kill -CONT "$replacement_stopped_pid"
+if wait "$replacement_publisher_pid"; then
+    printf 'production publisher accepted a replaced shared catalog lock\n' >&2
+    exit 1
+fi
+replacement_publisher_pid=
+assert_current "$replacement_root" 1
+[[ ! -e "$replacement_root/versions/hyg-v4.2-p3-s2-r16" ]]
+[[ -n "$(find "$replacement_root/versions" -maxdepth 1 -name '.staging.*' -print -quit)" ]]
+rm -f -- "$replacement_root/.catalog.lock"
+mv -T -- "$replacement_root/.catalog.lock.original" "$replacement_root/.catalog.lock"
+replacement_cleanup_marker="$TEMPORARY_DIRECTORY/replaced-production-cleanup.marker"
+HVO_CATALOG_TEST_LOCK_BARRIER=production-staging-cleanup HVO_CATALOG_TEST_LOCK_MARKER="$replacement_cleanup_marker" \
+    "$SCRIPT_DIR/install-hyg-v42.sh" install "$replacement_bundle" "$replacement_root" >/dev/null 2>&1 &
+replacement_publisher_pid=$!
+while [[ ! -e "$replacement_cleanup_marker" ]]; do sleep 0.01; kill -0 "$replacement_publisher_pid"; done
+replacement_stopped_pid="$(<"$replacement_cleanup_marker")"
+mv -T -- "$replacement_root/.catalog.lock" "$replacement_root/.catalog.lock.original"
+: > "$replacement_root/.catalog.lock"; chmod 600 "$replacement_root/.catalog.lock"
+kill -CONT "$replacement_stopped_pid"
+if wait "$replacement_publisher_pid"; then
+    printf 'conditional production staging cleanup accepted a replaced shared catalog lock\n' >&2
+    exit 1
+fi
+replacement_publisher_pid=
+[[ ! -e "$replacement_root/versions/hyg-v4.2-p3-s2-r16" ]]
+[[ -n "$(find "$replacement_root/versions" -maxdepth 1 -name '.staging.*' -print -quit)" ]]
+rm -f -- "$replacement_root/.catalog.lock"
+mv -T -- "$replacement_root/.catalog.lock.original" "$replacement_root/.catalog.lock"
+"$SCRIPT_DIR/install-hyg-v42.sh" install "$replacement_bundle" "$replacement_root" >/dev/null
+assert_current "$replacement_root" 16
 
 # A fixture-side holder and the production installer contend on the same root lock.
 HVO_CATALOG_TEST_MODE=true HVO_CATALOG_TEST_LOCK_HOLD_SECONDS=2 bash -c \

@@ -493,6 +493,9 @@ else
   source_manifest_sha="$(sha256sum "$bundle/manifest.json" | cut -d' ' -f1)"
   transaction="$install_root/.fixture-pointer-transaction"
   candidate_intent="$install_root/.fixture-candidate-transaction"
+  fixture_lock_barrier() {
+    hyg_catalog_revalidate_root_lock "$install_root" "${1:-}" || exit 97
+  }
   fixture_fail_at() {
     if [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" == "$1" ]]; then
       [[ -z "${HYG_CATALOG_ROOT_LOCK_FD:-}" ]] || exec {HYG_CATALOG_ROOT_LOCK_FD}>&-
@@ -528,11 +531,16 @@ else
   fixture_remove_partial_candidate() {
     local candidate=$1
     fixture_validate_partial_candidate "$candidate" || return 1
-    chmod 700 -- "$candidate"
+    fixture_lock_barrier fixture-candidate-cleanup || exit 97
+    chmod 700 -- "$candidate" || exit 97
+    fixture_lock_barrier || exit 97
     chmod 600 -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite" 2>/dev/null || true
-    rm -f -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"
-    rmdir -- "$candidate"
+    fixture_lock_barrier || exit 97
+    rm -f -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite" || exit 97
+    fixture_lock_barrier || exit 97
+    rmdir -- "$candidate" || exit 97
     sync -f "$install_root/versions"
+    fixture_lock_barrier || exit 97
   }
   fixture_reconcile_candidate() {
     local intent="$candidate_intent" target recorded_id recorded_manifest_sha recorded_database_sha recorded_version candidate actual_id
@@ -558,8 +566,10 @@ else
     elif [[ -e "$candidate" || -L "$candidate" ]]; then
       fixture_remove_partial_candidate "$candidate" || return 1
     fi
+    fixture_lock_barrier || exit 97
     rm -f -- "$intent"
     sync -f "$install_root"
+    fixture_lock_barrier || exit 97
   }
   install_parent="$(dirname -- "$install_root")"
   [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
@@ -574,6 +584,7 @@ else
     sync -f "$install_parent"
   fi
   hyg_catalog_acquire_root_lock "$install_root" || exit 97
+  fixture_lock_barrier || exit 97
   hyg_catalog_reconcile_lineage_temporaries "$install_root" || exit 97
   if [[ -e "$install_root/.catalog-lineage.json" || -L "$install_root/.catalog-lineage.json" ]]; then
     hyg_catalog_require_lineage "$install_root" "$catalog_id" "$kind" "$schema_version" "$preprocessing_version" || exit 97
@@ -582,9 +593,11 @@ else
   if [[ -e "$install_root/versions" || -L "$install_root/versions" ]]; then
     hyg_catalog_safe_mutable_directory "$install_root/versions" || exit 97
   else
+    fixture_lock_barrier || exit 97
     mkdir -m 700 -- "$install_root/versions"
     hyg_catalog_safe_mutable_directory "$install_root/versions" || exit 97
     sync -f "$install_root"
+    fixture_lock_barrier || exit 97
   fi
   hyg_fixture_reconcile_pointer_temporaries "$install_root" || exit 97
   if [[ -e "$install_root/current" || -L "$install_root/current" ]]; then
@@ -601,24 +614,38 @@ else
   if [[ ! -e "$destination" ]]; then
     candidate="$install_root/versions/.fixture-candidate-$version.stage"
     [[ ! -e "$candidate" && ! -L "$candidate" && ! -e "$candidate_intent" && ! -L "$candidate_intent" ]] || exit 98
+    fixture_lock_barrier || exit 97
     temporary="$(fixture_create_private_temporary .fixture-candidate-transaction.tmp)"
+    fixture_lock_barrier || exit 97
     printf '%s\n%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" "$expected_sha" > "$temporary"
-    chmod 600 "$temporary"; sync -f "$temporary"; fixture_fail_at after-candidate-transaction-temp-fsync
-    mv -T -- "$temporary" "$candidate_intent"; sync -f "$install_root"
-    mkdir -m 700 -- "$candidate"
+    fixture_lock_barrier || exit 97
+    chmod 600 "$temporary" || exit 97
+    fixture_lock_barrier || exit 97
+    sync -f "$temporary"; fixture_lock_barrier || exit 97
+    fixture_fail_at after-candidate-transaction-temp-fsync
+    fixture_lock_barrier || exit 97
+    mv -T -- "$temporary" "$candidate_intent"; sync -f "$install_root"; fixture_lock_barrier || exit 97
+    mkdir -m 700 -- "$candidate"; fixture_lock_barrier || exit 97
+    fixture_lock_barrier || exit 97
     (umask 077; cp --no-preserve=mode,ownership -- "$bundle/manifest.json" "$candidate/manifest.json")
-    chmod 600 "$candidate/manifest.json"
+    fixture_lock_barrier || exit 97
+    chmod 600 "$candidate/manifest.json"; fixture_lock_barrier || exit 97
     fixture_fail_at during-candidate-copy
+    fixture_lock_barrier || exit 97
     (umask 077; cp --no-preserve=mode,ownership -- "$bundle/hyg_v42.sqlite" "$candidate/hyg_v42.sqlite")
-    chmod 600 "$candidate/hyg_v42.sqlite"
+    fixture_lock_barrier || exit 97
+    chmod 600 "$candidate/hyg_v42.sqlite"; fixture_lock_barrier || exit 97
     hyg_validate_catalog_contract "$candidate" "$catalog_id" "$kind" "$version" "$schema_version" \
       "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 98
+    fixture_lock_barrier || exit 97
     chmod 444 -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"
+    fixture_lock_barrier || exit 97
     chmod 555 -- "$candidate"
     sync -f "$candidate/manifest.json"; sync -f "$candidate/hyg_v42.sqlite"; sync -f "$candidate"
+    fixture_lock_barrier fixture-candidate-publication || exit 97
     fixture_fail_at before-candidate-rename
-    mv -T -- "$candidate" "$destination"; sync -f "$install_root/versions"
-    rm -f -- "$candidate_intent"; sync -f "$install_root"
+    mv -T -- "$candidate" "$destination"; sync -f "$install_root/versions"; fixture_lock_barrier || exit 97
+    rm -f -- "$candidate_intent"; sync -f "$install_root"; fixture_lock_barrier || exit 97
   else
     existing="$destination/hyg_v42.sqlite"
     [[ -d "$destination" && ! -L "$destination" && -f "$existing" && ! -L "$existing" &&
@@ -635,19 +662,28 @@ else
     previous_manifest_sha=-
     if [[ -n "$old_target" ]]; then previous_manifest_sha="$(hyg_sha256 "$install_root/$old_target/manifest.json")"; else old_target=-; fi
     [[ ! -e "$transaction" && ! -L "$transaction" ]] || exit 98
+    fixture_lock_barrier || exit 97
     temporary="$(fixture_create_private_temporary .fixture-pointer-transaction.tmp)"
+    fixture_lock_barrier || exit 97
     printf '%s\n%s\n%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" \
       "$old_target" "$previous_manifest_sha" > "$temporary"
-    chmod 600 "$temporary"; sync -f "$temporary"; fixture_fail_at after-pointer-transaction-temp-fsync
-    mv -T -- "$temporary" "$transaction"; sync -f "$install_root"
+    fixture_lock_barrier || exit 97
+    chmod 600 "$temporary" || exit 97
+    fixture_lock_barrier || exit 97
+    sync -f "$temporary"; fixture_lock_barrier || exit 97
+    fixture_fail_at after-pointer-transaction-temp-fsync
+    fixture_lock_barrier || exit 97
+    mv -T -- "$temporary" "$transaction"; sync -f "$install_root"; fixture_lock_barrier || exit 97
     fixture_fail_at after-pointer-transaction
     hyg_fixture_reconcile_pointer_transaction "$install_root"
   fi
   hyg_validate_fixture_installation "$install_root" "$version" "$catalog_id" || exit 98
+  fixture_lock_barrier || exit 97
 fi
 current="$(readlink "$install_root/current")"; installed="$install_root/$current/hyg_v42.sqlite"
 hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$version" "$schema_version" \
   "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 96
+[[ "$kind" != fixture ]] || fixture_lock_barrier || exit 97
 printf 'installed\t%s\t%s\n' "$current" "$expected_sha"
 REMOTE
 }
@@ -784,6 +820,7 @@ stage=$1; install_root=$2; catalog_id=$3; kind=$4; expected_version=$5; schema_v
 source "$stage/scripts/catalog/catalog-common.sh"
 [[ -L "$install_root/current" ]] || exit 90
 hyg_catalog_acquire_root_lock "$install_root" || exit 92
+hyg_catalog_revalidate_root_lock "$install_root" || exit 92
 hyg_catalog_reconcile_lineage_temporaries "$install_root" || exit 92
 hyg_catalog_require_lineage "$install_root" "$catalog_id" "$kind" "$schema_version" "$preprocessing_version" || exit 92
 if [[ "$kind" == fixture ]]; then
@@ -804,6 +841,7 @@ if [[ "$kind" == fixture ]]; then
 fi
 hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$expected_version" "$schema_version" \
   "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 92
+hyg_catalog_revalidate_root_lock "$install_root" || exit 92
 printf 'verified\t%s\t%s\n' "$current" "$expected_sha"
 REMOTE
 }
