@@ -13,12 +13,6 @@
       "rigProfileVersion": "browser-fixture-mono16-v1"
     }
   },
-  "observatory": {
-    "latitudeDegrees": 35.347,
-    "longitudeDegrees": -113.878,
-    "elevationMeters": 1000.0,
-    "timeZoneId": "America/Phoenix"
-  },
   "rig": {
     "sensor": {
       "name": "BrowserFixtureMono16",

@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using HVO.SkyMonitor.CameraAgent.Data;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -10,23 +12,37 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 internal sealed class IntegrationUserAuthenticationHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> options,
     ILoggerFactory logger,
-    UrlEncoder encoder)
+    UrlEncoder encoder,
+    UserManager<ApplicationUser> userManager,
+    IOptions<IdentityOptions> identityOptions)
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
     internal const string SchemeName = "CameraAgentIntegrationUser";
     internal const string UserIdHeader = "X-CameraAgent-Integration-User";
 
-    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         var userId = Request.Headers[UserIdHeader].ToString();
         if (string.IsNullOrWhiteSpace(userId))
         {
-            return Task.FromResult(AuthenticateResult.NoResult());
+            return AuthenticateResult.NoResult();
+        }
+        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, userId) };
+        var user = await userManager.FindByIdAsync(userId).ConfigureAwait(false);
+        if (user is not null)
+        {
+            var securityStamp = await userManager.GetSecurityStampAsync(user).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(securityStamp))
+            {
+                claims.Add(new Claim(
+                    identityOptions.Value.ClaimsIdentity.SecurityStampClaimType,
+                    securityStamp));
+            }
         }
         var identity = new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, userId)],
+            claims,
             SchemeName);
-        return Task.FromResult(AuthenticateResult.Success(
-            new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
+        return AuthenticateResult.Success(
+            new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName));
     }
 }

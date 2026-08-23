@@ -127,6 +127,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             var fixture = new StandaloneCameraAgentKestrelFixture(
                 root, catalog, overrides, environmentalSettingsPath);
             await fixture.StartHostAsync().ConfigureAwait(false);
+            await fixture.CompleteOwnerBootstrapForExistingAcceptanceTestsAsync().ConfigureAwait(false);
             return fixture;
         }
         catch
@@ -195,6 +196,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 timeProvider,
                 laneFaultInjector);
             await fixture.StartHostAsync().ConfigureAwait(false);
+            await fixture.CompleteOwnerBootstrapForExistingAcceptanceTestsAsync().ConfigureAwait(false);
             return fixture;
         }
         catch
@@ -208,6 +210,21 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     {
         await StopHostAsync().ConfigureAwait(false);
         await StartHostAsync().ConfigureAwait(false);
+    }
+
+    private async Task CompleteOwnerBootstrapForExistingAcceptanceTestsAsync()
+    {
+        using var scope = Services.CreateScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var owner = await users.FindByEmailAsync(OwnerEmail).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The standalone acceptance owner was not seeded.");
+        owner.PasswordChangeRequired = false;
+        var result = await users.UpdateAsync(owner).ConfigureAwait(false);
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Could not prepare the standalone acceptance owner: {string.Join(", ", result.Errors.Select(static error => error.Code))}");
+        }
     }
 
     internal void ArmLaneInterruption() => (_laneFaultInjector

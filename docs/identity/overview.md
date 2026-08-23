@@ -67,8 +67,15 @@ current coordinates.
 CameraAgent uses a separate SQLite ASP.NET Identity database and remains usable
 offline. It does not share LogicHost users, cookies, or SQL Server tables.
 
-- `LocalIdentity:AdminEmail` and `LocalIdentity:AdminPassword` create and
-  reconcile the site owner at startup.
+- `LocalIdentity:AdminEmail` and a temporary `LocalIdentity:AdminPassword` or
+  `AdminPasswordFile` create the site owner once. Existing owner passwords are
+  never reconciled from configuration.
+- A newly seeded owner must replace the temporary password at
+  `/Account/ReplaceTemporaryPassword` before ordinary owner UI or APIs are
+  authorized. The requirement is durable in the local Identity database.
+- After durable seeding, an explicit
+  `LocalIdentity:AllowMissingAdminPassword=true` permits startup without a
+  configured password. It does not permit first-time seeding without one.
 - Local cookies are named `CameraAgent.Auth`, last 12 hours with sliding
   expiration, and revalidate the security stamp every 30 minutes.
 - CameraAgent has no inbound bearer or API-key authentication. Its central OAuth
@@ -78,6 +85,8 @@ offline. It does not share LogicHost users, cookies, or SQL Server tables.
 - Local self-registration is disabled. Operator pages, frame previews, gallery,
   artifact retrieval, capture controls, and outbox operations require the
   configured site owner; API denials return `401` or `403` instead of redirects.
+- Password replacement rotates the Identity security stamp, refreshes only the
+  completing session, and invalidates other owner cookies on their next request.
 - Device identity and encrypted secrets are stored under
   `DeviceProvisioning:StateDirectory`.
 
