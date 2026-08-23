@@ -29,9 +29,11 @@ deploy_is_canonical_uuid "$instance_id" || { printf 'Instance ID must be a canon
 deploy_is_catalog_id "$catalog_id" || { printf 'Catalog ID is invalid.\n' >&2; exit 1; }
 [[ "$application_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { printf 'Application ID is invalid.\n' >&2; exit 1; }
 [[ -z "$bound_device_id" || "$bound_device_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { printf 'Bound device ID is invalid.\n' >&2; exit 1; }
-[[ "$legacy_root" != "$product_root" && "$product_root" != "$legacy_root"/* && "$legacy_root" != "$product_root"/* ]] || { printf 'Legacy and product roots must not overlap.\n' >&2; exit 1; }
-
 legacy_config="$legacy_root/config/cameraagent"; legacy_state="$legacy_root/data/agent"; legacy_catalog="$legacy_root/data/catalog"
+for source_tree in "$legacy_config" "$legacy_state" "$legacy_catalog"; do
+  [[ "$product_root" != "$source_tree" && "$product_root" != "$source_tree"/* && "$source_tree" != "$product_root"/* ]] ||
+    { printf 'Product root must not overlap a migrated legacy source tree.\n' >&2; exit 1; }
+done
 instance_root="$product_root/cameraagents/$instance_id"; catalog_root="$product_root/catalogs/$catalog_id"
 manifest="$instance_root/instance-manifest.json"; binding="$instance_root/application-identity.json"
 lock="${product_root}.migration.lock"; intent="${evidence}.finalize-intent.json"
@@ -305,6 +307,20 @@ validate_migration_filesystem_state() {
   *) return 1 ;;
   esac
 }
+verify_migration_destination() {
+  local catalog_manifest catalog_bundle catalog_identity catalog_identity_source
+  validate_instance_tree_for_removal "$instance_root" "$product_root/cameraagents" complete || return 1
+  verify_snapshot_copy "$instance_root/config" "$config_snapshot" &&
+    verify_snapshot_copy "$instance_root/state" "$state_snapshot" &&
+    validate_stage_root "$catalog_root" "$product_root/catalogs" &&
+    verify_snapshot_copy "$catalog_root" "$catalog_snapshot" || return 1
+  catalog_manifest="$catalog_root/current/manifest.json"
+  [[ -f "$catalog_manifest" && ! -L "$catalog_manifest" ]] || return 1
+  catalog_bundle="$(realpath -- "$catalog_root/current")"
+  [[ "$catalog_bundle" == "$catalog_root/versions/"* && -d "$catalog_bundle" && ! -L "$catalog_bundle" ]] || return 1
+  IFS=$'\t' read -r catalog_identity catalog_identity_source < <(catalog_manifest_identity "$catalog_manifest" "$catalog_bundle") || return 1
+  [[ "$catalog_identity" == "$catalog_id" && "$catalog_identity_source" == "$(jq -r '.catalogIdentitySource' "$evidence")" ]]
+}
 remove_rollback_metadata() {
   local path="$1" label="$2"
   if [[ -e "$path" || -L "$path" ]]; then
@@ -393,17 +409,7 @@ verify)
   validate_metadata_file "$config_snapshot" && validate_metadata_file "$state_snapshot" &&
     validate_metadata_file "$catalog_snapshot" || exit 1
   validate_migration_filesystem_state || exit 1
-  validate_instance_tree_for_removal "$instance_root" "$product_root/cameraagents" complete || exit 1
-  verify_snapshot_copy "$instance_root/config" "$config_snapshot" &&
-    verify_snapshot_copy "$instance_root/state" "$state_snapshot" &&
-    validate_stage_root "$catalog_root" "$product_root/catalogs" &&
-    verify_snapshot_copy "$catalog_root" "$catalog_snapshot" || exit 1
-  catalog_manifest="$catalog_root/current/manifest.json"; catalog_bundle='' catalog_identity='' catalog_identity_source=''
-  [[ -f "$catalog_manifest" && ! -L "$catalog_manifest" ]] || exit 1
-  catalog_bundle="$(realpath -- "$catalog_root/current")"
-  [[ "$catalog_bundle" == "$catalog_root/versions/"* && -d "$catalog_bundle" && ! -L "$catalog_bundle" ]] || exit 1
-  IFS=$'\t' read -r catalog_identity catalog_identity_source < <(catalog_manifest_identity "$catalog_manifest" "$catalog_bundle") || exit 1
-  [[ "$catalog_identity" == "$catalog_id" && "$catalog_identity_source" == "$(jq -r '.catalogIdentitySource' "$evidence")" ]] || exit 1
+  verify_migration_destination || exit 1
   ;;
 rollback)
   catalog_manifest="$legacy_catalog/current/manifest.json"; catalog_bundle='' catalog_identity='' catalog_identity_source=''
@@ -481,7 +487,7 @@ finalize)
   validate_finalize_evidence "$cutover_sha" || exit 1
   migration_status="$(jq -r '.status' "$evidence")"
   if [[ "$migration_status" == finalized ]]; then
-    for path in "$legacy_config" "$legacy_state" "$legacy_catalog" "$config_tomb" "$state_tomb" "$catalog_tomb"; do [[ ! -e "$path" && ! -L "$path" ]] || exit 1; done
+    validate_migration_filesystem_state && verify_migration_destination || exit 1
     printf 'migration=%s status=passed instance=%s catalog=%s\n' "$action" "$instance_id" "$catalog_id"; exit 0
   fi
   if [[ ! -e "$intent" && ! -L "$intent" ]]; then

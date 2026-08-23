@@ -3080,6 +3080,26 @@ for hardlinked_payload in "$installed_catalog_manifest" "$installed_database"; d
   rm "$payload_hardlink"
 done
 
+installed_manifest_compact="$(jq -c . "$TEMP_DIR/installed-catalog.valid")"
+for manifest_schema_drift in unknown-top unknown-package unknown-catalog unknown-database duplicate-top duplicate-package malformed oversized; do
+  chmod 644 "$installed_catalog_manifest"
+  case "$manifest_schema_drift" in
+    unknown-top) jq '.unexpected=true' "$TEMP_DIR/installed-catalog.valid" > "$installed_catalog_manifest" ;;
+    unknown-package) jq '.package.unexpected=true' "$TEMP_DIR/installed-catalog.valid" > "$installed_catalog_manifest" ;;
+    unknown-catalog) jq '.catalog.unexpected=true' "$TEMP_DIR/installed-catalog.valid" > "$installed_catalog_manifest" ;;
+    unknown-database) jq '.database.unexpected=true' "$TEMP_DIR/installed-catalog.valid" > "$installed_catalog_manifest" ;;
+    duplicate-top) printf '{"manifestVersion":2,%s\n' "${installed_manifest_compact#\{}" > "$installed_catalog_manifest" ;;
+    duplicate-package) printf '%s\n' "${installed_manifest_compact/\"package\":\{\"kind\":\"fixture\"/\"package\":\{\"kind\":\"fixture\",\"kind\":\"fixture\"}" > "$installed_catalog_manifest" ;;
+    malformed) printf '{"manifestVersion":2\n' > "$installed_catalog_manifest" ;;
+    oversized) cp "$TEMP_DIR/installed-catalog.valid" "$installed_catalog_manifest"; printf '%*s' 65537 '' >> "$installed_catalog_manifest" ;;
+  esac
+  chmod 444 "$installed_catalog_manifest"
+  expect_fixture_resume_failure "manifest-$manifest_schema_drift"
+  chmod 644 "$installed_catalog_manifest"
+  cp "$TEMP_DIR/installed-catalog.valid" "$installed_catalog_manifest"
+  chmod 444 "$installed_catalog_manifest"
+done
+
 chmod 755 "$install_root/versions/fixture-v1"
 printf 'unexpected\n' > "$install_root/versions/fixture-v1/unexpected"
 chmod 555 "$install_root/versions/fixture-v1"

@@ -82,6 +82,28 @@ ln -s versions/v1 "$legacy/data/catalog/current"
 printf 'sibling-preserved\n' > "$legacy/data/sibling"
 instance=44444444-4444-4444-8444-444444444444
 args=(--legacy-root "$legacy" --product-root "$migrated" --instance-id "$instance" --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$evidence")
+# The shipped layout nests the product root beneath the legacy root, but outside every migrated source tree.
+nested_legacy="$TEMP_DIR/nested-legacy"; nested_product="$nested_legacy/skymonitor"; nested_evidence="$nested_legacy/migration.json"
+mkdir -m 700 "$nested_legacy"
+cp -a "$legacy/config" "$legacy/data" "$nested_legacy/"
+mkdir -m 700 "$nested_product"
+printf 'legacy-sibling-preserved\n' > "$nested_legacy/unrelated-legacy-state"
+printf 'product-state-preserved\n' > "$nested_product/unrelated-product-state"
+nested_args=(--legacy-root "$nested_legacy" --product-root "$nested_product" --instance-id "$instance" --application-id agent-legacy \
+  --catalog-id hyg-v42-production --evidence "$nested_evidence")
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${nested_args[@]}" >/dev/null
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${nested_args[@]}" >/dev/null
+test "$(<"$nested_legacy/unrelated-legacy-state")" = legacy-sibling-preserved
+test "$(<"$nested_product/unrelated-product-state")" = product-state-preserved
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${nested_args[@]}" >/dev/null
+test "$(<"$nested_legacy/unrelated-legacy-state")" = legacy-sibling-preserved
+test "$(<"$nested_product/unrelated-product-state")" = product-state-preserved
+for overlapping_product in "$nested_legacy/config" "$nested_legacy/config/cameraagent" "$nested_legacy/config/cameraagent/product" \
+  "$nested_legacy/data" "$nested_legacy/data/agent/product" "$nested_legacy/data/catalog/product"; do
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply --legacy-root "$nested_legacy" --product-root "$overlapping_product" \
+    --instance-id "$instance" --application-id agent-legacy --catalog-id hyg-v42-production \
+    --evidence "$TEMP_DIR/overlap.json" >/dev/null 2>&1; then exit 86; fi
+done
 safe_product_parent="$TEMP_DIR/safe-product-parent"; safe_evidence_parent="$TEMP_DIR/safe-evidence-parent"
 mkdir -m 755 "$safe_product_parent" "$safe_evidence_parent"
 safe_args=(--legacy-root "$legacy" --product-root "$safe_product_parent/skymonitor" --instance-id "$instance" --application-id agent-legacy \
@@ -267,9 +289,13 @@ for finalized_drift in missing-instance missing-config corrupt-state corrupt-man
   if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then
     printf 'Finalized migration verify accepted destination drift: %s\n' "$finalized_drift" >&2; exit 106
   fi
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then
+    printf 'Finalized migration finalize accepted destination drift: %s\n' "$finalized_drift" >&2; exit 107
+  fi
   restore_finalized_destinations
 done
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null
 cp "$cutover" "$cutover.valid"
 jq '.captureSequenceAfter=45' "$cutover.valid" > "$cutover"; chmod 600 "$cutover"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 105; fi

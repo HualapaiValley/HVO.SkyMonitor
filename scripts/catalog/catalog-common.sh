@@ -209,17 +209,21 @@ hyg_is_supported_package_version() {
     (( ${#revision} < 10 )) || { [[ ${#revision} -eq 10 ]] && (( 10#$revision <= 2147483647 )); }
 }
 
+hyg_validate_manifest_document() {
+    local manifest="$1"
+    local duplicate_count
+    [[ -f "$manifest" && ! -L "$manifest" ]] || { hyg_fail "bundle manifest is missing or is not a regular file: $manifest"; return 1; }
+    [[ "$(hyg_file_length "$manifest")" -le "$HYG_MAXIMUM_MANIFEST_LENGTH" ]] || { hyg_fail "bundle manifest exceeds the maximum byte length"; return 1; }
+    [[ "$(hyg_json_query "$manifest" 'SELECT json_valid(document) FROM input;')" == "1" ]] || { hyg_fail "bundle manifest is malformed JSON"; return 1; }
+    duplicate_count="$(hyg_json_query "$manifest" "SELECT count(*) FROM (SELECT parent, key FROM input, json_tree(document) WHERE key IS NOT NULL GROUP BY parent, key HAVING count(*) > 1);")"
+    [[ "$duplicate_count" == "0" ]] || { hyg_fail "bundle manifest contains duplicate properties"; return 1; }
+}
+
 hyg_validate_manifest_version() {
     local bundle="$1"
     local expected_manifest_version="$2"
     local manifest="$bundle/$HYG_MANIFEST_FILE"
-    local duplicate_count
-
-    [[ -f "$manifest" && ! -L "$manifest" ]] || hyg_fail "bundle manifest is missing or is not a regular file: $manifest"
-    [[ "$(hyg_file_length "$manifest")" -le "$HYG_MAXIMUM_MANIFEST_LENGTH" ]] || hyg_fail "bundle manifest exceeds the maximum byte length"
-    [[ "$(hyg_json_query "$manifest" 'SELECT json_valid(document) FROM input;')" == "1" ]] || hyg_fail "bundle manifest is malformed JSON"
-    duplicate_count="$(hyg_json_query "$manifest" "SELECT count(*) FROM (SELECT parent, key FROM input, json_tree(document) WHERE key IS NOT NULL GROUP BY parent, key HAVING count(*) > 1);")"
-    [[ "$duplicate_count" == "0" ]] || hyg_fail "bundle manifest contains duplicate properties"
+    hyg_validate_manifest_document "$manifest" || return 1
 
     hyg_json_exact "$manifest" '$.package.kind' text production
     hyg_json_exact_keys "$manifest" '$' 'catalog,database,license,manifestVersion,package,preprocessingVersion,schemaVersion,serializer,source,topology'
@@ -290,7 +294,6 @@ hyg_validate_manifest() {
 hyg_validate_legacy_fixture_bundle() {
     local bundle="$1"
     local manifest="$bundle/$HYG_MANIFEST_FILE"
-    local duplicate_count
     local -a entries
     HYG_VALIDATION_FAILED=0
 
@@ -299,10 +302,7 @@ hyg_validate_legacy_fixture_bundle() {
     entries=("$bundle"/*)
     shopt -u nullglob dotglob
     [[ ${#entries[@]} -eq 2 ]] || hyg_fail "legacy fixture bundle must contain exactly its manifest and database"
-    [[ "$(hyg_file_length "$manifest")" -le "$HYG_MAXIMUM_MANIFEST_LENGTH" ]] || hyg_fail "bundle manifest exceeds the maximum byte length"
-    [[ "$(hyg_json_query "$manifest" 'SELECT json_valid(document) FROM input;')" == 1 ]] || hyg_fail "bundle manifest is malformed JSON"
-    duplicate_count="$(hyg_json_query "$manifest" "SELECT count(*) FROM (SELECT parent, key FROM input, json_tree(document) WHERE key IS NOT NULL GROUP BY parent, key HAVING count(*) > 1);")"
-    [[ "$duplicate_count" == 0 ]] || hyg_fail "bundle manifest contains duplicate properties"
+    hyg_validate_manifest_document "$manifest" || return 1
     hyg_json_exact_keys "$manifest" '$' 'catalog,database,manifestVersion,package,preprocessingVersion,schemaVersion'
     hyg_json_exact_keys "$manifest" '$.package' 'kind,version'
     hyg_json_exact_keys "$manifest" '$.catalog' 'name,version'
@@ -430,19 +430,52 @@ hyg_validate_fixture_installation() {
     hyg_validate_fixture_payload "$install_root" "$version"
 }
 
+hyg_validate_fixture_manifest_v2() {
+    local bundle="$1" expected_id="$2" expected_version="$3" expected_schema="$4"
+    local expected_preprocessing="$5" expected_sha="$6" expected_length="$7" expected_rows="$8"
+    local manifest="$bundle/$HYG_MANIFEST_FILE" catalog_name catalog_version
+    hyg_json_exact_keys "$manifest" '$' 'catalog,database,manifestVersion,package,preprocessingVersion,schemaVersion'
+    hyg_json_exact_keys "$manifest" '$.package' 'kind,version'
+    hyg_json_exact_keys "$manifest" '$.catalog' 'id,name,version'
+    hyg_json_exact_keys "$manifest" '$.database' 'length,relativePath,rowCount,sha256'
+    hyg_json_exact "$manifest" '$.manifestVersion' integer 2
+    hyg_json_exact "$manifest" '$.package.kind' text fixture
+    hyg_json_exact "$manifest" '$.package.version' text "$expected_version"
+    hyg_json_exact "$manifest" '$.catalog.id' text "$expected_id"
+    catalog_name="$(hyg_json_value "$manifest" '$.catalog.name')"
+    catalog_version="$(hyg_json_value "$manifest" '$.catalog.version')"
+    [[ "$(hyg_json_type "$manifest" '$.catalog.name')" == text && "$catalog_name" =~ [^[:space:]] ]] ||
+        hyg_fail "bundle manifest has an invalid fixture catalog name"
+    [[ "$(hyg_json_type "$manifest" '$.catalog.version')" == text && "$catalog_version" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]] ||
+        hyg_fail "bundle manifest has an invalid fixture catalog version"
+    hyg_json_exact "$manifest" '$.schemaVersion' text "$expected_schema"
+    hyg_json_exact "$manifest" '$.preprocessingVersion' text "$expected_preprocessing"
+    hyg_json_exact "$manifest" '$.database.relativePath' text "$HYG_DATABASE_FILE"
+    hyg_json_exact "$manifest" '$.database.sha256' text "$expected_sha"
+    hyg_json_exact "$manifest" '$.database.length' integer "$expected_length"
+    hyg_json_exact "$manifest" '$.database.rowCount' integer "$expected_rows"
+    hyg_validate_database_contract "$bundle/$HYG_DATABASE_FILE" "$expected_length" "$expected_sha" \
+        "$expected_schema" "$expected_preprocessing" "$expected_rows"
+    [[ "$HYG_VALIDATION_FAILED" == 0 ]]
+}
+
 hyg_validate_catalog_contract() {
     local bundle="$1" expected_id="$2" expected_kind="$3" expected_version="$4"
     local expected_schema="$5" expected_preprocessing="$6" expected_sha="$7" expected_length="$8" expected_rows="$9"
     local manifest="$bundle/$HYG_MANIFEST_FILE" manifest_version resolved_id
     HYG_VALIDATION_FAILED=0
+    hyg_validate_manifest_document "$manifest" || return 1
     manifest_version="$(hyg_json_value "$manifest" '$.manifestVersion')"
     if [[ "$manifest_version" == 1 ]]; then
         resolved_id="$(hyg_resolve_legacy_catalog_identity "$bundle")" || return 1
         [[ "$resolved_id" == "$expected_id" ]] || hyg_fail "legacy catalog identity does not match inventory"
     elif [[ "$manifest_version" == 2 ]]; then
-        hyg_json_exact "$manifest" '$.catalog.id' text "$expected_id"
-        hyg_validate_database_contract "$bundle/$HYG_DATABASE_FILE" "$expected_length" "$expected_sha" \
-            "$expected_schema" "$expected_preprocessing" "$expected_rows"
+        case "$expected_kind" in
+            production) hyg_validate_bundle "$bundle" || return 1 ;;
+            fixture) hyg_validate_fixture_manifest_v2 "$bundle" "$expected_id" "$expected_version" "$expected_schema" \
+                "$expected_preprocessing" "$expected_sha" "$expected_length" "$expected_rows" || return 1 ;;
+            *) hyg_fail "catalog package kind is unsupported"; return 1 ;;
+        esac
     else
         hyg_fail "catalog manifest version is unsupported"
     fi
