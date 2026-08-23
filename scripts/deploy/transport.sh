@@ -485,6 +485,7 @@ if [[ "$kind" == production ]]; then
   "$stage/scripts/catalog/install-hyg-v42.sh" install "$bundle" "$install_root" >/dev/null
 else
   destination="$install_root/versions/$version"
+  source_manifest_sha="$(sha256sum "$bundle/manifest.json" | cut -d' ' -f1)"
   mkdir -p -- "$install_root/versions"
   if [[ ! -e "$destination" ]]; then
     mkdir -m 755 -- "$destination"; cp -a -- "$bundle/." "$destination/"
@@ -495,8 +496,14 @@ else
     [[ -d "$destination" && ! -L "$destination" && -f "$existing" && ! -L "$existing" &&
        "$(sha256sum "$existing" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$existing")" == "$expected_length" ]] || exit 98
   fi
-  [[ "$(stat -c %a "$destination")" == 555 && "$(stat -c %a "$destination/manifest.json")" == 444 &&
+  shopt -s nullglob dotglob; entries=("$destination"/*); shopt -u nullglob dotglob
+  [[ ${#entries[@]} -eq 2 && -f "$destination/manifest.json" && ! -L "$destination/manifest.json" &&
+     -f "$destination/hyg_v42.sqlite" && ! -L "$destination/hyg_v42.sqlite" &&
+     "$(sha256sum "$destination/manifest.json" | cut -d' ' -f1)" == "$source_manifest_sha" &&
+     "$(stat -c %a "$destination")" == 555 && "$(stat -c %a "$destination/manifest.json")" == 444 &&
      "$(stat -c %a "$destination/hyg_v42.sqlite")" == 444 ]] || exit 98
+  hyg_validate_catalog_contract "$destination" "$catalog_id" "$kind" "$version" "$schema_version" \
+    "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 98
   temporary="$install_root/.current.tmp.$$"
   ln -s "versions/$version" "$temporary"; mv -Tf -- "$temporary" "$install_root/current"
 fi

@@ -2926,6 +2926,19 @@ jq --arg bundle "$production_mismatch_bundle" '.catalogs[0].kind="production" | 
   fi
 )
 test ! -s "$LOG" || fail 'Production catalog mismatch reached transport.'
+mkdir -p "$install_root/versions/prior" "$install_root/versions/fixture-v1"
+printf 'prior\n' > "$install_root/versions/prior/marker"
+ln -s versions/prior "$install_root/current"
+cp "$bundle/hyg_v42.sqlite" "$install_root/versions/fixture-v1/hyg_v42.sqlite"
+jq '.catalog.id="hostile-existing-fixture"' "$TEMP_DIR/fixture-manifest.valid" > "$install_root/versions/fixture-v1/manifest.json"
+chmod 444 "$install_root/versions/fixture-v1/manifest.json" "$install_root/versions/fixture-v1/hyg_v42.sqlite"
+chmod 555 "$install_root/versions/fixture-v1"
+if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/hostile-existing-catalog.log" 2>&1; then
+  fail 'Catalog accepted a hostile preexisting fixture version.'
+fi
+test "$(readlink "$install_root/current")" = versions/prior || fail 'Catalog replaced current before validating the existing fixture version.'
+chmod 755 "$install_root/versions/fixture-v1"
+rm -rf "$install_root/versions/fixture-v1"
 run_deploy_mode catalog "$deploy_case" isolated >/dev/null
 installed_catalog_manifest="$install_root/versions/fixture-v1/manifest.json"
 test "$(stat -c %a "$install_root/versions/fixture-v1")" = 555

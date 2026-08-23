@@ -114,6 +114,30 @@ test -d "$migrated/cameraagents/$instance/state"
 test -f "$migrated/catalogs/hyg-v42-production/versions/v1/catalog.sqlite"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
 test ! -e "$evidence.rollback-intent.json"; test ! -e "$migrated/cameraagents/$instance"
+for cleanup_case in \
+  'intent|' \
+  "evidence|$evidence" \
+  "config-snapshot|$evidence.config.snapshot" \
+  "state-snapshot|$evidence.state.snapshot" \
+  "catalog-snapshot|$evidence.catalog.snapshot" \
+  "apply-intent|$evidence.apply-intent.json"; do
+  cleanup_boundary="${cleanup_case%%|*}"; cleanup_deleted="${cleanup_case#*|}"
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}"
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
+  if DEPLOY_MIGRATION_FAILPOINT="after-rollback-cleanup-$cleanup_boundary" "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null 2>&1; then exit 103; fi
+  jq -e '.state == "cleanup-pending"' "$evidence.rollback-intent.json" >/dev/null
+  [[ -z "$cleanup_deleted" ]] || test ! -e "$cleanup_deleted"
+  if [[ "$cleanup_boundary" == evidence ]]; then
+    cp "$evidence.config.snapshot" "$TEMP_DIR/config.snapshot.valid"
+    printf 'hostile\n' >> "$evidence.config.snapshot"
+    if "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null 2>&1; then exit 104; fi
+    test -f "$evidence.rollback-intent.json"
+    cp "$TEMP_DIR/config.snapshot.valid" "$evidence.config.snapshot"
+  fi
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
+  test ! -e "$evidence.rollback-intent.json"; test ! -e "$evidence.apply-intent.json"
+  test ! -e "$evidence.config.snapshot"; test ! -e "$evidence.state.snapshot"; test ! -e "$evidence.catalog.snapshot"
+done
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
 test "$(<"$migrated/cameraagents/$instance/state/capture-sequence")" = 42
