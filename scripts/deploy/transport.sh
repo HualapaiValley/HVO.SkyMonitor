@@ -404,8 +404,12 @@ else
 fi
 if [[ -e "$binding" || -L "$binding" ]]; then
   [[ -f "$binding" && ! -L "$binding" && "$(stat -c '%h:%a' "$binding")" == 1:600 ]] || exit 93
-  jq -e --argjson initial "$binding_initial" '.schemaVersion == 1 and .configuredIdentity == $initial.configuredIdentity and
-    ((.state == "pre-provisioning" and .boundIdentity == null) or (.state == "bound" and (.boundIdentity | type == "string" and length > 0)))' "$binding" >/dev/null || exit 93
+  jq -e --argjson initial "$binding_initial" '
+    (keys | sort) == (["boundIdentity","configuredIdentity","schemaVersion","state"] | sort) and
+    .schemaVersion == 1 and .configuredIdentity == $initial.configuredIdentity and
+    (.configuredIdentity | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
+    ((.state == "pre-provisioning" and .boundIdentity == null) or
+     (.state == "bound" and (.boundIdentity | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))))' "$binding" >/dev/null || exit 93
   if [[ "$(jq -r '.state' "$binding")" == bound ]]; then
     [[ "$(jq -r '.component' "$manifest")" == cameraAgent ]] || exit 93
     bound="$(jq -r '.boundIdentity' "$binding")"; configured="$(jq -r '.configuredIdentity' "$binding")"; agent_file="$root/config/secrets/CameraAgent__AgentId"; module="$root/config/camera-module.json"
@@ -487,18 +491,8 @@ else
   destination="$install_root/versions/$version"
   source_manifest_sha="$(sha256sum "$bundle/manifest.json" | cut -d' ' -f1)"
   transaction="$install_root/.fixture-pointer-transaction"
+  candidate_intent="$install_root/.fixture-candidate-transaction"
   fixture_fail_at() { [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" != "$1" ]] || exit 75; }
-  fixture_replace_current() {
-    local target=$1 temporary attempt
-    for attempt in {1..16}; do
-      temporary="$install_root/.current.tmp.$$.$RANDOM"
-      if ln -s -- "$target" "$temporary" 2>/dev/null; then break; fi
-      temporary=
-    done
-    [[ -n "$temporary" ]] || return 1
-    mv -Tf -- "$temporary" "$install_root/current"
-    sync -f "$install_root"
-  }
   fixture_create_private_temporary() {
     local prefix=$1 temporary attempt
     for attempt in {1..16}; do
@@ -509,6 +503,58 @@ else
     done
     return 1
   }
+  fixture_validate_partial_candidate() {
+    local candidate=$1 path name mode
+    local -a entries
+    [[ -d "$candidate" && ! -L "$candidate" &&
+       "$(stat -c '%u:%d' -- "$candidate")" == "$(id -u):$(stat -c %d -- "$install_root/versions")" ]] || return 1
+    mode="$(stat -c %a -- "$candidate")"; [[ "$mode" == 700 || "$mode" == 555 ]] || return 1
+    shopt -s nullglob dotglob
+    entries=("$candidate"/*)
+    shopt -u nullglob dotglob
+    for path in "${entries[@]}"; do
+      name="${path##*/}"
+      [[ "$name" == manifest.json || "$name" == hyg_v42.sqlite ]] || return 1
+      [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%h' -- "$path")" == "$(id -u):1" ]] || return 1
+      mode="$(stat -c %a -- "$path")"; [[ "$mode" == 600 || "$mode" == 444 ]] || return 1
+    done
+  }
+  fixture_remove_partial_candidate() {
+    local candidate=$1
+    fixture_validate_partial_candidate "$candidate" || return 1
+    chmod 700 -- "$candidate"
+    chmod 600 -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite" 2>/dev/null || true
+    rm -f -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"
+    rmdir -- "$candidate"
+    sync -f "$install_root/versions"
+  }
+  fixture_reconcile_candidate() {
+    local intent="$candidate_intent" target recorded_id recorded_manifest_sha recorded_database_sha recorded_version candidate actual_id
+    local -a fields
+    [[ -e "$intent" || -L "$intent" ]] || return 0
+    [[ -f "$intent" && ! -L "$intent" && "$(stat -c '%u:%h:%a' -- "$intent")" == "$(id -u):1:600" ]] || return 1
+    mapfile -t fields < "$intent"
+    [[ ${#fields[@]} -eq 4 ]] || return 1
+    target="${fields[0]}"; recorded_id="${fields[1]}"; recorded_manifest_sha="${fields[2]}"; recorded_database_sha="${fields[3]}"
+    [[ "$target" =~ ^versions/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$ &&
+       "$recorded_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && "$recorded_manifest_sha" =~ ^[0-9a-f]{64}$ &&
+       "$recorded_database_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+    recorded_version="${target#versions/}"
+    candidate="$install_root/versions/.fixture-candidate-$recorded_version.stage"
+    if [[ -e "$install_root/$target" || -L "$install_root/$target" ]]; then
+      [[ ! -e "$candidate" && ! -L "$candidate" ]] || return 1
+      hyg_validate_fixture_payload "$install_root" "$recorded_version" || return 1
+      [[ "$(hyg_sha256 "$install_root/$target/manifest.json")" == "$recorded_manifest_sha" &&
+         "$(hyg_sha256 "$install_root/$target/hyg_v42.sqlite")" == "$recorded_database_sha" ]] || return 1
+      actual_id="$(hyg_resolve_catalog_identity "$install_root/$target")" || return 1
+      [[ "$actual_id" == "$recorded_id" &&
+         "$(hyg_json_value "$install_root/$target/manifest.json" '$.package.version')" == "$recorded_version" ]] || return 1
+    elif [[ -e "$candidate" || -L "$candidate" ]]; then
+      fixture_remove_partial_candidate "$candidate" || return 1
+    fi
+    rm -f -- "$intent"
+    sync -f "$install_root"
+  }
   install_parent="$(dirname -- "$install_root")"
   [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
      -d "$install_parent" && ! -L "$install_parent" ]] || exit 97
@@ -517,7 +563,7 @@ else
   if [[ -e "$install_root" || -L "$install_root" ]]; then
     hyg_fixture_safe_mutable_directory "$install_root" || exit 97
   else
-    mkdir -m 700 -- "$install_root"
+    mkdir -m 700 -- "$install_root" 2>/dev/null || [[ -d "$install_root" && ! -L "$install_root" ]] || exit 97
     hyg_fixture_safe_mutable_directory "$install_root" || exit 97
     sync -f "$install_parent"
   fi
@@ -532,15 +578,28 @@ else
   if [[ -e "$install_root/current" || -L "$install_root/current" ]]; then
     hyg_fixture_validate_pointer "$install_root" "$install_root/current" || exit 97
   fi
-  if [[ -e "$transaction" || -L "$transaction" ]]; then
-    [[ -f "$transaction" && ! -L "$transaction" &&
-       "$(stat -c '%u:%h:%a' -- "$transaction")" == "$(id -u):1:600" &&
-       "$(<"$transaction")" == "versions/$version" ]] || exit 97
-  fi
+  hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 97
+  fixture_reconcile_candidate || exit 97
   if [[ ! -e "$destination" ]]; then
-    mkdir -m 755 -- "$destination"; cp -a -- "$bundle/." "$destination/"
-    chmod 444 -- "$destination/manifest.json" "$destination/hyg_v42.sqlite"
-    chmod 555 -- "$destination"
+    candidate="$install_root/versions/.fixture-candidate-$version.stage"
+    [[ ! -e "$candidate" && ! -L "$candidate" && ! -e "$candidate_intent" && ! -L "$candidate_intent" ]] || exit 98
+    temporary="$(fixture_create_private_temporary .fixture-candidate-transaction.tmp)"
+    printf '%s\n%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" "$expected_sha" > "$temporary"
+    chmod 600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$candidate_intent"; sync -f "$install_root"
+    mkdir -m 700 -- "$candidate"
+    (umask 077; cp --no-preserve=mode,ownership -- "$bundle/manifest.json" "$candidate/manifest.json")
+    chmod 600 "$candidate/manifest.json"
+    fixture_fail_at during-candidate-copy
+    (umask 077; cp --no-preserve=mode,ownership -- "$bundle/hyg_v42.sqlite" "$candidate/hyg_v42.sqlite")
+    chmod 600 "$candidate/hyg_v42.sqlite"
+    hyg_validate_catalog_contract "$candidate" "$catalog_id" "$kind" "$version" "$schema_version" \
+      "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 98
+    chmod 444 -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"
+    chmod 555 -- "$candidate"
+    sync -f "$candidate/manifest.json"; sync -f "$candidate/hyg_v42.sqlite"; sync -f "$candidate"
+    fixture_fail_at before-candidate-rename
+    mv -T -- "$candidate" "$destination"; sync -f "$install_root/versions"
+    rm -f -- "$candidate_intent"; sync -f "$install_root"
   else
     existing="$destination/hyg_v42.sqlite"
     [[ -d "$destination" && ! -L "$destination" && -f "$existing" && ! -L "$existing" &&
@@ -553,13 +612,12 @@ else
   sync -f "$destination/manifest.json"; sync -f "$destination/hyg_v42.sqlite"
   sync -f "$destination"; sync -f "$install_root/versions"
   fixture_fail_at after-candidate-publication
-  if [[ ! -e "$transaction" && ! -L "$transaction" ]]; then
-    temporary="$(fixture_create_private_temporary .fixture-pointer-transaction.tmp)"
-    printf '%s\n' "versions/$version" > "$temporary"; chmod 600 "$temporary"; sync -f "$temporary"
-    mv -T -- "$temporary" "$transaction"; sync -f "$install_root"
-  fi
+  [[ ! -e "$transaction" && ! -L "$transaction" ]] || exit 98
+  temporary="$(fixture_create_private_temporary .fixture-pointer-transaction.tmp)"
+  printf '%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" > "$temporary"
+  chmod 600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$transaction"; sync -f "$install_root"
   fixture_fail_at after-pointer-transaction
-  fixture_replace_current "versions/$version"
+  hyg_fixture_replace_current "$install_root" "versions/$version"
   fixture_fail_at after-current-pointer
   rm -f -- "$transaction"; sync -f "$install_root"
   hyg_validate_fixture_installation "$install_root" "$version" || exit 98
@@ -595,6 +653,7 @@ source "$stage/scripts/catalog/catalog-common.sh"
 [[ -L "$install_root/current" ]] || exit 90
 if [[ "$kind" == fixture ]]; then
   hyg_fixture_acquire_install_lock "$install_root" || exit 92
+  hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 92
 fi
 current=$(readlink "$install_root/current")
 [[ "$current" == "versions/$expected_version" ]] || exit 91

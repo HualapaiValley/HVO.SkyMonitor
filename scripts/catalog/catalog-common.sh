@@ -88,6 +88,39 @@ hyg_sqlite_scalar() {
     sqlite3 -batch -noheader -readonly "$1" "$2"
 }
 
+hyg_validate_database_structure() {
+    local database="$1"
+    local result
+
+    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name || ':' || type, ',') FROM (SELECT name, type FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name);")"
+    [[ "$result" == "celestial_objects_magnitude_id:index,catalog_metadata:table,celestial_objects:table" ]] || \
+        hyg_fail "catalog database contains an unexpected table or index set"
+    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name || ':' || type || ':' || ncol || ':' || wr || ':' || strict, ',') FROM (SELECT name, type, ncol, wr, strict FROM pragma_table_list WHERE schema = 'main' AND name NOT LIKE 'sqlite_%' ORDER BY name);")"
+    [[ "$result" == "catalog_metadata:table:2:1:0,celestial_objects:table:7:1:0" ]] || \
+        hyg_fail "catalog database tables have incompatible options"
+    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name || ':' || type || ':' || \"notnull\" || ':' || coalesce(dflt_value, '-') || ':' || pk || ':' || hidden, ',') FROM (SELECT name, type, \"notnull\", dflt_value, pk, hidden FROM pragma_table_xinfo('catalog_metadata') ORDER BY cid);")"
+    [[ "$result" == "key:TEXT:1:-:1:0,value:TEXT:1:-:0:0" ]] || hyg_fail "catalog_metadata has an incompatible schema"
+    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name || ':' || type || ':' || \"notnull\" || ':' || coalesce(dflt_value, '-') || ':' || pk || ':' || hidden, ',') FROM (SELECT name, type, \"notnull\", dflt_value, pk, hidden FROM pragma_table_xinfo('celestial_objects') ORDER BY cid);")"
+    [[ "$result" == "id:TEXT:1:-:1:0,display_name:TEXT:1:-:0:0,right_ascension_hours:REAL:1:-:0:0,declination_degrees:REAL:1:-:0:0,magnitude:REAL:1:-:0:0,color_index:REAL:0:-:0:0,hipparcos_id:TEXT:0:-:0:0" ]] || \
+        hyg_fail "celestial_objects has an incompatible schema"
+    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name || ':' || \"unique\" || ':' || origin || ':' || partial, ',') FROM (SELECT name, \"unique\", origin, partial FROM pragma_index_list('celestial_objects') WHERE origin != 'pk' ORDER BY name);")"
+    [[ "$result" == "celestial_objects_magnitude_id:0:c:0" ]] || hyg_fail "catalog database contains an unexpected secondary index"
+    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name || ':' || desc || ':' || coll || ':' || key, ',') FROM (SELECT name, desc, coll, key FROM pragma_index_xinfo('celestial_objects_magnitude_id') ORDER BY seqno);")"
+    [[ "$result" == "magnitude:0:BINARY:1,id:0:BINARY:1" ]] || hyg_fail "catalog ordering index is missing or incompatible"
+}
+
+hyg_validate_database_invariants() {
+    local database="$1"
+    local result
+
+    result="$(hyg_sqlite_scalar "$database" "SELECT count(*) FROM celestial_objects WHERE id = '0' OR lower(trim(display_name)) = 'sol';")"
+    [[ "$result" == 0 ]] || hyg_fail "catalog database contains Sol"
+    result="$(hyg_sqlite_scalar "$database" "SELECT count(*) FROM (SELECT id FROM celestial_objects GROUP BY id HAVING count(*) != 1);")"
+    [[ "$result" == 0 ]] || hyg_fail "catalog database contains duplicate object IDs"
+    result="$(hyg_sqlite_scalar "$database" "SELECT count(*) FROM (SELECT hipparcos_id FROM celestial_objects WHERE hipparcos_id IS NOT NULL AND trim(hipparcos_id) != '' GROUP BY hipparcos_id HAVING count(*) != 1);")"
+    [[ "$result" == 0 ]] || hyg_fail "catalog database contains duplicate nonblank Hipparcos IDs"
+}
+
 hyg_validate_database() {
     local database="$1"
     local result
@@ -104,26 +137,14 @@ hyg_validate_database() {
     result="$(hyg_sqlite_scalar "$database" 'PRAGMA user_version;')"
     [[ "$result" == "$HYG_SCHEMA_VERSION" ]] || hyg_fail "catalog database user_version is $result, expected $HYG_SCHEMA_VERSION"
 
-    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name || ':' || type, ',') FROM (SELECT name, type FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name);")"
-    [[ "$result" == "celestial_objects_magnitude_id:index,catalog_metadata:table,celestial_objects:table" ]] || \
-        hyg_fail "catalog database contains an unexpected table or index set"
-    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name || ':' || type || ':' || \"notnull\" || ':' || pk, ',') FROM (SELECT name, type, \"notnull\", pk FROM pragma_table_info('catalog_metadata') ORDER BY cid);")"
-    [[ "$result" == "key:TEXT:1:1,value:TEXT:1:0" ]] || hyg_fail "catalog_metadata has an incompatible schema"
-    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name || ':' || type || ':' || \"notnull\" || ':' || pk, ',') FROM (SELECT name, type, \"notnull\", pk FROM pragma_table_info('celestial_objects') ORDER BY cid);")"
-    [[ "$result" == "id:TEXT:1:1,display_name:TEXT:1:0,right_ascension_hours:REAL:1:0,declination_degrees:REAL:1:0,magnitude:REAL:1:0,color_index:REAL:0:0,hipparcos_id:TEXT:0:0" ]] || \
-        hyg_fail "celestial_objects has an incompatible schema"
-    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(name, ',') FROM (SELECT name FROM pragma_index_info('celestial_objects_magnitude_id') ORDER BY seqno);")"
-    [[ "$result" == "magnitude,id" ]] || hyg_fail "catalog ordering index is missing or incompatible"
+    hyg_validate_database_structure "$database"
 
     expected_metadata=$'catalog_version=4.2\nlicense=CC BY-SA 4.0\nname=HYG 4.2\npreprocessing_version=3\nschema_version=2\nsource_url=https://codeberg.org/astronexus/hyg'
     result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(key || '=' || value, char(10)) FROM (SELECT key, value FROM catalog_metadata ORDER BY key);")"
     [[ "$result" == "$expected_metadata" ]] || hyg_fail "catalog database metadata is missing or incompatible"
     result="$(hyg_sqlite_scalar "$database" 'SELECT count(*) FROM celestial_objects;')"
     [[ "$result" == "$HYG_EXPECTED_ROWS" ]] || hyg_fail "catalog database contains $result rows, expected $HYG_EXPECTED_ROWS"
-    result="$(hyg_sqlite_scalar "$database" "SELECT count(*) FROM celestial_objects WHERE id = '0' OR lower(trim(display_name)) = 'sol';")"
-    [[ "$result" == "0" ]] || hyg_fail "catalog database contains Sol"
-    result="$(hyg_sqlite_scalar "$database" "SELECT count(*) FROM (SELECT hipparcos_id FROM celestial_objects WHERE hipparcos_id IS NOT NULL AND trim(hipparcos_id) != '' GROUP BY hipparcos_id HAVING count(*) != 1);")"
-    [[ "$result" == "0" ]] || hyg_fail "catalog database contains duplicate nonblank Hipparcos IDs"
+    hyg_validate_database_invariants "$database"
 
     for suffix in -journal -wal -shm; do
         [[ ! -e "$database$suffix" && ! -L "$database$suffix" ]] || hyg_fail "read-only validation created an SQLite sidecar: $database$suffix"
@@ -137,7 +158,10 @@ hyg_validate_database_contract() {
     local expected_schema="$4"
     local expected_preprocessing="$5"
     local expected_rows="$6"
+    local expected_name="$7"
+    local expected_catalog_version="$8"
     local result
+    local expected_metadata
     local suffix
 
     hyg_verify_file "$database" "$expected_length" "$expected_sha256" "catalog database"
@@ -148,12 +172,13 @@ hyg_validate_database_contract() {
     [[ "$result" == ok ]] || hyg_fail "catalog database integrity_check failed: $result"
     result="$(hyg_sqlite_scalar "$database" 'PRAGMA user_version;')"
     [[ "$result" == "$expected_schema" ]] || hyg_fail "catalog database user_version is $result, expected $expected_schema"
-    result="$(hyg_sqlite_scalar "$database" "SELECT value FROM catalog_metadata WHERE key = 'schema_version';")"
-    [[ "$result" == "$expected_schema" ]] || hyg_fail "catalog database schema metadata is $result, expected $expected_schema"
-    result="$(hyg_sqlite_scalar "$database" "SELECT value FROM catalog_metadata WHERE key = 'preprocessing_version';")"
-    [[ "$result" == "$expected_preprocessing" ]] || hyg_fail "catalog database preprocessing metadata is $result, expected $expected_preprocessing"
+    hyg_validate_database_structure "$database"
+    expected_metadata="catalog_version=$expected_catalog_version"$'\n'"license=$HYG_LICENSE_IDENTIFIER"$'\n'"name=$expected_name"$'\n'"preprocessing_version=$expected_preprocessing"$'\n'"schema_version=$expected_schema"$'\n'"source_url=$HYG_SOURCE_PROJECT_URL"
+    result="$(hyg_sqlite_scalar "$database" "SELECT group_concat(key || '=' || value, char(10)) FROM (SELECT key, value FROM catalog_metadata ORDER BY key);")"
+    [[ "$result" == "$expected_metadata" ]] || hyg_fail "catalog database metadata is missing or incompatible"
     result="$(hyg_sqlite_scalar "$database" 'SELECT count(*) FROM celestial_objects;')"
     [[ "$result" == "$expected_rows" ]] || hyg_fail "catalog database contains $result rows, expected $expected_rows"
+    hyg_validate_database_invariants "$database"
     for suffix in -journal -wal -shm; do
         [[ ! -e "$database$suffix" && ! -L "$database$suffix" ]] || hyg_fail "read-only validation created an SQLite sidecar: $database$suffix"
     done
@@ -319,7 +344,8 @@ hyg_validate_legacy_fixture_bundle() {
     hyg_json_exact "$manifest" '$.database.length' integer "$HYG_FIXTURE_DATABASE_LENGTH"
     hyg_json_exact "$manifest" '$.database.rowCount' integer "$HYG_FIXTURE_EXPECTED_ROWS"
     hyg_validate_database_contract "$bundle/$HYG_DATABASE_FILE" "$HYG_FIXTURE_DATABASE_LENGTH" \
-        "$HYG_FIXTURE_DATABASE_SHA256" "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION" "$HYG_FIXTURE_EXPECTED_ROWS"
+        "$HYG_FIXTURE_DATABASE_SHA256" "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION" "$HYG_FIXTURE_EXPECTED_ROWS" \
+        "$HYG_FIXTURE_CATALOG_NAME" "$HYG_FIXTURE_CATALOG_VERSION"
     [[ "$HYG_VALIDATION_FAILED" == 0 ]]
 }
 
@@ -423,6 +449,48 @@ hyg_fixture_validate_pointer() {
     (( (8#$mode & 0022) == 0 ))
 }
 
+hyg_fixture_replace_current() {
+    local install_root="$1"
+    local target="$2"
+    local temporary attempt
+    for attempt in {1..16}; do
+        temporary="$install_root/.current.tmp.$$.$RANDOM"
+        if ln -s -- "$target" "$temporary" 2>/dev/null; then
+            break
+        fi
+        temporary=
+    done
+    [[ -n "$temporary" ]] || return 1
+    mv -Tf -- "$temporary" "$install_root/current"
+    sync -f "$install_root"
+}
+
+hyg_fixture_reconcile_pointer_transaction() {
+    local install_root="$1"
+    local transaction="$install_root/.fixture-pointer-transaction"
+    local target catalog_id manifest_sha version actual_id actual_manifest_sha
+    local -a fields
+    [[ -e "$transaction" || -L "$transaction" ]] || return 0
+    [[ -f "$transaction" && ! -L "$transaction" &&
+       "$(stat -c '%u:%h:%a' -- "$transaction")" == "$(id -u):1:600" ]] || return 1
+    mapfile -t fields < "$transaction"
+    [[ ${#fields[@]} -eq 3 ]] || return 1
+    target="${fields[0]}"; catalog_id="${fields[1]}"; manifest_sha="${fields[2]}"
+    [[ "$target" =~ ^versions/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$ &&
+       "$catalog_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && "$manifest_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+    version="${target#versions/}"
+    hyg_validate_fixture_payload "$install_root" "$version" || return 1
+    actual_manifest_sha="$(hyg_sha256 "$install_root/$target/$HYG_MANIFEST_FILE")"
+    [[ "$actual_manifest_sha" == "$manifest_sha" ]] || return 1
+    actual_id="$(hyg_resolve_catalog_identity "$install_root/$target")" || return 1
+    [[ "$actual_id" == "$catalog_id" &&
+       "$(hyg_json_value "$install_root/$target/$HYG_MANIFEST_FILE" '$.package.kind')" == fixture &&
+       "$(hyg_json_value "$install_root/$target/$HYG_MANIFEST_FILE" '$.package.version')" == "$version" ]] || return 1
+    hyg_fixture_replace_current "$install_root" "$target"
+    rm -f -- "$transaction"
+    sync -f "$install_root"
+}
+
 hyg_validate_fixture_payload() {
     local install_root="$1"
     local version="$2"
@@ -445,6 +513,7 @@ hyg_validate_fixture_installation() {
     local install_root="$1"
     local version="$2"
     local install_parent current
+    local -a candidate_stages
     install_parent="$(dirname -- "$install_root")"
     [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
        -d "$install_parent" && ! -L "$install_parent" ]] || return 1
@@ -453,7 +522,12 @@ hyg_validate_fixture_installation() {
         hyg_fixture_safe_mutable_directory "$install_root" &&
         hyg_fixture_safe_mutable_directory "$install_root/versions" &&
         hyg_fixture_validate_pointer "$install_root" "$install_root/current" || return 1
-    [[ ! -e "$install_root/.fixture-pointer-transaction" && ! -L "$install_root/.fixture-pointer-transaction" ]] || return 1
+    [[ ! -e "$install_root/.fixture-pointer-transaction" && ! -L "$install_root/.fixture-pointer-transaction" &&
+       ! -e "$install_root/.fixture-candidate-transaction" && ! -L "$install_root/.fixture-candidate-transaction" ]] || return 1
+    shopt -s nullglob dotglob
+    candidate_stages=("$install_root/versions"/.fixture-candidate-*.stage)
+    shopt -u nullglob dotglob
+    [[ ${#candidate_stages[@]} -eq 0 ]] || return 1
     current="$(readlink "$install_root/current")"
     [[ "$current" == "versions/$version" ]] || return 1
     hyg_validate_fixture_payload "$install_root" "$version"
@@ -471,6 +545,8 @@ hyg_validate_fixture_manifest_v2() {
     hyg_json_exact "$manifest" '$.package.kind' text fixture
     hyg_json_exact "$manifest" '$.package.version' text "$expected_version"
     hyg_json_exact "$manifest" '$.catalog.id' text "$expected_id"
+    [[ "$expected_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || hyg_fail "bundle manifest has an invalid fixture catalog ID"
+    [[ "$expected_version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || hyg_fail "bundle manifest has an invalid fixture package version"
     catalog_name="$(hyg_json_value "$manifest" '$.catalog.name')"
     catalog_version="$(hyg_json_value "$manifest" '$.catalog.version')"
     [[ "$(hyg_json_type "$manifest" '$.catalog.name')" == text && "$catalog_name" =~ [^[:space:]] ]] ||
@@ -479,13 +555,50 @@ hyg_validate_fixture_manifest_v2() {
         hyg_fail "bundle manifest has an invalid fixture catalog version"
     hyg_json_exact "$manifest" '$.schemaVersion' text "$expected_schema"
     hyg_json_exact "$manifest" '$.preprocessingVersion' text "$expected_preprocessing"
+    [[ "$expected_schema" == "$HYG_SCHEMA_VERSION" && "$expected_preprocessing" == "$HYG_PREPROCESSING_VERSION" ]] || \
+        hyg_fail "fixture catalog uses an unsupported schema or preprocessing version"
     hyg_json_exact "$manifest" '$.database.relativePath' text "$HYG_DATABASE_FILE"
     hyg_json_exact "$manifest" '$.database.sha256' text "$expected_sha"
     hyg_json_exact "$manifest" '$.database.length' integer "$expected_length"
     hyg_json_exact "$manifest" '$.database.rowCount' integer "$expected_rows"
     hyg_validate_database_contract "$bundle/$HYG_DATABASE_FILE" "$expected_length" "$expected_sha" \
-        "$expected_schema" "$expected_preprocessing" "$expected_rows"
+        "$expected_schema" "$expected_preprocessing" "$expected_rows" "$catalog_name" "$catalog_version"
     [[ "$HYG_VALIDATION_FAILED" == 0 ]]
+}
+
+hyg_resolve_catalog_identity() {
+    local bundle="$1"
+    local manifest="$bundle/$HYG_MANIFEST_FILE"
+    local manifest_version kind catalog_id version schema preprocessing sha length rows
+    HYG_VALIDATION_FAILED=0
+    hyg_validate_manifest_document "$manifest" || return 1
+    [[ "$(hyg_json_type "$manifest" '$.manifestVersion')" == integer ]] || { hyg_fail "catalog manifest version has an invalid type"; return 1; }
+    manifest_version="$(hyg_json_value "$manifest" '$.manifestVersion')"
+    if [[ "$manifest_version" == 1 ]]; then
+        hyg_resolve_legacy_catalog_identity "$bundle"
+        return
+    fi
+    [[ "$manifest_version" == 2 ]] || { hyg_fail "catalog manifest version is unsupported"; return 1; }
+    kind="$(hyg_json_value "$manifest" '$.package.kind')"
+    case "$kind" in
+        production)
+            hyg_validate_bundle "$bundle" || return 1
+            printf '%s\n' "$HYG_CATALOG_ID"
+            ;;
+        fixture)
+            catalog_id="$(hyg_json_value "$manifest" '$.catalog.id')"
+            version="$(hyg_json_value "$manifest" '$.package.version')"
+            schema="$(hyg_json_value "$manifest" '$.schemaVersion')"
+            preprocessing="$(hyg_json_value "$manifest" '$.preprocessingVersion')"
+            sha="$(hyg_json_value "$manifest" '$.database.sha256')"
+            length="$(hyg_json_value "$manifest" '$.database.length')"
+            rows="$(hyg_json_value "$manifest" '$.database.rowCount')"
+            hyg_validate_fixture_manifest_v2 "$bundle" "$catalog_id" "$version" "$schema" "$preprocessing" \
+                "$sha" "$length" "$rows" || return 1
+            printf '%s\n' "$catalog_id"
+            ;;
+        *) hyg_fail "catalog package kind is unsupported" ;;
+    esac
 }
 
 hyg_validate_catalog_contract() {
@@ -523,6 +636,7 @@ hyg_validate_bundle() {
     local bundle="$1"
     local -a entries
 
+    HYG_VALIDATION_FAILED=0
     [[ -d "$bundle" && ! -L "$bundle" ]] || hyg_fail "bundle is missing or is not a directory: $bundle"
     shopt -s nullglob dotglob
     entries=("$bundle"/*)
@@ -533,4 +647,5 @@ hyg_validate_bundle() {
     hyg_verify_file "$bundle/$HYG_LICENSE_FILE" "$HYG_LICENSE_LENGTH" "$HYG_LICENSE_SHA256" "HYG license"
     hyg_verify_file "$bundle/$HYG_ATTRIBUTION_FILE" "$HYG_ATTRIBUTION_LENGTH" "$HYG_ATTRIBUTION_SHA256" "HYG attribution"
     hyg_validate_database "$bundle/$HYG_DATABASE_FILE"
+    [[ "$HYG_VALIDATION_FAILED" == 0 ]]
 }

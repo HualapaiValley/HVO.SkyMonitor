@@ -2995,9 +2995,28 @@ for hostile_fixture_lock in symlink hardlink mode owner; do
 done
 rm -rf "$install_root"
 
+# Unauthenticated or structurally hostile candidate stages are retained for inspection and never adopted or deleted.
+for hostile_candidate in no-intent hostile-intent; do
+  rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
+    "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
+  rm -rf "$install_root"; mkdir -m 700 "$install_root" "$install_root/versions" "$install_root/versions/.fixture-candidate-fixture-v1.stage"
+  printf 'preserve\n' > "$install_root/versions/.fixture-candidate-fixture-v1.stage/unexpected"
+  if [[ "$hostile_candidate" == hostile-intent ]]; then
+    printf 'versions/fixture-v1\ntest-fixture\n%s\n%s\n' \
+      "$(sha256sum "$bundle/manifest.json" | cut -d' ' -f1)" "$catalog_sha" > "$install_root/.fixture-candidate-transaction"
+    chmod 600 "$install_root/.fixture-candidate-transaction"
+  fi
+  if run_deploy_mode catalog "$deploy_case" isolated > "$TEMP_DIR/catalog-hostile-candidate-$hostile_candidate.log" 2>&1; then
+    fail "Catalog accepted hostile fixture candidate state: $hostile_candidate"
+  fi
+  test "$(<"$install_root/versions/.fixture-candidate-fixture-v1.stage/unexpected")" = preserve
+  test ! -e "$install_root/current"
+done
+rm -rf "$install_root"
+
 # A runtime-owned 0755 catalog parent is safe; activation preserves the old pointer before intent and reconciles on restart.
 test "$(stat -c %a "$catalog_parent")" = 755
-for fixture_boundary in after-candidate-publication after-pointer-transaction after-current-pointer; do
+for fixture_boundary in during-candidate-copy before-candidate-rename after-candidate-publication after-pointer-transaction after-current-pointer; do
   rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
     "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
   chmod -R u+w "$install_root" 2>/dev/null || true
@@ -3014,7 +3033,8 @@ for fixture_boundary in after-candidate-publication after-pointer-transaction af
   fi
   run_deploy_mode catalog "$deploy_case" isolated >/dev/null
   test "$(readlink "$install_root/current")" = versions/fixture-v1
-  test ! -e "$install_root/.fixture-pointer-transaction"
+  test ! -e "$install_root/.fixture-pointer-transaction"; test ! -e "$install_root/.fixture-candidate-transaction"
+  test -z "$(find "$install_root/versions" -maxdepth 1 -name '.fixture-candidate-*.stage' -print -quit)"
 done
 
 make_fixture_transport_stage() {
@@ -3027,10 +3047,11 @@ make_fixture_transport_stage() {
 
 run_fixture_transport_install() {
   local stage_root="$1" target_root="$2" package_version="$3" output="$4"
+  local expected_sha="${5:-$catalog_sha}" expected_length="${6:-$catalog_length}" expected_rows="${7:-9}"
   (
     source "$REPO_ROOT/scripts/deploy/transport.sh"
     PATH="$BIN:$PATH" deploy_transport_catalog_install logic@example "$stage_root" "$target_root" test-fixture fixture \
-      "$package_version" 2 3 "$catalog_sha" "$catalog_length" 9 > "$output"
+      "$package_version" 2 3 "$expected_sha" "$expected_length" "$expected_rows" > "$output"
   )
 }
 
@@ -3047,11 +3068,10 @@ wait_for_fixture_lock() {
 concurrent_root="$TEMP_DIR/remote/concurrent-fixture-catalog"
 same_stage="$TEMP_DIR/concurrent-stage-same"
 make_fixture_transport_stage "$same_stage" fixture-v1
-rm -rf "$concurrent_root"; mkdir -m 700 "$concurrent_root"
-HVO_FIXTURE_CATALOG_TEST_MODE=true HVO_FIXTURE_CATALOG_TEST_LOCK_HOLD_SECONDS=2 \
+rm -rf "$concurrent_root"
+HVO_FIXTURE_CATALOG_TEST_MODE=true HVO_FIXTURE_CATALOG_TEST_LOCK_HOLD_SECONDS=1 \
   run_fixture_transport_install "$same_stage" "$concurrent_root" fixture-v1 "$TEMP_DIR/concurrent-same-first.out" &
 same_first_pid=$!
-wait_for_fixture_lock "$concurrent_root/.fixture-install.lock" "$same_first_pid" || fail 'Same-version fixture publisher did not acquire its install lock.'
 run_fixture_transport_install "$same_stage" "$concurrent_root" fixture-v1 "$TEMP_DIR/concurrent-same-second.out" &
 same_second_pid=$!
 wait "$same_first_pid"; wait "$same_second_pid"
@@ -3064,7 +3084,7 @@ first_stage="$TEMP_DIR/concurrent-stage-v1"
 second_stage="$TEMP_DIR/concurrent-stage-v2"
 make_fixture_transport_stage "$first_stage" fixture-v1
 make_fixture_transport_stage "$second_stage" fixture-v2
-chmod -R u+w "$concurrent_root"; rm -rf "$concurrent_root"; mkdir -m 700 "$concurrent_root"
+chmod -R u+w "$concurrent_root"; rm -rf "$concurrent_root"
 HVO_FIXTURE_CATALOG_TEST_MODE=true HVO_FIXTURE_CATALOG_TEST_LOCK_HOLD_SECONDS=2 \
   run_fixture_transport_install "$first_stage" "$concurrent_root" fixture-v1 "$TEMP_DIR/concurrent-v1.out" &
 first_publisher_pid=$!
@@ -3077,6 +3097,33 @@ test "$(<"$TEMP_DIR/concurrent-v2.out")" = $'installed\tversions/fixture-v2\t'"$
 test "$(readlink "$concurrent_root/current")" = versions/fixture-v2
 test -d "$concurrent_root/versions/fixture-v1" && test -d "$concurrent_root/versions/fixture-v2"
 test ! -e "$concurrent_root/.fixture-pointer-transaction"
+
+# A committed v1 pointer move is completed before a newly requested v2 publication starts.
+cross_version_root="$TEMP_DIR/remote/cross-version-fixture-catalog"
+rm -rf "$cross_version_root"; mkdir -m 700 "$cross_version_root"
+if HVO_FIXTURE_CATALOG_TEST_FAIL_AT=after-pointer-transaction \
+  run_fixture_transport_install "$first_stage" "$cross_version_root" fixture-v1 "$TEMP_DIR/cross-version-v1.out"; then
+  fail 'Cross-version fixture pointer failpoint passed.'
+fi
+test -f "$cross_version_root/.fixture-pointer-transaction"
+run_fixture_transport_install "$second_stage" "$cross_version_root" fixture-v2 "$TEMP_DIR/cross-version-v2.out"
+test "$(readlink "$cross_version_root/current")" = versions/fixture-v2
+test ! -e "$cross_version_root/.fixture-pointer-transaction"
+
+# A schema-drifted database remains internally valid and self-consistent but cannot be published.
+schema_drift_stage="$TEMP_DIR/schema-drift-stage"
+make_fixture_transport_stage "$schema_drift_stage" fixture-schema-drift
+sqlite3 "$schema_drift_stage/bundle/hyg_v42.sqlite" 'CREATE TABLE unexpected_schema(value TEXT);'
+schema_drift_sha="$(sha256sum "$schema_drift_stage/bundle/hyg_v42.sqlite" | cut -d' ' -f1)"
+schema_drift_length="$(wc -c < "$schema_drift_stage/bundle/hyg_v42.sqlite")"
+jq --arg sha "$schema_drift_sha" --argjson length "$schema_drift_length" '.database.sha256=$sha | .database.length=$length' \
+  "$schema_drift_stage/bundle/manifest.json" > "$schema_drift_stage/bundle/manifest.json.changed"
+mv "$schema_drift_stage/bundle/manifest.json.changed" "$schema_drift_stage/bundle/manifest.json"
+if run_fixture_transport_install "$schema_drift_stage" "$TEMP_DIR/remote/schema-drift-catalog" fixture-schema-drift \
+  "$TEMP_DIR/schema-drift.out" "$schema_drift_sha" "$schema_drift_length" 9; then
+  fail 'Fixture publication accepted a self-consistent schema-drifted database.'
+fi
+test ! -e "$TEMP_DIR/remote/schema-drift-catalog/current"
 
 rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
   "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
@@ -3270,6 +3317,22 @@ printf 'false\n' > "$east_config/secrets/CameraAgent__ProvisioningStartupGate__E
 printf 'true\n' > "$east_config/secrets/CameraAgent__CaptureDistribution__UploadEnabled"
 jq '.agentId="device-east"' "$east_config/camera-module.json" > "$east_config/camera-module.json.changed" && mv "$east_config/camera-module.json.changed" "$east_config/camera-module.json"
 chmod 600 "$east_root/application-identity.json" "$east_config/camera-module.json"
+cp "$east_root/application-identity.json" "$TEMP_DIR/east-application-identity.valid"
+for invalid_binding in unknown-key malformed-configured malformed-bound; do
+  case "$invalid_binding" in
+    unknown-key) jq '.unexpected=true' "$TEMP_DIR/east-application-identity.valid" > "$east_root/application-identity.json" ;;
+    malformed-configured) jq '.configuredIdentity="invalid identity"' "$TEMP_DIR/east-application-identity.valid" > "$east_root/application-identity.json" ;;
+    malformed-bound) jq '.boundIdentity="invalid identity"' "$TEMP_DIR/east-application-identity.valid" > "$east_root/application-identity.json" ;;
+  esac
+  chmod 600 "$east_root/application-identity.json"
+  compose_before_identity_rejection="$(grep -c $'\tcompose\t' "$LOG" || true)"
+  if run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/binding-$invalid_binding.log" 2>&1; then
+    fail "Up accepted malformed application identity: $invalid_binding"
+  fi
+  test "$(grep -c $'\tcompose\t' "$LOG" || true)" = "$compose_before_identity_rejection" ||
+    fail "Malformed application identity reached Compose mutation: $invalid_binding"
+  cp "$TEMP_DIR/east-application-identity.valid" "$east_root/application-identity.json"; chmod 600 "$east_root/application-identity.json"
+done
 migrated_module_sha="$(sha256sum "$east_config/camera-module.json")"; migrated_password_sha="$(sha256sum "$east_config/private/owner-password")"
 run_deploy_mode up "$deploy_case" isolated >/dev/null
 test "$(sha256sum "$east_config/camera-module.json")" = "$migrated_module_sha"

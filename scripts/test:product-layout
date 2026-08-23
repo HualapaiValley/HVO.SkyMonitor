@@ -68,20 +68,58 @@ jq '.productRoot="/opt/not-skymonitor" | .productRoot as $root |
   .catalogs |= map(.installRoot=($root+"/catalogs/"+.catalogId))' "$inventory" > "$TEMP_DIR/noncanonical-persistent.json"
 reject_layout "$TEMP_DIR/noncanonical-persistent.json" persistent-root persistent
 
+create_v2_fixture_catalog() {
+  local catalog_root="$1" catalog_id="$2" package_version="$3" version_root sha length
+  version_root="$catalog_root/versions/$package_version"
+  mkdir -p "$version_root"
+  cp "$REPO_ROOT/tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" "$version_root/hyg_v42.sqlite"
+  sha="$(sha256sum "$version_root/hyg_v42.sqlite" | cut -d' ' -f1)"; length="$(wc -c < "$version_root/hyg_v42.sqlite")"
+  jq -n --arg id "$catalog_id" --arg package "$package_version" --arg sha "$sha" --argjson length "$length" \
+    '{manifestVersion:2,package:{kind:"fixture",version:$package},catalog:{id:$id,name:"HYG bright-star test fixture",version:"4.2-fixture.1"},
+      schemaVersion:"2",preprocessingVersion:"3",database:{relativePath:"hyg_v42.sqlite",sha256:$sha,length:$length,rowCount:9}}' \
+    > "$version_root/manifest.json"
+  chmod 444 "$version_root/hyg_v42.sqlite" "$version_root/manifest.json"; chmod 555 "$version_root"
+  ln -s "versions/$package_version" "$catalog_root/current"
+}
+
 # Exercise guarded singular-layout migration only beneath a disposable root.
 legacy="$TEMP_DIR/legacy"; migrated="$TEMP_DIR/migrated/skymonitor"; evidence="$TEMP_DIR/migration.json"
-mkdir -p "$legacy/config/cameraagent" "$legacy/data/agent/identity" "$legacy/data/agent/provisioning" "$legacy/data/catalog/versions/v1"
+mkdir -p "$legacy/config/cameraagent" "$legacy/data/agent/identity" "$legacy/data/agent/provisioning"
 printf 'owner-db\n' > "$legacy/config/cameraagent/identity.db"
 printf '42\n' > "$legacy/data/agent/capture-sequence"
 printf 'protected-location\n' > "$legacy/data/agent/provisioning/location.protected"
-printf 'catalog-bytes\n' > "$legacy/data/catalog/versions/v1/catalog.sqlite"
-printf '{"manifestVersion":2,"catalog":{"id":"hyg-v42-production"}}\n' > "$legacy/data/catalog/versions/v1/manifest.json"
-chmod 444 "$legacy/data/catalog/versions/v1/catalog.sqlite" "$legacy/data/catalog/versions/v1/manifest.json"
-chmod 555 "$legacy/data/catalog/versions/v1"
-ln -s versions/v1 "$legacy/data/catalog/current"
+create_v2_fixture_catalog "$legacy/data/catalog" hyg-v42-production fixture-v1
 printf 'sibling-preserved\n' > "$legacy/data/sibling"
 instance=44444444-4444-4444-8444-444444444444
 args=(--legacy-root "$legacy" --product-root "$migrated" --instance-id "$instance" --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$evidence")
+# V2 migration authenticates the complete manifest and database, not only catalog.id or self-consistent hashes.
+for invalid_catalog in unknown-manifest-property schema-drift; do
+  invalid_legacy="$TEMP_DIR/invalid-catalog-$invalid_catalog"; invalid_product="$TEMP_DIR/invalid-catalog-$invalid_catalog-product"
+  mkdir -p "$invalid_legacy/config" "$invalid_legacy/data"
+  cp -a "$legacy/config/cameraagent" "$invalid_legacy/config/cameraagent"
+  cp -a "$legacy/data/agent" "$invalid_legacy/data/agent"
+  cp -a "$legacy/data/catalog" "$invalid_legacy/data/catalog"
+  invalid_version="$invalid_legacy/data/catalog/versions/fixture-v1"
+  chmod 755 "$invalid_version"; chmod 644 "$invalid_version/manifest.json" "$invalid_version/hyg_v42.sqlite"
+  if [[ "$invalid_catalog" == unknown-manifest-property ]]; then
+    jq '.unexpected=true' "$invalid_version/manifest.json" > "$invalid_version/manifest.json.changed"
+    mv "$invalid_version/manifest.json.changed" "$invalid_version/manifest.json"
+  else
+    sqlite3 "$invalid_version/hyg_v42.sqlite" 'CREATE TABLE unexpected_schema(value TEXT);'
+    invalid_sha="$(sha256sum "$invalid_version/hyg_v42.sqlite" | cut -d' ' -f1)"
+    invalid_length="$(wc -c < "$invalid_version/hyg_v42.sqlite")"
+    jq --arg sha "$invalid_sha" --argjson length "$invalid_length" '.database.sha256=$sha | .database.length=$length' \
+      "$invalid_version/manifest.json" > "$invalid_version/manifest.json.changed"
+    mv "$invalid_version/manifest.json.changed" "$invalid_version/manifest.json"
+  fi
+  chmod 444 "$invalid_version/manifest.json" "$invalid_version/hyg_v42.sqlite"; chmod 555 "$invalid_version"
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply --legacy-root "$invalid_legacy" --product-root "$invalid_product" \
+    --instance-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --application-id invalid-agent --catalog-id hyg-v42-production \
+    --evidence "$TEMP_DIR/invalid-catalog-$invalid_catalog.json" >/dev/null 2>&1; then
+    printf 'Migration accepted invalid v2 catalog: %s\n' "$invalid_catalog" >&2; exit 111
+  fi
+  test ! -e "$invalid_product/cameraagents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+done
 # The shipped layout nests the product root beneath the legacy root, but outside every migrated source tree.
 nested_legacy="$TEMP_DIR/nested-legacy"; nested_product="$nested_legacy/skymonitor"; nested_evidence="$nested_legacy/migration.json"
 mkdir -m 700 "$nested_legacy"
@@ -103,6 +141,31 @@ for overlapping_product in "$nested_legacy/config" "$nested_legacy/config/camera
   if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply --legacy-root "$nested_legacy" --product-root "$overlapping_product" \
     --instance-id "$instance" --application-id agent-legacy --catalog-id hyg-v42-production \
     --evidence "$TEMP_DIR/overlap.json" >/dev/null 2>&1; then exit 86; fi
+done
+# Migration metadata and cutover evidence cannot enter any tree the transaction may move or modify.
+nested_lock_sha="$(sha256sum "${nested_product}.migration.lock")"
+for overlap_spec in \
+  "source|$nested_legacy/data/agent/migration.json|" \
+  "destination|$nested_product/cameraagents/$instance/migration.json|" \
+  "stage|$nested_product/cameraagents/.hvo-migration-$instance.stage/migration.json|" \
+  "tombstone|$nested_legacy/data/agent.hvo-migration-$instance/migration.json|" \
+  "lock|${nested_product}.migration.lock|" \
+  "cutover-source|$TEMP_DIR/cutover-overlap-evidence.json|$nested_legacy/data/agent/cutover.json" \
+  "cutover-destination|$TEMP_DIR/cutover-destination-evidence.json|$nested_product/catalogs/hyg-v42-production/cutover.json" \
+  "cutover-metadata|$TEMP_DIR/cutover-metadata.json|$TEMP_DIR/cutover-metadata.json/child"; do
+  IFS='|' read -r overlap_label overlap_evidence overlap_cutover <<< "$overlap_spec"
+  overlap_options=(--legacy-root "$nested_legacy" --product-root "$nested_product" --instance-id "$instance" --application-id agent-legacy \
+    --catalog-id hyg-v42-production --evidence "$overlap_evidence")
+  [[ -z "$overlap_cutover" ]] || overlap_options+=(--cutover-evidence "$overlap_cutover")
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${overlap_options[@]}" >/dev/null 2>&1; then
+    printf 'Migration accepted overlapping %s metadata.\n' "$overlap_label" >&2; exit 86
+  fi
+  test "$(<"$nested_legacy/unrelated-legacy-state")" = legacy-sibling-preserved
+  test "$(<"$nested_product/unrelated-product-state")" = product-state-preserved
+  test "$(sha256sum "${nested_product}.migration.lock")" = "$nested_lock_sha"
+  test ! -e "$nested_product/cameraagents/$instance"; test ! -e "$nested_product/cameraagents/.hvo-migration-$instance.stage"
+  test ! -e "$nested_legacy/data/agent.hvo-migration-$instance"
+  test ! -e "$overlap_evidence.apply-intent.json"; test ! -e "$overlap_evidence.config.snapshot"
 done
 safe_product_parent="$TEMP_DIR/safe-product-parent"; safe_evidence_parent="$TEMP_DIR/safe-evidence-parent"
 mkdir -m 755 "$safe_product_parent" "$safe_evidence_parent"
@@ -135,6 +198,20 @@ bash -c 'ln -s "$1" "$2.apply-intent.json.tmp.$$"; shift 2; exec "$@"' _ \
 test "$(<"$TEMP_DIR/publication-target")" = publication-target
 rm -f -- "$evidence.apply-intent.json.tmp."*
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
+# Both final pre-publication boundaries retain authenticated snapshots and refuse source drift.
+for evidence_boundary in before-final-evidence-revalidation after-final-evidence-revalidation; do
+  if DEPLOY_MIGRATION_FAILPOINT="$evidence_boundary" "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 108; fi
+  test ! -e "$evidence"; test -d "$migrated/cameraagents/$instance"; test -d "$migrated/catalogs/hyg-v42-production"
+  printf 'source-drift\n' > "$legacy/config/cameraagent/identity.db"
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 109; fi
+  test ! -e "$evidence"
+  printf 'owner-db\n' > "$legacy/config/cameraagent/identity.db"
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null
+  test ! -e "$evidence"; test ! -e "$migrated/cameraagents/$instance"
+  test -f "$migrated/catalogs/hyg-v42-production/versions/fixture-v1/hyg_v42.sqlite"
+done
 if DEPLOY_MIGRATION_FAILPOINT=mid-copy-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}" >/dev/null 2>&1; then exit 89; fi
 test -f "$evidence.apply-intent.json"; test -d "$migrated/cameraagents/.hvo-migration-$instance.stage"
 test ! -e "$migrated/cameraagents/.hvo-migration-$instance.stage/config/identity.db"
@@ -171,7 +248,7 @@ if DEPLOY_MIGRATION_FAILPOINT=after-delete-rollback-instance-config "$REPO_ROOT/
 test -f "$evidence.rollback-intent.json"
 test ! -e "$migrated/cameraagents/$instance/config"
 test -d "$migrated/cameraagents/$instance/state"
-test -f "$migrated/catalogs/hyg-v42-production/versions/v1/catalog.sqlite"
+test -f "$migrated/catalogs/hyg-v42-production/versions/fixture-v1/hyg_v42.sqlite"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}"
 test ! -e "$evidence.rollback-intent.json"; test ! -e "$migrated/cameraagents/$instance"
 for cleanup_case in \
@@ -201,7 +278,7 @@ done
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${args[@]}"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
 test "$(<"$migrated/cameraagents/$instance/state/capture-sequence")" = 42
-test "$(readlink "$migrated/catalogs/hyg-v42-production/current")" = versions/v1
+test "$(readlink "$migrated/catalogs/hyg-v42-production/current")" = versions/fixture-v1
 jq -e --arg instance "$instance" '.schemaVersion == 2 and .status == "copied-and-verified" and .legacyRetained == true and .instanceId == $instance' "$evidence" >/dev/null
 jq -e --arg instance "$instance" '.component == "cameraAgent" and .instanceId == $instance and .applicationIdentityFile == "application-identity.json" and (has("applicationIdentity") | not)' "$migrated/cameraagents/$instance/instance-manifest.json" >/dev/null
 jq -e '.state == "pre-provisioning" and .configuredIdentity == "agent-legacy" and .boundIdentity == null' "$migrated/cameraagents/$instance/application-identity.json" >/dev/null
@@ -237,7 +314,7 @@ mv "$TEMP_DIR/copied-config.valid" "$legacy/config/cameraagent"
 # Rollback prevalidates every candidate root before deleting any sibling.
 printf 'unknown\n' > "$migrated/cameraagents/$instance/unknown"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null 2>&1; then exit 98; fi
-test -f "$migrated/cameraagents/$instance/unknown"; test -f "$migrated/catalogs/hyg-v42-production/versions/v1/catalog.sqlite"
+test -f "$migrated/cameraagents/$instance/unknown"; test -f "$migrated/catalogs/hyg-v42-production/versions/fixture-v1/hyg_v42.sqlite"
 rm "$migrated/cameraagents/$instance/unknown"
 printf 'unknown\n' > "$migrated/catalogs/hyg-v42-production/unknown"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null 2>&1; then exit 99; fi
@@ -327,7 +404,7 @@ for finalized_drift in missing-instance missing-config corrupt-state corrupt-man
     corrupt-manifest) jq '.instanceId="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"' "$final_instance/instance-manifest.json" > "$final_instance/instance-manifest.json.changed"; mv "$final_instance/instance-manifest.json.changed" "$final_instance/instance-manifest.json"; chmod 600 "$final_instance/instance-manifest.json" ;;
     corrupt-binding) jq '.configuredIdentity="corrupt"' "$final_instance/application-identity.json" > "$final_instance/application-identity.json.changed"; mv "$final_instance/application-identity.json.changed" "$final_instance/application-identity.json"; chmod 600 "$final_instance/application-identity.json" ;;
     missing-catalog) chmod -R u+w "$final_catalog"; rm -rf "$final_catalog" ;;
-    corrupt-catalog) chmod u+w "$final_catalog/versions/v1/catalog.sqlite"; printf 'corrupt\n' >> "$final_catalog/versions/v1/catalog.sqlite" ;;
+    corrupt-catalog) chmod u+w "$final_catalog/versions/fixture-v1/hyg_v42.sqlite"; printf 'corrupt\n' >> "$final_catalog/versions/fixture-v1/hyg_v42.sqlite" ;;
   esac
   if "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}" >/dev/null 2>&1; then
     printf 'Finalized migration verify accepted destination drift: %s\n' "$finalized_drift" >&2; exit 106
@@ -350,15 +427,14 @@ fi
 
 # An explicitly supplied preserved device identity migrates as bound without resetting provisioned configuration.
 provisioned="$TEMP_DIR/provisioned"; provisioned_product="$TEMP_DIR/provisioned-product"; provisioned_evidence="$TEMP_DIR/provisioned.json"
-mkdir -p "$provisioned/config/cameraagent/secrets" "$provisioned/data/agent" "$provisioned/data/catalog/versions/v1"
+mkdir -p "$provisioned/config/cameraagent/secrets" "$provisioned/data/agent"
 printf '{"agentId":"device-preserved","module":{},"rig":{}}\n' > "$provisioned/config/cameraagent/camera-module.json"
 printf 'device-preserved\n' > "$provisioned/config/cameraagent/secrets/CameraAgent__AgentId"
 printf 'false\n' > "$provisioned/config/cameraagent/secrets/CameraAgent__ProvisioningStartupGate__Enabled"
 printf 'true\n' > "$provisioned/config/cameraagent/secrets/CameraAgent__CaptureDistribution__UploadEnabled"
 printf 'preserved-password-state\n' > "$provisioned/config/cameraagent/password-state"
 printf 'state\n' > "$provisioned/data/agent/state"
-printf '{"manifestVersion":2,"catalog":{"id":"hyg-v42-production"}}\n' > "$provisioned/data/catalog/versions/v1/manifest.json"
-ln -s versions/v1 "$provisioned/data/catalog/current"
+create_v2_fixture_catalog "$provisioned/data/catalog" hyg-v42-production fixture-v1
 provisioned_instance=66666666-6666-4666-8666-666666666666
 provisioned_args=(--legacy-root "$provisioned" --product-root "$provisioned_product" --instance-id "$provisioned_instance" --application-id configured-agent --bound-device-id device-preserved --catalog-id hyg-v42-production --evidence "$provisioned_evidence")
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${provisioned_args[@]}"
@@ -397,6 +473,26 @@ if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply --legacy-root "$host
 test ! -e "$hostile_product/cameraagents/99999999-9999-4999-8999-999999999999"; test ! -e "$hostile_product/catalogs/hyg-v42-fixture"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${fixture_args[@]}"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${fixture_args[@]}"
+fixture_catalog="$fixture_product/catalogs/hyg-v42-fixture"
+fixture_catalog_sha="$(sha256sum "$fixture_catalog/versions/hyg-v42-fixture-1/hyg_v42.sqlite")"
+fixture_pointer="$(readlink "$fixture_catalog/current")"
+fixture_sibling="$fixture_product/cameraagents/sibling-consumer"
+mkdir -m 700 -p "$fixture_sibling"; printf '%s\n' "$fixture_catalog" > "$fixture_sibling/catalog-root"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${fixture_args[@]}"
+test ! -e "$fixture_product/cameraagents/$fixture_instance"; test -f "$fixture_sibling/catalog-root"
+test "$(sha256sum "$fixture_catalog/versions/hyg-v42-fixture-1/hyg_v42.sqlite")" = "$fixture_catalog_sha"
+test "$(readlink "$fixture_catalog/current")" = "$fixture_pointer"
+test ! -e "$fixture_evidence"; test ! -e "$fixture_evidence.apply-intent.json"
+printf 'unknown\n' > "$fixture_catalog/unknown"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${fixture_args[@]}" >/dev/null 2>&1; then
+  printf 'Migration adopted a drifted published catalog.\n' >&2; exit 110
+fi
+test -f "$fixture_catalog/unknown"; test ! -e "$fixture_product/cameraagents/$fixture_instance"; test ! -e "$fixture_evidence"
+rm "$fixture_catalog/unknown"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${fixture_args[@]}"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${fixture_args[@]}"
+test "$(sha256sum "$fixture_catalog/versions/hyg-v42-fixture-1/hyg_v42.sqlite")" = "$fixture_catalog_sha"
+test "$(readlink "$fixture_catalog/current")" = "$fixture_pointer"
 jq -e '.catalogId == "hyg-v42-fixture" and .catalogIdentitySource == "derived-manifest-v1"' "$fixture_evidence" >/dev/null
 jq -e '.manifestVersion == 1 and (.catalog | has("id") | not)' "$fixture_product/catalogs/hyg-v42-fixture/current/manifest.json" >/dev/null
 
@@ -428,10 +524,9 @@ EOF
 chmod 700 "$TEMP_DIR/fake-bin/stat"
 for unsafe in absolute-link escaping-link fifo device-crossing ownership-drift tab-name newline-name tab-link-target newline-link-target; do
   root="$TEMP_DIR/unsafe-$unsafe"; destination="$TEMP_DIR/unsafe-$unsafe-product"; unsafe_evidence="$TEMP_DIR/unsafe-$unsafe.json"
-  mkdir -p "$root/config/cameraagent" "$root/data/agent" "$root/data/catalog/versions/v1"
+  mkdir -p "$root/config/cameraagent" "$root/data/agent"
   printf '{}\n' > "$root/config/cameraagent/config.json"; printf 'state\n' > "$root/data/agent/state"
-  printf '{"manifestVersion":2,"catalog":{"id":"hyg-v42-production"}}\n' > "$root/data/catalog/versions/v1/manifest.json"
-  ln -s versions/v1 "$root/data/catalog/current"
+  create_v2_fixture_catalog "$root/data/catalog" hyg-v42-production fixture-v1
   case "$unsafe" in
     absolute-link) ln -s /etc/passwd "$root/data/agent/unsafe" ;;
     escaping-link) ln -s ../../../../outside "$root/data/agent/unsafe" ;;

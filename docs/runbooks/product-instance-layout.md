@@ -131,7 +131,12 @@ Migration verifies that identity against preserved configuration, publishes a
 and upload settings unchanged on later `up`, restart, or upgrade runs.
 
 Before cutover, `rollback` verifies that the copy still equals the retained
-legacy source and removes only the copied UUID/catalog roots. `finalize` also
+legacy source and removes only the copied UUID root and migration-only catalog
+staging. A fully published and verified catalog root is retained because sibling
+instances may already consume that immutable catalog. A subsequent `apply` may
+reuse the retained root only when its complete tree, active pointer, manifest
+identity, ownership, modes, and content still exactly match the authenticated
+legacy snapshot; unknown or drifted state fails closed. `finalize` also
 requires owner-only JSON cutover evidence for image identity, health, login,
 provisioning, Data Protection, protected location history, artifact checksums,
 non-regressing capture sequence, and a rehearsed rollback. It records that
