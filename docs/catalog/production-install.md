@@ -172,8 +172,14 @@ loaded immutable catalog.
 
 The installer first takes the application-state operation lock shared with
 start, rebuild, reset, backup, and restore, then takes its catalog-exclusive
-`.install.lock`. This prevents catalog pointer mutation while restore preserves
-the target catalog. It removes abandoned
+`.catalog.lock`, shared by production and fixture publishers. This prevents catalog pointer mutation while restore preserves
+the target catalog. The lock is an owner-only, single-link regular file and its
+device/inode identity is revalidated against the held descriptor. Under that
+lock, `.catalog-lineage.json` permanently binds the root to its catalog ID,
+package kind, and schema/preprocessing lineage. A pre-binding installation is
+adopted only after its complete active snapshot validates; an empty root is
+bound before candidate publication. Conflicting IDs, package kinds, or lineage
+fail closed. It removes abandoned
 `.staging.*` directories, and validates the local bundle before staging. It
 checks every retained payload length and hash, the pinned production identity,
 SQLite integrity/user version/schema/index/metadata, exactly 119,625 rows, Sol
@@ -186,6 +192,13 @@ interruption between replacements, the next locked catalog operation validates
 the recorded targets and finishes the old-to-new transition before new work. A
 valid displaced active target is retained as `previous`. Candidate failure
 before the transaction never changes `current`.
+
+Fixture publication uses the same root lock and lineage binding. Its durable
+pointer transaction authenticates both the candidate and displaced active
+snapshot, publishes the displaced target as `previous`, then publishes
+`current`. Restart recovery independently revalidates both targets before
+completing either pointer move; reactivating the already-current version leaves
+`previous` unchanged.
 
 Rollback validates the complete previous bundle before changing either pointer:
 

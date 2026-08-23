@@ -169,7 +169,7 @@ phase14_source_run_issue211() {
 COLLECT_OUTPUT="$TEMP_DIR/collected-output"; CATALOG="$TEMP_DIR/catalog"
 COLLECTOR_IMAGE="collector.invalid/otel@sha256:$(printf 'a%.0s' {1..64})"
 install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG" "$CATALOG/versions" "$CATALOG/versions/catalog-v1"
-install -m 600 /dev/null "$CATALOG/.install.lock"
+install -m 600 /dev/null "$CATALOG/.catalog.lock"
 printf 'catalog\n' > "$CATALOG/versions/catalog-v1/catalog.sqlite"
 catalog_sha="$(phase14_source_hash "$CATALOG/versions/catalog-v1/catalog.sqlite")"
 jq -S -n --arg sha "$catalog_sha" --argjson length "$(stat -c %s "$CATALOG/versions/catalog-v1/catalog.sqlite")" \

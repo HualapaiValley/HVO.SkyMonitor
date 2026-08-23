@@ -52,8 +52,8 @@ fi
     printf 'failed fixture install changed the active pointer\n' >&2
     exit 1
 }
-[[ ! -e "$install_root/.staging.orphan" ]] || {
-    printf 'orphan staging directory was not cleaned\n' >&2
+[[ -e "$install_root/.staging.orphan" ]] || {
+    printf 'invalid unbound install mutated orphan staging before bundle validation\n' >&2
     exit 1
 }
 

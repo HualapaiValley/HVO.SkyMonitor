@@ -2967,16 +2967,17 @@ done
 chmod 755 "$catalog_parent"
 rm -rf "$install_root"
 
-for hostile_fixture_lock in symlink hardlink mode owner; do
+for hostile_fixture_lock in symlink hardlink mode owner type; do
   rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
     "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
   rm -rf "$install_root"; mkdir -m 700 "$install_root"
-  fixture_lock="$install_root/.fixture-install.lock"
+  fixture_lock="$install_root/.catalog.lock"
   case "$hostile_fixture_lock" in
     symlink) printf 'preserve\n' > "$TEMP_DIR/fixture-lock-target"; ln -s "$TEMP_DIR/fixture-lock-target" "$fixture_lock" ;;
     hardlink) printf 'lock\n' > "$TEMP_DIR/fixture-lock-hardlink"; chmod 600 "$TEMP_DIR/fixture-lock-hardlink"; ln "$TEMP_DIR/fixture-lock-hardlink" "$fixture_lock" ;;
     mode) printf 'lock\n' > "$fixture_lock"; chmod 640 "$fixture_lock" ;;
     owner) printf 'lock\n' > "$fixture_lock"; chmod 600 "$fixture_lock" ;;
+    type) mkdir -m 700 "$fixture_lock" ;;
   esac
   if [[ "$hostile_fixture_lock" == owner ]]; then
     cp "$FAKE_REMOTE_UID_MAP" "$TEMP_DIR/fixture-lock-uid-map"
@@ -2991,7 +2992,7 @@ for hostile_fixture_lock in symlink hardlink mode owner; do
   fi
   test ! -e "$install_root/current" && test ! -e "$install_root/.fixture-pointer-transaction"
   [[ "$hostile_fixture_lock" != symlink ]] || test "$(<"$TEMP_DIR/fixture-lock-target")" = preserve
-  rm -f "$fixture_lock" "$TEMP_DIR/fixture-lock-target" "$TEMP_DIR/fixture-lock-hardlink"
+  rm -rf "$fixture_lock"; rm -f "$TEMP_DIR/fixture-lock-target" "$TEMP_DIR/fixture-lock-hardlink"
 done
 rm -rf "$install_root"
 
@@ -3087,16 +3088,27 @@ for hostile_candidate in no-intent hostile-intent; do
 done
 rm -rf "$install_root"
 
+install_fixture_test_version() {
+  local target_root="$1" package_version="$2" destination
+  destination="$target_root/versions/$package_version"
+  mkdir -m 700 -p "$destination"
+  cp "$bundle/hyg_v42.sqlite" "$destination/hyg_v42.sqlite"
+  jq --arg version "$package_version" '.package.version=$version' "$TEMP_DIR/fixture-manifest.valid" > "$destination/manifest.json"
+  chmod 444 "$destination/manifest.json" "$destination/hyg_v42.sqlite"
+  chmod 555 "$destination"
+}
+
 # A runtime-owned 0755 catalog parent is safe; activation preserves the old pointer before intent and reconciles on restart.
 test "$(stat -c %a "$catalog_parent")" = 755
 for fixture_boundary in after-candidate-transaction-temp-fsync during-candidate-copy before-candidate-rename \
   after-candidate-publication after-pointer-transaction-temp-fsync after-pointer-transaction \
-  after-current-pointer-temporary after-current-pointer; do
+  after-previous-pointer-temporary after-previous-pointer after-current-pointer-temporary after-current-pointer; do
   rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/output/$deploy_case-state/catalog-manifest.json" \
     "$TEMP_DIR/output/$deploy_case-evidence/catalog.json"
   chmod -R u+w "$install_root" 2>/dev/null || true
-  rm -rf "$install_root"; mkdir -m 700 "$install_root" "$install_root/versions" "$install_root/versions/prior"
-  chmod 555 "$install_root/versions/prior"; ln -s versions/prior "$install_root/current"
+  rm -rf "$install_root"; mkdir -m 700 "$install_root" "$install_root/versions"
+  install_fixture_test_version "$install_root" prior
+  ln -s versions/prior "$install_root/current"
   if HVO_FIXTURE_CATALOG_TEST_FAIL_AT="$fixture_boundary" run_deploy_mode catalog "$deploy_case" isolated \
     > "$TEMP_DIR/catalog-$fixture_boundary.log" 2>&1; then
     fail "Fixture activation failpoint $fixture_boundary passed."
@@ -3117,6 +3129,7 @@ for fixture_boundary in after-candidate-transaction-temp-fsync during-candidate-
   fi
   run_deploy_mode catalog "$deploy_case" isolated >/dev/null
   test "$(readlink "$install_root/current")" = versions/fixture-v1
+  test "$(readlink "$install_root/previous")" = versions/prior
   test ! -e "$install_root/.fixture-pointer-transaction"; test ! -e "$install_root/.fixture-candidate-transaction"
   test -z "$(find "$install_root/versions" -maxdepth 1 -name '.fixture-candidate-*.stage' -print -quit)"
   test -z "$(find "$install_root" -maxdepth 1 \( -name '.fixture-candidate-transaction.tmp.*' -o -name '.fixture-pointer-transaction.tmp.*' \) -print -quit)"
@@ -3151,11 +3164,21 @@ wait_for_fixture_lock() {
   return 1
 }
 
+require_catalog_lock_blocked() {
+  local root="$1"
+  if timeout 0.2 bash -c 'source "$1"; hyg_catalog_acquire_root_lock "$2"' _ \
+    "$REPO_ROOT/scripts/catalog/catalog-common.sh" "$root"; then
+    fail 'A second package-kind publisher acquired the shared catalog root lock.'
+  else
+    [[ $? -eq 124 ]] || fail 'Cross-kind catalog lock probe failed for an unexpected reason.'
+  fi
+}
+
 concurrent_root="$TEMP_DIR/remote/concurrent-fixture-catalog"
 same_stage="$TEMP_DIR/concurrent-stage-same"
 make_fixture_transport_stage "$same_stage" fixture-v1
 rm -rf "$concurrent_root"
-HVO_FIXTURE_CATALOG_TEST_MODE=true HVO_FIXTURE_CATALOG_TEST_LOCK_HOLD_SECONDS=1 \
+HVO_CATALOG_TEST_MODE=true HVO_CATALOG_TEST_LOCK_HOLD_SECONDS=1 \
   run_fixture_transport_install "$same_stage" "$concurrent_root" fixture-v1 "$TEMP_DIR/concurrent-same-first.out" &
 same_first_pid=$!
 run_fixture_transport_install "$same_stage" "$concurrent_root" fixture-v1 "$TEMP_DIR/concurrent-same-second.out" &
@@ -3171,16 +3194,18 @@ second_stage="$TEMP_DIR/concurrent-stage-v2"
 make_fixture_transport_stage "$first_stage" fixture-v1
 make_fixture_transport_stage "$second_stage" fixture-v2
 chmod -R u+w "$concurrent_root"; rm -rf "$concurrent_root"
-HVO_FIXTURE_CATALOG_TEST_MODE=true HVO_FIXTURE_CATALOG_TEST_LOCK_HOLD_SECONDS=2 \
+HVO_CATALOG_TEST_MODE=true HVO_CATALOG_TEST_LOCK_HOLD_SECONDS=2 \
   run_fixture_transport_install "$first_stage" "$concurrent_root" fixture-v1 "$TEMP_DIR/concurrent-v1.out" &
 first_publisher_pid=$!
-wait_for_fixture_lock "$concurrent_root/.fixture-install.lock" "$first_publisher_pid" || fail 'First different-version fixture publisher did not acquire its install lock.'
+wait_for_fixture_lock "$concurrent_root/.catalog.lock" "$first_publisher_pid" || fail 'First different-version fixture publisher did not acquire its catalog root lock.'
+require_catalog_lock_blocked "$concurrent_root"
 run_fixture_transport_install "$second_stage" "$concurrent_root" fixture-v2 "$TEMP_DIR/concurrent-v2.out" &
 second_publisher_pid=$!
 wait "$first_publisher_pid"; wait "$second_publisher_pid"
 test "$(<"$TEMP_DIR/concurrent-v1.out")" = $'installed\tversions/fixture-v1\t'"$catalog_sha"
 test "$(<"$TEMP_DIR/concurrent-v2.out")" = $'installed\tversions/fixture-v2\t'"$catalog_sha"
 test "$(readlink "$concurrent_root/current")" = versions/fixture-v2
+test "$(readlink "$concurrent_root/previous")" = versions/fixture-v1
 test -d "$concurrent_root/versions/fixture-v1" && test -d "$concurrent_root/versions/fixture-v2"
 test ! -e "$concurrent_root/.fixture-pointer-transaction"
 
@@ -3194,7 +3219,23 @@ fi
 test -f "$cross_version_root/.fixture-pointer-transaction"
 run_fixture_transport_install "$second_stage" "$cross_version_root" fixture-v2 "$TEMP_DIR/cross-version-v2.out"
 test "$(readlink "$cross_version_root/current")" = versions/fixture-v2
+test "$(readlink "$cross_version_root/previous")" = versions/fixture-v1
 test ! -e "$cross_version_root/.fixture-pointer-transaction"
+
+# A bound root cannot be repurposed to another package kind or catalog ID.
+(
+  source "$REPO_ROOT/scripts/catalog/catalog-common.sh"
+  hyg_catalog_acquire_root_lock "$cross_version_root"
+  if hyg_catalog_require_lineage "$cross_version_root" test-fixture production 2 3 >/dev/null 2>&1; then exit 91; fi
+  if hyg_catalog_require_lineage "$cross_version_root" different-fixture fixture 2 3 >/dev/null 2>&1; then exit 92; fi
+)
+
+# Reactivating the same version preserves previous; activating v1 again performs a validated rollback and swaps previous to v2.
+run_fixture_transport_install "$second_stage" "$cross_version_root" fixture-v2 "$TEMP_DIR/cross-version-v2-repeat.out"
+test "$(readlink "$cross_version_root/previous")" = versions/fixture-v1
+run_fixture_transport_install "$first_stage" "$cross_version_root" fixture-v1 "$TEMP_DIR/cross-version-rollback.out"
+test "$(readlink "$cross_version_root/current")" = versions/fixture-v1
+test "$(readlink "$cross_version_root/previous")" = versions/fixture-v2
 
 # A schema-drifted database remains internally valid and self-consistent but cannot be published.
 schema_drift_stage="$TEMP_DIR/schema-drift-stage"
@@ -3274,6 +3315,23 @@ expect_fixture_resume_failure() {
 }
 
 # Resume revalidates the complete fixture installation boundary before returning verified.
+rm "$install_root/.catalog-lineage.json"
+run_deploy_mode catalog "$deploy_case" isolated >/dev/null
+test "$(jq -r '.catalogId' "$install_root/.catalog-lineage.json")" = test-fixture
+cp "$install_root/.catalog-lineage.json" "$TEMP_DIR/catalog-lineage.valid"
+for lineage_drift in id kind mode hardlink; do
+  case "$lineage_drift" in
+    id) jq '.catalogId="other-fixture"' "$TEMP_DIR/catalog-lineage.valid" > "$install_root/.catalog-lineage.json"; chmod 600 "$install_root/.catalog-lineage.json" ;;
+    kind) jq '.packageKind="production" | .packageLineage="hyg-v42-production-p3-s2"' "$TEMP_DIR/catalog-lineage.valid" > "$install_root/.catalog-lineage.json"; chmod 600 "$install_root/.catalog-lineage.json" ;;
+    mode) chmod 640 "$install_root/.catalog-lineage.json" ;;
+    hardlink) ln "$install_root/.catalog-lineage.json" "$TEMP_DIR/catalog-lineage.hardlink" ;;
+  esac
+  expect_fixture_resume_failure "lineage-$lineage_drift"
+  rm -f "$TEMP_DIR/catalog-lineage.hardlink"
+  cp "$TEMP_DIR/catalog-lineage.valid" "$install_root/.catalog-lineage.json"
+  chmod 600 "$install_root/.catalog-lineage.json"
+done
+
 resume_catalog_parent="$TEMP_DIR/catalog-resume-parent"
 mv "$catalog_parent" "$resume_catalog_parent"; ln -s "$resume_catalog_parent" "$catalog_parent"
 expect_fixture_resume_failure symlinked-ancestor
@@ -3334,6 +3392,11 @@ expect_fixture_resume_failure hostile-current
 rm "$install_root/current"; ln -s ../outside "$install_root/current"
 expect_fixture_resume_failure hostile-current-target
 rm "$install_root/current"; ln -s versions/fixture-v1 "$install_root/current"
+ln -s versions/missing "$install_root/previous"
+expect_fixture_resume_failure hostile-previous-target
+rm "$install_root/previous"; ln -s versions/fixture-v1 "$install_root/previous"
+expect_fixture_resume_failure previous-equals-current
+rm "$install_root/previous"
 printf 'versions/fixture-v1\n' > "$install_root/.fixture-pointer-transaction"; chmod 600 "$install_root/.fixture-pointer-transaction"
 expect_fixture_resume_failure leftover-pointer-transaction
 rm "$install_root/.fixture-pointer-transaction"

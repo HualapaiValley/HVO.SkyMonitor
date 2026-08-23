@@ -144,6 +144,8 @@ validate_installed_target() {
 
 prepare_root() {
     local requested_root="$1"
+    local expected_catalog_id="$2"
+    local expected_kind="$3"
     local current="/"
     local component
     local owner
@@ -175,20 +177,22 @@ prepare_root() {
     mkdir -p "$INSTALL_ROOT/versions"
     [[ -d "$INSTALL_ROOT/versions" && ! -L "$INSTALL_ROOT/versions" ]] || hyg_fail "versions path is not a safe directory"
     chmod 0700 "$INSTALL_ROOT/versions"
-    [[ ! -L "$INSTALL_ROOT/.install.lock" ]] || hyg_fail "install lock must not be a symbolic link"
-    exec 9>> "$INSTALL_ROOT/.install.lock"
-    chmod 0600 "$INSTALL_ROOT/.install.lock"
-    flock -x 9
-    [[ ! -L "$INSTALL_ROOT/.install.lock" &&
-        "$(stat -Lc '%d:%i' "$INSTALL_ROOT/.install.lock")" == "$(stat -Lc '%d:%i' "/proc/$$/fd/9")" ]] || \
-        hyg_fail "install lock changed while it was acquired"
+    hyg_catalog_acquire_root_lock "$INSTALL_ROOT" || hyg_fail "catalog root lock is unsafe or unavailable"
+    hyg_catalog_reconcile_lineage_temporaries "$INSTALL_ROOT" || hyg_fail "catalog lineage temporary is unsafe"
+    if [[ -e "$INSTALL_ROOT/.catalog-lineage.json" || -L "$INSTALL_ROOT/.catalog-lineage.json" ]]; then
+        hyg_catalog_require_lineage "$INSTALL_ROOT" "$expected_catalog_id" "$expected_kind" \
+            "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION" || hyg_fail "catalog root lineage is missing or incompatible"
+    fi
     reconcile_pointer_transaction
     cleanup_orphan_staging
+    hyg_catalog_require_lineage "$INSTALL_ROOT" "$expected_catalog_id" "$expected_kind" \
+        "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION" || hyg_fail "catalog root lineage is missing or incompatible"
 }
 
 install_bundle() {
     local bundle
     local package_version
+    local requested_package_version
     local target
     local target_path
     local bundle_manifest_sha256
@@ -197,12 +201,13 @@ install_bundle() {
 
     acquire_application_state_lock "$2"
     bundle="$(realpath "$1")"
-    prepare_root "$2"
-
-    # Validate the local bundle before creating candidate staging state.
     hyg_validate_bundle "$bundle"
+    requested_package_version="$HYG_MANIFEST_PACKAGE_VERSION"
+    prepare_root "$2" "$HYG_CATALOG_ID" production
+
+    # Recovery validates existing targets and must not replace the requested package identity.
     bundle_manifest_sha256="$(hyg_sha256 "$bundle/$HYG_MANIFEST_FILE")"
-    package_version="$HYG_MANIFEST_PACKAGE_VERSION"
+    package_version="$requested_package_version"
     target="versions/$package_version"
     target_path="$INSTALL_ROOT/$target"
 
@@ -279,7 +284,7 @@ rollback_catalog() {
     local current_target=""
 
     acquire_application_state_lock "$1"
-    prepare_root "$1"
+    prepare_root "$1" "$HYG_CATALOG_ID" production
     previous_target="$(read_pointer previous)"
     validate_installed_target "$previous_target"
 

@@ -422,7 +422,7 @@ assert_static_identities() {
         sha256_matches "$UDEV_PATH" "$EXPECTED_UDEV_SHA256"
 }
 assert_static_identities || { printf 'Profile, SDK, header, or udev identity changed.\n' >&2; exit 2; }
-catalog_lock="$HVO_CATALOG_PERF_ROOT/.install.lock"
+catalog_lock="$HVO_CATALOG_PERF_ROOT/.catalog.lock"
 [[ -f "$catalog_lock" && ! -L "$catalog_lock" ]] || {
     printf 'Production catalog installer lock is missing or unsafe.\n' >&2
     exit 2

@@ -31,6 +31,29 @@ if "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$TEMPORARY_DIRECTO
     exit 1
 fi
 
+for hostile_lock in symlink hardlink mode type; do
+    hostile_root="$TEMPORARY_DIRECTORY/hostile-lock-$hostile_lock"
+    mkdir -m 700 "$hostile_root"
+    lock="$hostile_root/.catalog.lock"
+    case "$hostile_lock" in
+        symlink) printf 'preserve\n' > "$TEMPORARY_DIRECTORY/lock-target"; ln -s "$TEMPORARY_DIRECTORY/lock-target" "$lock" ;;
+        hardlink) printf 'preserve\n' > "$TEMPORARY_DIRECTORY/lock-target"; chmod 600 "$TEMPORARY_DIRECTORY/lock-target"; ln "$TEMPORARY_DIRECTORY/lock-target" "$lock" ;;
+        mode) printf 'preserve\n' > "$lock"; chmod 640 "$lock" ;;
+        type) mkdir -m 700 "$lock" ;;
+    esac
+    before_mode="$(stat -c %a "$lock")"
+    if "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$hostile_root" >/dev/null 2>&1; then
+        printf 'production installer accepted hostile catalog root lock: %s\n' "$hostile_lock" >&2
+        exit 1
+    fi
+    [[ "$(stat -c %a "$lock")" == "$before_mode" ]] || {
+        printf 'production installer mutated hostile catalog root lock: %s\n' "$hostile_lock" >&2
+        exit 1
+    }
+    [[ "$hostile_lock" == type || "$(<"${lock}")" == preserve ]] || exit 1
+    rm -rf "$lock"; rm -f "$TEMPORARY_DIRECTORY/lock-target"
+done
+
 make_revision() {
     local revision="$1"
     local output="$TEMPORARY_DIRECTORY/r$revision.bundle"
@@ -115,6 +138,47 @@ done
 
 "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null
 assert_current "$INSTALL_ROOT" 1
+[[ "$(stat -c '%u:%h:%a' "$INSTALL_ROOT/.catalog.lock")" == "$(id -u):1:600" ]]
+[[ "$(stat -c '%u:%h:%a' "$INSTALL_ROOT/.catalog-lineage.json")" == "$(id -u):1:600" ]]
+[[ "$(hyg_json_value "$INSTALL_ROOT/.catalog-lineage.json" '$.catalogId')" == "$HYG_CATALOG_ID" ]]
+[[ "$(hyg_json_value "$INSTALL_ROOT/.catalog-lineage.json" '$.packageKind')" == production ]]
+
+# A fixture-side holder and the production installer contend on the same root lock.
+HVO_CATALOG_TEST_MODE=true HVO_CATALOG_TEST_LOCK_HOLD_SECONDS=2 bash -c \
+    'source "$1"; hyg_catalog_acquire_root_lock "$2"' _ "$SCRIPT_DIR/catalog-common.sh" "$INSTALL_ROOT" &
+cross_kind_holder=$!
+for ((attempt=0; attempt<100; attempt++)); do
+    kill -0 "$cross_kind_holder" 2>/dev/null || exit 1
+    if ! flock -n "$INSTALL_ROOT/.catalog.lock" true; then break; fi
+    sleep 0.05
+done
+set +e
+timeout 0.2 "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null 2>&1
+blocked_status=$?
+set -e
+[[ "$blocked_status" == 124 ]] || { printf 'production publisher bypassed the shared catalog root lock\n' >&2; exit 1; }
+wait "$cross_kind_holder"
+"$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null
+
+# An exact pre-binding installation is adopted once; conflicting identity or kind is rejected thereafter.
+rm "$INSTALL_ROOT/.catalog-lineage.json"
+"$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null
+[[ -f "$INSTALL_ROOT/.catalog-lineage.json" ]]
+cp "$INSTALL_ROOT/.catalog-lineage.json" "$TEMPORARY_DIRECTORY/lineage.valid"
+for conflict in id kind; do
+    case "$conflict" in
+        id) jq '.catalogId="different-catalog"' "$TEMPORARY_DIRECTORY/lineage.valid" > "$INSTALL_ROOT/.catalog-lineage.json" ;;
+        kind) jq '.packageKind="fixture" | .packageLineage="hyg-v42-fixture-p3-s2"' "$TEMPORARY_DIRECTORY/lineage.valid" > "$INSTALL_ROOT/.catalog-lineage.json" ;;
+    esac
+    chmod 600 "$INSTALL_ROOT/.catalog-lineage.json"
+    if "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null 2>&1; then
+        printf 'production installer accepted conflicting root lineage: %s\n' "$conflict" >&2
+        exit 1
+    fi
+    assert_current "$INSTALL_ROOT" 1
+    cp "$TEMPORARY_DIRECTORY/lineage.valid" "$INSTALL_ROOT/.catalog-lineage.json"
+    chmod 600 "$INSTALL_ROOT/.catalog-lineage.json"
+done
 
 collision="$TEMPORARY_DIRECTORY/collision.bundle"
 cp -R -- "$SOURCE_BUNDLE" "$collision"

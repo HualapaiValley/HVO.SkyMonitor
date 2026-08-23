@@ -303,6 +303,12 @@ done
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
 test "$(<"$migrated/cameraagents/$instance/state/capture-sequence")" = 42
 test "$(readlink "$migrated/catalogs/hyg-v42-production/current")" = versions/fixture-v1
+(
+  source "$REPO_ROOT/scripts/catalog/catalog-common.sh"
+  hyg_catalog_acquire_root_lock "$migrated/catalogs/hyg-v42-production"
+  hyg_catalog_require_lineage "$migrated/catalogs/hyg-v42-production" hyg-v42-production fixture 2 3
+)
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${args[@]}"
 jq -e --arg instance "$instance" '.schemaVersion == 2 and .status == "copied-and-verified" and .legacyRetained == true and .legacyCatalogRetained == true and .instanceId == $instance' "$evidence" >/dev/null
 jq -e --arg instance "$instance" '.component == "cameraAgent" and .instanceId == $instance and .applicationIdentityFile == "application-identity.json" and (has("applicationIdentity") | not)' "$migrated/cameraagents/$instance/instance-manifest.json" >/dev/null
 jq -e '.state == "pre-provisioning" and .configuredIdentity == "agent-legacy" and .boundIdentity == null' "$migrated/cameraagents/$instance/application-identity.json" >/dev/null
@@ -404,6 +410,55 @@ for finalize_identity_drift in manifest binding; do
   cp "$TEMP_DIR/application-identity.valid" "$identity_binding"
   chmod 600 "$identity_manifest" "$identity_binding"
 done
+# A durable finalize intent is rollback-safe only before either legacy tombstone exists.
+recovery_legacy="$TEMP_DIR/recovery-legacy"; recovery_product="$TEMP_DIR/recovery-product"; recovery_evidence="$TEMP_DIR/recovery.json"
+mkdir -m 700 "$recovery_legacy"
+cp -a "$legacy/config" "$legacy/data" "$recovery_legacy/"
+recovery_args=(--legacy-root "$recovery_legacy" --product-root "$recovery_product" --instance-id "$instance" \
+  --application-id agent-legacy --catalog-id hyg-v42-production --evidence "$recovery_evidence")
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${recovery_args[@]}" >/dev/null
+printf 'cutover-config-preserved\n' > "$recovery_product/cameraagents/$instance/config/cutover-state"
+printf '43\n' > "$recovery_product/cameraagents/$instance/state/capture-sequence"
+recovery_cutover="$TEMP_DIR/recovery-cutover.json"
+cp "$cutover" "$recovery_cutover"; chmod 600 "$recovery_cutover"
+if DEPLOY_MIGRATION_FAILPOINT=after-finalize-intent "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize \
+  "${recovery_args[@]}" --cutover-evidence "$recovery_cutover" >/dev/null 2>&1; then exit 122; fi
+test -f "$recovery_evidence.finalize-intent.json"
+test -d "$recovery_legacy/config/cameraagent"; test -d "$recovery_legacy/data/agent"
+test ! -e "$recovery_legacy/config/cameraagent.hvo-migration-$instance"
+test ! -e "$recovery_legacy/data/agent.hvo-migration-$instance"
+cp "$recovery_evidence.finalize-intent.json" "$TEMP_DIR/recovery-intent.valid"
+jq '.finalConfigSnapshotSha256=("0" * 64)' "$TEMP_DIR/recovery-intent.valid" > "$recovery_evidence.finalize-intent.json"
+chmod 600 "$recovery_evidence.finalize-intent.json"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${recovery_args[@]}" >/dev/null 2>&1; then exit 123; fi
+test -d "$recovery_product/cameraagents/$instance"; test ! -e "$recovery_evidence.rollback-intent.json"
+cp "$TEMP_DIR/recovery-intent.valid" "$recovery_evidence.finalize-intent.json"; chmod 600 "$recovery_evidence.finalize-intent.json"
+if DEPLOY_MIGRATION_FAILPOINT=after-rollback-cleanup-final-state-snapshot \
+  "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${recovery_args[@]}" >/dev/null 2>&1; then exit 124; fi
+jq -e '.state == "cleanup-pending"' "$recovery_evidence.rollback-intent.json" >/dev/null
+test ! -e "$recovery_evidence.finalize-intent.json"; test ! -e "$recovery_evidence.final-state.snapshot"
+test -f "$recovery_evidence.final-config.snapshot"; test -f "$recovery_evidence.cutover.snapshot"
+mv "$recovery_evidence.cutover.snapshot" "$TEMP_DIR/recovery-cutover.snapshot.valid"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${recovery_args[@]}" >/dev/null 2>&1; then exit 125; fi
+test -f "$recovery_evidence.final-config.snapshot"; test -f "$recovery_evidence.rollback-intent.json"
+mv "$TEMP_DIR/recovery-cutover.snapshot.valid" "$recovery_evidence.cutover.snapshot"; chmod 600 "$recovery_evidence.cutover.snapshot"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${recovery_args[@]}" >/dev/null
+for recovery_metadata in "$recovery_evidence" "$recovery_evidence.apply-intent.json" "$recovery_evidence.rollback-intent.json" \
+  "$recovery_evidence.finalize-intent.json" "$recovery_evidence.config.snapshot" "$recovery_evidence.state.snapshot" \
+  "$recovery_evidence.catalog.snapshot" "$recovery_evidence.final-config.snapshot" "$recovery_evidence.final-state.snapshot" \
+  "$recovery_evidence.cutover.snapshot"; do test ! -e "$recovery_metadata" && test ! -L "$recovery_metadata"; done
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${recovery_args[@]}" >/dev/null
+printf 'cutover-config-preserved\n' > "$recovery_product/cameraagents/$instance/config/cutover-state"
+printf '43\n' > "$recovery_product/cameraagents/$instance/state/capture-sequence"
+"$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${recovery_args[@]}" --cutover-evidence "$recovery_cutover" >/dev/null
+jq -e '.status == "finalized" and .legacyCatalogRetained == true' "$recovery_evidence" >/dev/null
+test ! -e "$recovery_evidence.rollback-intent.json"
+jq -e --arg cutoverSha "$(sha256sum "$recovery_evidence.cutover.snapshot" | cut -d' ' -f1)" \
+  --arg configSha "$(sha256sum "$recovery_evidence.final-config.snapshot" | cut -d' ' -f1)" \
+  --arg stateSha "$(sha256sum "$recovery_evidence.final-state.snapshot" | cut -d' ' -f1)" \
+  '.state == "rename-pending" and .cutoverEvidenceSha256 == $cutoverSha and
+   .finalConfigSnapshotSha256 == $configSha and .finalStateSnapshotSha256 == $stateSha' \
+  "$recovery_evidence.finalize-intent.json" >/dev/null
 legacy_catalog_pointer="$(readlink "$legacy/data/catalog/current")"
 legacy_catalog_sha="$(sha256sum "$legacy/data/catalog/versions/fixture-v1/hyg_v42.sqlite" | cut -d' ' -f1)"
 sibling_consumer_stop="$TEMP_DIR/sibling-consumer.stop"
@@ -417,6 +472,8 @@ sibling_consumer_stop="$TEMP_DIR/sibling-consumer.stop"
 sibling_consumer_pid=$!
 if DEPLOY_MIGRATION_FAILPOINT=after-tombstone-config "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 91; fi
 test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent"; test -d "$legacy/data/catalog"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" rollback "${args[@]}" >/dev/null 2>&1; then exit 126; fi
+test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent"
 if DEPLOY_MIGRATION_FAILPOINT=after-pre-pending-destination-barrier "$REPO_ROOT/scripts/deploy:migrate-product-layout" finalize "${args[@]}" --cutover-evidence "$cutover" >/dev/null 2>&1; then exit 113; fi
 test -d "$legacy/config/cameraagent.hvo-migration-$instance"; test -d "$legacy/data/agent.hvo-migration-$instance"
 test -d "$legacy/data/catalog"; test ! -e "$legacy/data/catalog.hvo-migration-$instance"; jq -e '.status == "copied-and-verified"' "$evidence" >/dev/null

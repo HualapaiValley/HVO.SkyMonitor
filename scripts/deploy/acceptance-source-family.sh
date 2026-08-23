@@ -323,7 +323,7 @@ phase14_source_collect() (
     project="$(jq -r '.[0].project' <<< "$acceptance_entries")"; method_id="$(phase14_source_method_id "$acceptance_fqn")"
     method="$input/$acceptance_family/$method_id"; fragments="$method/fragments"
     install -d -m 700 "$input/$acceptance_family" "$method" "$method/results" "$method/trial-results" "$fragments"
-    catalog_lock="$catalog_root/.install.lock"
+    catalog_lock="$catalog_root/.catalog.lock"
     [[ -f "$catalog_lock" && ! -L "$catalog_lock" ]] || { phase14_source_fail catalog-root unsafe-lock; return 1; }
     catalog_lock_metadata="$(stat -c '%u:%h:%a' -- "$catalog_lock" 2>/dev/null)" || return 1
     [[ "$catalog_lock_metadata" == "$(id -u):1:600" ]] || { phase14_source_fail catalog-root unsafe-lock; return 1; }

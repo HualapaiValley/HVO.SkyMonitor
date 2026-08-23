@@ -489,10 +489,16 @@ if [[ "$kind" == production ]]; then
   "$stage/scripts/catalog/install-hyg-v42.sh" install "$bundle" "$install_root" >/dev/null
 else
   destination="$install_root/versions/$version"
+  old_target=""
   source_manifest_sha="$(sha256sum "$bundle/manifest.json" | cut -d' ' -f1)"
   transaction="$install_root/.fixture-pointer-transaction"
   candidate_intent="$install_root/.fixture-candidate-transaction"
-  fixture_fail_at() { [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" != "$1" ]] || exit 75; }
+  fixture_fail_at() {
+    if [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" == "$1" ]]; then
+      [[ -z "${HYG_CATALOG_ROOT_LOCK_FD:-}" ]] || exec {HYG_CATALOG_ROOT_LOCK_FD}>&-
+      exit 75
+    fi
+  }
   fixture_create_private_temporary() {
     local prefix=$1 temporary attempt
     for attempt in {1..16}; do
@@ -558,30 +564,40 @@ else
   install_parent="$(dirname -- "$install_root")"
   [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
      -d "$install_parent" && ! -L "$install_parent" ]] || exit 97
-  hyg_fixture_validate_ancestor_chain "$install_parent" || exit 97
-  hyg_fixture_safe_mutable_directory "$install_parent" || exit 97
+  hyg_catalog_validate_ancestor_chain "$install_parent" || exit 97
+  hyg_catalog_safe_mutable_directory "$install_parent" || exit 97
   if [[ -e "$install_root" || -L "$install_root" ]]; then
-    hyg_fixture_safe_mutable_directory "$install_root" || exit 97
+    hyg_catalog_safe_mutable_directory "$install_root" || exit 97
   else
     mkdir -m 700 -- "$install_root" 2>/dev/null || [[ -d "$install_root" && ! -L "$install_root" ]] || exit 97
-    hyg_fixture_safe_mutable_directory "$install_root" || exit 97
+    hyg_catalog_safe_mutable_directory "$install_root" || exit 97
     sync -f "$install_parent"
   fi
-  hyg_fixture_acquire_install_lock "$install_root" || exit 97
+  hyg_catalog_acquire_root_lock "$install_root" || exit 97
+  hyg_catalog_reconcile_lineage_temporaries "$install_root" || exit 97
+  if [[ -e "$install_root/.catalog-lineage.json" || -L "$install_root/.catalog-lineage.json" ]]; then
+    hyg_catalog_require_lineage "$install_root" "$catalog_id" "$kind" "$schema_version" "$preprocessing_version" || exit 97
+  fi
   hyg_fixture_reconcile_transaction_temporaries "$install_root" || exit 97
   if [[ -e "$install_root/versions" || -L "$install_root/versions" ]]; then
-    hyg_fixture_safe_mutable_directory "$install_root/versions" || exit 97
+    hyg_catalog_safe_mutable_directory "$install_root/versions" || exit 97
   else
     mkdir -m 700 -- "$install_root/versions"
-    hyg_fixture_safe_mutable_directory "$install_root/versions" || exit 97
+    hyg_catalog_safe_mutable_directory "$install_root/versions" || exit 97
     sync -f "$install_root"
   fi
-  hyg_fixture_reconcile_current_temporaries "$install_root" || exit 97
+  hyg_fixture_reconcile_pointer_temporaries "$install_root" || exit 97
   if [[ -e "$install_root/current" || -L "$install_root/current" ]]; then
     hyg_fixture_validate_pointer "$install_root" "$install_root/current" || exit 97
   fi
   hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 97
   fixture_reconcile_candidate || exit 97
+  hyg_catalog_require_lineage "$install_root" "$catalog_id" "$kind" "$schema_version" "$preprocessing_version" || exit 97
+  if [[ -e "$install_root/current" || -L "$install_root/current" ]]; then
+    hyg_fixture_validate_pointer "$install_root" "$install_root/current" || exit 97
+    old_target="$(readlink "$install_root/current")"
+    hyg_catalog_validate_installed_target "$install_root" "$old_target" "$catalog_id" fixture || exit 97
+  fi
   if [[ ! -e "$destination" ]]; then
     candidate="$install_root/versions/.fixture-candidate-$version.stage"
     [[ ! -e "$candidate" && ! -L "$candidate" && ! -e "$candidate_intent" && ! -L "$candidate_intent" ]] || exit 98
@@ -615,16 +631,19 @@ else
   sync -f "$destination/manifest.json"; sync -f "$destination/hyg_v42.sqlite"
   sync -f "$destination"; sync -f "$install_root/versions"
   fixture_fail_at after-candidate-publication
-  [[ ! -e "$transaction" && ! -L "$transaction" ]] || exit 98
-  temporary="$(fixture_create_private_temporary .fixture-pointer-transaction.tmp)"
-  printf '%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" > "$temporary"
-  chmod 600 "$temporary"; sync -f "$temporary"; fixture_fail_at after-pointer-transaction-temp-fsync
-  mv -T -- "$temporary" "$transaction"; sync -f "$install_root"
-  fixture_fail_at after-pointer-transaction
-  hyg_fixture_replace_current "$install_root" "versions/$version"
-  fixture_fail_at after-current-pointer
-  rm -f -- "$transaction"; sync -f "$install_root"
-  hyg_validate_fixture_installation "$install_root" "$version" || exit 98
+  if [[ "$old_target" != "versions/$version" ]]; then
+    previous_manifest_sha=-
+    if [[ -n "$old_target" ]]; then previous_manifest_sha="$(hyg_sha256 "$install_root/$old_target/manifest.json")"; else old_target=-; fi
+    [[ ! -e "$transaction" && ! -L "$transaction" ]] || exit 98
+    temporary="$(fixture_create_private_temporary .fixture-pointer-transaction.tmp)"
+    printf '%s\n%s\n%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" \
+      "$old_target" "$previous_manifest_sha" > "$temporary"
+    chmod 600 "$temporary"; sync -f "$temporary"; fixture_fail_at after-pointer-transaction-temp-fsync
+    mv -T -- "$temporary" "$transaction"; sync -f "$install_root"
+    fixture_fail_at after-pointer-transaction
+    hyg_fixture_reconcile_pointer_transaction "$install_root"
+  fi
+  hyg_validate_fixture_installation "$install_root" "$version" "$catalog_id" || exit 98
 fi
 current="$(readlink "$install_root/current")"; installed="$install_root/$current/hyg_v42.sqlite"
 hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$version" "$schema_version" \
@@ -655,17 +674,19 @@ stage=$1; install_root=$2; catalog_id=$3; kind=$4; expected_version=$5; schema_v
 # shellcheck disable=SC1091
 source "$stage/scripts/catalog/catalog-common.sh"
 [[ -L "$install_root/current" ]] || exit 90
+hyg_catalog_acquire_root_lock "$install_root" || exit 92
+hyg_catalog_reconcile_lineage_temporaries "$install_root" || exit 92
+hyg_catalog_require_lineage "$install_root" "$catalog_id" "$kind" "$schema_version" "$preprocessing_version" || exit 92
 if [[ "$kind" == fixture ]]; then
-  hyg_fixture_acquire_install_lock "$install_root" || exit 92
   hyg_fixture_reconcile_transaction_temporaries "$install_root" || exit 92
-  hyg_fixture_reconcile_current_temporaries "$install_root" || exit 92
+  hyg_fixture_reconcile_pointer_temporaries "$install_root" || exit 92
   hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 92
 fi
 current=$(readlink "$install_root/current")
 [[ "$current" == "versions/$expected_version" ]] || exit 91
 database="$install_root/$current/hyg_v42.sqlite"
 if [[ "$kind" == fixture ]]; then
-  hyg_validate_fixture_installation "$install_root" "$expected_version" || exit 92
+  hyg_validate_fixture_installation "$install_root" "$expected_version" "$catalog_id" || exit 92
 fi
 hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$expected_version" "$schema_version" \
   "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 92

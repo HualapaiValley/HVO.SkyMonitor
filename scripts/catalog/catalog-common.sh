@@ -380,7 +380,7 @@ hyg_resolve_legacy_catalog_identity() {
     esac
 }
 
-hyg_fixture_safe_mutable_directory() {
+hyg_catalog_safe_mutable_directory() {
     local path="$1"
     local mode
     [[ -d "$path" && ! -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
@@ -388,33 +388,50 @@ hyg_fixture_safe_mutable_directory() {
     (( (8#$mode & 0022) == 0 ))
 }
 
-hyg_fixture_acquire_install_lock() {
+hyg_catalog_acquire_root_lock() {
     local install_root="$1"
-    local lock_path="$install_root/.fixture-install.lock"
+    local lock_path="$install_root/.catalog.lock"
     local install_parent
-    local hold_seconds="${HVO_FIXTURE_CATALOG_TEST_LOCK_HOLD_SECONDS:-}"
+    local hold_seconds="${HVO_CATALOG_TEST_LOCK_HOLD_SECONDS:-}"
     install_parent="$(dirname -- "$install_root")"
     [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
        -d "$install_parent" && ! -L "$install_parent" ]] || return 1
-    hyg_fixture_validate_ancestor_chain "$install_parent" &&
-        hyg_fixture_safe_mutable_directory "$install_parent" &&
-        hyg_fixture_safe_mutable_directory "$install_root" || return 1
+    hyg_catalog_validate_ancestor_chain "$install_parent" &&
+        hyg_catalog_safe_mutable_directory "$install_parent" &&
+        hyg_catalog_safe_mutable_directory "$install_root" || return 1
     if [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
         (set -o noclobber; umask 077; : > "$lock_path") 2>/dev/null || true
     fi
     [[ -f "$lock_path" && ! -L "$lock_path" &&
        "$(stat -c %u -- "$lock_path")" == "$(id -u)" &&
        "$(stat -c '%h:%a' -- "$lock_path")" == "1:600" ]] || return 1
-    exec {HYG_FIXTURE_INSTALL_LOCK_FD}<>"$lock_path" || return 1
-    flock -x "$HYG_FIXTURE_INSTALL_LOCK_FD" || return 1
+    exec {HYG_CATALOG_ROOT_LOCK_FD}<>"$lock_path" || return 1
+    flock -x "$HYG_CATALOG_ROOT_LOCK_FD" || return 1
     [[ -f "$lock_path" && ! -L "$lock_path" &&
        "$(stat -c %u -- "$lock_path")" == "$(id -u)" &&
        "$(stat -c '%h:%a' -- "$lock_path")" == "1:600" &&
-       "$(stat -Lc '%d:%i' -- "$lock_path")" == "$(stat -Lc '%d:%i' -- "/proc/$$/fd/$HYG_FIXTURE_INSTALL_LOCK_FD")" ]] || return 1
+       "$(stat -Lc '%d:%i' -- "$lock_path")" == "$(stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/$HYG_CATALOG_ROOT_LOCK_FD")" ]] || return 1
     if [[ -n "$hold_seconds" ]]; then
-        [[ "${HVO_FIXTURE_CATALOG_TEST_MODE:-}" == true && "$hold_seconds" =~ ^[1-9]$ ]] || return 1
+        [[ "${HVO_CATALOG_TEST_MODE:-}" == true && "$hold_seconds" =~ ^[1-9]$ ]] || return 1
         sleep "$hold_seconds"
     fi
+}
+
+hyg_catalog_reconcile_lineage_temporaries() {
+    local install_root="$1" path name removed=false
+    local -a temporaries
+    shopt -s nullglob dotglob
+    temporaries=("$install_root"/.catalog-lineage.tmp.*)
+    shopt -u nullglob dotglob
+    for path in "${temporaries[@]}"; do
+        name="${path##*/}"
+        [[ "$name" =~ ^[.]catalog-lineage[.]tmp[.][1-9][0-9]*[.][0-9]{1,5}$ &&
+           -f "$path" && ! -L "$path" &&
+           "$(stat -c '%u:%h:%a' -- "$path")" == "$(id -u):1:600" ]] || return 1
+        rm -f -- "$path"
+        removed=true
+    done
+    [[ "$removed" == false ]] || sync -f "$install_root"
 }
 
 hyg_fixture_reconcile_transaction_temporaries() {
@@ -437,18 +454,18 @@ hyg_fixture_reconcile_transaction_temporaries() {
     [[ "$removed" == false ]] || sync -f "$install_root"
 }
 
-hyg_fixture_reconcile_current_temporaries() {
+hyg_fixture_reconcile_pointer_temporaries() {
     local install_root="$1"
     local path name target
     local removed=false
     local -a temporaries
-    hyg_fixture_safe_mutable_directory "$install_root/versions" || return 1
+    hyg_catalog_safe_mutable_directory "$install_root/versions" || return 1
     shopt -s nullglob dotglob
-    temporaries=("$install_root"/.current.tmp.*)
+    temporaries=("$install_root"/.current.tmp.* "$install_root"/.previous.tmp.*)
     shopt -u nullglob dotglob
     for path in "${temporaries[@]}"; do
         name="${path##*/}"
-        [[ "$name" =~ ^[.]current[.]tmp[.][1-9][0-9]*[.][0-9]{1,5}$ &&
+        [[ "$name" =~ ^[.](current|previous)[.]tmp[.][1-9][0-9]*[.][0-9]{1,5}$ &&
            -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" &&
            "$(stat -c %h -- "$path")" == 1 ]] || return 1
         target="$(readlink "$path")"
@@ -460,7 +477,7 @@ hyg_fixture_reconcile_current_temporaries() {
     [[ "$removed" == false ]] || sync -f "$install_root"
 }
 
-hyg_fixture_validate_ancestor_chain() {
+hyg_catalog_validate_ancestor_chain() {
     local path="$1"
     local current=/ component owner mode
     [[ "$path" == /* && "$path" != / ]] || return 1
@@ -492,46 +509,136 @@ hyg_fixture_validate_pointer() {
     (( (8#$mode & 0022) == 0 ))
 }
 
-hyg_fixture_replace_current() {
+hyg_fixture_replace_pointer() {
     local install_root="$1"
-    local target="$2"
+    local pointer="$2"
+    local target="$3"
     local temporary attempt
     for attempt in {1..16}; do
-        temporary="$install_root/.current.tmp.$$.$RANDOM"
+        temporary="$install_root/.${pointer}.tmp.$$.$RANDOM"
         if ln -s -- "$target" "$temporary" 2>/dev/null; then
-            [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" != after-current-pointer-temporary ]] || exit 75
+            if [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" == "after-$pointer-pointer-temporary" ]]; then
+                exec {HYG_CATALOG_ROOT_LOCK_FD}>&-
+                exit 75
+            fi
             break
         fi
         temporary=
     done
     [[ -n "$temporary" ]] || return 1
-    mv -Tf -- "$temporary" "$install_root/current"
+    mv -Tf -- "$temporary" "$install_root/$pointer"
     sync -f "$install_root"
 }
 
 hyg_fixture_reconcile_pointer_transaction() {
     local install_root="$1"
     local transaction="$install_root/.fixture-pointer-transaction"
-    local target catalog_id manifest_sha version actual_id actual_manifest_sha
+    local target catalog_id manifest_sha previous_target previous_manifest_sha
     local -a fields
     [[ -e "$transaction" || -L "$transaction" ]] || return 0
     [[ -f "$transaction" && ! -L "$transaction" &&
        "$(stat -c '%u:%h:%a' -- "$transaction")" == "$(id -u):1:600" ]] || return 1
     mapfile -t fields < "$transaction"
-    [[ ${#fields[@]} -eq 3 ]] || return 1
+    [[ ${#fields[@]} -eq 5 ]] || return 1
     target="${fields[0]}"; catalog_id="${fields[1]}"; manifest_sha="${fields[2]}"
+    previous_target="${fields[3]}"; previous_manifest_sha="${fields[4]}"
     [[ "$target" =~ ^versions/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$ &&
        "$catalog_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && "$manifest_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
-    version="${target#versions/}"
-    hyg_validate_fixture_payload "$install_root" "$version" || return 1
-    actual_manifest_sha="$(hyg_sha256 "$install_root/$target/$HYG_MANIFEST_FILE")"
-    [[ "$actual_manifest_sha" == "$manifest_sha" ]] || return 1
-    actual_id="$(hyg_resolve_catalog_identity "$install_root/$target")" || return 1
-    [[ "$actual_id" == "$catalog_id" &&
-       "$(hyg_json_value "$install_root/$target/$HYG_MANIFEST_FILE" '$.package.kind')" == fixture &&
-       "$(hyg_json_value "$install_root/$target/$HYG_MANIFEST_FILE" '$.package.version')" == "$version" ]] || return 1
-    hyg_fixture_replace_current "$install_root" "$target"
+    hyg_catalog_validate_installed_target "$install_root" "$target" "$catalog_id" fixture "$manifest_sha" || return 1
+    if [[ "$previous_target" == - ]]; then
+        [[ "$previous_manifest_sha" == - ]] || return 1
+        rm -f -- "$install_root/previous"
+        sync -f "$install_root"
+    else
+        [[ "$previous_target" =~ ^versions/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ &&
+           "$previous_manifest_sha" =~ ^[0-9a-f]{64}$ && "$previous_target" != "$target" ]] || return 1
+        hyg_catalog_validate_installed_target "$install_root" "$previous_target" "$catalog_id" fixture \
+            "$previous_manifest_sha" || return 1
+        hyg_fixture_replace_pointer "$install_root" previous "$previous_target"
+    fi
+    if [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" == after-previous-pointer ]]; then
+        exec {HYG_CATALOG_ROOT_LOCK_FD}>&-
+        exit 75
+    fi
+    hyg_fixture_replace_pointer "$install_root" current "$target"
+    if [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" == after-current-pointer ]]; then
+        exec {HYG_CATALOG_ROOT_LOCK_FD}>&-
+        exit 75
+    fi
     rm -f -- "$transaction"
+    sync -f "$install_root"
+}
+
+hyg_catalog_validate_installed_target() {
+    local install_root="$1" target="$2" expected_id="$3" expected_kind="$4" expected_manifest_sha="${5:-}"
+    local directory version actual_id manifest
+    local file
+    directory="$install_root/$target"
+    manifest="$directory/$HYG_MANIFEST_FILE"
+    [[ "$target" =~ ^versions/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$ ]] || return 1
+    version="${target#versions/}"
+    [[ -d "$directory" && ! -L "$directory" && "$(stat -c '%u:%a' -- "$directory")" == "$(id -u):555" ]] || return 1
+    actual_id="$(hyg_resolve_catalog_identity "$directory")" || return 1
+    [[ "$actual_id" == "$expected_id" &&
+       "$(hyg_json_value "$manifest" '$.package.kind')" == "$expected_kind" &&
+       "$(hyg_json_value "$manifest" '$.package.version')" == "$version" ]] || return 1
+    [[ -z "$expected_manifest_sha" || "$(hyg_sha256 "$manifest")" == "$expected_manifest_sha" ]] || return 1
+    if [[ "$expected_kind" == fixture ]]; then
+        hyg_validate_fixture_payload "$install_root" "$version"
+    else
+        for file in "$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE"; do
+            [[ -f "$directory/$file" && ! -L "$directory/$file" &&
+               "$(stat -c '%u:%h:%a' -- "$directory/$file")" == "$(id -u):1:444" ]] || return 1
+        done
+    fi
+}
+
+hyg_catalog_package_lineage() {
+    local kind="$1" schema="$2" preprocessing="$3"
+    [[ "$schema" == "$HYG_SCHEMA_VERSION" && "$preprocessing" == "$HYG_PREPROCESSING_VERSION" ]] || return 1
+    case "$kind" in
+        production) printf 'hyg-v42-production-p%s-s%s\n' "$preprocessing" "$schema" ;;
+        fixture) printf 'hyg-v42-fixture-p%s-s%s\n' "$preprocessing" "$schema" ;;
+        *) return 1 ;;
+    esac
+}
+
+hyg_catalog_require_lineage() {
+    local install_root="$1" expected_id="$2" expected_kind="$3" expected_schema="$4" expected_preprocessing="$5"
+    local binding="$install_root/.catalog-lineage.json" lineage temporary target
+    local -a versions
+    lineage="$(hyg_catalog_package_lineage "$expected_kind" "$expected_schema" "$expected_preprocessing")" || return 1
+    if [[ -e "$binding" || -L "$binding" ]]; then
+        [[ -f "$binding" && ! -L "$binding" &&
+           "$(stat -c '%u:%h:%a' -- "$binding")" == "$(id -u):1:600" ]] || return 1
+        HYG_VALIDATION_FAILED=0
+        hyg_validate_manifest_document "$binding" || return 1
+        hyg_json_exact_keys "$binding" '$' 'catalogId,packageKind,packageLineage,schemaVersion'
+        hyg_json_exact "$binding" '$.schemaVersion' integer 1
+        hyg_json_exact "$binding" '$.catalogId' text "$expected_id"
+        hyg_json_exact "$binding" '$.packageKind' text "$expected_kind"
+        hyg_json_exact "$binding" '$.packageLineage' text "$lineage"
+        [[ "$HYG_VALIDATION_FAILED" == 0 ]]
+        return
+    fi
+
+    if [[ -e "$install_root/current" || -L "$install_root/current" ]]; then
+        hyg_fixture_validate_pointer "$install_root" "$install_root/current" || return 1
+        target="$(readlink "$install_root/current")"
+        hyg_catalog_validate_installed_target "$install_root" "$target" "$expected_id" "$expected_kind" || return 1
+    else
+        [[ ! -e "$install_root/previous" && ! -L "$install_root/previous" ]] || return 1
+        shopt -s nullglob dotglob
+        versions=("$install_root/versions"/*)
+        shopt -u nullglob dotglob
+        [[ ${#versions[@]} -eq 0 ]] || return 1
+    fi
+
+    temporary="$install_root/.catalog-lineage.tmp.$$.$RANDOM"
+    (set -o noclobber; umask 077; printf '{"schemaVersion":1,"catalogId":"%s","packageKind":"%s","packageLineage":"%s"}\n' \
+        "$expected_id" "$expected_kind" "$lineage" > "$temporary") || return 1
+    sync -f "$temporary"
+    mv -T -- "$temporary" "$binding"
     sync -f "$install_root"
 }
 
@@ -556,15 +663,16 @@ hyg_validate_fixture_payload() {
 hyg_validate_fixture_installation() {
     local install_root="$1"
     local version="$2"
-    local install_parent current
+    local expected_id="$3"
+    local install_parent current previous
     local -a candidate_stages transaction_temporaries current_temporaries
     install_parent="$(dirname -- "$install_root")"
     [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
        -d "$install_parent" && ! -L "$install_parent" ]] || return 1
-    hyg_fixture_validate_ancestor_chain "$install_parent" &&
-        hyg_fixture_safe_mutable_directory "$install_parent" &&
-        hyg_fixture_safe_mutable_directory "$install_root" &&
-        hyg_fixture_safe_mutable_directory "$install_root/versions" &&
+    hyg_catalog_validate_ancestor_chain "$install_parent" &&
+        hyg_catalog_safe_mutable_directory "$install_parent" &&
+        hyg_catalog_safe_mutable_directory "$install_root" &&
+        hyg_catalog_safe_mutable_directory "$install_root/versions" &&
         hyg_fixture_validate_pointer "$install_root" "$install_root/current" || return 1
     [[ ! -e "$install_root/.fixture-pointer-transaction" && ! -L "$install_root/.fixture-pointer-transaction" &&
        ! -e "$install_root/.fixture-candidate-transaction" && ! -L "$install_root/.fixture-candidate-transaction" ]] || return 1
@@ -572,13 +680,21 @@ hyg_validate_fixture_installation() {
     candidate_stages=("$install_root/versions"/.fixture-candidate-*.stage)
     transaction_temporaries=("$install_root"/.fixture-candidate-transaction.tmp.*
         "$install_root"/.fixture-pointer-transaction.tmp.*)
-    current_temporaries=("$install_root"/.current.tmp.*)
+    current_temporaries=("$install_root"/.current.tmp.* "$install_root"/.previous.tmp.*)
     shopt -u nullglob dotglob
     [[ ${#candidate_stages[@]} -eq 0 && ${#transaction_temporaries[@]} -eq 0 &&
        ${#current_temporaries[@]} -eq 0 ]] || return 1
     current="$(readlink "$install_root/current")"
     [[ "$current" == "versions/$version" ]] || return 1
-    hyg_validate_fixture_payload "$install_root" "$version"
+    hyg_catalog_validate_installed_target "$install_root" "$current" "$expected_id" fixture || return 1
+    hyg_catalog_require_lineage "$install_root" "$expected_id" fixture "$HYG_SCHEMA_VERSION" \
+        "$HYG_PREPROCESSING_VERSION" || return 1
+    if [[ -e "$install_root/previous" || -L "$install_root/previous" ]]; then
+        hyg_fixture_validate_pointer "$install_root" "$install_root/previous" || return 1
+        previous="$(readlink "$install_root/previous")"
+        [[ "$previous" != "$current" ]] || return 1
+        hyg_catalog_validate_installed_target "$install_root" "$previous" "$expected_id" fixture || return 1
+    fi
 }
 
 hyg_validate_fixture_manifest_v2() {
