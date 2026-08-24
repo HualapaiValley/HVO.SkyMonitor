@@ -1,13 +1,15 @@
 # HVO SkyMonitor Virtual-First Completion Plan
 
-Status date: 2026-07-25
+Status date: 2026-08-24
 
 This is the authoritative architecture, virtual-first requirements, phase-order,
 and completion source for HVO SkyMonitor. The repository-visible
 [product roadmap](roadmap.md) owns stable portfolio initiative IDs, planning
-horizons, and top-level epic mappings. Live coordination is tracked by the
+horizons, and top-level epic mappings. The completed
 [Virtual-First Platform Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/1)
-and [epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89).
+and [epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89) retain
+the delivery history; active coordination belongs to each current initiative's
+owning roadmap epic.
 Detailed execution rules and reusable agent prompts are maintained in:
 
 - [Product roadmap](roadmap.md)
@@ -402,19 +404,18 @@ The plan starts from the following completed foundation:
 This initial baseline was not yet a reconstruction-complete or executable
 central pipeline.
 
-### Aggregate status at 2026-07-25
+### Aggregate status at 2026-08-24
 
-- Phases 0-11 and the backend children of phase 12 are merged. Transient epic
-  #65 remains open for final UI/two-host closure.
-- The standalone foundation through #191, #194-#197, #171, and central location
-  reconciliation #170 is merged.
-- Phase 12A is the active course correction. Epic #205 and children #206-#211
-  are open; #206 is the first implementation dependency.
-- Phase 13 is partial: CameraAgent UI #106 is merged, while LogicHost UI #107
-  follows standalone gate #211.
-- Phase 14 remains open: #166 and #211 precede deployment automation #151;
-  #243 database disposition and accepted rollout-blocking corrections also
-  precede #151; #151, #107, and #211 precede final two-host gate #108.
+- Phases 0-14 are complete for the virtual-first scope. Epic #89, its nested
+  epics, and all milestone issues are closed.
+- Standalone CameraAgent, optional LogicHost integration, transient workflows,
+  both host UIs, split-host deployment, and the final two-host fault matrix are
+  merged and retained as executable evidence.
+- Deferred scale validation #252 and #262 and later physical-hardware evidence
+  remain outside virtual-first completion and are mapped separately in
+  `docs/roadmap.md`.
+- Post-completion deployment lifecycle issues #414-#417 are delivered under
+  `RM-003`; they extend operations without reopening this completion plan.
 
 ## 7. Phase 0 - Planning, Boundaries, and Quality
 
@@ -1038,9 +1039,10 @@ definition and current disposition are recorded in
 Parallel work is allowed only when contracts and migration order are stable.
 Independent issues use separate branches and isolated worktrees, with a default
 limit of two active implementation issues plus non-editing research/review
-agents. One roadmap coordinator records claims in epic #89 and owns global slot
-accounting. Agents must not implement a downstream issue against an unmerged
-speculative contract unless the issues explicitly coordinate one PR series.
+agents. One roadmap coordinator records claims in the active initiative's owning
+epic and owns global slot accounting. Agents must not implement a downstream
+issue against an unmerged speculative contract unless the issues explicitly
+coordinate one PR series.
 
 ## 24. PR and Validation Gate
 

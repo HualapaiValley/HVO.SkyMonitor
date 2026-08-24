@@ -737,5 +737,5 @@ accuracy is suitable for visualization, not precision astrometry or navigation.
   evidence pass; Raspberry Pi and physical calibration remain later hardware
   acceptance.
 
-Implementation order and live status are owned only by `docs/project-plan.md`
-and its linked GitHub issues.
+Portfolio order is owned by `docs/roadmap.md`, virtual-first phase order by
+`docs/project-plan.md`, and live status by the linked GitHub issues.

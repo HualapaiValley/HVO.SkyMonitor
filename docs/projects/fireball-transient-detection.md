@@ -6,10 +6,11 @@ This document defines the subsystem architecture for optional meteor, fireball,
 satellite, aircraft, and transient detection. The umbrella work item is issue
 [#65](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/65).
 
-The authoritative status and execution order live in
-[`docs/project-plan.md`](../project-plan.md). This document owns transient
-behavior and invariants only. Runtime work starts only when its linked issue
-meets the readiness rules in `docs/planning/agent-execution.md`.
+Portfolio status lives in [`docs/roadmap.md`](../roadmap.md), virtual-first phase
+history in [`docs/project-plan.md`](../project-plan.md), and current execution
+state in the linked GitHub issues. This document owns transient behavior and
+invariants only. Runtime work starts only when its linked issue meets the
+readiness rules in `docs/planning/agent-execution.md`.
 
 The initial implementation is not a generic machine-learning platform. It starts
 with deterministic image algorithms, measured heuristics, retained source

@@ -16,11 +16,10 @@ local processing, and uploads selected reconstructable artifacts to a central
 LogicHost. LogicHost receives data from many CameraAgents, stores it durably,
 runs central processing, and exposes operational review surfaces.
 
-The current milestone is virtual-first. The system proves the full software
-path with `VirtualSkyCameraModule` before production physical camera modules are
-required. VirtualSky behaves as a normal camera module behind the same camera
-contract, so the rest of the system should not need special branches for
-simulation.
+The completed virtual-first milestone proved the full software path with
+`VirtualSkyCameraModule` before requiring production physical camera modules.
+VirtualSky behaves as a normal camera module behind the same camera contract, so
+the rest of the system should not need special branches for simulation.
 
 ## The Big Picture
 

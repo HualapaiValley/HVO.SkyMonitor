@@ -66,7 +66,9 @@
   state are host bind mounts. The devcontainer must fail its persistence check
   rather than start OpenCode against container-layer fallback directories.
 
-- Virtual-first completion is coordinated by GitHub epic #89 and the `Virtual-First Platform Completion` milestone.
+- Use the active initiative's owning roadmap epic for coordination, claims, and
+  handoffs. Epic #89 and the `Virtual-First Platform Completion` milestone retain
+  the completed virtual-first delivery history.
 - Before implementing a roadmap issue, follow `docs/planning/agent-execution.md` and the relevant section of `docs/planning/agent-prompts.md`.
 - Use `docs/planning/requirements-crosswalk.md` for the owning detailed specification and `docs/planning/performance-validation.md` for canonical workloads and evidence.
 - Keep one implementation issue per branch/PR unless dependencies explicitly coordinate stacked PRs.
@@ -77,12 +79,12 @@
   analysis, and evidence. By default, up to two independent ready issues may
   proceed in isolated worktrees when dependencies are merged and machine/Docker
   capacity permits; raise that limit only after explicitly verifying capacity.
-  The roadmap coordinator records claims in epic #89 and never lets agents edit
-  the same worktree.
+  The roadmap coordinator records claims in the owning roadmap epic and never
+  lets agents edit the same worktree.
 - Every PR must build and test locally, push, receive review, correct every actionable finding, rerun replacement CI on the corrected head, resolve threads, and merge only when current-head required checks are green.
 - Performance-sensitive work requires reproducible baseline/after evidence for relevant I/O, CPU, allocations/working set, throughput, latency, and backlog. Unexplained regression blocks merge.
 - Validate produced outputs through checksums, numerical invariants, provenance, lineage, and durable state where applicable. Inspect logs, metrics, traces, and health behavior for host/worker changes.
-- If work stops or blocks, leave the resumable handoff required by the execution protocol and update epic #89 with the exact next action.
+- If work stops or blocks, leave the resumable handoff required by the execution protocol and update the owning roadmap epic with the exact next action.
 - After merging a roadmap issue, the roadmap coordinator automatically claims
   and starts the highest-priority candidate-ready issue after posting its
   synopsis and `READY` signal. Other implementing agents return completion state

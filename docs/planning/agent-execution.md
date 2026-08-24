@@ -1,8 +1,7 @@
 # Agent Execution Protocol
 
-This protocol applies to every issue in the
-[Virtual-First Platform Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/1)
-and [epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89).
+This protocol applies to every approved issue in `docs/roadmap.md` and its owning
+roadmap epic or milestone.
 It is designed for continuous roadmap execution: work may stop, hand off, and
 resume without losing decisions, validation state, or the exact next action,
 but a completed issue does not require an operator prompt before the next ready
@@ -13,13 +12,14 @@ issue starts.
 Read these sources in order before implementation:
 
 1. `AGENTS.md`
-2. `docs/project-plan.md`
-3. The active GitHub issue and its dependencies
-4. The owning subsystem specification or runbook
-5. `docs/planning/requirements-crosswalk.md`
-6. `docs/planning/performance-validation.md`
-7. `docs/planning/agent-prompts.md`
-8. Current code and tests
+2. `docs/roadmap.md`
+3. `docs/project-plan.md`
+4. The active GitHub issue, owning roadmap epic, and dependencies
+5. The owning subsystem specification or runbook
+6. `docs/planning/requirements-crosswalk.md`
+7. `docs/planning/performance-validation.md`
+8. `docs/planning/agent-prompts.md`
+9. Current code and tests
 
 If sources conflict, stop implementation long enough to resolve the conflict in
 the issue or authoritative plan. Do not silently choose a convenient behavior.
@@ -85,17 +85,19 @@ reason.
 
 ### Coordination
 
-- Epic #89 names one roadmap coordinator for the active execution session. Only
-  that coordinator selects or claims the next issue; implementing agents return
-  completion/blocker state to it rather than independently consuming the queue.
+- The active initiative's owning roadmap epic names one coordinator for the
+  execution session. Only that coordinator selects or claims the next issue;
+  implementing agents return completion/blocker state to it rather than
+  independently consuming the queue.
 - Keep one implementing agent per issue branch. Use research, review, failure
   analysis, and evidence agents concurrently when their work does not overlap.
 - The roadmap coordinator may maintain at most two active implementation issues
   globally by default, including issues waiting on CI or review. Raise that limit
   only when machine and Docker capacity are known to support it.
-- Before creating a worktree, claim the issue in epic #89 with its branch,
-  worktree owner, and dependency base. Exclude every claimed or active issue from
-  subsequent selection and clear the claim after merge or explicit release.
+- Before creating a worktree, claim the issue in the owning roadmap epic with its
+  branch, worktree owner, and dependency base. Exclude every claimed or active
+  issue from subsequent selection and clear the claim after merge or explicit
+  release.
 - Concurrent issues require stable merged dependencies and separate branches
   and isolated git worktrees. Agents must never edit the same worktree.
 - Do not start a downstream issue from an unmerged contract or migration unless
@@ -307,7 +309,7 @@ Every PR follows this sequence:
    push. Tier C/M runs the complete local candidate gate.
 3. Commit only intended files.
 4. Push the issue branch.
-5. Open a PR linked to the issue and epic #89.
+5. Open a PR linked to the issue and its owning roadmap epic.
 6. Include implementation, migrations/compatibility, tests, output evidence,
    performance evidence, logs/telemetry review, and residual risks.
 7. Wait for automatic CI and automatic review.
@@ -321,8 +323,8 @@ Every PR follows this sequence:
 13. Resolve threads only after the correction exists.
 14. Merge only when the current head is mergeable, every required current-head
     check is green, and every actionable thread is resolved.
-15. Confirm the issue closes, update epic #89, synchronize local `main`, and
-    preserve unrelated worktree changes.
+15. Confirm the issue closes, update the owning roadmap epic, synchronize local
+    `main`, and preserve unrelated worktree changes.
 
 A pre-correction green run is stale and does not satisfy the gate.
 
@@ -384,14 +386,14 @@ validation state, performance observations, and next exact action.
 
 After a successful merge, the roadmap coordinator must:
 
-1. Confirm issue closure, update epic #89, and synchronize `main`.
+1. Confirm issue closure, update the owning roadmap epic, and synchronize `main`.
 2. Recompute the unclaimed candidate-ready queue defined in section 12.
 3. Fill only available implementation slots, up to the global maximum. Select by
    explicit epic priority first, then dependency critical-path unlocks, roadmap
    phase order, and finally oldest issue number.
 4. For each selected issue, post its plain-language synopsis and `READY` signal,
-   record its claim in epic #89, create its issue branch/worktree, and begin the
-   lifecycle without asking the operator to say `continue`.
+   record its claim in the owning roadmap epic, create its issue branch/worktree,
+   and begin the lifecycle without asking the operator to say `continue`.
 5. Start a second independent issue only when a slot is available and doing so
    will not compete for the same contracts, migrations, or Docker-heavy gates.
 
@@ -412,7 +414,7 @@ An issue is candidate-ready for coordinator selection when:
   requirements crosswalk.
 - No unresolved decision would invalidate implementation.
 - The issue links this protocol and the relevant prompt section.
-- It is not already claimed or active in epic #89.
+- It is not already claimed or active in its owning roadmap epic.
 
 After the coordinator selects a candidate-ready issue, post its plain-language
 synopsis and update the issue or epic with:

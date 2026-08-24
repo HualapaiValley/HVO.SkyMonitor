@@ -87,13 +87,13 @@ Before deleting a document:
    retained source and phase/issue destination.
 8. Record the deletion and destinations in the consolidation PR.
 
-## 5. Planned Cleanup Issues
+## 5. Cleanup History
 
-- [#90](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/90) owns roadmap,
-  documentation authority, retirement, identity/reference status cleanup, and
-  link validation.
-- [#109](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/109) owns CI,
+- [#90](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/90) delivered the
+  initial planning consolidation, documentation authority, retirement,
+  identity/reference status cleanup, and link validation.
+- [#109](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/109) delivered CI,
   catalog packaging, persistent CameraAgent storage, and infrastructure runbook
   corrections.
-- [Epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89) records
-  current phase and continuation handoff.
+- [Epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89) retains
+  the completed virtual-first phase and continuation history.

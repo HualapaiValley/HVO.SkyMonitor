@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-08-23
+Status date: 2026-08-24
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -39,9 +39,9 @@ The planning horizons are:
 
 ## Current
 
-| ID | Initiative | Outcome | Owning issues | Dependencies and boundary |
-| --- | --- | --- | --- | --- |
-| `RM-003` | Installable and lifecycle-managed deployment | Provide multi-instance-safe persistent layout, a self-contained installer, transactional upgrade/rollback/uninstall, and signed release/catalog distribution. | [#414](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/414)-[#417](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/417) | Delivery order starts with #414 and #415; later packages and publishes the proven component lifecycle. This does not add physical-camera discovery or vendor SDK installation. |
+No initiative is active. Promote an accepted item from `Next` only after its
+owning epic records priority, readiness, and the coordination owner for the new
+milestone.
 
 ## Next
 
@@ -88,7 +88,8 @@ portfolio initiatives.
 | --- | --- | --- | --- |
 | `RM-001` | Virtual-first SkyMonitor platform | Standalone CameraAgent plus optional reconstructable LogicHost processing, weather/cloud/transient workflows, UI, recovery, and production-readiness foundations. | [Epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89). Nested epics #59, #60, #62, #64, #65, #109, #205, and #243 inherit this ID. |
 | `RM-002` | Deferred Phase 14 evidence campaign | Imported, executed, aggregated, and dispositioned exhaustive evidence without reopening virtual-first completion. | [#305](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/305); children #318-#322 inherit this ID. |
-| `RM-011` | Direct ZWO camera enablement | Added the optional direct ZWO CameraAgent adapter and retained Linux x64 ASI178MC and ARM64 ASI676MC functional deployment evidence. | [#265](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/265)-[#267](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/267) |
+| `RM-003` | Installable and lifecycle-managed deployment | Delivered multi-instance-safe persistent layout, a self-contained installer, transactional upgrade/rollback/uninstall, and signed release/catalog distribution without adding physical-camera discovery or vendor SDK installation. | [#414](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/414), [#415](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/415), [#416](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/416), and [#417](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/417) |
+| `RM-011` | Direct ZWO camera enablement | Added the optional direct ZWO CameraAgent adapter and retained Linux x64 ASI178MC and ARM64 ASI676MC functional deployment evidence. | [#265](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/265), [#266](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/266), and [#267](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/267) |
 
 Delivered does not imply broader physical calibration or field-performance
 acceptance. The retained future hardware requirements remain in the
@@ -99,7 +100,7 @@ acceptance. The retained future hardware requirements remain in the
 The primary forward dependency is:
 
 ```text
-RM-003 installable deployment
+RM-003 delivered installable deployment
   +-> RM-014 CameraAgent presentation experience
 
 RM-004 layered capture products

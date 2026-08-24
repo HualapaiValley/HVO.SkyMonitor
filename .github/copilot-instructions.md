@@ -79,5 +79,5 @@ highest-priority candidate-ready issue after posting its synopsis and `READY`
 signal, unless the operator explicitly paused execution or a real
 blocker/no-candidate-ready-work condition exists. Other agents return completion
 state to the coordinator. Independent issues may run concurrently only in
-isolated worktrees with stable dependencies, epic #89 claims, and safe
-machine/Docker capacity.
+isolated worktrees with stable dependencies, owning-roadmap-epic claims, and
+safe machine/Docker capacity.

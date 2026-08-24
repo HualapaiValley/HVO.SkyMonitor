@@ -1,14 +1,21 @@
 # Database Critical Sections And Access Plans: Issue 243
 
-This document is the historical-baseline and current-head inventory and disposition record for issue
+This document is the historical baseline and execution-time inventory and disposition record for issue
 [#243](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/243). It records
 facts before tuning. Accepted production changes remain in focused child issues
 with equivalent baseline/after evidence.
 
-This is an interim structural inventory, not the `E2E-007` exit record. Issue
-#243 remains open pending clean attributable replacement runs, exact plans where
-listed, scaled I/O/WAL evidence, shared-instance attribution, fault evidence and
-the named operational-policy dispositions.
+This is the retained interim structural inventory, not the `E2E-007` exit
+record. Issue #243 closed after its accepted corrections and disposition work;
+the clean attributable replacement runs, exact plans, scale evidence, fault
+evidence, and operational-policy decisions remain in the issue and its linked
+child evidence rather than being reconstructed in this baseline.
+
+Unless a paragraph explicitly says otherwise, terms such as `current-head`,
+`pending`, `requires`, and `must` below describe the execution-time snapshot and
+decision gates retained for provenance; they are not current issue status.
+Issues #246-#251 and #253-#257 are closed. Open follow-up #252 remains deferred
+under `RM-001` in `docs/roadmap.md`.
 
 ## 1. Baseline
 
@@ -91,7 +98,7 @@ fencing and crash reconciliation are defined.
 
 Confirmed cross-store transaction boundaries:
 
-| Path | SQL/SQLite boundary held during external work | Current disposition |
+| Path | SQL/SQLite boundary held during external work | Execution-time disposition |
 | --- | --- | --- |
 | `ArtifactIngestService.ReconcileExistingUnderObjectLockAsync` and `PersistAsync` | Serializable SQL transaction while MinIO object bytes are streamed and SHA-256 verified | Evidence required; probable separate ingest child |
 | `CentralArtifactRetentionService.ReleaseAsync` | Object session lock, serializable SQL transaction and incompatible artifact lock while MinIO DELETE runs | Confirmed structural coupling; candidate blocker pending #246 baseline |
@@ -100,7 +107,7 @@ Confirmed cross-store transaction boundaries:
 | `SqliteTransientCandidateJournal.ReserveAsync` | Raw lifecycle lock across a deferred durable snapshot, transaction-free physical validation and a short exactly revalidated immediate transaction | Corrected by #247; historical blocking and corrected writer-freedom observations are distinguished below |
 | `SqliteCaptureLaneStore.ClaimAsync` | Raw lifecycle lock and immediate writer reservation while manifest/context parsing and filesystem existence checks run | Measure separately; no hashing occurs, so it is not combined with candidate reservation by default |
 
-## 4. Current-Head Critical-Section Evidence
+## 4. Execution-Time Current-Head Critical-Section Evidence
 
 ### SQL retention and MinIO
 
@@ -332,7 +339,7 @@ No central or edge deletion policy is accepted by this classification alone.
 Each owner must prove that provenance, idempotency, recovery, legal/operator
 history and backup/restore requirements survive the proposed compaction.
 
-## 7. SQL Server And SQLite Operations Gaps
+## 7. Recorded SQL Server And SQLite Operations Gaps
 
 Before rollout, SQL Server requires an operator-owned policy for stable
 `Application Name`, measured pool/timeout values, Query Store, blocked-process
@@ -397,7 +404,7 @@ busy/locked duration, cadence blocking and context size; do not combine it with
 | Retention changes/counters | Defer | Require W3M scan/growth evidence and preserved durable semantics |
 | Runtime catalog migration | Reject | Catalog snapshots remain immutable verified artifacts |
 
-## 9. Ranked Disposition
+## 9. Execution-Time Ranked Disposition
 
 1. Candidate rollout blocker: [#246](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/246)
    must baseline a durable-state/crash-reconciliation design that shortens the
