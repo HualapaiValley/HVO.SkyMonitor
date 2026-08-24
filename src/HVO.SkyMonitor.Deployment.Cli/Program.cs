@@ -26,16 +26,33 @@ internal static class Program
         var jsonErrors = args.Contains("--json", StringComparer.Ordinal);
         try
         {
-            var request = CommandLine.Parse(args);
-            var result = await CameraAgentInstaller.InstallAsync(request, cancellation.Token).ConfigureAwait(false);
-            if (request.Json)
+            var command = CommandLine.ParseCommand(args);
+            if (command is InstallDeploymentCommand install)
             {
-                await Console.Out.WriteLineAsync(
-                    JsonSerializer.Serialize(result, DeploymentJsonContext.Default.InstallationResult)).ConfigureAwait(false);
+                var result = await CameraAgentInstaller.InstallAsync(install.Request, cancellation.Token).ConfigureAwait(false);
+                if (install.Json)
+                {
+                    await Console.Out.WriteLineAsync(
+                        JsonSerializer.Serialize(result, DeploymentJsonContext.Default.InstallationResult)).ConfigureAwait(false);
+                }
+                else
+                {
+                    await WriteHumanResultAsync(result).ConfigureAwait(false);
+                }
             }
             else
             {
-                await WriteHumanResultAsync(result).ConfigureAwait(false);
+                var lifecycle = await CameraAgentLifecycleManager.ExecuteAsync((LifecycleRequest)command, cancellation.Token)
+                    .ConfigureAwait(false);
+                if (command.Json)
+                {
+                    await Console.Out.WriteLineAsync(
+                        JsonSerializer.Serialize(lifecycle, DeploymentJsonContext.Default.LifecycleResult)).ConfigureAwait(false);
+                }
+                else
+                {
+                    await WriteLifecycleResultAsync(lifecycle).ConfigureAwait(false);
+                }
             }
             return 0;
         }
@@ -46,7 +63,7 @@ internal static class Program
         }
         catch (OperationCanceledException)
         {
-            await WriteErrorAsync(jsonErrors, "canceled", "Installation canceled.").ConfigureAwait(false);
+            await WriteErrorAsync(jsonErrors, "canceled", "Deployment operation canceled.").ConfigureAwait(false);
             return 130;
         }
         catch (InstallerException exception)
@@ -76,5 +93,17 @@ internal static class Program
         await Console.Out.WriteLineAsync($"Image: {result.Image.ImageId}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Runtime: {result.RuntimeUid}:{result.RuntimeGid}; alive={result.Alive}; healthy={result.Healthy}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"State: {result.OwnerBootstrapState}").ConfigureAwait(false);
+    }
+
+    private static async Task WriteLifecycleResultAsync(HVO.SkyMonitor.Deployment.Contracts.LifecycleResult result)
+    {
+        await Console.Out.WriteLineAsync($"Outcome: {result.Outcome}").ConfigureAwait(false);
+        if (result.Operation is not null) await Console.Out.WriteLineAsync($"Operation: {result.Operation} / {result.OperationId}").ConfigureAwait(false);
+        if (result.InstanceId is not null) await Console.Out.WriteLineAsync($"Instance: {result.InstanceId:D} / {result.LifecycleCondition}").ConfigureAwait(false);
+        if (result.Image is not null) await Console.Out.WriteLineAsync($"Image: {result.Image.ImageId}").ConfigureAwait(false);
+        if (result.Catalog is not null) await Console.Out.WriteLineAsync($"Catalog: {result.Catalog.CatalogId} / {result.Catalog.PackageVersion}").ConfigureAwait(false);
+        if (result.Running is not null) await Console.Out.WriteLineAsync($"Runtime: running={result.Running}; healthy={result.Healthy}").ConfigureAwait(false);
+        foreach (var path in result.PreservedPaths) await Console.Out.WriteLineAsync($"Preserved: {path}").ConfigureAwait(false);
+        if (result.ResumeCommand is not null) await Console.Out.WriteLineAsync($"Resume: {result.ResumeCommand}").ConfigureAwait(false);
     }
 }

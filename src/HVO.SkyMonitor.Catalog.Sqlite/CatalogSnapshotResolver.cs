@@ -32,6 +32,9 @@ public sealed record CatalogSnapshotResolverOptions(string InstallRoot, string E
 
     /// <summary>Gets the required deterministic preprocessing version.</summary>
     public string ExpectedPreprocessingVersion { get; init; } = "3";
+
+    /// <summary>Gets the exact immutable package version to resolve instead of the legacy current pointer.</summary>
+    public string? ExpectedPackageVersion { get; init; }
 }
 
 /// <summary>A resolved, validated, and fully loaded installed catalog snapshot.</summary>
@@ -105,8 +108,9 @@ public static class CatalogSnapshotResolver
         ValidateOptions(options);
 
         var installRoot = Path.GetFullPath(options.InstallRoot);
-        var pointerPath = Path.Combine(installRoot, "current");
-        var pointer = ReadPointer(installRoot, pointerPath);
+        var pointer = options.ExpectedPackageVersion is null
+            ? ReadPointer(installRoot, Path.Combine(installRoot, "current"))
+            : ReadExactVersion(installRoot, options.ExpectedPackageVersion);
         var snapshotVersion = pointer.SnapshotVersion;
         var snapshotDirectory = pointer.SnapshotDirectory;
 
@@ -344,6 +348,10 @@ public static class CatalogSnapshotResolver
         ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedSchemaVersion);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.ExpectedPreprocessingVersion);
         ValidateCatalogId(options.ExpectedCatalogId);
+        if (options.ExpectedPackageVersion is { } packageVersion && !IsValidVersion(packageVersion))
+        {
+            throw new ArgumentException("Expected package version is invalid.", nameof(options));
+        }
         if (options.ExpectedManifestVersion <= 0 || !Enum.IsDefined(options.ExpectedPackageKind))
         {
             throw new ArgumentOutOfRangeException(nameof(options));
@@ -375,6 +383,18 @@ public static class CatalogSnapshotResolver
         var snapshotDirectory = GetContainedPath(installRoot, target, "Catalog current pointer");
         EnsureDirectoryIsNotLink(snapshotDirectory, "Catalog snapshot directory");
         return new SnapshotPointer(segments[1], snapshotDirectory);
+    }
+
+    private static SnapshotPointer ReadExactVersion(string installRoot, string packageVersion)
+    {
+        var versionsDirectory = Path.Combine(installRoot, "versions");
+        EnsureDirectoryIsNotLink(versionsDirectory, "Catalog versions directory");
+        var snapshotDirectory = GetContainedPath(
+            installRoot,
+            $"versions/{packageVersion}",
+            "Catalog package version");
+        EnsureDirectoryIsNotLink(snapshotDirectory, "Catalog snapshot directory");
+        return new SnapshotPointer(packageVersion, snapshotDirectory);
     }
 
     private static SnapshotManifest ReadManifest(AuthenticatedFile file)

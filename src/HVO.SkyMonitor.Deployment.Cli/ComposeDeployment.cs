@@ -21,7 +21,7 @@ internal sealed record ComposeFiles(
 
 internal static class ComposeDeployment
 {
-    public const string TemplateVersion = "cameraagent-compose-v1";
+    public const string TemplateVersion = "cameraagent-compose-v2";
 
     private const string Template = """
 services:
@@ -30,6 +30,10 @@ services:
     hostname: ${HVO_CONTAINER_NAME}
     image: ${CAMERAAGENT_IMAGE:?immutable image required}
     pull_policy: never
+    labels:
+      io.hvo.skymonitor.product: HVO.SkyMonitor
+      io.hvo.skymonitor.component: CameraAgent
+      io.hvo.skymonitor.instance-id: ${HVO_INSTANCE_ID:?instance id required}
     user: "${HVO_RUNTIME_UID:?uid required}:${HVO_RUNTIME_GID:?gid required}"
     environment:
       ASPNETCORE_ENVIRONMENT: Production
@@ -78,8 +82,10 @@ services:
         uint uid,
         uint gid,
         string immutableImage,
+        string catalogPackageVersion,
         string passwordFile,
         string installationVerificationToken,
+        string lifecycleControlToken,
         bool passwordAuthorityEnabled,
         InstallationPaths? outputPaths = null)
     {
@@ -119,11 +125,13 @@ services:
             ["Catalog__Root"] = "/app/catalog",
             ["Catalog__RequiredCatalogId"] = ProductionCatalog.CatalogId,
             ["Catalog__RequiredPackageKind"] = "Production",
+            ["Catalog__RequiredPackageVersion"] = catalogPackageVersion,
             ["LocalIdentity__AdminEmail"] = request.OwnerEmail,
             ["LocalIdentity__CookieName"] = $"hvo.skymonitor.{compactId}",
             ["LocalIdentity__DatabasePath"] = "/app/App_Data/cameraagent_identity.db",
             ["LocalIdentity__AllowMissingAdminPassword"] = passwordAuthorityEnabled ? "false" : "true",
             ["InstallationVerification__Token"] = installationVerificationToken,
+            ["LifecycleControl__Token"] = lifecycleControlToken,
             ["DeviceProvisioning__StateDirectory"] = "/app/data/provisioning"
         };
         if (passwordAuthorityEnabled)
@@ -153,6 +161,7 @@ services:
         var environment = string.Join('\n', new[]
         {
             $"HVO_CONTAINER_NAME=hvo-skymonitor-{compactId}",
+            $"HVO_INSTANCE_ID={instanceId:D}",
             $"CAMERAAGENT_IMAGE={immutableImage}",
             $"HVO_RUNTIME_UID={uid.ToString(CultureInfo.InvariantCulture)}",
             $"HVO_RUNTIME_GID={gid.ToString(CultureInfo.InvariantCulture)}",

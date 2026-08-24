@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
@@ -173,5 +174,70 @@ public sealed class CommandLineTests
 
         Assert.AreEqual("hyg-v4.2-p3-s2-r1", request.CatalogVersion);
         Assert.AreEqual(DistributionChannel.Prerelease, request.Channel);
+    }
+
+    [TestMethod]
+    public void ParseCommand_Status_RequiresExactInstanceIdentity()
+    {
+        var instanceId = Guid.NewGuid();
+
+        var request = (LifecycleRequest)CommandLine.ParseCommand([
+            "status", "--instance-id", instanceId.ToString("D"), "--json"
+        ]);
+
+        Assert.IsNull(request.Operation);
+        Assert.AreEqual(instanceId, request.InstanceId);
+        Assert.IsTrue(request.Json);
+    }
+
+    [TestMethod]
+    public void ParseCommand_Upgrade_RequiresImmutableImageAndCompatibilityAcknowledgement()
+    {
+        var request = (LifecycleRequest)CommandLine.ParseCommand([
+            "cameraagent", "upgrade",
+            "--instance-id", Guid.NewGuid().ToString("D"),
+            "--image-ref", $"cameraagent@sha256:{new string('a', 64)}",
+            "--migration-backward-compatible",
+            "--no-download"
+        ]);
+
+        Assert.AreEqual(LifecycleOperationKind.Upgrade, request.Operation);
+        Assert.IsTrue(request.MigrationBackwardCompatible);
+        Assert.IsTrue(request.NoDownload);
+    }
+
+    [TestMethod]
+    public void ParseCommand_UpgradeWithMutableTag_IsRejected()
+    {
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--image-ref", "cameraagent:latest"
+        ]));
+    }
+
+    [TestMethod]
+    public void ParseCommand_PurgeRequiresMatchingConfirmation()
+    {
+        var instanceId = Guid.NewGuid();
+
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "purge", "--instance-id", instanceId.ToString("D"),
+            "--confirm-instance-id", Guid.NewGuid().ToString("D")
+        ]));
+    }
+
+    [TestMethod]
+    public void ParseCommand_CatalogCommandsHaveDistinctScope()
+    {
+        var install = (LifecycleRequest)CommandLine.ParseCommand([
+            "catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle", "--dry-run"
+        ]);
+        var select = (LifecycleRequest)CommandLine.ParseCommand([
+            "catalog", "select", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--catalog-version", "hyg-v4.2-p3-s2-r2"
+        ]);
+
+        Assert.AreEqual(LifecycleOperationKind.CatalogInstall, install.Operation);
+        Assert.AreEqual(LifecycleOperationKind.CatalogSelect, select.Operation);
     }
 }

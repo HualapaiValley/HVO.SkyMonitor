@@ -7,6 +7,7 @@ public static class DeploymentSchemaVersions
     public const int InstanceManifest = 1;
     public const int InstallationState = 1;
     public const int InstallationResult = 1;
+    public const int LifecycleOperation = 1;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DeploymentComponent>))]
@@ -47,6 +48,43 @@ public enum InstallationOutcome
     Installed
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter<InstanceLifecycleCondition>))]
+public enum InstanceLifecycleCondition
+{
+    Installed,
+    Uninstalled
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationKind>))]
+public enum LifecycleOperationKind
+{
+    Upgrade,
+    Rollback,
+    Reinstall,
+    Uninstall,
+    Purge,
+    CatalogInstall,
+    CatalogSelect,
+    CatalogRollback,
+    CatalogGarbageCollect
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationPhase>))]
+public enum LifecycleOperationPhase
+{
+    Planned,
+    Prepared,
+    CandidateValidated,
+    BackupRecorded,
+    Drained,
+    Mutating,
+    CandidateStarted,
+    CandidateVerified,
+    Committed,
+    Restoring,
+    Completed
+}
+
 public sealed record ApplicationIdentityBinding(
     int SchemaVersion,
     string State,
@@ -72,7 +110,12 @@ public sealed record ImageInstallationIdentity(
     string ImageId,
     string Architecture,
     string? ArchiveSha256,
-    DistributionVerificationEvidence? Distribution = null);
+    DistributionVerificationEvidence? Distribution = null,
+    string? UpgradeCompatibility = null,
+    string? SourceRevision = null,
+    string? Component = null,
+    string? ConfigurationContract = null,
+    string? CatalogContract = null);
 
 public sealed record DockerDaemonIdentity(
     string Id,
@@ -117,7 +160,92 @@ public sealed record InstanceManifest(
     ImageInstallationIdentity? PreviousImage,
     DockerDaemonIdentity DockerDaemon,
     string UpgradeCompatibility,
-    DateTimeOffset CreatedUtc);
+    DateTimeOffset CreatedUtc,
+    CatalogInstallationIdentity? PreviousCatalog = null,
+    InstanceLifecycleCondition LifecycleCondition = InstanceLifecycleCondition.Installed,
+    string BindAddress = "127.0.0.1",
+    int Port = 5130,
+    Guid? LastLifecycleOperationId = null,
+    DateTimeOffset? UpdatedUtc = null,
+    string? LifecycleControlTokenSha256 = null,
+    string? PreviousComposeTemplateVersion = null,
+    string? PreviousComposeModelSha256 = null);
+
+public sealed record LifecycleOperationState(
+    int SchemaVersion,
+    Guid OperationId,
+    LifecycleOperationKind Kind,
+    Guid? InstanceId,
+    string RequestSha256,
+    LifecycleOperationPhase Phase,
+    InstallationStatus Status,
+    DateTimeOffset StartedUtc,
+    DateTimeOffset UpdatedUtc,
+    ImageInstallationIdentity? OriginalImage = null,
+    ImageInstallationIdentity? CandidateImage = null,
+    CatalogInstallationIdentity? OriginalCatalog = null,
+    CatalogInstallationIdentity? CandidateCatalog = null,
+    bool MutationStarted = false,
+    string? BackupManifestSha256 = null,
+    string? FailureCode = null,
+    string? FailureMessage = null,
+    LifecycleContinuityBoundary? PreMutationContinuity = null,
+    LifecycleContinuityBoundary? PostMutationContinuity = null);
+
+public sealed record LifecycleContinuityBoundary(
+    string CaptureState,
+    long CaptureVersion,
+    long CaptureSequence,
+    long RawPending,
+    long RawLeased,
+    long LanePending,
+    long LaneLeased,
+    long ProcessingPending,
+    long ProcessingLeased,
+    long OutboxPending,
+    long OutboxLeased,
+    DateTimeOffset RecordedUtc);
+
+public sealed record BackupFileIdentity(
+    string RelativePath,
+    long Length,
+    string Sha256);
+
+public sealed record InstanceBackupManifest(
+    int SchemaVersion,
+    Guid BackupId,
+    Guid InstanceId,
+    Guid OperationId,
+    DateTimeOffset CreatedUtc,
+    string InstanceManifestSha256,
+    string ApplicationIdentitySha256,
+    string ConfigurationSha256,
+    string ComposeModelSha256,
+    CatalogInstallationIdentity Catalog,
+    ImageInstallationIdentity Image,
+    IReadOnlyList<BackupFileIdentity> Files,
+    string ArchiveSha256,
+    long ArchiveLength);
+
+public sealed record LifecycleResult(
+    int SchemaVersion,
+    LifecycleOperationKind? Operation,
+    string Outcome,
+    Guid? OperationId,
+    Guid? InstanceId,
+    InstanceLifecycleCondition? LifecycleCondition,
+    string ProductRoot,
+    string? InstanceRoot,
+    ImageInstallationIdentity? Image,
+    ImageInstallationIdentity? PreviousImage,
+    CatalogInstallationIdentity? Catalog,
+    CatalogInstallationIdentity? PreviousCatalog,
+    DockerDaemonIdentity? DockerDaemon,
+    bool? Running,
+    bool? Healthy,
+    IReadOnlyList<string> PreservedPaths,
+    string? ResumeCommand,
+    DateTimeOffset CompletedUtc);
 
 public sealed record InstallationState(
     int SchemaVersion,

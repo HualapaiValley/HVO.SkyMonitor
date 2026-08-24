@@ -60,6 +60,35 @@ internal sealed class CatalogSnapshotResolverTests
     }
 
     [TestMethod]
+    public void ResolveExactPackage_DoesNotFollowSharedCurrentPointer()
+    {
+        using var installation = CreateInstallation();
+        File.Delete(installation.PointerPath);
+        Directory.CreateSymbolicLink(installation.PointerPath, "versions/unrelated-version");
+
+        var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+            installation.Root,
+            FixtureCatalogId)
+        {
+            ExpectedPackageKind = CatalogSnapshotPackageKind.Fixture,
+            ExpectedPackageVersion = SnapshotVersion
+        });
+
+        Assert.AreEqual(SnapshotVersion, result.SnapshotVersion);
+    }
+
+    [TestMethod]
+    public void ResolveExactPackage_RejectsInvalidVersionBeforeFilesystemAccess()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => CatalogSnapshotResolver.Resolve(
+            new CatalogSnapshotResolverOptions("missing", FixtureCatalogId)
+            {
+                ExpectedPackageKind = CatalogSnapshotPackageKind.Fixture,
+                ExpectedPackageVersion = "../escape"
+            }));
+    }
+
+    [TestMethod]
     public void ResolveRejectsLegacyFixtureWhosePinnedFactsDoNotMatch()
     {
         using var installation = CreateLegacyFixtureInstallation();

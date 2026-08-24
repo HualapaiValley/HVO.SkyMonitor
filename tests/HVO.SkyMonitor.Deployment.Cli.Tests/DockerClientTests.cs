@@ -21,7 +21,9 @@ public sealed class DockerClientTests
 
         Assert.AreEqual("daemon-1", result.Daemon.Id);
         Assert.AreEqual(digest, result.Image.ImmutableReference);
-        CollectionAssert.Contains(runner.Commands, $"docker image pull {digest}");
+        Assert.IsTrue(runner.Commands.Any(command => command.EndsWith($" image pull {digest}", StringComparison.Ordinal)));
+        Assert.IsTrue(runner.Commands.Where(command => !command.Contains(" context inspect ", StringComparison.Ordinal))
+            .All(command => command.StartsWith("docker --host unix:///var/run/docker.sock ", StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -49,7 +51,7 @@ public sealed class DockerClientTests
 
         await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, CancellationToken.None);
 
-        Assert.IsFalse(runner.Commands.Any(static command => command.StartsWith("docker image pull", StringComparison.Ordinal)));
+        Assert.IsFalse(runner.Commands.Any(static command => command.Contains(" image pull ", StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -77,11 +79,65 @@ public sealed class DockerClientTests
                 () => new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, CancellationToken.None));
 
             StringAssert.Contains(exception.Message, "did not contain", StringComparison.Ordinal);
-            StringAssert.Contains(runner.Commands.Single(command => command.StartsWith("docker image load", StringComparison.Ordinal)), "/proc/", StringComparison.Ordinal);
+            StringAssert.Contains(runner.Commands.Single(command => command.Contains(" image load ", StringComparison.Ordinal)), "/proc/", StringComparison.Ordinal);
         }
         finally
         {
             File.Delete(archive);
+        }
+    }
+
+    [TestMethod]
+    public async Task InspectContainerAsync_DaemonFailure_IsNotTreatedAsAbsence()
+    {
+        var runner = new FailingProcessRunner();
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            new DockerClient(runner).InspectContainerAsync("cameraagent", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "Docker", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("/srv/catalogs/hyg-v4.2-p3-s2-r1")]
+    [DataRow("/srv/catalogs")]
+    public async Task EnsureNoPathReferencesAsync_DirectOrAncestorMount_IsRejected(string mountSource)
+    {
+        const string candidate = "/srv/catalogs/hyg-v4.2-p3-s2-r1";
+        var runner = new FakeProcessRunner(
+            "container-1\n",
+            $"[{{\"Mounts\":[{{\"Source\":\"{mountSource}\"}}]}}]");
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            new DockerClient(runner).EnsureNoPathReferencesAsync(candidate, CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "referenced", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task EnsureNoPathReferencesAsync_SymlinkAliasToDescendant_IsRejected()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), $"hvo-docker-alias-{Guid.NewGuid():N}");
+        var candidate = Path.Combine(parent, "candidate");
+        var descendant = Path.Combine(candidate, "state");
+        var alias = Path.Combine(parent, "alias");
+        Directory.CreateDirectory(descendant);
+        File.SetUnixFileMode(candidate, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.SetUnixFileMode(descendant, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        Directory.CreateSymbolicLink(alias, descendant);
+        try
+        {
+            var inventory = SafeTreeDeletion.CaptureChildInventory(parent, "candidate", NativeLinux.getuid(), NativeLinux.getgid());
+            var runner = new FakeProcessRunner(
+                "container-1\n",
+                $"[{{\"Mounts\":[{{\"Source\":\"{alias}\"}}]}}]");
+
+            await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+                new DockerClient(runner).EnsureNoPathReferencesAsync(candidate, CancellationToken.None, inventory));
+        }
+        finally
+        {
+            Directory.Delete(parent, true);
         }
     }
 
@@ -105,7 +161,19 @@ public sealed class DockerClientTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Commands.Add($"{fileName} {string.Join(' ', arguments)}");
+            if (arguments is ["context", "inspect", ..])
+                return Task.FromResult(new ProcessResult(0, "unix:///var/run/docker.sock", string.Empty));
             return Task.FromResult(new ProcessResult(0, outputs[index++], string.Empty));
         }
+    }
+
+
+    private sealed class FailingProcessRunner : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(
+            string fileName,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new ProcessResult(1, string.Empty, "permission denied"));
     }
 }

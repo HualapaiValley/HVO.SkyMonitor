@@ -11,6 +11,7 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
     private const string CatalogRootKey = "Catalog:Root";
     private const string RequiredCatalogIdKey = "Catalog:RequiredCatalogId";
     private const string RequiredPackageKindKey = "Catalog:RequiredPackageKind";
+    private const string RequiredPackageVersionKey = "Catalog:RequiredPackageVersion";
 
     /// <summary>
     /// Registers one lazily resolved installed snapshot and maps all catalog contracts to its immutable catalog.
@@ -37,7 +38,8 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
             var packageKind = ParseRequiredPackageKind(configuration[RequiredPackageKindKey]);
             var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installRoot, requiredCatalogId)
             {
-                ExpectedPackageKind = packageKind
+                ExpectedPackageKind = packageKind,
+                ExpectedPackageVersion = configuration[RequiredPackageVersionKey]
             });
 
             CatalogSnapshotResolved(
