@@ -11,7 +11,10 @@ internal sealed record InstallationPaths(
     string StatePath,
     string ResultPath,
     string CatalogRoot,
-    string OperationsRoot)
+    string OperationsRoot,
+    string LifecycleStatePath,
+    string BackupsRoot,
+    string CatalogReferencesRoot)
 {
     public static InstallationPaths Create(string productRoot, Guid instanceId, string catalogId)
     {
@@ -21,6 +24,7 @@ internal sealed record InstallationPaths(
         var configRoot = Path.Combine(instanceRoot, "config");
         var stateRoot = Path.Combine(instanceRoot, "state");
         var deploymentStateRoot = Path.Combine(stateRoot, "deployment");
+        var operationsRoot = Path.Combine(canonicalProductRoot, "operations");
         return new InstallationPaths(
             canonicalProductRoot,
             instanceRoot,
@@ -32,6 +36,9 @@ internal sealed record InstallationPaths(
             Path.Combine(deploymentStateRoot, "installation-state.json"),
             Path.Combine(deploymentStateRoot, "installation-result.json"),
             Path.Combine(canonicalProductRoot, "catalogs", catalogId),
-            Path.Combine(canonicalProductRoot, "operations"));
+            operationsRoot,
+            Path.Combine(operationsRoot, $"cameraagent-{id}.lifecycle.json"),
+            Path.Combine(operationsRoot, "backups", "cameraagents", id),
+            Path.Combine(operationsRoot, "catalog-references", catalogId));
     }
 }

@@ -360,6 +360,7 @@ public class Program
         app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapCameraAgentEnvironmentalOperationsEndpoints();
         app.MapCameraAgentDeploymentEndpoints();
+        app.MapCameraAgentLifecycleEndpoints();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();

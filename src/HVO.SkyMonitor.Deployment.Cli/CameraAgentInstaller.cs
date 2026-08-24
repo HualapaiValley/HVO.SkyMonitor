@@ -63,8 +63,8 @@ internal sealed class CameraAgentInstaller
         ValidateCatalogInput(request.CatalogBundle!);
 
         await PrivilegedPreparation.PrepareAsync(paths, uid, gid, processRunner, cancellationToken).ConfigureAwait(false);
-        using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"));
-        using var instanceLock = OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"));
+        using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
+        using var instanceLock = OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
         if (!File.Exists(paths.StatePath))
         {
             EnsurePortAvailable(request.BindAddress, request.Port);
@@ -137,7 +137,16 @@ internal sealed class CameraAgentInstaller
             {
                 throw new InstallerException("The retained installation result does not correlate with this installation.");
             }
-            if (retainedCompletedResult is null)
+            if (retainedCompletedResult is not null && existingManifest!.ComposeTemplateVersion == "cameraagent-compose-v1")
+            {
+                throw new InstallerException(
+                    "A legacy v1 installation must be migrated with cameraagent upgrade and --owner-password-file; installer rerun cannot change runtime capabilities.");
+            }
+            if (retainedCompletedResult is not null && existingManifest!.LifecycleCondition == InstanceLifecycleCondition.Uninstalled)
+            {
+                throw new InstallerException("A preserved uninstalled instance must be restored with cameraagent reinstall.");
+            }
+            if (retainedCompletedResult is null || existingManifest?.LifecycleControlTokenSha256 is null)
             {
                 state = await RecordPhaseAsync(paths, state, InstallationPhase.Prepare, cancellationToken).ConfigureAwait(false);
             }
@@ -199,6 +208,15 @@ internal sealed class CameraAgentInstaller
                     cancellationToken).ConfigureAwait(false);
             }
             var verificationToken = await ReadOwnerSecretAsync(verificationTokenPath, cancellationToken).ConfigureAwait(false);
+            var lifecycleControlTokenPath = Path.Combine(paths.ConfigRoot, "lifecycle-control", "token");
+            if (retainedCompletedResult is null)
+            {
+                lifecycleControlTokenPath = await CredentialFile.GetOrCreateAsync(
+                    null,
+                    lifecycleControlTokenPath,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            var lifecycleControlToken = await ReadOwnerSecretAsync(lifecycleControlTokenPath, cancellationToken).ConfigureAwait(false);
             var passwordAuthorityEnabled = retainedCompletedResult is null &&
                                             (existingState is null || existingState.Phase < InstallationPhase.OwnerSeeded);
             if (retainedCompletedResult is not null)
@@ -213,6 +231,7 @@ internal sealed class CameraAgentInstaller
                     gid,
                     passwordPath,
                     verificationToken,
+                    lifecycleControlToken,
                     catalog,
                     image,
                     daemon,
@@ -230,8 +249,10 @@ internal sealed class CameraAgentInstaller
                 uid,
                 gid,
                 image.ImageId,
+                catalog.PackageVersion,
                 passwordPath,
                 verificationToken,
+                lifecycleControlToken,
                 passwordAuthorityEnabled);
 
             state = await RecordPhaseAsync(paths, state, InstallationPhase.Compose, cancellationToken).ConfigureAwait(false);
@@ -244,7 +265,7 @@ internal sealed class CameraAgentInstaller
             var composeModelSha256 = ComposeDeployment.ComputeSha256(rendered.StandardOutput);
             var manifest = CreateManifest(
                 request, paths, instanceId, installationId, applicationIdentity, uid, gid,
-                verificationToken, compose, composeModelSha256, catalog, image, daemon, existingManifest);
+                verificationToken, lifecycleControlToken, compose, composeModelSha256, catalog, image, daemon, existingManifest);
             if (retainedCompletedResult is null)
             {
                 await SafeFileSystem.WriteJsonAtomicAsync(
@@ -285,8 +306,10 @@ internal sealed class CameraAgentInstaller
                         uid,
                         gid,
                         image.ImageId,
+                        catalog.PackageVersion,
                         passwordPath,
                         verificationToken,
+                        lifecycleControlToken,
                         passwordAuthorityEnabled: false);
                     rendered = await docker.ComposeAsync(
                         compose.ComposeFile,
@@ -335,7 +358,35 @@ internal sealed class CameraAgentInstaller
             manifest = manifest with { ComposeModelSha256 = composeModelSha256 };
             if (retainedCompletedResult is not null && manifest != existingManifest)
             {
-                throw new InstallerException("The completed installation differs from its retained immutable manifest.");
+                var migrated = existingManifest! with
+                {
+                    LifecycleCondition = InstanceLifecycleCondition.Installed,
+                    BindAddress = request.BindAddress,
+                    Port = request.Port
+                };
+                if (existingManifest.ComposeTemplateVersion == "cameraagent-compose-v1")
+                {
+                    migrated = migrated with
+                    {
+                        ComposeTemplateVersion = ComposeDeployment.TemplateVersion,
+                        ComposeModelSha256 = composeModelSha256
+                    };
+                }
+                if ((existingManifest.LifecycleCondition != InstanceLifecycleCondition.Uninstalled &&
+                     existingManifest.ComposeTemplateVersion != "cameraagent-compose-v1") || manifest != migrated)
+                {
+                    throw new InstallerException("The completed installation differs from its retained immutable manifest.");
+                }
+                await SafeFileSystem.WriteJsonAtomicAsync(
+                    paths.ManifestPath, migrated, DeploymentJsonContext.Default.InstanceManifest, cancellationToken)
+                    .ConfigureAwait(false);
+                if (existingManifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled)
+                {
+                    await new CameraAgentLifecycleClient(baseAddress).ResumeAsync(
+                        existingManifest.LastLifecycleOperationId ?? installationId,
+                        verificationToken,
+                        cancellationToken).ConfigureAwait(false);
+                }
             }
             if (retainedCompletedResult is null)
             {
@@ -368,7 +419,19 @@ internal sealed class CameraAgentInstaller
                 var comparableResult = result with { CompletedUtc = retainedCompletedResult.CompletedUtc };
                 if (comparableResult != retainedCompletedResult)
                 {
-                    throw new InstallerException("The completed installation differs from its retained result.");
+                    if (existingManifest!.ComposeTemplateVersion != "cameraagent-compose-v1" ||
+                        comparableResult != (retainedCompletedResult with
+                        {
+                            ComposeTemplateVersion = ComposeDeployment.TemplateVersion,
+                            ComposeModelSha256 = comparableResult.ComposeModelSha256
+                        }))
+                    {
+                        throw new InstallerException("The completed installation differs from its retained result.");
+                    }
+                    await SafeFileSystem.WriteJsonAtomicAsync(
+                        paths.ResultPath, comparableResult, DeploymentJsonContext.Default.InstallationResult, cancellationToken)
+                        .ConfigureAwait(false);
+                    retainedCompletedResult = comparableResult;
                 }
                 result = retainedCompletedResult;
             }
@@ -436,8 +499,10 @@ internal sealed class CameraAgentInstaller
                 NativeLinux.getuid(),
                 NativeLinux.getgid(),
                 image.ImageId,
+                catalog.PackageVersion,
                 "/dev/null",
                 "dry-run-installation-verification-token",
+                "dry-run-lifecycle-control-token",
                 passwordAuthorityEnabled: true);
             var rendered = await docker.ComposeAsync(
                 compose.ComposeFile,
@@ -536,6 +601,7 @@ internal sealed class CameraAgentInstaller
         uint gid,
         string passwordPath,
         string verificationToken,
+        string lifecycleControlToken,
         CatalogInstallationIdentity catalog,
         ImageInstallationIdentity image,
         DockerDaemonIdentity daemon,
@@ -556,8 +622,10 @@ internal sealed class CameraAgentInstaller
                 uid,
                 gid,
                 image.ImageId,
+                catalog.PackageVersion,
                 passwordPath,
                 verificationToken,
+                lifecycleControlToken,
                 passwordAuthorityEnabled: false,
                 outputPaths: outputPaths);
             var rendered = await docker.ComposeAsync(
@@ -575,13 +643,30 @@ internal sealed class CameraAgentInstaller
                 uid,
                 gid,
                 verificationToken,
+                lifecycleControlToken,
                 compose,
                 ComposeDeployment.ComputeSha256(rendered.StandardOutput),
                 catalog,
                 image,
                 daemon,
                 retainedManifest);
-            if (candidate != retainedManifest)
+            var expectedManifest = retainedManifest;
+            if (retainedManifest.ComposeTemplateVersion == "cameraagent-compose-v1")
+            {
+                expectedManifest = retainedManifest with
+                {
+                    ComposeTemplateVersion = ComposeDeployment.TemplateVersion,
+                    ComposeModelSha256 = candidate.ComposeModelSha256,
+                    BindAddress = request.BindAddress,
+                    Port = request.Port,
+                    LifecycleControlTokenSha256 = candidate.LifecycleControlTokenSha256
+                };
+            }
+            if (retainedManifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled)
+            {
+                expectedManifest = expectedManifest with { LifecycleCondition = InstanceLifecycleCondition.Installed };
+            }
+            if (candidate != expectedManifest)
             {
                 throw new InstallerException("The completed installation differs from its retained immutable manifest.");
             }
@@ -601,7 +686,14 @@ internal sealed class CameraAgentInstaller
                 daemon,
                 "owner-password-change-required",
                 retainedResult.CompletedUtc);
-            if (candidateResult != retainedResult)
+            var expectedResult = retainedManifest.ComposeTemplateVersion == "cameraagent-compose-v1"
+                ? retainedResult with
+                {
+                    ComposeTemplateVersion = ComposeDeployment.TemplateVersion,
+                    ComposeModelSha256 = candidateResult.ComposeModelSha256
+                }
+                : retainedResult;
+            if (candidateResult != expectedResult)
             {
                 throw new InstallerException("The completed installation differs from its retained result.");
             }
@@ -625,6 +717,7 @@ internal sealed class CameraAgentInstaller
         uint uid,
         uint gid,
         string verificationToken,
+        string lifecycleControlToken,
         ComposeFiles compose,
         string composeModelSha256,
         CatalogInstallationIdentity catalog,
@@ -679,8 +772,15 @@ internal sealed class CameraAgentInstaller
             image,
             previous?.PreviousImage,
             daemon,
-            "requires-declared-compatible-migration",
-            previous?.CreatedUtc ?? DateTimeOffset.UtcNow);
+            image.UpgradeCompatibility ?? "requires-declared-compatible-migration",
+            previous?.CreatedUtc ?? DateTimeOffset.UtcNow,
+            previous?.PreviousCatalog,
+            InstanceLifecycleCondition.Installed,
+            request.BindAddress,
+            request.Port,
+            previous?.LastLifecycleOperationId,
+            previous?.UpdatedUtc,
+            ComposeDeployment.ComputeSha256(lifecycleControlToken));
     }
 
     private static InstallationResult CreateInstalledResult(
@@ -822,7 +922,7 @@ internal sealed class CameraAgentInstaller
             !double.IsFinite(value.LatitudeDegrees) || !double.IsFinite(value.LongitudeDegrees) ||
             !double.IsFinite(value.ElevationMeters) ||
             value.RuntimeUid == 0 || !HasValue(value.ProductRoot) || !HasValue(value.ConfigRoot) ||
-            !HasValue(value.StateRoot) || value.ComposeTemplateVersion != ComposeDeployment.TemplateVersion ||
+            !HasValue(value.StateRoot) || !IsSupportedComposeTemplate(value.ComposeTemplateVersion) ||
             !IsSha256(value.ConfigurationSha256) || !IsSha256(value.RigProfileSha256) ||
             !IsSha256(value.ScheduleSha256) || !HasValue(value.RigProfileName) ||
             !HasValue(value.RigProfileVersion) || !HasValue(value.ScheduleSchemaVersion) ||
@@ -853,7 +953,7 @@ internal sealed class CameraAgentInstaller
             !HasValue(value.PasswordFile) ||
             !HasValue(value.ProductRoot) || !HasValue(value.InstanceRoot) ||
             !HasValue(value.ConfigRoot) || !HasValue(value.StateRoot) || value.RuntimeUid == 0 ||
-            value.ComposeTemplateVersion != ComposeDeployment.TemplateVersion || !HasValue(value.TimeZoneId) ||
+            !IsSupportedComposeTemplate(value.ComposeTemplateVersion) || !HasValue(value.TimeZoneId) ||
             !double.IsFinite(value.LatitudeDegrees) || !double.IsFinite(value.LongitudeDegrees) ||
             !double.IsFinite(value.ElevationMeters) ||
             !IsSha256(value.ConfigurationSha256) || !IsSha256(value.RigProfileSha256) ||
@@ -876,7 +976,10 @@ internal sealed class CameraAgentInstaller
            (value.Distribution is null || IsValid(value.Distribution) &&
             value.Distribution.ManifestKind == DistributionManifestKind.CatalogRelease.ToString() &&
             value.Distribution.ReleaseTrain == "catalog" && value.Distribution.ReleaseVersion == value.PackageVersion &&
-            value.Distribution.ReleaseTag == $"catalog-{value.PackageVersion}");
+             value.Distribution.ReleaseTag == $"catalog-{value.PackageVersion}");
+
+    private static bool IsSupportedComposeTemplate(string value)
+        => value is "cameraagent-compose-v1" or ComposeDeployment.TemplateVersion;
 
     private static bool IsValid(ImageInstallationIdentity? value)
         => value is not null && HasValue(value.Source) && HasValue(value.ImmutableReference) &&

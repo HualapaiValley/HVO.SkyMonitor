@@ -2,6 +2,7 @@ using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Deployment.Contracts;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -15,6 +16,7 @@ internal static class CatalogInstaller
     public static CatalogInstallationIdentity Install(string bundlePath, string installRoot, Guid installationId)
     {
         ValidateBundleEntries(bundlePath);
+        var packageVersion = ReadPackageVersion(bundlePath);
         SafeFileSystem.EnsureSafeExistingAncestors(installRoot);
         SafeFileSystem.CreateOwnerDirectory(installRoot);
         var versionsRoot = Path.Combine(installRoot, "versions");
@@ -30,12 +32,11 @@ internal static class CatalogInstaller
 
         try
         {
-            var candidateVersion = Path.Combine(candidateRoot, "versions", ProductionCatalog.PackageVersion);
+            var candidateVersion = Path.Combine(candidateRoot, "versions", packageVersion);
             CopyBundle(bundlePath, candidateVersion);
-            Directory.CreateSymbolicLink(Path.Combine(candidateRoot, "current"), $"versions/{ProductionCatalog.PackageVersion}");
-            var candidate = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(candidateRoot));
+            var candidate = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(candidateRoot, packageVersion));
 
-            var installedVersion = Path.Combine(versionsRoot, ProductionCatalog.PackageVersion);
+            var installedVersion = Path.Combine(versionsRoot, packageVersion);
             if (Directory.Exists(installedVersion))
             {
                 ValidateInstalledVersion(installedVersion, candidateVersion);
@@ -48,9 +49,9 @@ internal static class CatalogInstaller
                 NativeLinux.FlushDirectory(versionsRoot);
             }
 
-            EnsureCurrentPointer(installRoot);
+            EnsureLegacyCurrentPointer(installRoot, packageVersion);
             NativeLinux.FlushDirectory(installRoot);
-            var installed = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(installRoot));
+            var installed = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(installRoot, packageVersion));
             return ProductionCatalog.ToIdentity(installed, installRoot);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -69,6 +70,7 @@ internal static class CatalogInstaller
     public static CatalogInstallationIdentity ValidateExisting(string bundlePath, string installRoot)
     {
         ValidateBundleEntries(bundlePath);
+        var packageVersion = ReadPackageVersion(bundlePath);
         var lineagePath = Path.Combine(installRoot, ".catalog-lineage.json");
         using (var stream = SafeFileSystem.OpenOwnerFileRead(lineagePath))
         {
@@ -80,15 +82,9 @@ internal static class CatalogInstaller
             }
         }
 
-        var current = new DirectoryInfo(Path.Combine(installRoot, "current"));
-        current.Refresh();
-        if (!string.Equals(current.LinkTarget, $"versions/{ProductionCatalog.PackageVersion}", StringComparison.Ordinal))
-        {
-            throw new InstallerException("The shared catalog current pointer does not select the production package.");
-        }
-        var installedVersion = Path.Combine(installRoot, "versions", ProductionCatalog.PackageVersion);
+        var installedVersion = Path.Combine(installRoot, "versions", packageVersion);
         ValidateInstalledVersion(installedVersion, bundlePath);
-        var installed = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(installRoot));
+        var installed = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(installRoot, packageVersion));
         return ProductionCatalog.ToIdentity(installed, installRoot);
     }
 
@@ -156,21 +152,16 @@ internal static class CatalogInstaller
         return SHA256.HashData(stream);
     }
 
-    private static void EnsureCurrentPointer(string installRoot)
+    private static void EnsureLegacyCurrentPointer(string installRoot, string packageVersion)
     {
         var current = Path.Combine(installRoot, "current");
         if (File.Exists(current) || Directory.Exists(current))
         {
-            var info = new DirectoryInfo(current);
-            if (!string.Equals(info.LinkTarget, $"versions/{ProductionCatalog.PackageVersion}", StringComparison.Ordinal))
-            {
-                throw new InstallerException("The shared catalog current pointer selects a different package.");
-            }
             return;
         }
 
         var pending = Path.Combine(installRoot, $".current-{Guid.NewGuid():N}");
-        Directory.CreateSymbolicLink(pending, $"versions/{ProductionCatalog.PackageVersion}");
+        Directory.CreateSymbolicLink(pending, $"versions/{packageVersion}");
         Directory.Move(pending, current);
         NativeLinux.FlushDirectory(installRoot);
     }
@@ -223,4 +214,42 @@ internal static class CatalogInstaller
 
     private static CatalogLineage ExpectedLineage()
         => new(1, ProductionCatalog.CatalogId, "production", "hyg-v42-production-p3-s2");
+
+    private static string ReadPackageVersion(string bundlePath)
+    {
+        using var stream = SafeFileSystem.OpenRegularFileRead(Path.Combine(bundlePath, "manifest.json"));
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(stream, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 32
+            });
+        }
+        catch (JsonException)
+        {
+            throw new InstallerException("The catalog bundle package version is invalid.");
+        }
+
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("package", out var package) ||
+                package.ValueKind != JsonValueKind.Object ||
+                !package.TryGetProperty("version", out var versionElement) ||
+                versionElement.ValueKind != JsonValueKind.String)
+            {
+                throw new InstallerException("The catalog bundle package version is invalid.");
+            }
+
+            var version = versionElement.GetString();
+            if (version is null || !Regex.IsMatch(version, "^hyg-v4\\.2-p3-s2-r[1-9][0-9]*$", RegexOptions.CultureInvariant))
+            {
+                throw new InstallerException("The catalog bundle package version is invalid.");
+            }
+            return version;
+        }
+    }
 }

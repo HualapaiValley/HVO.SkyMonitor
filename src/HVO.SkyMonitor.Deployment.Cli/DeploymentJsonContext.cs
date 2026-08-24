@@ -11,4 +11,11 @@ namespace HVO.SkyMonitor.Deployment;
 [JsonSerializable(typeof(InstallationState))]
 [JsonSerializable(typeof(InstallationResult))]
 [JsonSerializable(typeof(ApplicationIdentityBinding))]
+[JsonSerializable(typeof(LifecycleOperationState))]
+[JsonSerializable(typeof(LifecycleResult))]
+[JsonSerializable(typeof(InstanceBackupManifest))]
+[JsonSerializable(typeof(CatalogInstallationIdentity))]
+[JsonSerializable(typeof(PurgeDeletionEvidence))]
+[JsonSerializable(typeof(CatalogGarbageCollectionEvidence))]
+[JsonSerializable(typeof(CatalogInstallOperationEvidence))]
 internal sealed partial class DeploymentJsonContext : JsonSerializerContext;

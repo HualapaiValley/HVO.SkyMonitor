@@ -317,7 +317,7 @@ internal sealed class DistributionCatalogAcquirer : IDisposable
         SafeFileSystem.CreateOwnerDirectory(assetRoot);
         var cached = Path.Combine(assetRoot, artifact.AssetName);
         var resolvedUriPath = cached + ".uri";
-        using var cacheLock = OperationLock.Acquire(Path.Combine(assetRoot, ".acquire.lock"));
+        using var cacheLock = OperationLock.Acquire(Path.Combine(assetRoot, ".acquire.lock"), cancellationToken: cancellationToken);
         if (File.Exists(cached))
         {
             try

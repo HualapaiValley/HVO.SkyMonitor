@@ -11,18 +11,19 @@ internal static class ProductionCatalog
     public const long DatabaseLength = 9_302_016;
     public const long RowCount = 119_625;
 
-    public static CatalogSnapshotResolverOptions ResolverOptions(string root) => new(root, CatalogId)
+    public static CatalogSnapshotResolverOptions ResolverOptions(string root, string? packageVersion = null) => new(root, CatalogId)
     {
         ExpectedManifestVersion = 2,
         ExpectedPackageKind = CatalogSnapshotPackageKind.Production,
         ExpectedSchemaVersion = "2",
-        ExpectedPreprocessingVersion = "3"
+        ExpectedPreprocessingVersion = "3",
+        ExpectedPackageVersion = packageVersion
     };
 
     public static CatalogInstallationIdentity ToIdentity(CatalogSnapshotResult snapshot, string installRoot)
     {
         var databaseSha256 = Convert.ToHexStringLower(Convert.FromHexString(snapshot.DatabaseSha256));
-        if (snapshot.SnapshotVersion != PackageVersion || databaseSha256 != DatabaseSha256 ||
+        if (databaseSha256 != DatabaseSha256 ||
             snapshot.DatabaseLength != DatabaseLength || snapshot.RowCount != RowCount)
         {
             throw new InstallerException("The catalog does not match the installer-pinned production identity.");

@@ -134,8 +134,64 @@ container is stopped, it revalidates the catalog, image, configuration, owner,
 deployment location, and Compose identities and converges the same instance back
 to healthy without regenerating identity or credentials.
 
-Upgrade, rollback, uninstall, purge, backup/restore, LogicHost installation,
-remote orchestration, and physical-camera discovery remain lifecycle scope.
+## CameraAgent Lifecycle
+
+Run lifecycle commands as the Docker-capable deployment user, never as root.
+Image and catalog transitions require the current owner password in an owner-only
+file so candidate owner login is verified in addition to health and installation
+identity. Image references must be immutable digests:
+
+```bash
+hvo-skymonitor status --instance-id <uuid> --json
+hvo-skymonitor cameraagent upgrade --instance-id <uuid> \
+  --image-ref <repository@sha256:digest> --migration-backward-compatible \
+  --owner-password-file /owner-private/password
+hvo-skymonitor cameraagent rollback --instance-id <uuid> \
+  --owner-password-file /owner-private/password
+hvo-skymonitor cameraagent uninstall --instance-id <uuid>
+hvo-skymonitor cameraagent reinstall --instance-id <uuid> \
+  --owner-password-file /owner-private/password
+```
+
+Each transition pins the Docker endpoint and daemon identity, validates the
+rendered Compose model, records pre-mutation continuity, creates and validates a
+consistent backup, and journals mutation intent before pause or stop. Candidate
+Compose, manifest, and result identities commit while capture remains paused;
+resume is the final idempotent action. If final acknowledgement is lost, rerun
+the exact command with `--resume`. A failed candidate restores the exact prior
+Compose, image, and identity records before capture resumes. A v1 instance or
+rollback target additionally requires owner authentication and retains its exact
+v1 Compose files rather than inferring capabilities from a rewritten template.
+
+Uninstall removes only the selected Compose runtime and preserves config,
+secrets, state, evidence, rollback identities, and shared catalogs. Purge is a
+separate operation and requires `--confirm-instance-id <same-uuid>` after
+uninstall. Purge quarantines the inode-authenticated instance tree and resumes
+deletion from that tombstone after interruption; it never republishes a partially
+deleted tree.
+
+Catalog versions are explicit per instance:
+
+```bash
+hvo-skymonitor catalog install --catalog-bundle /owner-private/catalog.bundle
+hvo-skymonitor catalog select --instance-id <uuid> --catalog-version <version> \
+  --owner-password-file /owner-private/password
+hvo-skymonitor catalog rollback --instance-id <uuid> \
+  --owner-password-file /owner-private/password
+hvo-skymonitor catalog gc --catalog-version <version>
+```
+
+Mutating garbage collection requires one explicit version. It fails closed on
+unknown instance roots, malformed selection pointers, active Docker mounts,
+manifests, backups, operations, rollback slots, or historical reconstruction
+references. Interrupted deletion continues from an authenticated tombstone and
+never restores a partial immutable catalog. Resume requires the same explicit
+version and `--resume`; request hash, operation ID, host, daemon, root inode, and
+the original tree inventory must still match. Missing original entries are
+accepted after partial deletion, while additions and replacements fail closed.
+
+LogicHost lifecycle, remote orchestration, and physical-camera discovery remain
+future lifecycle scope.
 
 ## Build Evidence
 
