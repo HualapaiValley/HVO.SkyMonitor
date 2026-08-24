@@ -20,6 +20,8 @@ public sealed class ArchitectureBoundaryTests
     private const string CameraAgentZwo = "HVO.SkyMonitor.CameraAgent.Modules.Zwo";
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
     private const string LogicHost = "HVO.SkyMonitor.LogicHost";
+    private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
+    private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
     private const string TestSupport = "HVO.SkyMonitor.TestSupport";
     private const string FixtureCatalogSha256 = "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840";
 
@@ -54,7 +56,9 @@ public sealed class ArchitectureBoundaryTests
             [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts),
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
-            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, Catalog, Common)
+            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, Catalog, Common),
+            [DeploymentContracts] = Set(),
+            [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts)
         };
 
     [TestMethod]

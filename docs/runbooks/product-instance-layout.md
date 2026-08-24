@@ -5,15 +5,19 @@ are separate identity domains beneath that root:
 
 ```text
 /var/lib/hvo/skymonitor/
-  catalogs/<catalog-id>/{current,previous,versions/}
-  cameraagents/<instance-uuid>/{config,state}
-  logichosts/<instance-uuid>/{config,state}
+├── operations/                       # product-wide runtime operation lock
+├── catalogs/<catalog-id>/{current,previous,versions/}
+├── cameraagents/<instance-uuid>/{config,state}
+└── logichosts/<instance-uuid>/{config,state}
 ```
 
 Persistent deployment rejects any other product root. Isolated contract tests
 may use a disposable root beneath their private `/tmp/hvo-deploy-test.*`
 directory. The deployment never treats `/var/lib/hvo`, a hostname, target name,
 friendly name, container name, port, or application identity as an instance ID.
+The self-contained local installer enforces this root and records its exact
+manifest, phase, and result contracts as described in
+[deployment-installer.md](deployment-installer.md).
 
 ## Instance Identity
 

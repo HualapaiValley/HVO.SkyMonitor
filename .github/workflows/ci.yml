@@ -126,7 +126,7 @@ jobs:
     needs: [changes, catalog-contracts]
     if: needs.changes.outputs.deployment == 'true'
     runs-on: [self-hosted, linux, x64, hvo-skymonitor]
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -160,7 +160,7 @@ jobs:
             exit 1
           fi
            ./scripts/test:deploy-environment --list-shards
-           bash -n scripts/deploy:migrate-product-layout scripts/test:product-layout
+           bash -n scripts/deploy:migrate-product-layout scripts/test:product-layout scripts/test:deployment-installer
       - name: Build pinned production catalog contracts
         run: |
           ./scripts/catalog/test-hyg-v42-install.sh \
@@ -174,6 +174,8 @@ jobs:
           ./scripts/test:phase14-normal-campaign
       - name: Run deployment contracts in parallel
         run: ./scripts/test:deploy-environment --parallel
+      - name: Run disposable offline installer contract
+        run: ./scripts/test:deployment-installer
       - name: Upload deployment contract logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -246,6 +248,7 @@ jobs:
           dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/imaging --logger "trx;LogFileName=unit-imaging.trx"
           dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/processing --logger "trx;LogFileName=unit-processing.trx"
           dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/catalog-sqlite --logger "trx;LogFileName=unit-catalog-sqlite.trx"
+          dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/deployment-cli --logger "trx;LogFileName=unit-deployment-cli.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent --logger "trx;LogFileName=unit-cameraagent.trx"
           dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/cameraagent-acceptance --logger "trx;LogFileName=unit-cameraagent-acceptance.trx"
           dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/unit/logichost --logger "trx;LogFileName=unit-logichost.trx"
@@ -318,19 +321,30 @@ jobs:
           HVO_PUBLISH_EVIDENCE_ROOT: ${{ github.workspace }}/TestResults/publish
         run: |
           dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --no-build --configuration Release --filter "TestCategory=Integration&FullyQualifiedName~ArchitectureBoundaryTests" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/architecture --logger "trx;LogFileName=architecture-publish.trx"
+          dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-x64 --output TestResults/publish/installer/linux-x64
+          dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/installer/linux-arm64
+          mv TestResults/publish/installer/linux-x64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-x64/hvo-skymonitor
+          mv TestResults/publish/installer/linux-arm64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-arm64/hvo-skymonitor
+          test -x TestResults/publish/installer/linux-x64/hvo-skymonitor
+          test -x TestResults/publish/installer/linux-arm64/hvo-skymonitor
       - name: Create retained publish manifests
         run: |
           (cd TestResults/publish/cameraagent && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../cameraagent.sha256)
           (cd TestResults/publish/logichost && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../logichost.sha256)
+          (cd TestResults/publish/installer/linux-x64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../installer-linux-x64.sha256)
+          (cd TestResults/publish/installer/linux-arm64 && find . -type f -print0 | sort -z | xargs -0 sha256sum > ../../installer-linux-arm64.sha256)
           cameraagent_files=$(find TestResults/publish/cameraagent -type f | wc -l)
           cameraagent_bytes=$(find TestResults/publish/cameraagent -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           cameraagent_dependencies=$(find TestResults/publish/cameraagent -maxdepth 1 -type f -name '*.dll' | wc -l)
           logichost_files=$(find TestResults/publish/logichost -type f | wc -l)
           logichost_bytes=$(find TestResults/publish/logichost -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           logichost_dependencies=$(find TestResults/publish/logichost -maxdepth 1 -type f -name '*.dll' | wc -l)
-          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nLogicHost files=%s bytes=%s dependencies=%s\n' \
+          installer_x64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-x64/hvo-skymonitor)
+          installer_arm64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-arm64/hvo-skymonitor)
+          printf 'CameraAgent files=%s bytes=%s dependencies=%s\nLogicHost files=%s bytes=%s dependencies=%s\nInstaller linux-x64 bytes=%s\nInstaller linux-arm64 bytes=%s\n' \
             "$cameraagent_files" "$cameraagent_bytes" "$cameraagent_dependencies" \
             "$logichost_files" "$logichost_bytes" "$logichost_dependencies" \
+            "$installer_x64_bytes" "$installer_arm64_bytes" \
             > TestResults/publish/summary.txt
       - name: Upload architecture coverage
         if: always()
@@ -439,6 +453,7 @@ jobs:
             'TestResults/unit/imaging/*/coverage.cobertura.xml'
             'TestResults/unit/processing/*/coverage.cobertura.xml'
             'TestResults/unit/catalog-sqlite/*/coverage.cobertura.xml'
+            'TestResults/unit/deployment-cli/*/coverage.cobertura.xml'
             'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
             'TestResults/unit/cameraagent-acceptance/*/coverage.cobertura.xml'
             'TestResults/unit/logichost/*/coverage.cobertura.xml'

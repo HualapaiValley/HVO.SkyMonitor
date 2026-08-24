@@ -22,6 +22,8 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 
 internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
 {
+    internal const string AgentId = "cameraagent-browser-acceptance";
+    internal const string InstallationVerificationToken = "cameraagent-browser-verification-token";
     internal const string OwnerEmail = "owner@cameraagent.browser";
     internal const string OwnerPassword = "BrowserOwner!106";
     internal const string NonOwnerEmail = "viewer@cameraagent.browser";
@@ -118,6 +120,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["LocalIdentity:AllowMissingAdminPassword"] = "false",
             ["LocalIdentity:DatabasePath"] = Path.Combine(root, "identity", "cameraagent_identity.db"),
             ["LocalIdentity:CookieName"] = "CameraAgent.Browser106.Auth",
+            ["InstallationVerification:Token"] = InstallationVerificationToken,
             ["Catalog:Root"] = catalog.Root,
             ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
             ["Catalog:RequiredPackageKind"] = "Fixture",
