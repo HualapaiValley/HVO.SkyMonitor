@@ -253,6 +253,11 @@ public sealed class InstallerFlowTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Assert.AreEqual("docker", fileName);
+            if (arguments is ["context", "inspect", ..])
+            {
+                return Success("unix:///var/run/docker.sock");
+            }
+            if (arguments.Count >= 2 && arguments[0] == "--host") arguments = arguments.Skip(2).ToArray();
             if (arguments.SequenceEqual(["info", "--format", "{{json .}}"], StringComparer.Ordinal))
             {
                 return Success("{\"OSType\":\"linux\",\"Architecture\":\"amd64\",\"ID\":\"daemon-1\",\"Name\":\"host\",\"ServerVersion\":\"29.0\"}");
@@ -281,7 +286,8 @@ public sealed class InstallerFlowTests
                             User = "1000:1000",
                             Labels = new Dictionary<string, string>
                             {
-                                ["com.docker.compose.project"] = arguments[2]
+                                ["com.docker.compose.project"] = arguments[2],
+                                ["io.hvo.skymonitor.instance-id"] = id
                             }
                         },
                         HostConfig = new { ReadonlyRootfs = true, Privileged = false },
