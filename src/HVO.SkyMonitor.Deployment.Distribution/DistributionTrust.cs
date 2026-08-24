@@ -11,6 +11,11 @@ public sealed record DistributionTrustRoot(string KeyId, string PublicKeyPem)
 
     public static DistributionTrustRoot Production { get; } = LoadProduction();
 
+    public static bool IsCanonicalKeyId(string? value)
+        => value is not null && value.StartsWith("p256-sha256:", StringComparison.Ordinal) &&
+           value.Length == "p256-sha256:".Length + 64 && value["p256-sha256:".Length..].All(static character =>
+               character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
     public static DistributionTrustRoot FromPem(string publicKeyPem)
     {
         using var key = ECDsa.Create();

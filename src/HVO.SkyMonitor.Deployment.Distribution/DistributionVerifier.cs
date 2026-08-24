@@ -193,7 +193,7 @@ public static partial class DistributionVerifier
         }
         ValidateReleaseShape(manifest, names);
         if (manifest.Catalog is { } catalog &&
-            (catalog.CatalogId != "hyg-v42-production" || catalog.PackageVersion != "hyg-v4.2-p3-s2-r1" ||
+            (catalog.CatalogId != "hyg-v42-production" || !ProductionCatalogVersionRegex().IsMatch(catalog.PackageVersion) ||
              catalog.PackageKind != "production" || catalog.ManifestVersion != 2 || catalog.SchemaVersion != "2" ||
              catalog.PreprocessingVersion != "3" || !Sha256Regex().IsMatch(catalog.BundleManifestSha256) ||
               !Sha256Regex().IsMatch(catalog.DatabaseSha256) || catalog.DatabaseLength <= 0 || catalog.RowCount <= 0 ||
@@ -351,4 +351,7 @@ public static partial class DistributionVerifier
 
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$", RegexOptions.CultureInvariant)]
     private static partial Regex AssetNameRegex();
+
+    [GeneratedRegex("^hyg-v4\\.2-p3-s2-r[1-9][0-9]*$", RegexOptions.CultureInvariant)]
+    private static partial Regex ProductionCatalogVersionRegex();
 }

@@ -154,6 +154,38 @@ public sealed class DistributionVerifierTests
     }
 
     [TestMethod]
+    public void VerifyManifest_NewerProductionCatalogRevision_IsAccepted()
+    {
+        using var fixture = SigningFixture.Create();
+        var manifest = fixture.CatalogManifest("hyg-v4.2-p3-s2-r2");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(manifest, DistributionJsonContext.Default.DistributionReleaseManifest);
+
+        var result = DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot);
+
+        Assert.AreEqual("hyg-v4.2-p3-s2-r2", result.Catalog?.PackageVersion);
+    }
+
+    [TestMethod]
+    [DataRow("hyg-v4.2-p3-s2-r0")]
+    [DataRow("other-v1")]
+    public void VerifyManifest_InvalidProductionCatalogVersion_IsRejected(string version)
+    {
+        using var fixture = SigningFixture.Create();
+        var manifest = fixture.CatalogManifest(version);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(manifest, DistributionJsonContext.Default.DistributionReleaseManifest);
+
+        Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+    }
+
+    [TestMethod]
+    public void IsCanonicalKeyId_HistoricalFingerprint_IsAccepted()
+    {
+        Assert.IsTrue(DistributionTrustRoot.IsCanonicalKeyId($"p256-sha256:{new string('f', 64)}"));
+        Assert.IsFalse(DistributionTrustRoot.IsCanonicalKeyId($"p256-sha256:{new string('F', 64)}"));
+    }
+
+    [TestMethod]
     public void VerifyIndex_SignedDefaultVersion_IsAccepted()
     {
         using var fixture = SigningFixture.Create();
@@ -218,6 +250,44 @@ public sealed class DistributionVerifierTests
 
         public byte[] ManifestBytes()
             => JsonSerializer.SerializeToUtf8Bytes(Manifest(), DistributionJsonContext.Default.DistributionReleaseManifest);
+
+        public DistributionReleaseManifest CatalogManifest(string version) => new(
+            DistributionSchemaVersions.ReleaseManifest,
+            DistributionManifestKind.CatalogRelease,
+            new DistributionReleaseIdentity(
+                "catalog",
+                version,
+                $"catalog-{version}",
+                "RoySalisbury/HVO.SkyMonitor",
+                new string('a', 40),
+                new string('b', 40),
+                DateTimeOffset.Parse("2026-08-24T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture)),
+            new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, TrustRoot.KeyId),
+            [
+                Artifact(DistributionArtifactRole.CatalogBundle, $"{version}.bundle.tar.gz"),
+                Artifact(DistributionArtifactRole.Checksums, "SHA256SUMS"),
+                Artifact(DistributionArtifactRole.Sbom, "catalog-sbom.spdx.json"),
+                Artifact(DistributionArtifactRole.Provenance, "catalog-provenance.json"),
+                Artifact(DistributionArtifactRole.License, "LICENSE-HYG.md"),
+                Artifact(DistributionArtifactRole.Attribution, "ATTRIBUTION-HYG.md")
+            ],
+            new DistributionCatalogIdentity(
+                "hyg-v42-production",
+                version,
+                "production",
+                2,
+                "2",
+                "3",
+                new string('d', 64),
+                new string('e', 64),
+                1,
+                1,
+                "MIT",
+                "LICENSE-HYG.md",
+                "ATTRIBUTION-HYG.md",
+                "topology",
+                new string('f', 64)),
+            []);
 
         public byte[] Sign(ReadOnlySpan<byte> bytes)
             => Encoding.ASCII.GetBytes(Convert.ToBase64String(key.SignData(

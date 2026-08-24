@@ -889,7 +889,7 @@ internal sealed class CameraAgentInstaller
         => HasValue(value.ManifestKind) && HasValue(value.ReleaseTrain) && HasValue(value.ReleaseVersion) &&
            HasValue(value.ReleaseTag) && IsSha256(value.ManifestSha256) &&
            value.ManifestLength is > 0 and <= DistributionVerifier.MaximumManifestBytes &&
-           value.SigningKeyId == DistributionTrustRoot.ProductionKeyId && HasValue(value.AssetName) &&
+           DistributionTrustRoot.IsCanonicalKeyId(value.SigningKeyId) && HasValue(value.AssetName) &&
            IsSha256(value.AssetSha256) && value.AssetLength is > 0 and <= DistributionVerifier.MaximumImageArchiveBytes &&
            IsSafeEvidenceUri(value.SourceBaseUri) && IsSafeEvidenceUri(value.ResolvedPublicUri) &&
            value.VerificationResult == "verified" && value.VerifiedUtc != default && value.VerifiedUtc.Offset == TimeSpan.Zero &&
