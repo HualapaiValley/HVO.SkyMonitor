@@ -31,7 +31,7 @@ Stop local application containers when you're done via `./scripts/infra:stop`. S
 
 ## Endpoints
 
-- **Web UI**: `http://localhost:5174` (when running as container) or dynamic port (when running as project)
+- **Web UI**: `http://localhost:5174` for the container and direct HTTP profiles; `https://localhost:7096` for the direct HTTPS profile
 - **API**: `/api/v1.0/status`
 - **Health Check**: `/health` (no auth required; reports database, Redis, MinIO, SMTP status)
 - **Metrics**: `/metrics`
@@ -47,8 +47,8 @@ See `appsettings.json` and `appsettings.Development.json` for configuration opti
 Use User Secrets for sensitive configuration in development:
 
 ```bash
-dotnet user-secrets set "MinIO:Username" "your-username"
-dotnet user-secrets set "MinIO:Password" "your-password"
+dotnet user-secrets set "Minio:AccessKey" "your-access-key"
+dotnet user-secrets set "Minio:SecretKey" "your-secret-key"
 ```
 
 ## Bootstrap Identities

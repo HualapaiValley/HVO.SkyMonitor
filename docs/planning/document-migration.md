@@ -97,3 +97,10 @@ Before deleting a document:
   corrections.
 - [Epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89) retains
   the completed virtual-first phase and continuation history.
+- Repository maintenance after that milestone removed tracked runtime Data
+  Protection key rings and an unused Bootstrap vendor copy; moved dated CI
+  timing and sanitized issue #331 installation observations to validation
+  evidence; and reconciled active identity, retention, deployment-schema,
+  catalog, and workflow guidance with current source. The removed key rings were
+  repository-local development artifacts and remain compromised in history;
+  they must never protect retained state or be reused.

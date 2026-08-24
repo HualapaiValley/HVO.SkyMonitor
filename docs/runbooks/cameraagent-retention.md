@@ -13,8 +13,9 @@ After every successful retention sweep, every held outbox record still
 references an existing payload beneath the same storage root. Expiration does
 not override this hold. Once central ingestion acknowledges the manifest and
 the outbox records a validated acknowledgement, the next eligible sweep may delete a derivative. Raw
-ingress evidence remains held by `raw-ingress.db` until durable
-required-consumer acknowledgements are added.
+ingress evidence remains held by `raw-ingress.db` until all required durable
+lane acknowledgements are recorded and no retained transient reference still
+depends on it.
 
 Retention fails closed for a storage root before deleting anything when:
 
@@ -120,9 +121,10 @@ idempotency key, artifact ID, checksum, length, and accepted schema before
 recording acknowledgement and releasing a derivative's local artifact. It does not remove an ingress-owned raw
 payload or manifest-v2 sidecar while the SQLite retention hold remains active.
 
-New work is persisted as canonical manifest v2. The current LogicHost endpoint
-is a v1 compatibility delivery adapter: its acknowledgement says
-`acceptedManifestSchemaVersion: v1` and does not claim central reconstructability.
+New work is persisted as canonical manifest v2. LogicHost accepts both legacy v1
+and canonical v2 manifests, validates the complete v2 reconstruction descriptor,
+and acknowledges the schema version it persisted. Version 1 remains a
+compatibility path and does not claim central reconstructability.
 OAuth client-credentials bearer authentication is the supported upload mode.
 An API key, rejected bearer identity, or inactive registration results in an
 `authentication-rejected` quarantine rather than an infinite retry.

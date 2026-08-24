@@ -88,8 +88,8 @@ Before each production change:
 Generate the review artifact outside tracked source:
 
 ```bash
-./scripts/logichost:generate-migration-sql TestResults/issue-256/logichost-idempotent.sql
-sha256sum --check TestResults/issue-256/logichost-idempotent.sql.sha256
+./scripts/logichost:generate-migration-sql TestResults/logichost-idempotent.sql
+sha256sum --check TestResults/logichost-idempotent.sql.sha256
 ```
 
 Record the Git revision, SQL hash, source and target migration IDs, backup ID,

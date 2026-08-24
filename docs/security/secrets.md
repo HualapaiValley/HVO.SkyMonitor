@@ -102,7 +102,7 @@ project for LogicHost keys.
 | `CentralIdentity:ClientCredentials:ClientSecret` | CameraAgent outbound client-credentials mode | Imported encrypted device state, User Secrets, or environment variables |
 | `CentralIdentity:ApiKey:Key` | CameraAgent outbound API-key mode | Imported encrypted device state, User Secrets, or environment variables |
 | `CAMERA_AGENT_ADMIN_PASSWORD` / `LocalIdentity:AdminPassword` or `AdminPasswordFile` | One-time temporary credential for initial local site-owner seeding and verification | Ignored `.env`, CameraAgent User Secrets, or an owner-only deployment file; remove runtime authority after durable seeding |
-| Split-host owner API key and per-agent owner passwords | LogicHost owner automation and temporary local Identity login | Schema-v6 owner-only `secretSource`; automation removes runtime password authority and correlated bootstrap files after durable seeding and authentication, then the operator replaces the temporary password through the required first-login flow |
+| Split-host owner API key and per-agent owner passwords | LogicHost owner automation and temporary local Identity login | Schema-v8 owner-only `secretSource`; automation removes runtime password authority and correlated bootstrap files after durable seeding and authentication, then the operator replaces the temporary password through the required first-login flow |
 | `CentralIdentity:LocalFallback:AccessCodeHash` | Reserved option; no runtime fallback handler is implemented | Do not configure as an active control |
 | OpenIddict signing/encryption PFX files and passwords | Token, code, and refresh-token cryptography | Development certificate store locally; split-host production mounts owner-supplied files and reads passwords through KeyPerFile |
 | Kestrel/TLS private key and password | HTTPS when Kestrel owns TLS | Framework configuration is available, but repository Compose has no HTTPS profile or secure mount |
@@ -130,7 +130,7 @@ ignored, access-controlled, and out of support bundles:
 - `src/HVO.SkyMonitor.CameraAgent/App_Data/`
 - any host `DataProtection-Keys/` directory
 - `.env` and `.devcontainer/devcontainer.local.env`
-- the ignored schema-v6 split-host `secretSource` file and transient remote `.hvo-deploy/{up,bootstrap,smoke,measure,down}-<run-id>/` private files (credentials are removed at phase exit)
+- the ignored schema-v8 split-host `secretSource` file and transient remote `.hvo-deploy/{up,bootstrap,smoke,measure,down}-<run-id>/` private files (credentials are removed at phase exit)
 
 Every local credential staging file, remote credential/session file, and private
 SCP temporary is atomically registered with its phase, kind, path, and complete
@@ -192,8 +192,9 @@ also sensitive operational state.
   unrequired names and missing required names are rejected before host contact;
   extraction independently enforces the same exact-count and control-character
   rules before rendering.
-- OAuth scopes are dot-separated: `api.admin`, `api.camera`, `api.frames`,
-  `api.images`, `api.viewer`, and `api.webhooks`.
+- OAuth scopes are dot-separated: `api.admin`, `api.artifacts.read`,
+  `api.camera`, `api.frames`, `api.images`, `api.owner.write`, `api.viewer`, and
+  `api.webhooks`.
 - API keys use `Read` or `ReadWrite`; choose `Read` unless mutation is required.
 
 ## Rotation Capability
@@ -236,14 +237,18 @@ Use the step-by-step procedures and rollback rules in the
 ## Certificates and Data Protection
 
 Development and Testing use OpenIddict development signing and encryption
-certificates. Production has no repository-supported certificate option schema
-or loader, so production startup and overlap rotation must remain blocked until
-that implementation exists.
+certificates. Production loads absolute-path signing and encryption PFX files
+through `OpenIddictCertificates`; split-host deployment supplies owner-provided
+mounts and KeyPerFile passwords. Coordinated overlap and automatic rotation are
+not implemented.
 
 Both hosts persist Data Protection keys to filesystem directories. Compose
 mounts those directories so rebuilds preserve cookies and protected state.
 Back up LogicHost keys with protected envelopes and CameraAgent keys with
 `device-secrets.dat`. Never reset a key ring as a certificate-rotation method.
+Any key ring committed to source control is compromised even after deletion
+because Git history retains it. Never reuse such keys; invalidate dependent
+development sessions and reprovision or discard protected local state.
 
 ## Troubleshooting
 

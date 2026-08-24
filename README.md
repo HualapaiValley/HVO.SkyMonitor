@@ -90,7 +90,9 @@ You can pass specific services to `--rebuild` (for example `--rebuild logichost`
 - **MinIO** - configured by `MINIO_*` in `.env`
 - **SMTP (Mailpit)** - configured by `SMTP_*` in `.env`
 - **Logic Host** - Main application: http://localhost:5174
- - **Camera Agent** - http://localhost:5130
+- **Camera Agent** - http://localhost:5130
+
+#### Option 2: Direct execution
 
 ```bash
 # First install the verified HYG bundle as documented in docs/catalog/production-install.md.
@@ -108,6 +110,11 @@ Both hosts require the same verified production catalog installed under the
 configured runtime-data root; production builds do not package the test fixture.
 
 This mode keeps hot reload and a faster edit/run cycle while still talking to the same SQL Server, Redis, and MinIO containers.
+
+VS Code launch configuration is intentionally attach-only. Start a host with
+`./scripts/with-env` as shown above, then select the matching `Attach` profile so
+debugging uses the same supported environment-loading path as ordinary direct
+execution.
 
 ### Devcontainer Setup
 
@@ -191,7 +198,7 @@ The following VS Code extensions are automatically installed:
 The following ports are automatically forwarded and accessible from your host machine:
 
 - **7096** - LogicHost HTTPS direct-run profile
-- **5174** - LogicHost container profile
+- **5174** - LogicHost HTTP container and direct-run profile
 - **5130** - Camera Agent container profile
 
 ### Environment Variables & Secrets
@@ -199,7 +206,7 @@ The following ports are automatically forwarded and accessible from your host ma
 - Copy `.env.template` to `.env` for Docker Compose. Only non-secret defaults live in version control.
 - Place per-developer overrides in `.devcontainer/devcontainer.local.env` (gitignored) and map them via the `remoteEnv` block in `.devcontainer/devcontainer.json`.
 - Treat `.devcontainer/state/` as secret local data. OpenCode credentials survive rebuilds but not a fresh clone; restore them securely or reauthenticate OpenCode after cloning. Legacy Tailscale state is intentionally not mounted into the container.
-- Use `.NET` [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets?view=aspnetcore-8.0&tabs=linux) for local debugging outside containers. The devcontainer mounts your host secrets folder automatically.
+- Use `.NET` [user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets?view=aspnetcore-10.0&tabs=linux) for local debugging outside containers. The devcontainer mounts your host secrets folder automatically.
 - See `docs/security/secrets.md` for detailed workflows covering Testcontainers, Docker Compose, and production deployments.
 
 ## Container Support

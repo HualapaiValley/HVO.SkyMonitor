@@ -3,14 +3,18 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 cd "$REPO_ROOT"
 
 readonly DOCS=(
+    README.md
     docs/identity/overview.md
     docs/identity/operations-runbook.md
     docs/security/secrets.md
+    docs/runbooks/cameraagent-retention.md
     docs/runbooks/infra-operations.md
     docs/runbooks/local-dev.md
     docs/runbooks/smoke-test.md
@@ -18,7 +22,19 @@ readonly DOCS=(
     docs/runbooks/ci-pipeline.md
     docs/catalog/production-install.md
     docs/catalog/hyg-v42.md
+    docs/planning/standalone-cameraagent-course-correction.md
+    docs/validation/ci-reduced-mode.md
+    docs/validation/issue-331-production-like-install-findings.md
+    src/HVO.SkyMonitor.Astronomy/README.md
+    src/HVO.SkyMonitor.LogicHost/README.md
 )
+
+for document in "${DOCS[@]}"; do
+    if [[ ! -f "$document" || -L "$document" ]]; then
+        printf 'Required operations document is missing or not a regular file: %s\n' "$document" >&2
+        exit 1
+    fi
+done
 
 forbidden_command='^[[:space:]]*(\$[[:space:]]+)?(pg_dump|psql|kubectl|az[[:space:]]+keyvault|redis-cli[^#]*(FLUSHDB|FLUSHALL)|docker[^#]*[[:space:]]env([[:space:]]|$))'
 if grep -Eni "$forbidden_command" "${DOCS[@]}"; then
@@ -53,6 +69,30 @@ if grep -ERn --exclude-dir=bin --exclude-dir=obj --include='appsettings*.json' \
     exit 1
 fi
 
+tracked_path_exists() {
+    local path
+    while IFS= read -r path; do
+        [[ -e "$path" ]] && return 0
+    done < <(git ls-files "$1")
+    return 1
+}
+
+if tracked_path_exists ':(glob)**/DataProtection-Keys/**'; then
+    printf 'Runtime Data Protection keys must not be tracked.\n' >&2
+    exit 1
+fi
+
+if tracked_path_exists ':(glob)src/HVO.SkyMonitor.LogicHost/wwwroot/lib/bootstrap/**'; then
+    printf 'The unused local Bootstrap vendor tree must not be tracked.\n' >&2
+    exit 1
+fi
+
+if grep -En 'schema-v6 split-host|schema v6 split-host|Production source currently has no certificate loader|Production has no repository-supported certificate' \
+    docs/identity/overview.md docs/identity/operations-runbook.md docs/security/secrets.md docs/runbooks/infra-operations.md; then
+    printf 'Active operations guidance contains a superseded capability or deployment schema.\n' >&2
+    exit 1
+fi
+
 require_source_reference() {
     local value="$1"
     local source_file="$2"
@@ -71,6 +111,14 @@ require_source_reference 'skymonitor-diagnostics' deploy/hvo-docker/minio/skymon
 require_source_reference 'skymonitor-artifacts' deploy/hvo-docker/minio/skymonitor-policy.json
 require_source_reference 'DeviceProvisioning__StateDirectory: /app/data/provisioning' docker-compose.apps.yml
 require_source_reference 'DeviceBootstrap__CentralIdentity__ClientCredentials__ClientSecret' docker-compose.apps.yml
+require_source_reference 'OpenIddictCertificateOptions.SectionName' src/HVO.SkyMonitor.LogicHost/Program.cs
+require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCertificate(encryption);' src/HVO.SkyMonitor.LogicHost/Program.cs
+require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
+require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
+require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
+require_source_reference 'Unit=2018' docs/runbooks/ci-pipeline.md
+require_source_reference 'public string AccessKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
+require_source_reference 'public string SecretKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
 # shellcheck disable=SC2016 # Backticks are literal Markdown.
 require_source_reference 'canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on' docs/catalog/production-install.md
 require_source_reference 'ARM64 operators must install the' docs/catalog/production-install.md
@@ -89,7 +137,9 @@ require_source_reference 'wildcard.' docs/runbooks/split-host-preflight.md
 require_source_reference 'no intent permits partial absence' docs/runbooks/split-host-preflight.md
 require_source_reference 'deploy_capture_queues_converged' scripts/deploy/common.sh
 require_source_reference './scripts/test:deploy-environment --parallel' docs/runbooks/ci-pipeline.md
+require_source_reference 'name: Catalog Contracts' .github/workflows/ci.yml
 require_source_reference 'name: Deployment Contracts' .github/workflows/ci.yml
+# shellcheck disable=SC2016 # GitHub expression syntax is intentionally literal.
 require_source_reference 'deployment: ${{ steps.classify.outputs.deployment }}' .github/workflows/ci.yml
 require_source_reference 'is_deployment_path()' scripts/ci:classify
 # shellcheck disable=SC2016 # The deployment source must retain this literal shell expression.

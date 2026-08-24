@@ -102,9 +102,11 @@ database. Supported inbound authentication is the LogicHost Identity cookie,
 `X-API-Key`, and locally validated OpenIddict bearer tokens.
 
 OpenIddict exposes `/connect/authorize` and `/connect/token`. Development and
-Testing use development certificates. Production signing/encryption certificate
-loading, key overlap, token revocation, and a production TLS topology are not
-implemented.
+Testing use development certificates. Production loads configured signing and
+encryption PFX files through `OpenIddictCertificates`; the split-host deployment
+mounts those files and supplies their passwords through KeyPerFile. Coordinated
+key overlap, automatic certificate rotation, token revocation, and a production
+TLS topology are not implemented.
 
 Device inventory and envelope issuance require the authenticated owner to match
 both the registration snapshot and its current observatory. Most bearer APIs do
