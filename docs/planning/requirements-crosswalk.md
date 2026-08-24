@@ -1,13 +1,15 @@
 # Requirements Crosswalk
 
 This crosswalk maps normative sources to the authoritative virtual-first phases,
-GitHub issues, and retained specifications. It prevents roadmap consolidation
+GitHub issues, and retained specifications. It prevents planning consolidation
 from dropping detailed behavior and prevents subsystem documents from becoming
 competing status authorities.
 
-`docs/project-plan.md` owns scope, architecture, phase order, aggregate status,
-and completion. The retained source in this table owns detailed subsystem
-behavior. GitHub issues own live issue/PR execution state and evidence.
+`docs/roadmap.md` owns portfolio initiative IDs, horizons, and top-level epic
+mappings. `docs/project-plan.md` owns virtual-first scope, architecture, phase
+order, aggregate phase status, and completion. The retained source in this table
+owns detailed subsystem behavior. GitHub issues own live issue/PR execution
+state and evidence.
 
 ## 1. Cross-Cutting Requirements
 

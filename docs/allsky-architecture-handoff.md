@@ -3,8 +3,10 @@
 This handoff gives another agent enough context to brainstorm product,
 architecture, workflow, and implementation ideas for HVO.SkyMonitor without
 needing to first learn the internal code paths. It is intentionally high level.
-Use `docs/project-plan.md` as the authoritative roadmap and architecture source
-when decisions need to become implementation work.
+Use `docs/roadmap.md` for portfolio direction and stable initiative IDs. Use
+`docs/project-plan.md` as the authoritative architecture, virtual-first
+requirements, phase-order, and completion source when decisions become
+implementation work.
 
 ## What The System Is
 

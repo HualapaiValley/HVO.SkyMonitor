@@ -5,8 +5,10 @@ narratives without deleting normative requirements or reproducibility evidence.
 
 ## 1. Governing Rules
 
-- `docs/project-plan.md` is the only authoritative roadmap and aggregate phase
-  status; linked GitHub issues own live issue/PR execution state and evidence.
+- `docs/roadmap.md` owns portfolio initiative IDs, horizons, and top-level epic
+  mappings. `docs/project-plan.md` owns architecture, virtual-first requirements,
+  phase order, aggregate phase status, and completion. Linked GitHub issues own
+  live issue/PR execution state and evidence.
 - Subsystem specifications define behavior but do not maintain competing phase
   status.
 - Validation and calibration files are evidence, not roadmap authority.

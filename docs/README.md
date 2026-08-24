@@ -1,13 +1,15 @@
 # Documentation Catalog
 
-The documents below have distinct ownership. Product direction, architecture,
-phase order, and aggregate status live in the project plan. GitHub issues own
+The documents below have distinct ownership. Portfolio direction and stable
+roadmap initiative IDs live in the roadmap. Architecture, virtual-first phase
+order, requirements, and completion live in the project plan. GitHub issues own
 live issue/PR execution state and evidence. Runbooks and focused subsystem
-documents link back without maintaining a competing roadmap.
+documents link back without maintaining competing status.
 
 | Topic | Target Doc | Notes |
 | --- | --- | --- |
-| Product architecture and implementation plan | `docs/project-plan.md` | Authoritative virtual-first architecture, requirements, current status, phases, issues, and acceptance criteria. |
+| Product roadmap | `docs/roadmap.md` | Portfolio initiatives, stable `RM-###` IDs, planning horizons, top-level epic mappings, and high-level dependencies. |
+| Product architecture and implementation plan | `docs/project-plan.md` | Authoritative virtual-first architecture, requirements, phase status, issues, and acceptance criteria. |
 | Agent execution and handoff | `docs/planning/agent-execution.md` | Required issue lifecycle, performance evidence, validation, review correction, green merge, and resumable handoff protocol. |
 | Agent prompts | `docs/planning/agent-prompts.md` | Reusable GPT-5.6 Sol, Terra, Luna, research, review, implementation, and handoff prompts. |
 | Performance validation | `docs/planning/performance-validation.md` | Canonical workloads, measurement record, phase gates, and evidence rule for justified complexity. |

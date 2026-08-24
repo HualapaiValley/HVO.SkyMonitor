@@ -2,12 +2,15 @@
 
 Status date: 2026-07-25
 
-This is the authoritative roadmap and architecture source for HVO SkyMonitor.
-Live coordination is tracked by the
+This is the authoritative architecture, virtual-first requirements, phase-order,
+and completion source for HVO SkyMonitor. The repository-visible
+[product roadmap](roadmap.md) owns stable portfolio initiative IDs, planning
+horizons, and top-level epic mappings. Live coordination is tracked by the
 [Virtual-First Platform Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/1)
 and [epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89).
 Detailed execution rules and reusable agent prompts are maintained in:
 
+- [Product roadmap](roadmap.md)
 - [Agent execution protocol](planning/agent-execution.md)
 - [Agent prompts](planning/agent-prompts.md)
 - [Performance validation](planning/performance-validation.md)
@@ -425,7 +428,7 @@ Requirements:
 
 | ID | Requirement |
 | --- | --- |
-| `ARCH-001` | Keep this file as the single authoritative roadmap. |
+| `ARCH-001` | Keep this file authoritative for architecture, virtual-first requirements, phase order, and completion; keep portfolio initiative IDs and horizons in `docs/roadmap.md`. |
 | `ARCH-002` | Enforce all project-reference directions with executable architecture tests. |
 | `ARCH-003` | Remove production references to TestSupport. |
 | `ARCH-004` | Remove or explicitly deprecate legacy upload scaffolding. |
