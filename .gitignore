@@ -297,6 +297,7 @@ ServiceFabricBackup/
 secrets.json
 *.key
 *.pem
+!src/HVO.SkyMonitor.Deployment.Distribution/Trust/hvo-skymonitor-production-release-p256-public.pem
 *.pfx
 *.p12
 *.jks

@@ -38,6 +38,21 @@ public sealed class DockerClientTests
     }
 
     [TestMethod]
+    public async Task PrepareImageAsync_NoDownload_InspectsExistingDigestWithoutPulling()
+    {
+        var digest = $"ghcr.io/example/cameraagent@sha256:{new string('a', 64)}";
+        var runner = new FakeProcessRunner(
+            "{\"OSType\":\"linux\",\"Architecture\":\"amd64\",\"ID\":\"daemon-1\",\"Name\":\"host\",\"ServerVersion\":\"29.0\"}",
+            "2.40.0",
+            $"[{{\"Id\":\"sha256:{new string('b', 64)}\",\"Architecture\":\"amd64\",\"Os\":\"linux\",\"RepoDigests\":[\"{digest}\"]}}]");
+        var request = CreateRequest(digest) with { NoDownload = true };
+
+        await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, CancellationToken.None);
+
+        Assert.IsFalse(runner.Commands.Any(static command => command.StartsWith("docker image pull", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
     public async Task PrepareImageAsync_ArchiveDoesNotContainRequestedExistingImage_IsRejected()
     {
         var archive = Path.GetTempFileName();

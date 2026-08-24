@@ -97,6 +97,7 @@ done
 
 deployment_paths=(
   ".github/workflows/ci.yml"
+  ".github/workflows/release.yml"
   ".dockerignore"
   ".env.template"
   "docker-compose.apps.yml"
@@ -105,6 +106,7 @@ deployment_paths=(
   "scripts/ci:require"
   "scripts/test:ci-classification"
   "scripts/deploy:environment"
+  "scripts/install-hvo-skymonitor.sh"
   "scripts/deploy:migrate-product-layout"
   "scripts/deploy/common.sh"
   "scripts/test:deploy-environment"
@@ -126,7 +128,10 @@ deployment_paths=(
   "src/HVO.SkyMonitor.LogicHost/Dockerfile"
   "src/HVO.SkyMonitor.Deployment.Cli/Program.cs"
   "src/HVO.SkyMonitor.Deployment.Contracts/InstallationContracts.cs"
+  "src/HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs"
   "tests/HVO.SkyMonitor.Deployment.Cli.Tests/InstallerFlowTests.cs"
+  "tests/HVO.SkyMonitor.Deployment.Distribution.Tests/DistributionVerifierTests.cs"
+  "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
   "src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json"
   "src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json"
   "src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json"

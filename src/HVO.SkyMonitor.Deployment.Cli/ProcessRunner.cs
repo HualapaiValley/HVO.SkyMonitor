@@ -32,6 +32,7 @@ internal sealed class ProcessRunner : IProcessRunner
         {
             process.StartInfo.ArgumentList.Add(argument);
         }
+        process.StartInfo.Environment.Remove("HVO_GITHUB_TOKEN");
 
         try
         {

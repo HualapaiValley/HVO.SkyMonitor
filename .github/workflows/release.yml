@@ -1,0 +1,386 @@
+name: Signed Distribution Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      train:
+        description: Independent release train
+        required: true
+        type: choice
+        options:
+          - installer
+          - catalog
+      version:
+        description: Exact immutable release version
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character commit on main
+        required: true
+        type: string
+      index_sequence:
+        description: Next signed index sequence
+        required: true
+        type: number
+      confirm:
+        description: Enter PUBLISH to create immutable releases
+        required: true
+        type: string
+
+concurrency:
+  group: signed-distribution-${{ inputs.train }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Reproducible Candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    steps:
+      - name: Require explicit main-branch publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          [[ "$GITHUB_REF" == "refs/heads/main" && "$CONFIRM" == "PUBLISH" ]]
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          if [[ "${{ inputs.train }}" == installer ]]; then package_tag="installer-v${{ inputs.version }}"; else package_tag="catalog-${{ inputs.version }}"; fi
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if gh release view "$package_tag" >/dev/null 2>&1; then
+            [[ "$(gh release view "$package_tag" --json targetCommitish --jq .targetCommitish)" == "$SOURCE_SHA" ]]
+            compare_status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_SHA...$main_sha" --jq .status)"
+            [[ "$compare_status" == ahead || "$compare_status" == identical ]]
+          else
+            [[ "$SOURCE_SHA" == "$GITHUB_SHA" && "$SOURCE_SHA" == "$main_sha" ]]
+          fi
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA/check-runs" --jq '[.check_runs[] | select(.name == "Required CI")][0].conclusion')
+          [[ "$conclusion" == "success" ]]
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate source ancestry and release identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TRAIN: ${{ inputs.train }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          git fetch --no-tags origin main
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          [[ "$VERSION" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,126}[A-Za-z0-9])?$ ]]
+          if [[ "$TRAIN" == installer ]]; then package_tag="installer-v$VERSION"; else package_tag="catalog-$VERSION"; fi
+          if ! gh release view "$package_tag" >/dev/null 2>&1; then
+            [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
+          fi
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Restore, build, and test release contracts
+        run: |
+          dotnet restore HVO.SkyMonitor.v9.slnx
+          dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror
+          dotnet test tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj --no-build --configuration Release --filter "TestCategory=Unit"
+      - name: Build deterministic unsigned assets
+        env:
+          TRAIN: ${{ inputs.train }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          tree=$(git rev-parse "HEAD^{tree}")
+          created=$(date -u -d "$(git show -s --format=%cI '${{ inputs.source_sha }}')" +%Y-%m-%dT%H:%M:%SZ)
+          candidate="$RUNNER_TEMP/candidate"
+          if [[ "$TRAIN" == "installer" ]]; then
+            dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-x64 --output "$RUNNER_TEMP/linux-x64"
+            dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-arm64 --output "$RUNNER_TEMP/linux-arm64"
+            dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release -- create-installer \
+              --version "$VERSION" --revision "$SOURCE_SHA" --tree "$tree" --created-utc "$created" \
+              --linux-x64 "$RUNNER_TEMP/linux-x64/HVO.SkyMonitor.Deployment.Cli" \
+              --linux-arm64 "$RUNNER_TEMP/linux-arm64/HVO.SkyMonitor.Deployment.Cli" \
+              --notices THIRD-PARTY-NOTICES.md --output "$candidate"
+          else
+            ./scripts/catalog/build-hyg-v42.sh --fetch "$RUNNER_TEMP/catalog-build"
+            catalog_bundles=("$RUNNER_TEMP"/catalog-build/*.bundle)
+            [[ ${#catalog_bundles[@]} -eq 1 && -d "${catalog_bundles[0]}" ]]
+            jq --exit-status --arg version "$VERSION" '.package.version == $version' \
+              "${catalog_bundles[0]}/manifest.json" >/dev/null
+            dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release -- create-catalog \
+              --revision "$SOURCE_SHA" --tree "$tree" --created-utc "$created" \
+              --bundle "${catalog_bundles[0]}" --output "$candidate"
+          fi
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/unsigned-candidate.tar.gz" candidate
+      - name: Upload unsigned candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unsigned-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/unsigned-candidate.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    name: Key Vault Signing
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Download unsigned candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: unsigned-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/unsigned
+      - name: Restore release tooling and candidate
+        run: |
+          dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
+          dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-restore --configuration Release -warnaserror
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/unsigned/unsigned-candidate.tar.gz"
+      - name: Revalidate protected main head before signing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TRAIN: ${{ inputs.train }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          git fetch --no-tags origin main
+          [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]]
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          if [[ "$TRAIN" == installer ]]; then package_tag="installer-v$VERSION"; else package_tag="catalog-$VERSION"; fi
+          if ! gh release view "$package_tag" >/dev/null 2>&1; then
+            [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
+          fi
+      - name: Azure OIDC login
+        uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign exact release bytes and signed index
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRAIN: ${{ inputs.train }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          INDEX_SEQUENCE: ${{ inputs.index_sequence }}
+          KEY_VAULT: ${{ vars.AZURE_KEY_VAULT_NAME }}
+          KEY_NAME: ${{ vars.AZURE_RELEASE_KEY_NAME }}
+          KEY_VERSION: ${{ vars.AZURE_RELEASE_KEY_VERSION }}
+        run: |
+          set -euo pipefail
+          tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release --)
+          candidate="$RUNNER_TEMP/candidate"
+          if [[ "$TRAIN" == "installer" ]]; then manifest="$candidate/release-manifest.json"; else manifest="$candidate/catalog-manifest.json"; fi
+          sign_file() {
+            local input="$1" output="$2"
+            local digest value
+            digest=$("${tool[@]}" digest --input "$input")
+            value=$(az keyvault key sign --vault-name "$KEY_VAULT" --name "$KEY_NAME" --version "$KEY_VERSION" --algorithm ES256 --digest "$digest" --query value --output tsv --only-show-errors)
+            "${tool[@]}" write-azure-signature --value "$value" --signature "$output"
+            "${tool[@]}" verify-signature --input "$input" --signature "$output"
+          }
+          if [[ "$TRAIN" == "installer" ]]; then package_tag="installer-v$VERSION"; else package_tag="catalog-$VERSION"; fi
+          existing_package="$RUNNER_TEMP/existing-package"
+          if gh release view "$package_tag" >/dev/null 2>&1; then
+            [[ "$(gh release view "$package_tag" --json targetCommitish --jq .targetCommitish)" == "${{ inputs.source_sha }}" ]]
+            mkdir -m 700 "$existing_package"
+            gh release download "$package_tag" --dir "$existing_package"
+            for source_file in "$candidate"/*; do cmp "$source_file" "$existing_package/$(basename "$source_file")"; done
+            "${tool[@]}" verify --manifest "$manifest" --signature "$existing_package/$(basename "$manifest").sig" --asset-root "$candidate"
+            "${tool[@]}" verify-signature --input "$candidate/SHA256SUMS" --signature "$existing_package/SHA256SUMS.sig"
+            cp "$existing_package/$(basename "$manifest").sig" "$manifest.sig"
+            cp "$existing_package/SHA256SUMS.sig" "$candidate/SHA256SUMS.sig"
+          else
+            sign_file "$manifest" "$manifest.sig"
+            sign_file "$candidate/SHA256SUMS" "$candidate/SHA256SUMS.sig"
+          fi
+          "${tool[@]}" verify --manifest "$manifest" --signature "$manifest.sig" --asset-root "$candidate"
+
+          created=$(date -u -d "$(git show -s --format=%cI "$SOURCE_SHA")" +%Y-%m-%dT%H:%M:%SZ)
+          index_args=(create-index --train "$TRAIN" --sequence "$INDEX_SEQUENCE" --created-utc "$created" \
+            --manifest "$manifest" --manifest-signature "$manifest.sig" --output "$RUNNER_TEMP/index")
+          if (( INDEX_SEQUENCE > 1 )); then
+            previous=$((INDEX_SEQUENCE - 1))
+            previous_root="$RUNNER_TEMP/previous-index"
+            mkdir -m 700 "$previous_root"
+            gh release download "$TRAIN-index-$previous" --dir "$previous_root" --pattern "$TRAIN-release-index.json*"
+            index_args+=(--previous-index "$previous_root/$TRAIN-release-index.json" --previous-index-signature "$previous_root/$TRAIN-release-index.json.sig")
+          fi
+          "${tool[@]}" "${index_args[@]}"
+          index_path="$RUNNER_TEMP/index/$TRAIN-release-index.json"
+          index_tag="$TRAIN-index-$INDEX_SEQUENCE"
+          existing_index="$RUNNER_TEMP/existing-index"
+          if gh release view "$index_tag" >/dev/null 2>&1; then
+            [[ "$(gh release view "$index_tag" --json targetCommitish --jq .targetCommitish)" == "${{ inputs.source_sha }}" ]]
+            mkdir -m 700 "$existing_index"
+            gh release download "$index_tag" --dir "$existing_index"
+            cmp "$index_path" "$existing_index/$TRAIN-release-index.json"
+            "${tool[@]}" verify-index --index "$index_path" --signature "$existing_index/$TRAIN-release-index.json.sig"
+            cp "$existing_index/$TRAIN-release-index.json.sig" "$index_path.sig"
+          else
+            sign_file "$index_path" "$index_path.sig"
+          fi
+          if [[ "$TRAIN" == installer ]]; then
+            mirror="$RUNNER_TEMP/bootstrap-mirror"
+            mkdir -p "$mirror"
+            chmod 0700 "$mirror"
+            mkdir -m 700 "$mirror/$package_tag"
+            cp "$candidate"/* "$mirror/$package_tag/"
+            HVO_INSTALLER_CACHE="$RUNNER_TEMP/bootstrap-cache-exact" \
+              scripts/install-hvo-skymonitor.sh "$VERSION" "$RUNNER_TEMP/bootstrap-exact" "$candidate"
+            HVO_INSTALLER_CACHE="$RUNNER_TEMP/bootstrap-cache-index" \
+              scripts/install-hvo-skymonitor.sh --index "$index_path" --asset-base "$mirror" "$RUNNER_TEMP/bootstrap-index"
+          fi
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/signed-candidate.tar.gz" candidate index
+      - name: Upload signed candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/signed-candidate.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Immutable Publication
+    needs: sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Download signed candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-${{ inputs.train }}-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/signed
+      - name: Refuse collisions and publish package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRAIN: ${{ inputs.train }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          INDEX_SEQUENCE: ${{ inputs.index_sequence }}
+        run: |
+          set -euo pipefail
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/signed/signed-candidate.tar.gz"
+          dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
+          dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-restore --configuration Release -warnaserror
+          tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release --)
+          if [[ "$TRAIN" == "installer" ]]; then tag="installer-v$VERSION"; else tag="catalog-$VERSION"; fi
+          index_tag="$TRAIN-index-$INDEX_SEQUENCE"
+          package_check="$RUNNER_TEMP/package-check"
+          index_check="$RUNNER_TEMP/index-check"
+          mkdir -m 700 "$package_check" "$index_check"
+          validate_existing() {
+            local kind="$1" source_root="$2" check_root="$3"
+            diff -u <(find "$source_root" -maxdepth 1 -type f -printf '%f\n' | sort) \
+              <(find "$check_root" -maxdepth 1 -type f -printf '%f\n' | sort)
+            for source_file in "$source_root"/*; do
+              cmp "$source_file" "$check_root/$(basename "$source_file")"
+            done
+            if [[ "$kind" == "package" ]]; then
+              if [[ "$TRAIN" == "installer" ]]; then manifest="release-manifest.json"; else manifest="catalog-manifest.json"; fi
+              "${tool[@]}" verify --manifest "$check_root/$manifest" --signature "$check_root/$manifest.sig" --asset-root "$check_root"
+              "${tool[@]}" verify-signature --input "$check_root/SHA256SUMS" --signature "$check_root/SHA256SUMS.sig"
+            else
+              "${tool[@]}" verify-index --index "$check_root/$TRAIN-release-index.json" --signature "$check_root/$TRAIN-release-index.json.sig"
+            fi
+          }
+          ensure_draft() {
+            local release_tag="$1" source_root="$2" check_root="$3" kind="$4" state_variable="$5"
+            if gh release view "$release_tag" >/dev/null 2>&1; then
+              [[ "$(gh release view "$release_tag" --json targetCommitish --jq .targetCommitish)" == "$SOURCE_SHA" ]]
+              gh release download "$release_tag" --dir "$check_root"
+              validate_existing "$kind" "$source_root" "$check_root"
+              printf -v "$state_variable" '%s' "$(gh release view "$release_tag" --json isDraft --jq .isDraft)"
+              return
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/$release_tag" >/dev/null 2>&1; then
+              printf 'Release tag collision: %s\n' "$release_tag" >&2
+              return 1
+            fi
+            gh release create "$release_tag" "$source_root"/* --draft --latest=false --target "$SOURCE_SHA" --title "$release_tag"
+            gh release download "$release_tag" --dir "$check_root"
+            diff -qr "$source_root" "$check_root"
+            printf -v "$state_variable" '%s' true
+          }
+          package_draft=false
+          index_draft=false
+          ensure_draft "$tag" "$RUNNER_TEMP/candidate" "$package_check" package package_draft
+          ensure_draft "$index_tag" "$RUNNER_TEMP/index" "$index_check" index index_draft
+          printf 'Index release remains draft before public package verification: %s\n' "$index_draft"
+          [[ "$package_draft" == false ]] || gh release edit "$tag" --draft=false --latest=false
+      - name: Verify package through anonymous public release URLs
+        env:
+          TRAIN: ${{ inputs.train }}
+          VERSION: ${{ inputs.version }}
+          INDEX_SEQUENCE: ${{ inputs.index_sequence }}
+        run: |
+          set -euo pipefail
+          dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
+          dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-restore --configuration Release -warnaserror
+          tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release --)
+          if [[ "$TRAIN" == "installer" ]]; then tag="installer-v$VERSION" manifest="release-manifest.json"; else tag="catalog-$VERSION" manifest="catalog-manifest.json"; fi
+          public="$RUNNER_TEMP/public"
+          mkdir -m 700 "$public"
+          download() {
+            curl --fail --silent --show-error --location --proto '=https' --max-redirs 5 --connect-timeout 10 --max-time 300 --max-filesize "$3" --output "$public/$2" \
+              "https://github.com/$GITHUB_REPOSITORY/releases/download/$1/$2"
+          }
+          download "$tag" "$manifest" 262144
+          download "$tag" "$manifest.sig" 128
+          while IFS=$'\t' read -r asset length; do download "$tag" "$asset" "$length"; done < <("${tool[@]}" list-assets --manifest "$public/$manifest" --signature "$public/$manifest.sig")
+          download "$tag" "SHA256SUMS.sig" 128
+          "${tool[@]}" verify --manifest "$public/$manifest" --signature "$public/$manifest.sig" --asset-root "$public"
+          "${tool[@]}" verify-signature --input "$public/SHA256SUMS" --signature "$public/SHA256SUMS.sig"
+      - name: Publish and anonymously verify signed index
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRAIN: ${{ inputs.train }}
+          INDEX_SEQUENCE: ${{ inputs.index_sequence }}
+        run: |
+          set -euo pipefail
+          index_tag="$TRAIN-index-$INDEX_SEQUENCE"
+          if [[ "$(gh release view "$index_tag" --json isDraft --jq .isDraft)" == true ]]; then
+            gh release edit "$index_tag" --draft=false --latest=false
+          fi
+          public="$RUNNER_TEMP/public-index"
+          mkdir -m 700 "$public"
+          curl --fail --silent --show-error --location --proto '=https' --max-redirs 5 --connect-timeout 10 --max-time 300 --max-filesize 262144 \
+            --output "$public/$TRAIN-release-index.json" "https://github.com/$GITHUB_REPOSITORY/releases/download/$index_tag/$TRAIN-release-index.json"
+          curl --fail --silent --show-error --location --proto '=https' --max-redirs 5 --connect-timeout 10 --max-time 300 --max-filesize 128 \
+            --output "$public/$TRAIN-release-index.json.sig" "https://github.com/$GITHUB_REPOSITORY/releases/download/$index_tag/$TRAIN-release-index.json.sig"
+          dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release -- \
+            verify-index --index "$public/$TRAIN-release-index.json" --signature "$public/$TRAIN-release-index.json.sig"

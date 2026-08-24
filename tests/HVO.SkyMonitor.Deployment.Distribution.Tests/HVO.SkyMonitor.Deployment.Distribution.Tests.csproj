@@ -5,8 +5,8 @@
   </ItemGroup>
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
-    <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Cli\HVO.SkyMonitor.Deployment.Cli.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Contracts\HVO.SkyMonitor.Deployment.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Distribution\HVO.SkyMonitor.Deployment.Distribution.csproj" />
+    <ProjectReference Include="..\..\tools\HVO.SkyMonitor.Deployment.ReleaseTool\HVO.SkyMonitor.Deployment.ReleaseTool.csproj" />
   </ItemGroup>
 </Project>
