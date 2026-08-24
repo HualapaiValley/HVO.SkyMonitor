@@ -3,9 +3,9 @@
 The `hvo-skymonitor` self-contained Linux CLI installs one local, standalone
 VirtualSky CameraAgent without a repository checkout or a target-host .NET
 runtime. Docker Engine and the Compose plugin are the only application-runtime
-prerequisites. The first release consumes operator-supplied local assets;
-signed online resolution and GitHub Release publication are owned by issue
-[#417](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/417).
+prerequisites. Catalog releases can be resolved from signed local metadata,
+HTTPS mirrors, or signed release indexes; every source uses the same pinned
+signature, length, checksum, archive, and internal catalog validation.
 
 ## Inputs
 
@@ -13,6 +13,9 @@ Supply an immutable CameraAgent repository digest or an already loaded image ID,
 plus the verified production catalog bundle. An offline image archive additionally
 requires its independently trusted lowercase SHA-256. Never use a mutable image
 tag or pass a password on the command line.
+
+The compatibility form below consumes the internally verified local catalog
+directory produced by the deterministic catalog tooling:
 
 ```bash
 hvo-skymonitor cameraagent install \
@@ -28,6 +31,42 @@ hvo-skymonitor cameraagent install \
   --time-zone America/Phoenix
 ```
 
+For a signed offline catalog release, place `catalog-manifest.json`,
+`catalog-manifest.json.sig`, and the referenced bundle together and use:
+
+```bash
+hvo-skymonitor cameraagent install \
+  --channel local \
+  --catalog-manifest /srv/hvo/catalog-release/catalog-manifest.json \
+  --no-download \
+  --friendly-name "North All-Sky Camera" \
+  --owner-email admin@home.lan \
+  --image-ref sha256:<loaded-image-id>
+```
+
+For an exact online release, use an immutable versioned manifest URL. To resolve
+a documented channel default or `--catalog-version`, use `--catalog-index` and a
+signed immutable index snapshot. A non-GitHub mirror also requires
+`--asset-base-url`; mirrored bytes retain the release tag, manifest hash, asset
+hash, and signing identity. Channels are `stable`, `nightly`, `prerelease`, and
+`local`; `local` is the compatibility default.
+
+`--no-download` permits local inputs and fully verified cache hits but performs
+no HTTP request and no Docker registry pull. The user cache is
+`$XDG_CACHE_HOME/hvo/skymonitor/distribution`, or
+`~/.cache/hvo/skymonitor/distribution` when `XDG_CACHE_HOME` is unset. Cache
+hits are rehashed, partial transfers use signed lengths and HTTP ranges, invalid
+complete or partial bytes are removed, and signed-index sequence/hash state
+prevents rollback. Network requests are HTTPS-only with bounded redirects,
+timeouts, retries, response sizes, and disk-space checks. Optional public GitHub
+authentication uses `HVO_GITHUB_TOKEN`; credentials are sent only to the
+original `github.com` request and never retained as evidence.
+
+Signed-index rollback state is durable rather than cache data. It is stored
+under `$XDG_STATE_HOME/hvo/skymonitor/distribution`, or
+`~/.local/state/hvo/skymonitor/distribution` when `XDG_STATE_HOME` is unset, and
+is not removed by ordinary cache cleanup.
+
 Use `--image-archive /srv/hvo/cameraagent.tar` together with
 `--image-archive-sha256 <sha256>` for an offline image load. Use
 `--password-file <owner-only-path>` for an operator-supplied temporary password;
@@ -38,7 +77,7 @@ creating the product root, loading/pulling an image, or starting a container.
 
 Missing required values are prompted only on an interactive terminal. A strict
 JSON config may be supplied with `--config`; value options cannot be mixed with
-it. Flags such as `--dry-run`, `--json`, and the explicit non-loopback HTTP
+it. Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
 acknowledgement may still be applied.
 
 ## Persistent State
@@ -65,6 +104,9 @@ catalog, image, Docker daemon, Compose template/model, configuration, rig,
 schedule, deployment-location snapshot, and installation-verification token
 hash identities. Password and verification-token content is never written to
 the manifest, result, phase state, Compose environment, logs, or terminal output.
+Signed installs additionally retain the release train/version/tag, exact
+manifest and asset length/hash, signing key ID, source and resolved public URI,
+verification result/time, and provenance identity without authentication data.
 
 The installer creates the product root through one narrow `sudo`-executed
 internal preparation command when needed, then performs catalog, configuration,
@@ -93,8 +135,7 @@ deployment location, and Compose identities and converges the same instance back
 to healthy without regenerating identity or credentials.
 
 Upgrade, rollback, uninstall, purge, backup/restore, LogicHost installation,
-remote orchestration, physical-camera discovery, and online asset acquisition
-are not implemented by this first slice.
+remote orchestration, and physical-camera discovery remain lifecycle scope.
 
 ## Build Evidence
 
@@ -107,5 +148,28 @@ dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.c
   --configuration Release --runtime linux-arm64
 ```
 
-Architecture & Publish CI retains SHA-256 manifests for both RIDs. Signing,
-release archives, SBOMs, indexes, and public-path verification remain #417.
+The `Signed Distribution Release` workflow publishes independent installer and
+catalog tags, signed manifests and indexes, checksums, SBOMs, provenance,
+licenses, and attribution. The optional bootstrap script downloads and verifies
+only the selected self-contained CLI archive:
+
+```bash
+./scripts/install-hvo-skymonitor.sh 1.0.0 /opt/hvo-installer-1.0.0
+```
+
+Resolve a signed installer-index default or exact indexed version with:
+
+```bash
+./scripts/install-hvo-skymonitor.sh \
+  --index https://github.com/RoySalisbury/HVO.SkyMonitor/releases/download/installer-index-3/installer-release-index.json \
+  --version 1.0.0 \
+  /opt/hvo-installer-1.0.0
+```
+
+The optional third direct-mode argument and `--asset-base` support HTTPS mirrors
+or absolute local release directories. `HVO_INSTALLER_NO_DOWNLOAD=1` permits
+only local or cached bytes. `HVO_INSTALLER_CACHE` selects an owner-only bounded
+2 GiB cache; mirror redirects are refused and GitHub redirects are restricted
+to approved release CDN hosts. The script retains the signed manifest, signature,
+and sanitized `installer-distribution.txt` beside the verified executable; it
+does not download or execute a helper verifier.

@@ -117,6 +117,24 @@ internal static class SafeFileSystem
         }
     }
 
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned FileStream takes ownership of the authenticated handle.")]
+    public static FileStream OpenOwnerFileAppend(string path)
+    {
+        var handle = NativeLinux.OpenReadWriteNoFollow(path);
+        try
+        {
+            ValidateOwnerFile(handle, path);
+            var stream = new FileStream(handle, FileAccess.ReadWrite, 128 * 1024, isAsync: false);
+            stream.Seek(0, SeekOrigin.End);
+            return stream;
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
     public static void ValidateOwnerFile(Microsoft.Win32.SafeHandles.SafeFileHandle handle, string path, bool allowReadOnly = false)
     {
         var identity = NativeLinux.GetOpenFileIdentity(handle, path);

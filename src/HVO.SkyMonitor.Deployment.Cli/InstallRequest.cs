@@ -5,6 +5,14 @@ using System.Text.RegularExpressions;
 
 namespace HVO.SkyMonitor.Deployment;
 
+internal enum DistributionChannel
+{
+    Local,
+    Stable,
+    Nightly,
+    Prerelease
+}
+
 internal sealed record InstallRequest
 {
     public const string DefaultProductRoot = "/var/lib/hvo/skymonitor";
@@ -15,7 +23,12 @@ internal sealed record InstallRequest
     public string BindAddress { get; init; } = "127.0.0.1";
     public int Port { get; init; } = 5130;
     public string ProductRoot { get; init; } = DefaultProductRoot;
-    public required string CatalogBundle { get; init; }
+    public string? CatalogBundle { get; init; }
+    public string? CatalogManifest { get; init; }
+    public string? CatalogIndex { get; init; }
+    public string? CatalogVersion { get; init; }
+    public string? AssetBaseUrl { get; init; }
+    public DistributionChannel Channel { get; init; } = DistributionChannel.Local;
     public required string ImageReference { get; init; }
     public string? ImageArchive { get; init; }
     public string? ImageArchiveSha256 { get; init; }
@@ -29,6 +42,7 @@ internal sealed record InstallRequest
     public bool Resume { get; init; }
     public bool Json { get; init; }
     public bool GeneratePassword { get; init; }
+    public bool NoDownload { get; init; }
 
     public void Validate()
     {
@@ -70,7 +84,41 @@ internal sealed record InstallRequest
         {
             throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
         }
-        ValidateAbsolutePath(CatalogBundle, "--catalog-bundle");
+        if (CatalogManifest is not null && CatalogIndex is not null)
+        {
+            throw new InstallUsageException("--catalog-manifest cannot be combined with --catalog-index.");
+        }
+        if (CatalogVersion is not null && CatalogIndex is null)
+        {
+            throw new InstallUsageException("--catalog-version requires --catalog-index.");
+        }
+        if (CatalogManifest is null && CatalogIndex is null)
+        {
+            if (CatalogBundle is null)
+            {
+                throw new InstallUsageException("--catalog-bundle or --catalog-manifest is required.");
+            }
+            if (Channel != DistributionChannel.Local)
+            {
+                throw new InstallUsageException("A non-local --channel requires --catalog-manifest.");
+            }
+        }
+        if (CatalogBundle is not null)
+        {
+            ValidateAbsolutePath(CatalogBundle, "--catalog-bundle");
+        }
+        if (CatalogManifest is not null)
+        {
+            ValidateDistributionLocator(CatalogManifest, "--catalog-manifest", Channel);
+        }
+        if (CatalogIndex is not null)
+        {
+            ValidateDistributionLocator(CatalogIndex, "--catalog-index", Channel);
+        }
+        if (AssetBaseUrl is not null)
+        {
+            ValidateDistributionLocator(AssetBaseUrl, "--asset-base-url", Channel);
+        }
         if (ImageArchive is not null)
         {
             ValidateAbsolutePath(ImageArchive, "--image-archive");
@@ -113,7 +161,7 @@ internal sealed record InstallRequest
             throw new InstallUsageException("--time-zone is invalid on this host.", exception);
         }
 
-        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, ImageReference, ImageArchive, PasswordFile, TimeZoneId })
+        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, CatalogManifest, CatalogIndex, CatalogVersion, AssetBaseUrl, ImageReference, ImageArchive, PasswordFile, TimeZoneId })
         {
             if (value?.Any(char.IsControl) == true)
             {
@@ -143,6 +191,29 @@ internal sealed record InstallRequest
 
     private static bool IsSha256(string? value)
         => value is not null && Regex.IsMatch(value, "^[a-f0-9]{64}$", RegexOptions.CultureInvariant);
+
+    private static void ValidateDistributionLocator(string value, string option, DistributionChannel channel)
+    {
+        if (Path.IsPathFullyQualified(value))
+        {
+            ValidateAbsolutePath(value, option);
+            if (channel != DistributionChannel.Local)
+            {
+                throw new InstallUsageException($"{option} must use HTTPS for a non-local channel.");
+            }
+            return;
+        }
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
+            !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new InstallUsageException($"{option} must be an absolute normalized path or an HTTPS URI without credentials or a fragment.");
+        }
+        if (channel == DistributionChannel.Local)
+        {
+            throw new InstallUsageException($"{option} cannot use HTTPS with the local channel.");
+        }
+    }
+
 }
 
 internal sealed class InstallUsageException : Exception

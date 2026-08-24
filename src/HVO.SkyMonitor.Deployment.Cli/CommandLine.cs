@@ -23,7 +23,7 @@ internal static class CommandLine
                 throw new InstallUsageException($"Unexpected argument '{option}'.");
             }
 
-            if (option is "--dry-run" or "--resume" or "--json" or "--generate-password" or "--acknowledge-plaintext-http")
+            if (option is "--dry-run" or "--resume" or "--json" or "--generate-password" or "--acknowledge-plaintext-http" or "--no-download")
             {
                 if (!flags.Add(option))
                 {
@@ -66,7 +66,12 @@ internal static class CommandLine
                 BindAddress = Get(values, "--bind-address") ?? "127.0.0.1",
                 Port = ParseInt(Get(values, "--port"), 5130, "--port"),
                 ProductRoot = Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
-                CatalogBundle = RequireOrPrompt(values, "--catalog-bundle", "Verified catalog bundle path: "),
+                CatalogBundle = Get(values, "--catalog-bundle"),
+                CatalogManifest = Get(values, "--catalog-manifest"),
+                CatalogIndex = Get(values, "--catalog-index"),
+                CatalogVersion = Get(values, "--catalog-version"),
+                AssetBaseUrl = Get(values, "--asset-base-url"),
+                Channel = ParseChannel(Get(values, "--channel")),
                 ImageReference = RequireOrPrompt(values, "--image-ref", "Immutable CameraAgent image digest or ID: "),
                 ImageArchive = Get(values, "--image-archive"),
                 ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
@@ -84,7 +89,8 @@ internal static class CommandLine
             Resume = flags.Contains("--resume") || request.Resume,
             Json = flags.Contains("--json") || request.Json,
             AcknowledgePlaintextHttp = flags.Contains("--acknowledge-plaintext-http") || request.AcknowledgePlaintextHttp,
-            GeneratePassword = flags.Contains("--generate-password") || request.GeneratePassword
+            GeneratePassword = flags.Contains("--generate-password") || request.GeneratePassword,
+            NoDownload = flags.Contains("--no-download") || request.NoDownload
         };
         request.Validate();
         return request;
@@ -95,7 +101,7 @@ internal static class CommandLine
         var known = new HashSet<string>(StringComparer.Ordinal)
         {
             "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
-            "--product-root", "--catalog-bundle", "--image-ref", "--image-archive",
+            "--product-root", "--catalog-bundle", "--catalog-manifest", "--catalog-index", "--catalog-version", "--asset-base-url", "--channel", "--image-ref", "--image-archive",
             "--image-archive-sha256", "--password-file", "--latitude", "--longitude",
             "--elevation", "--time-zone"
         };
@@ -143,4 +149,14 @@ internal static class CommandLine
         => value is null ? fallback : double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : throw new InstallUsageException($"{option} must be a number.");
+
+    private static DistributionChannel ParseChannel(string? value)
+        => value switch
+        {
+            null or "local" => DistributionChannel.Local,
+            "stable" => DistributionChannel.Stable,
+            "nightly" => DistributionChannel.Nightly,
+            "prerelease" => DistributionChannel.Prerelease,
+            _ => throw new InstallUsageException("--channel must be stable, nightly, prerelease, or local.")
+        };
 }

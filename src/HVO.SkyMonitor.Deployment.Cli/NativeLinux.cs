@@ -126,6 +126,17 @@ internal static partial class NativeLinux
             : throw new InstallerException($"Operation lock '{path}' could not be opened safely.");
     }
 
+    public static SafeFileHandle OpenReadWriteNoFollow(string path)
+    {
+        var descriptor = OpenWithMode(
+            path,
+            OpenReadWrite | OpenCreate | OpenNoFollow | OpenCloseOnExec,
+            0x180);
+        return descriptor >= 0
+            ? new SafeFileHandle(descriptor, ownsHandle: true)
+            : throw new InstallerException($"Protected file '{path}' could not be opened for writing without following links.");
+    }
+
     public static UnixFileIdentity GetOpenFileIdentity(SafeFileHandle handle, string path)
     {
         const uint mask = StatxType | StatxMode | StatxLinkCount | StatxUid | StatxGid;

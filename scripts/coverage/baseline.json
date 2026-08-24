@@ -26,6 +26,9 @@
     "HVO.SkyMonitor.Processing/EnvironmentalObservationJson.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Processing/ProcessingIdentity.cs": { "line": 0.95, "branch": 0.90 },
     "HVO.SkyMonitor.Processing/ProcessingRecipeExecutor.cs": { "line": 0.95, "branch": 0.90 },
-    "HVO.SkyMonitor.Catalog.Sqlite/SqliteCelestialCatalog.cs": { "line": 0.90, "branch": 0.85 }
+    "HVO.SkyMonitor.Catalog.Sqlite/SqliteCelestialCatalog.cs": { "line": 0.90, "branch": 0.85 },
+    "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs": { "line": 0.55, "branch": 0.35 },
+    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs": { "line": 0.75, "branch": 0.48 },
+    "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs": { "line": 0.50, "branch": 0.35 }
   }
 }

@@ -14,6 +14,7 @@
     <ProjectReference Include="..\HVO.SkyMonitor.AgentCore\HVO.SkyMonitor.AgentCore.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Deployment.Contracts\HVO.SkyMonitor.Deployment.Contracts.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.Deployment.Distribution\HVO.SkyMonitor.Deployment.Distribution.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="HVO.SkyMonitor.Deployment.Cli.Tests" />

@@ -70,13 +70,13 @@ is_deployment_path() {
   local path="$1"
 
   case "$path" in
-    .github/workflows/ci.yml | .dockerignore | .env.template | docker-compose.apps.yml | global.json)
+    .github/workflows/ci.yml | .github/workflows/release.yml | .dockerignore | .env.template | docker-compose.apps.yml | global.json)
       return 0
       ;;
     scripts/ci:classify | scripts/ci:require | scripts/test:ci-classification)
       return 0
       ;;
-    scripts/deploy:environment | scripts/deploy:migrate-product-layout | scripts/deploy/*)
+    scripts/deploy:environment | scripts/deploy:migrate-product-layout | scripts/deploy/* | scripts/install-hvo-skymonitor.sh)
       return 0
       ;;
     scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:product-layout | scripts/test:phase14-campaign | scripts/test:phase14-normal-campaign)
@@ -94,7 +94,7 @@ is_deployment_path() {
     src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
       return 0
       ;;
-    src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/*)
+    src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       return 0
       ;;
     src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json)

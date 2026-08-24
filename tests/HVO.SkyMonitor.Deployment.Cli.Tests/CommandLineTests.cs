@@ -108,4 +108,70 @@ public sealed class CommandLineTests
 
         StringAssert.Contains(exception.Message, "cannot be combined", StringComparison.Ordinal);
     }
+
+    [TestMethod]
+    public void Parse_SignedLocalCatalog_UsesLocalChannelWithoutNetwork()
+    {
+        var arguments = ValidArguments
+            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
+            .Concat(["--catalog-manifest", "/srv/hvo/catalog-manifest.json", "--no-download"])
+            .ToArray();
+
+        var request = CommandLine.Parse(arguments);
+
+        Assert.AreEqual(DistributionChannel.Local, request.Channel);
+        Assert.IsTrue(request.NoDownload);
+        Assert.IsNull(request.CatalogBundle);
+    }
+
+    [TestMethod]
+    public void Parse_StableCatalogManifest_RequiresHttpsLocator()
+    {
+        var arguments = ValidArguments
+            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
+            .Concat(["--channel", "stable", "--catalog-manifest", "https://downloads.example/catalog/catalog-manifest.json"])
+            .ToArray();
+
+        var request = CommandLine.Parse(arguments);
+
+        Assert.AreEqual(DistributionChannel.Stable, request.Channel);
+    }
+
+    [TestMethod]
+    public void Parse_NonLocalChannelWithLocalManifest_IsRejected()
+    {
+        var arguments = ValidArguments
+            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
+            .Concat(["--channel", "stable", "--catalog-manifest", "/srv/hvo/catalog-manifest.json"])
+            .ToArray();
+
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(arguments));
+    }
+
+    [TestMethod]
+    public void Parse_UnknownChannel_IsRejected()
+    {
+        var arguments = ValidArguments.Concat(["--channel", "latest"]).ToArray();
+
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(arguments));
+    }
+
+    [TestMethod]
+    public void Parse_SignedIndex_AllowsExplicitOrDefaultCatalogVersion()
+    {
+        var arguments = ValidArguments
+            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
+            .Concat([
+                "--channel", "prerelease",
+                "--catalog-index", "https://downloads.example/catalog-index.json",
+                "--catalog-version", "hyg-v4.2-p3-s2-r1",
+                "--asset-base-url", "https://mirror.example/releases"
+            ])
+            .ToArray();
+
+        var request = CommandLine.Parse(arguments);
+
+        Assert.AreEqual("hyg-v4.2-p3-s2-r1", request.CatalogVersion);
+        Assert.AreEqual(DistributionChannel.Prerelease, request.Channel);
+    }
 }

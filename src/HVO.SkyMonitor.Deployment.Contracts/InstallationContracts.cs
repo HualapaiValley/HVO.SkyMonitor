@@ -63,14 +63,16 @@ public sealed record CatalogInstallationIdentity(
     long RowCount,
     string InstallRoot,
     string ManifestSha256,
-    string Source);
+    string Source,
+    DistributionVerificationEvidence? Distribution = null);
 
 public sealed record ImageInstallationIdentity(
     string Source,
     string ImmutableReference,
     string ImageId,
     string Architecture,
-    string? ArchiveSha256);
+    string? ArchiveSha256,
+    DistributionVerificationEvidence? Distribution = null);
 
 public sealed record DockerDaemonIdentity(
     string Id,

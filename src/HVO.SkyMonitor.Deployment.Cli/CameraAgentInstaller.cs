@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.Deployment.Contracts;
+using HVO.SkyMonitor.Deployment.Distribution;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -31,12 +32,22 @@ internal sealed class CameraAgentInstaller
         CancellationToken cancellationToken)
     {
         request.Validate();
+        var identityRequest = request;
         var docker = new DockerClient(processRunner);
         var instanceId = request.InstanceId ?? Guid.NewGuid();
         var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
         if (request.DryRun)
         {
-            return await PlanAsync(request, paths, instanceId, docker, cancellationToken).ConfigureAwait(false);
+            using var dryRunAcquirer = new DistributionCatalogAcquirer();
+            using var dryRunCatalog = await dryRunAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
+            return await PlanAsync(
+                    request with { CatalogBundle = dryRunCatalog.BundlePath },
+                    dryRunCatalog.Evidence,
+                    paths,
+                    instanceId,
+                    docker,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         if (uid == 0)
@@ -44,8 +55,12 @@ internal sealed class CameraAgentInstaller
             throw new InstallerException("Run the installer as the Docker-capable runtime user, not as root or through sudo.");
         }
 
+        using var catalogAcquirer = new DistributionCatalogAcquirer();
+        using var acquiredCatalog = await catalogAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
+        request = request with { CatalogBundle = acquiredCatalog.BundlePath };
+
         var preflightDaemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
-        ValidateCatalogInput(request.CatalogBundle);
+        ValidateCatalogInput(request.CatalogBundle!);
 
         await PrivilegedPreparation.PrepareAsync(paths, uid, gid, processRunner, cancellationToken).ConfigureAwait(false);
         using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"));
@@ -61,7 +76,7 @@ internal sealed class CameraAgentInstaller
             throw new InstallerException("The host clock is not synchronized.");
         }
 
-        var requestSha256 = ComputeRequestSha256(request, instanceId);
+        var requestSha256 = ComputeRequestSha256(identityRequest, instanceId, acquiredCatalog.Evidence);
         var existingState = await ReadStateAsync(paths.StatePath, cancellationToken).ConfigureAwait(false);
         EnsureInstanceRootCanBeOwned(paths, existingState is not null);
         if (existingState is not null && !string.Equals(existingState.RequestSha256, requestSha256, StringComparison.Ordinal))
@@ -132,8 +147,20 @@ internal sealed class CameraAgentInstaller
                 state = await RecordPhaseAsync(paths, state, InstallationPhase.Catalog, cancellationToken).ConfigureAwait(false);
             }
             var catalog = retainedCompletedResult is null
-                ? CatalogInstaller.Install(request.CatalogBundle, paths.CatalogRoot, installationId)
-                : CatalogInstaller.ValidateExisting(request.CatalogBundle, paths.CatalogRoot);
+                ? CatalogInstaller.Install(request.CatalogBundle!, paths.CatalogRoot, installationId)
+                : CatalogInstaller.ValidateExisting(request.CatalogBundle!, paths.CatalogRoot);
+            if (acquiredCatalog.SignedIdentity is { } signedCatalog &&
+                (catalog.CatalogId != signedCatalog.CatalogId || catalog.PackageVersion != signedCatalog.PackageVersion ||
+                 catalog.SchemaVersion != signedCatalog.SchemaVersion || catalog.PreprocessingVersion != signedCatalog.PreprocessingVersion ||
+                 catalog.DatabaseSha256 != signedCatalog.DatabaseSha256 || catalog.DatabaseLength != signedCatalog.DatabaseLength ||
+                 catalog.RowCount != signedCatalog.RowCount || catalog.ManifestSha256 != signedCatalog.BundleManifestSha256))
+            {
+                throw new InstallerException("The installed catalog does not match its signed distribution identity.");
+            }
+            catalog = catalog with
+            {
+                Distribution = retainedCompletedResult?.Catalog.Distribution ?? acquiredCatalog.Evidence
+            };
 
             if (retainedCompletedResult is null)
             {
@@ -383,6 +410,7 @@ internal sealed class CameraAgentInstaller
 
     private static async Task<InstallationResult> PlanAsync(
         InstallRequest request,
+        DistributionVerificationEvidence? catalogDistribution,
         InstallationPaths finalPaths,
         Guid instanceId,
         DockerClient docker,
@@ -393,9 +421,10 @@ internal sealed class CameraAgentInstaller
         {
             var applicationIdentity = Guid.NewGuid();
             var temporaryPaths = InstallationPaths.Create(temporaryRoot, instanceId, ProductionCatalog.CatalogId);
-            var catalog = CatalogInstaller.Install(request.CatalogBundle, temporaryPaths.CatalogRoot, Guid.NewGuid()) with
+            var catalog = CatalogInstaller.Install(request.CatalogBundle!, temporaryPaths.CatalogRoot, Guid.NewGuid()) with
             {
-                InstallRoot = finalPaths.CatalogRoot
+                InstallRoot = finalPaths.CatalogRoot,
+                Distribution = catalogDistribution
             };
             var (daemon, image) = await docker.PrepareImageAsync(request, allowMutation: false, cancellationToken)
                 .ConfigureAwait(false);
@@ -843,13 +872,33 @@ internal sealed class CameraAgentInstaller
     private static bool IsValid(CatalogInstallationIdentity? value)
         => value is not null && HasValue(value.CatalogId) && HasValue(value.PackageVersion) && HasValue(value.SchemaVersion) &&
            HasValue(value.PreprocessingVersion) && IsSha256(value.DatabaseSha256) && value.DatabaseLength > 0 &&
-           value.RowCount > 0 && HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && HasValue(value.Source);
+           value.RowCount > 0 && HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && HasValue(value.Source) &&
+           (value.Distribution is null || IsValid(value.Distribution) &&
+            value.Distribution.ManifestKind == DistributionManifestKind.CatalogRelease.ToString() &&
+            value.Distribution.ReleaseTrain == "catalog" && value.Distribution.ReleaseVersion == value.PackageVersion &&
+            value.Distribution.ReleaseTag == $"catalog-{value.PackageVersion}");
 
     private static bool IsValid(ImageInstallationIdentity? value)
         => value is not null && HasValue(value.Source) && HasValue(value.ImmutableReference) &&
            value.ImageId is not null && value.ImageId.StartsWith("sha256:", StringComparison.Ordinal) &&
            IsSha256(value.ImageId["sha256:".Length..]) && HasValue(value.Architecture) &&
-           (value.ArchiveSha256 is null || IsSha256(value.ArchiveSha256));
+           (value.ArchiveSha256 is null || IsSha256(value.ArchiveSha256)) &&
+           (value.Distribution is null || IsValid(value.Distribution));
+
+    private static bool IsValid(DistributionVerificationEvidence value)
+        => HasValue(value.ManifestKind) && HasValue(value.ReleaseTrain) && HasValue(value.ReleaseVersion) &&
+           HasValue(value.ReleaseTag) && IsSha256(value.ManifestSha256) &&
+           value.ManifestLength is > 0 and <= DistributionVerifier.MaximumManifestBytes &&
+           DistributionTrustRoot.IsCanonicalKeyId(value.SigningKeyId) && HasValue(value.AssetName) &&
+           IsSha256(value.AssetSha256) && value.AssetLength is > 0 and <= DistributionVerifier.MaximumImageArchiveBytes &&
+           IsSafeEvidenceUri(value.SourceBaseUri) && IsSafeEvidenceUri(value.ResolvedPublicUri) &&
+           value.VerificationResult == "verified" && value.VerifiedUtc != default && value.VerifiedUtc.Offset == TimeSpan.Zero &&
+           (value.ProvenanceAssetName is null && value.ProvenanceSha256 is null ||
+            HasValue(value.ProvenanceAssetName) && IsSha256(value.ProvenanceSha256));
+
+    private static bool IsSafeEvidenceUri(Uri? value)
+        => value is { IsAbsoluteUri: true } && value.Scheme is "https" or "file" &&
+           string.IsNullOrEmpty(value.UserInfo) && string.IsNullOrEmpty(value.Fragment);
 
     private static bool IsValid(DockerDaemonIdentity? value)
         => value is not null && HasValue(value.Id) && HasValue(value.Name) && HasValue(value.Architecture) && HasValue(value.ServerVersion);
@@ -931,7 +980,7 @@ internal sealed class CameraAgentInstaller
 
     private static void EnsureStorageAvailable(InstallRequest request)
     {
-        var bundleBytes = Directory.EnumerateFiles(request.CatalogBundle).Sum(path => new FileInfo(path).Length);
+        var bundleBytes = Directory.EnumerateFiles(request.CatalogBundle!).Sum(path => new FileInfo(path).Length);
         var archiveBytes = request.ImageArchive is null ? 0 : new FileInfo(request.ImageArchive).Length;
         var required = checked(bundleBytes * 2 + archiveBytes + 1024L * 1024 * 1024);
         var existing = new DirectoryInfo(request.ProductRoot);
@@ -965,7 +1014,10 @@ internal sealed class CameraAgentInstaller
         }
     }
 
-    private static string ComputeRequestSha256(InstallRequest request, Guid instanceId)
+    private static string ComputeRequestSha256(
+        InstallRequest request,
+        Guid instanceId,
+        DistributionVerificationEvidence? catalogDistribution = null)
     {
         var identity = JsonSerializer.SerializeToUtf8Bytes(new
         {
@@ -975,7 +1027,18 @@ internal sealed class CameraAgentInstaller
             request.BindAddress,
             request.Port,
             request.ProductRoot,
-            request.CatalogBundle,
+            CatalogBundle = catalogDistribution is null ? request.CatalogBundle : null,
+            CatalogRelease = catalogDistribution is null ? null : new
+            {
+                catalogDistribution.ReleaseTrain,
+                catalogDistribution.ReleaseVersion,
+                catalogDistribution.ReleaseTag,
+                catalogDistribution.ManifestSha256,
+                catalogDistribution.AssetName,
+                catalogDistribution.AssetSha256,
+                catalogDistribution.AssetLength,
+                catalogDistribution.SigningKeyId
+            },
             request.ImageReference,
             request.ImageArchive,
             request.ImageArchiveSha256,

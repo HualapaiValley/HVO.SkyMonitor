@@ -40,7 +40,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                 loadedImageIds = await ReadLoadedImageIdsAsync(load.StandardOutput, cancellationToken).ConfigureAwait(false);
             }
         }
-        else if (allowMutation && request.ImageReference.Contains('@', StringComparison.Ordinal))
+        else if (allowMutation && !request.NoDownload && request.ImageReference.Contains('@', StringComparison.Ordinal))
         {
             await RunDockerAsync(["image", "pull", request.ImageReference], cancellationToken).ConfigureAwait(false);
         }
