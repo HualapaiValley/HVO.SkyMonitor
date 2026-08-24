@@ -3,8 +3,10 @@
 This handoff gives another agent enough context to brainstorm product,
 architecture, workflow, and implementation ideas for HVO.SkyMonitor without
 needing to first learn the internal code paths. It is intentionally high level.
-Use `docs/project-plan.md` as the authoritative roadmap and architecture source
-when decisions need to become implementation work.
+Use `docs/roadmap.md` for portfolio direction and stable initiative IDs. Use
+`docs/project-plan.md` as the authoritative architecture, virtual-first
+requirements, phase-order, and completion source when decisions become
+implementation work.
 
 ## What The System Is
 
@@ -14,11 +16,10 @@ local processing, and uploads selected reconstructable artifacts to a central
 LogicHost. LogicHost receives data from many CameraAgents, stores it durably,
 runs central processing, and exposes operational review surfaces.
 
-The current milestone is virtual-first. The system proves the full software
-path with `VirtualSkyCameraModule` before production physical camera modules are
-required. VirtualSky behaves as a normal camera module behind the same camera
-contract, so the rest of the system should not need special branches for
-simulation.
+The completed virtual-first milestone proved the full software path with
+`VirtualSkyCameraModule` before requiring production physical camera modules.
+VirtualSky behaves as a normal camera module behind the same camera contract, so
+the rest of the system should not need special branches for simulation.
 
 ## The Big Picture
 

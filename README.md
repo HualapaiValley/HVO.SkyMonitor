@@ -5,7 +5,9 @@ instances acquire and process images near each camera, retain bounded local hist
 and send selected artifacts to a central LogicHost for durable storage and further
 processing.
 
-The authoritative architecture and implementation roadmap is
+The portfolio roadmap and stable initiative IDs are in
+[`docs/roadmap.md`](docs/roadmap.md). The authoritative architecture,
+virtual-first requirements, and detailed implementation plan remain in
 [`docs/project-plan.md`](docs/project-plan.md).
 
 For a repository-independent local VirtualSky CameraAgent installation from

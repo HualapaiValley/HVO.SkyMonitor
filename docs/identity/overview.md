@@ -1,8 +1,9 @@
 # Identity Program Overview
 
 This document defines the current device-registration and local-identity
-architecture. Live sequencing and completion remain owned by
-`docs/project-plan.md`, epic #89, and their linked issues.
+architecture. Portfolio sequencing lives in `docs/roadmap.md`, virtual-first
+completion history in `docs/project-plan.md`, and live execution state in the
+linked GitHub issues.
 
 ## Device Registration and Bootstrap
 

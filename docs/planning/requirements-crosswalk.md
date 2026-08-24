@@ -1,13 +1,15 @@
 # Requirements Crosswalk
 
 This crosswalk maps normative sources to the authoritative virtual-first phases,
-GitHub issues, and retained specifications. It prevents roadmap consolidation
+GitHub issues, and retained specifications. It prevents planning consolidation
 from dropping detailed behavior and prevents subsystem documents from becoming
 competing status authorities.
 
-`docs/project-plan.md` owns scope, architecture, phase order, aggregate status,
-and completion. The retained source in this table owns detailed subsystem
-behavior. GitHub issues own live issue/PR execution state and evidence.
+`docs/roadmap.md` owns portfolio initiative IDs, horizons, and top-level epic
+mappings. `docs/project-plan.md` owns virtual-first scope, architecture, phase
+order, aggregate phase status, and completion. The retained source in this table
+owns detailed subsystem behavior. GitHub issues own live issue/PR execution
+state and evidence.
 
 ## 1. Cross-Cutting Requirements
 
@@ -16,7 +18,7 @@ behavior. GitHub issues own live issue/PR execution state and evidence.
 | `SYS-001`-`SYS-008` | One camera per CameraAgent process; isolated multi-agent hosts; per-agent configuration, identity, pipeline, history, and telemetry; in-process modules by default; complete standalone operation; optional LogicHost for many agents/sites | `docs/project-plan.md` sections 1-3 | All; epics #89 and #205 |
 | `OWN-EDGE-001`-`OWN-EDGE-010` | Acquisition, authoritative local profile revisions, setpoint control, raw normalization, local recipes, derivatives, bounded history, offline authenticated operation, outbox, telemetry, and local catalog ownership | `docs/project-plan.md` section 3 | Phases 1-7, 12A, and 13 |
 | `OWN-CENTRAL-001`-`OWN-CENTRAL-006` | Registration/received profile snapshots, idempotent ingest, central lifecycle, contextual processing, history/UI, and reprocessing without editing edge profiles | `docs/project-plan.md` section 3 | Phases 8-14 |
-| `ARCH-001`-`ARCH-007` | One roadmap, complete dependency graph, no production TestSupport, no host cross-reference, and explicit AgentCore/Astronomy/Imaging/Processing/Common/catalog/host ownership | `docs/project-plan.md` section 3 and phase 0 | #90, #91 |
+| `ARCH-001`-`ARCH-007` | Scoped roadmap/architecture authority, complete dependency graph, no production TestSupport, no host cross-reference, and explicit AgentCore/Astronomy/Imaging/Processing/Common/catalog/host ownership | `docs/roadmap.md`; `docs/project-plan.md` section 3 and phase 0 | #90, #91 |
 | `DOC-001`-`DOC-007` | Roadmap/specification/evidence/runbook authority, safe retirement, provenance retention, and link validation | `docs/planning/document-migration.md` | #90 |
 | `EXEC-001`-`EXEC-014` | Issue readiness and plain-language synopsis, dependencies, compatibility, parallel coordination, validation economy, performance, runtime review, local candidate gate, PR correction cycle, non-green recovery, continuous next-issue execution, and resumable handoff | `docs/planning/agent-execution.md` | Every milestone issue |
 | `PERF-001`-`PERF-010` | Reproducible baseline/after evidence, bounded memory/backlog, streaming, references, indexed access, algorithm complexity, cardinality, and regression disposition | `docs/project-plan.md` section 4 and `docs/planning/performance-validation.md` | Every `performance` issue |

@@ -196,10 +196,12 @@ not expose request or response bodies.
 After the owner database is seeded, the CameraAgent host contract supports a
 restart without retaining the configuration password. A missing password is
 valid only when `AllowMissingAdminPassword` is explicit and the durable owner
-already exists; initial seeding still fails. Current split-host automation does
-not perform this transition, replace the temporary owner password, or correlate
-and delete its bootstrap file. Implementing those installer actions remains
-issue #415; this issue supplies only the stable host, status, and UI contract.
+already exists; initial seeding still fails. Split-host automation authenticates
+the seeded owner, removes the password file and configuration authority through
+correlated private-path cleanup, enables the explicit missing-password mode, and
+recreates the service. The self-contained installer performs the same authority
+transition. Neither workflow silently chooses the owner's durable password; the
+operator completes the required first-login replacement in CameraAgent.
 
 ### Owner bootstrap status contract
 
@@ -234,10 +236,10 @@ Structured events contain no email, password, token, path, or credential value:
 | `4182` | `OwnerPasswordBootstrapCompleted` | Replacement committed and the completing session was refreshed. |
 | `4183` | `OwnerOperationDeniedDuringBootstrap` | A pending owner attempted an ordinary API operation. |
 
-No anonymous account creation or password endpoint is added. Owner recovery,
-email reset, installer configuration transition, and correlated bootstrap-file
-deletion remain #415 or separate work; do not emulate them with direct SQLite
-edits.
+No anonymous account creation or password endpoint is added. Owner recovery and
+email reset remain separate work. Installer and split-host configuration
+transitions remove temporary runtime authority and correlated bootstrap files;
+do not emulate either transition or password recovery with direct SQLite edits.
 
 Every temporary remote credential registration binds the full inventory target
 identity. Cleanup re-correlates that identity before and after deletion and

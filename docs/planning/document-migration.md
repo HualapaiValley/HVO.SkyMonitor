@@ -5,8 +5,10 @@ narratives without deleting normative requirements or reproducibility evidence.
 
 ## 1. Governing Rules
 
-- `docs/project-plan.md` is the only authoritative roadmap and aggregate phase
-  status; linked GitHub issues own live issue/PR execution state and evidence.
+- `docs/roadmap.md` owns portfolio initiative IDs, horizons, and top-level epic
+  mappings. `docs/project-plan.md` owns architecture, virtual-first requirements,
+  phase order, aggregate phase status, and completion. Linked GitHub issues own
+  live issue/PR execution state and evidence.
 - Subsystem specifications define behavior but do not maintain competing phase
   status.
 - Validation and calibration files are evidence, not roadmap authority.
@@ -85,13 +87,13 @@ Before deleting a document:
    retained source and phase/issue destination.
 8. Record the deletion and destinations in the consolidation PR.
 
-## 5. Planned Cleanup Issues
+## 5. Cleanup History
 
-- [#90](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/90) owns roadmap,
-  documentation authority, retirement, identity/reference status cleanup, and
-  link validation.
-- [#109](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/109) owns CI,
+- [#90](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/90) delivered the
+  initial planning consolidation, documentation authority, retirement,
+  identity/reference status cleanup, and link validation.
+- [#109](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/109) delivered CI,
   catalog packaging, persistent CameraAgent storage, and infrastructure runbook
   corrections.
-- [Epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89) records
-  current phase and continuation handoff.
+- [Epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89) retains
+  the completed virtual-first phase and continuation history.

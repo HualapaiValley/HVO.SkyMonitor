@@ -1,9 +1,10 @@
 # Agent Prompts
 
-These prompts support work under
-[epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89).
-They supplement, but never override, `AGENTS.md`, `docs/project-plan.md`, the
-active issue, or [the execution protocol](agent-execution.md).
+These prompts support approved work under the owning epics mapped in
+`docs/roadmap.md`.
+They supplement, but never override, `AGENTS.md`, `docs/roadmap.md`,
+`docs/project-plan.md`, the active issue, or
+[the execution protocol](agent-execution.md).
 
 The named models are recommended coordination roles. If a named model is not
 available in an execution environment, use an equivalent primary or reviewer
@@ -66,7 +67,7 @@ next candidate-ready issue after posting its synopsis and `READY` signal, unless
 the operator asked to pause or a real decision/blocker prevents continuation.
 Non-coordinator implementing agents return completion state to the coordinator
 instead of selecting from the queue. If blocked, leave the required handoff in
-the issue and epic #89.
+the issue and its owning roadmap epic.
 ```
 
 ## 3. Foundation and Contracts Prompt
@@ -245,5 +246,6 @@ Stop implementation and write the resumable handoff required by
 docs/planning/agent-execution.md. Include objective, decisions, completed work,
 active branch/PR/files, exact blocker, validation and coverage, output evidence,
 performance evidence, logs/telemetry observations, one exact next action, and
-relevant paths. Update epic #89 if the issue cannot continue in this session.
+relevant paths. Update the owning roadmap epic if the issue cannot continue in
+this session.
 ```
