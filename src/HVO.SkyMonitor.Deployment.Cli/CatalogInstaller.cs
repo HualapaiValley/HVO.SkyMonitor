@@ -218,17 +218,38 @@ internal static class CatalogInstaller
     private static string ReadPackageVersion(string bundlePath)
     {
         using var stream = SafeFileSystem.OpenRegularFileRead(Path.Combine(bundlePath, "manifest.json"));
-        using var document = JsonDocument.Parse(stream, new JsonDocumentOptions
+        JsonDocument document;
+        try
         {
-            AllowTrailingCommas = false,
-            CommentHandling = JsonCommentHandling.Disallow,
-            MaxDepth = 32
-        });
-        var version = document.RootElement.GetProperty("package").GetProperty("version").GetString();
-        if (version is null || !Regex.IsMatch(version, "^hyg-v4\\.2-p3-s2-r[1-9][0-9]*$", RegexOptions.CultureInvariant))
+            document = JsonDocument.Parse(stream, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 32
+            });
+        }
+        catch (JsonException)
         {
             throw new InstallerException("The catalog bundle package version is invalid.");
         }
-        return version;
+
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("package", out var package) ||
+                package.ValueKind != JsonValueKind.Object ||
+                !package.TryGetProperty("version", out var versionElement) ||
+                versionElement.ValueKind != JsonValueKind.String)
+            {
+                throw new InstallerException("The catalog bundle package version is invalid.");
+            }
+
+            var version = versionElement.GetString();
+            if (version is null || !Regex.IsMatch(version, "^hyg-v4\\.2-p3-s2-r[1-9][0-9]*$", RegexOptions.CultureInvariant))
+            {
+                throw new InstallerException("The catalog bundle package version is invalid.");
+            }
+            return version;
+        }
     }
 }
