@@ -67,6 +67,8 @@ public sealed class HealthCheckTests
             StringComparison.Ordinal);
         var identity = catalog.GetProperty("data");
         Assert.AreEqual("Fixture", identity.GetProperty("Kind").GetString());
+        Assert.AreEqual("hyg-v42-fixture", identity.GetProperty("CatalogId").GetString());
+        Assert.AreEqual("explicit-manifest-v2", identity.GetProperty("CatalogIdentitySource").GetString());
         Assert.AreEqual("4.2-fixture.1", identity.GetProperty("CatalogVersion").GetString());
         Assert.AreEqual(9, identity.GetProperty("RowCount").GetInt64());
         var worker = payload.RootElement.GetProperty("checks").EnumerateArray()

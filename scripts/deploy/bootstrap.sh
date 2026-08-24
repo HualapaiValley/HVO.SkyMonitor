@@ -193,8 +193,8 @@ deploy_bootstrap_owner_session() {
     local login_page login_response login_verification remote_response
     ssh="$(jq -r '.sshHost' <<< "$target")"; endpoint="$(jq -r '.internalEndpoint' <<< "$target")"; cookies="$remote_root/owner.cookies"
     password_path="$remote_root/owner-password"
-    seeded_password="$(jq -r '.runtimeRoot' <<< "$target")/.hvo-deploy/up-$(jq -r '.runId' "$DEPLOY_MANIFEST")/private/owner-password"
-    password_setting="$(jq -r '.runtimeRoot' <<< "$target")/.hvo-deploy/up-$(jq -r '.runId' "$DEPLOY_MANIFEST")/secrets/LocalIdentity__AdminPasswordFile"
+    seeded_password="$(jq -r '.runtimeRoot' <<< "$target")/config/private/owner-password"
+    password_setting="$(jq -r '.runtimeRoot' <<< "$target")/config/secrets/LocalIdentity__AdminPasswordFile"
     password="$(deploy_secret_value "$(jq -r '.secretSource.path' "$inventory")" "$(jq -r '.ownerPasswordSecretReference' <<< "$target")")" || return 1
     local_password="$render_root/$(jq -r '.name' <<< "$target")-owner-password"
     deploy_transport_register_local_private "$target" "$local_password" || return 1
@@ -221,7 +221,7 @@ deploy_bootstrap_owner_session() {
     [[ "${DEPLOY_TEST_FAILPOINT:-}" != abrupt-after-owner-session-create ]] || exit 75
     deploy_transport_remove_private_files "$ssh" "$seeded_password" "$password_setting" || return 1
     deploy_up_stage_value "$target" "$render_root" \
-      "$(jq -r '.runtimeRoot' <<< "$target")/.hvo-deploy/up-$(jq -r '.runId' "$DEPLOY_MANIFEST")/secrets" \
+      "$(jq -r '.runtimeRoot' <<< "$target")/config/secrets" \
       LocalIdentity__AllowMissingAdminPassword true || return 1
     deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
     remote_response="$remote_root/antiforgery.json"
@@ -374,11 +374,11 @@ deploy_stage_workload_profile() {
     (umask 077; jq -S --arg device "$device_id" '.agentId=$device' "$source" > "$rendered") || return 1
     rendered_canonical="$(jq -S -c . "$rendered")"; rendered_hash="$(printf '%s' "$rendered_canonical" | sha256sum | cut -d' ' -f1)"
     if [[ "$activate" == true ]]; then
-        target_root="$(jq -r '.runtimeRoot' <<< "$target")"; destination="$target_root/.hvo-deploy/up-$run_id/camera-module.json"
+        target_root="$(jq -r '.runtimeRoot' <<< "$target")"; destination="$target_root/config/camera-module.json"
         deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         deploy_transport_copy_private_file "$rendered" "$(jq -r '.sshHost' <<< "$target")" "$destination" || return 1
         deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
-        context="$(jq -r '.dockerContext' <<< "$target")"; project="$(jq -r '.deployment.resources.project' "$inventory")-$(jq -r '.name' <<< "$target")"
+        context="$(jq -r '.dockerContext' <<< "$target")"; project="$(deploy_compose_project "$inventory" "$target")"
         env_file="$state_dir/up-rendered/$(jq -r '.name' <<< "$target").env"
         deploy_up_compose_mutation "$target" "$context" "$project" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" \
           up -d --force-recreate cameraagent || return 1
@@ -584,13 +584,15 @@ deploy_run_bootstrap() {
         pre_local_capture="$(deploy_bootstrap_local_capture_sequence "$private_root/$name-pre-restart-continuity.json" "$device_id")" || return 1
         pre_central_capture="$(deploy_bootstrap_central_capture_sequence "$private_root/$name-pre-restart-central.json")" || return 1
 
-        deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__AgentId "$device_id" || return 1
-        deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__ProvisioningStartupGate__Enabled false || return 1
-        deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__CaptureDistribution__UploadEnabled true || return 1
-        deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__TransientDetection__Mode "$(jq -r '.deployment.transient.mode' "$inventory")" || return 1
-        deploy_up_stage_value "$target" "$render_root" "$target_root/.hvo-deploy/up-$run_id/secrets" CameraAgent__TransientDetection__Required "$(jq -r '.deployment.transient.mode != "Off"' "$inventory")" || return 1
-        project="$(jq -r '.deployment.resources.project' "$inventory")"; context="$(jq -r '.dockerContext' <<< "$target")"; env_file="$state_dir/up-rendered/$name.env"
-        deploy_up_compose_mutation "$target" "$context" "$project-$name" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" up -d --force-recreate cameraagent || return 1
+        deploy_transport_update_application_identity "$(jq -r '.sshHost' <<< "$target")" "$target_root" \
+          "$(jq -r '.applicationIdentity' <<< "$target")" "$device_id" || { deploy_fail bootstrap "$name" application-identity-bind-failed; return 1; }
+        deploy_up_stage_value "$target" "$render_root" "$target_root/config/secrets" CameraAgent__AgentId "$device_id" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$target_root/config/secrets" CameraAgent__ProvisioningStartupGate__Enabled false || return 1
+        deploy_up_stage_value "$target" "$render_root" "$target_root/config/secrets" CameraAgent__CaptureDistribution__UploadEnabled true || return 1
+        deploy_up_stage_value "$target" "$render_root" "$target_root/config/secrets" CameraAgent__TransientDetection__Mode "$(jq -r '.deployment.transient.mode' "$inventory")" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$target_root/config/secrets" CameraAgent__TransientDetection__Required "$(jq -r '.deployment.transient.mode != "Off"' "$inventory")" || return 1
+        project="$(deploy_compose_project "$inventory" "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; env_file="$state_dir/up-rendered/$name.env"
+        deploy_up_compose_mutation "$target" "$context" "$project" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" up -d --force-recreate cameraagent || return 1
         deploy_transport_http_ready "$(jq -r '.sshHost' <<< "$target")" "$endpoint/health" || return 1
         deploy_bootstrap_resume_capture "$target" "$target_remote" "$private_root" "$render_root" "$cookies" "$run_id" || return 1
         fleet_ack=""
@@ -646,11 +648,11 @@ deploy_run_bootstrap() {
 
     # Central processing starts only after every agent acknowledges its final
     # identity, upload, rig, and transient configuration.
-    deploy_up_stage_value "$logic" "$render_root" "$logic_root/.hvo-deploy/up-$run_id/runtime-secrets" \
+    deploy_up_stage_value "$logic" "$render_root" "$logic_root/config/runtime-secrets" \
       CentralTransient__Mode "$(jq -r '.deployment.transient.mode' "$inventory")" || return 1
-    deploy_up_stage_value "$logic" "$render_root" "$logic_root/.hvo-deploy/up-$run_id/runtime-secrets" \
+    deploy_up_stage_value "$logic" "$render_root" "$logic_root/config/runtime-secrets" \
       TransientPayloadRelease__Enabled "$(jq -r '.deployment.transient.mode != "Off"' "$inventory")" || return 1
-    project="$(jq -r '.deployment.resources.project' "$inventory")-logic"; context="$(jq -r '.dockerContext' <<< "$logic")"
+    project="$(deploy_compose_project "$inventory" "$logic")"; context="$(jq -r '.dockerContext' <<< "$logic")"
     env_file="$state_dir/up-rendered/$(jq -r '.name' <<< "$logic").env"
     deploy_up_compose_mutation "$logic" "$context" "$project" "$env_file" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" \
       up -d --force-recreate logichost || return 1

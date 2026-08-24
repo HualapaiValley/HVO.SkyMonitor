@@ -16,10 +16,15 @@ Usage:
 USAGE
 }
 
-hyg_require_commands flock id mv readlink realpath sha256sum sqlite3 stat sync wc
+hyg_require_commands cmp find flock id mv readlink realpath sha256sum sqlite3 stat sync wc
 hyg_check_sqlite_version
 
 INSTALL_STAGING=""
+
+catalog_lock_barrier() {
+    hyg_catalog_revalidate_root_lock "$INSTALL_ROOT" "${1:-}" ||
+        hyg_fail "catalog root lock descriptor no longer matches its pathname"
+}
 
 acquire_application_state_lock() {
     local requested_root="$1"
@@ -30,7 +35,7 @@ acquire_application_state_lock() {
     if [[ -n "${HVO_RUNTIME_DATA_ROOT:-}" ]]; then
         operation_runtime_root="$(realpath -ms "$HVO_RUNTIME_DATA_ROOT")"
         [[ "$canonical_root" == "$operation_runtime_root/catalog" ]] || \
-            hyg_fail "catalog install root must equal HVO_RUNTIME_DATA_ROOT/catalog"
+            { hyg_fail "catalog install root must equal HVO_RUNTIME_DATA_ROOT/catalog"; return 1; }
     elif [[ "$(basename "$canonical_root")" == catalog ]]; then
         operation_runtime_root="$(dirname "$canonical_root")"
     else
@@ -46,6 +51,77 @@ test_fail_at() {
     fi
 }
 
+remove_authenticated_staging_tree() (
+    local path="$1" boundary="${2:-}" entry parent root_device mode identity paths_file directory_fd
+    local root_identity
+    local -A identities=()
+    local -a entries=() directories=()
+    paths_file="$(mktemp)" || return 1
+    trap 'rm -f -- "$paths_file"' EXIT
+    [[ -d "$path" && ! -L "$path" && "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
+    root_device="$(stat -c %d -- "$path")" || return 1
+    root_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" || return 1
+    identities["$path"]="$root_identity"
+    directories=("$path")
+    find -P "$path" -xdev -depth -mindepth 1 -print0 > "$paths_file" || return 1
+    while IFS= read -r -d '' entry; do
+        [[ "$(stat -c %d -- "$entry")" == "$root_device" ]] || return 1
+        if [[ -d "$entry" && ! -L "$entry" ]]; then
+            [[ "$(stat -c %u -- "$entry")" == "$(id -u)" ]] || return 1
+            mode="$(stat -c %a -- "$entry")"
+            (( (8#$mode & 0022) == 0 )) || return 1
+            directories+=("$entry")
+        elif [[ -f "$entry" && ! -L "$entry" ]]; then
+            [[ "$(stat -c '%u:%h' -- "$entry")" == "$(id -u):1" ]] || return 1
+        else
+            return 1
+        fi
+        identities["$entry"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" || return 1
+        entries+=("$entry")
+    done < "$paths_file"
+
+    for entry in "${directories[@]}"; do
+        catalog_lock_barrier "$boundary" || return 1
+        boundary=''
+        [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "$root_identity" &&
+           "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" &&
+           -d "$entry" && ! -L "$entry" ]] || return 1
+        exec {directory_fd}<"$entry" || return 1
+        [[ "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$directory_fd")" == "${identities[$entry]}" ]] || return 1
+        chmod u+w -- "/proc/$BASHPID/fd/$directory_fd" || return 1
+        identities["$entry"]="$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$directory_fd")" || return 1
+        [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" ]] || return 1
+        exec {directory_fd}<&-
+        [[ "$entry" != "$path" ]] || root_identity="${identities[$entry]}"
+        catalog_lock_barrier || return 1
+    done
+
+    for entry in "${entries[@]}"; do
+        catalog_lock_barrier || return 1
+        [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "$root_identity" &&
+           "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$entry")" == "${identities[$entry]}" ]] || return 1
+        if [[ -d "$entry" && ! -L "$entry" ]]; then
+            rmdir -- "$entry" || return 1
+        elif [[ -f "$entry" && ! -L "$entry" ]]; then
+            rm -f -- "$entry" || return 1
+        else
+            return 1
+        fi
+        [[ ! -e "$entry" && ! -L "$entry" ]] || return 1
+        parent="$(dirname -- "$entry")"
+        if [[ -n "${identities[$parent]+present}" ]]; then
+            identities["$parent"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$parent")" || return 1
+            [[ "$parent" != "$path" ]] || root_identity="${identities[$parent]}"
+        fi
+        catalog_lock_barrier || return 1
+    done
+    catalog_lock_barrier || return 1
+    [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "$root_identity" && -d "$path" && ! -L "$path" ]] || return 1
+    rmdir -- "$path" || return 1
+    sync -f "$(dirname -- "$path")" || return 1
+    catalog_lock_barrier || return 1
+)
+
 cleanup_orphan_staging() {
     local path
     local -a staging_paths
@@ -53,18 +129,17 @@ cleanup_orphan_staging() {
     staging_paths=("$INSTALL_ROOT"/.staging.* "$INSTALL_ROOT/versions"/.staging.*)
     shopt -u nullglob dotglob
     for path in "${staging_paths[@]}"; do
-        chmod -R u+w "$path" 2>/dev/null || true
-        rm -rf -- "$path"
+        remove_authenticated_staging_tree "$path" production-staging-cleanup || return 1
     done
 }
 
 read_pointer() {
     local pointer="$1"
     local target
-    [[ -L "$INSTALL_ROOT/$pointer" ]] || hyg_fail "$pointer pointer is missing or is not a symbolic link"
-    target="$(readlink "$INSTALL_ROOT/$pointer")"
-    [[ "$target" =~ ^versions/hyg-v4\.2-p3-s2-r[1-9][0-9]*$ ]] || hyg_fail "$pointer pointer has an unsafe or incompatible target"
-    [[ -d "$INSTALL_ROOT/$target" && ! -L "$INSTALL_ROOT/$target" ]] || hyg_fail "$pointer pointer target is missing or unsafe"
+    [[ -L "$INSTALL_ROOT/$pointer" ]] || { hyg_fail "$pointer pointer is missing or is not a symbolic link"; return 1; }
+    target="$(readlink "$INSTALL_ROOT/$pointer")" || return 1
+    [[ "$target" =~ ^versions/hyg-v4\.2-p3-s2-r[1-9][0-9]*$ ]] || { hyg_fail "$pointer pointer has an unsafe or incompatible target"; return 1; }
+    [[ -d "$INSTALL_ROOT/$target" && ! -L "$INSTALL_ROOT/$target" ]] || { hyg_fail "$pointer pointer target is missing or unsafe"; return 1; }
     printf '%s\n' "$target"
 }
 
@@ -72,72 +147,103 @@ replace_pointer() {
     local pointer="$1"
     local target="$2"
     local temporary="$INSTALL_ROOT/.${pointer}.tmp.$$.$RANDOM"
-    ln -s -- "$target" "$temporary"
+    catalog_lock_barrier || return 1
+    ln -s -- "$target" "$temporary" || return 1
+    catalog_lock_barrier || return 1
+    test_fail_at "after-$pointer-pointer-temporary" || return 1
     if ! mv -Tf -- "$temporary" "$INSTALL_ROOT/$pointer"; then
-        rm -f -- "$temporary"
+        catalog_lock_barrier || return 1
+        rm -f -- "$temporary" || return 1
+        catalog_lock_barrier || return 1
         return 1
     fi
-    sync -f "$INSTALL_ROOT"
+    sync -f "$INSTALL_ROOT" || return 1
+    catalog_lock_barrier || return 1
 }
 
 validate_pointer_target() {
     local target="$1"
-    [[ "$target" =~ ^versions/hyg-v4\.2-p3-s2-r[1-9][0-9]*$ ]] || hyg_fail "pointer transaction contains an unsafe target"
+    [[ "$target" =~ ^versions/hyg-v4\.2-p3-s2-r[1-9][0-9]*$ ]] || { hyg_fail "pointer transaction contains an unsafe target"; return 1; }
     validate_installed_target "$target"
 }
 
 commit_pointer_state() {
     local current_target="$1"
     local previous_target="${2:--}"
-    local temporary="$INSTALL_ROOT/.pointer-transaction.tmp.$$.$RANDOM"
+    local temporary='' transaction_fd attempt
 
     validate_pointer_target "$current_target"
     if [[ "$previous_target" != "-" ]]; then
         validate_pointer_target "$previous_target"
     fi
-    printf '%s\n%s\n' "$current_target" "$previous_target" > "$temporary"
-    chmod 0600 "$temporary"
-    sync -f "$temporary"
-    mv -Tf -- "$temporary" "$INSTALL_ROOT/.pointer-transaction"
-    sync -f "$INSTALL_ROOT"
-    test_fail_at after-transaction
+    catalog_lock_barrier || return 1
+    for attempt in {1..16}; do
+        temporary="$INSTALL_ROOT/.pointer-transaction.tmp.$$.$RANDOM"
+        if (set -o noclobber; umask 077; printf '%s\n%s\n' "$current_target" "$previous_target" > "$temporary") 2>/dev/null; then
+            break
+        fi
+        temporary=''
+    done
+    [[ -n "$temporary" ]] || { hyg_fail "could not allocate an exclusive pointer transaction temporary"; return 1; }
+    catalog_lock_barrier || return 1
+    [[ -f "$temporary" && ! -L "$temporary" &&
+       "$(stat -c '%u:%h:%a' -- "$temporary")" == "$(id -u):1:600" ]] ||
+        { hyg_fail "pointer transaction temporary is unsafe"; return 1; }
+    exec {transaction_fd}<>"$temporary" || { hyg_fail "pointer transaction temporary could not be pinned"; return 1; }
+    [[ "$(stat -Lc '%d:%i:%u:%h:%a' -- "$temporary")" == \
+       "$(stat -Lc '%d:%i:%u:%h:%a' -- "/proc/$BASHPID/fd/$transaction_fd")" ]] ||
+        { hyg_fail "pointer transaction temporary changed while being pinned"; return 1; }
+    sync -f "$temporary" || return 1
+    [[ "$(stat -Lc '%d:%i:%u:%h:%a' -- "$temporary")" == \
+       "$(stat -Lc '%d:%i:%u:%h:%a' -- "/proc/$BASHPID/fd/$transaction_fd")" ]] ||
+        { hyg_fail "pointer transaction temporary changed before publication"; return 1; }
+    exec {transaction_fd}>&-
+    catalog_lock_barrier || return 1
+    test_fail_at after-pointer-transaction-temp-fsync || return 1
+    [[ ! -e "$INSTALL_ROOT/.pointer-transaction" && ! -L "$INSTALL_ROOT/.pointer-transaction" ]] ||
+        { hyg_fail "pointer transaction already exists"; return 1; }
+    catalog_lock_barrier || return 1
+    mv -Tf -- "$temporary" "$INSTALL_ROOT/.pointer-transaction" || return 1
+    sync -f "$INSTALL_ROOT" || return 1
+    catalog_lock_barrier || return 1
+    test_fail_at after-transaction || return 1
 
     if [[ "$previous_target" == "-" ]]; then
-        rm -f -- "$INSTALL_ROOT/previous"
-        sync -f "$INSTALL_ROOT"
+        catalog_lock_barrier || return 1
+        rm -f -- "$INSTALL_ROOT/previous" || return 1
+        sync -f "$INSTALL_ROOT" || return 1
+        catalog_lock_barrier || return 1
     else
-        replace_pointer previous "$previous_target"
+        replace_pointer previous "$previous_target" || return 1
     fi
-    test_fail_at after-previous-pointer
-    replace_pointer current "$current_target"
-    test_fail_at after-current-pointer
-    rm -f -- "$INSTALL_ROOT/.pointer-transaction"
-    sync -f "$INSTALL_ROOT"
+    test_fail_at after-previous-pointer || return 1
+    replace_pointer current "$current_target" || return 1
+    test_fail_at after-current-pointer || return 1
+    catalog_lock_barrier || return 1
+    rm -f -- "$INSTALL_ROOT/.pointer-transaction" || return 1
+    sync -f "$INSTALL_ROOT" || return 1
+    catalog_lock_barrier || return 1
 }
 
 reconcile_pointer_transaction() {
-    local transaction="$INSTALL_ROOT/.pointer-transaction"
-    local -a targets
-    [[ -e "$transaction" || -L "$transaction" ]] || return 0
-    [[ -f "$transaction" && ! -L "$transaction" ]] || hyg_fail "pointer transaction is not a safe regular file"
-    mapfile -t targets < "$transaction"
-    [[ ${#targets[@]} -eq 2 ]] || hyg_fail "pointer transaction is malformed"
-    commit_pointer_state "${targets[0]}" "${targets[1]}"
+    hyg_production_reconcile_pointer_temporaries "$INSTALL_ROOT" ||
+        { hyg_fail "pointer transaction temporary is unsafe, malformed, or ambiguous"; return 1; }
+    hyg_production_reconcile_pointer_symlink_temporaries "$INSTALL_ROOT" ||
+        { hyg_fail "pointer symlink temporary is unsafe, malformed, or incompatible"; return 1; }
+    hyg_production_reconcile_pointer_transaction "$INSTALL_ROOT" ||
+        { hyg_fail "pointer transaction is unsafe, malformed, or incompatible"; return 1; }
 }
 
 validate_installed_target() {
     local target="$1"
-    local file
-    hyg_validate_bundle "$INSTALL_ROOT/$target"
-    [[ "$target" == "versions/$HYG_MANIFEST_PACKAGE_VERSION" ]] || hyg_fail "version directory does not match its manifest package version"
-    [[ "$(stat -c '%a' "$INSTALL_ROOT/$target")" == "555" ]] || hyg_fail "installed version directory is not immutable"
-    for file in "$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE"; do
-        [[ "$(stat -c '%a' "$INSTALL_ROOT/$target/$file")" == "444" ]] || hyg_fail "installed payload is not read-only: $file"
-    done
+    hyg_catalog_validate_installed_target "$INSTALL_ROOT" "$target" "$HYG_CATALOG_ID" production ||
+        hyg_fail "installed production catalog target is unsafe or incompatible: $target"
 }
 
 prepare_root() {
     local requested_root="$1"
+    local expected_catalog_id="$2"
+    local expected_kind="$3"
     local current="/"
     local component
     local owner
@@ -145,44 +251,50 @@ prepare_root() {
     local permissions
     local current_uid="$(id -u)"
     INSTALL_ROOT="$(realpath -ms "$requested_root")"
-    [[ -n "$INSTALL_ROOT" && "$INSTALL_ROOT" != "/" ]] || hyg_fail "refusing unsafe install root: $INSTALL_ROOT"
+    [[ -n "$INSTALL_ROOT" && "$INSTALL_ROOT" != "/" ]] || { hyg_fail "refusing unsafe install root: $INSTALL_ROOT"; return 1; }
     IFS='/' read -r -a components <<< "${INSTALL_ROOT#/}"
     for component in "${components[@]}"; do
         current="$current$component"
-        [[ ! -L "$current" ]] || hyg_fail "install root cannot traverse a symbolic link: $current"
+        [[ ! -L "$current" ]] || { hyg_fail "install root cannot traverse a symbolic link: $current"; return 1; }
         if [[ -e "$current" ]]; then
             read -r owner mode < <(stat -c '%u %a' "$current")
             [[ "$owner" == "$current_uid" || "$owner" == "0" ]] || \
-                hyg_fail "install root ancestor is not trusted-owned: $current"
+                { hyg_fail "install root ancestor is not trusted-owned: $current"; return 1; }
             permissions=$((10#$mode))
             if (( ((permissions / 10) % 10) & 2 || (permissions % 10) & 2 )); then
                 (( owner == 0 && (permissions / 1000) & 1 )) || \
-                    hyg_fail "install root ancestor is writable by untrusted users: $current"
+                    { hyg_fail "install root ancestor is writable by untrusted users: $current"; return 1; }
             fi
         fi
         current="$current/"
     done
-    mkdir -p "$INSTALL_ROOT"
-    [[ -d "$INSTALL_ROOT" && ! -L "$INSTALL_ROOT" ]] || hyg_fail "install root is not a safe directory: $INSTALL_ROOT"
-    [[ "$(stat -c '%u' "$INSTALL_ROOT")" == "$current_uid" ]] || hyg_fail "install root must be owned by the installing user"
-    chmod 0700 "$INSTALL_ROOT"
-    mkdir -p "$INSTALL_ROOT/versions"
-    [[ -d "$INSTALL_ROOT/versions" && ! -L "$INSTALL_ROOT/versions" ]] || hyg_fail "versions path is not a safe directory"
-    chmod 0700 "$INSTALL_ROOT/versions"
-    [[ ! -L "$INSTALL_ROOT/.install.lock" ]] || hyg_fail "install lock must not be a symbolic link"
-    exec 9>> "$INSTALL_ROOT/.install.lock"
-    chmod 0600 "$INSTALL_ROOT/.install.lock"
-    flock -x 9
-    [[ ! -L "$INSTALL_ROOT/.install.lock" &&
-        "$(stat -Lc '%d:%i' "$INSTALL_ROOT/.install.lock")" == "$(stat -Lc '%d:%i' "/proc/$$/fd/9")" ]] || \
-        hyg_fail "install lock changed while it was acquired"
+    mkdir -p "$INSTALL_ROOT" || return 1
+    [[ -d "$INSTALL_ROOT" && ! -L "$INSTALL_ROOT" ]] || { hyg_fail "install root is not a safe directory: $INSTALL_ROOT"; return 1; }
+    [[ "$(stat -c '%u' "$INSTALL_ROOT")" == "$current_uid" ]] || { hyg_fail "install root must be owned by the installing user"; return 1; }
+    chmod 0700 "$INSTALL_ROOT" || return 1
+    hyg_catalog_acquire_root_lock "$INSTALL_ROOT" || { hyg_fail "catalog root lock is unsafe or unavailable"; return 1; }
+    catalog_lock_barrier || return 1
+    mkdir -p "$INSTALL_ROOT/versions" || return 1
+    catalog_lock_barrier || return 1
+    [[ -d "$INSTALL_ROOT/versions" && ! -L "$INSTALL_ROOT/versions" ]] || { hyg_fail "versions path is not a safe directory"; return 1; }
+    catalog_lock_barrier || return 1
+    chmod 0700 "$INSTALL_ROOT/versions" || return 1
+    catalog_lock_barrier || return 1
+    hyg_catalog_reconcile_lineage_temporaries "$INSTALL_ROOT" || { hyg_fail "catalog lineage temporary is unsafe"; return 1; }
+    if [[ -e "$INSTALL_ROOT/.catalog-lineage.json" || -L "$INSTALL_ROOT/.catalog-lineage.json" ]]; then
+        hyg_catalog_require_lineage "$INSTALL_ROOT" "$expected_catalog_id" "$expected_kind" \
+            "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION" || { hyg_fail "catalog root lineage is missing or incompatible"; return 1; }
+    fi
     reconcile_pointer_transaction
-    cleanup_orphan_staging
+    cleanup_orphan_staging || { hyg_fail "orphan catalog staging is unsafe and was retained"; return 1; }
+    hyg_catalog_require_lineage "$INSTALL_ROOT" "$expected_catalog_id" "$expected_kind" \
+        "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION" || { hyg_fail "catalog root lineage is missing or incompatible"; return 1; }
 }
 
 install_bundle() {
     local bundle
     local package_version
+    local requested_package_version
     local target
     local target_path
     local bundle_manifest_sha256
@@ -191,17 +303,18 @@ install_bundle() {
 
     acquire_application_state_lock "$2"
     bundle="$(realpath "$1")"
-    prepare_root "$2"
-
-    # Validate the local bundle before creating candidate staging state.
     hyg_validate_bundle "$bundle"
+    requested_package_version="$HYG_MANIFEST_PACKAGE_VERSION"
+    prepare_root "$2" "$HYG_CATALOG_ID" production
+
+    # Recovery validates existing targets and must not replace the requested package identity.
     bundle_manifest_sha256="$(hyg_sha256 "$bundle/$HYG_MANIFEST_FILE")"
-    package_version="$HYG_MANIFEST_PACKAGE_VERSION"
+    package_version="$requested_package_version"
     target="versions/$package_version"
     target_path="$INSTALL_ROOT/$target"
 
     if [[ -e "$INSTALL_ROOT/current" || -L "$INSTALL_ROOT/current" ]]; then
-        [[ -L "$INSTALL_ROOT/current" ]] || hyg_fail "current pointer is not a symbolic link"
+        [[ -L "$INSTALL_ROOT/current" ]] || { hyg_fail "current pointer is not a symbolic link"; return 1; }
         if old_target="$(read_pointer current 2>/dev/null)" && validate_installed_target "$old_target" >/dev/null 2>&1; then
             :
         else
@@ -211,52 +324,65 @@ install_bundle() {
     fi
 
     if [[ -e "$target_path" || -L "$target_path" ]]; then
-        [[ -d "$target_path" && ! -L "$target_path" ]] || hyg_fail "immutable version path is not a safe directory: $target_path"
+        [[ -d "$target_path" && ! -L "$target_path" ]] || { hyg_fail "immutable version path is not a safe directory: $target_path"; return 1; }
         validate_installed_target "$target"
-        [[ "$(hyg_sha256 "$target_path/$HYG_MANIFEST_FILE")" == "$bundle_manifest_sha256" ]] || \
-            hyg_fail "installed package version has different immutable bundle contents"
+        if [[ "$(hyg_json_value "$target_path/$HYG_MANIFEST_FILE" '$.manifestVersion')" == 2 ]]; then
+            [[ "$(hyg_sha256 "$target_path/$HYG_MANIFEST_FILE")" == "$bundle_manifest_sha256" ]] || \
+                { hyg_fail "installed package version has different immutable bundle contents"; return 1; }
+        fi
     else
+        catalog_lock_barrier || return 1
         INSTALL_STAGING="$(mktemp -d "$INSTALL_ROOT/versions/.staging.XXXXXX")"
+        catalog_lock_barrier || return 1
         cleanup_candidate() {
             local status=$?
             trap - EXIT
-            if [[ -n "${INSTALL_STAGING:-}" ]]; then
-                chmod -R u+w "$INSTALL_STAGING" 2>/dev/null || true
-                rm -rf -- "$INSTALL_STAGING"
+            if [[ -n "${INSTALL_STAGING:-}" ]] && hyg_catalog_revalidate_root_lock "$INSTALL_ROOT"; then
+                remove_authenticated_staging_tree "$INSTALL_STAGING" production-exit-staging-cleanup || true
             fi
-            rm -f -- "$INSTALL_ROOT"/.current.tmp.$$.* "$INSTALL_ROOT"/.previous.tmp.$$.*
             exit "$status"
         }
         trap cleanup_candidate EXIT
 
+        catalog_lock_barrier || return 1
         for file in "$HYG_MANIFEST_FILE" "$HYG_DATABASE_FILE" "$HYG_LICENSE_FILE" "$HYG_ATTRIBUTION_FILE"; do
-            cp -- "$bundle/$file" "$INSTALL_STAGING/$file"
+            catalog_lock_barrier || return 1
+            cp -- "$bundle/$file" "$INSTALL_STAGING/$file" || return 1
+            catalog_lock_barrier || return 1
         done
-        test_fail_at after-copy
+        catalog_lock_barrier || return 1
+        test_fail_at after-copy || return 1
         hyg_validate_bundle "$INSTALL_STAGING"
-        test_fail_at after-candidate-validation
-        chmod 0444 "$INSTALL_STAGING"/*
-        chmod 0555 "$INSTALL_STAGING"
-        sync -f "$INSTALL_STAGING/$HYG_MANIFEST_FILE"
-        sync -f "$INSTALL_STAGING/$HYG_DATABASE_FILE"
-        sync -f "$INSTALL_STAGING/$HYG_LICENSE_FILE"
-        sync -f "$INSTALL_STAGING/$HYG_ATTRIBUTION_FILE"
-        sync -f "$INSTALL_STAGING"
-        test_fail_at after-staging-fsync
-        mv -T -- "$INSTALL_STAGING" "$target_path"
+        test_fail_at after-candidate-validation || return 1
+        catalog_lock_barrier || return 1
+        chmod 0444 "$INSTALL_STAGING"/* || return 1
+        catalog_lock_barrier || return 1
+        chmod 0555 "$INSTALL_STAGING" || return 1
+        sync -f "$INSTALL_STAGING/$HYG_MANIFEST_FILE" || return 1
+        sync -f "$INSTALL_STAGING/$HYG_DATABASE_FILE" || return 1
+        sync -f "$INSTALL_STAGING/$HYG_LICENSE_FILE" || return 1
+        sync -f "$INSTALL_STAGING/$HYG_ATTRIBUTION_FILE" || return 1
+        sync -f "$INSTALL_STAGING" || return 1
+        catalog_lock_barrier || return 1
+        test_fail_at after-staging-fsync || return 1
+        catalog_lock_barrier production-version-publication || return 1
+        mv -T -- "$INSTALL_STAGING" "$target_path" || return 1
         INSTALL_STAGING=""
-        sync -f "$INSTALL_ROOT/versions"
+        sync -f "$INSTALL_ROOT/versions" || return 1
+        catalog_lock_barrier || return 1
         validate_installed_target "$target"
-        test_fail_at after-publish
+        test_fail_at after-publish || return 1
     fi
 
     if [[ "$old_target" == "$target" ]]; then
+        catalog_lock_barrier || return 1
         trap - EXIT
         printf 'Catalog version is already active: %s\n' "$target_path"
         return 0
     fi
-    test_fail_at before-activation
+    test_fail_at before-activation || return 1
     commit_pointer_state "$target" "${old_target:--}"
+    catalog_lock_barrier || return 1
     trap - EXIT
 
     printf 'Installed HYG production catalog: %s\n' "$target_path"
@@ -271,7 +397,7 @@ rollback_catalog() {
     local current_target=""
 
     acquire_application_state_lock "$1"
-    prepare_root "$1"
+    prepare_root "$1" "$HYG_CATALOG_ID" production
     previous_target="$(read_pointer previous)"
     validate_installed_target "$previous_target"
 
@@ -279,9 +405,10 @@ rollback_catalog() {
         current_target="$(read_pointer current)"
         validate_installed_target "$current_target"
     fi
-    [[ "$previous_target" != "$current_target" ]] || hyg_fail "previous catalog is already active"
+    [[ "$previous_target" != "$current_target" ]] || { hyg_fail "previous catalog is already active"; return 1; }
 
     commit_pointer_state "$previous_target" "${current_target:--}"
+    catalog_lock_barrier || return 1
 
     printf 'Rolled back active catalog to: %s/%s\n' "$INSTALL_ROOT" "$previous_target"
 }

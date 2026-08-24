@@ -34,6 +34,7 @@ services:
       DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__1: api.frames
       DeviceBootstrap__CentralIdentity__ClientCredentials__Scopes__2: api.images
       Catalog__Root: /app/catalog
+      Catalog__RequiredCatalogId: hyg-v42-production
       Catalog__RequiredPackageKind: Production
     ports:
       - "${LOGIC_HOST_HTTP_PORT:-5174}:8080"
@@ -74,6 +75,7 @@ services:
       DeviceProvisioning__StateDirectory: /app/data/provisioning
       CameraAgent__RawIngressRoot: /workspaces/HVO.SkyMonitor/data/agent
       Catalog__Root: /app/catalog
+      Catalog__RequiredCatalogId: hyg-v42-production
       Catalog__RequiredPackageKind: Production
     ports:
       - "${CAMERA_AGENT_HTTP_PORT:-5130}:8080"

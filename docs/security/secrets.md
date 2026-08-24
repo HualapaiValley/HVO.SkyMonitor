@@ -32,6 +32,23 @@ service. A production deployment may add a provider-neutral or cloud-specific
 store, but that provider, workload identity, availability model, rotation, and
 recovery must be implemented and tested in that deployment.
 
+Release automation is a separate control plane and does not add Azure Key Vault
+as an application runtime provider. The `production-release` GitHub environment
+uses OIDC subject
+`repo:RoySalisbury/HVO.SkyMonitor:environment:production-release` and the
+least-privileged `Key Vault Crypto User` assignment scoped to the single
+non-exported P-256 release key. Workflow variables identify the Azure tenant,
+subscription, client, vault, key name, and pinned key version; there is no Azure
+client secret or GitHub-held private signing key. The public key and fingerprint
+are committed trust roots. Owner recovery material and the encrypted Key Vault
+backup remain outside Git.
+
+The current GitHub billing plan cannot enforce required reviewers or a wait
+timer on the environment. Publication therefore remains manual, requires an
+exact protected-main SHA with successful `Required CI`, separates OIDC signing
+from release-write permission, and fails on tag or asset collision. Enable
+environment reviewers as soon as repository plan support is available.
+
 ## Local Setup
 
 Keep `.env` mode `0600` and shell-compatible because repository helpers source

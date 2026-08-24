@@ -141,7 +141,7 @@ deploy_transport_copy() {
 deploy_transport_copy_private_file() {
     local source="$1" ssh_host="$2" destination="$3" target runtime_root upload_root token temporary
     [[ -f "$source" && ! -L "$source" ]] || return 1
-    target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
+    target="$(deploy_transport_private_upload_target "$ssh_host" "$destination")" || return 1
     runtime_root="$(jq -r '.runtimeRoot' <<< "$target")"; upload_root="$runtime_root/.hvo-deploy/uploads"
     [[ "$destination" == "$runtime_root"/* ]] || return 1
     token="$(printf '%s' "${DEPLOY_PRIVATE_UPLOAD_PHASE:?}|$destination|$$" | sha256sum | cut -c1-32)"
@@ -171,10 +171,11 @@ REMOTE
 }
 
 deploy_transport_private_upload_target() {
-    local ssh_host="$1" target
+    local ssh_host="$1" path="${2:-}" target
     [[ -n "${DEPLOY_PRIVATE_UPLOAD_INVENTORY:-}" ]] || return 1
-    target="$(jq -c --arg ssh "$ssh_host" '([.logicHost] + .cameraAgents + (if .sharedServices then [.sharedServices] else [] end)) |
-      [.[] | select(.sshHost == $ssh)] | if length == 1 then .[0] else empty end' "$DEPLOY_PRIVATE_UPLOAD_INVENTORY")"
+    target="$(jq -c --arg ssh "$ssh_host" --arg path "$path" '([.logicHost] + .cameraAgents + (if .sharedServices then [.sharedServices] else [] end)) |
+      [.[] | . as $target | select(.sshHost == $ssh and ($path == "" or ($path | startswith($target.runtimeRoot + "/"))))] |
+      if length == 1 then .[0] else empty end' "$DEPLOY_PRIVATE_UPLOAD_INVENTORY")"
     [[ -n "$target" ]] || return 1
     printf '%s\n' "$target"
 }
@@ -194,10 +195,13 @@ deploy_transport_initialize_private_upload_registry() {
               ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/uploads/") and
               (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|transient-confirm|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))
              elif .kind == "remote-private" then
-               any(targets[]; . == $entry.target) and ($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/")) and
+               any(targets[]; . == $entry.target) and
+               ((($entry.path | startswith($entry.target.runtimeRoot + "/.hvo-deploy/")) and
                (($entry.path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
-                 ($entry.path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")) or
-                 ($entry.path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))
+                  ($entry.path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")) or
+                  ($entry.path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))) or
+                $entry.path == ($entry.target.runtimeRoot + "/config/private/owner-password") or
+                $entry.path == ($entry.target.runtimeRoot + "/config/secrets/LocalIdentity__AdminPasswordFile"))
              elif .kind == "local-private" then
                any(targets[]; . == $entry.target) and ($entry.path | startswith(($registry | sub("/private-upload-registry[.]json$"; "")) + "/")) and
                ($entry.path | test("/(central[.]headers|[A-Za-z0-9._-]+-(owner-password|antiforgery[.]headers|antiforgery[.]json|envelope[.]json|bootstrap-request[.]json))$")) and
@@ -223,7 +227,7 @@ deploy_transport_register_private_upload() {
         DEPLOY_PRIVATE_UPLOADS+="${DEPLOY_PRIVATE_UPLOADS:+$'\n'}$ssh_host"$'\t'"$temporary"
         return 0
     fi
-    target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
+    target="$(deploy_transport_private_upload_target "$ssh_host" "$temporary")" || return 1
     jq -e --arg path "$temporary" --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" '
       .runtimeRoot as $root | ($path | startswith($root + "/.hvo-deploy/uploads/") and
       (split("/")[-1] | test("^hvo-upload-" + $phase + "-[0-9]+-[0-9a-f]{32}[.]tmp$")))' <<< "$target" >/dev/null || return 1
@@ -234,10 +238,13 @@ deploy_transport_register_private_upload() {
 
 deploy_transport_register_remote_private() {
     local target="$1" path="$2" updated
-    jq -e --arg path "$path" '.runtimeRoot as $root | ($path | startswith($root + "/.hvo-deploy/")) and
+    jq -e --arg path "$path" '.runtimeRoot as $root |
+      ((($path | startswith($root + "/.hvo-deploy/")) and
       (($path | test("/(owner-password|owner[.]cookies|owner[.]headers|[A-Za-z0-9._-]+-control[.]headers|LocalIdentity__AdminPasswordFile|bootstrap-request[.]json|[A-Za-z0-9._-]+-envelope[.]json)$")) or
         ($path | test("/[.]hvo-deploy/(bootstrap|smoke|measure|campaign|down)-[A-Za-z0-9._-]+/(login[.]html|login-response[.]html|owner-verification[.]json|antiforgery[.]json)$")) or
-        ($path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))' \
+        ($path | test("/[.]hvo-deploy/down-[A-Za-z0-9._-]+/(pause|pause-response|final-pause|final-pause-response|continuity-boundary|continuity-[0-9]+|summary-[0-9]+)[.]json$")))) or
+       $path == ($root + "/config/private/owner-password") or
+       $path == ($root + "/config/secrets/LocalIdentity__AdminPasswordFile"))' \
       <<< "$target" >/dev/null || return 1
     updated="$(jq -c --arg phase "$DEPLOY_PRIVATE_UPLOAD_PHASE" --arg path "$path" --argjson target "$target" '
       if any(.[]; .path == $path and .phase == $phase and .kind == "remote-private" and .target == $target) then .
@@ -311,7 +318,7 @@ deploy_transport_reconcile_private_uploads() {
 
 deploy_transport_cleanup_private_upload() {
     local ssh_host="$1" temporary="$2" target
-    target="$(deploy_transport_private_upload_target "$ssh_host")" || return 1
+    target="$(deploy_transport_private_upload_target "$ssh_host" "$temporary")" || return 1
     jq -e --arg path "$temporary" '.runtimeRoot as $root |
       ($path | startswith($root + "/.hvo-deploy/uploads/") and
         (split("/")[-1] | test("^hvo-upload-(up|bootstrap|smoke|measure|acceptance-run|transient-confirm|down)-[0-9]+-[0-9a-f]{32}[.]tmp$")))' \
@@ -375,6 +382,84 @@ done
 REMOTE
 }
 
+deploy_transport_instance_manifest() {
+    local ssh_host="$1" root="$2" expected_json="$3" binding_json="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$expected_json" "$binding_json" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; expected=$2; binding_initial=$3; manifest="$root/instance-manifest.json"; binding="$root/application-identity.json"
+[[ "$root" == /* && -d "$root" && ! -L "$root" && "$expected" != *$'\n'* && "$binding_initial" != *$'\n'* ]] || exit 90
+if [[ -e "$manifest" || -L "$manifest" ]]; then
+  [[ -f "$manifest" && ! -L "$manifest" && "$(stat -c '%h:%a' "$manifest")" == 1:600 ]] || exit 91
+  jq -e --argjson expected "$expected" '
+    (keys | sort) == (["applicationIdentityFile","component","creationProvenance","instanceId","product","schemaVersion"] | sort) and
+    .schemaVersion == $expected.schemaVersion and .product == $expected.product and .component == $expected.component and
+    .instanceId == $expected.instanceId and .applicationIdentityFile == $expected.applicationIdentityFile and
+    (.creationProvenance == $expected.creationProvenance or .creationProvenance == {migration:"singular-layout-v1"})' "$manifest" >/dev/null || exit 91
+else
+  temporary="$root/.instance-manifest.tmp.$$"
+  (umask 077; printf '%s\n' "$expected" > "$temporary")
+  [[ -f "$temporary" && ! -L "$temporary" ]] || exit 92
+  mv -T "$temporary" "$manifest"
+  if command -v sync >/dev/null; then sync -f "$manifest"; sync -f "$root"; fi
+fi
+if [[ -e "$binding" || -L "$binding" ]]; then
+  [[ -f "$binding" && ! -L "$binding" && "$(stat -c '%h:%a' "$binding")" == 1:600 ]] || exit 93
+  jq -e --argjson initial "$binding_initial" '
+    (keys | sort) == (["boundIdentity","configuredIdentity","schemaVersion","state"] | sort) and
+    .schemaVersion == 1 and .configuredIdentity == $initial.configuredIdentity and
+    (.configuredIdentity | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
+    ((.state == "pre-provisioning" and .boundIdentity == null) or
+     (.state == "bound" and (.boundIdentity | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))))' "$binding" >/dev/null || exit 93
+  if [[ "$(jq -r '.state' "$binding")" == bound ]]; then
+    [[ "$(jq -r '.component' "$manifest")" == cameraAgent ]] || exit 93
+    bound="$(jq -r '.boundIdentity' "$binding")"; configured="$(jq -r '.configuredIdentity' "$binding")"; agent_file="$root/config/secrets/CameraAgent__AgentId"; module="$root/config/camera-module.json"
+    gate_file="$root/config/secrets/CameraAgent__ProvisioningStartupGate__Enabled"; upload_file="$root/config/secrets/CameraAgent__CaptureDistribution__UploadEnabled"
+    module_identity="$(jq -r '.agentId' "$module")"
+    [[ -f "$agent_file" && ! -L "$agent_file" && -f "$module" && ! -L "$module" && "$(<"$agent_file")" == "$bound" &&
+       ( "$module_identity" == "$configured" || "$module_identity" == "$bound" ) &&
+       -f "$gate_file" && ! -L "$gate_file" && "$(<"$gate_file")" == false &&
+       -f "$upload_file" && ! -L "$upload_file" && "$(<"$upload_file")" == true ]] || exit 93
+  fi
+else
+  temporary="$root/.application-identity.tmp.$$"; (umask 077; printf '%s\n' "$binding_initial" > "$temporary"); mv -T "$temporary" "$binding"
+  if command -v sync >/dev/null; then sync -f "$binding"; sync -f "$root"; fi
+fi
+cat "$binding"
+REMOTE
+}
+
+deploy_transport_camera_provisioning_state() {
+    local ssh_host="$1" root="$2" expected_state="$3"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$expected_state" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; expected_state=$2; gate="$root/config/secrets/CameraAgent__ProvisioningStartupGate__Enabled"; upload="$root/config/secrets/CameraAgent__CaptureDistribution__UploadEnabled"
+[[ "$root" == /* && ( "$expected_state" == pre-provisioning || "$expected_state" == bound ) ]] || exit 90
+for path in "$gate" "$upload"; do [[ -f "$path" && ! -L "$path" && "$(stat -c %h "$path")" == 1 ]] || exit 91; done
+gate_value="$(<"$gate")"; upload_value="$(<"$upload")"
+[[ ( "$gate_value" == true || "$gate_value" == false ) && ( "$upload_value" == true || "$upload_value" == false ) ]] || exit 92
+if [[ "$expected_state" == bound ]]; then [[ "$gate_value" == false && "$upload_value" == true ]] || exit 93
+else [[ "$gate_value" == true && "$upload_value" == false ]] || exit 93; fi
+printf '%s\t%s\n' "$gate_value" "$upload_value"
+REMOTE
+}
+
+deploy_transport_update_application_identity() {
+    local ssh_host="$1" root="$2" expected="$3" replacement="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$expected" "$replacement" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; expected=$2; replacement=$3; binding="$root/application-identity.json"
+for value in "$expected" "$replacement"; do [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || exit 90; done
+before="$(printf '{\"schemaVersion\":1,\"state\":\"pre-provisioning\",\"configuredIdentity\":\"%s\",\"boundIdentity\":null}' "$expected")"
+after="$(printf '{\"schemaVersion\":1,\"state\":\"bound\",\"configuredIdentity\":\"%s\",\"boundIdentity\":\"%s\"}' "$expected" "$replacement")"
+[[ -f "$binding" && ! -L "$binding" && "$(stat -c '%h:%a' "$binding")" == 1:600 ]] || exit 91
+actual="$(<"$binding")"; [[ "$actual" == "$before" || "$actual" == "$after" ]] || exit 92
+if [[ "$actual" != "$after" ]]; then
+  temporary="$root/.application-identity.tmp.$$"; (umask 077; printf '%s\n' "$after" > "$temporary"); mv -T "$temporary" "$binding"
+  if command -v sync >/dev/null; then sync -f "$binding"; sync -f "$root"; fi
+fi
+REMOTE
+}
+
 deploy_transport_remote_seed_state() {
     local ssh_host="$1"
     shift
@@ -393,38 +478,477 @@ deploy_transport_catalog_install() {
     shift
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null <<'REMOTE'
 set -euo pipefail
-stage=$1; install_root=$2; kind=$3; version=$4; expected_sha=$5; expected_length=$6; expected_rows=$7
+stage=$1; install_root=$2; catalog_id=$3; kind=$4; version=$5; schema_version=$6; preprocessing_version=$7; expected_sha=$8; expected_length=$9; expected_rows=${10}
 bundle="$stage/bundle"; database="$bundle/hyg_v42.sqlite"
 [[ -d "$bundle" && ! -L "$bundle" && -f "$database" && ! -L "$database" ]] || exit 92
-[[ "$(sha256sum "$database" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$database")" == "$expected_length" ]] || exit 93
-[[ "$(sqlite3 -batch -noheader -readonly "$database" 'PRAGMA integrity_check;')" == ok ]] || exit 94
-[[ "$(sqlite3 -batch -noheader -readonly "$database" 'SELECT count(*) FROM celestial_objects;')" == "$expected_rows" ]] || exit 95
+# shellcheck disable=SC1091
+source "$stage/scripts/catalog/catalog-common.sh"
+hyg_validate_catalog_contract "$bundle" "$catalog_id" "$kind" "$version" "$schema_version" \
+  "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 92
 if [[ "$kind" == production ]]; then
   "$stage/scripts/catalog/install-hyg-v42.sh" install "$bundle" "$install_root" >/dev/null
 else
   destination="$install_root/versions/$version"
-  mkdir -p -- "$install_root/versions"
-  if [[ ! -e "$destination" ]]; then mkdir -m 755 -- "$destination"; cp -a -- "$bundle/." "$destination/"; fi
-  temporary="$install_root/.current.tmp.$$"
-  ln -s "versions/$version" "$temporary"; mv -Tf -- "$temporary" "$install_root/current"
+  old_target=""
+  source_manifest_sha="$(sha256sum "$bundle/manifest.json" | cut -d' ' -f1)"
+  transaction="$install_root/.fixture-pointer-transaction"
+  candidate_intent="$install_root/.fixture-candidate-transaction"
+  fixture_lock_barrier() {
+    hyg_catalog_revalidate_root_lock "$install_root" "${1:-}" || exit 97
+  }
+  fixture_fail_at() {
+    if [[ "${HVO_FIXTURE_CATALOG_TEST_FAIL_AT:-}" == "$1" ]]; then
+      [[ -z "${HYG_CATALOG_ROOT_LOCK_FD:-}" ]] || exec {HYG_CATALOG_ROOT_LOCK_FD}>&-
+      exit 75
+    fi
+  }
+  fixture_create_private_temporary() {
+    local prefix=$1 temporary attempt
+    for attempt in {1..16}; do
+      temporary="$install_root/$prefix.$$.$RANDOM"
+      if (set -o noclobber; umask 077; : > "$temporary") 2>/dev/null; then
+        printf '%s\n' "$temporary"; return 0
+      fi
+    done
+    return 1
+  }
+  fixture_validate_partial_candidate() {
+    local candidate=$1 path name mode
+    local -a entries
+    [[ -d "$candidate" && ! -L "$candidate" &&
+       "$(stat -c '%u:%d' -- "$candidate")" == "$(id -u):$(stat -c %d -- "$install_root/versions")" ]] || return 1
+    mode="$(stat -c %a -- "$candidate")"; [[ "$mode" == 700 || "$mode" == 555 ]] || return 1
+    shopt -s nullglob dotglob
+    entries=("$candidate"/*)
+    shopt -u nullglob dotglob
+    for path in "${entries[@]}"; do
+      name="${path##*/}"
+      [[ "$name" == manifest.json || "$name" == hyg_v42.sqlite ]] || return 1
+      [[ -f "$path" && ! -L "$path" && "$(stat -c '%u:%h' -- "$path")" == "$(id -u):1" ]] || return 1
+      mode="$(stat -c %a -- "$path")"; [[ "$mode" == 600 || "$mode" == 444 ]] || return 1
+    done
+  }
+  fixture_remove_partial_candidate() {
+    local candidate=$1 candidate_identity child child_identity
+    local -A child_identities=()
+    fixture_validate_partial_candidate "$candidate" || return 1
+    candidate_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$candidate")" || return 1
+    for child in "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"; do
+      if [[ -e "$child" || -L "$child" ]]; then
+        child_identities["$child"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$child")" || return 1
+      else
+        child_identities["$child"]='-'
+      fi
+    done
+    fixture_candidate_identities_match() {
+      local candidate_child expected
+      [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$candidate")" == "$candidate_identity" ]] || return 1
+      for candidate_child in "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"; do
+        expected="${child_identities[$candidate_child]}"
+        if [[ "$expected" == - ]]; then
+          [[ ! -e "$candidate_child" && ! -L "$candidate_child" ]] || return 1
+        else
+          [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$candidate_child")" == "$expected" ]] || return 1
+        fi
+      done
+    }
+    fixture_lock_barrier fixture-candidate-cleanup || exit 97
+    fixture_candidate_identities_match || return 1
+    chmod 700 -- "$candidate" || exit 97
+    candidate_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$candidate")" || return 1
+    fixture_lock_barrier || exit 97
+    for child in "$candidate/manifest.json" "$candidate/hyg_v42.sqlite"; do
+      child_identity="${child_identities[$child]}"
+      if [[ "$child_identity" == - ]]; then
+        fixture_candidate_identities_match || return 1
+        continue
+      fi
+      fixture_candidate_identities_match || return 1
+      chmod 600 -- "$child" || exit 97
+      child_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$child")" || return 1
+      child_identities["$child"]="$child_identity"
+      fixture_lock_barrier || exit 97
+      fixture_candidate_identities_match || return 1
+      rm -f -- "$child" || exit 97
+      child_identities["$child"]='-'
+      fixture_lock_barrier || exit 97
+    done
+    fixture_candidate_identities_match || return 1
+    rmdir -- "$candidate" || exit 97
+    sync -f "$install_root/versions" || exit 97
+    fixture_lock_barrier || exit 97
+  }
+  fixture_reconcile_candidate() {
+    local intent="$candidate_intent" target recorded_id recorded_manifest_sha recorded_database_sha recorded_version candidate actual_id
+    local -a fields
+    [[ -e "$intent" || -L "$intent" ]] || return 0
+    [[ -f "$intent" && ! -L "$intent" && "$(stat -c '%u:%h:%a' -- "$intent")" == "$(id -u):1:600" ]] || return 1
+    mapfile -t fields < "$intent"
+    [[ ${#fields[@]} -eq 4 ]] || return 1
+    target="${fields[0]}"; recorded_id="${fields[1]}"; recorded_manifest_sha="${fields[2]}"; recorded_database_sha="${fields[3]}"
+    [[ "$target" =~ ^versions/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$ &&
+       "$recorded_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && "$recorded_manifest_sha" =~ ^[0-9a-f]{64}$ &&
+       "$recorded_database_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+    recorded_version="${target#versions/}"
+    candidate="$install_root/versions/.fixture-candidate-$recorded_version.stage"
+    if [[ -e "$install_root/$target" || -L "$install_root/$target" ]]; then
+      [[ ! -e "$candidate" && ! -L "$candidate" ]] || return 1
+      hyg_validate_fixture_payload "$install_root" "$recorded_version" || return 1
+      [[ "$(hyg_sha256 "$install_root/$target/manifest.json")" == "$recorded_manifest_sha" &&
+         "$(hyg_sha256 "$install_root/$target/hyg_v42.sqlite")" == "$recorded_database_sha" ]] || return 1
+      actual_id="$(hyg_resolve_catalog_identity "$install_root/$target")" || return 1
+      [[ "$actual_id" == "$recorded_id" &&
+         "$(hyg_json_value "$install_root/$target/manifest.json" '$.package.version')" == "$recorded_version" ]] || return 1
+    elif [[ -e "$candidate" || -L "$candidate" ]]; then
+      fixture_remove_partial_candidate "$candidate" || return 1
+    fi
+    fixture_lock_barrier || exit 97
+    rm -f -- "$intent" || exit 97
+    sync -f "$install_root" || exit 97
+    fixture_lock_barrier || exit 97
+  }
+  install_parent="$(dirname -- "$install_root")"
+  [[ "$install_root" == /* && "$install_root" != / && "$(realpath -ms -- "$install_root")" == "$install_root" &&
+     -d "$install_parent" && ! -L "$install_parent" ]] || exit 97
+  hyg_catalog_validate_ancestor_chain "$install_parent" || exit 97
+  hyg_catalog_safe_mutable_directory "$install_parent" || exit 97
+  if [[ -e "$install_root" || -L "$install_root" ]]; then
+    hyg_catalog_safe_mutable_directory "$install_root" || exit 97
+  else
+    mkdir -m 700 -- "$install_root" 2>/dev/null || [[ -d "$install_root" && ! -L "$install_root" ]] || exit 97
+    hyg_catalog_safe_mutable_directory "$install_root" || exit 97
+    sync -f "$install_parent" || exit 97
+  fi
+  hyg_catalog_acquire_root_lock "$install_root" || exit 97
+  fixture_lock_barrier || exit 97
+  hyg_catalog_reconcile_lineage_temporaries "$install_root" || exit 97
+  if [[ -e "$install_root/.catalog-lineage.json" || -L "$install_root/.catalog-lineage.json" ]]; then
+    hyg_catalog_require_lineage "$install_root" "$catalog_id" "$kind" "$schema_version" "$preprocessing_version" || exit 97
+  fi
+  hyg_fixture_reconcile_transaction_temporaries "$install_root" || exit 97
+  if [[ -e "$install_root/versions" || -L "$install_root/versions" ]]; then
+    hyg_catalog_safe_mutable_directory "$install_root/versions" || exit 97
+  else
+    fixture_lock_barrier || exit 97
+    mkdir -m 700 -- "$install_root/versions" || exit 97
+    hyg_catalog_safe_mutable_directory "$install_root/versions" || exit 97
+    sync -f "$install_root" || exit 97
+    fixture_lock_barrier || exit 97
+  fi
+  hyg_fixture_reconcile_pointer_temporaries "$install_root" || exit 97
+  if [[ -e "$install_root/current" || -L "$install_root/current" ]]; then
+    hyg_fixture_validate_pointer "$install_root" "$install_root/current" || exit 97
+  fi
+  hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 97
+  fixture_reconcile_candidate || exit 97
+  hyg_catalog_require_lineage "$install_root" "$catalog_id" "$kind" "$schema_version" "$preprocessing_version" || exit 97
+  if [[ -e "$install_root/current" || -L "$install_root/current" ]]; then
+    hyg_fixture_validate_pointer "$install_root" "$install_root/current" || exit 97
+    old_target="$(readlink "$install_root/current")"
+    hyg_catalog_validate_installed_target "$install_root" "$old_target" "$catalog_id" fixture || exit 97
+  fi
+  if [[ ! -e "$destination" ]]; then
+    candidate="$install_root/versions/.fixture-candidate-$version.stage"
+    [[ ! -e "$candidate" && ! -L "$candidate" && ! -e "$candidate_intent" && ! -L "$candidate_intent" ]] || exit 98
+    fixture_lock_barrier || exit 97
+    temporary="$(fixture_create_private_temporary .fixture-candidate-transaction.tmp)"
+    fixture_lock_barrier || exit 97
+    printf '%s\n%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" "$expected_sha" > "$temporary"
+    fixture_lock_barrier || exit 97
+    chmod 600 "$temporary" || exit 97
+    fixture_lock_barrier || exit 97
+    sync -f "$temporary" || exit 97; fixture_lock_barrier || exit 97
+    fixture_fail_at after-candidate-transaction-temp-fsync
+    fixture_lock_barrier || exit 97
+    mv -T -- "$temporary" "$candidate_intent" || exit 97
+    sync -f "$install_root" || exit 97; fixture_lock_barrier || exit 97
+    mkdir -m 700 -- "$candidate" || exit 97; fixture_lock_barrier || exit 97
+    fixture_lock_barrier || exit 97
+    (umask 077; cp --no-preserve=mode,ownership -- "$bundle/manifest.json" "$candidate/manifest.json") || exit 97
+    fixture_lock_barrier || exit 97
+    chmod 600 "$candidate/manifest.json" || exit 97; fixture_lock_barrier || exit 97
+    fixture_fail_at during-candidate-copy
+    fixture_lock_barrier || exit 97
+    (umask 077; cp --no-preserve=mode,ownership -- "$bundle/hyg_v42.sqlite" "$candidate/hyg_v42.sqlite") || exit 97
+    fixture_lock_barrier || exit 97
+    chmod 600 "$candidate/hyg_v42.sqlite" || exit 97; fixture_lock_barrier || exit 97
+    hyg_validate_catalog_contract "$candidate" "$catalog_id" "$kind" "$version" "$schema_version" \
+      "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 98
+    fixture_lock_barrier || exit 97
+    chmod 444 -- "$candidate/manifest.json" "$candidate/hyg_v42.sqlite" || exit 97
+    fixture_lock_barrier || exit 97
+    chmod 555 -- "$candidate" || exit 97
+    sync -f "$candidate/manifest.json" || exit 97
+    sync -f "$candidate/hyg_v42.sqlite" || exit 97
+    sync -f "$candidate" || exit 97
+    fixture_lock_barrier fixture-candidate-publication || exit 97
+    fixture_fail_at before-candidate-rename
+    mv -T -- "$candidate" "$destination" || exit 97
+    sync -f "$install_root/versions" || exit 97; fixture_lock_barrier || exit 97
+    rm -f -- "$candidate_intent" || exit 97
+    sync -f "$install_root" || exit 97; fixture_lock_barrier || exit 97
+  else
+    existing="$destination/hyg_v42.sqlite"
+    [[ -d "$destination" && ! -L "$destination" && -f "$existing" && ! -L "$existing" &&
+       "$(sha256sum "$existing" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$existing")" == "$expected_length" ]] || exit 98
+  fi
+  hyg_validate_fixture_payload "$install_root" "$version" &&
+    [[ "$(sha256sum "$destination/manifest.json" | cut -d' ' -f1)" == "$source_manifest_sha" ]] || exit 98
+  hyg_validate_catalog_contract "$destination" "$catalog_id" "$kind" "$version" "$schema_version" \
+    "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 98
+  sync -f "$destination/manifest.json" || exit 97
+  sync -f "$destination/hyg_v42.sqlite" || exit 97
+  sync -f "$destination" || exit 97
+  sync -f "$install_root/versions" || exit 97
+  fixture_fail_at after-candidate-publication
+  if [[ "$old_target" != "versions/$version" ]]; then
+    previous_manifest_sha=-
+    if [[ -n "$old_target" ]]; then previous_manifest_sha="$(hyg_sha256 "$install_root/$old_target/manifest.json")"; else old_target=-; fi
+    [[ ! -e "$transaction" && ! -L "$transaction" ]] || exit 98
+    fixture_lock_barrier || exit 97
+    temporary="$(fixture_create_private_temporary .fixture-pointer-transaction.tmp)"
+    fixture_lock_barrier || exit 97
+    printf '%s\n%s\n%s\n%s\n%s\n' "versions/$version" "$catalog_id" "$source_manifest_sha" \
+      "$old_target" "$previous_manifest_sha" > "$temporary"
+    fixture_lock_barrier || exit 97
+    chmod 600 "$temporary" || exit 97
+    fixture_lock_barrier || exit 97
+    sync -f "$temporary" || exit 97; fixture_lock_barrier || exit 97
+    fixture_fail_at after-pointer-transaction-temp-fsync
+    fixture_lock_barrier || exit 97
+    mv -T -- "$temporary" "$transaction" || exit 97
+    sync -f "$install_root" || exit 97; fixture_lock_barrier || exit 97
+    fixture_fail_at after-pointer-transaction
+    hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 97
+  fi
+  hyg_validate_fixture_installation "$install_root" "$version" "$catalog_id" || exit 98
+  fixture_lock_barrier || exit 97
 fi
 current="$(readlink "$install_root/current")"; installed="$install_root/$current/hyg_v42.sqlite"
-[[ -f "$installed" && "$(sha256sum "$installed" | cut -d' ' -f1)" == "$expected_sha" && "$(wc -c < "$installed")" == "$expected_length" ]] || exit 96
-[[ "$(sqlite3 -batch -noheader -readonly "$installed" 'PRAGMA integrity_check; SELECT count(*) FROM celestial_objects;')" == $'ok\n'"$expected_rows" ]] || exit 97
+hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$version" "$schema_version" \
+  "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 96
+[[ "$kind" != fixture ]] || fixture_lock_barrier || exit 97
 printf 'installed\t%s\t%s\n' "$current" "$expected_sha"
 REMOTE
 }
 
-deploy_transport_catalog_prepare_scripts() {
-    local ssh_host="$1" stage="$2"
-    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$stage" 2>/dev/null <<'REMOTE'
+deploy_transport_catalog_create_stage() {
+    local ssh_host="$1" parent="$2" run_id="$3" catalog_id="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
+      "$parent" "$run_id" "$catalog_id" 2>/dev/null <<'REMOTE'
 set -euo pipefail
-stage=$1
-[[ "$stage" == /* && -d "$stage/scripts/catalog" && ! -L "$stage/scripts" && ! -L "$stage/scripts/catalog" ]] || exit 90
-for path in "$stage/scripts/catalog/catalog-common.sh" "$stage/scripts/catalog/install-hyg-v42.sh" "$stage/scripts/infra:operation-lock"; do
-  [[ -f "$path" && ! -L "$path" && "$(stat -c %h "$path")" == 1 ]] || exit 91
-  chmod 700 "$path"
+parent=$1; run_id=$2; catalog_id=$3
+[[ "$parent" == /* && "$parent" != / && "$parent" != *//* && "$parent" != */../* && "$parent" != */./* &&
+   "$run_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && "$catalog_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || exit 90
+[[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%a' -- "$parent")" == "$(id -u):700" ]] || exit 91
+parent_device="$(stat -c %d -- "$parent")"
+safe_remove() (
+  local root=$1 boundary=${2:-catalog-remnant-cleanup-final} path path_parent mode root_identity paths_file map_identity
+  local map_fd read_fd attempt
+  local -A identities=()
+  local -a entries=()
+  cleanup_map() {
+    [[ -z "${paths_file:-}" ]] || rm -f -- "$paths_file"
+    [[ -z "${read_fd:-}" ]] || exec {read_fd}<&-
+    [[ -z "${map_fd:-}" ]] || exec {map_fd}>&-
+  }
+  trap cleanup_map EXIT
+  [[ -d "$root" && ! -L "$root" &&
+     "$(stat -c '%u:%d' -- "$root")" == "$(id -u):$parent_device" ]] || return 1
+  mode="$(stat -c %a -- "$root")"; (( (8#$mode & 0022) == 0 )) || return 1
+  root_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$root")" || return 1
+  identities["$root"]="$root_identity"
+  paths_file=''
+  for attempt in {1..16}; do
+    paths_file="${root%/*}/.catalog-cleanup-map.$$.$RANDOM.$RANDOM"
+    if (set -o noclobber; umask 077; : > "$paths_file") 2>/dev/null; then break; fi
+    paths_file=''
+  done
+  [[ -n "$paths_file" ]] || return 1
+  exec {map_fd}<>"$paths_file" || { rm -f -- "$paths_file"; return 1; }
+  map_identity="$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$map_fd")" || return 1
+  [[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "$paths_file")" ]] || return 1
+  exec {read_fd}<"$paths_file" || return 1
+  [[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$read_fd")" ]] || return 1
+  rm -f -- "$paths_file" || return 1
+  paths_file=''
+  find -P "$root" -xdev -depth -mindepth 1 -print0 > "/proc/$BASHPID/fd/$map_fd" || return 1
+  exec {map_fd}>&-
+  map_fd=''
+  while IFS= read -r -d '' path; do
+    [[ "$(stat -c %d -- "$path")" == "$parent_device" ]] || return 1
+    if [[ -d "$path" && ! -L "$path" ]]; then
+      [[ "$(stat -c %u -- "$path")" == "$(id -u)" ]] || return 1
+      mode="$(stat -c %a -- "$path")"; (( (8#$mode & 0022) == 0 )) || return 1
+    elif [[ -f "$path" && ! -L "$path" ]]; then
+      [[ "$(stat -c '%u:%h' -- "$path")" == "$(id -u):1" ]] || return 1
+    else
+      return 1
+    fi
+    identities["$path"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" || return 1
+    entries+=("$path")
+  done <&"$read_fd"
+  exec {read_fd}<&-
+  read_fd=''
+  if [[ "${HVO_CATALOG_TEST_MODE:-}" == true && "${HVO_CATALOG_TEST_LOCK_BARRIER:-}" == "$boundary" ]]; then
+    [[ -n "${HVO_CATALOG_TEST_LOCK_MARKER:-}" ]] || return 1
+    printf '%s\n' "$BASHPID" > "$HVO_CATALOG_TEST_LOCK_MARKER"
+    kill -STOP "$BASHPID"
+  fi
+  for path in "${entries[@]}"; do
+    [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$root")" == "$root_identity" && -d "$root" && ! -L "$root" &&
+       "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "${identities[$path]}" ]] || return 1
+    if [[ -d "$path" && ! -L "$path" ]]; then rmdir -- "$path" || return 1
+    elif [[ -f "$path" && ! -L "$path" ]]; then rm -f -- "$path" || return 1
+    else return 1; fi
+    [[ ! -e "$path" && ! -L "$path" ]] || return 1
+    path_parent="${path%/*}"
+    if [[ -n "${identities[$path_parent]+present}" ]]; then
+      identities["$path_parent"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path_parent")" || return 1
+      [[ "$path_parent" != "$root" ]] || root_identity="${identities[$path_parent]}"
+    fi
+  done
+  [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$root")" == "$root_identity" && -d "$root" && ! -L "$root" ]] || return 1
+  rmdir -- "$root"
+)
+shopt -s nullglob dotglob
+remnants=("$parent/.catalog-transaction-$run_id-$catalog_id."* "$parent/.catalog-stage-$run_id-$catalog_id."*)
+shopt -u nullglob dotglob
+for remnant in "${remnants[@]}"; do
+  [[ "${remnant##*/}" =~ ^[.]catalog-(transaction|stage)-${run_id}-${catalog_id}[.][1-9][0-9]*[.][0-9]{1,5}[.][0-9]{1,5}$ ]] || continue
+  safe_remove "$remnant" >/dev/null 2>&1 || true
 done
+umask 077
+stage=''
+for _ in {1..16}; do
+  candidate="$parent/.catalog-transaction-$run_id-$catalog_id.$$.$RANDOM.$RANDOM"
+  if mkdir -m 700 -- "$candidate" 2>/dev/null; then stage=$candidate; break; fi
+done
+[[ -n "$stage" ]] || exit 92
+[[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%d:%a' -- "$stage")" == "$(id -u):$parent_device:700" ]] || exit 92
+mkdir -m 700 -- "$stage/bundle" "$stage/scripts" "$stage/scripts/catalog" "$stage/scripts/infra" || exit 92
+sync -f "$parent" || exit 92
+printf '%s\n' "$stage"
+REMOTE
+}
+
+deploy_transport_catalog_authenticate_stage() {
+    local ssh_host="$1" stage="$2" run_id="$3" catalog_id="$4" kind="$5"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
+      "$stage" "$run_id" "$catalog_id" "$kind" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+stage=$1; run_id=$2; catalog_id=$3; kind=$4; parent=${stage%/*}
+[[ "$stage" == /* && "$stage" != *//* && "$stage" != */../* && "$stage" != */./* &&
+   "${stage##*/}" =~ ^[.]catalog-transaction-${run_id}-${catalog_id}[.][1-9][0-9]*[.][0-9]{1,5}[.][0-9]{1,5}$ &&
+   ( "$kind" == production || "$kind" == fixture ) ]] || exit 90
+[[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%a' -- "$parent")" == "$(id -u):700" ]] || exit 91
+device="$(stat -c %d -- "$parent")"
+[[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%d:%a' -- "$stage")" == "$(id -u):$device:700" ]] || exit 92
+expected_count=9; [[ "$kind" != production ]] || expected_count=11
+[[ "$(find -P "$stage" -xdev -mindepth 1 -printf '.\n' | wc -l)" == "$expected_count" ]] || exit 93
+while IFS= read -r -d '' path; do
+  relative="${path#"$stage"/}"
+  case "$relative" in
+    bundle|scripts|scripts/catalog|scripts/infra|bundle/manifest.json|bundle/hyg_v42.sqlite|scripts/catalog/catalog-common.sh|scripts/catalog/install-hyg-v42.sh|scripts/infra:operation-lock) ;;
+    bundle/LICENSE-HYG.md|bundle/ATTRIBUTION-HYG.md) [[ "$kind" == production ]] || exit 93 ;;
+    *) exit 93 ;;
+  esac
+  path="$stage/$relative"
+  [[ "$(stat -c %d -- "$path")" == "$device" ]] || exit 94
+  if [[ -d "$path" && ! -L "$path" ]]; then
+    [[ "$(stat -c '%u:%a' -- "$path")" == "$(id -u):700" ]] || exit 94
+  elif [[ -f "$path" && ! -L "$path" ]]; then
+    [[ "$(stat -c '%u:%h' -- "$path")" == "$(id -u):1" ]] || exit 94
+    mode="$(stat -c %a -- "$path")"; (( (8#$mode & 0022) == 0 )) || exit 94
+  else
+    exit 94
+  fi
+done < <(find -P "$stage" -xdev -mindepth 1 -print0)
+chmod 700 -- "$stage/scripts/catalog/catalog-common.sh" "$stage/scripts/catalog/install-hyg-v42.sh" \
+  "$stage/scripts/infra:operation-lock" || exit 94
+sync -f "$stage" || exit 94
+adopted="$parent/.catalog-stage-$run_id-$catalog_id.${stage##*.catalog-transaction-$run_id-$catalog_id.}"
+[[ ! -e "$adopted" && ! -L "$adopted" ]] || exit 95
+mv -T -- "$stage" "$adopted" || exit 95
+sync -f "$parent" || exit 95
+printf '%s\n' "$adopted"
+REMOTE
+}
+
+deploy_transport_catalog_cleanup_stage() {
+    local ssh_host="$1" stage="$2" run_id="$3" catalog_id="$4"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- \
+      "$stage" "$run_id" "$catalog_id" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+stage=$1; run_id=$2; catalog_id=$3; parent=${stage%/*}
+[[ "$stage" == /* && "$stage" != *//* && "$stage" != */../* && "$stage" != */./* &&
+   "${stage##*/}" =~ ^[.]catalog-(transaction|stage)-${run_id}-${catalog_id}[.][1-9][0-9]*[.][0-9]{1,5}[.][0-9]{1,5}$ ]] || exit 90
+[[ -d "$parent" && ! -L "$parent" && "$(stat -c '%u:%a' -- "$parent")" == "$(id -u):700" ]] || exit 91
+device="$(stat -c %d -- "$parent")"
+[[ -d "$stage" && ! -L "$stage" && "$(stat -c '%u:%d' -- "$stage")" == "$(id -u):$device" ]] || exit 92
+stage_identity="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$stage")" || exit 93
+paths_file=''; map_fd=''; read_fd=''
+cleanup_map() {
+  [[ -z "${paths_file:-}" ]] || rm -f -- "$paths_file"
+  [[ -z "${read_fd:-}" ]] || exec {read_fd}<&-
+  [[ -z "${map_fd:-}" ]] || exec {map_fd}>&-
+}
+trap cleanup_map EXIT
+declare -A identities=()
+declare -a entries=()
+identities["$stage"]="$stage_identity"
+for attempt in {1..16}; do
+  paths_file="$parent/.catalog-cleanup-map.$$.$RANDOM.$RANDOM"
+  if (set -o noclobber; umask 077; : > "$paths_file") 2>/dev/null; then break; fi
+  paths_file=''
+done
+[[ -n "$paths_file" ]] || exit 93
+exec {map_fd}<>"$paths_file" || { rm -f -- "$paths_file"; exit 93; }
+map_identity="$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$map_fd")" || exit 93
+[[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "$paths_file")" ]] || exit 93
+exec {read_fd}<"$paths_file" || exit 93
+[[ "$map_identity" == "$(stat -Lc '%d:%i:%f:%u:%g:%h:%a' -- "/proc/$BASHPID/fd/$read_fd")" ]] || exit 93
+rm -f -- "$paths_file" || exit 93
+paths_file=''
+find -P "$stage" -xdev -depth -mindepth 1 -print0 > "/proc/$BASHPID/fd/$map_fd" || exit 93
+exec {map_fd}>&-
+map_fd=''
+while IFS= read -r -d '' path; do
+  [[ "$(stat -c %d -- "$path")" == "$device" ]] || exit 93
+  if [[ -d "$path" && ! -L "$path" ]]; then
+    [[ "$(stat -c %u -- "$path")" == "$(id -u)" ]] || exit 93
+    mode="$(stat -c %a -- "$path")"; (( (8#$mode & 0022) == 0 )) || exit 93
+  elif [[ -f "$path" && ! -L "$path" ]]; then
+    [[ "$(stat -c '%u:%h' -- "$path")" == "$(id -u):1" ]] || exit 93
+  else
+    exit 93
+  fi
+  identities["$path"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" || exit 93
+  entries+=("$path")
+done <&"$read_fd"
+exec {read_fd}<&-
+read_fd=''
+if [[ "${HVO_CATALOG_TEST_MODE:-}" == true && "${HVO_CATALOG_TEST_LOCK_BARRIER:-}" == catalog-stage-cleanup-final ]]; then
+  [[ -n "${HVO_CATALOG_TEST_LOCK_MARKER:-}" ]] || exit 93
+  printf '%s\n' "$BASHPID" > "$HVO_CATALOG_TEST_LOCK_MARKER"
+  kill -STOP "$BASHPID"
+fi
+for path in "${entries[@]}"; do
+  [[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$stage")" == "$stage_identity" && -d "$stage" && ! -L "$stage" &&
+     "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path")" == "${identities[$path]}" ]] || exit 93
+  if [[ -d "$path" && ! -L "$path" ]]; then rmdir -- "$path" || exit 93
+  elif [[ -f "$path" && ! -L "$path" ]]; then rm -f -- "$path" || exit 93
+  else exit 93; fi
+  [[ ! -e "$path" && ! -L "$path" ]] || exit 93
+  path_parent="${path%/*}"
+  if [[ -n "${identities[$path_parent]+present}" ]]; then
+    identities["$path_parent"]="$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$path_parent")" || exit 93
+    [[ "$path_parent" != "$stage" ]] || stage_identity="${identities[$path_parent]}"
+  fi
+done
+[[ "$(stat -c '%d:%i:%f:%u:%g:%h:%a' -- "$stage")" == "$stage_identity" && -d "$stage" && ! -L "$stage" ]] || exit 93
+rmdir -- "$stage" || exit 93
+sync -f "$parent" || exit 93
 REMOTE
 }
 
@@ -433,14 +957,34 @@ deploy_transport_catalog_verify() {
     shift
     ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null <<'REMOTE'
 set -euo pipefail
-install_root=$1; expected_version=$2; expected_sha=$3; expected_length=$4; expected_rows=$5
+stage=$1; install_root=$2; catalog_id=$3; kind=$4; expected_version=$5; schema_version=$6; preprocessing_version=$7; expected_sha=$8; expected_length=$9; expected_rows=${10}
+# shellcheck disable=SC1091
+source "$stage/scripts/catalog/catalog-common.sh"
 [[ -L "$install_root/current" ]] || exit 90
+hyg_catalog_acquire_root_lock "$install_root" || exit 92
+hyg_catalog_revalidate_root_lock "$install_root" || exit 92
+hyg_catalog_reconcile_lineage_temporaries "$install_root" || exit 92
+hyg_catalog_require_lineage "$install_root" "$catalog_id" "$kind" "$schema_version" "$preprocessing_version" || exit 92
+if [[ "$kind" == fixture ]]; then
+  hyg_fixture_reconcile_transaction_temporaries "$install_root" || exit 92
+  hyg_fixture_reconcile_pointer_temporaries "$install_root" || exit 92
+  hyg_fixture_reconcile_pointer_transaction "$install_root" || exit 92
+else
+  hyg_production_reconcile_pointer_temporaries "$install_root" || exit 92
+  hyg_production_reconcile_pointer_symlink_temporaries "$install_root" || exit 92
+  hyg_production_reconcile_pointer_transaction "$install_root" || exit 92
+  [[ ! -e "$install_root/.pointer-transaction" && ! -L "$install_root/.pointer-transaction" ]] || exit 92
+fi
 current=$(readlink "$install_root/current")
 [[ "$current" == "versions/$expected_version" ]] || exit 91
 database="$install_root/$current/hyg_v42.sqlite"
-[[ -f "$database" && ! -L "$database" && "$(sha256sum "$database" | cut -d' ' -f1)" == "$expected_sha" &&
-   "$(wc -c < "$database")" == "$expected_length" ]] || exit 92
-[[ "$(sqlite3 -batch -noheader -readonly "$database" 'PRAGMA integrity_check; SELECT count(*) FROM celestial_objects;')" == $'ok\n'"$expected_rows" ]] || exit 93
+hyg_catalog_validate_installed_target "$install_root" "$current" "$catalog_id" "$kind" || exit 92
+if [[ "$kind" == fixture ]]; then
+  hyg_validate_fixture_installation "$install_root" "$expected_version" "$catalog_id" || exit 92
+fi
+hyg_validate_catalog_contract "$install_root/$current" "$catalog_id" "$kind" "$expected_version" "$schema_version" \
+  "$preprocessing_version" "$expected_sha" "$expected_length" "$expected_rows" >/dev/null || exit 92
+hyg_catalog_revalidate_root_lock "$install_root" || exit 92
 printf 'verified\t%s\t%s\n' "$current" "$expected_sha"
 REMOTE
 }

@@ -28,6 +28,7 @@ services:
       CameraAgent__DeploymentLocation__Source: ${CAMERA_AGENT_LOCATION_SOURCE:?CAMERA_AGENT_LOCATION_SOURCE must be set}
       CameraAgent__DeploymentLocation__EffectiveFromUtc: ${CAMERA_AGENT_LOCATION_EFFECTIVE_UTC:?CAMERA_AGENT_LOCATION_EFFECTIVE_UTC must be set}
       Catalog__Root: ${CAMERA_AGENT_CATALOG_TARGET:?CAMERA_AGENT_CATALOG_TARGET must be set}
+      Catalog__RequiredCatalogId: hyg-v42-production
       Catalog__RequiredPackageKind: Production
       LocalIdentity__AdminEmail: ${CAMERA_AGENT_OWNER_EMAIL:?CAMERA_AGENT_OWNER_EMAIL must be set}
       LocalIdentity__CookieName: ${CAMERA_AGENT_COOKIE_NAME:?CAMERA_AGENT_COOKIE_NAME must be set}

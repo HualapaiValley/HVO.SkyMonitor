@@ -1,6 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Security.Cryptography;
 using HVO.SkyMonitor.Astronomy;
 using Microsoft.Data.Sqlite;
 
@@ -16,56 +16,93 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
     private readonly IReadOnlyDictionary<string, CelestialCatalogObject> _objectsByHipparcosId;
 
     /// <summary>Creates and fully loads a validated catalog snapshot.</summary>
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
+        Justification = "The chained constructor disposes the authenticated source in its finally block.")]
     public SqliteCelestialCatalog(SqliteCelestialCatalogOptions options)
+        : this(options, AuthenticateDatabase(options), expectedDatabaseLength: null, ownsAuthenticatedSource: true)
     {
-        ArgumentNullException.ThrowIfNull(options);
-        ValidateOptions(options);
+    }
 
-        Options = options;
-        var databasePath = Path.GetFullPath(options.DatabasePath);
-        ValidateNoSidecars(databasePath);
-        var actualChecksum = ValidateChecksum(databasePath, options.ExpectedSha256);
+    internal SqliteCelestialCatalog(
+        SqliteCelestialCatalogOptions options,
+        CatalogSnapshotResolver.AuthenticatedFile authenticatedSource,
+        long expectedDatabaseLength)
+        : this(options, authenticatedSource, expectedDatabaseLength, ownsAuthenticatedSource: false)
+    {
+    }
 
-        var connectionString = new SqliteConnectionStringBuilder
+    private SqliteCelestialCatalog(
+        SqliteCelestialCatalogOptions options,
+        CatalogSnapshotResolver.AuthenticatedFile authenticatedSource,
+        long? expectedDatabaseLength,
+        bool ownsAuthenticatedSource)
+    {
+        try
         {
-            DataSource = new Uri(databasePath).AbsoluteUri + "?immutable=1",
-            Mode = SqliteOpenMode.ReadOnly,
-            Cache = SqliteCacheMode.Private,
-            Pooling = false
-        }.ToString();
+            ArgumentNullException.ThrowIfNull(options);
+            ArgumentNullException.ThrowIfNull(authenticatedSource);
+            ValidateOptions(options);
 
-        using var connection = new SqliteConnection(connectionString);
-        connection.Open();
+            Options = options;
+            var databasePath = Path.GetFullPath(options.DatabasePath);
+            ValidateNoSidecars(databasePath);
+            using var privateSnapshot = PrivateSqliteSnapshot.Create(
+                authenticatedSource.Stream,
+                expectedDatabaseLength ?? authenticatedSource.Stream.Length,
+                options.ExpectedSha256);
+            CatalogSnapshotResolver.RevalidateFile(authenticatedSource, "Catalog database");
 
-        ValidateIntegrity(connection);
-        ValidateSchema(connection);
-        var metadata = ReadMetadata(connection);
-        ValidateVersion("schema_version", options.ExpectedSchemaVersion, metadata);
-        ValidateVersion("preprocessing_version", options.ExpectedPreprocessingVersion, metadata);
-        if (options.ExpectedCatalogVersion is { } expectedCatalogVersion)
-        {
-            ValidateVersion("catalog_version", expectedCatalogVersion, metadata);
+            var connectionString = new SqliteConnectionStringBuilder
+            {
+                DataSource = ":memory:",
+                Mode = SqliteOpenMode.Memory,
+                Cache = SqliteCacheMode.Private,
+                Pooling = false
+            }.ToString();
+
+            using var connection = new SqliteConnection(connectionString);
+            CatalogSnapshotResolver.InvokeValidationTestHook(databasePath, CatalogSnapshotValidationPoint.BeforeSqliteOpen);
+            connection.Open();
+            privateSnapshot.Load(connection);
+
+            ValidateIntegrity(connection);
+            ValidateSchema(connection);
+            var metadata = ReadMetadata(connection);
+            ValidateVersion("schema_version", options.ExpectedSchemaVersion, metadata);
+            ValidateVersion("preprocessing_version", options.ExpectedPreprocessingVersion, metadata);
+            if (options.ExpectedCatalogVersion is { } expectedCatalogVersion)
+            {
+                ValidateVersion("catalog_version", expectedCatalogVersion, metadata);
+            }
+            ValidateUserVersion(connection, options.ExpectedSchemaVersion);
+
+            Metadata = new CatalogMetadata(
+                RequiredMetadata(metadata, "name"),
+                RequiredMetadata(metadata, "catalog_version"),
+                new Uri(RequiredMetadata(metadata, "source_url"), UriKind.Absolute),
+                privateSnapshot.Sha256,
+                RequiredMetadata(metadata, "license"),
+                RequiredMetadata(metadata, "schema_version"));
+            PreprocessingVersion = RequiredMetadata(metadata, "preprocessing_version");
+            _objects = Array.AsReadOnly(ReadObjects(connection));
+            if (options.ExpectedRowCount is { } expectedRowCount && _objects.Count != expectedRowCount)
+            {
+                throw new InvalidDataException(
+                    $"Catalog row count mismatch. Expected {expectedRowCount}, got {_objects.Count}.");
+            }
+            _objectsByHipparcosId = _objects
+                .Where(static item => item.HipparcosId is not null)
+                .ToDictionary(static item => item.HipparcosId!, StringComparer.Ordinal);
+            CatalogSnapshotResolver.InvokeValidationTestHook(databasePath, CatalogSnapshotValidationPoint.AfterSqliteLoad);
+            ValidateNoSidecars(databasePath);
         }
-        ValidateUserVersion(connection, options.ExpectedSchemaVersion);
-
-        Metadata = new CatalogMetadata(
-            RequiredMetadata(metadata, "name"),
-            RequiredMetadata(metadata, "catalog_version"),
-            new Uri(RequiredMetadata(metadata, "source_url"), UriKind.Absolute),
-            actualChecksum,
-            RequiredMetadata(metadata, "license"),
-            RequiredMetadata(metadata, "schema_version"));
-        PreprocessingVersion = RequiredMetadata(metadata, "preprocessing_version");
-        _objects = Array.AsReadOnly(ReadObjects(connection));
-        if (options.ExpectedRowCount is { } expectedRowCount && _objects.Count != expectedRowCount)
+        finally
         {
-            throw new InvalidDataException(
-                $"Catalog row count mismatch. Expected {expectedRowCount}, got {_objects.Count}.");
+            if (ownsAuthenticatedSource)
+            {
+                authenticatedSource.Dispose();
+            }
         }
-        _objectsByHipparcosId = _objects
-            .Where(static item => item.HipparcosId is not null)
-            .ToDictionary(static item => item.HipparcosId!, StringComparer.Ordinal);
-        ValidateNoSidecars(databasePath);
     }
 
     /// <summary>Gets the immutable options used to validate this snapshot.</summary>
@@ -184,18 +221,14 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         }
     }
 
-    private static string ValidateChecksum(string path, string expectedChecksum)
+    private static CatalogSnapshotResolver.AuthenticatedFile AuthenticateDatabase(
+        SqliteCelestialCatalogOptions options)
     {
-        using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var actual = SHA256.HashData(source);
-        var expected = Convert.FromHexString(expectedChecksum);
-        if (!CryptographicOperations.FixedTimeEquals(actual, expected))
-        {
-            throw new InvalidDataException(
-                $"Catalog snapshot SHA-256 mismatch. Expected {expectedChecksum.ToUpperInvariant()}, got {Convert.ToHexString(actual)}.");
-        }
-
-        return Convert.ToHexString(actual);
+        ArgumentNullException.ThrowIfNull(options);
+        ValidateOptions(options);
+        var databasePath = Path.GetFullPath(options.DatabasePath);
+        ValidateNoSidecars(databasePath);
+        return CatalogSnapshotResolver.AuthenticateFile(databasePath, "Catalog database");
     }
 
     private static Dictionary<string, string> ReadMetadata(SqliteConnection connection)

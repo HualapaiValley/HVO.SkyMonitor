@@ -27,20 +27,25 @@ deploy_validate_inventory() {
        def infra: exact(["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","ports"]) and
          ({name,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot,runtimeOwner} | base) and
          (.ports | type == "array" and length > 0 and all(type == "number" and floor == . and . >= 1 and . <= 65535) and length == (unique | length));
-       def app: exact(["name","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","internalEndpoint","publicEndpoint","trustedProxyAddresses","ports"]) and
-         ({name,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot,runtimeOwner} | base) and
+       def app: exact(["name","friendlyName","instanceId","applicationIdentity","catalogId","cookieName","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","internalEndpoint","publicEndpoint","trustedProxyAddresses","ports"]) and
+          ({name,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot,runtimeOwner} | base) and
+          (.friendlyName | text and length <= 200) and
+          (.instanceId | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")) and
+          (.applicationIdentity | text and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
+          (.catalogId | name) and (.cookieName | text and test("^hvo[.]skymonitor[.][0-9a-f]{32}$")) and
          (.publicEndpoint | url) and (.internalEndpoint | url and startswith("http://")) and
          (.trustedProxyAddresses | type == "array" and length == (unique | length) and all(ipv4)) and
          (.ports | type == "array" and length > 0 and all(type == "number" and floor == . and . >= 1 and . <= 65535) and length == (unique | length)) and
          (. as $target | (.internalEndpoint | capture("^http://[^/:]+:(?<port>[0-9]+)").port | tonumber) as $internalPort |
            $internalPort <= 65535 and ($target.ports | index($internalPort) != null));
-         def camera: exact(["name","friendlyName","ownerEmail","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","internalEndpoint","publicEndpoint","trustedProxyAddresses","ports","moduleConfigPath","ownerPasswordSecretReference"]) and
-          ({name,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot,runtimeOwner,
-            internalEndpoint,publicEndpoint,trustedProxyAddresses,ports} | app) and
-           (.friendlyName | text and length <= 200) and (.ownerEmail | text and length <= 254 and test("^[^@[:space:]]+@[^@[:space:]]+$")) and
+         def camera: exact(["name","friendlyName","instanceId","applicationIdentity","catalogId","cookieName","ownerEmail","sshHost","dockerContext","expectedArchitecture","expectedHostName","expectedHostIdentity","expectedDockerDaemonIdentity","runtimeRoot","runtimeOwner","internalEndpoint","publicEndpoint","trustedProxyAddresses","ports","moduleConfigPath","ownerPasswordSecretReference"]) and
+           ({name,friendlyName,instanceId,applicationIdentity,catalogId,cookieName,sshHost,dockerContext,expectedArchitecture,expectedHostName,expectedHostIdentity,expectedDockerDaemonIdentity,runtimeRoot,runtimeOwner,
+             internalEndpoint,publicEndpoint,trustedProxyAddresses,ports} | app) and
+            (.ownerEmail | text and length <= 254 and test("^[^@[:space:]]+@[^@[:space:]]+$")) and
            (.moduleConfigPath | root) and (.ownerPasswordSecretReference | type == "string" and test("^[A-Z][A-Z0-9_]{0,127}$"));
-        exact(["schemaVersion","environment","installationId","source","secretSource","observatory","logicHost","cameraAgents","sharedServices","serviceEndpoints","catalog","images","deployment"]) and
-         .schemaVersion == 7 and (.environment | name) and (.installationId | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) and
+         exact(["schemaVersion","environment","installationId","productRoot","source","secretSource","observatory","logicHost","cameraAgents","sharedServices","serviceEndpoints","catalogs","images","deployment"]) and
+          .schemaVersion == 8 and (.environment | name) and (.installationId | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) and
+       (.productRoot | runtime_root) and
       (.source | exact(["revision","dirtyDisposition"]) and (.revision | type == "string" and test("^[0-9a-f]{40}$")) and
         (.dirtyDisposition == "require-clean" or .dirtyDisposition == "allow-dirty")) and
        (.secretSource | exact(["path","requiredReferences"]) and (.path | text) and
@@ -57,9 +62,12 @@ deploy_validate_inventory() {
       (.serviceEndpoints | type == "array" and all(exact(["name","host","port","fromTargets"]) and (.name | name) and
         (.host | text and test("^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")) and (.port | type == "number" and floor == . and . >= 1 and . <= 65535) and
         (.fromTargets | type == "array" and length > 0 and length == (unique | length) and all(type == "string")))) and
-      (.catalog | exact(["kind","version","sha256","length","rowCount"]) and (.kind == "production" or .kind == "fixture") and
-        (.version | text and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and (.sha256 | type == "string" and test("^[0-9a-fA-F]{64}$")) and
-        (.length | type == "number" and floor == . and . > 0) and (.rowCount | type == "number" and floor == . and . > 0)) and
+       (.catalogs | type == "array" and length > 0 and all(
+          exact(["catalogId","displayName","kind","version","schemaVersion","preprocessingVersion","sha256","length","rowCount","bundlePath","installRoot","allowFixture"]) and
+         (.catalogId | name) and (.displayName | text and length <= 200) and (.kind == "production" or .kind == "fixture") and
+          all(.version,.schemaVersion,.preprocessingVersion; text and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and (.sha256 | type == "string" and test("^[0-9a-fA-F]{64}$")) and
+         (.length | type == "number" and floor == . and . > 0) and (.rowCount | type == "number" and floor == . and . > 0) and
+         (.bundlePath | root) and (.installRoot | runtime_root) and (.allowFixture | type == "boolean"))) and
       (.images | exact(["distributionMode","artifactRoot","tag","builder","registryImmutableTags","logicHost","cameraAgent"]) and
         (.distributionMode == "registry" or .distributionMode == "archive") and
         (.artifactRoot == null or (.artifactRoot | root)) and
@@ -81,8 +89,7 @@ deploy_validate_inventory() {
       .images.tag == ("rev-" + .source.revision) and
       ((.images.distributionMode == "archive" and .images.artifactRoot != null and .images.registryImmutableTags == false) or
        (.images.distributionMode == "registry" and .images.artifactRoot == null and .images.registryImmutableTags == true)) and
-      (.deployment | exact(["catalog","services","resources","certificates","automation","deviceBootstrap","transient","workload","secretMappings","limits"]) and
-        (.catalog | exact(["bundlePath","installRoot","allowFixture"]) and (.bundlePath | root) and (.installRoot | root) and (.allowFixture | type == "boolean")) and
+       (.deployment | exact(["services","resources","certificates","automation","deviceBootstrap","transient","workload","secretMappings","limits"]) and
         (.services | exact(["mode","sql","redis","minio","smtp","images"]) and (.mode == "existing" or .mode == "deploy") and
           all(.sql,.redis,.minio,.smtp; .host | text and test("^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")) and
           all(.sql,.redis,.minio; .port | type == "number" and floor == . and . >= 1 and . <= 65535) and
@@ -152,7 +159,7 @@ deploy_validate_inventory() {
           ([.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.minio.port,.deployment.services.smtp.ports[]] | unique | length) == 5 and
           (.sharedServices.ports | sort) == ([.deployment.services.sql.port,.deployment.services.redis.port,.deployment.services.minio.port,.deployment.services.smtp.ports[]] | sort)) or
        .deployment.services.mode == "existing") and
-      (($mode == "isolated" and (.catalog.kind == "production" or .deployment.catalog.allowFixture == true)) or $mode == "persistent")
+       (($mode == "isolated" and all(.catalogs[]; .kind == "production" or .allowFixture == true)) or $mode == "persistent")
     ' "$inventory" >/dev/null 2>&1 || deploy_fail validate inventory "schema-or-value-invalid" || return 1
 
     local target_count unique_count collision_count unknown_route
@@ -160,14 +167,17 @@ deploy_validate_inventory() {
     unique_count="$(jq '([.logicHost.name] + [.cameraAgents[].name] + (if .sharedServices then [.sharedServices.name] else [] end)) | unique | length' "$inventory")"
     [[ "$target_count" == "$unique_count" ]] || deploy_fail validate inventory "duplicate-target-name" || return 1
     collision_count="$(jq '
-      def allowed_colocation($logic; $shared):
-        $shared != null and length == 2 and ([.[].name] | sort) == ([$logic.name,$shared.name] | sort);
-      .logicHost as $logic | .sharedServices as $shared |
-      ([.logicHost] + .cameraAgents + (if $shared then [$shared] else [] end)) as $targets |
-      ([($targets | group_by(.sshHost)[]), ($targets | group_by(.dockerContext)[]) | select(length > 1)] +
-       [($targets | group_by(.expectedHostName)[]), ($targets | group_by(.expectedHostIdentity)[]),
-        ($targets | group_by(.expectedDockerDaemonIdentity)[]) | select(length > 1 and (allowed_colocation($logic; $shared) | not))]) |
-      length' "$inventory")"
+      ([.logicHost] + .cameraAgents + (if .sharedServices then [.sharedServices] else [] end)) as $targets |
+      [range(0; $targets|length) as $i | range($i+1; $targets|length) as $j |
+       $targets[$i] as $a | $targets[$j] as $b |
+       select(
+         ($a.sshHost == $b.sshHost and
+           ([$a.expectedHostName,$a.expectedHostIdentity,$a.expectedArchitecture] != [$b.expectedHostName,$b.expectedHostIdentity,$b.expectedArchitecture])) or
+         ($a.dockerContext == $b.dockerContext and
+           ([$a.expectedDockerDaemonIdentity,$a.expectedArchitecture] != [$b.expectedDockerDaemonIdentity,$b.expectedArchitecture])) or
+         ($a.expectedHostIdentity == $b.expectedHostIdentity and
+           ([$a.expectedHostName,$a.expectedArchitecture] != [$b.expectedHostName,$b.expectedArchitecture])) or
+         ($a.expectedDockerDaemonIdentity == $b.expectedDockerDaemonIdentity and $a.expectedArchitecture != $b.expectedArchitecture))] | length' "$inventory")"
     [[ "$collision_count" == 0 ]] || deploy_fail validate inventory "target-identity-collision" || return 1
     unknown_route="$(jq '([.logicHost.name] + [.cameraAgents[].name] + (if .sharedServices then [.sharedServices.name] else [] end)) as $names |
       [.serviceEndpoints[].fromTargets[] | select(. as $n | $names | index($n) | not)] | length' "$inventory")"
@@ -185,7 +195,7 @@ deploy_validate_inventory() {
         map(select(. != null)) | unique | all(. as $reference | $required | index($reference) != null))' "$inventory" >/dev/null ||
       deploy_fail validate inventory "unknown-deployment-secret-reference" || return 1
     if [[ "$mode" == persistent ]]; then
-        jq -e '.catalog.kind == "production" and .deployment.catalog.allowFixture == false and
+        jq -e 'all(.catalogs[]; .kind == "production" and .allowFixture == false) and
           .deployment.services.mode == "existing" and .deployment.services.smtp.kind == "production" and
           (([.logicHost] + .cameraAgents) | all(.[]; (.publicEndpoint | startswith("https://")) and
             (.internalEndpoint | startswith("http://")) and (.trustedProxyAddresses | length > 0)))' "$inventory" >/dev/null ||

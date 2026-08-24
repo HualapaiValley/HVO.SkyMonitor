@@ -17,12 +17,13 @@ install_root="$temporary_directory/install"
 mkdir -p "$bundle" "$install_root/versions/sentinel" "$install_root/.staging.orphan"
 cat > "$bundle/manifest.json" <<JSON
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "package": {
     "kind": "fixture",
     "version": "fixture-1"
   },
   "catalog": {
+    "id": "fixture-smoke",
     "name": "fixture",
     "version": "fixture-1"
   },
@@ -51,14 +52,14 @@ fi
     printf 'failed fixture install changed the active pointer\n' >&2
     exit 1
 }
-[[ ! -e "$install_root/.staging.orphan" ]] || {
-    printf 'orphan staging directory was not cleaned\n' >&2
+[[ -e "$install_root/.staging.orphan" ]] || {
+    printf 'invalid unbound install mutated orphan staging before bundle validation\n' >&2
     exit 1
 }
 
 cat > "$bundle/manifest.json" <<JSON
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "package": {
     "kind": "production",
     "kind": "production",

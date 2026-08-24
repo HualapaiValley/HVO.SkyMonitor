@@ -3780,7 +3780,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
         var catalogRoot = Environment.GetEnvironmentVariable("HVO_CATALOG_PERF_ROOT");
         Assert.IsFalse(string.IsNullOrWhiteSpace(catalogRoot));
-        var catalog = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(catalogRoot!));
+        var catalog = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+            catalogRoot!, "hyg-v42-production"));
         Assert.AreEqual(ExpectedCatalogSha256, catalog.DatabaseSha256, ignoreCase: true);
         await using var module = new VirtualSkyCameraModule(
             new FixedUtcTimeProvider(raw.Manifest.Descriptor.Timing.RequestedStartUtc),

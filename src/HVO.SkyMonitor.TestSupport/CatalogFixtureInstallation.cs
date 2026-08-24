@@ -7,6 +7,7 @@ namespace HVO.SkyMonitor.TestSupport;
 public sealed class CatalogFixtureInstallation : IDisposable
 {
     private const string PackageVersion = "hyg-v42-fixture-1";
+    private const string CatalogId = "hyg-v42-fixture";
     private bool _disposed;
 
     private CatalogFixtureInstallation(string root)
@@ -32,9 +33,9 @@ public sealed class CatalogFixtureInstallation : IDisposable
         var checksum = Convert.ToHexString(SHA256.HashData(source));
         var manifest = new
         {
-            manifestVersion = 1,
+            manifestVersion = 2,
             package = new { kind = "fixture", version = PackageVersion },
-            catalog = new { name = "HYG bright-star test fixture", version = "4.2-fixture.1" },
+            catalog = new { id = CatalogId, name = "HYG bright-star test fixture", version = "4.2-fixture.1" },
             schemaVersion = "2",
             preprocessingVersion = "3",
             database = new

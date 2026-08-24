@@ -9,7 +9,9 @@ namespace HVO.SkyMonitor.Catalog.Sqlite;
 public static partial class InstalledCelestialCatalogServiceCollectionExtensions
 {
     private const string CatalogRootKey = "Catalog:Root";
+    private const string RequiredCatalogIdKey = "Catalog:RequiredCatalogId";
     private const string RequiredPackageKindKey = "Catalog:RequiredPackageKind";
+    private const string RequiredPackageVersionKey = "Catalog:RequiredPackageVersion";
 
     /// <summary>
     /// Registers one lazily resolved installed snapshot and maps all catalog contracts to its immutable catalog.
@@ -27,15 +29,24 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
                 throw new InvalidOperationException($"Configuration value '{CatalogRootKey}' is required.");
             }
 
-            var packageKind = ParseRequiredPackageKind(configuration[RequiredPackageKindKey]);
-            var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installRoot)
+            var requiredCatalogId = configuration[RequiredCatalogIdKey];
+            if (string.IsNullOrWhiteSpace(requiredCatalogId))
             {
-                ExpectedPackageKind = packageKind
+                throw new InvalidOperationException($"Configuration value '{RequiredCatalogIdKey}' is required.");
+            }
+
+            var packageKind = ParseRequiredPackageKind(configuration[RequiredPackageKindKey]);
+            var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installRoot, requiredCatalogId)
+            {
+                ExpectedPackageKind = packageKind,
+                ExpectedPackageVersion = configuration[RequiredPackageVersionKey]
             });
 
             CatalogSnapshotResolved(
                 serviceProvider.GetRequiredService<ILogger<SqliteCelestialCatalog>>(),
                 result.PackageKind,
+                result.CatalogId,
+                result.CatalogIdDerivedFromLegacyManifest ? "derived-manifest-v1" : "explicit-manifest-v2",
                 result.CatalogVersion,
                 result.SchemaVersion,
                 result.PreprocessingVersion,
@@ -74,10 +85,12 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
         EventId = 3000,
         EventName = "InstalledCatalogSnapshotResolved",
         Level = LogLevel.Information,
-        Message = "Installed celestial catalog snapshot {Kind}: catalog {CatalogVersion}, schema {SchemaVersion}, preprocessing {PreprocessingVersion}, database SHA-256 {DatabaseSha256}, rows {RowCount}")]
+        Message = "Installed celestial catalog snapshot {Kind}: identity {CatalogId} ({CatalogIdentitySource}), catalog {CatalogVersion}, schema {SchemaVersion}, preprocessing {PreprocessingVersion}, database SHA-256 {DatabaseSha256}, rows {RowCount}")]
     private static partial void CatalogSnapshotResolved(
         ILogger logger,
         CatalogSnapshotPackageKind kind,
+        string catalogId,
+        string catalogIdentitySource,
         string catalogVersion,
         string schemaVersion,
         string preprocessingVersion,

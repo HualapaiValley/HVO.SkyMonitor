@@ -41,7 +41,14 @@ RUN dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o 
 
 # Stage 2: Runtime
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
+ARG HVO_SOURCE_REVISION=unknown
 WORKDIR /app
+
+LABEL io.hvo.skymonitor.component="CameraAgent" \
+      io.hvo.skymonitor.state-compatibility="backward-compatible" \
+      io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
+      io.hvo.skymonitor.catalog-contract="hyg-v42-production-p3-s2" \
+      org.opencontainers.image.revision="${HVO_SOURCE_REVISION}"
 
 # Install health-check and ASI SDK runtime dependencies. The proprietary SDK is mounted separately.
 RUN apt-get update && apt-get install -y curl libusb-1.0-0 && rm -rf /var/lib/apt/lists/*

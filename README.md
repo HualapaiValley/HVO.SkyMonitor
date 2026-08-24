@@ -10,6 +10,10 @@ The portfolio roadmap and stable initiative IDs are in
 virtual-first requirements, and detailed implementation plan remain in
 [`docs/project-plan.md`](docs/project-plan.md).
 
+For a repository-independent local VirtualSky CameraAgent installation from
+verified local/offline assets, see the
+[`hvo-skymonitor` installer runbook](docs/runbooks/deployment-installer.md).
+
 ## Development Environment
 
 This repository is configured to work with Visual Studio Code Dev Containers and GitHub Codespaces. The devcontainer provides a Docker CLI for local and remote Docker contexts.

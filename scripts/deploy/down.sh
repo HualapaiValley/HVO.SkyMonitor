@@ -362,23 +362,23 @@ deploy_run_down() {
         if deploy_down_begin_action "cameraagent:$name" graceful-stop; then
             deploy_transport_remote_directories "$(jq -r '.sshHost' <<< "$target")" "$remote_root" || return 1
             deploy_down_pause_and_drain "$inventory" "$target" "$render_root" "$private_root" "$remote_root" "$run_id" || return 1
-            deploy_up_compose_mutation "$target" "$context" "$state_project-$name" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" stop -t 60 cameraagent || return 1
-            deploy_down_require_service_stopped "$target" "$context" "$state_project-$name" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent || return 1
+            deploy_up_compose_mutation "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" stop -t 60 cameraagent || return 1
+            deploy_down_require_service_stopped "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent || return 1
             deploy_down_after_mutation "cameraagent:$name" graceful-stop || return 1
             deploy_down_complete_action "cameraagent:$name" graceful-stop || return 1
         else result=$?; [[ "$result" == 2 ]] || return 1
-            deploy_down_require_service_stopped "$target" "$context" "$state_project-$name" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent || return 1
+            deploy_down_require_service_stopped "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent || return 1
         fi
     done < <(jq -c '.cameraAgents[]' "$inventory")
 
     logic="$(jq -c '.logicHost' "$inventory")"; name="$(jq -r '.name' <<< "$logic")"; context="$(jq -r '.dockerContext' <<< "$logic")"; env_file="$state_dir/up-rendered/$name.env"
     if deploy_down_begin_action logichost graceful-stop; then
-        deploy_up_compose_mutation "$logic" "$context" "$state_project-logic" "$env_file" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" stop -t 60 logichost || return 1
-        deploy_down_require_service_stopped "$logic" "$context" "$state_project-logic" "$env_file" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" logichost || return 1
+        deploy_up_compose_mutation "$logic" "$context" "$(deploy_compose_project "$inventory" "$logic")" "$env_file" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" stop -t 60 logichost || return 1
+        deploy_down_require_service_stopped "$logic" "$context" "$(deploy_compose_project "$inventory" "$logic")" "$env_file" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" logichost || return 1
         deploy_down_after_mutation logichost graceful-stop || return 1
         deploy_down_complete_action logichost graceful-stop || return 1
     else result=$?; [[ "$result" == 2 ]] || return 1
-        deploy_down_require_service_stopped "$logic" "$context" "$state_project-logic" "$env_file" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" logichost || return 1
+        deploy_down_require_service_stopped "$logic" "$context" "$(deploy_compose_project "$inventory" "$logic")" "$env_file" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" logichost || return 1
     fi
 
     if [[ "$(jq -r '.deployment.services.mode' "$inventory")" == deploy ]]; then
@@ -401,22 +401,22 @@ deploy_run_down() {
         while IFS= read -r target; do
             name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"; env_file="$state_dir/up-rendered/$name.env"
             if deploy_down_begin_action "cameraagent:$name" remove; then
-                deploy_up_compose_mutation "$target" "$context" "$state_project-$name" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" rm -f cameraagent || return 1
-                deploy_down_require_service_absent "$target" "$context" "$state_project-$name" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent || return 1
+                deploy_up_compose_mutation "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" rm -f cameraagent || return 1
+                deploy_down_require_service_absent "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent || return 1
                 deploy_down_after_mutation "cameraagent:$name" remove || return 1
                 deploy_down_complete_action "cameraagent:$name" remove || return 1
             else result=$?; [[ "$result" == 2 ]] || return 1
-                deploy_down_require_service_absent "$target" "$context" "$state_project-$name" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent || return 1
+                deploy_down_require_service_absent "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent || return 1
             fi
         done < <(jq -c '.cameraAgents[]' "$inventory")
         if deploy_down_begin_action logichost remove; then
-            deploy_up_compose_mutation "$logic" "$(jq -r '.dockerContext' <<< "$logic")" "$state_project-logic" "$state_dir/up-rendered/$(jq -r '.name' <<< "$logic").env" \
+            deploy_up_compose_mutation "$logic" "$(jq -r '.dockerContext' <<< "$logic")" "$(deploy_compose_project "$inventory" "$logic")" "$state_dir/up-rendered/$(jq -r '.name' <<< "$logic").env" \
               "$REPO_ROOT/deploy/split-host/compose.logichost.yml" rm -f logichost || return 1
-            deploy_down_require_service_absent "$logic" "$(jq -r '.dockerContext' <<< "$logic")" "$state_project-logic" "$state_dir/up-rendered/$(jq -r '.name' <<< "$logic").env" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" logichost || return 1
+            deploy_down_require_service_absent "$logic" "$(jq -r '.dockerContext' <<< "$logic")" "$(deploy_compose_project "$inventory" "$logic")" "$state_dir/up-rendered/$(jq -r '.name' <<< "$logic").env" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" logichost || return 1
             deploy_down_after_mutation logichost remove || return 1
             deploy_down_complete_action logichost remove || return 1
         else result=$?; [[ "$result" == 2 ]] || return 1
-            deploy_down_require_service_absent "$logic" "$(jq -r '.dockerContext' <<< "$logic")" "$state_project-logic" "$state_dir/up-rendered/$(jq -r '.name' <<< "$logic").env" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" logichost || return 1
+            deploy_down_require_service_absent "$logic" "$(jq -r '.dockerContext' <<< "$logic")" "$(deploy_compose_project "$inventory" "$logic")" "$state_dir/up-rendered/$(jq -r '.name' <<< "$logic").env" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" logichost || return 1
         fi
         shared="$(jq -c '.sharedServices' "$inventory")"; context="$(jq -r '.dockerContext' <<< "$shared")"
         if deploy_down_begin_action shared-services remove; then
@@ -447,8 +447,8 @@ deploy_run_down() {
                 deploy_down_complete_action "network:$network" delete-network || return 1
             else result=$?; [[ "$result" == 2 ]] || return 1; fi
         done < <(
-          while IFS= read -r target; do name="$(jq -r '.name' <<< "$target")"; printf '%s\t%s\t%s\t%s\n' "$name" "$(jq -r '.dockerContext' <<< "$target")" "$state_project-$name" "$target"; done < <(jq -c '.cameraAgents[]' "$inventory")
-          printf 'logic\t%s\t%s\t%s\n' "$(jq -r '.dockerContext' <<< "$logic")" "$state_project-logic" "$logic"
+          while IFS= read -r target; do name="$(jq -r '.name' <<< "$target")"; printf '%s\t%s\t%s\t%s\n' "$name" "$(jq -r '.dockerContext' <<< "$target")" "$(deploy_compose_project "$inventory" "$target")" "$target"; done < <(jq -c '.cameraAgents[]' "$inventory")
+          printf 'logic\t%s\t%s\t%s\n' "$(jq -r '.dockerContext' <<< "$logic")" "$(deploy_compose_project "$inventory" "$logic")" "$logic"
           printf 'services\t%s\t%s\t%s\n' "$context" "$state_project-services" "$shared"
         )
         context="$(jq -r '.dockerContext' <<< "$shared")"

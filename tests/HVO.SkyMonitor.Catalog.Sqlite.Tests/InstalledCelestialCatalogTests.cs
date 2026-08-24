@@ -25,10 +25,12 @@ internal sealed class InstalledCelestialCatalogTests
         var logger = new RecordingLogger<SqliteCelestialCatalog>();
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(Configuration(("Catalog:Root", "missing"),
+            ("Catalog:RequiredCatalogId", "hyg-v42-production"),
             ("Catalog:RequiredPackageKind", "Production")));
         services.AddSingleton<ILogger<SqliteCelestialCatalog>>(logger);
         services.AddInstalledCelestialCatalog();
         services.AddSingleton<IConfiguration>(Configuration(("Catalog:Root", installation.Root),
+            ("Catalog:RequiredCatalogId", "hyg-v42-fixture"),
             ("Catalog:RequiredPackageKind", "fixture")));
         using var provider = services.BuildServiceProvider();
 
@@ -48,12 +50,14 @@ internal sealed class InstalledCelestialCatalogTests
         Assert.AreEqual("InstalledCatalogSnapshotResolved", entry.EventId.Name);
         Assert.AreEqual(LogLevel.Information, entry.Level);
         Assert.AreEqual(CatalogSnapshotPackageKind.Fixture, entry.Properties["Kind"]);
+        Assert.AreEqual("hyg-v42-fixture", entry.Properties["CatalogId"]);
+        Assert.AreEqual("explicit-manifest-v2", entry.Properties["CatalogIdentitySource"]);
         Assert.AreEqual("4.2-fixture.1", entry.Properties["CatalogVersion"]);
         Assert.AreEqual("2", entry.Properties["SchemaVersion"]);
         Assert.AreEqual("3", entry.Properties["PreprocessingVersion"]);
         Assert.AreEqual(snapshot.DatabaseSha256, entry.Properties["DatabaseSha256"]);
         Assert.AreEqual(9L, entry.Properties["RowCount"]);
-        Assert.HasCount(7, entry.Properties);
+        Assert.HasCount(9, entry.Properties);
         Assert.IsFalse(entry.Message.Contains(installation.Root, StringComparison.Ordinal));
     }
 
@@ -66,25 +70,48 @@ internal sealed class InstalledCelestialCatalogTests
             Resolve(Configuration(("Catalog:RequiredPackageKind", "Fixture"))));
         StringAssert.Contains(missingRoot.Message, "Catalog:Root", StringComparison.Ordinal);
         Assert.ThrowsExactly<InvalidOperationException>(() =>
-            Resolve(Configuration(("Catalog:Root", " "), ("Catalog:RequiredPackageKind", "Fixture"))));
+            Resolve(Configuration(("Catalog:Root", " "), ("Catalog:RequiredCatalogId", "hyg-v42-fixture"),
+                ("Catalog:RequiredPackageKind", "Fixture"))));
+
+        var missingCatalogId = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            Resolve(Configuration(("Catalog:Root", installation.Root),
+                ("Catalog:RequiredPackageKind", "Fixture"))));
+        StringAssert.Contains(missingCatalogId.Message, "Catalog:RequiredCatalogId", StringComparison.Ordinal);
 
         var missingKind = Assert.ThrowsExactly<InvalidOperationException>(() =>
-            Resolve(Configuration(("Catalog:Root", installation.Root))));
+            Resolve(Configuration(("Catalog:Root", installation.Root),
+                ("Catalog:RequiredCatalogId", "hyg-v42-fixture"))));
         StringAssert.Contains(missingKind.Message, "Catalog:RequiredPackageKind", StringComparison.Ordinal);
 
         Assert.ThrowsExactly<InvalidOperationException>(() =>
             Resolve(Configuration(("Catalog:Root", installation.Root),
+                ("Catalog:RequiredCatalogId", "hyg-v42-fixture"),
                 ("Catalog:RequiredPackageKind", "0"))));
         Assert.ThrowsExactly<InvalidOperationException>(() =>
             Resolve(Configuration(("Catalog:Root", installation.Root),
+                ("Catalog:RequiredCatalogId", "hyg-v42-fixture"),
                 ("Catalog:RequiredPackageKind", " fixture "))));
+    }
+
+    [TestMethod]
+    public void RegistrationRejectsSwappedValidFixtureIdentity()
+    {
+        using var installation = CatalogSnapshotResolverTests.CreateInstallation();
+
+        var exception = Assert.ThrowsExactly<InvalidDataException>(() =>
+            Resolve(Configuration(("Catalog:Root", installation.Root),
+                ("Catalog:RequiredCatalogId", "alternate-fixture"),
+                ("Catalog:RequiredPackageKind", "Fixture"))));
+
+        StringAssert.Contains(exception.Message, "Catalog identity mismatch", StringComparison.Ordinal);
     }
 
     [TestMethod]
     public async Task HealthUsesLoadedIdentityAndDistinguishesFixtureFromProduction()
     {
         using var installation = CatalogSnapshotResolverTests.CreateInstallation();
-        var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(installation.Root)
+        var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+            installation.Root, "hyg-v42-fixture")
         {
             ExpectedPackageKind = CatalogSnapshotPackageKind.Fixture
         });
@@ -103,8 +130,10 @@ internal sealed class InstalledCelestialCatalogTests
             fixture.Description);
         Assert.AreEqual(HealthStatus.Healthy, production.Status);
         Assert.AreEqual("Production celestial catalog snapshot is installed.", production.Description);
-        Assert.HasCount(6, fixture.Data);
+        Assert.HasCount(8, fixture.Data);
         Assert.AreEqual("Fixture", fixture.Data["Kind"]);
+        Assert.AreEqual("hyg-v42-fixture", fixture.Data["CatalogId"]);
+        Assert.AreEqual("explicit-manifest-v2", fixture.Data["CatalogIdentitySource"]);
         Assert.AreEqual(snapshot.DatabaseSha256, fixture.Data["DatabaseSha256"]);
         Assert.AreEqual(snapshot.RowCount, fixture.Data["RowCount"]);
         Assert.IsFalse(fixture.Data.Keys.Any(static key => key.Contains("Path", StringComparison.Ordinal)));

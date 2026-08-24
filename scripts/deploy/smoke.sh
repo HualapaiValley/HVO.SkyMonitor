@@ -314,7 +314,7 @@ deploy_run_smoke() {
             deploy_fail smoke "$name" bounded-metrics-invalid
             return 1
         fi
-        context="$(jq -r '.dockerContext' <<< "$target")"; project="$(jq -r '.deployment.resources.project' "$inventory")-$name"; env_file="$state_dir/up-rendered/$name.env"
+        context="$(jq -r '.dockerContext' <<< "$target")"; project="$(deploy_compose_project "$inventory" "$target")"; env_file="$state_dir/up-rendered/$name.env"
         deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || return 1
         deploy_transport_compose_logs "$context" "$project" "$env_file" "$REPO_ROOT/deploy/split-host/compose.cameraagent.yml" cameraagent \
           "$(jq -r '.startedAt' <<< "$DEPLOY_SMOKE_JSON")" "$private_root/$name-application.log" || return 1

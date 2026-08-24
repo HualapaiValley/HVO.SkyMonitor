@@ -35,6 +35,26 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
         Assert.AreEqual(
             OwnerBootstrapStates.PasswordChangeRequired,
             await ReadBootstrapStateAsync(replacingClient).ConfigureAwait(false));
+        using (var deniedVerification = await replacingClient.GetAsync(
+            new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative)).ConfigureAwait(false))
+        {
+            Assert.AreEqual(HttpStatusCode.Unauthorized, deniedVerification.StatusCode);
+        }
+        using (var request = new HttpRequestMessage(
+                   HttpMethod.Get,
+                   new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative)))
+        {
+            request.Headers.Add("X-HVO-Installation-Token", CameraAgentKestrelFixture.InstallationVerificationToken);
+            using var verification = await replacingClient.SendAsync(request).ConfigureAwait(false);
+            verification.EnsureSuccessStatusCode();
+            using var json = System.Text.Json.JsonDocument.Parse(
+                await verification.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            Assert.AreEqual(CameraAgentKestrelFixture.AgentId, json.RootElement.GetProperty("agentId").GetString());
+            Assert.AreEqual(CameraAgentKestrelFixture.OwnerEmail, json.RootElement.GetProperty("ownerEmail").GetString());
+            Assert.AreEqual(OwnerBootstrapStates.PasswordChangeRequired, json.RootElement.GetProperty("ownerBootstrapState").GetString());
+            Assert.AreEqual(64, json.RootElement.GetProperty("configurationSha256").GetString()?.Length);
+            Assert.AreEqual("hyg-v42-fixture", json.RootElement.GetProperty("catalogId").GetString());
+        }
         using (var healthClient = new HttpClient { BaseAddress = host.BaseAddress })
         using (var health = await healthClient.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false))
         {

@@ -439,7 +439,8 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         Assert.IsTrue(intervals.All(static interval => interval is >= 4900 and <= 5500),
             $"{agent.Name} did not sustain the declared five-second cadence.");
 
-        var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(agent.CatalogRoot));
+        var snapshot = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+            agent.CatalogRoot, "hyg-v42-production"));
         Assert.AreEqual(ExpectedCatalogSha256, snapshot.DatabaseSha256, ignoreCase: true);
         Assert.IsEmpty(Directory.EnumerateFiles(agent.CatalogRoot, "*.db-*", SearchOption.AllDirectories).ToArray());
         var catalogInode = await StatInodeAsync(snapshot.DatabasePath).ConfigureAwait(false);

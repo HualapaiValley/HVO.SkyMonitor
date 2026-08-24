@@ -447,6 +447,8 @@ Requirements:
 | `QA-010` | Keep external, soak, and hardware checks separately selectable and never report an unrun category as passed. |
 | `OPS-001` | Distinguish fixture and full catalog deployment. |
 | `OPS-002` | Mount persistent CameraAgent payload and journal state in container deployment. |
+| `OPS-003` | Keep product, component, UUID instance, and named catalog roots distinct, ownership-bound, and multi-instance safe. |
+| `OPS-004` | Install one local VirtualSky CameraAgent from immutable local/offline inputs through a self-contained, resumable, redaction-safe CLI. |
 
 Exit gate `GATE-P00`:
 

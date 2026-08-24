@@ -158,7 +158,12 @@ static string NormalizeSourcePath(string path)
 {
     var normalized = path.Replace('\\', '/');
     var sourceMarker = normalized.LastIndexOf("/src/", StringComparison.Ordinal);
-    return sourceMarker >= 0 ? normalized[(sourceMarker + 5)..] : normalized.TrimStart('/');
+    if (sourceMarker >= 0)
+    {
+        return normalized[(sourceMarker + 5)..];
+    }
+    var toolsMarker = normalized.LastIndexOf("/tools/", StringComparison.Ordinal);
+    return toolsMarker >= 0 ? normalized[(toolsMarker + 1)..] : normalized.TrimStart('/');
 }
 
 static double ParsePercentage(string value)
