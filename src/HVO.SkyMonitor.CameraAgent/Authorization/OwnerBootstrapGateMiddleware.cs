@@ -13,6 +13,7 @@ internal sealed class OwnerBootstrapGateMiddleware(
     internal const string DenialReason = OwnerBootstrapStates.PasswordChangeRequired;
     internal const string ReplacementPath = "/Account/ReplaceTemporaryPassword";
     internal const string StatusPath = "/api/internal/owner-bootstrap/status";
+    internal const string VerificationPath = "/api/internal/owner-bootstrap/installation-verification";
 
     public async Task InvokeAsync(
         HttpContext context,
@@ -69,7 +70,7 @@ internal sealed class OwnerBootstrapGateMiddleware(
     {
         if (path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
         {
-            return IsExactPath(path, StatusPath);
+            return IsExactPath(path, StatusPath) || IsExactPath(path, VerificationPath);
         }
 
         return IsExactPath(path, "/Account/Login") ||

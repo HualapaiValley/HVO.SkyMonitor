@@ -30,6 +30,7 @@ documents link back without maintaining a competing roadmap.
 | Runbooks (daily ops) | `docs/runbooks/*.md` | `local-dev.md`, `infra-operations.md`, and `ci-pipeline.md` remain the authoritative workflow docs. |
 | Smoke-test environment | `docs/runbooks/smoke-test.md` | Owner-only smoke inputs, initialization, fail-closed preflight, generated-state boundary, and data-policy guard. |
 | Split-host deployment and smoke | `docs/runbooks/split-host-preflight.md` | Versioned inventory, preparation, immutable images, catalogs, services, application-assisted bootstrap, continuity refusal, W0 smoke, explicit teardown, resumable ledgers, and sanitized evidence. |
+| Local CameraAgent installer | `docs/runbooks/deployment-installer.md` | Self-contained Linux CLI, verified local/offline inputs, UUID-scoped layout, owner bootstrap, dry run, resume, and structured installation evidence. |
 | CameraAgent retention recovery | `docs/runbooks/cameraagent-retention.md` | Pending-upload retention invariant and outage recovery procedure. |
 
 ## Documentation Rules

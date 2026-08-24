@@ -144,3 +144,13 @@ dotnet_diagnostic.CA1707.severity = none
 [tests/HVO.SkyMonitor.Imaging.Tests/**.cs]
 dotnet_diagnostic.CA1515.severity = none
 dotnet_diagnostic.CA1707.severity = none
+
+# Deployment CLI tests use MSTest's public discovery surface and scenario names.
+[tests/HVO.SkyMonitor.Deployment.Cli.Tests/**.cs]
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA2007.severity = none
+
+# The self-contained CLI has no synchronization context.
+[src/HVO.SkyMonitor.Deployment.Cli/**.cs]
+dotnet_diagnostic.CA2007.severity = none

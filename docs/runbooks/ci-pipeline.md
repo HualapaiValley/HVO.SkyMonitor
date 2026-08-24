@@ -8,16 +8,16 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, the active acceptance inventory contract, and pinned .NET tools; reduced mode does not restore or audit application packages it cannot affect. |
-| **Deployment Contracts** | One self-hosted job running the deployment coordinator and current campaign contracts, product-layout migration contracts, catalog lifecycle, and nine isolated split-host shards with at most eight local child processes. Always runs for main/release pushes and deployment-relevant pull requests; otherwise its planned `skipped` result is required. |
+| **Deployment Contracts** | One self-hosted job running the deployment coordinator and current campaign contracts, product-layout migration contracts, catalog lifecycle, the disposable offline installer contract, and nine isolated split-host shards with at most eight local child processes. Always runs for main/release pushes and deployment-relevant pull requests; otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
-| **Unit Tests** | 1923 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
+| **Unit Tests** | 1943 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
 | **Integration Tests** | 563 Integration-category cases across SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, forwarded-header, host integration, and the six repository graph/publish cases in Architecture & Publish. Skipped only in classified reduced mode. |
-| **Architecture & Publish** | Six Integration-category repository graph/MSBuild/publish cases plus retained host publish manifests. |
+| **Architecture & Publish** | Six Integration-category repository graph/MSBuild/publish cases, retained host publish manifests, and self-contained installer publishes plus SHA-256 manifests for Linux x64 and ARM64. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
 | **Coverage** | Exact source-path and branch merge of twelve expected reports, checked-in aggregate non-regression, and risk-file floors. |
 | **Required CI** | Current-head aggregate that fails when any expected check fails, times out, is canceled, is missing, or is unexpectedly skipped or run for the selected mode. |
 
-Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected twelve, preventing missing or overwritten evidence.
+Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected thirteen, preventing missing or overwritten evidence.
 
 Change Classification, Catalog Contracts, Quality, and Required CI run on pinned
 `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit Tests,
@@ -28,7 +28,7 @@ formatting, and package audit only for full-mode changes.
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1923`, `Integration=563`, `Manual=76`, `Soak=1`, `External=0`, and `Hardware=1`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1943`, `Integration=563`, `Manual=76`, `Soak=1`, `External=0`, and `Hardware=1`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
@@ -179,11 +179,12 @@ request runs the sharded deployment gate. The closed deployment path map is:
 - `.github/workflows/ci.yml`, `.dockerignore`, `.env.template`, `docker-compose.apps.yml`, and `global.json`
 - `scripts/ci:classify`, `scripts/ci:require`, and `scripts/test:ci-classification`
 - `scripts/deploy:environment`, `scripts/deploy:migrate-product-layout`, and `scripts/deploy/**`
-- `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:product-layout`, `scripts/test:phase14-campaign`, and `scripts/test:phase14-normal-campaign`
+- `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:deployment-installer`, `scripts/test:product-layout`, `scripts/test:phase14-campaign`, and `scripts/test:phase14-normal-campaign`
 - `scripts/catalog:*`, `scripts/catalog/**`, and `scripts/infra:operation-lock`
 - `deploy/**`
 - `tests/fixtures/catalog/hyg-v42-bright-stars.sqlite`
 - `src/HVO.SkyMonitor.CameraAgent/Dockerfile` and `src/HVO.SkyMonitor.LogicHost/Dockerfile`
+- `src/HVO.SkyMonitor.Deployment.Cli/**`, `src/HVO.SkyMonitor.Deployment.Contracts/**`, and `tests/HVO.SkyMonitor.Deployment.Cli.Tests/**`
 - `src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json`
 - `src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json` and `src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json`
 

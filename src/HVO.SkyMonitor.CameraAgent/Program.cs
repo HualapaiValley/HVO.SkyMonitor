@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Asp.Versioning;
@@ -23,6 +26,7 @@ using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.Common.Configuration;
@@ -371,6 +375,53 @@ public class Program
                 });
             })
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OwnerBootstrapReadV1);
+        app.MapGet(OwnerBootstrapGateMiddleware.VerificationPath, async (
+                HttpContext context,
+                IConfiguration hostConfiguration,
+                OwnerBootstrapStateReader ownerBootstrapStateReader,
+                HVO.SkyMonitor.CameraAgent.Common.Configuration.ICameraAgentConfigurationLoader configurationLoader,
+                HVO.SkyMonitor.Catalog.Sqlite.CatalogSnapshotResult catalog,
+                IOptions<HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions> options,
+                CancellationToken cancellationToken) =>
+            {
+                var expectedToken = hostConfiguration["InstallationVerification:Token"];
+                var suppliedToken = context.Request.Headers["X-HVO-Installation-Token"].ToString();
+                if (string.IsNullOrEmpty(expectedToken) || string.IsNullOrEmpty(suppliedToken) ||
+                    !CryptographicOperations.FixedTimeEquals(
+                        SHA256.HashData(Encoding.UTF8.GetBytes(expectedToken)),
+                        SHA256.HashData(Encoding.UTF8.GetBytes(suppliedToken))))
+                {
+                    return Results.Unauthorized();
+                }
+                var configuration = await configurationLoader.LoadAsync(cancellationToken).ConfigureAwait(false);
+                var ownerBootstrapState = await ownerBootstrapStateReader.GetStateAsync(cancellationToken).ConfigureAwait(false);
+                await using var stream = File.OpenRead(Path.GetFullPath(options.Value.ConfigFilePath));
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                return Results.Ok(new
+                {
+                    agentId = configuration.AgentId,
+                    ownerEmail = hostConfiguration["LocalIdentity:AdminEmail"],
+                    ownerBootstrapState,
+                    configurationSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(document.RootElement),
+                    rigProfileSha256 = CameraRigProfileIdentity.ComputeSha256(configuration.Rig),
+                    scheduleSha256 = configuration.Schedule is null
+                        ? null
+                        : CaptureScheduleContract.ComputeSha256(configuration.Schedule),
+                    deploymentLocationId = configuration.DeploymentLocation?.LocationId,
+                    deploymentLocationVersion = configuration.DeploymentLocation?.Version,
+                    deploymentLocationSha256 = configuration.DeploymentLocation?.CanonicalSha256,
+                    rawIngressRoot = options.Value.RawIngressRoot,
+                    catalogId = catalog.CatalogId,
+                    packageVersion = catalog.SnapshotVersion,
+                    schemaVersion = catalog.SchemaVersion,
+                    preprocessingVersion = catalog.PreprocessingVersion,
+                    databaseSha256 = catalog.DatabaseSha256,
+                    databaseLength = catalog.DatabaseLength,
+                    rowCount = catalog.RowCount
+                });
+            })
+            .AllowAnonymous();
         app.MapPrometheusScrapingEndpoint();
 
         app.MapSkyMonitorHealthEndpoints();
