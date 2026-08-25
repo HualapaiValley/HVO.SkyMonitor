@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>Large viewer study</title>
+        <link rel="stylesheet" href="studies.css" />
+    </head>
+    <body>
+        <main>
+            <p class="eyebrow">RM-014 design checkpoint</p>
+            <h1>Large-image viewer</h1>
+            <p class="lede">
+                A modal, keyboard-safe, aspect-correct viewing surface. Capture
+                navigation is not overloaded onto pan gestures.
+            </p>
+            <div class="studies">
+                <section class="study">
+                    <h2>Desktop 1440 x 900</h2>
+                    <div class="viewport desktop">
+                        <div class="viewer-backdrop">
+                            <section
+                                class="dialog"
+                                role="dialog"
+                                aria-modal="true"
+                                aria-labelledby="viewer-title"
+                            >
+                                <header>
+                                    <h2 id="viewer-title">
+                                        Processed sky / 10:41:32 PM
+                                    </h2>
+                                    <a
+                                        class="button"
+                                        href="capture-detail.html"
+                                        aria-label="Close large image"
+                                        >Close</a
+                                    >
+                                </header>
+                                <div class="image">
+                                    <img
+                                        src="assets/all-sky-night.svg"
+                                        alt="Large synthetic all-sky night"
+                                    />
+                                </div>
+                                <footer>
+                                    <span>Fit image</span><span>100%</span
+                                    ><span
+                                        >Escape closes / focus returns to View
+                                        large image</span
+                                    >
+                                </footer>
+                            </section>
+                        </div>
+                    </div>
+                </section>
+                <section class="study">
+                    <h2>Narrow portrait 390 x 844</h2>
+                    <div class="viewport portrait">
+                        <div class="viewer-backdrop">
+                            <section
+                                class="dialog"
+                                role="dialog"
+                                aria-modal="true"
+                                aria-labelledby="viewer-mobile"
+                            >
+                                <header>
+                                    <h2 id="viewer-mobile">Raw / 6:12 PM</h2>
+                                    <a
+                                        class="button"
+                                        href="home.html"
+                                        aria-label="Close large image"
+                                        >Close</a
+                                    >
+                                </header>
+                                <div class="image">
+                                    <img
+                                        src="assets/all-sky-day.svg"
+                                        alt="Large synthetic daylight sky"
+                                    />
+                                </div>
+                                <footer>
+                                    Pinch zoom is optional; pan and close remain
+                                    available.
+                                </footer>
+                            </section>
+                        </div>
+                    </div>
+                </section>
+                <section class="study">
+                    <h2>Short landscape 844 x 390</h2>
+                    <div class="viewport landscape">
+                        <div class="viewer-backdrop">
+                            <section
+                                class="dialog"
+                                role="dialog"
+                                aria-modal="true"
+                                aria-labelledby="viewer-landscape"
+                            >
+                                <header>
+                                    <h2 id="viewer-landscape">Processed sky</h2>
+                                    <a
+                                        class="button"
+                                        href="gallery.html"
+                                        aria-label="Close large image"
+                                        >Close</a
+                                    >
+                                </header>
+                                <div class="image">
+                                    <img
+                                        src="assets/all-sky-night.svg"
+                                        alt="Large synthetic all-sky night"
+                                    />
+                                </div>
+                                <footer>
+                                    Selected stage and viewer state survive
+                                    orientation changes.
+                                </footer>
+                            </section>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </body>
+</html>
