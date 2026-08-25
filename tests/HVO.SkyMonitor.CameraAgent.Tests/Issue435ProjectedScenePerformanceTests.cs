@@ -504,10 +504,38 @@ public sealed class Issue435ProjectedScenePerformanceTests
         var durable = await persistence.ReadNodeAsync(
             fixture.Descriptor.Capture.CaptureId, fixture.Node.Id, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(durable);
+        Assert.HasCount(1, durable.Outputs);
+        var output = durable.Outputs[0];
+        Assert.IsNull(output.Descriptor);
+        var manifest = Assert.IsInstanceOfType<DurableTypedMetadataProductManifestV3>(output.ProductManifest);
+        Assert.AreEqual(DurableTypedMetadataProductManifestV3.CurrentSchemaVersion, manifest.SchemaVersion);
+        Assert.AreEqual(ProcessingProductKind.Metadata, manifest.Kind);
+        Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, manifest.ProductSchemaVersion);
+        Assert.AreEqual(fixture.Scene.SceneIdentitySha256, manifest.ContentIdentitySha256);
+        Assert.AreEqual(fixture.Product.ChecksumSha256, manifest.Artifact.ChecksumSha256);
+        CollectionAssert.AreEqual(fixture.Product.SourceArtifactIds.ToArray(), manifest.Artifact.SourceArtifactIds.ToArray());
+        Assert.AreEqual(fixture.Descriptor.Capture.CaptureId, manifest.Capture.CaptureId);
         var context = new CaptureProcessingContext(CreateConfig(), fixture.Context.Submission, fixture.Receipt);
+        var artifactCountBefore = context.AllArtifacts.Count;
         await persistence.RestoreNodeAsync(durable, context, CancellationToken.None).ConfigureAwait(false);
-        Assert.HasCount(1, context.ProcessingProducts);
-        return context.ProcessingProducts[0];
+        context.BeginNode("issue-435-restart-consumer", [fixture.Node.Id]);
+        var restored = context.GetDependencyProducts();
+        Assert.HasCount(1, restored);
+        Assert.AreEqual(artifactCountBefore, context.AllArtifacts.Count,
+            "Restoring layoutless projected-scene metadata must not fabricate a frame artifact.");
+        Assert.IsFalse(context.AllArtifacts.Any(artifact =>
+            artifact.ArtifactId == ProcessingIdentity.CreateArtifactId(fixture.Product.OutputIdentitySha256)));
+        Assert.AreEqual(fixture.Product.OutputIdentitySha256, restored[0].OutputIdentitySha256);
+        Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, restored[0].SchemaVersion);
+        Assert.AreEqual(ProcessingProductKind.Metadata, restored[0].Kind);
+        Assert.AreEqual(fixture.Scene.SceneIdentitySha256, restored[0].ContentIdentitySha256);
+        Assert.AreEqual(fixture.Product.ChecksumSha256, restored[0].ChecksumSha256);
+        CollectionAssert.AreEqual(fixture.Product.SourceArtifactIds.ToArray(), restored[0].SourceArtifactIds.ToArray());
+        var parsed = ProjectedSceneJson.Parse(restored[0].Payload);
+        Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+        Assert.AreEqual(fixture.Scene.Source, parsed.Scene!.Source);
+        Assert.AreEqual(fixture.Scene.SceneIdentitySha256, parsed.Scene.SceneIdentitySha256);
+        return restored[0];
     }
 
     private static async Task<BoundaryMeasurement> MeasureBoundaryAsync(Func<Task> operation)
@@ -1079,6 +1107,12 @@ public sealed class Issue435ProjectedScenePerformanceHarnessManifestTests
         Assert.IsTrue(source.IndexOf("duplicatePersistence.WriteNodeAsync", StringComparison.Ordinal) <
             source.IndexOf("await ingress.CompleteAsync(fixture.Lease!", StringComparison.Ordinal),
             "Duplicate convergence must occur under the active production lane lease before completion.");
+        StringAssert.Contains(source,
+            "context.BeginNode(\"issue-435-restart-consumer\", [fixture.Node.Id])", StringComparison.Ordinal);
+        StringAssert.Contains(source, "context.GetDependencyProducts()", StringComparison.Ordinal);
+        StringAssert.Contains(source, "Restoring layoutless projected-scene metadata must not fabricate a frame artifact", StringComparison.Ordinal);
+        StringAssert.Contains(source, "DurableTypedMetadataProductManifestV3", StringComparison.Ordinal);
+        StringAssert.Contains(source, "ProjectedSceneJson.Parse(restored[0].Payload)", StringComparison.Ordinal);
         var runner = File.ReadAllText(Path.Combine(root, "scripts", "evidence:issue-435"));
         StringAssert.Contains(runner, "--no-incremental -warnaserror", StringComparison.Ordinal);
         StringAssert.Contains(runner,
