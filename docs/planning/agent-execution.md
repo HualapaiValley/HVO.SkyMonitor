@@ -28,7 +28,8 @@ the issue or authoritative plan. Do not silently choose a convenient behavior.
 
 Before changing files:
 
-1. Confirm the issue is open and assigned to the expected milestone.
+1. Confirm the issue is open and mapped to the expected roadmap initiative,
+   owning epic, and milestone when one is assigned.
 2. Confirm every required dependency is merged or explicitly coordinated.
 3. Inspect `git status`, recent commits, current branch, and related PRs.
 4. Preserve unrelated worktree changes.

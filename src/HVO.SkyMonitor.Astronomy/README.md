@@ -6,7 +6,9 @@ database, rendering, or image-library dependency.
 
 ## Catalog data
 
-The initial `CsvCelestialCatalog` accepts HYG-compatible CSV columns `id`,
-`proper`, `ra`, `dec`, and `mag`, with optional `ci`. Production HYG data is
-not packaged yet; before adding it, record its license, source URL, version,
-SHA-256 checksum, and preprocessing process in `CatalogMetadata` and this file.
+`CsvCelestialCatalog` accepts HYG-compatible CSV columns `id`, `proper`, `ra`,
+`dec`, and `mag`, with optional `ci`. Runtime hosts consume the verified HYG v42
+SQLite package installed separately under the configured catalog root; production
+catalog data is intentionally not embedded in this assembly. Build, provenance,
+checksum, and installation details are maintained in
+[`docs/catalog/production-install.md`](../../docs/catalog/production-install.md).

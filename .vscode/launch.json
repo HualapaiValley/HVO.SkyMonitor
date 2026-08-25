@@ -2,44 +2,6 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch Logic Host",
-            "type": "coreclr",
-            "request": "launch",
-            "program": "dotnet",
-            "args": [
-                "run",
-                "--project",
-                "${workspaceFolder}/src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj"
-            ],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "DOTNET_ENVIRONMENT": "Development"
-            }
-        },
-        {
-            "name": "Launch Camera Agent",
-            "type": "coreclr",
-            "request": "launch",
-            "program": "dotnet",
-            "args": [
-                "run",
-                "--project",
-                "${workspaceFolder}/src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj"
-            ],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "DOTNET_ENVIRONMENT": "Development"
-            }
-        },
-        {
             "name": "Attach -> Logic Host (pick)",
             "type": "coreclr",
             "request": "attach",
@@ -52,15 +14,6 @@
             "request": "attach",
             "processId": "${command:pickProcess}",
             "justMyCode": false
-        },
-    ],
-    "compounds": [
-        {
-            "name": "Run All Services",
-            "configurations": [
-                "Launch Logic Host",
-                "Launch Camera Agent"
-            ]
         }
     ]
 }

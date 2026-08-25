@@ -1,10 +1,14 @@
 # Standalone CameraAgent Course Correction
 
+> Historical decision record. Issues #205 through #211 delivered this course
+> correction and its standalone acceptance gate. Imperative and future-tense
+> language below records the executed contract; it does not describe open work.
+
 ## Decision
 
-Virtual-first completion now requires a production-like standalone CameraAgent
+Virtual-first completion required a production-like standalone CameraAgent
 checkpoint before split-host deployment or LogicHost UI work. The checkpoint
-must prove that acquisition, local control, processing, environmental history,
+proved that acquisition, local control, processing, environmental history,
 storage, recovery, and authenticated operator workflows are complete while
 LogicHost, SQL Server, Redis, and MinIO are absent.
 
@@ -230,26 +234,11 @@ ASI174 evidence.
 
 ## Validation Economy
 
-Correctness and protected current-head CI remain mandatory. Expensive evidence
-is selected by changed risk:
-
-| Tier | Change | Local evidence before push |
-| --- | --- | --- |
-| A | Documentation, labels, styling, isolated non-behavioral cleanup | Focused validation and affected build/format; no complete local matrix or benchmark |
-| B | Ordinary contracts, algorithms, UI, configuration, or isolated defects | Focused tests and affected project/boundary tests; no complete local matrix or canonical benchmark unless promoted by wider risk |
-| C | Durable boundaries, concurrency, recovery, migrations, full-frame algorithms, or measured hot paths | Complete local candidate gate, affected integration/fault evidence, and the smallest representative measurement |
-| M | Named operational milestone such as standalone or final two-host acceptance | Complete local candidate gate, canonical full-resolution composition, fault/recovery evidence, runtime inspection, and benchmark suite |
-
-Every tier still requires complete protected current-head CI before merge. The
-tier changes pre-push local breadth and issue-specific performance/fault
-evidence; it never permits a stale, partial, or red protected check to pass.
-
-Long performance evidence is invalidated only by a change to its measured code,
-configuration, fixture, workload, environment, or measurement logic. Review
-corrections rerun affected evidence, not unrelated milestone suites. New
-full-frame algorithms still record complexity, output correctness, and maximum
-live buffers even when their canonical comparative benchmark is deferred to the
-next `M` gate.
+The execution-time validation policy used for this work has been superseded by
+the maintained risk-tier ladder in
+[`agent-execution.md`](agent-execution.md). Retained acceptance evidence remains
+valid only while its measured code, configuration, fixture, workload,
+environment, and measurement logic remain unchanged.
 
 ## Deferred Boundaries
 

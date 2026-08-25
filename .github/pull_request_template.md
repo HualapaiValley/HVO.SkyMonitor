@@ -1,7 +1,8 @@
 ## Summary
 
 - Closes #
-- Epic: #89
+- Roadmap initiative (`RM-###`) or maintenance rationale:
+- Owning roadmap epic:
 - Plain-language outcome and why this issue is next:
 - Practical benefit and what this unlocks:
 
@@ -13,11 +14,12 @@
 
 ## Validation
 
-- [ ] Focused tests pass.
-- [ ] One stable-candidate local gate passed before the first push.
+- [ ] Risk tier (`A`, `B`, `C`, or `M`) and rationale are recorded below.
+- [ ] Focused and tier-appropriate affected tests pass.
+- [ ] Tier `C`/`M` complete local candidate gate passed, or `N/A` is justified.
 - [ ] Corrections reran focused and affected gates without repeating unrelated
       long suites.
-- [ ] Required local candidate Debug/Release build and solution tests pass.
+- [ ] Required Debug/Release builds and solution tests pass for the selected tier.
 - [ ] Coverage output was reviewed; the current gate was not lowered and no
       uncorrected regression remains.
 - [ ] Migrations, architecture, publish, format, package, fault, soak, external,
@@ -58,7 +60,7 @@
 - [ ] Every required current-head check is green; canceled, timed-out, flaky,
       missing, or stale pre-correction checks are not accepted.
 - [ ] Review conversations are resolved only after correction evidence exists.
-- [ ] The owning roadmap epic will be updated after merge with validation,
-      performance, and the exact next action.
-- [ ] The next ready issue will start automatically unless execution is explicitly
-      paused or blocked.
+- [ ] For roadmap work, the owning epic will be updated after merge with
+      validation, performance, and the exact next action.
+- [ ] For roadmap work, the next ready issue will start automatically unless
+      execution is explicitly paused or blocked.

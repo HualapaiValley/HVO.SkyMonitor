@@ -7,10 +7,11 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | Check | Enforced behavior |
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
+| **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact. Skipped in classified reduced mode; its result is not currently aggregated by Required CI. |
 | **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, the active acceptance inventory contract, and pinned .NET tools; reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | One self-hosted job running the deployment coordinator and current campaign contracts, product-layout migration contracts, catalog lifecycle, the disposable offline installer contract, and nine isolated split-host shards with at most eight local child processes. Always runs for main/release pushes and deployment-relevant pull requests; otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
-| **Unit Tests** | 1974 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
+| **Unit Tests** | 2018 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
 | **Integration Tests** | 563 Integration-category cases across SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, forwarded-header, host integration, and the six repository graph/publish cases in Architecture & Publish. Skipped only in classified reduced mode. |
 | **Architecture & Publish** | Six Integration-category repository graph/MSBuild/publish cases, retained host publish manifests, and self-contained installer publishes plus SHA-256 manifests for Linux x64 and ARM64. |
 | **Migrations** | Zero pending CameraAgent or LogicHost EF model changes; current and legacy migration convergence remains in Integration Tests. |
@@ -28,7 +29,7 @@ formatting, and package audit only for full-mode changes.
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=1974`, `Integration=563`, `Manual=76`, `Soak=1`, `External=0`, and `Hardware=1`.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=2018`, `Integration=563`, `Manual=76`, `Soak=1`, `External=0`, and `Hardware=1`.
 
 `External` is implemented by the pinned, networkless Stellarium workflow rather than an empty MSTest check. The accelerated `Soak` case and real-duration soak are independently selectable in `.github/workflows/cameraagent-soak.yml`. The Hardware case remains separately selectable and is not published as a CI check until a suitable device runner exists.
 
@@ -212,26 +213,3 @@ does not implement broader subsystem targeting.
 - Coverage failures name exact source paths, covered/valid counts, observed rates, and required floors.
 - Integration failures retain separate project/category TRX and Cobertura evidence for 30 days.
 - Deployment failures identify the failed shard in coordinator output; inspect the retained shard log and status marker before rerunning only that shard locally.
-
-## Deployment Timing Evidence
-
-Run `32669782600` is the cleanup baseline: Quality took 12:23, including about
-4:05 for the closed Phase 14 component/source importer path. Issue #444 removes
-that historical work from protected CI, retains the fast acceptance inventory
-contract in full Quality, and moves the current campaign contracts to Deployment Contracts. Reduced mode also
-avoids full-only .NET restore/format/package work.
-
-Earlier pre-change Quality jobs took approximately 24-25 minutes, with the
-deployment suite accounting for approximately 19-20 minutes. The first
-four-shard implementation measured 22:51 serial and 19:38 parallel; its
-`existing-services` shard took 19:38 and therefore did not satisfy the target.
-The refined nine-shard local candidate measured 22:48 serial and a 10:08 median
-parallel time on the same 8-core, 31-GiB host, a 55.6% wall-time reduction.
-Three complete parallel runs passed in 10:07.64, 10:07.82, and 10:11.06 with
-no leaked child or listener process. User plus system
-CPU increased from 1,424.44 to 1,513.80 seconds (6.3%) because independently
-reproducible lifecycle setup is repeated; maximum reported resident set stayed
-within measurement noise at approximately 202 MiB. Record the current-head
-hosted Quality, Deployment Contracts, and total Required CI wall time here after
-protected CI executes. Pull-request deployment relevance reduces unnecessary
-runner use but is not included in the 55.6% execution-time comparison.

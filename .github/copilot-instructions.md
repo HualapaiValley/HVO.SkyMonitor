@@ -3,13 +3,14 @@
 `AGENTS.md` is the repository-wide engineering authority. Read it before making
 changes. For roadmap work, also read these sources in order:
 
-1. `docs/project-plan.md`
-2. The active GitHub issue and dependencies
-3. The owning subsystem specification or runbook
-4. `docs/planning/requirements-crosswalk.md`
-5. `docs/planning/performance-validation.md`
-6. `docs/planning/agent-execution.md`
-7. `docs/planning/agent-prompts.md`
+1. `docs/roadmap.md`
+2. `docs/project-plan.md`
+3. The active GitHub issue and dependencies
+4. The owning subsystem specification or runbook
+5. `docs/planning/requirements-crosswalk.md`
+6. `docs/planning/performance-validation.md`
+7. `docs/planning/agent-execution.md`
+8. `docs/planning/agent-prompts.md`
 
 Do not introduce guidance here that conflicts with those sources.
 
@@ -64,8 +65,9 @@ why the issue is next, its practical outcome and benefit, what it unlocks, and
 the main exclusion. Every roadmap PR follows the validation ladder and complete
 push, review, correction, replacement-CI, thread-resolution, and
 current-head-green merge process in `docs/planning/agent-execution.md`. Use
-focused inner-loop tests, one stable-candidate local gate, affected correction
-gates, and complete final CI rather than repeating unchanged long suites.
+focused inner-loop tests, tier-appropriate local candidate evidence, affected
+correction gates, and complete final CI rather than repeating unchanged long
+suites.
 Performance-sensitive changes use canonical workloads and report relevant I/O,
 CPU, allocations/working set, throughput, latency, and backlog. Data-producing
 changes validate checksums, numerical invariants, provenance, lineage, and

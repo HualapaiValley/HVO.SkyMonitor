@@ -16,16 +16,17 @@ for capabilities that are not implemented.
 | Runtime state | SQL Server `SkyMonitor`, the two approved MinIO buckets, prefixed Redis cache keys, both hosts' Data Protection keys, CameraAgent local Identity, and CameraAgent provisioning files. |
 | Observability | `/alive`, `/health`, `/metrics`, structured token/API-key events, and ASP.NET request traces. |
 
-The repository does not currently provide production OpenIddict certificate
-loading, signing-key overlap, OAuth token revocation, revoke-all sessions,
-cross-user API-key administration, device-key rotation, roles, signed-URL
-routes, or an administrator user-management portal. Do not replace those gaps
-with direct database edits.
+The repository provides production OpenIddict signing and encryption certificate
+loading, including split-host secure mounts. It does not provide signing-key
+overlap, automatic certificate rotation, OAuth token revocation, revoke-all
+sessions, cross-user API-key administration, device-key rotation, roles,
+signed-URL routes, or an administrator user-management portal. Do not replace
+those gaps with direct database edits.
 
-Application Compose is a Development topology over HTTP. A production TLS
-terminator, forwarded-header policy, external issuer, and OpenIddict signing and
-encryption certificate loader must be implemented and tested before this
-Compose file can be treated as a production identity deployment.
+Application Compose is a Development topology over HTTP. Before it can be
+treated as a production identity deployment, the deployment must provide and
+test a TLS terminator, forwarded-header policy, external issuer, configured
+OpenIddict PFX files, and a reviewed certificate-rotation procedure.
 
 Current authorization still has deployment limits: CameraAgent
 self-registration is disabled and its operator, frame, gallery, artifact, and
@@ -323,8 +324,9 @@ Confidential clients are configuration-seeded with these exact sections:
 - `DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret`
 - `DeviceBootstrap:CentralIdentity:ClientCredentials:Scopes:<index>`
 
-Current scopes are `api.admin`, `api.camera`, `api.frames`, `api.images`,
-`api.viewer`, and `api.webhooks`. Use only scopes consumed by the client.
+Current scopes are `api.admin`, `api.artifacts.read`, `api.camera`, `api.frames`,
+`api.images`, `api.owner.write`, `api.viewer`, and `api.webhooks`. Use only
+scopes consumed by the client.
 
 Startup reconciles a changed confidential-client secret immediately. It does
 not retain the old secret, so zero-downtime overlap is not supported through
@@ -355,11 +357,13 @@ reprovision every agent; there is no per-device OAuth containment today.
 ## Certificates, TLS, and Data Protection
 
 Development and Testing use OpenIddict development signing and encryption
-certificates. Production source currently has no certificate loader, option
-schema, secure mount, or overlap test. Therefore there is no supported
-production OpenIddict certificate-rotation command. Do not adapt an Azure,
-Kubernetes, or certificate-store example without first implementing and testing
-the chosen provider.
+certificates. Production requires absolute paths to valid signing and encryption
+PFX files in `OpenIddictCertificates:SigningPath` and `EncryptionPath`; optional
+passwords use the corresponding `SigningPassword` and `EncryptionPassword`
+keys. The split-host workflow supplies secure mounts and KeyPerFile password
+mappings. There is no supported overlap or automatic rotation command, so a
+certificate change requires a coordinated stop, configuration replacement,
+restart, and validation with rollback material preserved.
 
 TLS certificate renewal belongs to the actual TLS termination point. The
 repository's application Compose topology is HTTP-only and does not define that
@@ -399,7 +403,7 @@ The application connection must use a login scoped to `SkyMonitor`, never `sa`
 or another instance administrator. Production separates the one-shot
 `ConnectionStrings:skymonitordb-migrations` principal from runtime
 `ConnectionStrings:skymonitordb`; runtime receives no migration secret and
-startup rejects effective DDL authority. The schema-v6 split-host workflow
+startup rejects effective DDL authority. The current split-host workflow
 applies the migration role before controlled initialization and the runtime role
 afterward. Redis similarly uses a runtime ACL identity restricted to the
 declared prefix. See
