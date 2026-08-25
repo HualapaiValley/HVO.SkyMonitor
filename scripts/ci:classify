@@ -145,7 +145,11 @@ select_deployment_suites() {
     scripts/test:product-layout)
       deployment_layout="true"
       ;;
-    scripts/install-hvo-skymonitor.sh | scripts/test:deployment-installer | .github/workflows/release.yml | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
+    .github/workflows/release.yml)
+      deployment_catalog="true"
+      deployment_installer="true"
+      ;;
+    scripts/install-hvo-skymonitor.sh | scripts/test:deployment-installer | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
       ;;
     .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
