@@ -6,6 +6,7 @@
   "buildReceiptPath": "$HVO_ISSUE433_EVIDENCE_ROOT/$HVO_EVIDENCE_REVISION/trials/$HVO_EVIDENCE_TRIAL/issue-433-build-receipt.json",
   "runner": "scripts/evidence:issue-433",
   "retainedTrials": true,
+  "provenanceModel": "Evidence output and Release build are keyed by evidenceHead. Production source is pinned to candidateProductCommit (default ee08ee7), whose parent is baseline (default fbf93c1). Candidate-to-evidence changes are restricted to the three allowlisted evidence files.",
   "harness": "HVO.SkyMonitor.Processing.Tests.Issue433LayeredPresentationPerformanceTests.FullResolutionSyntheticMono8OldAndLayeredPathsEvidence",
   "performanceWorkloads": [
     "synthetic-3552x3552-mono8-old-annotation-weather",
@@ -45,7 +46,7 @@
   "limitations": [
     "CPU and endpoint RSS are process-wide and can include test-host/runtime activity.",
     "Retained LOH is measured at forced-GC path-group endpoints and is not per-operation attribution.",
-    "Both legacy and layered paths execute in the candidate binary; baseline ancestry and unchanged blob proofs are source-equivalence evidence, not a separately measured baseline build.",
+    "Both paths execute from the Release output built at evidenceHead; production source is pinned to candidateProductCommit and later commits are restricted to the allowlisted evidence files. Baseline ancestry and unchanged blob proofs are source-equivalence evidence, not a separately measured baseline build.",
     "The deterministic synthetic Mono8 workload complements but does not replace unavailable external canonical W6 evidence.",
     "Filesystem, SQLite, network, and backlog are N/A because both compared paths are synchronous in-memory operations.",
     "Material greater-than-10-percent changes are flagged for disposition, not used as arbitrary fail thresholds."
