@@ -9,7 +9,9 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -80,11 +82,22 @@ public sealed class Issue435ProjectedScenePerformanceTests
                 }
             });
             using var staging = new ProjectedSceneStagingStore(options);
+            var ingressState = new RawIngressState(TimeProvider.System);
+            using var ingressTelemetry = new RawIngressTelemetry(ingressState);
+            var lanePolicy = new CaptureLanePolicy(options);
+            using var ingress = new RawCaptureIngress(
+                options, new FileSystemStorageCapacityProvider(), ingressState, TimeProvider.System,
+                ingressTelemetry, NullLogger<RawCaptureIngress>.Instance, new NullRawIngressFaultInjector(),
+                lanePolicy, new NullCaptureLaneFaultInjector());
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var standardLane = lanePolicy.Definitions.Single(static lane => lane.Name == "standard");
             var fixtures = new List<ProductFixture>(TotalProductCount);
             var measurements = new List<OperationMeasurement>(MeasuredCount);
             for (var ordinal = 0; ordinal < TotalProductCount; ordinal++)
             {
                 var fixture = await CreateFixtureAsync(ordinal).ConfigureAwait(false);
+                fixture = await CreateLaneLeaseAsync(
+                    ingress, standardLane, fixture, ordinal).ConfigureAwait(false);
                 fixtures.Add(fixture);
                 var measured = ordinal >= WarmupCount;
                 var stage = await MeasureBoundaryAsync(async () =>
@@ -106,7 +119,8 @@ public sealed class Issue435ProjectedScenePerformanceTests
                             fixture.Receipt, fixture.Node, DurableProcessingNodeStatus.Completed, null, 1,
                             fixture.Descriptor.Timing.ExposureStartedUtc,
                             fixture.Descriptor.Timing.ReadoutCompletedUtc,
-                            TimeSpan.Zero, ProcessingOutcomeStatus.Produced, ordinal + 1, null,
+                            TimeSpan.Zero, ProcessingOutcomeStatus.Produced,
+                            fixture.Lease!.WorkId, fixture.Lease.LeaseToken,
                             [fixture.Product], fixture.Context, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
                     Assert.AreEqual(0L, ReadCount(work,
                         $"SELECT COUNT(*) FROM processing_outputs WHERE output_identity_sha256 = '{fixture.Product.OutputIdentitySha256}';"));
@@ -123,7 +137,8 @@ public sealed class Issue435ProjectedScenePerformanceTests
                         fixture.Receipt, fixture.Node, DurableProcessingNodeStatus.Completed, null, 1,
                         fixture.Descriptor.Timing.ExposureStartedUtc,
                         fixture.Descriptor.Timing.ReadoutCompletedUtc,
-                        TimeSpan.Zero, ProcessingOutcomeStatus.Produced, ordinal + 1, null,
+                        TimeSpan.Zero, ProcessingOutcomeStatus.Produced,
+                        fixture.Lease!.WorkId, fixture.Lease.LeaseToken,
                         [fixture.Product], fixture.Context, CancellationToken.None).ConfigureAwait(false);
                 }).ConfigureAwait(false);
                 var retrieval = await MeasureBoundaryAsync(async () =>
@@ -132,6 +147,23 @@ public sealed class Issue435ProjectedScenePerformanceTests
                     AssertProduct(fixture.Product, restored);
                 }).ConfigureAwait(false);
                 if (measured) measurements.Add(new(stage, publication, retrieval));
+                if (ordinal == WarmupCount)
+                {
+                    using var duplicateTelemetry = new CaptureProcessingTelemetry();
+                    using var duplicateStore = new SqliteCaptureProcessingStore(options);
+                    using var duplicateStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+                    var duplicatePersistence = new CaptureProcessingPersistence(
+                        options, duplicateStore, duplicateStorage, duplicateTelemetry,
+                        NullLogger<CaptureProcessingPersistence>.Instance);
+                    await duplicatePersistence.WriteNodeAsync(
+                        fixture.Receipt, fixture.Node, DurableProcessingNodeStatus.Completed, null, 2,
+                        fixture.Descriptor.Timing.ExposureStartedUtc,
+                        fixture.Descriptor.Timing.ReadoutCompletedUtc,
+                        TimeSpan.Zero, ProcessingOutcomeStatus.Produced,
+                        fixture.Lease!.WorkId, fixture.Lease.LeaseToken,
+                        [fixture.Product], fixture.Context, CancellationToken.None).ConfigureAwait(false);
+                }
+                await ingress.CompleteAsync(fixture.Lease!, CancellationToken.None).ConfigureAwait(false);
             }
 
             Assert.HasCount(MeasuredCount, measurements);
@@ -143,20 +175,6 @@ public sealed class Issue435ProjectedScenePerformanceTests
                 ProcessingIdentity.CreateArtifactId(item.Product.OutputIdentitySha256)).Distinct().Count());
 
             var duplicate = fixtures[WarmupCount];
-            using (var duplicateTelemetry = new CaptureProcessingTelemetry())
-            using (var duplicateStore = new SqliteCaptureProcessingStore(options))
-            using (var duplicateStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
-            {
-                var duplicatePersistence = new CaptureProcessingPersistence(
-                    options, duplicateStore, duplicateStorage, duplicateTelemetry,
-                    NullLogger<CaptureProcessingPersistence>.Instance);
-                await duplicatePersistence.WriteNodeAsync(
-                    duplicate.Receipt, duplicate.Node, DurableProcessingNodeStatus.Completed, null, 2,
-                    duplicate.Descriptor.Timing.ExposureStartedUtc,
-                    duplicate.Descriptor.Timing.ReadoutCompletedUtc,
-                    TimeSpan.Zero, ProcessingOutcomeStatus.Produced, WarmupCount + 1, null,
-                    [duplicate.Product], duplicate.Context, CancellationToken.None).ConfigureAwait(false);
-            }
 
             using (var verificationStore = new SqliteCaptureProcessingStore(options))
             {
@@ -252,6 +270,8 @@ public sealed class Issue435ProjectedScenePerformanceTests
                     committedRowCount = TotalProductCount,
                     warmupsIncludedInStorage = true,
                     trialId,
+                    laneSetupMeasured = false,
+                    laneSetup = "Each capture is committed through RawCaptureIngress and claimed from the production standard lane before timed publication; lane setup/claim latency is excluded.",
                     reconciliationRecordCount = ReconciliationRecordCount,
                     reconciliationBatchSize = ReconciliationBatchSize
                 },
@@ -416,48 +436,60 @@ public sealed class Issue435ProjectedScenePerformanceTests
         var visible = await CreateRepresentativeSceneAsync(utc).ConfigureAwait(false);
         Assert.HasCount(300, visible.Objects);
         Assert.IsNotEmpty(visible.Segments);
-        var rawBytes = new byte[1936 * 1216 * 2];
-        var template = ReconstructableCaptureContractTests.CreateManifest(
-            CameraPixelFormat.Mono16, 1936, 1216, 1936 * 2, rawBytes);
-        var captureId = Guid.Parse($"43500000-0000-0000-0001-{ordinal + 1:D12}");
-        var rawArtifactId = Guid.Parse($"43500000-0000-0000-0002-{ordinal + 1:D12}");
-        var descriptor = template.Descriptor with
-        {
-            Capture = template.Descriptor.Capture with { CaptureId = captureId, CaptureSequence = ordinal + 1 },
-            Timing = template.Descriptor.Timing with
-            {
-                RequestedStartUtc = utc,
-                ExposureStartedUtc = utc,
-                ExposureEndedUtc = utc.AddSeconds(1),
-                ReadoutCompletedUtc = utc.AddSeconds(1),
-                DurableIngressUtc = utc.AddSeconds(1)
-            },
-            Artifact = template.Descriptor.Artifact with { ArtifactId = rawArtifactId, CreatedUtc = utc.AddSeconds(1) }
-        };
-        var manifest = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion, descriptor, $"raw/{ordinal:D3}.bin");
-        var source = new ProjectedSceneSource(captureId, rawArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor));
-        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative, visible,
-            ProjectedSceneImageTransformV1.Identity(1936, 1216), source,
-            "issue-435-w1-calibration-v1", "issue-435-w1-projection-v1");
-        var payload = ProjectedSceneJson.Serialize(scene);
-        var product = CreateProduct(descriptor, scene, payload, ordinal);
         var config = CreateConfig();
-        var frame = new CameraFrame(utc, 1, 1, CameraPixelFormat.Mono8, new byte[] { 0 },
-            new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0), 1);
+        var frame = new CameraFrame(utc, 1936, 1216, CameraPixelFormat.Mono16,
+            new byte[1936 * 1216 * 2], new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0), 1936 * 2);
         var submission = new CaptureLoopSubmission(
             new CaptureRequest(utc, TimeSpan.FromSeconds(1), CaptureMode.Still),
             new CaptureResult(frame, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null),
-                TimeSpan.Zero, CaptureMode.Still, false), utc, TimeSpan.FromSeconds(1), TimeSpan.Zero);
-        var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, manifest,
-            new StoredFrameReference(manifest.RelativeArtifactPath, manifest.RelativeArtifactPath, utc, FrameArtifactRole.Raw),
-            CaptureContractJson.ComputeManifestSha256(manifest));
-        var context = new CaptureProcessingContext(config, submission, receipt);
+                TimeSpan.Zero, CaptureMode.Still, false)
+            {
+                AcquisitionTiming = new CaptureAcquisitionTiming(utc, utc.AddSeconds(1), utc.AddSeconds(1))
+            }, utc, TimeSpan.FromSeconds(1), TimeSpan.Zero);
+        return new(config, submission, visible,
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"stage-{ordinal}"))));
+    }
+
+    private static async Task<ProductFixture> CreateLaneLeaseAsync(
+        RawCaptureIngress ingress,
+        CaptureLaneDefinition standardLane,
+        ProductFixture fixture,
+        int ordinal)
+    {
+        await ingress.EnsureCanAcceptAsync(
+            fixture.Submission.Result.Frame!.PixelData.Length, CancellationToken.None).ConfigureAwait(false);
+        var receipt = await ingress.AcceptAsync(
+            fixture.Config, fixture.Submission, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(receipt);
+        var lease = await ingress.ClaimAsync(
+            standardLane, $"issue-435-{ordinal:D3}", fixture.Config, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        Assert.AreEqual(receipt.Manifest.Descriptor.Capture.CaptureId,
+            lease.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
+        var descriptor = lease.Context.RawCapture.Manifest.Descriptor;
+        var source = new ProjectedSceneSource(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
+            CaptureContractJson.ComputeDescriptorSha256(descriptor));
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative, fixture.VisibleScene,
+            ProjectedSceneImageTransformV1.Identity(1936, 1216), source,
+            "issue-435-w1-calibration-v1", "issue-435-w1-projection-v1");
+        var product = CreateProduct(descriptor, scene, ProjectedSceneJson.Serialize(scene), ordinal);
+        var context = new CaptureProcessingContext(
+            lease.Context.Configuration, lease.Context.Submission, lease.Context.RawCapture);
         var step = new FixedProductStep(product);
         var node = new CaptureProcessingGraphNode(
             $"projected-scene-{ordinal:D3}", step, ["$raw"], true, step.RecipeName,
-            step.OutputRole, step.OutputVariant, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"plan-{ordinal}"))));
-        return new(descriptor, receipt, context, node, visible, scene, product,
-            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"stage-{ordinal}"))));
+            step.OutputRole, step.OutputVariant,
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"plan-{ordinal}"))));
+        return fixture with
+        {
+            Descriptor = descriptor,
+            Receipt = lease.Context.RawCapture,
+            Context = context,
+            Node = node,
+            Scene = scene,
+            Product = product,
+            Lease = lease
+        };
     }
 
     private static async Task<ProcessingProduct> RestoreFreshAsync(
@@ -533,10 +565,23 @@ public sealed class Issue435ProjectedScenePerformanceTests
 
     private static CameraModuleConfig CreateConfig() => new(
         new ObservatoryLocation(35, -115, 1000, "UTC"), new CameraModuleDescriptor("VirtualSky"),
-        new CameraRigConfig(new SensorProfile("W1", 1936, 1216, 5.86, SensorColorMode.Mono, CameraPixelFormat.Mono16),
-            new OpticsProfile("EquidistantFisheye", 2.5, 170, 0), new RigOrientation(90, 0, 0),
-            new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
-        AgentId: "issue-435-performance");
+        new CameraRigConfig(new SensorProfile(
+                "W1", 1936, 1216, 5.86, SensorColorMode.Mono, CameraPixelFormat.Mono16,
+                StrideBytes: 1936 * 2, ByteOrder: SampleByteOrder.LittleEndian),
+            new OpticsProfile(
+                "EquidistantFisheye", 2.5, 170, 0, LensKind.Fisheye,
+                PrincipalPointX: 968, PrincipalPointY: 608, ImageCircleRadiusPixels: 560,
+                FocalLengthXPixels: 560, FocalLengthYPixels: 560,
+                CalibrationVersion: "issue-435-w1-calibration-v1"),
+            new RigOrientation(90, 0, 0),
+            new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1),
+            ProfileVersion: "issue-435-w1-rig-v1"),
+        AgentId: "issue-435-performance")
+    {
+        DeploymentLocation = DeploymentLocationSnapshot.Create(
+            "issue-435-location", 1, "evidence", null, DateTimeOffset.UnixEpoch, null,
+            35, -115, 1000, "UTC")
+    };
 
     private static void AssertProduct(ProcessingProduct expected, ProcessingProduct actual) =>
         Assert.IsTrue(ProductsEqual(expected, actual));
@@ -878,9 +923,19 @@ public sealed class Issue435ProjectedScenePerformanceTests
     ];
 
     private sealed record ProductFixture(
-        ReconstructionDescriptor Descriptor, RawCaptureReceipt Receipt, CaptureProcessingContext Context,
-        CaptureProcessingGraphNode Node, VisibleScene VisibleScene, ProjectedSceneV1 Scene,
-        ProcessingProduct Product, string StageKey);
+        CameraModuleConfig Config,
+        CaptureLoopSubmission Submission,
+        VisibleScene VisibleScene,
+        string StageKey)
+    {
+        internal ReconstructionDescriptor Descriptor { get; init; } = null!;
+        internal RawCaptureReceipt Receipt { get; init; } = null!;
+        internal CaptureProcessingContext Context { get; init; } = null!;
+        internal CaptureProcessingGraphNode Node { get; init; } = null!;
+        internal ProjectedSceneV1 Scene { get; init; } = null!;
+        internal ProcessingProduct Product { get; init; } = null!;
+        internal CaptureLaneLease? Lease { get; init; }
+    }
     private sealed record BoundaryMeasurement(
         double WallMilliseconds, double CpuMilliseconds, long AllocatedBytes, long RssBeforeBytes, long RssAfterBytes);
     private sealed record OperationMeasurement(
@@ -1016,6 +1071,14 @@ public sealed class Issue435ProjectedScenePerformanceHarnessManifestTests
         StringAssert.Contains(source, "runtimeDependencyInventory", StringComparison.Ordinal);
         StringAssert.Contains(source, "runtimeDependencySetSha256", StringComparison.Ordinal);
         StringAssert.Contains(source, "Runtime output changed after receipt verification", StringComparison.Ordinal);
+        StringAssert.Contains(source, "CreateLaneLeaseAsync", StringComparison.Ordinal);
+        StringAssert.Contains(source, "fixture.Lease!.WorkId", StringComparison.Ordinal);
+        StringAssert.Contains(source, "fixture.Lease.LeaseToken", StringComparison.Ordinal);
+        StringAssert.Contains(source, "laneSetupMeasured = false", StringComparison.Ordinal);
+        StringAssert.Contains(source, "await ingress.CompleteAsync(fixture.Lease!", StringComparison.Ordinal);
+        Assert.IsTrue(source.IndexOf("duplicatePersistence.WriteNodeAsync", StringComparison.Ordinal) <
+            source.IndexOf("await ingress.CompleteAsync(fixture.Lease!", StringComparison.Ordinal),
+            "Duplicate convergence must occur under the active production lane lease before completion.");
         var runner = File.ReadAllText(Path.Combine(root, "scripts", "evidence:issue-435"));
         StringAssert.Contains(runner, "--no-incremental -warnaserror", StringComparison.Ordinal);
         StringAssert.Contains(runner,
