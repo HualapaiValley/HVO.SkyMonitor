@@ -8,10 +8,11 @@ contract. Neither issue reopens or claims the closed Virtual-First Platform
 Completion milestone, `GATE-P14`, or `DONE-007`.
 
 The deferred evidence campaign and its source/component importers are retained
-as historical reproducibility tooling and are not protected-CI gates. Full
-Quality retains the acceptance inventory contract, while Deployment Contracts
-retains the supported campaign orchestration contracts. Source/component
-imports run explicitly only when reproducing this closed evidence set.
+as historical reproducibility tooling and are not automatic gates. Manual CI
+retains the acceptance inventory contract. Pull-request Deployment Contracts
+retains separate capability-named tests for the current lightweight campaign
+orchestration behavior. Source/component imports run explicitly only when
+reproducing this closed evidence set.
 
 The machine-readable definition is
 `deploy/split-host/acceptance/phase14-evidence-contract.json`. The existing
@@ -193,8 +194,14 @@ For historical campaign reproduction, run:
 ./scripts/test:phase14-acceptance
 ./scripts/test:phase14-component
 ./scripts/test:phase14-source-import
-./scripts/test:phase14-campaign
-./scripts/test:phase14-normal-campaign
+```
+
+The current deployment orchestration contracts are not historical evidence
+reproduction and use capability-based entry points:
+
+```bash
+./scripts/test:deployment-logichost-outage-contract
+./scripts/test:deployment-normal-flow-contract
 ```
 
 The acceptance contract test verifies the 111-row digest and exact one-rule

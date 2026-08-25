@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the opt-in full-resolution production-catalog standalone smoke for issue #171.
+# Run the opt-in full-resolution production-catalog standalone smoke.
 
 set -euo pipefail
 export LC_ALL=C

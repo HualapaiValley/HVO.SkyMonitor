@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, 'release/**']
   pull_request:
@@ -25,6 +26,10 @@ jobs:
     outputs:
       mode: ${{ steps.classify.outputs.mode }}
       deployment: ${{ steps.classify.outputs.deployment }}
+      deployment_catalog: ${{ steps.classify.outputs.deployment_catalog }}
+      deployment_layout: ${{ steps.classify.outputs.deployment_layout }}
+      deployment_shards: ${{ steps.classify.outputs.deployment_shards }}
+      deployment_installer: ${{ steps.classify.outputs.deployment_installer }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,7 +100,7 @@ jobs:
           /tmp/actionlint .github/workflows/*.yml
       - name: Run static and lightweight contract checks
         run: |
-          bash -n .devcontainer/*.sh .devcontainer/opencode-host.conf scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/deploy:environment scripts/deploy:migrate-product-layout scripts/deploy/*.sh deploy/split-host/provision-sql.sh deploy/split-host/provision-minio.sh scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:deploy-environment scripts/test:deploy-environment-cli scripts/test:product-layout scripts/test:opencode scripts/test:cameraagent-dual-197 scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/install-hvo-skymonitor.sh scripts/opencode:connect scripts/opencode:enable scripts/opencode:disable
+          bash -n .devcontainer/*.sh .devcontainer/opencode-host.conf scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/deploy:environment scripts/deploy:migrate-product-layout scripts/deploy/*.sh deploy/split-host/provision-sql.sh deploy/split-host/provision-minio.sh scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:deploy-environment scripts/test:deploy-environment-cli scripts/test:product-layout scripts/test:opencode scripts/test:cameraagent-ui scripts/test:logichost-ui scripts/test:cameraagent-standalone-production-smoke scripts/test:cameraagent-dual-standalone-smoke scripts/test:deployment-logichost-outage-contract scripts/test:deployment-normal-flow-contract scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/install-hvo-skymonitor.sh scripts/opencode:connect scripts/opencode:enable scripts/opencode:disable
           ./scripts/docs:audit-operations
           ./scripts/test:infra
           ./scripts/test:smoke-env
@@ -106,7 +111,7 @@ jobs:
           HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_RUNTIME_UID=1000 HVO_RUNTIME_GID=1000 HVO_SQL_MEMORY=4G MSSQL_MEMORY_LIMIT_MB=3072 SQLSERVER_PORT=1433 REDIS_PORT=6379 MINIO_PORT=9000 SMTP_PORT=1025 MAILPIT_HTTP_PORT=8025 SQLSERVER_IMAGE=example/sql@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa REDIS_IMAGE=example/redis@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb MINIO_IMAGE=example/minio@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc MINIO_CLIENT_IMAGE=example/mc@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd MAILPIT_IMAGE=example/mailpit@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee SQL_DATABASE=hvo-test SQL_ADMIN_USER=sa SQL_INITIALIZER_USER=hvo-init SQL_RUNTIME_USER=hvo-runtime REDIS_RUNTIME_USER=hvo-runtime REDIS_PREFIX=hvo-test: MINIO_ARTIFACT_BUCKET=hvo-test-artifacts MINIO_DIAGNOSTICS_BUCKET=hvo-test-diagnostics docker compose -f deploy/split-host/compose.shared-services.yml --profile provision --profile test-smtp config --quiet
           HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_CATALOG_ROOT=/srv/hvo/catalog HVO_CONTAINER_NAME=hvo-skymonitor-11111111111141118111111111111111 HVO_PUBLIC_PORT=5174 LOGICHOST_IMAGE=example/logichost@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa docker compose -f deploy/split-host/compose.logichost.yml --profile initialize config --quiet
           HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_CATALOG_ROOT=/srv/hvo/catalog HVO_CONTAINER_NAME=hvo-skymonitor-22222222222242228222222222222222 HVO_PUBLIC_PORT=5130 CAMERAAGENT_IMAGE=example/cameraagent@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb docker compose -f deploy/split-host/compose.cameraagent.yml config --quiet
-          docker compose --env-file deploy/acceptance/issue-197/compose.validation.env.template -f deploy/acceptance/issue-197/compose.yml config --quiet
+          docker compose --env-file deploy/acceptance/cameraagent-dual-standalone-smoke/compose.validation.env.template -f deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml config --quiet
       - name: Audit vulnerable and deprecated packages
         if: needs.changes.outputs.mode == 'full'
         run: ./scripts/package:audit
@@ -118,8 +123,8 @@ jobs:
           path: TestResults/package-audit/*.json
           if-no-files-found: error
           retention-days: 30
-      - name: Run active acceptance inventory contract
-        if: needs.changes.outputs.mode == 'full'
+      - name: Run historical Phase 14 acceptance inventory contract
+        if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'
         run: ./scripts/test:phase14-acceptance
   deployment-contracts:
     name: Deployment Contracts
@@ -161,23 +166,27 @@ jobs:
           fi
            ./scripts/test:deploy-environment --list-shards
            bash -n scripts/deploy:migrate-product-layout scripts/test:product-layout scripts/test:deployment-installer
-      - name: Build pinned production catalog contracts
+      - name: Run exhaustive production catalog lifecycle
+        if: needs.changes.outputs.deployment_catalog == 'true'
         run: |
           ./scripts/catalog/test-hyg-v42-install.sh \
             "$RUNNER_TEMP/hyg-v42-contracts/build/hyg-v4.2-p3-s2-r1.bundle"
-      - name: Run product layout and migration contracts
+      - name: Run exhaustive product layout and migration contracts
+        if: needs.changes.outputs.deployment_layout == 'true'
         run: ./scripts/test:product-layout
-      - name: Run deployment coordinator and campaign contracts
+      - name: Run lightweight deployment contracts
         run: |
           ./scripts/test:deploy-environment-cli
-          ./scripts/test:phase14-campaign
-          ./scripts/test:phase14-normal-campaign
-      - name: Run deployment contracts in parallel
+          ./scripts/test:deployment-logichost-outage-contract
+          ./scripts/test:deployment-normal-flow-contract
+      - name: Run exhaustive deployment contracts in parallel
+        if: needs.changes.outputs.deployment_shards == 'true'
         run: ./scripts/test:deploy-environment --parallel
-      - name: Run disposable offline installer contract
+      - name: Run exhaustive disposable offline installer contract
+        if: needs.changes.outputs.deployment_installer == 'true'
         run: ./scripts/test:deployment-installer
       - name: Upload deployment contract logs
-        if: always()
+        if: always() && needs.changes.outputs.deployment_shards == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: deployment-contract-logs

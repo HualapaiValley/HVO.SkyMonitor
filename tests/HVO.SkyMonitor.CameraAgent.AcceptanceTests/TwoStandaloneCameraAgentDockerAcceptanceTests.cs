@@ -53,7 +53,7 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         }
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("HVO_ISSUE_197_HUALAPAI_BASE_URI")))
         {
-            Assert.Inconclusive("Run through scripts/test:cameraagent-dual-197.");
+            Assert.Inconclusive("Run through scripts/test:cameraagent-dual-standalone-smoke.");
         }
 
         var evidenceRoot = RequiredPath("HVO_ISSUE_197_EVIDENCE_ROOT");

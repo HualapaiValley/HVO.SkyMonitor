@@ -21,10 +21,26 @@ expect_plan() {
   local output
 
   output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
-  if [[ "$output" != "mode=$expected_mode"$'\n'"deployment=$expected_deployment" ]]; then
+  if [[ "$output" != "mode=$expected_mode"$'\n'"deployment=$expected_deployment"$'\n'* ]]; then
     printf 'Expected mode=%s deployment=%s, received %s\n' "$expected_mode" "$expected_deployment" "$output" >&2
     exit 1
   fi
+}
+
+expect_suites() {
+  local expected_catalog="$1" expected_layout="$2" expected_shards="$3" expected_installer="$4"
+  local event_name="$5" base_sha="$6" head_sha="$7" output
+  output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
+  for expectation in \
+    "deployment_catalog=$expected_catalog" \
+    "deployment_layout=$expected_layout" \
+    "deployment_shards=$expected_shards" \
+    "deployment_installer=$expected_installer"; do
+    grep -Fxq "$expectation" <<< "$output" || {
+      printf 'Expected suite output %s, received %s\n' "$expectation" "$output" >&2
+      exit 1
+    }
+  done
 }
 
 commit_file() {
@@ -68,6 +84,9 @@ git -C "$work_root" commit --quiet -m "Add allowlisted paths"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
 expect_plan reduced false pull_request "$base_sha" "$head_sha"
 expect_plan full true push "$base_sha" "$head_sha"
+expect_plan full true workflow_dispatch "$base_sha" "$head_sha"
+expect_suites true true true true push "$base_sha" "$head_sha"
+expect_suites true true true true workflow_dispatch "$base_sha" "$head_sha"
 summary_file="$work_root/.git/classification-summary.md"
 (cd "$work_root" && GITHUB_STEP_SUMMARY="$summary_file" "$classifier" pull_request "$base_sha" "$head_sha" >/dev/null)
 grep -Fq 'Mode: **reduced**' "$summary_file"
@@ -113,12 +132,12 @@ deployment_paths=(
   "scripts/test:deploy-environment-cli"
   "scripts/test:deployment-installer"
   "scripts/test:product-layout"
-  "scripts/test:phase14-campaign"
-  "scripts/test:phase14-normal-campaign"
+  "scripts/test:deployment-logichost-outage-contract"
+  "scripts/test:deployment-normal-flow-contract"
   "scripts/catalog/install-hyg-v42.sh"
   "scripts/catalog:install"
   "scripts/infra:operation-lock"
-  "deploy/acceptance/issue-197/compose.yml"
+  "deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml"
   "deploy/hvo-docker/README.md"
   "deploy/hvo-docker/docker-compose.shared-services.yml"
   "deploy/split-host/workloads/canonical-workloads.json"
@@ -143,6 +162,38 @@ for path in "${deployment_paths[@]}"; do
   head_sha="$(git -C "$work_root" rev-parse HEAD)"
   expect_plan full true pull_request "$base_sha" "$head_sha"
 done
+
+update_file() {
+  local path="$1"
+  printf 'updated classification fixture\n' >> "$work_root/$path"
+  git -C "$work_root" add -- "$path"
+  git -C "$work_root" commit --quiet -m "Update $path"
+}
+
+verify_targeted_suites() {
+  local path="$1" expected_catalog="$2" expected_layout="$3" expected_shards="$4" expected_installer="$5"
+  local targeted_base targeted_head
+  targeted_base="$(git -C "$work_root" rev-parse HEAD)"
+  update_file "$path"
+  targeted_head="$(git -C "$work_root" rev-parse HEAD)"
+  expect_plan full true pull_request "$targeted_base" "$targeted_head"
+  expect_suites "$expected_catalog" "$expected_layout" "$expected_shards" "$expected_installer" \
+    pull_request "$targeted_base" "$targeted_head"
+}
+
+verify_targeted_suites ".github/workflows/ci.yml" true true true true
+verify_targeted_suites ".github/workflows/release.yml" true false false true
+verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true false true false
+verify_targeted_suites "scripts/catalog/catalog-common.sh" true true true false
+verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true true true false
+verify_targeted_suites "scripts/infra:operation-lock" true true true false
+verify_targeted_suites "scripts/deploy:migrate-product-layout" false true true false
+verify_targeted_suites "scripts/deploy/common.sh" false true true false
+verify_targeted_suites "scripts/deploy/product-layout.sh" false true true false
+verify_targeted_suites "scripts/test:product-layout" false true false false
+verify_targeted_suites "scripts/test:deploy-environment" false false true false
+verify_targeted_suites "scripts/test:deployment-installer" false false false true
+verify_targeted_suites "scripts/test:deployment-normal-flow-contract" false false false false
 
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
 commit_file "docs/mixed.md"
@@ -216,13 +267,14 @@ for fake_case in malformed failure; do
   if [[ "$fake_case" == failure ]]; then fake_failure=true; else fake_failure=false; fi
   output="$(cd "$work_root" && PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" \
     "$classifier" pull_request fake-base fake-head)"
-  if [[ "$output" != $'mode=full\ndeployment=true' ]]; then
+  if [[ "$output" != $'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_layout=true\ndeployment_shards=true\ndeployment_installer=true' ]]; then
     printf 'Expected fail-closed malformed/diff-failure plan, received %s\n' "$output" >&2
     exit 1
   fi
 done
 
 "$required" full true push success success success success success success success success success >/dev/null
+"$required" full true workflow_dispatch success success success success success success success success success >/dev/null
 "$required" full false pull_request success success skipped success success success success success success >/dev/null
 "$required" reduced false pull_request success success skipped skipped skipped skipped skipped skipped skipped >/dev/null
 
@@ -258,6 +310,36 @@ fi
 
 if "$required" full true pull_request success success '' success success success success success success >/dev/null 2>&1; then
   printf 'Expected Required CI rejection for a missing deployment result.\n' >&2
+  exit 1
+fi
+
+workflow="$repo_root/.github/workflows/ci.yml"
+grep -Fq "if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'" "$workflow" || {
+  printf 'Historical Phase 14 acceptance must remain manual-dispatch only.\n' >&2
+  exit 1
+}
+for suite in catalog layout shards installer; do
+  grep -Fq "if: needs.changes.outputs.deployment_$suite == 'true'" "$workflow" || {
+    printf 'Exhaustive deployment suite is not controlled by its classifier output: %s\n' "$suite" >&2
+    exit 1
+  }
+done
+grep -Fq "if: always() && needs.changes.outputs.deployment_shards == 'true'" "$workflow" || {
+  printf 'Deployment shard log upload must follow the shard classifier output.\n' >&2
+  exit 1
+}
+
+release_workflow="$repo_root/.github/workflows/release.yml"
+grep -Fq -- '-f branch=main -f event=push -f status=completed -f head_sha=' "$release_workflow" || {
+  printf 'Release qualification must select completed exact-SHA main-push CI runs.\n' >&2
+  exit 1
+}
+grep -Fq 'select(.name == "Required CI")' "$release_workflow" || {
+  printf 'Release qualification must inspect the Required CI job.\n' >&2
+  exit 1
+}
+if grep -Fq 'select(.conclusion == "success")' "$release_workflow"; then
+  printf 'Release qualification must not require unrelated workflow jobs to succeed.\n' >&2
   exit 1
 fi
 

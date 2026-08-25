@@ -27,7 +27,7 @@ synthetic location fixture.
 ```bash
 HVO_CATALOG_PERF_ROOT=/var/lib/hvo/data/catalog \
 HVO_OTEL_COLLECTOR_IMAGE=otel/opentelemetry-collector-contrib@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6 \
-  ./scripts/test:cameraagent-dual-197
+  ./scripts/test:cameraagent-dual-standalone-smoke
 ```
 
 The runner retains five trial manifests, both agents' sanitized images,

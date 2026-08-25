@@ -26,7 +26,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
             Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui-106 --install-browser` from the repository root.");
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
         }
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync(
@@ -164,7 +164,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
             Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui-106 --install-browser` from the repository root.");
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
         }
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync().ConfigureAwait(false);
@@ -221,7 +221,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
             Assert.Inconclusive(
-                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui-106 --install-browser` from the repository root.");
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
         }
 
         await using var host = await CameraAgentKestrelFixture.CreateAsync(

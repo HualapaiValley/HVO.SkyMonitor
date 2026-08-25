@@ -25,7 +25,7 @@ Install the approved catalog package and run:
 
 ```bash
 HVO_CATALOG_PERF_ROOT=/var/lib/hvo/data/catalog \
-  ./scripts/test:cameraagent-standalone-171
+  ./scripts/test:cameraagent-standalone-production-smoke
 ```
 
 The runner produces five fresh, approximately one-minute trials under

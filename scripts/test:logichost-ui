@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the opt-in LogicHost UI browser and evidence gate for issue #107.
+# Run the opt-in LogicHost UI browser and evidence gate.
 
 set -euo pipefail
 export LC_ALL=C
@@ -11,8 +11,8 @@ readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonito
 readonly PROCESSING_PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
 readonly CONFIGURATION="Release"
 readonly OUTPUT="$REPO_ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/$CONFIGURATION/net10.0"
-readonly MANIFEST="$REPO_ROOT/docs/validation/logichost-ui-107-runtime-signals.json"
-readonly baseline_root="${HVO_ISSUE_107_BASELINE_ROOT:-$REPO_ROOT/TestResults/issue-107/baseline-ed7f975}"
+readonly MANIFEST="$REPO_ROOT/docs/validation/logichost-ui-runtime-signals.json"
+readonly baseline_root="${HVO_LOGICHOST_UI_BASELINE_ROOT:-$REPO_ROOT/TestResults/issue-107/baseline-ed7f975}"
 install_browser=false
 
 for argument in "$@"; do

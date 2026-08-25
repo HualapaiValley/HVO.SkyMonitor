@@ -120,7 +120,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
-            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui-106 --install-browser.");
+            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.");
         }
 
         var baseUri = new Uri(baseUriText, UriKind.Absolute);
@@ -520,7 +520,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
-            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui-106 --install-browser.");
+            Assert.Inconclusive("Install the pinned Playwright Chromium with scripts/test:cameraagent-ui --install-browser.");
         }
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions

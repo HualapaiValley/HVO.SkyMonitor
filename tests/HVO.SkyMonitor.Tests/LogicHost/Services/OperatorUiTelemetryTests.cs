@@ -73,7 +73,7 @@ public sealed class OperatorUiTelemetryTests
         using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
             "Validation",
-            "logichost-ui-107-runtime-signals.json")));
+            "logichost-ui-runtime-signals.json")));
         var root = document.RootElement;
         root.GetProperty("schema").GetString().Should().Be("hvo-runtime-signal-manifest-v1");
         root.GetProperty("issue").GetInt32().Should().Be(107);

@@ -759,13 +759,17 @@ requires every fragment to bind the exact inventory selector in addition to the
 method-level TRX. Sanitizer and admissibility identities live in the separate
 campaign-index envelope; the existing runtime artifact schema remains unchanged.
 
-Current protected CI retains the focused acceptance inventory and supported
-campaign contracts:
+Manual CI retains the focused historical acceptance inventory contract:
 
 ```bash
 ./scripts/test:phase14-acceptance
-./scripts/test:phase14-campaign
-./scripts/test:phase14-normal-campaign
+```
+
+Deployment-relevant pull requests retain the current capability contracts:
+
+```bash
+./scripts/test:deployment-logichost-outage-contract
+./scripts/test:deployment-normal-flow-contract
 ```
 
 The source importer below is historical reproducibility tooling for the closed,
