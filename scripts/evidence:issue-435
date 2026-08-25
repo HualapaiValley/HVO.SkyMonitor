@@ -5,6 +5,7 @@ ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
 
 PROJECT="tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+SOLUTION="HVO.SkyMonitor.v9.slnx"
 PROJECT_DIR="$ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests"
 BIN_DIR="$PROJECT_DIR/bin/Release"
 OBJ_DIR="$PROJECT_DIR/obj/Release"
@@ -42,6 +43,7 @@ safe_clean "$BIN_DIR" "$PROJECT_DIR/bin/Release"
 safe_clean "$OBJ_DIR" "$PROJECT_DIR/obj/Release"
 
 BUILD_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+dotnet clean "$SOLUTION" --configuration Release
 dotnet restore "$PROJECT"
 dotnet build "$PROJECT" --configuration Release --no-restore --no-incremental -warnaserror
 BUILD_COMPLETED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
@@ -81,7 +83,7 @@ OUTPUT_HASH=$(inventory_hash "$OUTPUT_DIR" "$OUTPUT_LIST" "$OUTPUT_MANIFEST")
 OUTPUT_COUNT=$(wc -l < "$OUTPUT_LIST" | tr -d ' ')
 BRANCH_DIFF_HASH=$(git diff --binary origin/main...HEAD | sha256sum | cut -d' ' -f1)
 SDK_VERSION=$(dotnet --version)
-COMMAND="dotnet restore $PROJECT && dotnet build $PROJECT --configuration Release --no-restore --no-incremental -warnaserror"
+COMMAND="dotnet clean $SOLUTION --configuration Release && dotnet restore $PROJECT && dotnet build $PROJECT --configuration Release --no-restore --no-incremental -warnaserror"
 
 TMP_RECEIPT="$TRIAL_DIR/.issue-435-build-receipt.$$.tmp"
 jq -n \

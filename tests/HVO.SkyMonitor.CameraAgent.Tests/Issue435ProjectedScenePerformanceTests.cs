@@ -708,17 +708,17 @@ public sealed class Issue435ProjectedScenePerformanceTests
             var compile = ReadProjectCompileProvenance(repositoryRoot, projectRelativePath, projectRoot, tracked);
             var assemblyInfo = new FileInfo(assemblyPath);
             var projectFileWriteUtc = new FileInfo(Path.Combine(repositoryRoot, projectRelativePath)).LastWriteTimeUtc;
-            var latestSourceUtc = new[] { compile.LatestItemWriteUtc, projectFileWriteUtc }.Max();
-            Assert.IsGreaterThanOrEqualTo(assemblyInfo.LastWriteTimeUtc, latestSourceUtc,
-                $"Loaded {name} assembly predates its evaluated source/generated items. Build Release before the --no-build run.");
+            var latestTrackedSourceUtc = new[] { compile.LatestTrackedItemWriteUtc, projectFileWriteUtc }.Max();
+            Assert.IsGreaterThanOrEqualTo(assemblyInfo.LastWriteTimeUtc, latestTrackedSourceUtc,
+                $"Loaded {name} assembly predates its tracked source/project inputs. Run scripts/evidence:issue-435 to clean and rebuild every dependency.");
             var pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
             string? pdbSha256 = null;
             DateTime? pdbLastWriteUtc = null;
             if (File.Exists(pdbPath))
             {
                 var pdbInfo = new FileInfo(pdbPath);
-                Assert.IsGreaterThanOrEqualTo(pdbInfo.LastWriteTimeUtc, latestSourceUtc,
-                    $"Loaded {name} PDB predates its evaluated source/generated items. Build Release before the --no-build run.");
+                Assert.IsGreaterThanOrEqualTo(pdbInfo.LastWriteTimeUtc, latestTrackedSourceUtc,
+                    $"Loaded {name} PDB predates its tracked source/project inputs. Run scripts/evidence:issue-435 to clean and rebuild every dependency.");
                 pdbSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(pdbPath)));
                 pdbLastWriteUtc = pdbInfo.LastWriteTimeUtc;
             }
@@ -727,7 +727,8 @@ public sealed class Issue435ProjectedScenePerformanceTests
                 File.Exists(pdbPath) ? pdbPath : null, pdbSha256, pdbLastWriteUtc,
                 projectRelativePath, Path.GetRelativePath(repositoryRoot, projectRoot).Replace(Path.DirectorySeparatorChar, '/'),
                 compile.CompileItemCount, compile.TrackedCompileItemCount, compile.GeneratedCompileItemCount,
-                compile.CompileItemsSha256, latestSourceUtc, compile.GeneratedItemBinding));
+                compile.CompileItemsSha256, latestTrackedSourceUtc, compile.LatestGeneratedItemWriteUtc,
+                compile.GeneratedItemBinding));
         }
         var required = new[]
         {
@@ -767,16 +768,20 @@ public sealed class Issue435ProjectedScenePerformanceTests
         var generatedRoot = Path.Combine(projectRoot, "obj") + Path.DirectorySeparatorChar;
         var trackedCount = 0;
         var generatedCount = 0;
-        var latestWriteUtc = DateTime.MinValue;
+        var latestTrackedWriteUtc = DateTime.MinValue;
+        DateTime? latestGeneratedWriteUtc = null;
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var fullPath in items)
         {
             Assert.IsTrue(File.Exists(fullPath), $"Evaluated Compile item is missing: {fullPath}");
-            latestWriteUtc = new[] { latestWriteUtc, new FileInfo(fullPath).LastWriteTimeUtc }.Max();
+            var itemWriteUtc = new FileInfo(fullPath).LastWriteTimeUtc;
             if (fullPath.StartsWith(generatedRoot,
                     OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             {
                 generatedCount++;
+                latestGeneratedWriteUtc = latestGeneratedWriteUtc is null
+                    ? itemWriteUtc
+                    : new[] { latestGeneratedWriteUtc.Value, itemWriteUtc }.Max();
                 AppendFingerprint(hash, Path.GetRelativePath(projectRoot, fullPath), File.ReadAllBytes(fullPath));
                 continue;
             }
@@ -786,10 +791,11 @@ public sealed class Issue435ProjectedScenePerformanceTests
             var relativePath = Path.GetRelativePath(repositoryRoot, fullPath).Replace(Path.DirectorySeparatorChar, '/');
             Assert.IsTrue(tracked.Contains(relativePath), $"Evaluated Compile item is not tracked by git: {relativePath}");
             trackedCount++;
+            latestTrackedWriteUtc = new[] { latestTrackedWriteUtc, itemWriteUtc }.Max();
             AppendFingerprint(hash, relativePath, File.ReadAllBytes(fullPath));
         }
         return new(items.Length, trackedCount, generatedCount, Convert.ToHexString(hash.GetHashAndReset()),
-            latestWriteUtc, generatedCount == 0
+            latestTrackedWriteUtc, latestGeneratedWriteUtc, generatedCount == 0
                 ? "No generated obj Compile items were evaluated; assembly/PDB hashes bind compiler output."
                 : "Generated obj Compile items are hashed directly and assembly/PDB hashes bind compiler output.");
     }
@@ -908,11 +914,13 @@ public sealed class Issue435ProjectedScenePerformanceTests
         string Name, string Path, string Sha256, DateTime LastWriteUtc,
         string? PdbPath, string? PdbSha256, DateTime? PdbLastWriteUtc,
         string ProjectPath, string SourceRoot, int CompileItemCount, int TrackedCompileItemCount,
-        int GeneratedCompileItemCount, string CompileItemsSha256, DateTime LatestSourceWriteUtc,
+        int GeneratedCompileItemCount, string CompileItemsSha256, DateTime LatestTrackedSourceWriteUtc,
+        DateTime? LatestGeneratedItemWriteUtc,
         string GeneratedItemBinding);
     private sealed record ProjectCompileProvenance(
         int CompileItemCount, int TrackedCompileItemCount, int GeneratedCompileItemCount,
-        string CompileItemsSha256, DateTime LatestItemWriteUtc, string GeneratedItemBinding);
+        string CompileItemsSha256, DateTime LatestTrackedItemWriteUtc,
+        DateTime? LatestGeneratedItemWriteUtc, string GeneratedItemBinding);
 
     private sealed class FixedProductStep(ProcessingProduct product) : ICaptureProcessingStep, ICaptureProcessingGraphStep
     {
@@ -1012,9 +1020,14 @@ public sealed class Issue435ProjectedScenePerformanceHarnessManifestTests
         StringAssert.Contains(source, "Runtime output changed after receipt verification", StringComparison.Ordinal);
         var runner = File.ReadAllText(Path.Combine(root, "scripts", "evidence:issue-435"));
         StringAssert.Contains(runner, "--no-incremental -warnaserror", StringComparison.Ordinal);
+        StringAssert.Contains(runner,
+            "dotnet clean \"$SOLUTION\" --configuration Release", StringComparison.Ordinal);
         StringAssert.Contains(runner, "git status --porcelain --untracked-files=all", StringComparison.Ordinal);
         StringAssert.Contains(runner, "set -o noclobber", StringComparison.Ordinal);
         StringAssert.Contains(runner, "HVO_ISSUE435_BUILD_RECEIPT", StringComparison.Ordinal);
+        StringAssert.Contains(source, "LatestTrackedSourceWriteUtc", StringComparison.Ordinal);
+        StringAssert.Contains(source, "LatestGeneratedItemWriteUtc", StringComparison.Ordinal);
+        StringAssert.Contains(source, "predates its tracked source/project inputs", StringComparison.Ordinal);
         var mappings = manifest.RootElement.GetProperty("resultFieldMappings").EnumerateObject()
             .ToDictionary(static item => item.Name, static item => item.Value.GetString()!, StringComparer.Ordinal);
         foreach (var measurement in manifest.RootElement.GetProperty("measurements").EnumerateArray().Select(static item => item.GetString()!))
