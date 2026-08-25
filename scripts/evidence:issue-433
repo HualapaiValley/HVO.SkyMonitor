@@ -8,7 +8,8 @@ PROJECT="tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.c
 SOLUTION="HVO.SkyMonitor.v9.slnx"
 OUTPUT_DIR="$ROOT/tests/HVO.SkyMonitor.Processing.Tests/bin/Release/net10.0"
 EVIDENCE_ROOT=${HVO_ISSUE433_EVIDENCE_ROOT:-"$ROOT/TestResults/issue-433"}
-EXPECTED_PARENT=${HVO_ISSUE433_BASELINE:-fbf93c1}
+EXPECTED_BASELINE=${HVO_ISSUE433_BASELINE:-fbf93c1}
+EXPECTED_CANDIDATE=${HVO_ISSUE433_CANDIDATE:-ee08ee7}
 
 command -v jq >/dev/null || { printf '%s\n' "jq is required." >&2; exit 1; }
 [[ $(git status --porcelain --untracked-files=all) == "" ]] || {
@@ -16,20 +17,26 @@ command -v jq >/dev/null || { printf '%s\n' "jq is required." >&2; exit 1; }
   exit 1
 }
 
-HEAD_COMMIT=$(git rev-parse HEAD)
-HEAD_TREE=$(git rev-parse 'HEAD^{tree}')
-PARENT_COMMIT=$(git rev-parse HEAD^)
-BASELINE_COMMIT=$(git rev-parse "$EXPECTED_PARENT^{commit}")
+EVIDENCE_HEAD=$(git rev-parse HEAD)
+EVIDENCE_HEAD_TREE=$(git rev-parse 'HEAD^{tree}')
+BASELINE_COMMIT=$(git rev-parse "$EXPECTED_BASELINE^{commit}")
 BASELINE_TREE=$(git rev-parse "$BASELINE_COMMIT^{tree}")
-[[ "$PARENT_COMMIT" == "$BASELINE_COMMIT" ]] || {
-  printf '%s\n' "HEAD parent must exactly equal configured issue #433 baseline $BASELINE_COMMIT; actual $PARENT_COMMIT." >&2
+CANDIDATE_PRODUCT_COMMIT=$(git rev-parse "$EXPECTED_CANDIDATE^{commit}")
+CANDIDATE_PRODUCT_TREE=$(git rev-parse "$CANDIDATE_PRODUCT_COMMIT^{tree}")
+CANDIDATE_PARENT=$(git rev-parse "$CANDIDATE_PRODUCT_COMMIT^")
+[[ "$CANDIDATE_PARENT" == "$BASELINE_COMMIT" ]] || {
+  printf '%s\n' "Issue #433 candidate product parent must exactly equal baseline $BASELINE_COMMIT; actual $CANDIDATE_PARENT." >&2
   exit 1
 }
-REVISION=${HVO_EVIDENCE_REVISION:-$HEAD_COMMIT}
-[[ "$REVISION" == "$HEAD_COMMIT" ]] || { printf '%s\n' "HVO_EVIDENCE_REVISION must equal HEAD." >&2; exit 1; }
+git merge-base --is-ancestor "$CANDIDATE_PRODUCT_COMMIT" "$EVIDENCE_HEAD" || {
+  printf '%s\n' "Issue #433 candidate product must be an ancestor of evidence HEAD." >&2
+  exit 1
+}
+REVISION=${HVO_EVIDENCE_REVISION:-$EVIDENCE_HEAD}
+[[ "$REVISION" == "$EVIDENCE_HEAD" ]] || { printf '%s\n' "HVO_EVIDENCE_REVISION must equal evidence HEAD." >&2; exit 1; }
 TRIAL=${HVO_EVIDENCE_TRIAL:-"$(date -u +%Y%m%dT%H%M%S%3NZ)-$$"}
 [[ "$TRIAL" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { printf '%s\n' "HVO_EVIDENCE_TRIAL is invalid." >&2; exit 1; }
-TRIAL_DIR="$EVIDENCE_ROOT/$HEAD_COMMIT/trials/$TRIAL"
+TRIAL_DIR="$EVIDENCE_ROOT/$EVIDENCE_HEAD/trials/$TRIAL"
 RECEIPT="$TRIAL_DIR/issue-433-build-receipt.json"
 RESULT="$TRIAL_DIR/issue-433-layered-presentation-performance.json"
 mkdir -p "$TRIAL_DIR"
@@ -57,9 +64,29 @@ inventory_hash() {
 
 SOURCE_HASH=$(inventory_hash "$ROOT" "$SOURCE_LIST" "$SOURCE_MANIFEST")
 SOURCE_COUNT=$(wc -l < "$SOURCE_LIST" | tr -d ' ')
-DIFF_FILE="$TRIAL_DIR/.branch.diff"
-git diff --binary "$BASELINE_COMMIT...$HEAD_COMMIT" > "$DIFF_FILE"
-DIFF_HASH=$(sha256sum "$DIFF_FILE" | cut -d' ' -f1 | tr 'a-f' 'A-F')
+PRODUCT_DIFF_FILE="$TRIAL_DIR/.product.diff"
+HARNESS_DIFF_FILE="$TRIAL_DIR/.harness.diff"
+git diff --binary "$BASELINE_COMMIT...$CANDIDATE_PRODUCT_COMMIT" > "$PRODUCT_DIFF_FILE"
+git diff --binary "$CANDIDATE_PRODUCT_COMMIT...$EVIDENCE_HEAD" > "$HARNESS_DIFF_FILE"
+PRODUCT_DIFF_HASH=$(sha256sum "$PRODUCT_DIFF_FILE" | cut -d' ' -f1 | tr 'a-f' 'A-F')
+HARNESS_DIFF_HASH=$(sha256sum "$HARNESS_DIFF_FILE" | cut -d' ' -f1 | tr 'a-f' 'A-F')
+
+EXPECTED_EVIDENCE_PATHS=(
+  "docs/validation/issue-433-runtime-signals.json"
+  "scripts/evidence:issue-433"
+  "tests/HVO.SkyMonitor.Processing.Tests/Issue433LayeredPresentationPerformanceTests.cs"
+)
+mapfile -t EVIDENCE_PATHS < <(git diff --name-only "$CANDIDATE_PRODUCT_COMMIT...$EVIDENCE_HEAD" | LC_ALL=C sort)
+[[ "${#EVIDENCE_PATHS[@]}" -eq "${#EXPECTED_EVIDENCE_PATHS[@]}" ]] || {
+  printf '%s\n' "Candidate-to-evidence diff must contain exactly the three issue #433 evidence files." >&2
+  exit 1
+}
+for index in "${!EXPECTED_EVIDENCE_PATHS[@]}"; do
+  [[ "${EVIDENCE_PATHS[$index]}" == "${EXPECTED_EVIDENCE_PATHS[$index]}" ]] || {
+    printf '%s\n' "Unexpected candidate-to-evidence path: ${EVIDENCE_PATHS[$index]}" >&2
+    exit 1
+  }
+done
 
 LEGACY_PATHS=(
   "src/HVO.SkyMonitor.Imaging/AnnotationRenderer.cs"
@@ -71,12 +98,16 @@ LEGACY_PATHS=(
 LEGACY_PROOFS='[]'
 for path in "${LEGACY_PATHS[@]}"; do
   git cat-file -e "$BASELINE_COMMIT:$path"
-  git cat-file -e "$HEAD_COMMIT:$path"
+  git cat-file -e "$CANDIDATE_PRODUCT_COMMIT:$path"
+  git cat-file -e "$EVIDENCE_HEAD:$path"
   baseline_blob=$(git rev-parse "$BASELINE_COMMIT:$path")
-  candidate_blob=$(git rev-parse "$HEAD_COMMIT:$path")
+  candidate_blob=$(git rev-parse "$CANDIDATE_PRODUCT_COMMIT:$path")
+  evidence_blob=$(git rev-parse "$EVIDENCE_HEAD:$path")
   [[ "$baseline_blob" == "$candidate_blob" ]] || { printf '%s\n' "Legacy source blob changed: $path" >&2; exit 1; }
-  LEGACY_PROOFS=$(jq -c --arg path "$path" --arg baselineBlob "$baseline_blob" --arg candidateBlob "$candidate_blob" \
-    '. + [{path:$path,baselineBlob:$baselineBlob,candidateBlob:$candidateBlob,identical:true}]' <<< "$LEGACY_PROOFS")
+  [[ "$candidate_blob" == "$evidence_blob" ]] || { printf '%s\n' "Evidence commit changed production source: $path" >&2; exit 1; }
+  LEGACY_PROOFS=$(jq -c --arg path "$path" --arg baselineBlob "$baseline_blob" --arg candidateProductBlob "$candidate_blob" \
+    --arg evidenceHeadBlob "$evidence_blob" \
+    '. + [{path:$path,baselineBlob:$baselineBlob,candidateProductBlob:$candidateProductBlob,evidenceHeadBlob:$evidenceHeadBlob,identical:true}]' <<< "$LEGACY_PROOFS")
 done
 
 BUILD_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
@@ -94,26 +125,33 @@ OUTPUT_COUNT=$(wc -l < "$OUTPUT_LIST" | tr -d ' ')
 SDK_VERSION=$(dotnet --version)
 TMP_RECEIPT="$TRIAL_DIR/.issue-433-build-receipt.$$.tmp"
 jq -n \
-  --arg schemaVersion "issue-433-build-receipt-v1" --arg headCommit "$HEAD_COMMIT" --arg headTree "$HEAD_TREE" \
-  --arg parentCommit "$PARENT_COMMIT" --arg baselineCommit "$BASELINE_COMMIT" --arg baselineTree "$BASELINE_TREE" \
-  --arg sourceDiffSha256 "$DIFF_HASH" --arg sourceInventorySha256 "$SOURCE_HASH" \
+  --arg schemaVersion "issue-433-build-receipt-v1" --arg evidenceHead "$EVIDENCE_HEAD" --arg evidenceHeadTree "$EVIDENCE_HEAD_TREE" \
+  --arg candidateProductCommit "$CANDIDATE_PRODUCT_COMMIT" --arg candidateProductTree "$CANDIDATE_PRODUCT_TREE" \
+  --arg baselineCommit "$BASELINE_COMMIT" --arg baselineTree "$BASELINE_TREE" \
+  --arg baselineToCandidateProductDiffSha256 "$PRODUCT_DIFF_HASH" \
+  --arg candidateToEvidenceHarnessDiffSha256 "$HARNESS_DIFF_HASH" --arg measuredSourceInventorySha256 "$SOURCE_HASH" \
   --arg runtimeOutputSetSha256 "$OUTPUT_HASH" --arg configuration "Release" --arg project "$PROJECT" \
   --arg sdkVersion "$SDK_VERSION" --arg trial "$TRIAL" --arg buildStartedUtc "$BUILD_STARTED_UTC" \
   --arg buildCompletedUtc "$BUILD_COMPLETED_UTC" --argjson sourceInventoryFileCount "$SOURCE_COUNT" \
   --argjson runtimeOutputFileCount "$OUTPUT_COUNT" --argjson legacyBlobProofs "$LEGACY_PROOFS" \
-  '{schemaVersion:$schemaVersion,headCommit:$headCommit,headTree:$headTree,parentCommit:$parentCommit,
-    baselineCommit:$baselineCommit,baselineTree:$baselineTree,sourceDiffSha256:$sourceDiffSha256,
-    sourceInventorySha256:$sourceInventorySha256,sourceInventoryFileCount:$sourceInventoryFileCount,
+  '{schemaVersion:$schemaVersion,evidenceHead:$evidenceHead,evidenceHeadTree:$evidenceHeadTree,
+    candidateProductCommit:$candidateProductCommit,candidateProductTree:$candidateProductTree,
+    baselineCommit:$baselineCommit,baselineTree:$baselineTree,
+    baselineToCandidateProductDiffSha256:$baselineToCandidateProductDiffSha256,
+    candidateToEvidenceHarnessDiffSha256:$candidateToEvidenceHarnessDiffSha256,
+    measuredSourceInventorySha256:$measuredSourceInventorySha256,measuredSourceInventoryFileCount:$sourceInventoryFileCount,
     runtimeOutputSetSha256:$runtimeOutputSetSha256,runtimeOutputFileCount:$runtimeOutputFileCount,
     configuration:$configuration,project:$project,sdkVersion:$sdkVersion,trial:$trial,
     buildStartedUtc:$buildStartedUtc,buildCompletedUtc:$buildCompletedUtc,legacyBlobProofs:$legacyBlobProofs}' > "$TMP_RECEIPT"
 (set -o noclobber; exec 9>"$RECEIPT"; cat "$TMP_RECEIPT" >&9)
-rm -f -- "$TMP_RECEIPT" "$SOURCE_LIST" "$SOURCE_MANIFEST" "$DIFF_FILE" "$OUTPUT_LIST" "$OUTPUT_MANIFEST"
+rm -f -- "$TMP_RECEIPT" "$SOURCE_LIST" "$SOURCE_MANIFEST" "$PRODUCT_DIFF_FILE" "$HARNESS_DIFF_FILE" "$OUTPUT_LIST" "$OUTPUT_MANIFEST"
 
 [[ $(git status --porcelain --untracked-files=all) == "" ]] || { printf '%s\n' "Worktree changed during evidence build." >&2; exit 1; }
 export HVO_ISSUE433_EVIDENCE=1
 export HVO_ISSUE433_EVIDENCE_ROOT="$EVIDENCE_ROOT"
-export HVO_EVIDENCE_REVISION="$HEAD_COMMIT"
+export HVO_EVIDENCE_REVISION="$EVIDENCE_HEAD"
+export HVO_ISSUE433_BASELINE="$BASELINE_COMMIT"
+export HVO_ISSUE433_CANDIDATE="$CANDIDATE_PRODUCT_COMMIT"
 export HVO_EVIDENCE_TRIAL="$TRIAL"
 export HVO_ISSUE433_BUILD_RECEIPT="$RECEIPT"
 dotnet test "$PROJECT" --no-build --configuration Release \

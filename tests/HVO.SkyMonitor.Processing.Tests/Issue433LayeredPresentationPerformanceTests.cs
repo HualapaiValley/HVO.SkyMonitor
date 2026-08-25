@@ -51,6 +51,12 @@ public sealed class Issue433LayeredPresentationPerformanceTests
         "src/HVO.SkyMonitor.Processing/WeatherCloudOverlayRecipe.cs",
         "src/HVO.SkyMonitor.Imaging/PresentationLayerPayload.cs"
     ];
+    private static readonly string[] EvidenceOnlyPaths =
+    [
+        "docs/validation/issue-433-runtime-signals.json",
+        "scripts/evidence:issue-433",
+        "tests/HVO.SkyMonitor.Processing.Tests/Issue433LayeredPresentationPerformanceTests.cs"
+    ];
 
     [TestMethod]
     public void FullResolutionSyntheticMono8OldAndLayeredPathsEvidence()
@@ -138,7 +144,7 @@ public sealed class Issue433LayeredPresentationPerformanceTests
         var trial = Environment.GetEnvironmentVariable("HVO_EVIDENCE_TRIAL");
         Assert.IsFalse(string.IsNullOrWhiteSpace(outputRoot));
         Assert.AreEqual(receipt.Trial, trial);
-        var outputDirectory = Path.GetFullPath(Path.Combine(outputRoot!, receipt.HeadCommit, "trials", receipt.Trial));
+        var outputDirectory = Path.GetFullPath(Path.Combine(outputRoot!, receipt.EvidenceHead, "trials", receipt.Trial));
         var outputPath = Path.Combine(outputDirectory, "issue-433-layered-presentation-performance.json");
         Assert.IsFalse(File.Exists(outputPath), "Evidence result is create-only.");
 
@@ -148,15 +154,17 @@ public sealed class Issue433LayeredPresentationPerformanceTests
             issue = 433,
             provenance = new
             {
-                receipt.HeadCommit,
-                receipt.HeadTree,
+                receipt.EvidenceHead,
+                receipt.EvidenceHeadTree,
+                receipt.CandidateProductCommit,
+                receipt.CandidateProductTree,
                 baselineRevision = receipt.BaselineCommit,
                 receipt.BaselineCommit,
                 receipt.BaselineTree,
-                receipt.ParentCommit,
-                receipt.SourceDiffSha256,
-                receipt.SourceInventorySha256,
-                receipt.SourceInventoryFileCount,
+                receipt.BaselineToCandidateProductDiffSha256,
+                receipt.CandidateToEvidenceHarnessDiffSha256,
+                receipt.MeasuredSourceInventorySha256,
+                receipt.MeasuredSourceInventoryFileCount,
                 receipt.RuntimeOutputSetSha256,
                 receipt.RuntimeOutputFileCount,
                 receipt.LegacyBlobProofs,
@@ -269,7 +277,7 @@ public sealed class Issue433LayeredPresentationPerformanceTests
                     ? "No material greater-than-10-percent comparison signal requires disposition."
                     : "Material greater-than-10-percent signals are flagged for operator disposition; this harness applies no arbitrary performance failure threshold.",
                 baselineRevisionRole = "ancestry-and-source-equivalence-only",
-                measuredBinary = "legacyPathInCandidateBinary and layeredPathInCandidateBinary were both measured from the candidate Release binary; no separate baseline build was measured.",
+                measuredBinary = "The measured candidate binary includes the evidence-only harness commit and is built from evidenceHead. Production source is pinned to candidateProductCommit; the commits after it are restricted to the three allowlisted evidence files. legacyPathInCandidateBinary and layeredPathInCandidateBinary execute in that same build. No separate baseline build was measured.",
                 interpretation = "Correctness is the only fail gate. Timing, CPU, allocation, throughput, RSS, and retained-LOH changes are comparison evidence and require explanation rather than an arbitrary threshold."
             },
             notApplicable = new
@@ -571,29 +579,39 @@ public sealed class Issue433LayeredPresentationPerformanceTests
         Assert.AreEqual("issue-433-build-receipt-v1", receipt.SchemaVersion);
         Assert.AreEqual("10.0.100", receipt.SdkVersion);
         Assert.AreEqual(ReadProcess(root, "dotnet", "--version"), receipt.SdkVersion);
-        var headCommit = ReadGit(root, "rev-parse", "HEAD");
-        var headTree = ReadGit(root, "rev-parse", "HEAD^{tree}");
-        var parentCommit = ReadGit(root, "rev-parse", "HEAD^");
+        var evidenceHead = ReadGit(root, "rev-parse", "HEAD");
+        var evidenceHeadTree = ReadGit(root, "rev-parse", "HEAD^{tree}");
         var expectedBaselineRevision = Environment.GetEnvironmentVariable("HVO_ISSUE433_BASELINE") ?? "fbf93c1";
+        var expectedCandidateRevision = Environment.GetEnvironmentVariable("HVO_ISSUE433_CANDIDATE") ?? "ee08ee7";
         var baselineCommit = ReadGit(root, "rev-parse", $"{expectedBaselineRevision}^{{commit}}");
         var baselineTree = ReadGit(root, "rev-parse", $"{baselineCommit}^{{tree}}");
-        Assert.AreEqual(headCommit, receipt.HeadCommit);
-        Assert.AreEqual(headTree, receipt.HeadTree);
-        Assert.AreEqual(parentCommit, receipt.ParentCommit);
-        Assert.AreEqual(parentCommit, baselineCommit, "Configured issue #433 baseline must exactly equal HEAD parent.");
+        var candidateProductCommit = ReadGit(root, "rev-parse", $"{expectedCandidateRevision}^{{commit}}");
+        var candidateProductTree = ReadGit(root, "rev-parse", $"{candidateProductCommit}^{{tree}}");
+        var candidateParent = ReadGit(root, "rev-parse", $"{candidateProductCommit}^");
+        Assert.AreEqual(evidenceHead, receipt.EvidenceHead);
+        Assert.AreEqual(evidenceHeadTree, receipt.EvidenceHeadTree);
+        Assert.AreEqual(candidateProductCommit, receipt.CandidateProductCommit);
+        Assert.AreEqual(candidateProductTree, receipt.CandidateProductTree);
+        Assert.AreEqual(baselineCommit, candidateParent, "Configured issue #433 candidate product parent must exactly equal baseline.");
+        AssertGitSuccess(root, "merge-base", "--is-ancestor", candidateProductCommit, evidenceHead);
         Assert.AreEqual(baselineCommit, receipt.BaselineCommit);
         Assert.AreEqual(baselineTree, receipt.BaselineTree);
         Assert.AreEqual(string.Empty, ReadGit(root, "status", "--porcelain", "--untracked-files=all"));
-        Assert.AreEqual(Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"), receipt.HeadCommit);
+        Assert.AreEqual(Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"), receipt.EvidenceHead);
         Assert.AreEqual(Environment.GetEnvironmentVariable("HVO_EVIDENCE_TRIAL"), receipt.Trial);
         Assert.AreEqual("Release", receipt.Configuration);
         Assert.AreEqual("tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj", receipt.Project);
-        var diffSha256 = Sha256(ReadGitBytes(root, "diff", "--binary", $"{baselineCommit}...{headCommit}"));
-        Assert.AreEqual(diffSha256, receipt.SourceDiffSha256, ignoreCase: true);
+        var productDiffSha256 = Sha256(ReadGitBytes(root, "diff", "--binary", $"{baselineCommit}...{candidateProductCommit}"));
+        var harnessDiffSha256 = Sha256(ReadGitBytes(root, "diff", "--binary", $"{candidateProductCommit}...{evidenceHead}"));
+        Assert.AreEqual(productDiffSha256, receipt.BaselineToCandidateProductDiffSha256, ignoreCase: true);
+        Assert.AreEqual(harnessDiffSha256, receipt.CandidateToEvidenceHarnessDiffSha256, ignoreCase: true);
+        var evidencePaths = Encoding.UTF8.GetString(ReadGitBytes(root, "diff", "--name-only", "-z",
+            $"{candidateProductCommit}...{evidenceHead}")).Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        CollectionAssert.AreEquivalent(EvidenceOnlyPaths, evidencePaths);
         var sourceInventory = SourceInventory(root);
-        Assert.AreEqual(sourceInventory.Sha256, receipt.SourceInventorySha256, ignoreCase: true);
-        Assert.AreEqual(sourceInventory.FileCount, receipt.SourceInventoryFileCount);
-        VerifyLegacyBlobProofs(root, receipt.LegacyBlobProofs, baselineCommit, headCommit);
+        Assert.AreEqual(sourceInventory.Sha256, receipt.MeasuredSourceInventorySha256, ignoreCase: true);
+        Assert.AreEqual(sourceInventory.FileCount, receipt.MeasuredSourceInventoryFileCount);
+        VerifyLegacyBlobProofs(root, receipt.LegacyBlobProofs, baselineCommit, candidateProductCommit, evidenceHead);
         return receipt;
     }
 
@@ -619,7 +637,8 @@ public sealed class Issue433LayeredPresentationPerformanceTests
         return new(relativePaths.Length, Sha256(manifest.ToArray()));
     }
 
-    private static void VerifyLegacyBlobProofs(string root, JsonElement proofs, string baselineCommit, string headCommit)
+    private static void VerifyLegacyBlobProofs(
+        string root, JsonElement proofs, string baselineCommit, string candidateProductCommit, string evidenceHead)
     {
         Assert.AreEqual(JsonValueKind.Array, proofs.ValueKind);
         var byPath = proofs.EnumerateArray().ToDictionary(
@@ -628,11 +647,14 @@ public sealed class Issue433LayeredPresentationPerformanceTests
         foreach (var relativePath in LegacySourcePaths)
         {
             var baselineBlob = ReadGit(root, "rev-parse", $"{baselineCommit}:{relativePath}");
-            var candidateBlob = ReadGit(root, "rev-parse", $"{headCommit}:{relativePath}");
+            var candidateBlob = ReadGit(root, "rev-parse", $"{candidateProductCommit}:{relativePath}");
+            var evidenceBlob = ReadGit(root, "rev-parse", $"{evidenceHead}:{relativePath}");
             Assert.AreEqual(baselineBlob, candidateBlob, $"Legacy source changed: {relativePath}");
+            Assert.AreEqual(candidateBlob, evidenceBlob, $"Evidence-only commits changed production source: {relativePath}");
             var proof = byPath[relativePath];
             Assert.AreEqual(baselineBlob, proof.GetProperty("baselineBlob").GetString());
-            Assert.AreEqual(candidateBlob, proof.GetProperty("candidateBlob").GetString());
+            Assert.AreEqual(candidateBlob, proof.GetProperty("candidateProductBlob").GetString());
+            Assert.AreEqual(evidenceBlob, proof.GetProperty("evidenceHeadBlob").GetString());
             Assert.IsTrue(proof.GetProperty("identical").GetBoolean());
         }
     }
@@ -667,6 +689,9 @@ public sealed class Issue433LayeredPresentationPerformanceTests
         Assert.AreEqual(0, process.ExitCode, error);
         return output.ToArray();
     }
+
+    private static void AssertGitSuccess(string root, params string[] arguments) =>
+        _ = ReadGitBytes(root, arguments);
 
     private static string Sha256(ReadOnlySpan<byte> value) => Convert.ToHexString(SHA256.HashData(value));
 
@@ -707,9 +732,11 @@ public sealed class Issue433LayeredPresentationPerformanceTests
     private readonly record struct InventoryHash(int FileCount, string Sha256);
     internal sealed record PercentComparison(double? Percent, string? NotApplicableReason);
     [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "System.Text.Json constructs the receipt DTO.")]
-    private sealed record BuildReceipt(string SchemaVersion, string HeadCommit, string HeadTree, string ParentCommit,
-        string BaselineCommit, string BaselineTree, string SourceDiffSha256, string SourceInventorySha256,
-        int SourceInventoryFileCount, string RuntimeOutputSetSha256, int RuntimeOutputFileCount,
+    private sealed record BuildReceipt(string SchemaVersion, string EvidenceHead, string EvidenceHeadTree,
+        string CandidateProductCommit, string CandidateProductTree, string BaselineCommit, string BaselineTree,
+        string BaselineToCandidateProductDiffSha256, string CandidateToEvidenceHarnessDiffSha256,
+        string MeasuredSourceInventorySha256, int MeasuredSourceInventoryFileCount,
+        string RuntimeOutputSetSha256, int RuntimeOutputFileCount,
         string Configuration, string Project, string SdkVersion, string Trial, JsonElement LegacyBlobProofs);
 }
 
@@ -775,10 +802,16 @@ public sealed class Issue433LayeredPresentationPerformanceHarnessTests
         }
 
         var runner = File.ReadAllText(Path.Combine(root, "scripts", "evidence:issue-433"));
-        StringAssert.Contains(runner, "EXPECTED_PARENT=${HVO_ISSUE433_BASELINE:-fbf93c1}", StringComparison.Ordinal);
+        StringAssert.Contains(runner, "EXPECTED_BASELINE=${HVO_ISSUE433_BASELINE:-fbf93c1}", StringComparison.Ordinal);
+        StringAssert.Contains(runner, "EXPECTED_CANDIDATE=${HVO_ISSUE433_CANDIDATE:-ee08ee7}", StringComparison.Ordinal);
         StringAssert.Contains(runner, "--no-incremental -warnaserror", StringComparison.Ordinal);
         StringAssert.Contains(runner, "dotnet clean \"$SOLUTION\" --configuration Release", StringComparison.Ordinal);
-        StringAssert.Contains(runner, "git diff --binary \"$BASELINE_COMMIT...$HEAD_COMMIT\"", StringComparison.Ordinal);
+        StringAssert.Contains(runner, "git merge-base --is-ancestor \"$CANDIDATE_PRODUCT_COMMIT\" \"$EVIDENCE_HEAD\"", StringComparison.Ordinal);
+        StringAssert.Contains(runner, "git diff --binary \"$BASELINE_COMMIT...$CANDIDATE_PRODUCT_COMMIT\"", StringComparison.Ordinal);
+        StringAssert.Contains(runner, "git diff --binary \"$CANDIDATE_PRODUCT_COMMIT...$EVIDENCE_HEAD\"", StringComparison.Ordinal);
+        StringAssert.Contains(runner, "EXPECTED_EVIDENCE_PATHS=(", StringComparison.Ordinal);
+        StringAssert.Contains(runner, "export HVO_ISSUE433_BASELINE=\"$BASELINE_COMMIT\"", StringComparison.Ordinal);
+        StringAssert.Contains(runner, "export HVO_ISSUE433_CANDIDATE=\"$CANDIDATE_PRODUCT_COMMIT\"", StringComparison.Ordinal);
         StringAssert.Contains(runner, "set -o noclobber", StringComparison.Ordinal);
         StringAssert.Contains(runner, "PresentationLayerPayload.cs", StringComparison.Ordinal);
         StringAssert.Contains(runner, "git cat-file -e", StringComparison.Ordinal);
@@ -800,14 +833,22 @@ public sealed class Issue433LayeredPresentationPerformanceHarnessTests
         StringAssert.Contains(source, "double.IsFinite(percent)", StringComparison.Ordinal);
         StringAssert.Contains(source, "item.Value.Percent is { } value && double.IsFinite(value) && Math.Abs(value) > 10", StringComparison.Ordinal);
         StringAssert.Contains(source, "var baselineCommit = ReadGit(root, \"rev-parse\"", StringComparison.Ordinal);
-        StringAssert.Contains(source, "Assert.AreEqual(parentCommit, baselineCommit", StringComparison.Ordinal);
+        StringAssert.Contains(source, "Assert.AreEqual(baselineCommit, candidateParent", StringComparison.Ordinal);
+        StringAssert.Contains(source, "AssertGitSuccess(root, \"merge-base\", \"--is-ancestor\"", StringComparison.Ordinal);
         StringAssert.Contains(source, "var baselineTree = ReadGit(root, \"rev-parse\"", StringComparison.Ordinal);
         StringAssert.Contains(source, "ReadGitBytes(root, \"diff\", \"--binary\"", StringComparison.Ordinal);
+        StringAssert.Contains(source, "CollectionAssert.AreEquivalent(EvidenceOnlyPaths, evidencePaths)", StringComparison.Ordinal);
         StringAssert.Contains(source, "var sourceInventory = SourceInventory(root);", StringComparison.Ordinal);
         StringAssert.Contains(source, "VerifyLegacyBlobProofs(root, receipt.LegacyBlobProofs", StringComparison.Ordinal);
         StringAssert.Contains(source, "CollectionAssert.AreEquivalent(LegacySourcePaths", StringComparison.Ordinal);
         StringAssert.Contains(source, "Assert.AreEqual(\"10.0.100\", receipt.SdkVersion)", StringComparison.Ordinal);
         StringAssert.Contains(source, "ReadProcess(root, \"dotnet\", \"--version\")", StringComparison.Ordinal);
+        StringAssert.Contains(source, "Production source is pinned to candidateProductCommit", StringComparison.Ordinal);
+        StringAssert.Contains(source, "receipt.EvidenceHeadTree", StringComparison.Ordinal);
+        StringAssert.Contains(source, "receipt.CandidateProductTree", StringComparison.Ordinal);
+        StringAssert.Contains(source, "receipt.BaselineToCandidateProductDiffSha256", StringComparison.Ordinal);
+        StringAssert.Contains(source, "receipt.CandidateToEvidenceHarnessDiffSha256", StringComparison.Ordinal);
+        StringAssert.Contains(source, "receipt.MeasuredSourceInventorySha256", StringComparison.Ordinal);
         var boundaryType = type.GetNestedType("BoundaryMeasurement", BindingFlags.NonPublic);
         Assert.IsNotNull(boundaryType);
         Assert.IsNull(boundaryType.GetProperty("Result"));
