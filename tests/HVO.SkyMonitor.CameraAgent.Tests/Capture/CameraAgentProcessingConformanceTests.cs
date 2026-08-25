@@ -191,6 +191,23 @@ public sealed class CameraAgentProcessingConformanceTests
             reconstructionDescriptor: fallbackDescriptor);
         Assert.AreEqual(fallbackDescriptor.Capture.CaptureSequence, reconstructedArtifact.CaptureSequence);
 
+        var typedProduct = new ProcessingProduct(
+            FrameArtifactRole.Metadata, "typed", new string('1', 64), "application/json", null, new byte[] { 1 },
+            new string('2', 64), ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                "typed", "1.0.0", "typed-v1", JsonSerializer.SerializeToElement(new { }))), [], [], TimeSpan.Zero,
+            reconstructedArtifact.Compatibility)
+        {
+            Kind = ProcessingProductKind.Metadata,
+            SchemaVersion = "typed-v1",
+            ContentIdentitySha256 = new string('A', 64)
+        };
+        var typedArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig,
+            new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Metadata, fallbackFrame), "typed", product: typedProduct);
+        Assert.AreEqual(ProcessingProductKind.Metadata, typedArtifact.ProductKind);
+        Assert.AreEqual("typed-v1", typedArtifact.SchemaVersion);
+        Assert.AreEqual(new string('A', 64), typedArtifact.ContentIdentitySha256);
+
         var outcome = await adapter.ExecuteAsync(
             ProcessingConformanceFixture.CreateRequest(input), CancellationToken.None).ConfigureAwait(false);
 

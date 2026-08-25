@@ -87,7 +87,12 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
             assessmentProduct.TotalIntegration,
             assessmentProduct.Compatibility,
             ObservationStartedUtc: preview.ObservationStartedUtc,
-            ObservationEndedUtc: preview.ObservationEndedUtc);
+            ObservationEndedUtc: preview.ObservationEndedUtc)
+        {
+            ProductKind = assessmentProduct.Kind,
+            SchemaVersion = assessmentProduct.SchemaVersion,
+            ContentIdentitySha256 = assessmentProduct.ContentIdentitySha256
+        };
         var environment = cloudEnvironment is null
             ? CameraAgentCloudEnvironment.CreateMissingInput(context)
             : await cloudEnvironment.CreateInputAsync(context, cancellationToken).ConfigureAwait(false);

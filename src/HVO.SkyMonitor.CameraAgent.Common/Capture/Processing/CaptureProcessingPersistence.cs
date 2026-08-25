@@ -191,7 +191,12 @@ internal sealed class CaptureProcessingPersistence(
                 restored.Product.Compatibility,
                 CaptureSequence: output.CaptureSequence,
                 ObservationStartedUtc: observationStartedUtc,
-                ObservationEndedUtc: observationEndedUtc));
+                ObservationEndedUtc: observationEndedUtc)
+            {
+                ProductKind = restored.Product.Kind,
+                SchemaVersion = restored.Product.SchemaVersion,
+                ContentIdentitySha256 = restored.Product.ContentIdentitySha256
+            });
         }
         return artifacts;
     }

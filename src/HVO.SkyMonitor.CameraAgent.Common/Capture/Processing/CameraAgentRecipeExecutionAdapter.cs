@@ -79,6 +79,9 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
                     reconstructionDescriptor.Controls.EffectiveOffset,
                     reconstructionDescriptor.Controls.EffectiveTemperatureC))
         {
+            ProductKind = product?.Kind ?? ProcessingProductKind.PixelData,
+            SchemaVersion = product?.SchemaVersion,
+            ContentIdentitySha256 = product?.ContentIdentitySha256,
             CaptureId = reconstructionDescriptor?.Capture.CaptureId,
             DescriptorIdentitySha256 = reconstructionDescriptor is null
                 ? null

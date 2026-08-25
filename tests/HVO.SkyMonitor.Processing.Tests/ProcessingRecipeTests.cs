@@ -152,6 +152,28 @@ public sealed class ProcessingRecipeTests
         Assert.AreNotEqual(product.ContentIdentitySha256, product.ChecksumSha256);
         Assert.AreNotEqual(product.Recipe.IdentitySha256, changed.Products.Single().Recipe.IdentitySha256);
         Assert.AreNotEqual(product.OutputIdentitySha256, changed.Products.Single().OutputIdentitySha256);
+
+        var projectedArtifact = new ProcessingArtifact(
+            ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), product.Role, product.Variant,
+            product.Recipe.IdentitySha256, product.MediaType, product.Layout, product.Payload,
+            DateTimeOffset.Parse("2026-08-25T00:00:00Z", CultureInfo.InvariantCulture), product.TotalIntegration,
+            product.Compatibility)
+        {
+            ProductKind = product.Kind,
+            SchemaVersion = product.SchemaVersion,
+            ContentIdentitySha256 = product.ContentIdentitySha256
+        };
+        var presentation = PresentationLayerProducers.FromProjectedScene(predicted,
+            new PresentationAnnotationStyleV1(ConstellationIds: []));
+        var layerProduct = PresentationProcessingProducts.CreateLayerProduct(
+            presentation, "scene-presentation", [projectedArtifact], PresentationLayerProducers.SceneProducerVersion);
+        Assert.AreEqual(presentation.ContentIdentitySha256, layerProduct.ContentIdentitySha256);
+        var w6Style = new PresentationAnnotationStyleV1(ConstellationIds: []);
+        Assert.AreEqual(new PresentationColor(96, 96, 96), w6Style.ImageCircleColor ?? new(96, 96, 96));
+        Assert.AreEqual(new PresentationColor(255, 255, 255), w6Style.CardinalColor ?? new(255, 255, 255));
+        Assert.AreEqual(2, w6Style.CardinalScale);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => PresentationLayerProducers.FromProjectedScene(
+            predicted, w6Style with { CardinalScale = 9 }));
     }
 
     [TestMethod]

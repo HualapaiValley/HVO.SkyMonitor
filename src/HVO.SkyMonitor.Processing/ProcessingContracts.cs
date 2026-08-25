@@ -90,6 +90,15 @@ public sealed record ProcessingArtifact(
     DateTimeOffset? ObservationEndedUtc = null,
     ProcessingCaptureConditions? Conditions = null)
 {
+    /// <summary>Gets the durable product category when this artifact was restored from a processing product.</summary>
+    public ProcessingProductKind ProductKind { get; init; } = ProcessingProductKind.PixelData;
+
+    /// <summary>Gets the typed payload schema, or <see langword="null"/> for untyped and legacy artifacts.</summary>
+    public string? SchemaVersion { get; init; }
+
+    /// <summary>Gets the canonical semantic payload identity, independent of storage encoding, when available.</summary>
+    public string? ContentIdentitySha256 { get; init; }
+
     public Guid? CaptureId { get; init; }
 
     public string? DescriptorIdentitySha256 { get; init; }

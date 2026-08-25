@@ -6,10 +6,12 @@ using HVO.SkyMonitor.AgentCore;
 namespace HVO.SkyMonitor.Processing;
 
 [JsonConverter(typeof(JsonStringEnumConverter<PresentationCoordinateSpace>))]
+/// <summary>Identifies whether primitive coordinates are image pixels or normalized image units.</summary>
 public enum PresentationCoordinateSpace { ScenePixels, NormalizedImage }
 
 [JsonConverter(typeof(JsonStringEnumConverter<PresentationBlendMode>))]
-public enum PresentationBlendMode { Normal, Multiply, Screen }
+/// <summary>Selects portable layer blending; <see cref="Lighten"/> is channel-wise maximum.</summary>
+public enum PresentationBlendMode { Normal, Multiply, Screen, Lighten }
 
 /// <summary>Geometry, sample layout, and coordinate identity required for products to share a presentation stack.</summary>
 public sealed record PresentationCompatibilityDescriptor(

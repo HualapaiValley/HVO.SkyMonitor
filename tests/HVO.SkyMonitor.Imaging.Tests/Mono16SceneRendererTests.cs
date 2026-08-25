@@ -369,8 +369,8 @@ public sealed class Mono16SceneRendererTests
     {
         var constructor = typeof(VisibleScene).GetConstructor(BindingFlags.Instance | BindingFlags.NonPublic,
             binder: null,
-            [typeof(VisibleSceneRequest), typeof(IEnumerable<ProjectedCelestialObject>), typeof(IEnumerable<ProjectedConstellationSegment>)],
+            [typeof(VisibleSceneRequest), typeof(IEnumerable<ProjectedCelestialObject>), typeof(IEnumerable<ProjectedConstellationSegment>), typeof(VisibleSceneComputationProvenance)],
             modifiers: null)!;
-        return (VisibleScene)constructor.Invoke([scene.Request, new[] { replacement }, scene.Segments]);
+        return (VisibleScene)constructor.Invoke([scene.Request, new[] { replacement }, scene.Segments, scene.ComputationProvenance]);
     }
 }

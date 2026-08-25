@@ -226,7 +226,12 @@ internal sealed class AnnotationCaptureProcessingStep(
                 frame.TimestampUtc,
                 projectedSceneProduct.TotalIntegration,
                 projectedSceneProduct.Compatibility,
-                SourceArtifactIds: projectedSceneProduct.SourceArtifactIds));
+                SourceArtifactIds: projectedSceneProduct.SourceArtifactIds)
+            {
+                ProductKind = projectedSceneProduct.Kind,
+                SchemaVersion = projectedSceneProduct.SchemaVersion,
+                ContentIdentitySha256 = projectedSceneProduct.ContentIdentitySha256
+            });
             auxiliaryInputs =
             [
                 new ProcessingAuxiliaryInput(
