@@ -709,16 +709,12 @@ public sealed class Issue435ProjectedScenePerformanceTests
             var assemblyInfo = new FileInfo(assemblyPath);
             var projectFileWriteUtc = new FileInfo(Path.Combine(repositoryRoot, projectRelativePath)).LastWriteTimeUtc;
             var latestTrackedSourceUtc = new[] { compile.LatestTrackedItemWriteUtc, projectFileWriteUtc }.Max();
-            Assert.IsGreaterThanOrEqualTo(assemblyInfo.LastWriteTimeUtc, latestTrackedSourceUtc,
-                $"Loaded {name} assembly predates its tracked source/project inputs. Run scripts/evidence:issue-435 to clean and rebuild every dependency.");
             var pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
             string? pdbSha256 = null;
             DateTime? pdbLastWriteUtc = null;
             if (File.Exists(pdbPath))
             {
                 var pdbInfo = new FileInfo(pdbPath);
-                Assert.IsGreaterThanOrEqualTo(pdbInfo.LastWriteTimeUtc, latestTrackedSourceUtc,
-                    $"Loaded {name} PDB predates its tracked source/project inputs. Run scripts/evidence:issue-435 to clean and rebuild every dependency.");
                 pdbSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(pdbPath)));
                 pdbLastWriteUtc = pdbInfo.LastWriteTimeUtc;
             }
@@ -728,6 +724,7 @@ public sealed class Issue435ProjectedScenePerformanceTests
                 projectRelativePath, Path.GetRelativePath(repositoryRoot, projectRoot).Replace(Path.DirectorySeparatorChar, '/'),
                 compile.CompileItemCount, compile.TrackedCompileItemCount, compile.GeneratedCompileItemCount,
                 compile.CompileItemsSha256, latestTrackedSourceUtc, compile.LatestGeneratedItemWriteUtc,
+                "Assembly, PDB, tracked-source, project, and generated-item timestamps are diagnostic only; deterministic builds may preserve non-causal timestamps. Exact clean-HEAD receipt, source/diff hashes, compile hashes, and complete runtime output hashes are authoritative.",
                 compile.GeneratedItemBinding));
         }
         var required = new[]
@@ -916,6 +913,7 @@ public sealed class Issue435ProjectedScenePerformanceTests
         string ProjectPath, string SourceRoot, int CompileItemCount, int TrackedCompileItemCount,
         int GeneratedCompileItemCount, string CompileItemsSha256, DateTime LatestTrackedSourceWriteUtc,
         DateTime? LatestGeneratedItemWriteUtc,
+        string TimestampAuthority,
         string GeneratedItemBinding);
     private sealed record ProjectCompileProvenance(
         int CompileItemCount, int TrackedCompileItemCount, int GeneratedCompileItemCount,
@@ -1027,7 +1025,11 @@ public sealed class Issue435ProjectedScenePerformanceHarnessManifestTests
         StringAssert.Contains(runner, "HVO_ISSUE435_BUILD_RECEIPT", StringComparison.Ordinal);
         StringAssert.Contains(source, "LatestTrackedSourceWriteUtc", StringComparison.Ordinal);
         StringAssert.Contains(source, "LatestGeneratedItemWriteUtc", StringComparison.Ordinal);
-        StringAssert.Contains(source, "predates its tracked source/project inputs", StringComparison.Ordinal);
+        StringAssert.Contains(source, "timestamps are diagnostic only", StringComparison.Ordinal);
+        var harnessSource = source[..source.IndexOf(
+            "public sealed class Issue435ProjectedScenePerformanceHarnessManifestTests", StringComparison.Ordinal)];
+        Assert.IsFalse(harnessSource.Contains("Assert.IsGreaterThanOrEqualTo", StringComparison.Ordinal),
+            "Issue #435 evidence must not use timestamp freshness as a claim gate.");
         var mappings = manifest.RootElement.GetProperty("resultFieldMappings").EnumerateObject()
             .ToDictionary(static item => item.Name, static item => item.Value.GetString()!, StringComparer.Ordinal);
         foreach (var measurement in manifest.RootElement.GetProperty("measurements").EnumerateArray().Select(static item => item.GetString()!))
