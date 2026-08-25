@@ -1103,7 +1103,22 @@ public sealed class DurableCaptureProcessingTests
             var details = new List<string>();
             using var reader = await plan.ExecuteReaderAsync().ConfigureAwait(false);
             while (await reader.ReadAsync().ConfigureAwait(false)) details.Add(reader.GetString(3));
+            await reader.DisposeAsync().ConfigureAwait(false);
             Assert.IsTrue(details.Any(static detail => detail.Contains("ix_processing_outputs_product", StringComparison.Ordinal)),
+                string.Join(Environment.NewLine, details));
+
+            plan.CommandText = """
+                EXPLAIN QUERY PLAN SELECT output_identity_sha256
+                FROM processing_outputs INDEXED BY ix_processing_outputs_retention_available
+                WHERE committed_unix_ms < $cutoff AND availability_state = 'Available'
+                ORDER BY committed_unix_ms, output_identity_sha256 LIMIT 10;
+                """;
+            plan.Parameters.Clear();
+            plan.Parameters.AddWithValue("$cutoff", long.MaxValue);
+            details.Clear();
+            using var retentionReader = await plan.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await retentionReader.ReadAsync().ConfigureAwait(false)) details.Add(retentionReader.GetString(3));
+            Assert.IsTrue(details.Any(static detail => detail.Contains("ix_processing_outputs_retention_available", StringComparison.Ordinal)),
                 string.Join(Environment.NewLine, details));
         }
         finally

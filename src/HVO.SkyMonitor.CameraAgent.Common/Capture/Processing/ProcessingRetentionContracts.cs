@@ -12,6 +12,16 @@ public interface IProcessingRetentionHolds
     ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
         CancellationToken cancellationToken);
+
+}
+
+internal interface IProcessingOutputExpiration
+{
+    ValueTask<int> ExpireOutputsAsync(
+        string storageRoot,
+        DateTimeOffset committedBeforeUtc,
+        IReadOnlySet<string> heldAbsolutePaths,
+        CancellationToken cancellationToken);
 }
 
 internal interface IAcceptanceRetentionControl : IProcessingRetentionHolds;
@@ -20,7 +30,7 @@ internal sealed class CompositeProcessingRetentionHolds(
     CaptureProcessingPersistence persistence,
     CameraAgentClearReferenceLoader clearReferences,
     SqliteCalibrationLibraryStore calibrationLibrary,
-    IAcceptanceRetentionControl? acceptanceControl = null) : IProcessingRetentionHolds
+    IAcceptanceRetentionControl? acceptanceControl = null) : IProcessingRetentionHolds, IProcessingOutputExpiration
 {
     public async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
@@ -34,4 +44,11 @@ internal sealed class CompositeProcessingRetentionHolds(
             : await acceptanceControl.GetRetentionHoldsAsync(storageRoot, cancellationToken).ConfigureAwait(false);
         return persisted.Concat(configured).Concat(calibration).Concat(acceptance).Distinct().ToArray();
     }
+
+    public ValueTask<int> ExpireOutputsAsync(
+        string storageRoot,
+        DateTimeOffset committedBeforeUtc,
+        IReadOnlySet<string> heldAbsolutePaths,
+        CancellationToken cancellationToken)
+        => persistence.ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, cancellationToken);
 }

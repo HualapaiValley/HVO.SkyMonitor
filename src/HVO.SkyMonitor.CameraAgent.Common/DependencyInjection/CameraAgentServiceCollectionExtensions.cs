@@ -219,6 +219,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<SyntheticCalibrationReferenceStore>();
         services.AddSingleton<CalibrationLibraryProcessingInputLoader>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
+        services.AddHostedService<DerivedProductReconciliationService>();
         services.AddHostedService<ProjectedSceneStageReconciliationService>();
         services.AddSingleton<IProcessingRetentionHolds>(provider =>
             new CompositeProcessingRetentionHolds(

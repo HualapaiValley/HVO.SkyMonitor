@@ -1,11 +1,6 @@
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-public enum CaptureProcessingAvailability
-{
-    Healthy,
-    Degraded,
-    Unhealthy
-}
+public enum CaptureProcessingAvailability { Healthy, Degraded, Unhealthy }
 
 public sealed record CaptureProcessingSnapshot(
     CaptureProcessingAvailability Availability,
@@ -14,40 +9,33 @@ public sealed record CaptureProcessingSnapshot(
     long TerminalCount,
     string Reason,
     DateTimeOffset? OldestPendingUtc = null,
-    DateTimeOffset? EvaluatedUtc = null);
+    DateTimeOffset? EvaluatedUtc = null,
+    long ProcessingQuarantineCount = 0,
+    long MissingProductCount = 0,
+    bool DurableStateUnavailable = false,
+    bool ReconciliationFailed = false);
 
 public sealed class CaptureProcessingState
 {
     private readonly object _gate = new();
-    private CaptureProcessingSnapshot _snapshot = new(
-        CaptureProcessingAvailability.Healthy, 0, 0, 0, "ready");
+    private long _pending;
+    private long _retry;
+    private long _terminal;
+    private long _quarantine;
+    private long _missing;
+    private DateTimeOffset? _oldest;
+    private bool _durableUnavailable;
+    private bool _reconciliationFailed;
     private bool _hasDurableSnapshot;
 
-    public CaptureProcessingSnapshot Snapshot
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _snapshot;
-            }
-        }
-    }
+    public CaptureProcessingSnapshot Snapshot { get { lock (_gate) return Compose(); } }
 
     internal void GraphStarted()
     {
         lock (_gate)
         {
-            if (_hasDurableSnapshot)
-            {
-                return;
-            }
-            _snapshot = _snapshot with { PendingCount = _snapshot.PendingCount + 1 };
-            if (_snapshot.PendingCount == 1)
-            {
-                _snapshot = _snapshot with { OldestPendingUtc = DateTimeOffset.UtcNow };
-            }
-            _snapshot = _snapshot with { EvaluatedUtc = DateTimeOffset.UtcNow };
+            if (_hasDurableSnapshot) return;
+            if (++_pending == 1) _oldest = DateTimeOffset.UtcNow;
         }
     }
 
@@ -55,34 +43,10 @@ public sealed class CaptureProcessingState
     {
         lock (_gate)
         {
-            if (_hasDurableSnapshot)
-            {
-                _snapshot = outcome switch
-                {
-                    "retry" => _snapshot with { Availability = CaptureProcessingAvailability.Degraded, Reason = "retry" },
-                    "terminal" => _snapshot with { Availability = CaptureProcessingAvailability.Unhealthy, Reason = "terminal" },
-                    _ when _snapshot.TerminalCount > 0 => _snapshot,
-                    _ when _snapshot.RetryCount > 0 => _snapshot,
-                    _ => _snapshot with { Availability = CaptureProcessingAvailability.Healthy, Reason = "completed" }
-                };
-                _snapshot = _snapshot with { EvaluatedUtc = DateTimeOffset.UtcNow };
-                return;
-            }
-            var pending = Math.Max(0, _snapshot.PendingCount - 1);
-            _snapshot = outcome switch
-            {
-                "completed" when _snapshot.TerminalCount > 0 => new(
-                    CaptureProcessingAvailability.Unhealthy, pending, 0, _snapshot.TerminalCount, "terminal", PendingTime(pending)),
-                "completed" => new(
-                    CaptureProcessingAvailability.Healthy, pending, 0, 0, "completed", PendingTime(pending)),
-                "retry" => new(
-                    CaptureProcessingAvailability.Degraded, pending, _snapshot.RetryCount + 1, _snapshot.TerminalCount, "retry", PendingTime(pending)),
-                _ => new(
-                    CaptureProcessingAvailability.Unhealthy, pending, _snapshot.RetryCount, _snapshot.TerminalCount + 1, "terminal", PendingTime(pending))
-            };
-            _snapshot = _snapshot with { EvaluatedUtc = DateTimeOffset.UtcNow };
-
-            DateTimeOffset? PendingTime(long count) => count == 0 ? null : _snapshot.OldestPendingUtc;
+            if (!_hasDurableSnapshot) _pending = Math.Max(0, _pending - 1);
+            if (_pending == 0) _oldest = null;
+            if (outcome == "retry") _retry++;
+            else if (outcome == "terminal") _terminal++;
         }
     }
 
@@ -91,34 +55,32 @@ public sealed class CaptureProcessingState
         lock (_gate)
         {
             _hasDurableSnapshot = true;
-            var availability = terminal > 0
-                ? CaptureProcessingAvailability.Unhealthy
-                : retry > 0
-                    ? CaptureProcessingAvailability.Degraded
-                    : CaptureProcessingAvailability.Healthy;
-            _snapshot = new CaptureProcessingSnapshot(
-                availability,
-                pending,
-                retry,
-                terminal,
-                terminal > 0 ? "terminal" : retry > 0 ? "retry" : "completed",
-                oldestPendingUtc,
-                DateTimeOffset.UtcNow);
+            _pending = pending;
+            _retry = retry;
+            _terminal = terminal;
+            _oldest = oldestPendingUtc;
+            _durableUnavailable = false;
         }
     }
 
-    internal void SetRefreshFailure()
+    internal void SetRefreshFailure() { lock (_gate) _durableUnavailable = true; }
+    internal void SetReconciliationFailure(bool failed) { lock (_gate) _reconciliationFailed = failed; }
+    internal void SetProcessingEvidence(long missing, long quarantined) { lock (_gate) { _missing = missing; _quarantine = quarantined; } }
+    internal void SetProcessingQuarantine(long count) => SetProcessingEvidence(_missing, count);
+
+    private CaptureProcessingSnapshot Compose()
     {
-        lock (_gate)
-        {
-            _snapshot = _snapshot.Availability == CaptureProcessingAvailability.Unhealthy
-                ? _snapshot with { Reason = "terminal;durable-state-unavailable" }
-                : _snapshot with
-                {
-                    Availability = CaptureProcessingAvailability.Degraded,
-                    Reason = "durable-state-unavailable"
-                };
-            _snapshot = _snapshot with { EvaluatedUtc = DateTimeOffset.UtcNow };
-        }
+        var reasons = new List<string>();
+        if (_terminal > 0) reasons.Add("terminal");
+        if (_retry > 0) reasons.Add("retry");
+        if (_quarantine > 0) reasons.Add("processing-quarantine");
+        if (_missing > 0) reasons.Add("processing-missing");
+        if (_durableUnavailable) reasons.Add("durable-state-unavailable");
+        if (_reconciliationFailed) reasons.Add("reconciliation-failed");
+        var availability = _terminal > 0 ? CaptureProcessingAvailability.Unhealthy :
+            reasons.Count > 0 ? CaptureProcessingAvailability.Degraded : CaptureProcessingAvailability.Healthy;
+        return new(availability, _pending, _retry, _terminal,
+            reasons.Count == 0 ? "completed" : string.Join(';', reasons), _oldest, DateTimeOffset.UtcNow,
+            _quarantine, _missing, _durableUnavailable, _reconciliationFailed);
     }
 }

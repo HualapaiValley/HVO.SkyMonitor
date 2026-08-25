@@ -19,7 +19,7 @@ internal sealed class CaptureProcessingPersistence(
     IFrameStorageService frameStorage,
     CaptureProcessingTelemetry telemetry,
     ILogger<CaptureProcessingPersistence> logger,
-    ICaptureProcessingFaultInjector? faultInjector = null) : IProcessingRetentionHolds
+    ICaptureProcessingFaultInjector? faultInjector = null) : IProcessingRetentionHolds, IProcessingOutputExpiration
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly SqliteCaptureProcessingStore _store = store;
@@ -28,6 +28,8 @@ internal sealed class CaptureProcessingPersistence(
     private readonly ILogger<CaptureProcessingPersistence> _logger = logger;
     private readonly ICaptureProcessingFaultInjector _faultInjector =
         faultInjector ?? NullCaptureProcessingFaultInjector.Instance;
+    private readonly DerivedProductLifecycleOptions _lifecycleOptions = options.Value.DerivedProductLifecycle;
+    private readonly TimeProvider _timeProvider = TimeProvider.System;
 
     internal ValueTask InitializeAsync(CancellationToken cancellationToken)
         => _store.InitializeAsync(cancellationToken);
@@ -37,6 +39,10 @@ internal sealed class CaptureProcessingPersistence(
         string nodeId,
         CancellationToken cancellationToken)
         => _store.ReadNodeAsync(captureId, nodeId, cancellationToken);
+
+    internal ValueTask<UnavailableNodeResolution> ResolveUnavailableNodeAsync(
+        Guid captureId, string nodeId, string planSha256, CancellationToken cancellationToken)
+        => _store.ResolveUnavailableNodeAsync(captureId, nodeId, planSha256, cancellationToken);
 
     internal ValueTask DeleteOutputlessNodeAsync(
         Guid captureId,
@@ -52,6 +58,80 @@ internal sealed class CaptureProcessingPersistence(
         => PathsEqual(storageRoot, _storageRoot)
             ? _store.ReadRetentionHoldsAsync(cancellationToken)
             : ValueTask.FromResult<IReadOnlyList<ProcessingRetentionHold>>([]);
+
+    public async ValueTask<int> ExpireOutputsAsync(
+        string storageRoot,
+        DateTimeOffset committedBeforeUtc,
+        IReadOnlySet<string> heldAbsolutePaths,
+        CancellationToken cancellationToken)
+    {
+        if (!PathsEqual(storageRoot, _storageRoot)) return 0;
+        var reconciler = new DerivedProductReconciler(_storageRoot, _store, _lifecycleOptions, _timeProvider);
+        var deletedFiles = 0;
+        foreach (var unavailable in new[] { false, true })
+        {
+            long? cursorTimestamp = null;
+            string? cursorOutput = null;
+            do
+            {
+                var page = unavailable
+                    ? await _store.ReadUnavailableExpirationPageAsync(
+                        _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
+                        cursorTimestamp, cursorOutput, _lifecycleOptions.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false)
+                    : await _store.ReadAvailableExpirationPageAsync(
+                        committedBeforeUtc, cursorTimestamp, cursorOutput,
+                        _lifecycleOptions.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
+                foreach (var candidate in page.Items)
+                {
+                    var sourcePaths = candidate.AvailabilityState == "Quarantined" && candidate.QuarantineRelativePath is { } quarantine
+                        ? Directory.Exists(ResolveSafePath(quarantine))
+                            ? Directory.EnumerateFiles(ResolveSafePath(quarantine)).Order(StringComparer.Ordinal).ToArray()
+                            : []
+                        : new[] { ResolveSafePath(candidate.PayloadRelativePath), ResolveSafePath(candidate.SidecarRelativePath) }
+                            .Where(File.Exists).ToArray();
+                    if (sourcePaths.Any(heldAbsolutePaths.Contains) && candidate.AvailabilityState == "Available") continue;
+                    var operation = new ProcessingLifecycleOperation(
+                        $"delete:{Guid.NewGuid():N}", "delete", candidate.OutputIdentitySha256,
+                        sourcePaths.FirstOrDefault() is { } first ? Relative(first) : null,
+                        sourcePaths.Skip(1).FirstOrDefault() is { } second ? Relative(second) : null,
+                        $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired",
+                        sourcePaths.Where(File.Exists).Sum(static path => new FileInfo(path).Length),
+                        _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+                    await _store.PlanLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+                    await reconciler.ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+                    deletedFiles += sourcePaths.Length;
+                }
+                cursorTimestamp = page.NextTimestamp;
+                cursorOutput = page.NextOutputIdentitySha256;
+            }
+            while (cursorTimestamp is not null);
+        }
+        long? diagnosticTimestamp = null;
+        long? diagnosticId = null;
+        do
+        {
+            var diagnostics = await _store.ReadDiagnosticExpirationPageAsync(
+                _timeProvider.GetUtcNow().AddDays(-_lifecycleOptions.DiagnosticRetentionDays),
+                diagnosticTimestamp, diagnosticId, _lifecycleOptions.ReconciliationBatchSize,
+                cancellationToken).ConfigureAwait(false);
+            foreach (var diagnostic in diagnostics.Items)
+            {
+                if (diagnostic.QuarantineRelativePath is { } quarantine)
+                {
+                    var path = ResolveSafePath(quarantine);
+                    if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+                    RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
+                }
+                await _store.DeleteDiagnosticAsync(diagnostic.DiagnosticId, cancellationToken).ConfigureAwait(false);
+            }
+            diagnosticTimestamp = diagnostics.NextRecordedUnixMilliseconds;
+            diagnosticId = diagnostics.NextDiagnosticId;
+        }
+        while (diagnosticTimestamp is not null);
+        return deletedFiles;
+    }
+
+    private string Relative(string path) => Path.GetRelativePath(_storageRoot, path).Replace(Path.DirectorySeparatorChar, '/');
 
     internal async ValueTask RestoreNodeAsync(
         DurableProcessingNode durableNode,

@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "issue-435-runtime-signals-v1",
+  "issue": 435,
+  "meter": "HVO.SkyMonitor.CameraAgent.ProcessingGraph",
+  "healthCheck": "capture-processing",
+  "metrics": [
+    "camera_agent.processing.reconciliation.outcomes",
+    "camera_agent.processing.reconciliation.bytes"
+  ],
+  "healthData": [
+    "ProcessingQuarantineCount"
+  ],
+  "logEventIds": [
+    2076,
+    2077
+  ],
+  "privacy": {
+    "forbiddenFields": [
+      "captureId",
+      "artifactId",
+      "outputIdentitySha256",
+      "path",
+      "payload",
+      "checksumSha256",
+      "coordinates"
+    ]
+  },
+  "performanceWorkloads": [
+    "representative-scene-publication",
+    "representative-scene-retrieval",
+    "bounded-derived-reconciliation"
+  ],
+  "measurements": [
+    "objectCount",
+    "segmentCount",
+    "canonicalBytes",
+    "storedBytes",
+    "fileOperations",
+    "sqliteOperations",
+    "cpuTime",
+    "allocatedBytes",
+    "workingSetBytes",
+    "latency",
+    "productsPerSecond",
+    "backlog",
+    "drainTime"
+  ]
+}

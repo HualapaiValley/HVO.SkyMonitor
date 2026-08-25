@@ -16,6 +16,10 @@ public sealed class CaptureProcessingHealthCheck(CaptureProcessingState state) :
             ["PendingCount"] = snapshot.PendingCount,
             ["RetryCount"] = snapshot.RetryCount,
             ["TerminalCount"] = snapshot.TerminalCount,
+            ["ProcessingQuarantineCount"] = snapshot.ProcessingQuarantineCount,
+            ["MissingProductCount"] = snapshot.MissingProductCount,
+            ["DurableStateUnavailable"] = snapshot.DurableStateUnavailable,
+            ["ReconciliationFailed"] = snapshot.ReconciliationFailed,
             ["OldestPendingAgeSeconds"] = snapshot.OldestPendingUtc is null
                 ? 0
                 : Math.Max(0, (DateTimeOffset.UtcNow - snapshot.OldestPendingUtc.Value).TotalSeconds),

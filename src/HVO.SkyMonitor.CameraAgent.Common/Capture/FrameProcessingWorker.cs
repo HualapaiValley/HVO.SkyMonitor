@@ -191,6 +191,8 @@ internal sealed class FrameProcessingWorker
 
                 if (persistence is not null && captureId is { } durableCaptureId)
                 {
+                    _ = await persistence.ResolveUnavailableNodeAsync(
+                        durableCaptureId, node.Id, node.PlanSha256, cancellationToken).ConfigureAwait(false);
                     var durable = await persistence.ReadNodeAsync(
                         durableCaptureId, node.Id, cancellationToken).ConfigureAwait(false);
                     if (durable is not null && !string.Equals(

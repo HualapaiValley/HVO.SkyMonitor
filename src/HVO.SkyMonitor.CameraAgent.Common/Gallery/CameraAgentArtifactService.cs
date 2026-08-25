@@ -510,7 +510,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         {
             output.CommandText = """
                 SELECT output.capture_id, output.artifact_id, output.payload_relative_path,
-                       output.sidecar_relative_path, output.descriptor_json
+                       output.sidecar_relative_path, output.descriptor_json, output.availability_state
                 FROM processing_outputs AS output
                 INNER JOIN processing_nodes AS node
                     ON node.capture_id = output.capture_id AND node.node_id = output.node_id
@@ -520,6 +520,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             using var reader = await output.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                if (!string.Equals(reader.GetString(5), "Available", StringComparison.Ordinal))
+                {
+                    return new(CameraAgentArtifactReadStatus.Unavailable);
+                }
                 var evidence = await reader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false);
                 var facts = ParseProcessingFacts(evidence);
                 rows.Add(new ArtifactEvidenceRow(

@@ -147,7 +147,9 @@ public sealed record CameraAgentGalleryArtifact(
     IReadOnlyList<CameraAgentGalleryAlgorithm>? Algorithms = null,
     string? ProductKind = null,
     string? ProductSchemaVersion = null,
-    string? ContentIdentitySha256 = null);
+    string? ContentIdentitySha256 = null,
+    string Availability = "Available",
+    string? AvailabilityReason = null);
 
 public sealed record CameraAgentGalleryAlgorithm(string Name, string Version);
 

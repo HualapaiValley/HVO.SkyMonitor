@@ -490,6 +490,11 @@ public sealed class SqliteCameraAgentGalleryTests
                 using (var dropV4 = connection.CreateCommand())
                 {
                     dropV4.CommandText = """
+                        DROP TABLE processing_reconciliation_state;
+                        DROP TABLE processing_output_diagnostics;
+                        DROP TABLE processing_lifecycle_operations;
+                        DROP INDEX ix_processing_outputs_retention_available;
+                        DROP INDEX ix_processing_outputs_retention_unavailable;
                         DROP TABLE processing_output_sources;
                         DROP INDEX ix_processing_outputs_product;
                         ALTER TABLE processing_outputs RENAME TO processing_outputs_v4;
@@ -542,7 +547,7 @@ public sealed class SqliteCameraAgentGalleryTests
                 using var downgrade = connection.CreateCommand();
                 downgrade.CommandText = """
                     DELETE FROM capture_processing_schema;
-                    INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 4);
+                    INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 5);
                     DROP TABLE capture_processing_schema;
                     CREATE TABLE capture_processing_schema(
                         schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
@@ -621,7 +626,7 @@ public sealed class SqliteCameraAgentGalleryTests
                 """;
             using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
             Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
-            Assert.AreEqual(4L, reader.GetInt64(0));
+            Assert.AreEqual(5L, reader.GetInt64(0));
             Assert.AreEqual(8L, reader.GetInt64(1));
             Assert.AreEqual("Completed", reader.GetString(2));
             Assert.AreEqual(2L, reader.GetInt64(3));

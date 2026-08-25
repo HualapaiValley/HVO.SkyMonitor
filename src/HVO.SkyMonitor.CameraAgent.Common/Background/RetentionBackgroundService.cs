@@ -163,7 +163,11 @@ public sealed class RetentionBackgroundService(
                 {
                     indexGate.Release();
                 }
-                deletedFiles += PruneDerivedOutputs(plan.StorageRoot, cutoffDate, pending.AbsolutePaths, cancellationToken);
+                deletedFiles += _processingHolds is IProcessingOutputExpiration expiration
+                    ? await expiration.ExpireOutputsAsync(
+                        plan.StorageRoot, new DateTimeOffset(cutoffDate, TimeSpan.Zero),
+                        pending.AbsolutePaths, cancellationToken).ConfigureAwait(false)
+                    : PruneDerivedOutputs(plan.StorageRoot, cutoffDate, pending.AbsolutePaths, cancellationToken);
                 _logger.RetentionSweepCompleted(plan.StorageRoot, deletedFiles, pending.ArtifactIds.Count);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -355,8 +359,8 @@ public sealed class RetentionBackgroundService(
             foreach (var hold in holds)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                AddHeldPath(normalizedRoot, rootPrefix, hold.PayloadRelativePath, paths);
-                AddHeldPath(normalizedRoot, rootPrefix, hold.SidecarRelativePath, paths);
+                AddHeldPath(normalizedRoot, rootPrefix, hold.PayloadRelativePath, paths, allowMissing: true);
+                AddHeldPath(normalizedRoot, rootPrefix, hold.SidecarRelativePath, paths, allowMissing: true);
                 artifactIds.Add(hold.ArtifactId);
             }
         }
@@ -378,7 +382,8 @@ public sealed class RetentionBackgroundService(
         string storageRoot,
         string rootPrefix,
         string relativePath,
-        HashSet<string> paths)
+        HashSet<string> paths,
+        bool allowMissing = false)
     {
         if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
         {
@@ -387,6 +392,7 @@ public sealed class RetentionBackgroundService(
         var path = Path.GetFullPath(Path.Combine(storageRoot, relativePath));
         if (!path.StartsWith(rootPrefix, PathComparison) || !File.Exists(path))
         {
+            if (allowMissing && path.StartsWith(rootPrefix, PathComparison)) return;
             throw new InvalidDataException("Raw ingress hold references missing or unsafe evidence.");
         }
         paths.Add(path);

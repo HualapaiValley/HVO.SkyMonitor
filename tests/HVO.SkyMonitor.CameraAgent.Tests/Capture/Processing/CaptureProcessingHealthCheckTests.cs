@@ -42,4 +42,27 @@ public sealed class CaptureProcessingHealthCheckTests
         Assert.IsGreaterThan(0d, Convert.ToDouble(
             result.Data["OldestPendingAgeSeconds"], System.Globalization.CultureInfo.InvariantCulture));
     }
+
+    [TestMethod]
+    public async Task IndependentOverlaysComposeAndClearingQuarantinePreservesFailures()
+    {
+        var state = new CaptureProcessingState();
+        state.SetDurable(0, 1, 0, null);
+        state.SetProcessingEvidence(2, 3);
+        state.SetReconciliationFailure(true);
+
+        var degraded = await new CaptureProcessingHealthCheck(state)
+            .CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        StringAssert.Contains((string)degraded.Data["Reason"], "retry", StringComparison.Ordinal);
+        StringAssert.Contains((string)degraded.Data["Reason"], "processing-quarantine", StringComparison.Ordinal);
+        StringAssert.Contains((string)degraded.Data["Reason"], "reconciliation-failed", StringComparison.Ordinal);
+
+        state.SetProcessingEvidence(2, 0);
+        var cleared = await new CaptureProcessingHealthCheck(state)
+            .CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        Assert.AreEqual(HealthStatus.Degraded, cleared.Status);
+        Assert.IsFalse(((string)cleared.Data["Reason"]).Contains("processing-quarantine", StringComparison.Ordinal));
+        StringAssert.Contains((string)cleared.Data["Reason"], "retry", StringComparison.Ordinal);
+        StringAssert.Contains((string)cleared.Data["Reason"], "reconciliation-failed", StringComparison.Ordinal);
+    }
 }

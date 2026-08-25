@@ -27,6 +27,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public ProjectedSceneStagingOptions ProjectedSceneStaging { get; init; } = new();
 
     [Required]
+    public DerivedProductLifecycleOptions DerivedProductLifecycle { get; init; } = new();
+
+    [Required]
     public CaptureDistributionOptions CaptureDistribution { get; init; } = new();
 
     [Required]
@@ -108,6 +111,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             projectedSceneStagingResults,
             validateAllProperties: true);
         foreach (var result in projectedSceneStagingResults)
+        {
+            yield return result;
+        }
+
+        var derivedLifecycleResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            DerivedProductLifecycle,
+            new ValidationContext(DerivedProductLifecycle),
+            derivedLifecycleResults,
+            validateAllProperties: true);
+        foreach (var result in derivedLifecycleResults)
         {
             yield return result;
         }
@@ -214,6 +228,18 @@ public sealed class ProjectedSceneStagingOptions
 
     [Range(1, 16384)]
     public int MaximumReconciliationEntries { get; init; } = 512;
+}
+
+public sealed class DerivedProductLifecycleOptions
+{
+    [Range(16, 4096)]
+    public int ReconciliationBatchSize { get; init; } = 512;
+
+    [Range(1, 365)]
+    public int DiagnosticRetentionDays { get; init; } = 14;
+
+    [Range(1, 1440)]
+    public int OrphanRecoveryWindowMinutes { get; init; } = 30;
 }
 
 public sealed class ProvisioningStartupGateOptions
