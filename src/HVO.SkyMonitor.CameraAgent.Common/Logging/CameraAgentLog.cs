@@ -52,6 +52,15 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2010, Level = LogLevel.Error, Message = "Capture loop encountered an error")]
     public static partial void CaptureLoopFailed(this ILogger logger, Exception exception);
 
+    [LoggerMessage(EventId = 2073, Level = LogLevel.Warning, Message = "Capture-owned projected-scene stage cleanup failed")]
+    public static partial void ProjectedSceneStageCleanupFailed(this ILogger logger, Exception exception);
+
+    [LoggerMessage(EventId = 2074, Level = LogLevel.Warning, Message = "Post-commit cleanup failed for processing node {NodeId}; durable completion is preserved")]
+    public static partial void CaptureProcessingPostCommitCleanupFailed(this ILogger logger, string nodeId, Exception exception);
+
+    [LoggerMessage(EventId = 2075, Level = LogLevel.Warning, Message = "Projected-scene stage reconciliation pass failed")]
+    public static partial void ProjectedSceneStageReconciliationFailed(this ILogger logger, Exception exception);
+
     [LoggerMessage(EventId = 2032, Level = LogLevel.Warning, Message = "Capture failure {ConsecutiveFailures}; retrying after {DelayMilliseconds} ms")]
     public static partial void CaptureFailureBackoff(this ILogger logger, int consecutiveFailures, double delayMilliseconds);
 

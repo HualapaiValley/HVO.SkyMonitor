@@ -306,6 +306,74 @@ public sealed class DurableCaptureProcessingTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
+    public async Task PostCommitCleanupFailure_DoesNotChangeCommittedResultOrBlockDependentNode()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var producer = new PostCommitFailingProducingStep();
+            var dependent = new ProducingStep("dependent", "dependent");
+            var first = new CaptureProcessingGraphNode(
+                "first", producer, [], true, producer.RecipeName, producer.OutputRole, producer.OutputVariant,
+                new string('1', 64));
+            var second = new CaptureProcessingGraphNode(
+                "second", dependent, ["first"], true, dependent.RecipeName, dependent.OutputRole,
+                dependent.OutputVariant, new string('2', 64));
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, new CaptureProcessingGraph([first, second]),
+                CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            Assert.AreEqual(1, dependent.ExecutionCount);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, (await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "first", CancellationToken.None)
+                .ConfigureAwait(false))!.Status);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task MemoryOnlySuccessfulNode_InvokesCompletionCallback()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var step = new RecordingPostCommitProducingStep();
+            var node = new CaptureProcessingGraphNode(
+                "memory", step, [], true, step.RecipeName, step.OutputRole, step.OutputVariant,
+                new string('3', 64), Publication: new CaptureProcessingPublicationPolicy(
+                    CaptureProcessingPersistenceMode.MemoryOnly));
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, new CaptureProcessingGraph([node]),
+                CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            Assert.AreEqual(1, step.CallbackCount);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [TestCategory("Integration")]
     public async Task DurableJpegProducts_RestoreExactlyWithMediaCorrectPathsAndNoIntermediatePayloads()
     {
@@ -1980,15 +2048,16 @@ public sealed class DurableCaptureProcessingTests
             decisionStartedUtc.AddMilliseconds(200));
     }
 
-    private sealed class ProducingStep : ICaptureProcessingStep, ICaptureProcessingGraphStep
+    private class ProducingStep(string name = "normalize", string outputVariant = "none") :
+        ICaptureProcessingStep, ICaptureProcessingGraphStep
     {
         public bool Enabled => true;
         public int ExecutionCount { get; private set; }
-        public string Name => "normalize";
+        public string Name => name;
         public int Order => 0;
         public string RecipeName => "test-normalization";
         public FrameArtifactRole OutputRole => FrameArtifactRole.Calibrated;
-        public string OutputVariant => "none";
+        public string OutputVariant => outputVariant;
         public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
 
         public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
@@ -2020,6 +2089,26 @@ public sealed class DurableCaptureProcessingTests
                 CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
             context.AssociateProcessingProduct(artifact, product);
             context.AddProcessingOutcome(ProcessingOutcome.Produced(product));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class PostCommitFailingProducingStep : ProducingStep, IDurableCaptureProcessingPostCommit
+    {
+        public ValueTask OnCommittedAsync(
+            CaptureDescriptorProcessingContext context,
+            CancellationToken cancellationToken) => ValueTask.FromException(new IOException("cleanup-failure"));
+    }
+
+    private sealed class RecordingPostCommitProducingStep : ProducingStep, IDurableCaptureProcessingPostCommit
+    {
+        public int CallbackCount { get; private set; }
+
+        public ValueTask OnCommittedAsync(
+            CaptureDescriptorProcessingContext context,
+            CancellationToken cancellationToken)
+        {
+            CallbackCount++;
             return ValueTask.CompletedTask;
         }
     }

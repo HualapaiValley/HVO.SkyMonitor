@@ -444,6 +444,23 @@ internal sealed class CaptureDescriptorProcessingContext(CaptureProcessingContex
 
     public string? CommittedManifestSha256 => context.RawCapture?.CommittedManifestSha256;
 
+    public SceneProvenance? SceneProvenance => context.RawCapture?.Manifest.Scene;
+
+    public void RecordCanonicalInput(string name, string schemaVersion, string identitySha256)
+        => context.RecordCanonicalInput(name, schemaVersion, identitySha256);
+
+    internal async ValueTask<ProcessingOutcome> ExecuteAsync(
+        CameraAgentRecipeExecutionAdapter adapter,
+        ProcessingExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(adapter);
+        context.RecordExecutionRequest(request);
+        var outcome = await adapter.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        context.RecordExecutionOutcome(outcome);
+        return outcome;
+    }
+
     public void AddProcessingOutcome(ProcessingOutcome outcome) => context.AddProcessingOutcome(outcome);
 }
 
@@ -456,4 +473,10 @@ internal interface IDescriptorOnlyCaptureProcessingStep : ICaptureProcessingStep
         CaptureProcessingContext context,
         CancellationToken cancellationToken)
         => ProcessAsync(new CaptureDescriptorProcessingContext(context), cancellationToken);
+}
+
+/// <summary>Runs only after a processing node and all of its outputs have committed durably.</summary>
+internal interface IDurableCaptureProcessingPostCommit
+{
+    ValueTask OnCommittedAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken);
 }

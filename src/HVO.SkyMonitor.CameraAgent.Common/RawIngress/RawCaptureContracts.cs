@@ -24,6 +24,24 @@ public interface IRawCaptureIngress
         CameraModuleConfig configuration,
         CaptureLoopSubmission submission,
         CancellationToken cancellationToken);
+
+    internal ValueTask<RawCapturePublicationState> GetPublicationStateAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(RawCapturePublicationState.Unknown);
+}
+
+internal enum RawCapturePublicationState
+{
+    Unknown,
+    DefinitelyNotCommitted,
+    Committed
+}
+
+internal interface IProjectedSceneStageOwnerProvider
+{
+    ValueTask<IReadOnlySet<string>> GetOwnedStageKeysAsync(CancellationToken cancellationToken);
 }
 
 public sealed record RawIngressRetentionHold(
@@ -75,7 +93,8 @@ internal sealed record RawIngressReconciliationSummary(
     int Quarantined,
     int MissingEvidence,
     long QuarantineBytes,
-    int IndexProjectionFailures = 0);
+    int IndexProjectionFailures = 0,
+    int ProjectedSceneStageBacklog = 0);
 
 internal sealed record RawIngressPlannedQuarantine(
     string EvidenceKey,

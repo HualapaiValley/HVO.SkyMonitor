@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -31,7 +32,9 @@ public sealed class CameraCaptureService(
     IHostApplicationLifetime applicationLifetime,
     ILogger<CameraCaptureService> logger,
     CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
-    EnvironmentalCaptureTriggerBridge? environmentalTriggers = null) : BackgroundService
+    EnvironmentalCaptureTriggerBridge? environmentalTriggers = null,
+    IProjectedSceneStagingStore? projectedSceneStaging = null,
+    ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly ICameraModuleFactory _moduleFactory = moduleFactory;
@@ -49,6 +52,9 @@ public sealed class CameraCaptureService(
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton coordinator.")]
     private readonly CaptureScheduleRuntimeCoordinator? _scheduleRuntimeCoordinator = scheduleRuntimeCoordinator;
     private readonly EnvironmentalCaptureTriggerBridge? _environmentalTriggers = environmentalTriggers;
+    private readonly IProjectedSceneStagingStore? _projectedSceneStaging = projectedSceneStaging;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton lifecycle coordinator.")]
+    private readonly ProjectedSceneStageLifecycleCoordinator? _projectedSceneLifecycle = projectedSceneLifecycle;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
@@ -86,7 +92,8 @@ public sealed class CameraCaptureService(
                 _logger.CameraModuleInitialized(module.DisplayName);
 
                 var hostContext = new CaptureHostContext(
-                    config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers);
+                    config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers,
+                    _projectedSceneStaging, _projectedSceneLifecycle, _logger);
 
                 var runner = new CameraModuleRunner(
                     module,

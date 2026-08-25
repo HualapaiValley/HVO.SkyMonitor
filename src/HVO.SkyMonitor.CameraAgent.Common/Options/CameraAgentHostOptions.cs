@@ -3,6 +3,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Options;
 
@@ -21,6 +22,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
 
     [Range(1, 300)]
     public int RawIngressSqliteBusyTimeoutSeconds { get; init; } = 5;
+
+    [Required]
+    public ProjectedSceneStagingOptions ProjectedSceneStaging { get; init; } = new();
 
     [Required]
     public CaptureDistributionOptions CaptureDistribution { get; init; } = new();
@@ -95,6 +99,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return new ValidationResult(
                 "UploadRetryMaximumDelaySeconds must be greater than or equal to UploadRetryInitialDelaySeconds.",
                 [nameof(UploadRetryMaximumDelaySeconds), nameof(UploadRetryInitialDelaySeconds)]);
+        }
+
+        var projectedSceneStagingResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            ProjectedSceneStaging,
+            new ValidationContext(ProjectedSceneStaging),
+            projectedSceneStagingResults,
+            validateAllProperties: true);
+        foreach (var result in projectedSceneStagingResults)
+        {
+            yield return result;
         }
 
         var distributionResults = new List<ValidationResult>();
@@ -187,6 +202,18 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return result;
         }
     }
+}
+
+public sealed class ProjectedSceneStagingOptions
+{
+    [Range(1, 4096)]
+    public int MaximumFileCount { get; init; } = 128;
+
+    [Range(ProjectedSceneJson.MaximumPayloadBytes, 1024L * 1024 * 1024)]
+    public long MaximumTotalBytes { get; init; } = 128L * 1024 * 1024;
+
+    [Range(1, 16384)]
+    public int MaximumReconciliationEntries { get; init; } = 512;
 }
 
 public sealed class ProvisioningStartupGateOptions

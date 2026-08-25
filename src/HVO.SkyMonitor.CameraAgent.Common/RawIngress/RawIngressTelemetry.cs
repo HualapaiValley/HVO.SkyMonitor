@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -28,6 +29,7 @@ public sealed class RawIngressTelemetry : IDisposable
     private long _directorySyncCount;
     private long _checkpointCount;
     private long _checkpointFailureCount;
+    private long _projectedSceneBacklog;
 
     public RawIngressTelemetry(RawIngressState state)
     {
@@ -48,6 +50,8 @@ public sealed class RawIngressTelemetry : IDisposable
         _meter.CreateObservableGauge("camera_agent.ingress.oldest.age", ObserveOldestAge, "s");
         _meter.CreateObservableGauge("camera_agent.ingress.quarantine.records", ObserveQuarantine, "{record}");
         _meter.CreateObservableGauge("camera_agent.ingress.quarantine.bytes", ObserveQuarantineBytes, "By");
+        _meter.CreateObservableGauge("camera_agent.ingress.projected_scene.backlog", () =>
+            new Measurement<long>(Interlocked.Read(ref _projectedSceneBacklog), RootTag), "{stage}");
     }
 
     internal void RecordCommit(RawIngressOutcome outcome, long bytes, TimeSpan duration)
@@ -104,6 +108,13 @@ public sealed class RawIngressTelemetry : IDisposable
         RecordOutcome("quarantined", summary.Quarantined);
         RecordOutcome("missing", summary.MissingEvidence);
         RecordOutcome("index-failed", summary.IndexProjectionFailures);
+        RecordOutcome("projected-scene-backlog", summary.ProjectedSceneStageBacklog);
+    }
+
+    internal void RecordProjectedSceneReconciliation(ProjectedSceneStageReconciliationResult result)
+    {
+        Interlocked.Exchange(ref _projectedSceneBacklog, result.BacklogCount);
+        RecordOutcome("projected-scene-cleaned", result.Deleted);
     }
 
     internal void RecordCheckpoint(bool succeeded)

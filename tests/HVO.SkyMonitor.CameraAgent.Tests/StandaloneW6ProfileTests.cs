@@ -38,16 +38,16 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "7D4B0803BE56ED1B898AB71FD141385C41B1D74331474AFB3A94DADEE7D7EE80",
+            "7A6869542F282F1EAF0F461B58E5BCCE046292BA415C1BF3A3B6C767D71B2653",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(
-            "E17DB795563078FD0B8C054586A3F059C8968BD1ADB45FBBB88E188B28F76C6E",
+            "2453844C3A527CDF894FE128C0B7C81572315A217AFB4A46464DFED0A2F69EED",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "9CC4C1FF098B9EAADE1EEA7646E8E9F8C248C8C494A40DCBB0834D89D51852D3",
+            "F96FD92667C1F4CA129C8138B0B7C3F2334D5945F1E368EAE8C0C289F9711226",
             preview.EffectiveSha256);
-        Assert.HasCount(10, preview.EffectiveNodes);
+        Assert.HasCount(11, preview.EffectiveNodes);
         Assert.AreEqual(TimeSpan.FromSeconds(5), configuration.Rig.Pipeline.NightExposure);
         Assert.AreEqual(TimeSpan.FromSeconds(10), configuration.Rig.Pipeline.CaptureInterval);
         Assert.AreEqual(CameraPixelFormat.BayerRggb16, configuration.Rig.Readout!.PixelFormat);

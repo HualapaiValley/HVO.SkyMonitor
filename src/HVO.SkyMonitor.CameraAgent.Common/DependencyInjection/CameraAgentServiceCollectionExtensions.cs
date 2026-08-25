@@ -103,6 +103,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<RawCaptureIngress>();
         services.AddSingleton<IRawCaptureIngress>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IRawIngressRetentionHolds>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<IProjectedSceneStageOwnerProvider>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<ICaptureLaneStore>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<IOperationsQueueSnapshotRefresher>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<SqliteCaptureScheduleStore>();
@@ -134,6 +135,11 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraModuleConfigurationValidator>(provider =>
             provider.GetRequiredService<CameraModuleFactory>());
         services.AddSingleton<IProjectedSceneStore, ProjectedSceneStore>();
+        services.AddSingleton<ProjectedSceneStageLifecycleCoordinator>();
+        services.AddSingleton<ProjectedSceneStagingStore>();
+        services.AddSingleton<IProjectedSceneStagingStore>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
+        services.AddSingleton<IProjectedSceneStagingReader>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
+        services.AddSingleton<IProjectedSceneStagingReconciler>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
         services.AddSingleton<IAnnotationSceneProvider>(provider => new AnnotationSceneProvider(
             () => provider.GetService<ICelestialCatalog>(),
@@ -213,6 +219,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<SyntheticCalibrationReferenceStore>();
         services.AddSingleton<CalibrationLibraryProcessingInputLoader>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
+        services.AddHostedService<ProjectedSceneStageReconciliationService>();
         services.AddSingleton<IProcessingRetentionHolds>(provider =>
             new CompositeProcessingRetentionHolds(
                 provider.GetRequiredService<CaptureProcessingPersistence>(),
@@ -255,6 +262,9 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "VirtualSkyCloudObservation", typeof(VirtualSkyCloudObservationProcessingStep),
             typeof(VirtualSkyCloudObservationProcessingStepOptions), 10, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "ProjectedScene", typeof(ProjectedSceneCaptureProcessingStep),
+            typeof(ProjectedSceneCaptureProcessingStepOptions), 15, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "CloudAssessment", typeof(CloudAssessmentCaptureProcessingStep),
             typeof(CloudAssessmentProcessingStepOptions), 80, AutoInclude: false));

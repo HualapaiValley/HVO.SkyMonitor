@@ -223,6 +223,21 @@
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": [
       {
+        "id": "projected-scene",
+        "type": "ProjectedScene",
+        "order": 5,
+        "dependsOn": [ "$raw" ],
+        "publication": { "persistence": "durable-local" },
+        "options": {
+          "outputVariant": "projected-scene-v1",
+          "maximumMagnitude": 6.5,
+          "maximumResults": 300,
+          "constellationIds": [ "ORI", "UMA", "UMI", "CAS", "CYG", "LYR" ],
+          "includeConstellationEndpointStars": true,
+          "solarSystemBodies": [ "Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune" ]
+        }
+      },
+      {
         "id": "calibration",
         "type": "Calibration",
         "order": 10,
@@ -343,7 +358,7 @@
         "id": "storage",
         "type": "Storage",
         "order": 90,
-        "dependsOn": [ "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud", "sky-annotation", "weather-overlay" ],
+        "dependsOn": [ "projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud", "sky-annotation", "weather-overlay" ],
         "options": {
           "storageRoot": "/var/lib/hvo/data/agent",
           "retentionDays": 1,
@@ -356,7 +371,7 @@
         "id": "telemetry",
         "type": "Telemetry",
         "order": 100,
-        "dependsOn": [ "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud", "sky-annotation", "weather-overlay", "storage" ]
+        "dependsOn": [ "projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud", "sky-annotation", "weather-overlay", "storage" ]
       }
     ]
   },

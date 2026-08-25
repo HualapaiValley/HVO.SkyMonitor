@@ -206,6 +206,12 @@ internal sealed class FrameProcessingWorker
                         if (durable.Status == DurableProcessingNodeStatus.Completed)
                         {
                             await persistence.RestoreNodeAsync(durable, context, cancellationToken).ConfigureAwait(false);
+                            if (node.Step is IDurableCaptureProcessingPostCommit restoredCommit)
+                            {
+                                await RunPostCommitCleanupAsync(
+                                    restoredCommit, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
+                                cancellationToken.ThrowIfCancellationRequested();
+                            }
                             logger.CaptureProcessingOutputExisting(node.Id);
                         }
                         statuses[node.Id] = durable.Status;
@@ -326,6 +332,12 @@ internal sealed class FrameProcessingWorker
                             item.WorkId,
                             item.LeaseToken,
                             cancellationToken).ConfigureAwait(false);
+                        if (node.Step is IDurableCaptureProcessingPostCommit memoryOnlyCleanup)
+                        {
+                            await RunPostCommitCleanupAsync(
+                                memoryOnlyCleanup, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
                     }
                     else
                     {
@@ -335,6 +347,13 @@ internal sealed class FrameProcessingWorker
                             outcome?.Status,
                             item.WorkId, item.LeaseToken,
                             products, context, cancellationToken).ConfigureAwait(false);
+                        if (status == DurableProcessingNodeStatus.Completed &&
+                            node.Step is IDurableCaptureProcessingPostCommit committed)
+                        {
+                            await RunPostCommitCleanupAsync(
+                                committed, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
                     }
                 }
                 statuses[node.Id] = status;
@@ -375,6 +394,28 @@ internal sealed class FrameProcessingWorker
                 Finish(CaptureLaneHandlerResult.Terminal("processing.unhandled"));
             }
             throw;
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Post-commit cleanup cannot invalidate a durable node or block its dependents.")]
+    private static async ValueTask RunPostCommitCleanupAsync(
+        IDurableCaptureProcessingPostCommit cleanup,
+        CaptureProcessingGraphNode node,
+        CaptureProcessingContext context,
+        CaptureProcessingTelemetry telemetry,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await cleanup.OnCommittedAsync(
+                new CaptureDescriptorProcessingContext(context), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            var reason = exception is OperationCanceledException ? "cancelled" : "failed";
+            telemetry.RecordPostCommitCleanupFailure(node, reason);
+            logger.CaptureProcessingPostCommitCleanupFailed(node.Id, exception);
         }
     }
 
