@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
+PROJECT="tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj"
+SOLUTION="HVO.SkyMonitor.v9.slnx"
+OUTPUT_DIR="$ROOT/tests/HVO.SkyMonitor.Processing.Tests/bin/Release/net10.0"
+EVIDENCE_ROOT=${HVO_ISSUE433_EVIDENCE_ROOT:-"$ROOT/TestResults/issue-433"}
+EXPECTED_PARENT=${HVO_ISSUE433_BASELINE:-fbf93c1}
+
+command -v jq >/dev/null || { printf '%s\n' "jq is required." >&2; exit 1; }
+[[ $(git status --porcelain --untracked-files=all) == "" ]] || {
+  printf '%s\n' "Claimable issue #433 evidence requires a completely clean tracked and untracked/unignored worktree." >&2
+  exit 1
+}
+
+HEAD_COMMIT=$(git rev-parse HEAD)
+HEAD_TREE=$(git rev-parse 'HEAD^{tree}')
+PARENT_COMMIT=$(git rev-parse HEAD^)
+BASELINE_COMMIT=$(git rev-parse "$EXPECTED_PARENT^{commit}")
+BASELINE_TREE=$(git rev-parse "$BASELINE_COMMIT^{tree}")
+[[ "$PARENT_COMMIT" == "$BASELINE_COMMIT" ]] || {
+  printf '%s\n' "HEAD parent must exactly equal configured issue #433 baseline $BASELINE_COMMIT; actual $PARENT_COMMIT." >&2
+  exit 1
+}
+REVISION=${HVO_EVIDENCE_REVISION:-$HEAD_COMMIT}
+[[ "$REVISION" == "$HEAD_COMMIT" ]] || { printf '%s\n' "HVO_EVIDENCE_REVISION must equal HEAD." >&2; exit 1; }
+TRIAL=${HVO_EVIDENCE_TRIAL:-"$(date -u +%Y%m%dT%H%M%S%3NZ)-$$"}
+[[ "$TRIAL" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { printf '%s\n' "HVO_EVIDENCE_TRIAL is invalid." >&2; exit 1; }
+TRIAL_DIR="$EVIDENCE_ROOT/$HEAD_COMMIT/trials/$TRIAL"
+RECEIPT="$TRIAL_DIR/issue-433-build-receipt.json"
+RESULT="$TRIAL_DIR/issue-433-layered-presentation-performance.json"
+mkdir -p "$TRIAL_DIR"
+[[ ! -e "$RECEIPT" && ! -e "$RESULT" ]] || { printf '%s\n' "Issue #433 trial is create-only: $TRIAL_DIR" >&2; exit 1; }
+
+SOURCE_LIST="$TRIAL_DIR/.source-files"
+SOURCE_MANIFEST="$TRIAL_DIR/.source-inventory"
+git ls-files -- \
+  src/HVO.SkyMonitor.AgentCore src/HVO.SkyMonitor.Astronomy src/HVO.SkyMonitor.Imaging src/HVO.SkyMonitor.Processing \
+  tests/HVO.SkyMonitor.Imaging.Tests tests/HVO.SkyMonitor.Processing.Tests scripts/evidence:issue-433 \
+  docs/validation/issue-433-runtime-signals.json Directory.Build.props Directory.Packages.props global.json \
+  HVO.SkyMonitor.v9.slnx | LC_ALL=C sort > "$SOURCE_LIST"
+
+inventory_hash() {
+  local base=$1 list=$2 manifest=$3
+  : > "$manifest"
+  while IFS= read -r relative; do
+    [[ "$relative" != *$'\n'* && "$relative" != *$'\t'* ]] || { printf '%s\n' "Unsupported inventory path." >&2; exit 1; }
+    local file="$base/$relative"
+    [[ -f "$file" ]] || { printf '%s\n' "Inventory file is missing: $file" >&2; exit 1; }
+    printf '%s\t%s\t%s\n' "$relative" "$(stat -c '%s' "$file")" "$(sha256sum "$file" | cut -d' ' -f1 | tr 'a-f' 'A-F')" >> "$manifest"
+  done < "$list"
+  sha256sum "$manifest" | cut -d' ' -f1 | tr 'a-f' 'A-F'
+}
+
+SOURCE_HASH=$(inventory_hash "$ROOT" "$SOURCE_LIST" "$SOURCE_MANIFEST")
+SOURCE_COUNT=$(wc -l < "$SOURCE_LIST" | tr -d ' ')
+DIFF_FILE="$TRIAL_DIR/.branch.diff"
+git diff --binary "$BASELINE_COMMIT...$HEAD_COMMIT" > "$DIFF_FILE"
+DIFF_HASH=$(sha256sum "$DIFF_FILE" | cut -d' ' -f1 | tr 'a-f' 'A-F')
+
+LEGACY_PATHS=(
+  "src/HVO.SkyMonitor.Imaging/AnnotationRenderer.cs"
+  "src/HVO.SkyMonitor.Imaging/WeatherCloudOverlayRenderer.cs"
+  "src/HVO.SkyMonitor.Processing/BuiltInProcessingRecipes.cs"
+  "src/HVO.SkyMonitor.Processing/WeatherCloudOverlayRecipe.cs"
+  "src/HVO.SkyMonitor.Imaging/PresentationLayerPayload.cs"
+)
+LEGACY_PROOFS='[]'
+for path in "${LEGACY_PATHS[@]}"; do
+  git cat-file -e "$BASELINE_COMMIT:$path"
+  git cat-file -e "$HEAD_COMMIT:$path"
+  baseline_blob=$(git rev-parse "$BASELINE_COMMIT:$path")
+  candidate_blob=$(git rev-parse "$HEAD_COMMIT:$path")
+  [[ "$baseline_blob" == "$candidate_blob" ]] || { printf '%s\n' "Legacy source blob changed: $path" >&2; exit 1; }
+  LEGACY_PROOFS=$(jq -c --arg path "$path" --arg baselineBlob "$baseline_blob" --arg candidateBlob "$candidate_blob" \
+    '. + [{path:$path,baselineBlob:$baselineBlob,candidateBlob:$candidateBlob,identical:true}]' <<< "$LEGACY_PROOFS")
+done
+
+BUILD_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+dotnet clean "$SOLUTION" --configuration Release
+dotnet restore "$SOLUTION"
+dotnet build "$SOLUTION" --configuration Release --no-restore --no-incremental -warnaserror
+BUILD_COMPLETED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+[[ -d "$OUTPUT_DIR" ]] || { printf '%s\n' "Release output is missing: $OUTPUT_DIR" >&2; exit 1; }
+
+OUTPUT_LIST="$TRIAL_DIR/.output-files"
+OUTPUT_MANIFEST="$TRIAL_DIR/.output-inventory"
+(cd "$OUTPUT_DIR" && find . -type f -printf '%P\n' | LC_ALL=C sort) > "$OUTPUT_LIST"
+OUTPUT_HASH=$(inventory_hash "$OUTPUT_DIR" "$OUTPUT_LIST" "$OUTPUT_MANIFEST")
+OUTPUT_COUNT=$(wc -l < "$OUTPUT_LIST" | tr -d ' ')
+SDK_VERSION=$(dotnet --version)
+TMP_RECEIPT="$TRIAL_DIR/.issue-433-build-receipt.$$.tmp"
+jq -n \
+  --arg schemaVersion "issue-433-build-receipt-v1" --arg headCommit "$HEAD_COMMIT" --arg headTree "$HEAD_TREE" \
+  --arg parentCommit "$PARENT_COMMIT" --arg baselineCommit "$BASELINE_COMMIT" --arg baselineTree "$BASELINE_TREE" \
+  --arg sourceDiffSha256 "$DIFF_HASH" --arg sourceInventorySha256 "$SOURCE_HASH" \
+  --arg runtimeOutputSetSha256 "$OUTPUT_HASH" --arg configuration "Release" --arg project "$PROJECT" \
+  --arg sdkVersion "$SDK_VERSION" --arg trial "$TRIAL" --arg buildStartedUtc "$BUILD_STARTED_UTC" \
+  --arg buildCompletedUtc "$BUILD_COMPLETED_UTC" --argjson sourceInventoryFileCount "$SOURCE_COUNT" \
+  --argjson runtimeOutputFileCount "$OUTPUT_COUNT" --argjson legacyBlobProofs "$LEGACY_PROOFS" \
+  '{schemaVersion:$schemaVersion,headCommit:$headCommit,headTree:$headTree,parentCommit:$parentCommit,
+    baselineCommit:$baselineCommit,baselineTree:$baselineTree,sourceDiffSha256:$sourceDiffSha256,
+    sourceInventorySha256:$sourceInventorySha256,sourceInventoryFileCount:$sourceInventoryFileCount,
+    runtimeOutputSetSha256:$runtimeOutputSetSha256,runtimeOutputFileCount:$runtimeOutputFileCount,
+    configuration:$configuration,project:$project,sdkVersion:$sdkVersion,trial:$trial,
+    buildStartedUtc:$buildStartedUtc,buildCompletedUtc:$buildCompletedUtc,legacyBlobProofs:$legacyBlobProofs}' > "$TMP_RECEIPT"
+(set -o noclobber; exec 9>"$RECEIPT"; cat "$TMP_RECEIPT" >&9)
+rm -f -- "$TMP_RECEIPT" "$SOURCE_LIST" "$SOURCE_MANIFEST" "$DIFF_FILE" "$OUTPUT_LIST" "$OUTPUT_MANIFEST"
+
+[[ $(git status --porcelain --untracked-files=all) == "" ]] || { printf '%s\n' "Worktree changed during evidence build." >&2; exit 1; }
+export HVO_ISSUE433_EVIDENCE=1
+export HVO_ISSUE433_EVIDENCE_ROOT="$EVIDENCE_ROOT"
+export HVO_EVIDENCE_REVISION="$HEAD_COMMIT"
+export HVO_EVIDENCE_TRIAL="$TRIAL"
+export HVO_ISSUE433_BUILD_RECEIPT="$RECEIPT"
+dotnet test "$PROJECT" --no-build --configuration Release \
+  --filter "FullyQualifiedName=HVO.SkyMonitor.Processing.Tests.Issue433LayeredPresentationPerformanceTests.FullResolutionSyntheticMono8OldAndLayeredPathsEvidence"

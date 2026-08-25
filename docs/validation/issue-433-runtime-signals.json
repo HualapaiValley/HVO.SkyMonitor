@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "issue-433-runtime-signals-v1",
+  "issue": 433,
+  "resultSchema": "issue-433-layered-presentation-performance-v1",
+  "resultPath": "$HVO_ISSUE433_EVIDENCE_ROOT/$HVO_EVIDENCE_REVISION/trials/$HVO_EVIDENCE_TRIAL/issue-433-layered-presentation-performance.json",
+  "buildReceiptPath": "$HVO_ISSUE433_EVIDENCE_ROOT/$HVO_EVIDENCE_REVISION/trials/$HVO_EVIDENCE_TRIAL/issue-433-build-receipt.json",
+  "runner": "scripts/evidence:issue-433",
+  "retainedTrials": true,
+  "harness": "HVO.SkyMonitor.Processing.Tests.Issue433LayeredPresentationPerformanceTests.FullResolutionSyntheticMono8OldAndLayeredPathsEvidence",
+  "performanceWorkloads": [
+    "synthetic-3552x3552-mono8-old-annotation-weather",
+    "synthetic-3552x3552-mono8-layer-payload-construction-serialization",
+    "synthetic-3552x3552-mono8-single-compositor-materialization"
+  ],
+  "measurements": [
+    "latency",
+    "cpuTime",
+    "currentThreadAllocatedBytes",
+    "endpointRssBytes",
+    "retainedLohBytes",
+    "transientKnownFullFrameBytes",
+    "publishedArtifactBytes",
+    "operationsPerSecond",
+    "comparisonPercentChanges",
+    "correctness"
+  ],
+  "resultFieldMappings": {
+    "latency": "boundaries",
+    "cpuTime": "boundaries",
+    "currentThreadAllocatedBytes": "boundaries",
+    "endpointRssBytes": "memory",
+    "retainedLohBytes": "memory",
+    "transientKnownFullFrameBytes": "transientMemory",
+    "publishedArtifactBytes": "artifactBytes",
+    "operationsPerSecond": "boundaries",
+    "comparisonPercentChanges": "comparison.changes.percent-or-explicit-notApplicableReason",
+    "correctness": "correctness"
+  },
+  "runtimeSignals": {
+    "metrics": "N/A: pure synchronous Processing/Imaging comparison adds no production metric boundary.",
+    "logs": "N/A: the host-neutral renderers do not log.",
+    "traces": "N/A: no host worker or distributed operation is exercised.",
+    "health": "N/A: no hosted service or dependency health boundary is exercised."
+  },
+  "limitations": [
+    "CPU and endpoint RSS are process-wide and can include test-host/runtime activity.",
+    "Retained LOH is measured at forced-GC path-group endpoints and is not per-operation attribution.",
+    "Both legacy and layered paths execute in the candidate binary; baseline ancestry and unchanged blob proofs are source-equivalence evidence, not a separately measured baseline build.",
+    "The deterministic synthetic Mono8 workload complements but does not replace unavailable external canonical W6 evidence.",
+    "Filesystem, SQLite, network, and backlog are N/A because both compared paths are synchronous in-memory operations.",
+    "Material greater-than-10-percent changes are flagged for disposition, not used as arbitrary fail thresholds."
+  ]
+}
