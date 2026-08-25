@@ -1,6 +1,9 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Background;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -1129,6 +1132,244 @@ public sealed class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Integration")]
+    public async Task PredictedAndSyntheticImageRegisteredV3CoexistAcrossRestartWithIndependentLineage()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
+                new CelestialCatalogObject("star", "Star", 0, 0, 1)
+            ])).BuildAsync(new VisibleSceneRequest(
+                fixture.Manifest.Descriptor.Timing.ExposureStartedUtc,
+                new ObserverLocation(0, 0, 0),
+                new EquidistantProjectionContext(1, 1, 1, 1, WidthPixels: 2, HeightPixels: 2),
+                new CatalogQuery(6.5, 10),
+                new CatalogMetadata("test", "1", new Uri("https://example.invalid"), new string('A', 64), "test", "1"),
+                projectionVersion: "projection-v1"))
+                .ConfigureAwait(false);
+            var source = new ProjectedSceneSource(
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                fixture.Manifest.Descriptor.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(fixture.Manifest.Descriptor));
+            var predictedScene = ProjectedSceneJson.Create(
+                ProjectedSceneKind.Predicted, visible, ProjectedSceneImageTransformV1.Identity(2, 2), source,
+                "calibration-v1", "projection-v1");
+            var registeredScene = ProjectedSceneJson.Create(
+                ProjectedSceneKind.ImageRegistered, visible, ProjectedSceneImageTransformV1.Identity(2, 2), source,
+                "calibration-v1", "projection-v1");
+            var predicted = new FixedMetadataProducingStep(CreateProjectedSceneProduct(
+                fixture.Item, predictedScene, "predicted-scene"));
+            var registered = new FixedMetadataProducingStep(CreateProjectedSceneProduct(
+                fixture.Item, registeredScene, "image-registered-scene"));
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([
+                        new CaptureProcessingGraphNode(
+                            "predicted", predicted, [], true, predicted.RecipeName, predicted.OutputRole,
+                            predicted.OutputVariant, new string('A', 64)),
+                        new CaptureProcessingGraphNode(
+                            "registered", registered, [], true, registered.RecipeName, registered.OutputRole,
+                            registered.OutputVariant, new string('B', 64))
+                    ]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            }
+
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using var restarted = new SqliteCaptureProcessingStore(fixture.Options);
+            var products = await restarted.ReadCaptureProductsAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                ProjectedSceneV1.CurrentSchemaVersion,
+                10,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.HasCount(2, products);
+            Assert.IsTrue(products.Select(static product => product.Variant).ToHashSet(StringComparer.Ordinal)
+                .SetEquals(["predicted-scene", "image-registered-scene"]));
+            Assert.AreEqual(2, products.Select(static product => product.OutputIdentitySha256).Distinct().Count());
+            Assert.AreEqual(2, products.Select(static product => product.ContentIdentitySha256).Distinct().Count());
+            foreach (var product in products)
+            {
+                var sources = await restarted.ReadOutputSourcesAsync(
+                    product.OutputIdentitySha256, 10, CancellationToken.None).ConfigureAwait(false);
+                Assert.HasCount(1, sources);
+                Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, sources[0].ArtifactId);
+            }
+            var holds = await restarted.ReadRetentionHoldsAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(products.All(product => holds.Any(hold =>
+                hold.ArtifactId == ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256))));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task ApplyRetentionAsync_ProductionProjectedSceneDependencyChainHoldsThenExpiresAndConverges()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var datedDirectory = Path.Combine(root, "frames", "2020", "01", "01", "Raw");
+            Directory.CreateDirectory(datedDirectory);
+            var datedPayload = Path.Combine(datedDirectory, "raw.bin");
+            var datedSidecar = Path.ChangeExtension(datedPayload, ".json");
+            File.Move(Path.Combine(root, "raw.bin"), datedPayload);
+            File.Move(Path.Combine(root, "raw.json"), datedSidecar);
+            var datedRelativePayload = Path.GetRelativePath(root, datedPayload).Replace(Path.DirectorySeparatorChar, '/');
+            var datedManifest = fixture.Manifest with { RelativeArtifactPath = datedRelativePayload };
+            await File.WriteAllBytesAsync(datedSidecar, CaptureContractJson.Serialize(datedManifest)).ConfigureAwait(false);
+            var datedReceipt = fixture.Item.RawCapture! with
+            {
+                Manifest = datedManifest,
+                StoredFrame = fixture.Item.RawCapture.StoredFrame with
+                {
+                    RelativePath = datedRelativePayload,
+                    AbsolutePath = datedPayload
+                },
+                CommittedManifestSha256 = CaptureContractJson.ComputeManifestSha256(datedManifest)
+            };
+            fixture = fixture with
+            {
+                Manifest = datedManifest,
+                Item = fixture.Item with { RawCapture = datedReceipt }
+            };
+            var rawId = fixture.Manifest.Descriptor.Artifact.ArtifactId;
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await journal.ReserveIdentityAsync(
+                fixture.Manifest.Descriptor.Capture.AgentId,
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                rawId,
+                CancellationToken.None).ConfigureAwait(false);
+            await journal.CommitAsync(new RawIngressJournalEntry(
+                fixture.Manifest.Descriptor.Capture.AgentId,
+                fixture.Manifest.Descriptor.Capture.CaptureSequence,
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                rawId,
+                CaptureContractJson.ComputeDescriptorSha256(fixture.Manifest.Descriptor),
+                CaptureContractJson.ComputeManifestSha256(fixture.Manifest),
+                fixture.Manifest.Descriptor.Artifact.ChecksumSha256,
+                fixture.Manifest.Descriptor.Layout.ByteLength,
+                fixture.Manifest.RelativeArtifactPath,
+                Path.ChangeExtension(fixture.Manifest.RelativeArtifactPath, ".json"),
+                CaptureContractJson.Serialize(fixture.Manifest),
+                fixture.Manifest.Descriptor.Timing.ExposureStartedUtc,
+                fixture.Manifest.Descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false);
+            var predicted = CreateSyntheticMetadataProduct(fixture.Item, "predicted", [rawId]);
+            var registered = CreateSyntheticMetadataProduct(fixture.Item, "registered", [rawId]);
+            var dependent = CreateSyntheticMetadataProduct(
+                fixture.Item, "dependent",
+                [ProcessingIdentity.CreateArtifactId(predicted.OutputIdentitySha256),
+                 ProcessingIdentity.CreateArtifactId(registered.OutputIdentitySha256)]);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item,
+                new CaptureProcessingGraph([
+                    new CaptureProcessingGraphNode("predicted", new FixedMetadataProducingStep(predicted), [], true,
+                        predicted.Recipe.Descriptor.Name, predicted.Role, predicted.Variant, new string('A', 64)),
+                    new CaptureProcessingGraphNode("registered", new FixedMetadataProducingStep(registered), [], true,
+                        registered.Recipe.Descriptor.Name, registered.Role, registered.Variant, new string('B', 64)),
+                    new CaptureProcessingGraphNode("dependent", new FixedMetadataProducingStep(dependent),
+                        ["predicted", "registered"], true, dependent.Recipe.Descriptor.Name, dependent.Role,
+                        dependent.Variant, new string('C', 64))
+                ]),
+                persistence, telemetry, 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+
+            var expiredUnix = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds();
+            using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var age = connection.CreateCommand();
+                age.CommandText = "UPDATE processing_outputs SET committed_unix_ms = $expired;";
+                age.Parameters.AddWithValue("$expired", expiredUnix);
+                await age.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            var outputPaths = new List<string>();
+            foreach (var nodeId in new[] { "predicted", "registered", "dependent" })
+            {
+                var node = await store.ReadNodeAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId, nodeId, CancellationToken.None).ConfigureAwait(false);
+                var output = node!.Outputs.Single();
+                outputPaths.Add(Path.Combine(root, output.PayloadRelativePath));
+                outputPaths.Add(Path.Combine(root, output.SidecarRelativePath));
+            }
+            var config = CreateRetentionConfig(root);
+            var retention = CreateProductionRetentionService(root, persistence);
+
+            await retention.ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(outputPaths.All(File.Exists));
+            Assert.IsTrue(File.Exists(datedPayload));
+            Assert.IsTrue(File.Exists(datedSidecar));
+            Assert.HasCount(3, await store.ReadCaptureProductsAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, null, 10, CancellationToken.None).ConfigureAwait(false));
+
+            using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var release = connection.CreateCommand();
+                release.CommandText = """
+                    UPDATE processing_outputs
+                    SET availability_state = 'Missing', availability_reason = 'retention-released',
+                        unavailable_unix_ms = $expired;
+                    """;
+                release.Parameters.AddWithValue("$expired", expiredUnix);
+                await release.ExecuteNonQueryAsync().ConfigureAwait(false);
+                using var releaseRaw = connection.CreateCommand();
+                releaseRaw.CommandText = "DELETE FROM raw_captures WHERE capture_id = $capture;";
+                releaseRaw.Parameters.AddWithValue(
+                    "$capture", fixture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+                await releaseRaw.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+
+            await retention.ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(outputPaths.All(path => !File.Exists(path)));
+            Assert.IsFalse(File.Exists(datedPayload));
+            Assert.IsFalse(File.Exists(datedSidecar));
+            Assert.IsEmpty(await store.ReadCaptureProductsAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, null, 10, CancellationToken.None).ConfigureAwait(false));
+            using var verify = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await verify.OpenAsync().ConfigureAwait(false);
+            using var counts = verify.CreateCommand();
+            counts.CommandText = """
+                SELECT
+                    (SELECT COUNT(*) FROM processing_outputs WHERE capture_id = $capture),
+                    (SELECT COUNT(*) FROM processing_output_sources source
+                     JOIN processing_outputs output ON output.output_identity_sha256 = source.output_identity_sha256
+                     WHERE output.capture_id = $capture),
+                    (SELECT COUNT(*) FROM processing_nodes WHERE capture_id = $capture);
+                """;
+            counts.Parameters.AddWithValue("$capture", fixture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+            using var reader = await counts.ExecuteReaderAsync().ConfigureAwait(false);
+            Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+            Assert.AreEqual(0L, reader.GetInt64(0));
+            Assert.AreEqual(0L, reader.GetInt64(1));
+            Assert.AreEqual(0L, reader.GetInt64(2));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
     public async Task DurableLineageAcceptsAndQueriesFiveHundredTwelveOrderedSources()
     {
         var root = CreateTestRoot();
@@ -1828,6 +2069,99 @@ public sealed class DurableCaptureProcessingTests
         };
     }
 
+    private static ProcessingProduct CreateProjectedSceneProduct(
+        FrameProcessingItem item,
+        ProjectedSceneV1 scene,
+        string variant)
+    {
+        var payload = ProjectedSceneJson.Serialize(scene);
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+            BuiltInProcessingRecipes.ProjectedScene, "1.0.0", "synthetic-test-v1",
+            JsonSerializer.SerializeToElement(new { kind = scene.Kind.ToString() })));
+        var descriptor = item.RawCapture?.Manifest.Descriptor ??
+            throw new InvalidOperationException("The projected-scene fixture requires raw capture evidence.");
+        var sources = new[] { descriptor.Artifact.ArtifactId };
+        return new ProcessingProduct(
+            FrameArtifactRole.Metadata,
+            variant,
+            ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, variant, recipe.IdentitySha256, sources),
+            "application/json",
+            null,
+            payload,
+            ProcessingIdentity.ComputePayloadSha256(payload),
+            recipe,
+            [new ProcessingAlgorithmIdentity("synthetic-registration-fixture", "v1")],
+            sources,
+            TimeSpan.Zero,
+            CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor))
+        {
+            Kind = ProcessingProductKind.Metadata,
+            SchemaVersion = ProjectedSceneV1.CurrentSchemaVersion,
+            ContentIdentitySha256 = scene.SceneIdentitySha256
+        };
+    }
+
+    private static ProcessingProduct CreateSyntheticMetadataProduct(
+        FrameProcessingItem item,
+        string variant,
+        IReadOnlyList<Guid> sources)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new { schemaVersion = "retention-chain-v1", variant });
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+            "retention-chain", "1.0.0", "retention-chain-v1", JsonSerializer.SerializeToElement(new { variant })));
+        return new ProcessingProduct(
+            FrameArtifactRole.Metadata,
+            variant,
+            ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, variant, recipe.IdentitySha256, sources),
+            "application/json",
+            null,
+            payload,
+            ProcessingIdentity.ComputePayloadSha256(payload),
+            recipe,
+            [new ProcessingAlgorithmIdentity("retention-chain", "v1")],
+            sources,
+            TimeSpan.Zero,
+            CameraAgentRecipeExecutionAdapter.CreateCompatibility(item.RawCapture!.Manifest.Descriptor))
+        {
+            Kind = ProcessingProductKind.Metadata,
+            SchemaVersion = "retention-chain-v1",
+            ContentIdentitySha256 = ProcessingIdentity.ComputePayloadSha256(payload)
+        };
+    }
+
+    private static CameraModuleConfig CreateRetentionConfig(string root)
+    {
+        var storageOptions = new NoOpFileStorageProcessingStepOptions
+        {
+            StorageRoot = root,
+            RetentionDays = 1
+        };
+        return CreateConfig() with
+        {
+            ProcessingSteps =
+            [
+                new CaptureProcessingStepConfig(
+                    "Storage", "storage", Options: JsonSerializer.SerializeToElement(storageOptions)),
+                new CaptureProcessingStepConfig(
+                    "ProjectedScene", "projected", Publication: new CaptureProcessingPublicationPolicy(
+                        CaptureProcessingPersistenceMode.DurableLocal))
+            ]
+        };
+    }
+
+    private static RetentionBackgroundService CreateProductionRetentionService(
+        string root,
+        CaptureProcessingPersistence persistence)
+        => new(
+            new RetentionConfigurationAccessor(),
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+            new RetentionTimeProvider(new DateTimeOffset(2026, 8, 25, 12, 0, 0, TimeSpan.Zero)),
+            new FileSystemArtifactOutbox(),
+            new RetentionCapacityProvider(),
+            new StoragePressureState(),
+            NullLogger<RetentionBackgroundService>.Instance,
+            processingHolds: persistence);
+
     private static DurableTypedMetadataProductManifestV3 CreateTypedMetadataManifest(ProcessingProduct product)
     {
         var capture = new CaptureIdentityDescriptor(
@@ -2318,7 +2652,12 @@ public sealed class DurableCaptureProcessingTests
         }
     }
 
-    private sealed class MetadataProducingStep(bool typed = true, int sourceCount = 1) : ICaptureProcessingStep, ICaptureProcessingGraphStep
+    private sealed class MetadataProducingStep(
+        bool typed = true,
+        int sourceCount = 1,
+        string schemaVersion = "test-metadata-v1",
+        string variant = "test-metadata-v1",
+        string? contentIdentity = null) : ICaptureProcessingStep, ICaptureProcessingGraphStep
     {
         private static readonly IReadOnlySet<FrameArtifactRole> InputRoles =
             new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
@@ -2330,7 +2669,7 @@ public sealed class DurableCaptureProcessingTests
         public int Order => 0;
         public string RecipeName => "test-metadata";
         public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
-        public string OutputVariant => "test-metadata-v1";
+        public string OutputVariant => variant;
         public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles => InputRoles;
         public ProcessingProduct? Product { get; private set; }
 
@@ -2345,7 +2684,7 @@ public sealed class DurableCaptureProcessingTests
                 .ToArray();
             var payload = JsonSerializer.SerializeToUtf8Bytes(new
             {
-                schemaVersion = "test-metadata-v1",
+                schemaVersion,
                 values = MetadataValues
             });
             Product = new ProcessingProduct(
@@ -2363,12 +2702,49 @@ public sealed class DurableCaptureProcessingTests
                 CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility)
             {
                 Kind = ProcessingProductKind.Metadata,
-                SchemaVersion = typed ? "test-metadata-v1" : null,
-                ContentIdentitySha256 = typed ? ProcessingIdentity.ComputePayloadSha256(payload) : null
+                SchemaVersion = typed ? schemaVersion : null,
+                ContentIdentitySha256 = typed ? contentIdentity ?? ProcessingIdentity.ComputePayloadSha256(payload) : null
             };
             context.AddProcessingOutcome(ProcessingOutcome.Produced(Product));
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class FixedMetadataProducingStep(ProcessingProduct product) :
+        ICaptureProcessingStep, ICaptureProcessingGraphStep
+    {
+        public bool Enabled => true;
+        public string Name => product.Variant;
+        public int Order => 0;
+        public string RecipeName => product.Recipe.Descriptor.Name;
+        public FrameArtifactRole OutputRole => product.Role;
+        public string OutputVariant => product.Variant;
+        public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+            new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.Produced(product));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RetentionConfigurationAccessor : ICameraAgentConfigurationAccessor
+    {
+        public bool IsConfigured => false;
+        public void SetConfiguration(CameraModuleConfig config) { }
+        public ValueTask<CameraModuleConfig> WaitForConfigurationAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromException<CameraModuleConfig>(new InvalidOperationException("Not used by direct retention tests."));
+    }
+
+    private sealed class RetentionTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
+    private sealed class RetentionCapacityProvider : IStorageCapacityProvider
+    {
+        public StorageCapacity GetCapacity(string storageRoot) => new(1000, 500);
     }
 
     private sealed class JpegProducingStep(string variant, bool malformed = false) : ICaptureProcessingStep, ICaptureProcessingGraphStep

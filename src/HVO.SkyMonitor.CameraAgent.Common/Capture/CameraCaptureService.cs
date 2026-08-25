@@ -34,7 +34,8 @@ public sealed class CameraCaptureService(
     CaptureScheduleRuntimeCoordinator? scheduleRuntimeCoordinator = null,
     EnvironmentalCaptureTriggerBridge? environmentalTriggers = null,
     IProjectedSceneStagingStore? projectedSceneStaging = null,
-    ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null) : BackgroundService
+    ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
+    CaptureProjectedSceneStager? projectedSceneStager = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly ICameraModuleFactory _moduleFactory = moduleFactory;
@@ -55,6 +56,7 @@ public sealed class CameraCaptureService(
     private readonly IProjectedSceneStagingStore? _projectedSceneStaging = projectedSceneStaging;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The dependency injection container owns this singleton lifecycle coordinator.")]
     private readonly ProjectedSceneStageLifecycleCoordinator? _projectedSceneLifecycle = projectedSceneLifecycle;
+    private readonly CaptureProjectedSceneStager? _projectedSceneStager = projectedSceneStager;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
@@ -92,8 +94,8 @@ public sealed class CameraCaptureService(
                 _logger.CameraModuleInitialized(module.DisplayName);
 
                 var hostContext = new CaptureHostContext(
-                    config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers,
-                    _projectedSceneStaging, _projectedSceneLifecycle, _logger);
+                     config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers,
+                     _projectedSceneStaging, _projectedSceneLifecycle, _projectedSceneStager, _logger);
 
                 var runner = new CameraModuleRunner(
                     module,

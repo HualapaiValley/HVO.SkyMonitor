@@ -21,7 +21,8 @@ internal sealed class AnnotationCaptureProcessingStep(
     IAnnotationSceneProvider annotationSceneProvider,
     CameraAgentRecipeExecutionAdapter adapter,
     IServiceProvider? serviceProvider = null)
-    : ConfigurableCaptureProcessingStep<AnnotationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
+    : ConfigurableCaptureProcessingStep<AnnotationProcessingStepOptions>(metadata, options),
+      ICaptureProcessingGraphStep, ICompoundCaptureProcessingGraphStep
 {
     public bool Enabled => Options.Enabled;
 
@@ -32,7 +33,24 @@ internal sealed class AnnotationCaptureProcessingStep(
     public string OutputVariant => Options.OutputVariant;
 
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
-        new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview };
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
+
+    public IReadOnlyList<IReadOnlySet<FrameArtifactRole>> RequiredDependencyRoleGroups =>
+        Options.RequireProjectedSceneDependency
+            ?
+            [
+                new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview },
+                new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }
+            ]
+            : [new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview }];
+
+    public IReadOnlyDictionary<FrameArtifactRole, IReadOnlySet<string>> RequiredDependencyRecipes =>
+        Options.RequireProjectedSceneDependency
+            ? new Dictionary<FrameArtifactRole, IReadOnlySet<string>>
+            {
+                [FrameArtifactRole.Metadata] = new HashSet<string> { BuiltInProcessingRecipes.ProjectedScene }
+            }
+            : new Dictionary<FrameArtifactRole, IReadOnlySet<string>>();
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
@@ -52,7 +70,22 @@ internal sealed class AnnotationCaptureProcessingStep(
         var provenance = artifacts.Raw.Frame.Metadata.Scene;
         AnnotationSceneResult? generatedScene = null;
         ProjectionContext? projectionOnly = null;
-        if (provenance is null && Options.DrawConstellationLines && Options.ConstellationIds.Count > 0)
+        var projectedSceneProduct = context.GetDependencyProducts().SingleOrDefault(static product =>
+            product.Kind == ProcessingProductKind.Metadata &&
+            string.Equals(product.SchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal));
+        ProjectedSceneV1? projectedScene = null;
+        if (projectedSceneProduct is not null)
+        {
+            var parsed = ProjectedSceneJson.Parse(projectedSceneProduct.Payload);
+            projectedScene = parsed.Scene ?? throw new InvalidDataException(
+                $"The declared projected-scene dependency is invalid at '{parsed.ErrorPath}'.");
+            ValidateProjectedScene(context, artifacts.Raw.Frame, projectedSceneProduct, projectedScene);
+        }
+        else if (Options.RequireProjectedSceneDependency)
+        {
+            throw new InvalidOperationException("The declared projected-scene dependency is unavailable.");
+        }
+        if (projectedScene is null && provenance is null && Options.DrawConstellationLines && Options.ConstellationIds.Count > 0)
         {
             generatedScene = await annotationSceneProvider.BuildAsync(
                 context.Config, context.ReconstructionDescriptor, artifacts.Raw.Frame,
@@ -63,7 +96,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         {
             projectionOnly = RigProjectionContextFactory.Create(context.Config.Rig);
         }
-        if (provenance is null && projectionOnly is null && !Options.DrawMetadataCorners)
+        if (projectedScene is null && provenance is null && projectionOnly is null && !Options.DrawMetadataCorners)
         {
             return;
         }
@@ -74,7 +107,22 @@ internal sealed class AnnotationCaptureProcessingStep(
         IReadOnlyList<ProjectedAnnotationObject> objects;
         IReadOnlyList<ProjectedAnnotationSegment> segments;
         ProjectedAnnotationOverlay? projectionOverlay;
-        if (projectionOnly is { } projection)
+        if (projectedScene is not null)
+        {
+            objects = projectedScene.Objects.Select(item =>
+            {
+                var annotate = IsNamed(item.Id, item.DisplayName) &&
+                    (item.Kind == CelestialObjectKind.SolarSystemBody || item.Magnitude <= Options.MaximumLabelMagnitude);
+                return new ProjectedAnnotationObject(item.Id, item.DisplayName, item.Pixel, annotate, annotate);
+            }).ToArray();
+            segments = Options.DrawConstellationLines
+                ? projectedScene.Segments.Where(item => IsSelectedConstellation(item.ConstellationId))
+                    .Select(static item => new ProjectedAnnotationSegment(
+                        item.ConstellationId, item.FromPixel, item.ToPixel)).ToArray()
+                : [];
+            projectionOverlay = CreateProjectionOverlay(projectedScene.Projection);
+        }
+        else if (projectionOnly is { } projection)
         {
             objects = [];
             segments = [];
@@ -142,7 +190,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         if (Options.DrawMetadataCorners)
         {
             metadataOverlay = await CreateMetadataOverlayAsync(
-                context, provenance, previewProduct, cancellationToken).ConfigureAwait(false);
+                context, provenance, projectedScene, previewProduct, cancellationToken).ConfigureAwait(false);
             if (metadataOverlay is null)
             {
                 context.AddProcessingOutcome(ProcessingOutcome.RetryableFailure(
@@ -160,6 +208,36 @@ internal sealed class AnnotationCaptureProcessingStep(
         if (previewProduct is not null)
         {
             input = input with { RecipeIdentitySha256 = previewProduct.Recipe.IdentitySha256 };
+        }
+        var executionInputs = new List<ProcessingArtifact> { input };
+        IReadOnlyList<ProcessingAuxiliaryInput>? auxiliaryInputs = null;
+        if (projectedSceneProduct is not null)
+        {
+            var projectedSceneArtifactId = CaptureProcessingContext.CreateArtifactId(
+                projectedSceneProduct.OutputIdentitySha256);
+            executionInputs.Add(new ProcessingArtifact(
+                projectedSceneArtifactId,
+                projectedSceneProduct.Role,
+                projectedSceneProduct.Variant,
+                projectedSceneProduct.Recipe.IdentitySha256,
+                projectedSceneProduct.MediaType,
+                projectedSceneProduct.Layout,
+                projectedSceneProduct.Payload,
+                frame.TimestampUtc,
+                projectedSceneProduct.TotalIntegration,
+                projectedSceneProduct.Compatibility,
+                SourceArtifactIds: projectedSceneProduct.SourceArtifactIds));
+            auxiliaryInputs =
+            [
+                new ProcessingAuxiliaryInput(
+                    "projected-scene",
+                    ProcessingAuxiliaryInputKind.Artifact,
+                    ProcessingInputSelector.RecipeResult(
+                        projectedSceneProduct.Role,
+                        projectedSceneProduct.Variant,
+                        projectedSceneProduct.Recipe.IdentitySha256),
+                    ArtifactId: projectedSceneArtifactId)
+            ];
         }
         var annotationInput = new ProcessingAnnotationInput(
             objects,
@@ -199,9 +277,10 @@ internal sealed class AnnotationCaptureProcessingStep(
                 FrameArtifactRole.Preview,
                 input.Variant,
                 input.RecipeIdentitySha256),
-            [input],
+            executionInputs,
             Options.OutputVariant,
             annotationInput,
+            AuxiliaryInputs: auxiliaryInputs,
             InputArtifactId: input.ArtifactId), cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
         if (outcome.Status != ProcessingOutcomeStatus.Produced)
@@ -220,7 +299,7 @@ internal sealed class AnnotationCaptureProcessingStep(
                     product.Recipe.IdentitySha256)
             },
             Options.RecipeVersion,
-            [preview.ArtifactId],
+            product.SourceArtifactIds,
             CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
         context.AssociateProcessingProduct(artifact, product);
     }
@@ -231,6 +310,26 @@ internal sealed class AnnotationCaptureProcessingStep(
     private bool IsSelectedConstellation(string id)
         => Options.ConstellationIds.Count == 0 ||
            Options.ConstellationIds.Contains(id, StringComparer.OrdinalIgnoreCase);
+
+    private static void ValidateProjectedScene(
+        CaptureProcessingContext context,
+        CameraFrame raw,
+        ProcessingProduct product,
+        ProjectedSceneV1 scene)
+    {
+        var descriptor = context.ReconstructionDescriptor;
+        var expectedRawId = descriptor?.Artifact.ArtifactId ?? context.Artifacts?.Raw.ArtifactId;
+        if (expectedRawId is null || scene.Source.ArtifactId != expectedRawId ||
+            product.SourceArtifactIds.Count != 1 || product.SourceArtifactIds[0] != expectedRawId ||
+            descriptor is not null && (scene.Source.CaptureId != descriptor.Capture.CaptureId ||
+                !string.Equals(scene.Source.ArtifactIdentitySha256,
+                    CaptureContractJson.ComputeDescriptorSha256(descriptor), StringComparison.OrdinalIgnoreCase)) ||
+            scene.ImageTransform.OutputWidthPixels != raw.Width ||
+            scene.ImageTransform.OutputHeightPixels != raw.Height)
+        {
+            throw new InvalidDataException("The projected-scene dependency does not match the captured raw source.");
+        }
+    }
 
     private FrameMetadata CreateAnnotationMetadata(
         FrameMetadata metadata,
@@ -273,9 +372,27 @@ internal sealed class AnnotationCaptureProcessingStep(
                 landmarks.West);
     }
 
+    private static ProjectedAnnotationOverlay? CreateProjectionOverlay(ProjectedSceneProjection projection)
+        => CreateProjectionOverlay(new ProjectionContext(
+            projection.Model,
+            projection.PrincipalPointX,
+            projection.PrincipalPointY,
+            projection.FocalLengthXPixels,
+            projection.FocalLengthYPixels,
+            projection.WidthPixels,
+            projection.HeightPixels,
+            projection.Aperture,
+            projection.ImageCircleRadiusPixels,
+            projection.BoresightAltitudeDegrees,
+            projection.BoresightAzimuthDegrees,
+            projection.RollDegrees,
+            projection.HorizontalFlip,
+            projection.EnforceSensorBounds));
+
     private async ValueTask<MetadataCornerOverlay?> CreateMetadataOverlayAsync(
         CaptureProcessingContext context,
         SceneProvenance? provenance,
+        ProjectedSceneV1? projectedScene,
         ProcessingProduct? previewProduct,
         CancellationToken cancellationToken)
     {
@@ -328,9 +445,11 @@ internal sealed class AnnotationCaptureProcessingStep(
                 AnnotationMetadataTokens.SensorSetpoint => $"SETPOINT {FormatNumber(descriptor?.Controls.TemperatureSetpointC, 1)} C",
                 AnnotationMetadataTokens.Environment => throw new InvalidOperationException(
                     "Environment metadata must be expanded from frozen associations."),
-                AnnotationMetadataTokens.Catalog => provenance is null
-                    ? "CATALOG UNAVAILABLE"
-                    : $"CATALOG {Visible(provenance.CatalogName)} {Visible(provenance.CatalogVersion)} {HashPrefix(provenance.CatalogChecksumSha256)}",
+                AnnotationMetadataTokens.Catalog => projectedScene is not null
+                    ? $"CATALOG {Visible(projectedScene.Catalog.Name)} {Visible(projectedScene.Catalog.Version)} {HashPrefix(projectedScene.Catalog.ChecksumSha256)}"
+                    : provenance is null
+                        ? "CATALOG UNAVAILABLE"
+                        : $"CATALOG {Visible(provenance.CatalogName)} {Visible(provenance.CatalogVersion)} {HashPrefix(provenance.CatalogChecksumSha256)}",
                 AnnotationMetadataTokens.Calibration => FormatProfile("CALIBRATION", descriptor?.Profiles.Calibration),
                 AnnotationMetadataTokens.Stack => stackProduct is null
                     ? "STACK UNAVAILABLE"
@@ -584,6 +703,8 @@ public sealed class AnnotationProcessingStepOptions : IValidatableObject
     public bool DrawCardinalDirections { get; init; }
 
     public bool DrawMetadataCorners { get; init; }
+
+    public bool RequireProjectedSceneDependency { get; init; }
 
     public IReadOnlyList<string> TopLeftTokens { get; init; } =
     [

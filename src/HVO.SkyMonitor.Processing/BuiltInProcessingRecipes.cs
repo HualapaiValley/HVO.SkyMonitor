@@ -641,6 +641,18 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
         {
             return ValueTask.FromResult(failure!);
         }
+        var auxiliarySources = (request.AuxiliaryInputs ?? [])
+            .Where(static auxiliary => auxiliary.Kind == ProcessingAuxiliaryInputKind.Artifact)
+            .Select(auxiliary => request.Inputs.SingleOrDefault(candidate =>
+                candidate.ArtifactId == auxiliary.ArtifactId &&
+                ProcessingRecipeSupport.Matches(candidate, auxiliary.Selector!)))
+            .ToArray();
+        if (auxiliarySources.Any(static source => source is null))
+        {
+            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.InvalidInput,
+                nameof(request.AuxiliaryInputs)));
+        }
 
         var options = ProcessingRecipeSupport.ParseOptions<AnnotationRecipeOptions>(
             identity.Descriptor.Options.GetProperty("parameters"));
@@ -691,7 +703,7 @@ internal sealed class AnnotationRecipe : IProcessingRecipe
             output,
             identity,
             algorithms,
-            [input],
+            [input, .. auxiliarySources!],
             input.Integration,
             input.Compatibility);
         return ValueTask.FromResult(ProcessingOutcome.Produced(product));

@@ -29,7 +29,11 @@ internal sealed record StagedProjectedSceneDocument(
     [property: JsonRequired] ProjectedSceneTopologyProvenance? ConstellationTopology,
     [property: JsonRequired] string? EphemerisModelVersion,
     [property: JsonRequired] IReadOnlyList<ProjectedCelestialObject> Objects,
-    [property: JsonRequired] IReadOnlyList<ProjectedConstellationSegment> Segments)
+    [property: JsonRequired] IReadOnlyList<ProjectedConstellationSegment> Segments,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RigProfileSha256 = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] FrameLayoutDescriptor? Layout = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ProjectedSceneKind? IntendedKind = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? StageSceneIdentitySha256 = null)
 {
     internal const string CurrentSchemaVersion = "projected-scene-stage-v1";
 
@@ -49,10 +53,22 @@ internal sealed record StagedProjectedSceneDocument(
 public interface IProjectedSceneStagingStore
 {
     ValueTask StageAsync(string stageKey, string sceneId, VisibleScene scene, CancellationToken cancellationToken);
+    ValueTask StageAsync(
+        string stageKey,
+        string sceneId,
+        VisibleScene scene,
+        CaptureProjectedSceneStageFacts facts,
+        CancellationToken cancellationToken) => StageAsync(stageKey, sceneId, scene, cancellationToken);
     ValueTask DeleteAsync(string stageKey, CancellationToken cancellationToken);
     ValueTask MarkCompletedAsync(string stageKey, CancellationToken cancellationToken);
     ValueTask DeleteCompletedAsync(string stageKey, CancellationToken cancellationToken);
 }
+
+public sealed record CaptureProjectedSceneStageFacts(
+    string RigProfileSha256,
+    FrameLayoutDescriptor Layout,
+    ProjectedSceneKind IntendedKind,
+    string StageSceneIdentitySha256);
 
 internal interface IProjectedSceneStagingReader
 {
@@ -110,8 +126,36 @@ internal sealed class ProjectedSceneStagingStore :
         ValidateKey(stageKey, nameof(stageKey));
         ValidateKey(sceneId);
         ArgumentNullException.ThrowIfNull(scene);
+        await StageCoreDocumentAsync(stageKey, sceneId, scene, facts: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public ValueTask StageAsync(
+        string stageKey,
+        string sceneId,
+        VisibleScene scene,
+        CaptureProjectedSceneStageFacts facts,
+        CancellationToken cancellationToken)
+        => StageCoreDocumentAsync(stageKey, sceneId, scene, facts ?? throw new ArgumentNullException(nameof(facts)), cancellationToken);
+
+    private async ValueTask StageCoreDocumentAsync(
+        string stageKey,
+        string sceneId,
+        VisibleScene scene,
+        CaptureProjectedSceneStageFacts? facts,
+        CancellationToken cancellationToken)
+    {
+        ValidateKey(stageKey, nameof(stageKey));
+        ValidateKey(sceneId);
+        ArgumentNullException.ThrowIfNull(scene);
+        if (facts is not null)
+        {
+            ValidateKey(facts.RigProfileSha256, nameof(facts));
+            ValidateKey(facts.StageSceneIdentitySha256, nameof(facts));
+            ArgumentNullException.ThrowIfNull(facts.Layout);
+            if (!Enum.IsDefined(facts.IntendedKind)) throw new ArgumentOutOfRangeException(nameof(facts));
+        }
         var projected = ProjectedSceneJson.Create(
-            ProjectedSceneKind.VirtualRenderAuthoritative,
+            facts?.IntendedKind ?? ProjectedSceneKind.VirtualRenderAuthoritative,
             scene,
             ProjectedSceneImageTransformV1.Identity(scene.Request.Projection.WidthPixels, scene.Request.Projection.HeightPixels),
             ValidationSource,
@@ -121,7 +165,8 @@ internal sealed class ProjectedSceneStagingStore :
             StagedProjectedSceneDocument.CurrentSchemaVersion, string.Empty, stageKey, sceneId, projected.EffectiveUtc,
             projected.Observer, projected.Catalog, projected.Selection, projected.Projection, projected.ImageTransform,
             projected.HorizonPolicy, projected.Refraction, projected.AstronomyAlgorithmVersion,
-            projected.ConstellationTopology, projected.EphemerisModelVersion, projected.Objects, projected.Segments);
+            projected.ConstellationTopology, projected.EphemerisModelVersion, projected.Objects, projected.Segments,
+            facts?.RigProfileSha256, facts?.Layout, facts?.IntendedKind, facts?.StageSceneIdentitySha256);
         document = document with { StageIdentitySha256 = ComputeIdentity(document) };
         var bytes = Serialize(document);
 
@@ -214,7 +259,7 @@ internal sealed class ProjectedSceneStagingStore :
                 document.StageKey != stageKey ||
                 !string.Equals(document.StageIdentitySha256, ComputeIdentity(document), StringComparison.Ordinal))
                 throw new InvalidDataException("Projected-scene stage identity is invalid.");
-            _ = document.Bind(ValidationSource, ProjectedSceneKind.VirtualRenderAuthoritative);
+            ValidateSemanticIdentity(document);
             return document;
         }
         finally
@@ -418,7 +463,7 @@ internal sealed class ProjectedSceneStagingStore :
                         !bytes.AsSpan().SequenceEqual(Serialize(document)) ||
                         !string.Equals(document.StageIdentitySha256, ComputeIdentity(document), StringComparison.Ordinal))
                         continue;
-                    _ = document.Bind(ValidationSource, ProjectedSceneKind.VirtualRenderAuthoritative);
+                    ValidateSemanticIdentity(document);
                     DeleteEntry(name);
                     deleted++;
                 }
@@ -509,6 +554,16 @@ internal sealed class ProjectedSceneStagingStore :
     private static string ComputeIdentity(StagedProjectedSceneDocument document) =>
         CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(
             document with { StageIdentitySha256 = string.Empty }, SerializerOptions));
+
+    private static void ValidateSemanticIdentity(StagedProjectedSceneDocument document)
+    {
+        var semantic = document.Bind(
+            ValidationSource,
+            document.IntendedKind ?? ProjectedSceneKind.VirtualRenderAuthoritative);
+        if (document.StageSceneIdentitySha256 is { } identity &&
+            !string.Equals(identity, semantic.SceneIdentitySha256, StringComparison.Ordinal))
+            throw new InvalidDataException("Projected-scene stage semantic identity is invalid.");
+    }
 
     private string GetPath(string stageKey) => Path.Combine(_root, $"{stageKey}.json");
 

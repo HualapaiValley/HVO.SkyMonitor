@@ -61,6 +61,9 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2075, Level = LogLevel.Warning, Message = "Projected-scene stage reconciliation pass failed")]
     public static partial void ProjectedSceneStageReconciliationFailed(this ILogger logger, Exception exception);
 
+    [LoggerMessage(EventId = 2078, Level = LogLevel.Warning, Message = "Optional capture projected-scene staging is unavailable with reason {Reason}")]
+    public static partial void ProjectedSceneStagingUnavailable(this ILogger logger, string reason);
+
     [LoggerMessage(EventId = 2076, Level = LogLevel.Information, Message = "Derived-product reconciliation completed: inspected {InspectedCount}, available {AvailableCount}, recoverable {RecoverableCount}, cleaned {CleanedCount}, missing {MissingCount}, quarantined {QuarantinedCount}, quarantine bytes {QuarantineBytes}")]
     public static partial void DerivedProductReconciliationCompleted(this ILogger logger, int inspectedCount, int availableCount, int recoverableCount, int cleanedCount, int missingCount, int quarantinedCount, long quarantineBytes);
 

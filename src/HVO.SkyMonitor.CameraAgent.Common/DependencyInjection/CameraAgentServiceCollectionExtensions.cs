@@ -140,6 +140,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IProjectedSceneStagingStore>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
         services.AddSingleton<IProjectedSceneStagingReader>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
         services.AddSingleton<IProjectedSceneStagingReconciler>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
+        services.AddSingleton<CaptureProjectedSceneStager>();
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
         services.AddSingleton<IAnnotationSceneProvider>(provider => new AnnotationSceneProvider(
             () => provider.GetService<ICelestialCatalog>(),

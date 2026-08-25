@@ -38,14 +38,16 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "7A6869542F282F1EAF0F461B58E5BCCE046292BA415C1BF3A3B6C767D71B2653",
+            "24A57E88DA4712FEE22C0D2B66E3CB9546856699F05BDDB14523176D340D656D",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(
-            "2453844C3A527CDF894FE128C0B7C81572315A217AFB4A46464DFED0A2F69EED",
+            "169E7A7E9FE718CABFBB82E51DFA734EF0D480EBAD26DB08DAA59FAAF259CC57",
+            preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "F96FD92667C1F4CA129C8138B0B7C3F2334D5945F1E368EAE8C0C289F9711226",
+            "2B3DC2E3635A05157ECC58D32422EAF480DB9B2BD5DD19A64BC69E9B1CAED034",
+            preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(11, preview.EffectiveNodes);
         Assert.AreEqual(TimeSpan.FromSeconds(5), configuration.Rig.Pipeline.NightExposure);
@@ -80,7 +82,8 @@ public sealed class StandaloneW6ProfileTests
             "A5F687646DFBC2BFE5716E45AA2ED9028901EAE940D2A9FC8EC70F98C283512D",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "DBA167BAF1AAF12FDEBF9BAC029D72BBE0943CAE0AB00C9BB187D70DB0A78FEF",
+            "45E1EE6DC3F571BF60FDAB460ADFD153758CF822AC0D54D5061EEEF2C538ABC8",
+            preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(4, preview.EffectiveNodes);
         Assert.IsFalse(preview.EffectiveNodes.Any(static node =>
@@ -90,6 +93,57 @@ public sealed class StandaloneW6ProfileTests
         Assert.AreEqual(120, layout.Height);
         Assert.AreEqual(CameraPixelFormat.Mono8, layout.PixelFormat);
         Assert.AreEqual(19_200L, layout.ByteLength);
+    }
+
+    [TestMethod]
+    public async Task AnnotationRequiringProjectedSceneRejectsMissingMetadataDependency()
+    {
+        var configuration = await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false);
+        var steps = configuration.Pipeline!.Steps.Select(step => step.Id == "sky-annotation"
+            ? step with { DependsOn = ["combined-preview"] }
+            : step).ToArray();
+        using var provider = CreateProvider();
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(
+                configuration with { Pipeline = configuration.Pipeline with { Steps = steps } }));
+
+        StringAssert.Contains(exception.Message, "required compound inputs", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task AnnotationRequiringProjectedSceneRejectsWrongMetadataRecipe()
+    {
+        var configuration = await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false);
+        var steps = configuration.Pipeline!.Steps.Select(step => step.Id == "sky-annotation"
+            ? step with { DependsOn = ["combined-preview", "quality"] }
+            : step).ToArray();
+        using var provider = CreateProvider();
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(
+                configuration with { Pipeline = configuration.Pipeline with { Steps = steps } }));
+
+        StringAssert.Contains(exception.Message, "required compound inputs", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task AnnotationRequiringProjectedSceneRejectsDuplicateSceneProducers()
+    {
+        var configuration = await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false);
+        var projected = configuration.Pipeline!.Steps.Single(step => step.Id == "projected-scene");
+        var steps = configuration.Pipeline.Steps
+            .Append(projected with { Id = "projected-scene-copy", Order = projected.Order + 1 })
+            .Select(step => step.Id == "sky-annotation"
+                ? step with { DependsOn = ["combined-preview", "projected-scene", "projected-scene-copy"] }
+                : step).ToArray();
+        using var provider = CreateProvider();
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(
+                configuration with { Pipeline = configuration.Pipeline with { Steps = steps } }));
+
+        StringAssert.Contains(exception.Message, "required compound inputs", StringComparison.Ordinal);
     }
 
     private static async Task<CameraModuleConfig> LoadAsync(string fileName)

@@ -1,5 +1,12 @@
+using System.Diagnostics;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Data.Sqlite;
 
@@ -9,6 +16,42 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [DoNotParallelize]
 public sealed class DerivedProductReconcilerTests
 {
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task RunOnceAsync_EmitsSafeSuccessAndFailureActivities()
+    {
+        var successRoot = CreateRoot();
+        var failurePath = Path.Combine(CreateRoot(), "not-a-directory");
+        await File.WriteAllTextAsync(failurePath, "failure").ConfigureAwait(false);
+        var stopped = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == CaptureProcessingTelemetry.ActivitySourceName,
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = stopped.Add
+        };
+        ActivitySource.AddActivityListener(listener);
+        try
+        {
+            await CreateReconciliationService(successRoot).RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            await CreateReconciliationService(failurePath).RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+            var activities = stopped.Where(activity => activity.OperationName == "processing-artifact.reconcile").ToArray();
+            Assert.HasCount(2, activities);
+            Assert.AreEqual(ActivityStatusCode.Ok, activities[0].Status);
+            Assert.AreEqual(ActivityStatusCode.Error, activities[1].Status);
+            Assert.AreEqual("reconciliation-failed", activities[1].StatusDescription);
+            Assert.AreEqual("DirectoryNotFoundException", activities[1].GetTagItem("error.type"));
+            Assert.IsFalse(activities.SelectMany(static activity => activity.TagObjects).Any(static tag =>
+                tag.Key is "path" or "capture_id" or "artifact_id" or "exception" or "payload"));
+        }
+        finally
+        {
+            Directory.Delete(successRoot, recursive: true);
+            Directory.Delete(Path.GetDirectoryName(failurePath)!, recursive: true);
+        }
+    }
+
     [TestMethod]
     [TestCategory("Unit")]
     public async Task RunAsync_CleansTemporaryEvidenceAndQuarantinesPayloadOnlyIdempotently()
@@ -221,5 +264,24 @@ public sealed class DerivedProductReconcilerTests
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-derived-reconciliation", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         return root;
+    }
+
+    private static DerivedProductReconciliationService CreateReconciliationService(string root)
+    {
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["CameraAgent:RawIngressRoot"] = root
+        }).Build());
+        var provider = services.BuildServiceProvider();
+        return new DerivedProductReconciliationService(
+            options,
+            provider.GetRequiredService<SqliteCaptureProcessingStore>(),
+            provider.GetRequiredService<CaptureProcessingTelemetry>(),
+            provider.GetRequiredService<CaptureProcessingState>(),
+            provider.GetRequiredService<CaptureDistributionService>(),
+            NullLogger<DerivedProductReconciliationService>.Instance);
     }
 }

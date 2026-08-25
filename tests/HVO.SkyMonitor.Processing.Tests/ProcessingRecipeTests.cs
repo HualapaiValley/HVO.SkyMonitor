@@ -507,6 +507,38 @@ public sealed class ProcessingRecipeTests
         Assert.IsTrue(outcome.Products[0].Algorithms.Any(item => item.Name == "jpeg-decode"));
         Assert.AreEqual(8, JpegImageCodec.DecodeJpeg(outcome.Products[0].Payload).Width);
 
+        var sceneArtifact = previewArtifact with
+        {
+            ArtifactId = Guid.Parse("30000000-0000-0000-0000-000000000001"),
+            Role = FrameArtifactRole.Metadata,
+            Variant = "projected-scene-v1",
+            RecipeIdentitySha256 = new string('C', 64),
+            MediaType = "application/json",
+            Layout = null,
+            Payload = "{}"u8.ToArray()
+        };
+        var sceneAuxiliary = new ProcessingAuxiliaryInput(
+            "projected-scene", ProcessingAuxiliaryInputKind.Artifact,
+            ProcessingInputSelector.RecipeResult(
+                sceneArtifact.Role, sceneArtifact.Variant, sceneArtifact.RecipeIdentitySha256),
+            ArtifactId: sceneArtifact.ArtifactId);
+        var withScene = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.Annotation,
+            EmptyOptions(),
+            ProcessingInputSelector.RecipeResult(
+                FrameArtifactRole.Preview, previewProduct.Variant, previewProduct.Recipe.IdentitySha256),
+            [previewArtifact, sceneArtifact],
+            "stars",
+            annotation,
+            AuxiliaryInputs: [sceneAuxiliary],
+            InputArtifactId: previewArtifact.ArtifactId)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, withScene.Status);
+        CollectionAssert.AreEqual(
+            new[] { previewArtifact.ArtifactId, sceneArtifact.ArtifactId },
+            withScene.Products[0].SourceArtifactIds.ToArray());
+        Assert.AreNotEqual(outcome.Products[0].Recipe.IdentitySha256, withScene.Products[0].Recipe.IdentitySha256);
+        Assert.AreNotEqual(outcome.Products[0].OutputIdentitySha256, withScene.Products[0].OutputIdentitySha256);
+
         var metadata = new MetadataCornerOverlay(["identity"], ["schedule"], ["environment"], ["provenance"]);
         var metadataOutcome = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.Annotation,

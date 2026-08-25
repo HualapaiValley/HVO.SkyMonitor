@@ -2,7 +2,6 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Processing;
 
@@ -13,16 +12,11 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     ProjectedSceneCaptureProcessingStepOptions options,
     IProjectedSceneStagingStore stagingStore,
     IProjectedSceneStagingReader stagingReader,
-    CameraAgentRecipeExecutionAdapter adapter,
-    IServiceProvider serviceProvider,
-    ICelestialCatalog? catalog = null,
-    IConstellationTopology? topology = null,
-    IPlanetEphemeris? ephemeris = null)
+    CameraAgentRecipeExecutionAdapter adapter)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
       IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit
 {
     private const string StageInputName = "virtual-render-scene";
-    private const string PredictionInputName = "predicted-scene-facts";
 
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.ProjectedScene;
@@ -48,18 +42,13 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, descriptorSha256);
         ProjectedSceneV1? scene;
         var provenance = context.SceneProvenance;
-        if (string.Equals(descriptor.Artifact.SourceId, "VirtualSky", StringComparison.Ordinal))
-        {
-            if (provenance is not
-                {
-                    ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
-                    ProjectedSceneStageKey: { Length: 64 } stageKey,
-                    SceneId: { Length: 64 } sceneId
-                })
+        if (provenance is
             {
-                context.AddProcessingOutcome(ProcessingOutcome.Skipped(ProcessingReasonCodes.MissingProjectedScene));
-                return;
-            }
+                ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
+                ProjectedSceneStageKey: { Length: 64 } stageKey,
+                SceneId: { Length: 64 } sceneId
+            })
+        {
             var staged = await stagingReader.ReadAsync(stageKey, cancellationToken).ConfigureAwait(false);
             if (staged is null)
             {
@@ -68,20 +57,25 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             }
             if (!string.Equals(staged.SceneId, sceneId, StringComparison.Ordinal))
                 throw new InvalidDataException("Projected-scene stage does not match capture scene evidence.");
-            scene = staged.Bind(source, ProjectedSceneKind.VirtualRenderAuthoritative);
+            if (staged.StageSceneIdentitySha256 is { } stagedIdentity &&
+                !string.Equals(stagedIdentity, provenance.ProjectedSceneStageIdentitySha256, StringComparison.Ordinal))
+                throw new InvalidDataException("Projected-scene stage semantic identity does not match capture evidence.");
+            if (staged.Layout is { } layout && staged.Layout != descriptor.Layout ||
+                staged.RigProfileSha256 is { } rigSha256 && !string.Equals(
+                    rigSha256, descriptor.Profiles.Rig.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Projected-scene stage does not match capture layout or rig evidence.");
+            var kind = staged.IntendedKind ??
+                (string.Equals(descriptor.Artifact.SourceId, "VirtualSky", StringComparison.Ordinal)
+                    ? ProjectedSceneKind.VirtualRenderAuthoritative
+                    : ProjectedSceneKind.Predicted);
+            scene = staged.Bind(source, kind);
             context.RecordCanonicalInput(StageInputName, StagedProjectedSceneDocument.CurrentSchemaVersion,
                 staged.StageIdentitySha256);
         }
         else
         {
-            scene = await BuildPredictedAsync(context.Config, descriptor, source, cancellationToken).ConfigureAwait(false);
-            if (scene is null)
-            {
-                context.AddProcessingOutcome(ProcessingOutcome.Skipped(ProcessingReasonCodes.MissingProjectedScene));
-                return;
-            }
-            context.RecordCanonicalInput(PredictionInputName, "projected-scene-prediction-facts-v1",
-                scene.SceneIdentitySha256);
+            context.AddProcessingOutcome(ProcessingOutcome.Skipped(ProcessingReasonCodes.MissingProjectedScene));
+            return;
         }
 
         var payload = ProjectedSceneJson.Serialize(scene);
@@ -123,50 +117,6 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
         await stagingStore.DeleteCompletedAsync(stageKey, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<ProjectedSceneV1?> BuildPredictedAsync(
-        CameraModuleConfig config,
-        ReconstructionDescriptor descriptor,
-        ProjectedSceneSource source,
-        CancellationToken cancellationToken)
-    {
-        if (descriptor.Location is not { } location || config.DeploymentLocationRedacted is false ||
-            !string.Equals(CameraRigProfileIdentity.ComputeSha256(config.Rig), descriptor.Profiles.Rig.Sha256,
-                StringComparison.OrdinalIgnoreCase))
-            return null;
-        var locationStore = serviceProvider.GetService(typeof(IDeploymentLocationStore)) as IDeploymentLocationStore;
-        if (locationStore is null) return null;
-        DeploymentLocationSnapshot resolved;
-        try
-        {
-            resolved = locationStore.Resolve(location, descriptor.Timing.ExposureStartedUtc);
-        }
-        catch (InvalidOperationException)
-        {
-            return null;
-        }
-        var projection = RigProjectionContextFactory.Create(config.Rig);
-        if (projection.WidthPixels != descriptor.Layout.Width || projection.HeightPixels != descriptor.Layout.Height)
-            return null;
-        var effectiveUtc = descriptor.Timing.ExposureStartedUtc + TimeSpan.FromTicks(descriptor.Controls.EffectiveExposure.Ticks / 2);
-        if (catalog is null) return null;
-        var metadata = (catalog as ICelestialCatalogMetadataSource)?.Metadata;
-        if (metadata is null) return null;
-        var request = new VisibleSceneRequest(
-            effectiveUtc, new ObserverLocation(resolved.LatitudeDegrees, resolved.LongitudeDegrees, resolved.ElevationMeters),
-            projection, new CatalogQuery(Options.MaximumMagnitude, Options.MaximumResults), metadata,
-            horizonPolicy: HorizonPolicy.GeometricHorizon,
-            projectionVersion: config.Rig.Optics.CalibrationVersion,
-            algorithmVersion: Options.AstronomyAlgorithmVersion,
-            constellationIds: Options.ConstellationIds,
-            solarSystemBodies: Options.SolarSystemBodies,
-            includeConstellationEndpointStars: Options.IncludeConstellationEndpointStars);
-        var visible = await new VisibleSceneBuilder(catalog, topology, ephemeris)
-            .BuildAsync(request, cancellationToken).ConfigureAwait(false);
-        return ProjectedSceneJson.Create(
-            ProjectedSceneKind.Predicted, visible,
-            ProjectedSceneImageTransformV1.Identity(descriptor.Layout.Width, descriptor.Layout.Height), source,
-            config.Rig.Optics.CalibrationVersion, config.Rig.Optics.CalibrationVersion);
-    }
 }
 
 internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableObject

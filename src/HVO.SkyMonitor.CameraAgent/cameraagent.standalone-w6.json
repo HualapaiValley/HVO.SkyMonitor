@@ -306,7 +306,7 @@
         "id": "sky-annotation",
         "type": "Annotation",
         "order": 70,
-        "dependsOn": [ "combined-preview" ],
+        "dependsOn": [ "combined-preview", "projected-scene" ],
         "options": {
           "markRadius": 6,
           "markerValue": 144,
@@ -324,6 +324,7 @@
           "drawImageCircle": true,
           "drawCardinalDirections": true,
           "drawMetadataCorners": true,
+          "requireProjectedSceneDependency": true,
           "topLeftTokens": [ "agent-identity", "capture-sequence", "utc" ],
           "topRightTokens": [ "schedule-profile", "exposure", "cadence", "gain", "offset", "sensor-setpoint" ],
           "bottomLeftTokens": [ "environment" ],

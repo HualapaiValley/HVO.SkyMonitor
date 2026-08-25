@@ -1,3 +1,4 @@
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -19,6 +20,121 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [DoNotParallelize]
 public sealed class ProjectedSceneCaptureProcessingStepTests
 {
+    [TestMethod]
+    public async Task PhysicalCaptureStagesOnceBeforeRawIdentityAndPreservesPayload()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var location = DeploymentLocationSnapshot.Create(
+                "capture-location", 1, "test", null, DateTimeOffset.UnixEpoch, null, 35, -115, 1200, "UTC");
+            var config = CreateConfig() with
+            {
+                Module = new CameraModuleDescriptor("PhysicalCamera"),
+                DeploymentLocation = location,
+                ProcessingSteps =
+                [
+                    new CaptureProcessingStepConfig("ProjectedScene", Options: JsonSerializer.SerializeToElement(
+                        new ProjectedSceneCaptureProcessingStepOptions()))
+                ]
+            };
+            var catalog = new MetadataCatalog([new CelestialCatalogObject("star", "Star", 0, 0, 1)]);
+            var stager = new CaptureProjectedSceneStager(staging, catalog);
+            var payload = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+            var layout = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, payload).Descriptor.Layout;
+            var startedUtc = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+            var frame = new CameraFrame(
+                startedUtc, 2, 2, CameraPixelFormat.Mono16, payload,
+                new FrameMetadata(TimeSpan.FromSeconds(2), 1, 0, "PhysicalCamera"), 4)
+            {
+                Layout = layout
+            };
+            var result = new CaptureResult(
+                frame, new CaptureSetpoint(TimeSpan.FromSeconds(2), 1, null, null),
+                TimeSpan.Zero, CaptureMode.Still, false)
+            {
+                AcquisitionTiming = new CaptureAcquisitionTiming(
+                    startedUtc, startedUtc.AddSeconds(4), startedUtc.AddSeconds(4.1))
+            };
+            var submission = new CaptureLoopSubmission(
+                new CaptureRequest(startedUtc, TimeSpan.FromSeconds(5), CaptureMode.Still),
+                result, startedUtc, TimeSpan.FromSeconds(5), TimeSpan.Zero);
+
+            var staged = await stager.StageAsync(config, submission, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(1, catalog.QueryCount);
+            CollectionAssert.AreEqual(payload, staged.Result.Frame!.PixelData.ToArray());
+            var provenance = staged.Result.Frame.Metadata.Scene;
+            Assert.IsNotNull(provenance);
+            Assert.AreEqual(StagedProjectedSceneDocument.CurrentSchemaVersion, provenance.ProjectedSceneStageSchemaVersion);
+            Assert.HasCount(64, provenance.ProjectedSceneStageKey!);
+            Assert.AreEqual(provenance.ProjectedSceneStageKey, provenance.SceneId);
+            Assert.AreNotEqual(provenance.SceneId, provenance.ProjectedSceneStageIdentitySha256);
+            var document = await staging.ReadAsync(provenance.ProjectedSceneStageKey!, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(document);
+            Assert.AreEqual(startedUtc.AddSeconds(2), document.EffectiveUtc);
+            Assert.AreEqual(CameraRigProfileIdentity.ComputeSha256(config.Rig), document.RigProfileSha256);
+            Assert.AreEqual(layout, document.Layout);
+            Assert.AreEqual(ProjectedSceneKind.Predicted, document.IntendedKind);
+            Assert.AreEqual(provenance.ProjectedSceneStageIdentitySha256, document.StageSceneIdentitySha256);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task PhysicalCaptureWithReversedAcquisitionTimingDoesNotStage()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var location = DeploymentLocationSnapshot.Create(
+                "capture-location", 1, "test", null, DateTimeOffset.UnixEpoch, null, 35, -115, 1200, "UTC");
+            var config = CreateConfig() with
+            {
+                Module = new CameraModuleDescriptor("PhysicalCamera"),
+                DeploymentLocation = location,
+                ProcessingSteps = [new CaptureProcessingStepConfig("ProjectedScene")]
+            };
+            var catalog = new MetadataCatalog([new CelestialCatalogObject("star", "Star", 0, 0, 1)]);
+            var stager = new CaptureProjectedSceneStager(staging, catalog);
+            var startedUtc = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+            var layout = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor.Layout;
+            var frame = new CameraFrame(
+                startedUtc, 2, 2, CameraPixelFormat.Mono16, new byte[8],
+                new FrameMetadata(TimeSpan.FromSeconds(2), 1, 0, "PhysicalCamera"), 4)
+            {
+                Layout = layout
+            };
+            var result = new CaptureResult(
+                frame, new CaptureSetpoint(TimeSpan.FromSeconds(2), 1, null, null),
+                TimeSpan.Zero, CaptureMode.Still, false)
+            {
+                AcquisitionTiming = new CaptureAcquisitionTiming(
+                    startedUtc, startedUtc.AddSeconds(-1), startedUtc.AddSeconds(1))
+            };
+            var submission = new CaptureLoopSubmission(
+                new CaptureRequest(startedUtc, TimeSpan.FromSeconds(5), CaptureMode.Still),
+                result, startedUtc, TimeSpan.FromSeconds(5), TimeSpan.Zero);
+
+            var unstaged = await stager.StageAsync(config, submission, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNull(unstaged.Result.Frame!.Metadata.Scene);
+            Assert.AreEqual(0, catalog.QueryCount);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     public async Task VirtualStageProducesAuthoritativeSourceBoundMetadataWithoutRawRead()
     {
@@ -167,15 +283,35 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 DeploymentLocationRedacted = true,
                 Observatory = new ObservatoryLocation(0, 0, 0, "UTC")
             };
-            var fixture = CreatePhysicalContext(root, config, location);
-            File.Delete(fixture.PayloadPath);
             var catalog = new MetadataCatalog([
                 new CelestialCatalogObject("star", "Star", 0, 0, 1)
             ]);
-            var services = new ServiceCollection()
-                .AddSingleton<IDeploymentLocationStore>(new FixedLocationStore(location))
-                .BuildServiceProvider();
-            var step = CreateStep(staging, services, catalog);
+            var effectiveUtc = new DateTimeOffset(2026, 1, 2, 3, 4, 6, TimeSpan.Zero) + TimeSpan.FromSeconds(4);
+            var scene = await new VisibleSceneBuilder(catalog).BuildAsync(new VisibleSceneRequest(
+                effectiveUtc,
+                new ObserverLocation(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters),
+                RigProjectionContextFactory.Create(config.Rig),
+                new CatalogQuery(6.5, 2000),
+                catalog.Metadata,
+                projectionVersion: config.Rig.Optics.CalibrationVersion,
+                algorithmVersion: "visible-scene-iau1976-constellation-v2")).ConfigureAwait(false);
+            var stageKey = new string('6', 64);
+            var sceneId = new string('E', 64);
+            await staging.StageAsync(stageKey, sceneId, scene, CancellationToken.None).ConfigureAwait(false);
+            var changedConfig = config with
+            {
+                Observatory = new ObservatoryLocation(-45, 90, 0, "UTC"),
+                ProcessingSteps = []
+            };
+            var fixture = CreatePhysicalContext(root, config, location, new SceneProvenance(
+                sceneId, config.Rig.ProfileVersion, catalog.Metadata.Name, catalog.Metadata.Version,
+                catalog.Metadata.Checksum, config.Rig.Optics.ProjectionModel,
+                RigProjectionContextFactory.AlgorithmVersion, scene.Request.AlgorithmVersion,
+                config.Rig.Sensor.SensorRecipeVersion,
+                ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
+                ProjectedSceneStageKey: stageKey), changedConfig);
+            File.Delete(fixture.PayloadPath);
+            var step = CreateStep(staging);
 
             await step.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
 
@@ -191,6 +327,103 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             Assert.AreEqual(location.LatitudeDegrees, parsed.Scene.Observer.LatitudeDegrees);
             Assert.AreEqual(location.LongitudeDegrees, parsed.Scene.Observer.LongitudeDegrees);
             Assert.AreEqual(config.Rig.Optics.CalibrationVersion, parsed.Scene.Projection.CalibrationVersion);
+            Assert.AreNotEqual(fixture.Context.RawCapture!.Manifest.Scene!.SceneId, parsed.Scene.SceneIdentitySha256);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task PhysicalStageProjectedProductAndAnnotationCalculateSceneExactlyOnceWithExactLineage()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var location = DeploymentLocationSnapshot.Create(
+                "capture-location", 1, "test", null, DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC");
+            var config = CreateConfig() with
+            {
+                Module = new CameraModuleDescriptor("PhysicalCamera"),
+                DeploymentLocation = location,
+                ProcessingSteps =
+                [
+                    new CaptureProcessingStepConfig("ProjectedScene", Options: JsonSerializer.SerializeToElement(
+                        new ProjectedSceneCaptureProcessingStepOptions()))
+                ]
+            };
+            var startedUtc = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+            var midpoint = startedUtc.AddSeconds(1);
+            var rightAscensionHours = AstronomyTime.LocalMeanSiderealDegrees(midpoint, 0) / 15;
+            var catalog = new MetadataCatalog([
+                new CelestialCatalogObject("zenith", "Zenith", rightAscensionHours, 0, 0)
+            ]);
+            var layout = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor.Layout;
+            var captureFrame = new CameraFrame(
+                startedUtc, 2, 2, CameraPixelFormat.Mono16, new byte[8],
+                new FrameMetadata(TimeSpan.FromSeconds(2), 1, 0, "PhysicalCamera"), 4)
+            {
+                Layout = layout
+            };
+            var captureResult = new CaptureResult(
+                captureFrame, new CaptureSetpoint(TimeSpan.FromSeconds(2), 1, null, null),
+                TimeSpan.Zero, CaptureMode.Still, false)
+            {
+                AcquisitionTiming = new CaptureAcquisitionTiming(
+                    startedUtc, startedUtc.AddSeconds(2), startedUtc.AddSeconds(2.1))
+            };
+            var stagedSubmission = await new CaptureProjectedSceneStager(staging, catalog).StageAsync(
+                config,
+                new CaptureLoopSubmission(
+                    new CaptureRequest(startedUtc, TimeSpan.FromSeconds(5), CaptureMode.Still),
+                    captureResult, startedUtc, TimeSpan.FromSeconds(5), TimeSpan.Zero),
+                CancellationToken.None).ConfigureAwait(false);
+            var fixture = CreatePhysicalContext(
+                root, config, location, stagedSubmission.Result.Frame!.Metadata.Scene!);
+            File.Delete(fixture.PayloadPath);
+            fixture.Context.BeginNode("projected-scene", ["$raw"]);
+            var projectedStep = CreateStep(staging);
+
+            await projectedStep.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+
+            var sceneProduct = fixture.Context.ProcessingOutcomes.Single().Products.Single();
+            fixture.Context.RegisterProcessingProduct(sceneProduct);
+            fixture.Context.BeginNode("preview", ["$raw"]);
+            var previewFrame = new CameraFrame(
+                startedUtc, 2, 2, CameraPixelFormat.Mono8, new byte[4],
+                new FrameMetadata(TimeSpan.FromSeconds(2), 1, 0), 2);
+            var previewArtifact = fixture.Context.AddDerivative(
+                FrameArtifactRole.Preview, previewFrame, "preview-v1",
+                [fixture.Descriptor.Artifact.ArtifactId]);
+            fixture.Context.BeginNode("annotation", ["preview", "projected-scene"]);
+            var annotation = new AnnotationCaptureProcessingStep(
+                new CaptureProcessingStepMetadata("annotation", "Annotation", 70),
+                new AnnotationProcessingStepOptions
+                {
+                    RequireProjectedSceneDependency = true,
+                    DrawLabels = false,
+                    DrawConstellationLines = false,
+                    MarkRadius = 0
+                },
+                new ProjectedSceneStore(), new FailingAnnotationSceneProvider(),
+                new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()));
+
+            await annotation.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(1, catalog.QueryCount);
+            var annotationProduct = fixture.Context.ProcessingProducts.Single(
+                product => product.Role == FrameArtifactRole.AnnotatedPreview);
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    previewArtifact.ArtifactId,
+                    CaptureProcessingContext.CreateArtifactId(sceneProduct.OutputIdentitySha256)
+                },
+                annotationProduct.SourceArtifactIds.ToArray());
+            Assert.IsTrue(annotationProduct.Payload.Span.Contains((byte)144));
         }
         finally
         {
@@ -200,15 +433,12 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
 
     private static ProjectedSceneCaptureProcessingStep CreateStep(
         ProjectedSceneStagingStore staging,
-        IServiceProvider? services = null,
-        ICelestialCatalog? catalog = null,
         IProjectedSceneStagingStore? stagingStore = null)
     {
         return new ProjectedSceneCaptureProcessingStep(
             new CaptureProcessingStepMetadata("projected-scene", "ProjectedScene", 0),
             new ProjectedSceneCaptureProcessingStepOptions(), stagingStore ?? staging, staging,
-            new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()),
-            services ?? new ServiceCollection().BuildServiceProvider(), catalog);
+            new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()));
     }
 
     private static (CaptureProcessingContext Context, ReconstructionDescriptor Descriptor, string PayloadPath) CreateContext(
@@ -250,7 +480,12 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 TimeSpan.FromSeconds(1), 1, 1)));
 
     private static (CaptureProcessingContext Context, ReconstructionDescriptor Descriptor, string PayloadPath)
-        CreatePhysicalContext(string root, CameraModuleConfig config, DeploymentLocationSnapshot location)
+        CreatePhysicalContext(
+            string root,
+            CameraModuleConfig config,
+            DeploymentLocationSnapshot location,
+            SceneProvenance provenance,
+            CameraModuleConfig? contextConfig = null)
     {
         var payload = new byte[8];
         var original = ReconstructableCaptureContractTests.CreateManifest(
@@ -265,7 +500,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             Artifact = original.Descriptor.Artifact with { SourceId = "PhysicalCamera" },
             Location = location.ToProvenance()
         };
-        var manifest = original with { Descriptor = descriptor, Scene = null };
+        var manifest = original with { Descriptor = descriptor, Scene = provenance };
         var payloadPath = Path.Combine(root, "physical-raw.bin");
         File.WriteAllBytes(payloadPath, payload);
         var receipt = new RawCaptureReceipt(
@@ -278,7 +513,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             request, new CaptureResult(null, new CaptureSetpoint(TimeSpan.FromSeconds(8), 1, null, null),
                 TimeSpan.Zero, CaptureMode.Still, false), descriptor.Timing.RequestedStartUtc,
             TimeSpan.FromSeconds(1), TimeSpan.Zero);
-        return (new CaptureProcessingContext(config, submission, receipt), descriptor, payloadPath);
+        return (new CaptureProcessingContext(contextConfig ?? config, submission, receipt), descriptor, payloadPath);
     }
 
     private static ValueTask<VisibleScene> CreateSceneAsync() =>
@@ -309,24 +544,21 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         public CatalogMetadata Metadata { get; } = new(
             "test", "1", new Uri("https://example.invalid"), new string('0', 64), "test", "1");
 
-        public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query) => _inner.Query(query);
+        public int QueryCount { get; private set; }
+
+        public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query)
+        {
+            QueryCount++;
+            return _inner.Query(query);
+        }
 
         public ValueTask<IReadOnlyList<CelestialCatalogObject>> QueryCandidatesAsync(
             CatalogCandidateQuery query,
-            CancellationToken cancellationToken = default) => _inner.QueryCandidatesAsync(query, cancellationToken);
-    }
-
-    private sealed class FixedLocationStore(DeploymentLocationSnapshot location) : IDeploymentLocationStore
-    {
-        public DeploymentLocationSnapshot? Active => location;
-
-        public ValueTask<DeploymentLocationSnapshot> InitializeAsync(
-            DeploymentLocationSeed seed,
-            CancellationToken cancellationToken) => ValueTask.FromResult(location);
-
-        public DeploymentLocationSnapshot Resolve(
-            CaptureLocationProvenance provenance,
-            DateTimeOffset? effectiveUtc = null) => location;
+            CancellationToken cancellationToken = default)
+        {
+            QueryCount++;
+            return _inner.QueryCandidatesAsync(query, cancellationToken);
+        }
     }
 
     private sealed class DeleteCompletedFailingStore(ProjectedSceneStagingStore inner) : IProjectedSceneStagingStore
@@ -342,5 +574,17 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
 
         public ValueTask DeleteCompletedAsync(string stageKey, CancellationToken cancellationToken)
             => ValueTask.FromException(new IOException("delete-completed-failure"));
+    }
+
+    private sealed class FailingAnnotationSceneProvider : IAnnotationSceneProvider
+    {
+        public ValueTask<AnnotationSceneResult> BuildAsync(
+            CameraModuleConfig config,
+            ReconstructionDescriptor? descriptor,
+            CameraFrame rawFrame,
+            IReadOnlyList<string> constellationIds,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<AnnotationSceneResult>(new AssertFailedException(
+                "Annotation must not recalculate a declared projected-scene dependency."));
     }
 }

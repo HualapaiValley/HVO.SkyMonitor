@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
@@ -30,6 +32,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     private readonly CatalogFixtureInstallation? _catalog;
     private readonly IReadOnlyDictionary<string, string?> _overrides;
     private readonly string? _environmentalSettingsPath;
+    private readonly string _configurationPath;
     private readonly TimeProvider? _timeProvider;
     private readonly ControllableLaneFaultInjector? _laneFaultInjector;
     private readonly ConcurrentQueue<OutboundHttpAttempt> _outboundAttempts = new();
@@ -39,6 +42,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         string root,
         CatalogFixtureInstallation? catalog,
         IReadOnlyDictionary<string, string?> overrides,
+        string configurationPath,
         string? environmentalSettingsPath = null,
         TimeProvider? timeProvider = null,
         ControllableLaneFaultInjector? laneFaultInjector = null)
@@ -46,6 +50,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         _root = root;
         _catalog = catalog;
         _overrides = overrides;
+        _configurationPath = configurationPath;
         _environmentalSettingsPath = environmentalSettingsPath;
         _timeProvider = timeProvider;
         _laneFaultInjector = laneFaultInjector;
@@ -70,7 +75,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     internal static async Task<StandaloneCameraAgentKestrelFixture> CreateAsync(
         bool useSidingSpringLocation = false,
         bool useSyntheticCalibration = false,
-        bool useEnvironmentalAcquisition = false)
+        bool useEnvironmentalAcquisition = false,
+        bool useProjectedScene = false)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -81,7 +87,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         try
         {
             var configPath = Path.Combine(root, "cameraagent.standalone.json");
-            await WriteConfigurationAsync(configPath, root, useSyntheticCalibration).ConfigureAwait(false);
+            await WriteConfigurationAsync(configPath, root, useSyntheticCalibration, useProjectedScene).ConfigureAwait(false);
             var environmentalSettingsPath = useEnvironmentalAcquisition
                 ? Path.Combine(root, "environmental.settings.json")
                 : null;
@@ -126,7 +132,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 overrides["CameraAgent:DeploymentLocation:EffectiveFromUtc"] = "2025-01-01T00:00:00Z";
             }
             var fixture = new StandaloneCameraAgentKestrelFixture(
-                root, catalog, overrides, environmentalSettingsPath);
+                root, catalog, overrides, configPath, environmentalSettingsPath);
             await fixture.StartHostAsync().ConfigureAwait(false);
             await fixture.CompleteOwnerBootstrapForExistingAcceptanceTestsAsync().ConfigureAwait(false);
             return fixture;
@@ -194,6 +200,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                 root,
                 null,
                 overrides,
+                configPath,
                 null,
                 timeProvider,
                 laneFaultInjector);
@@ -212,6 +219,38 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     {
         await StopHostAsync().ConfigureAwait(false);
         await StartHostAsync().ConfigureAwait(false);
+    }
+
+    internal async Task ChangeCurrentProjectedSceneConfigurationAsync()
+    {
+        var configuration = JsonNode.Parse(await File.ReadAllTextAsync(_configurationPath).ConfigureAwait(false))!.AsObject();
+        configuration["module"]!["options"]!["maximumMagnitude"] = 5.75;
+        configuration["pipeline"]!["steps"]!.AsArray()
+            .Select(static node => node!.AsObject())
+            .Single(static step => step["type"]!.GetValue<string>() == "ProjectedScene")
+            ["options"]!["maximumMagnitude"] = 5.75;
+        await File.WriteAllTextAsync(
+            _configurationPath,
+            configuration.ToJsonString(new JsonSerializerOptions { WriteIndented = true })).ConfigureAwait(false);
+        var persisted = JsonNode.Parse(await File.ReadAllTextAsync(_configurationPath).ConfigureAwait(false))!;
+        if (persisted["module"]!["options"]!["maximumMagnitude"]!.GetValue<double>() != 5.75)
+            throw new InvalidDataException("Changed standalone projected-scene configuration was not persisted.");
+        var persistedStep = persisted["pipeline"]!["steps"]!.AsArray()
+            .Select(static node => node!.AsObject())
+            .Single(static step => step["type"]!.GetValue<string>() == "ProjectedScene");
+        if (persistedStep["options"]!["maximumMagnitude"]!.GetValue<double>() != 5.75)
+            throw new InvalidDataException("Changed standalone projected-scene step was not persisted.");
+    }
+
+    internal int ProjectedSceneMemoryCacheCount =>
+        ((ProjectedSceneStore)Services.GetRequiredService<IProjectedSceneStore>()).Count;
+
+    internal async Task<double> ReadLoadedMaximumMagnitudeAsync()
+    {
+        var config = await Services.GetRequiredService<ICameraAgentConfigurationLoader>()
+            .LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        return config.ResolveProcessingSteps().Single(static step => step.Type == "ProjectedScene")
+            .Options!.Value.GetProperty("maximumMagnitude").GetDouble();
     }
 
     private async Task CompleteOwnerBootstrapForExistingAcceptanceTestsAsync()
@@ -316,6 +355,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         _host = null;
         await host.DisposeAsync().ConfigureAwait(false);
     }
+
+    internal Task StopAsync() => StopHostAsync();
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "HttpClient takes ownership of its handler and the caller owns the returned client.")]
     internal async Task<HttpClient> CreateOwnerClientAsync()
@@ -453,7 +494,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     private static async Task WriteConfigurationAsync(
         string configPath,
         string root,
-        bool useSyntheticCalibration)
+        bool useSyntheticCalibration,
+        bool useProjectedScene)
     {
         var template = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "cameraagent.integration.json")).ConfigureAwait(false);
@@ -474,6 +516,43 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         foreach (var policy in options["policies"]!.AsArray())
         {
             policy!.AsObject()["queueForUpload"] = true;
+        }
+        if (useProjectedScene)
+        {
+            options["queueForUpload"] = false;
+            foreach (var policy in options["policies"]!.AsArray()) policy!.AsObject()["queueForUpload"] = false;
+            var projectedScene = JsonNode.Parse("""
+                {
+                  "id": "ProjectedScene",
+                  "type": "ProjectedScene",
+                  "order": 1,
+                  "dependsOn": ["$raw"],
+                  "publication": { "persistence": "durable-local" },
+                  "options": { "outputVariant": "projected-scene-v1", "maximumMagnitude": 6.5, "maximumResults": 9 }
+                }
+                """)!;
+            configuration["processingSteps"]!.AsArray().Insert(0, projectedScene);
+            localStorage["dependsOn"]!.AsArray().Add("ProjectedScene");
+            foreach (var stepNode in configuration["processingSteps"]!.AsArray())
+            {
+                var step = stepNode!.AsObject();
+                var type = step["type"]!.GetValue<string>();
+                if (type.Contains("NoOpFileStorageProcessingStep", StringComparison.Ordinal)) step["type"] = "Storage";
+                if (type.Contains("TelemetryCaptureProcessingStep", StringComparison.Ordinal)) step["type"] = "Telemetry";
+                step["dependsOn"] ??= new JsonArray("$raw");
+                var stepOptions = step["options"]?.AsObject();
+                if (stepOptions?.Remove("enabled", out var enabled) == true)
+                {
+                    step["enabled"] = enabled;
+                }
+            }
+            configuration["pipeline"] = new JsonObject
+            {
+                ["schemaVersion"] = "cameraagent-capture-pipeline-v2",
+                ["dependencyPolicy"] = "reject-enabled-dependent-v1",
+                ["steps"] = configuration["processingSteps"]!.DeepClone()
+            };
+            configuration.Remove("processingSteps");
         }
         if (useSyntheticCalibration)
         {
