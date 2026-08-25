@@ -1048,6 +1048,133 @@ public sealed class DurableCaptureProcessingTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
+    public async Task TypedMetadataFactsAndOrderedSourcesAreQueryableWithoutPayloadParsingAfterRestart()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([CreateMetadataNode(new MetadataProducingStep())]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            }
+
+            using var restarted = new SqliteCaptureProcessingStore(fixture.Options);
+            var products = await restarted.ReadCaptureProductsAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "test-metadata-v1", 10,
+                CancellationToken.None).ConfigureAwait(false);
+            var product = products.Single();
+            Assert.AreEqual(ProcessingProductKind.Metadata, product.ProductKind);
+            Assert.AreEqual("test-metadata-v1", product.ProductSchemaVersion);
+            Assert.IsNotNull(product.ContentIdentitySha256);
+            var sources = await restarted.ReadOutputSourcesAsync(
+                product.OutputIdentitySha256, 10, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, sources);
+            Assert.AreEqual(0, sources[0].Ordinal);
+            Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, sources[0].ArtifactId);
+            Assert.IsEmpty(await restarted.ReadCaptureProductsAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "other-schema-v1", 10,
+                CancellationToken.None).ConfigureAwait(false));
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
+                await restarted.ReadCaptureProductsAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId, null,
+                    SqliteCaptureProcessingStore.MaximumProductQueryCount + 1,
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var plan = connection.CreateCommand();
+            plan.CommandText = """
+                EXPLAIN QUERY PLAN SELECT output_identity_sha256
+                FROM processing_outputs
+                WHERE capture_id = $capture AND product_schema_version = $schema
+                ORDER BY output_identity_sha256 LIMIT 10;
+                """;
+            plan.Parameters.AddWithValue("$capture", fixture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+            plan.Parameters.AddWithValue("$schema", "test-metadata-v1");
+            var details = new List<string>();
+            using var reader = await plan.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false)) details.Add(reader.GetString(3));
+            Assert.IsTrue(details.Any(static detail => detail.Contains("ix_processing_outputs_product", StringComparison.Ordinal)),
+                string.Join(Environment.NewLine, details));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task DurableLineageAcceptsAndQueriesFiveHundredTwelveOrderedSources()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var step = new MetadataProducingStep(sourceCount: LayeredPresentationJson.MaximumSourceArtifactCount);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, new CaptureProcessingGraph([CreateMetadataNode(step)]),
+                CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            var output = (await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "metadata", CancellationToken.None)
+                .ConfigureAwait(false))!.Outputs.Single();
+            var sources = await store.ReadOutputSourcesAsync(
+                output.OutputIdentitySha256, LayeredPresentationJson.MaximumSourceArtifactCount,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            Assert.HasCount(LayeredPresentationJson.MaximumSourceArtifactCount, sources);
+            CollectionAssert.AreEqual(step.Product!.SourceArtifactIds.ToArray(),
+                sources.Select(static source => source.ArtifactId).ToArray());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task MoreThanFiveHundredTwelveSourcesFailsBeforeDerivedFilesPublish()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var step = new MetadataProducingStep(sourceCount: LayeredPresentationJson.MaximumSourceArtifactCount + 1);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item, new CaptureProcessingGraph([CreateMetadataNode(step)]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    NullLogger.Instance, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "derived")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [TestCategory("Unit")]
     public void TypedMetadataV3_RejectsMissingNonCanonicalAndDuplicateTypedFacts()
     {
@@ -1130,6 +1257,12 @@ public sealed class DurableCaptureProcessingTests
                 command.Parameters.AddWithValue("$artifact", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
                 command.Parameters.AddWithValue("$output", new string('B', 64));
                 command.Parameters.AddWithValue("$recipe", new string('C', 64));
+                if (mismatch == "output-identity")
+                {
+                    await Assert.ThrowsExactlyAsync<SqliteException>(async () =>
+                        await command.ExecuteNonQueryAsync().ConfigureAwait(false)).ConfigureAwait(false);
+                    return;
+                }
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
 
@@ -2170,7 +2303,7 @@ public sealed class DurableCaptureProcessingTests
         }
     }
 
-    private sealed class MetadataProducingStep(bool typed = true) : ICaptureProcessingStep, ICaptureProcessingGraphStep
+    private sealed class MetadataProducingStep(bool typed = true, int sourceCount = 1) : ICaptureProcessingStep, ICaptureProcessingGraphStep
     {
         private static readonly IReadOnlySet<FrameArtifactRole> InputRoles =
             new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
@@ -2192,7 +2325,9 @@ public sealed class DurableCaptureProcessingTests
             var raw = context.Artifacts!.Raw;
             var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
                 RecipeName, "1.0.0", "test-v1", JsonSerializer.SerializeToElement(new { gridColumns = 2, gridRows = 2 })));
-            var sources = new[] { raw.ArtifactId };
+            var sources = Enumerable.Range(0, sourceCount)
+                .Select(index => index == 0 ? raw.ArtifactId : Guid.Parse($"60000000-0000-0000-0000-{index:D12}"))
+                .ToArray();
             var payload = JsonSerializer.SerializeToUtf8Bytes(new
             {
                 schemaVersion = "test-metadata-v1",

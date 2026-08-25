@@ -21,6 +21,7 @@ public sealed class SqliteCameraAgentGalleryTests
     private static readonly string[] SourceDependency = ["source"];
     private static readonly string[] ExpectedDeliveryStatuses = ["Pending", "Retry", "Acknowledged", "Quarantined"];
     private static readonly string[] ExpectedTwoRootDeliveryStatuses = ["raw-ingress:Pending", "storage-1:Acknowledged"];
+    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
     public async Task PageBoundsAndCursorBindingAreEnforcedAsync()
@@ -154,12 +155,68 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.IsNull(legacyNode.Outcome);
         Assert.AreEqual("Unavailable", detail.Detail.ArtifactStates[0].DeliveryAvailability);
         Assert.AreEqual("Unavailable", detail.Detail.CloudAssessment.Availability);
+        Assert.AreEqual("Unavailable", detail.CanonicalSceneAvailability);
         var json = JsonSerializer.Serialize(detail);
         Assert.IsFalse(json.Contains("relativePath", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(json.Contains("lease", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(json.Contains("options\"", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(json.Contains("sensitive processing failure", StringComparison.Ordinal));
         Assert.IsFalse(json.Contains(fixture.Root, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task GalleryProjectsTypedFactsAndOnlyV3ProjectedSceneAsCanonical()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        await fixture.AddCloudAssessmentAsync(
+            raw, CreateCloudAssessment(raw, CloudAssessmentStatus.Quantified, false), "projected-scene-v1")
+            .ConfigureAwait(false);
+
+        var detail = await fixture.Gallery.GetCaptureAsync(
+            raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+
+        var metadata = detail!.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Metadata);
+        Assert.AreEqual(nameof(ProcessingProductKind.Metadata), metadata.ProductKind);
+        Assert.AreEqual("projected-scene-v1", metadata.ProductSchemaVersion);
+        Assert.AreEqual(new string('D', 64), metadata.ContentIdentitySha256);
+        Assert.AreEqual("Available", detail.CanonicalSceneAvailability);
+    }
+
+    [TestMethod]
+    public async Task CanonicalSceneAvailabilityIsIndependentOfBoundedArtifactProjection()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumArtifactsPerCapture; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw, $"a-node-{index:D3}", DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+        }
+        await fixture.AddCloudAssessmentAsync(
+            raw, CreateCloudAssessment(raw, CloudAssessmentStatus.Quantified, false), "projected-scene-v1",
+            nodeId: "z-projected-scene").ConfigureAwait(false);
+
+        var detail = await fixture.Gallery.GetCaptureAsync(
+            raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsTrue(detail!.ArtifactsTruncated);
+        Assert.AreEqual("Available", detail.CanonicalSceneAvailability);
+        Assert.IsFalse(detail.Artifacts.Any(static artifact => artifact.ProductSchemaVersion == "projected-scene-v1"));
+    }
+
+    [TestMethod]
+    public async Task CanonicalSceneQueryFailureReturnsProjectionUnavailable()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        await fixture.ExecuteAsync("DROP INDEX ix_processing_outputs_product;").ConfigureAwait(false);
+
+        var detail = await fixture.Gallery.GetCaptureAsync(
+            raw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(detail);
+        Assert.AreEqual("ProjectionUnavailable", detail.CanonicalSceneAvailability);
     }
 
     [TestMethod]
@@ -366,6 +423,8 @@ public sealed class SqliteCameraAgentGalleryTests
     [TestMethod]
     [DataRow(1)]
     [DataRow(2)]
+    [DataRow(3)]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The selected migration fixture statements are fixed test SQL.")]
     public async Task ProcessingSchemaMigratesWithoutLosingLegacyRowsAsync(int schemaVersion)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-processing-migration-{Guid.NewGuid():N}");
@@ -377,6 +436,49 @@ public sealed class SqliteCameraAgentGalleryTests
         });
         try
         {
+            var legacyManifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+            var legacySources = Enumerable.Range(1, 200)
+                .Select(index => Guid.Parse($"70000000-0000-0000-0000-{index:D12}"))
+                .ToArray();
+            legacyManifest = legacyManifest with
+            {
+                Descriptor = legacyManifest.Descriptor with
+                {
+                    Capture = new CaptureIdentityDescriptor(
+                        "legacy-agent", "legacy-rig", 1,
+                        Guid.Parse("10000000-0000-0000-0000-000000000001")),
+                    Artifact = legacyManifest.Descriptor.Artifact with { SourceId = "legacy-node" }
+                },
+                RelativeArtifactPath = "legacy.bin"
+            };
+            var legacyRecipeIdentity = ProcessingIdentity.CreateRecipeIdentity(
+                legacyManifest.Descriptor.Artifact.Recipe).IdentitySha256;
+            var legacyOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Metadata, "legacy", legacyRecipeIdentity, legacySources);
+            var legacyArtifactId = ProcessingIdentity.CreateArtifactId(legacyOutputIdentity);
+            var legacyArtifact = legacyManifest.Descriptor.Artifact with
+            {
+                ArtifactId = legacyArtifactId,
+                Role = FrameArtifactRole.Metadata,
+                SourceId = "legacy-node",
+                Variant = "legacy",
+                SourceArtifactIds = legacySources,
+                MediaType = "application/json"
+            };
+            using var nullDocument = JsonDocument.Parse("null");
+            var legacyProductManifest = new DurableProcessingProductManifestV1(
+                DurableProcessingProductManifestV1.CurrentSchemaVersion,
+                legacyManifest.Descriptor.Capture,
+                legacyArtifact,
+                legacyOutputIdentity,
+                [],
+                new ProcessingCompatibilityIdentity("rig", "orientation", "calibration", "mask", "sensor", "setpoint", "processing"),
+                1,
+                1,
+                "legacy.json",
+                nullDocument.RootElement.Clone());
+            var legacyEvidence = DurableProcessingProductManifestJson.Serialize(legacyProductManifest);
             using (var initial = new SqliteCaptureProcessingStore(options))
             {
                 await initial.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -385,6 +487,47 @@ public sealed class SqliteCameraAgentGalleryTests
                        $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
             {
                 await connection.OpenAsync().ConfigureAwait(false);
+                using (var dropV4 = connection.CreateCommand())
+                {
+                    dropV4.CommandText = """
+                        DROP TABLE processing_output_sources;
+                        DROP INDEX ix_processing_outputs_product;
+                        ALTER TABLE processing_outputs RENAME TO processing_outputs_v4;
+                        CREATE TABLE processing_outputs(
+                            output_identity_sha256 TEXT PRIMARY KEY CHECK(length(output_identity_sha256) = 64),
+                            capture_id TEXT NOT NULL,
+                            agent_id TEXT NOT NULL,
+                            node_id TEXT NOT NULL,
+                            artifact_id TEXT NOT NULL UNIQUE CHECK(length(artifact_id) = 32),
+                            role TEXT NOT NULL,
+                            variant TEXT NOT NULL,
+                            payload_relative_path TEXT NOT NULL,
+                            sidecar_relative_path TEXT NOT NULL,
+                            descriptor_json BLOB NOT NULL,
+                            recipe_identity_sha256 TEXT NOT NULL CHECK(length(recipe_identity_sha256) = 64),
+                            algorithms_json BLOB NOT NULL,
+                            compatibility_json BLOB NOT NULL,
+                            total_integration_ticks INTEGER NOT NULL,
+                            capture_sequence INTEGER NOT NULL CHECK(capture_sequence > 0),
+                            legacy_recipe_version TEXT NULL,
+                            committed_unix_ms INTEGER NOT NULL,
+                            FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id)
+                                DEFERRABLE INITIALLY DEFERRED
+                        ) STRICT;
+                        INSERT INTO processing_outputs
+                        SELECT output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
+                               payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
+                               algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+                               legacy_recipe_version, committed_unix_ms
+                        FROM processing_outputs_v4;
+                        DROP TABLE processing_outputs_v4;
+                        CREATE INDEX ix_processing_outputs_capture_node ON processing_outputs(capture_id, node_id);
+                        CREATE INDEX ix_processing_outputs_window ON processing_outputs(agent_id, node_id, role, capture_sequence);
+                        CREATE INDEX ix_processing_outputs_role ON processing_outputs(role, capture_id);
+                        CREATE INDEX ix_processing_outputs_recipe ON processing_outputs(recipe_identity_sha256, capture_id);
+                        """;
+                    await dropV4.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
                 if (schemaVersion == 1)
                 {
                     using var dropV2Indexes = connection.CreateCommand();
@@ -398,16 +541,12 @@ public sealed class SqliteCameraAgentGalleryTests
                 }
                 using var downgrade = connection.CreateCommand();
                 downgrade.CommandText = """
-                    DROP TABLE processing_node_inputs;
-                    ALTER TABLE processing_nodes DROP COLUMN outcome;
-                    ALTER TABLE processing_nodes DROP COLUMN duration_ticks;
-                    ALTER TABLE processing_nodes DROP COLUMN started_unix_ms;
-                    ALTER TABLE processing_nodes DROP COLUMN processing_profile_identity_sha256;
-                    ALTER TABLE processing_nodes DROP COLUMN input_evidence_version;
+                    DELETE FROM capture_processing_schema;
+                    INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 4);
                     DROP TABLE capture_processing_schema;
                     CREATE TABLE capture_processing_schema(
                         schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-                        version INTEGER NOT NULL CHECK(version IN (1, 2))
+                        version INTEGER NOT NULL CHECK(version BETWEEN 1 AND 3)
                     ) STRICT;
                     INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, $version);
                     INSERT INTO processing_nodes(
@@ -423,13 +562,31 @@ public sealed class SqliteCameraAgentGalleryTests
                         legacy_recipe_version, committed_unix_ms)
                     VALUES(
                         $output, '10000000000000000000000000000001', 'legacy-agent', 'legacy-node',
-                        '20000000000000000000000000000002', 'Preview', 'legacy', 'legacy.bin', 'legacy.json',
-                        X'7B7D', $recipe, X'5B5D', X'7B7D', 1, 1, 'legacy-v1', 1000);
+                        $artifact, $role, $variant, 'legacy.json', 'legacy.manifest.json',
+                        $evidence, $recipe, X'5B5D', $compatibility, 1, 1, 'legacy-v1', 1000);
                     """;
+                if (schemaVersion < 3)
+                {
+                    downgrade.CommandText = string.Concat("""
+                        DROP TABLE processing_node_inputs;
+                        ALTER TABLE processing_nodes DROP COLUMN outcome;
+                        ALTER TABLE processing_nodes DROP COLUMN duration_ticks;
+                        ALTER TABLE processing_nodes DROP COLUMN started_unix_ms;
+                        ALTER TABLE processing_nodes DROP COLUMN processing_profile_identity_sha256;
+                        ALTER TABLE processing_nodes DROP COLUMN input_evidence_version;
+                        """, downgrade.CommandText);
+                }
                 downgrade.Parameters.AddWithValue("$version", schemaVersion);
                 downgrade.Parameters.AddWithValue("$plan", new string('A', 64));
-                downgrade.Parameters.AddWithValue("$output", new string('B', 64));
-                downgrade.Parameters.AddWithValue("$recipe", new string('C', 64));
+                downgrade.Parameters.AddWithValue("$output", legacyOutputIdentity);
+                downgrade.Parameters.AddWithValue("$artifact", legacyArtifactId.ToString("N"));
+                downgrade.Parameters.AddWithValue("$recipe", legacyRecipeIdentity);
+                downgrade.Parameters.AddWithValue("$role", legacyArtifact.Role.ToString());
+                downgrade.Parameters.AddWithValue("$variant", legacyArtifact.Variant);
+                downgrade.Parameters.AddWithValue("$evidence", legacyEvidence);
+                downgrade.Parameters.AddWithValue("$compatibility", JsonSerializer.SerializeToUtf8Bytes(
+                    new ProcessingCompatibilityIdentity("rig", "orientation", "calibration", "mask", "sensor", "setpoint", "processing"),
+                    WebJson));
                 await downgrade.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
 
@@ -456,13 +613,15 @@ public sealed class SqliteCameraAgentGalleryTests
                     duration_ticks IS NULL,
                     outcome IS NULL,
                     input_evidence_version IS NULL,
-                    (SELECT artifact_id FROM processing_outputs WHERE node_id = 'legacy-node')
+                    (SELECT artifact_id FROM processing_outputs WHERE node_id = 'legacy-node'),
+                    (SELECT COUNT(*) FROM processing_output_sources WHERE output_identity_sha256 = processing_outputs.output_identity_sha256)
                 FROM processing_nodes
+                JOIN processing_outputs USING(capture_id, node_id)
                 WHERE node_id = 'legacy-node';
                 """;
             using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
             Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
-            Assert.AreEqual(3L, reader.GetInt64(0));
+            Assert.AreEqual(4L, reader.GetInt64(0));
             Assert.AreEqual(8L, reader.GetInt64(1));
             Assert.AreEqual("Completed", reader.GetString(2));
             Assert.AreEqual(2L, reader.GetInt64(3));
@@ -471,7 +630,13 @@ public sealed class SqliteCameraAgentGalleryTests
             Assert.IsTrue(reader.GetBoolean(6));
             Assert.IsTrue(reader.GetBoolean(7));
             Assert.IsTrue(reader.GetBoolean(8));
-            Assert.AreEqual("20000000000000000000000000000002", reader.GetString(9));
+            Assert.AreEqual(legacyArtifactId.ToString("N"), reader.GetString(9));
+            Assert.AreEqual((long)legacySources.Length, reader.GetInt64(10));
+            await reader.DisposeAsync().ConfigureAwait(false);
+            using var partial = verify.CreateCommand();
+            partial.CommandText = "UPDATE processing_outputs SET product_kind = 'Metadata' WHERE node_id = 'legacy-node';";
+            await Assert.ThrowsExactlyAsync<SqliteException>(async () =>
+                await partial.ExecuteNonQueryAsync().ConfigureAwait(false)).ConfigureAwait(false);
         }
         finally
         {
@@ -481,6 +646,133 @@ public sealed class SqliteCameraAgentGalleryTests
                 Directory.Delete(root, recursive: true);
             }
         }
+    }
+
+    [TestMethod]
+    public async Task ProcessingSchemaDefinitionDriftFailsInitialization()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        await fixture.ExecuteAsync("""
+            ALTER TABLE processing_output_sources RENAME TO processing_output_sources_valid;
+            CREATE TABLE processing_output_sources(
+                output_identity_sha256 TEXT NOT NULL,
+                source_ordinal INTEGER NOT NULL,
+                source_artifact_id TEXT NOT NULL,
+                PRIMARY KEY(output_identity_sha256, source_ordinal)
+            ) STRICT;
+            DROP TABLE processing_output_sources_valid;
+            CREATE INDEX ix_processing_output_sources_artifact
+                ON processing_output_sources(source_artifact_id, output_identity_sha256);
+            """).ConfigureAwait(false);
+        var options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = fixture.Root,
+            RawIngressSqliteBusyTimeoutSeconds = 1
+        });
+        using var drifted = new SqliteCaptureProcessingStore(options);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await drifted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow("ix_processing_outputs_product", "capture_id, variant, output_identity_sha256")]
+    [DataRow("ix_processing_outputs_product", "product_schema_version, capture_id, output_identity_sha256")]
+    [DataRow("ix_processing_output_sources_artifact", "source_ordinal, output_identity_sha256")]
+    [DataRow("ix_processing_output_sources_artifact", "output_identity_sha256, source_artifact_id")]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Index names and definitions are fixed test data rows.")]
+    public async Task ProcessingSchemaIndexColumnDriftFailsInitialization(
+        string indexName,
+        string replacementColumns)
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var tableName = indexName == "ix_processing_outputs_product"
+            ? "processing_outputs"
+            : "processing_output_sources";
+        await fixture.ExecuteAsync($"""
+            DROP INDEX {indexName};
+            CREATE INDEX {indexName} ON {tableName}({replacementColumns});
+            """).ConfigureAwait(false);
+        var options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = fixture.Root,
+            RawIngressSqliteBusyTimeoutSeconds = 1
+        });
+        using var drifted = new SqliteCaptureProcessingStore(options);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await drifted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow("identity")]
+    [DataRow("payload-path")]
+    public async Task ProcessingV3MigrationEvidenceMismatchRollsBackAtomically(string mismatch)
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(6), "Physical", null).ConfigureAwait(false);
+        await fixture.AddCloudAssessmentAsync(raw, CreateCloudAssessment(raw, CloudAssessmentStatus.Quantified, false))
+            .ConfigureAwait(false);
+        await fixture.ExecuteAsync("""
+            DROP TABLE processing_output_sources;
+            DROP INDEX ix_processing_outputs_product;
+            DROP INDEX ix_processing_outputs_capture_node;
+            DROP INDEX ix_processing_outputs_window;
+            DROP INDEX ix_processing_outputs_role;
+            DROP INDEX ix_processing_outputs_recipe;
+            ALTER TABLE processing_outputs RENAME TO processing_outputs_v4;
+            CREATE TABLE processing_outputs(
+                output_identity_sha256 TEXT PRIMARY KEY CHECK(length(output_identity_sha256) = 64),
+                capture_id TEXT NOT NULL, agent_id TEXT NOT NULL, node_id TEXT NOT NULL,
+                artifact_id TEXT NOT NULL UNIQUE CHECK(length(artifact_id) = 32), role TEXT NOT NULL,
+                variant TEXT NOT NULL, payload_relative_path TEXT NOT NULL, sidecar_relative_path TEXT NOT NULL,
+                descriptor_json BLOB NOT NULL, recipe_identity_sha256 TEXT NOT NULL CHECK(length(recipe_identity_sha256) = 64),
+                algorithms_json BLOB NOT NULL, compatibility_json BLOB NOT NULL,
+                total_integration_ticks INTEGER NOT NULL, capture_sequence INTEGER NOT NULL CHECK(capture_sequence > 0),
+                legacy_recipe_version TEXT NULL, committed_unix_ms INTEGER NOT NULL,
+                FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id) DEFERRABLE INITIALLY DEFERRED
+            ) STRICT;
+            INSERT INTO processing_outputs
+            SELECT output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
+                   payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
+                   algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+                   legacy_recipe_version, committed_unix_ms FROM processing_outputs_v4;
+            DROP TABLE processing_outputs_v4;
+            CREATE INDEX ix_processing_outputs_capture_node ON processing_outputs(capture_id, node_id);
+            CREATE INDEX ix_processing_outputs_window ON processing_outputs(agent_id, node_id, role, capture_sequence);
+            CREATE INDEX ix_processing_outputs_role ON processing_outputs(role, capture_id);
+            CREATE INDEX ix_processing_outputs_recipe ON processing_outputs(recipe_identity_sha256, capture_id);
+            DROP TABLE capture_processing_schema;
+            CREATE TABLE capture_processing_schema(
+                schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1), version INTEGER NOT NULL CHECK(version = 3)
+            ) STRICT;
+            INSERT INTO capture_processing_schema VALUES(1, 3);
+            """).ConfigureAwait(false);
+        await fixture.ExecuteAsync(mismatch == "identity"
+            ? "UPDATE processing_outputs SET output_identity_sha256 = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';"
+            : "UPDATE processing_outputs SET payload_relative_path = 'products/../wrong.json';").ConfigureAwait(false);
+        var options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = fixture.Root,
+            RawIngressSqliteBusyTimeoutSeconds = 1
+        });
+        using var migrated = new SqliteCaptureProcessingStore(options);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await migrated.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(fixture.Root, "journal", "raw-ingress.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var verify = connection.CreateCommand();
+        verify.CommandText = """
+            SELECT (SELECT version FROM capture_processing_schema WHERE schema_key = 1),
+                   EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'processing_output_sources');
+            """;
+        using var reader = await verify.ExecuteReaderAsync().ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+        Assert.AreEqual(3L, reader.GetInt64(0));
+        Assert.IsFalse(reader.GetBoolean(1));
     }
 
     private static T AssertSingle<T>(IReadOnlyList<T> values)
@@ -559,7 +851,6 @@ public sealed class SqliteCameraAgentGalleryTests
 
     private sealed class GalleryFixture : IDisposable
     {
-        private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
         private readonly SqliteRawCaptureJournal _journal;
         private readonly SqliteCaptureProcessingStore _processingStore;
 
@@ -756,7 +1047,9 @@ public sealed class SqliteCameraAgentGalleryTests
 
         internal async Task AddCloudAssessmentAsync(
             ArtifactManifestV2 raw,
-            CloudAssessmentV1 assessment)
+            CloudAssessmentV1 assessment,
+            string? productSchemaVersion = null,
+            string nodeId = "cloud")
         {
             var payload = CloudAssessmentJson.Serialize(assessment);
             var recipe = RecipeIdentityDescriptor.Create(
@@ -784,17 +1077,33 @@ public sealed class SqliteCameraAgentGalleryTests
             var compatibility = new ProcessingCompatibilityIdentity(
                 "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "processing");
             var relativePath = $"products/{artifact.ArtifactId:N}.json";
-            var manifest = new DurableProcessingProductManifestV1(
-                DurableProcessingProductManifestV1.CurrentSchemaVersion,
-                raw.Descriptor.Capture,
-                artifact,
-                outputIdentity,
-                algorithms,
-                compatibility,
-                TimeSpan.FromSeconds(1).Ticks,
-                payload.LongLength,
-                relativePath,
-                null);
+            using var nullDocument = JsonDocument.Parse("null");
+            IDurableProcessingProductManifest manifest = productSchemaVersion is null
+                ? new DurableProcessingProductManifestV1(
+                    DurableProcessingProductManifestV1.CurrentSchemaVersion,
+                    raw.Descriptor.Capture,
+                    artifact,
+                    outputIdentity,
+                    algorithms,
+                    compatibility,
+                    TimeSpan.FromSeconds(1).Ticks,
+                    payload.LongLength,
+                    relativePath,
+                    nullDocument.RootElement.Clone())
+                : new DurableTypedMetadataProductManifestV3(
+                    DurableTypedMetadataProductManifestV3.CurrentSchemaVersion,
+                    raw.Descriptor.Capture,
+                    artifact,
+                    outputIdentity,
+                    algorithms,
+                    compatibility,
+                    TimeSpan.FromSeconds(1).Ticks,
+                    payload.LongLength,
+                    relativePath,
+                    nullDocument.RootElement.Clone(),
+                    ProcessingProductKind.Metadata,
+                    productSchemaVersion,
+                    new string('D', 64));
             var evidence = DurableProcessingProductManifestJson.Serialize(manifest);
             var path = Path.Combine(Root, relativePath);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -808,10 +1117,11 @@ public sealed class SqliteCameraAgentGalleryTests
                     INSERT INTO processing_nodes(
                         capture_id, node_id, required, dependencies_json, recipe_name, output_role,
                         output_variant, plan_sha256, status, reason, attempt, completed_unix_ms)
-                    VALUES ($capture, 'cloud', 0, '[]', $recipe_name, 'Metadata', 'cloud-assessment-v1',
+                    VALUES ($capture, $node, 0, '[]', $recipe_name, 'Metadata', 'cloud-assessment-v1',
                             $plan, 'Completed', NULL, 1, $completed);
                     """;
                 node.Parameters.AddWithValue("$capture", raw.Descriptor.Capture.CaptureId.ToString("N"));
+                node.Parameters.AddWithValue("$node", nodeId);
                 node.Parameters.AddWithValue("$recipe_name", BuiltInProcessingRecipes.CloudAssessment);
                 node.Parameters.AddWithValue("$plan", new string('C', 64));
                 node.Parameters.AddWithValue("$completed", raw.Descriptor.Timing.DurableIngressUtc.ToUnixTimeMilliseconds());
@@ -824,14 +1134,16 @@ public sealed class SqliteCameraAgentGalleryTests
                         output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
                         payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
                         algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                        legacy_recipe_version, committed_unix_ms)
-                    VALUES ($identity, $capture, $agent, 'cloud', $artifact, 'Metadata', 'cloud-assessment-v1',
+                            legacy_recipe_version, committed_unix_ms, product_kind,
+                            product_schema_version, content_identity_sha256)
+                    VALUES ($identity, $capture, $agent, $node, $artifact, 'Metadata', 'cloud-assessment-v1',
                             $payload, $sidecar, $descriptor, $recipe, $algorithms, $compatibility,
-                            $integration, $sequence, NULL, $committed);
+                            $integration, $sequence, NULL, $committed, $kind, $schema, $content);
                     """;
                 output.Parameters.AddWithValue("$identity", outputIdentity);
                 output.Parameters.AddWithValue("$capture", raw.Descriptor.Capture.CaptureId.ToString("N"));
                 output.Parameters.AddWithValue("$agent", raw.Descriptor.Capture.AgentId);
+                output.Parameters.AddWithValue("$node", nodeId);
                 output.Parameters.AddWithValue("$artifact", artifact.ArtifactId.ToString("N"));
                 output.Parameters.AddWithValue("$payload", relativePath);
                 output.Parameters.AddWithValue("$sidecar", Path.ChangeExtension(relativePath, ".manifest.json"));
@@ -842,6 +1154,9 @@ public sealed class SqliteCameraAgentGalleryTests
                 output.Parameters.AddWithValue("$integration", manifest.TotalIntegrationTicks);
                 output.Parameters.AddWithValue("$sequence", raw.Descriptor.Capture.CaptureSequence);
                 output.Parameters.AddWithValue("$committed", raw.Descriptor.Timing.DurableIngressUtc.ToUnixTimeMilliseconds());
+                output.Parameters.AddWithValue("$kind", productSchemaVersion is null ? DBNull.Value : nameof(ProcessingProductKind.Metadata));
+                output.Parameters.AddWithValue("$schema", (object?)productSchemaVersion ?? DBNull.Value);
+                output.Parameters.AddWithValue("$content", productSchemaVersion is null ? DBNull.Value : new string('D', 64));
                 await output.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
         }

@@ -162,6 +162,7 @@ internal static class DurableProcessingProductManifestJson
             string.IsNullOrWhiteSpace(manifest.Artifact.Variant) ||
             manifest.Artifact.CreatedUtc.Offset != TimeSpan.Zero ||
             manifest.Artifact.SourceArtifactIds is null || manifest.Artifact.SourceArtifactIds.Count == 0 ||
+            manifest.Artifact.SourceArtifactIds.Count > LayeredPresentationJson.MaximumSourceArtifactCount ||
             manifest.Artifact.SourceArtifactIds.Any(static id => id == Guid.Empty) ||
             manifest.Artifact.SourceArtifactIds.Distinct().Count() != manifest.Artifact.SourceArtifactIds.Count ||
             manifest.Artifact.SourceArtifactIds.Contains(manifest.Artifact.ArtifactId) ||

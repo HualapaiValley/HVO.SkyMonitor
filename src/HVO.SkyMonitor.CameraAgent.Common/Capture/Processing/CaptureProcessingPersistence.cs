@@ -185,6 +185,10 @@ internal sealed class CaptureProcessingPersistence(
         CaptureProcessingContext context,
         CancellationToken cancellationToken)
     {
+        foreach (var product in products)
+        {
+            ValidateProductForPublication(product);
+        }
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -234,7 +238,10 @@ internal sealed class CaptureProcessingPersistence(
                         product.Compatibility,
                         product.TotalIntegration,
                         rawCapture.Manifest.Descriptor.Capture.CaptureSequence,
-                        artifact.RecipeVersion));
+                        artifact.RecipeVersion,
+                        null,
+                        null,
+                        null));
                 }
                 stopwatch.Stop();
                 _telemetry.RecordPersistence(node, product, stopwatch.Elapsed);
@@ -494,6 +501,7 @@ internal sealed class CaptureProcessingPersistence(
                 encodedImage.PixelFormat,
                 sourceId);
         var evidenceJson = DurableProcessingProductManifestJson.Serialize(manifest);
+        var typedManifest = manifest as DurableTypedMetadataProductManifestV3;
 
         var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
@@ -526,7 +534,10 @@ internal sealed class CaptureProcessingPersistence(
             product.Compatibility,
             product.TotalIntegration,
             sourceDescriptor.Capture.CaptureSequence,
-            null);
+            null,
+            typedManifest?.Kind,
+            typedManifest?.ProductSchemaVersion,
+            typedManifest?.ContentIdentitySha256);
     }
 
     private static async ValueTask ValidateExistingMetadataEvidenceAsync(
@@ -717,6 +728,17 @@ internal sealed class CaptureProcessingPersistence(
         => product.Role == FrameArtifactRole.Metadata && IsJsonMediaType(product.MediaType) ||
            product.Role is FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview &&
            string.Equals(product.MediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase);
+
+    private static void ValidateProductForPublication(ProcessingProduct product)
+    {
+        if (product.SourceArtifactIds is null || product.SourceArtifactIds.Count == 0 ||
+            product.SourceArtifactIds.Count > LayeredPresentationJson.MaximumSourceArtifactCount ||
+            product.SourceArtifactIds.Any(static source => source == Guid.Empty) ||
+            product.SourceArtifactIds.Distinct().Count() != product.SourceArtifactIds.Count)
+        {
+            throw new InvalidDataException("Processing product source lineage is invalid or exceeds its durable bound.");
+        }
+    }
 
     private static bool IsJsonMediaType(string mediaType)
         => string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase) ||

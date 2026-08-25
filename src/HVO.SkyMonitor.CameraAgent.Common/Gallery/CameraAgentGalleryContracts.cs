@@ -40,7 +40,8 @@ public sealed record CameraAgentGalleryCapture(
     CameraAgentGalleryCaptureDetail? Detail = null,
     bool ProcessingNodesTruncated = false,
     bool ArtifactsTruncated = false,
-    bool ProcessingProjectionUnavailable = false);
+    bool ProcessingProjectionUnavailable = false,
+    string CanonicalSceneAvailability = "Unavailable");
 
 public sealed record CameraAgentGalleryCaptureDetail(
     string EvidenceAvailability,
@@ -143,7 +144,10 @@ public sealed record CameraAgentGalleryArtifact(
     CameraAgentGalleryRecipe? Recipe,
     IReadOnlyList<Guid> SourceArtifactIds,
     string? ProcessingNodeId,
-    IReadOnlyList<CameraAgentGalleryAlgorithm>? Algorithms = null);
+    IReadOnlyList<CameraAgentGalleryAlgorithm>? Algorithms = null,
+    string? ProductKind = null,
+    string? ProductSchemaVersion = null,
+    string? ContentIdentitySha256 = null);
 
 public sealed record CameraAgentGalleryAlgorithm(string Name, string Version);
 
