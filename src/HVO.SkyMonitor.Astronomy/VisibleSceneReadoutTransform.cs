@@ -39,7 +39,8 @@ public static class VisibleSceneReadoutTransform
             {
                 FromPixel = Scale(segment.FromPixel, binX, binY),
                 ToPixel = Scale(segment.ToPixel, binX, binY)
-            }));
+            }),
+            nativeRoiScene.ComputationProvenance);
     }
 
     private static PixelPoint Scale(PixelPoint value, int binX, int binY)

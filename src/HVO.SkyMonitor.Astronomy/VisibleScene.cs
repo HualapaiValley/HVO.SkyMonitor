@@ -210,17 +210,26 @@ public sealed record ProjectedConstellationSegment(
     PixelPoint ToPixel,
     int PartIndex = 0);
 
+/// <summary>Provider provenance bound by the builder to the computation that produced a visible scene.</summary>
+public sealed record VisibleSceneComputationProvenance(
+    string CatalogPreprocessingVersion,
+    ConstellationTopologyMetadata? ConstellationTopology,
+    string? ConstellationTopologyArtifactSha256,
+    string? EphemerisModelVersion);
+
 /// <summary>The immutable geometry authority shared by rendering and annotation.</summary>
 public sealed class VisibleScene
 {
     internal VisibleScene(
         VisibleSceneRequest request,
         IEnumerable<ProjectedCelestialObject> objects,
-        IEnumerable<ProjectedConstellationSegment>? segments = null)
+        IEnumerable<ProjectedConstellationSegment>? segments = null,
+        VisibleSceneComputationProvenance? computationProvenance = null)
     {
         Request = request;
         Objects = new ReadOnlyCollection<ProjectedCelestialObject>(objects.ToArray());
         Segments = new ReadOnlyCollection<ProjectedConstellationSegment>((segments ?? []).ToArray());
+        ComputationProvenance = computationProvenance ?? new("unspecified", null, null, null);
     }
 
     /// <summary>Gets the validated request and provenance for this scene.</summary>
@@ -231,6 +240,9 @@ public sealed class VisibleScene
 
     /// <summary>Gets clipped constellation chords resolved independently of normal render-object selection.</summary>
     public IReadOnlyList<ProjectedConstellationSegment> Segments { get; }
+
+    /// <summary>Gets topology and ephemeris provider identities actually used by the builder.</summary>
+    public VisibleSceneComputationProvenance ComputationProvenance { get; }
 }
 
 /// <summary>Builds deterministic visible scenes without persistence or rendering dependencies.</summary>
@@ -261,6 +273,17 @@ public sealed class VisibleSceneBuilder
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        var catalogPreprocessingVersion = "unspecified";
+        if (_catalog is ICelestialCatalogMetadataSource metadataSource)
+        {
+            var actualMetadata = metadataSource.Metadata
+                ?? throw new InvalidOperationException("Catalog metadata source returned no metadata.");
+            if (request.CatalogMetadata != actualMetadata)
+                throw new ArgumentException("Requested catalog metadata does not match the catalog provider.", nameof(request));
+            catalogPreprocessingVersion = metadataSource.PreprocessingVersion;
+            ArgumentException.ThrowIfNullOrWhiteSpace(catalogPreprocessingVersion);
+            request = CopyWithCatalogMetadata(request, actualMetadata);
+        }
         var candidates = await _catalog.QueryCandidatesAsync(
             new CatalogCandidateQuery(request.CatalogQuery.MaximumMagnitude, CreateCandidateRegion(request)),
             cancellationToken).ConfigureAwait(false);
@@ -371,13 +394,36 @@ public sealed class VisibleSceneBuilder
             }
         }
 
-        return new VisibleScene(request, selected, segments);
+        return new VisibleScene(
+            request,
+            selected,
+            segments,
+            new VisibleSceneComputationProvenance(
+                catalogPreprocessingVersion,
+                request.ConstellationIds.Count > 0 ? _constellationTopology?.Metadata : null,
+                request.ConstellationIds.Count > 0 ? _constellationTopology?.ArtifactSha256 : null,
+                request.SolarSystemBodies.Count > 0 ? _planetEphemeris?.ModelVersion : null));
     }
+
+    private static VisibleSceneRequest CopyWithCatalogMetadata(VisibleSceneRequest request, CatalogMetadata metadata) => new(
+        request.Utc,
+        request.Observer,
+        request.Projection,
+        request.CatalogQuery,
+        metadata,
+        request.Refraction,
+        request.HorizonPolicy,
+        request.ProjectionVersion,
+        request.AlgorithmVersion,
+        request.ConstellationIds,
+        request.SolarSystemBodies,
+        request.IncludeConstellationEndpointStars);
 
     private static J2000SphericalCap? CreateCandidateRegion(VisibleSceneRequest request)
     {
         J2000SphericalCap? optical = null;
-        if (!request.Refraction.Enabled)
+        if (!request.Refraction.Enabled &&
+            (request.Projection.Model != ProjectionModel.Perspective || request.Projection.EnforceSensorBounds))
         {
             var radius = OpticalRadiusDegrees(request.Projection);
             optical = CreateJ2000Cap(request, new AltAzPoint(
@@ -694,8 +740,7 @@ public sealed class VisibleSceneBuilder
         var deltaY = to.Y - from.Y;
         var minimum = 0d;
         var maximum = 1d;
-        var enforceSensorBounds = projection.EnforceSensorBounds || projection.Model == ProjectionModel.Perspective;
-        if (enforceSensorBounds &&
+        if (projection.EnforceSensorBounds &&
             (!ClipBoundary(-deltaX, from.X, ref minimum, ref maximum) ||
              !ClipBoundary(deltaX, projection.WidthPixels - from.X, ref minimum, ref maximum) ||
              !ClipBoundary(-deltaY, from.Y, ref minimum, ref maximum) ||

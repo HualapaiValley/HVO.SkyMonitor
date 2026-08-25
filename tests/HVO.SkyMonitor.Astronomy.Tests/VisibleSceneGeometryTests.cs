@@ -83,6 +83,26 @@ public sealed class VisibleSceneGeometryTests
     }
 
     [TestMethod]
+    public void TryClipToProjection_PerspectiveWithoutSensorBoundsRetainsOffSensorSegment()
+    {
+        var projection = new ProjectionContext(
+            ProjectionModel.Perspective, 50, 50, 50, 50, 100, 100,
+            ProjectionAperture.Rectangular, EnforceSensorBounds: false);
+        var from = new PixelPoint(-25, 50);
+        var to = new PixelPoint(125, 50);
+
+        Assert.IsTrue(VisibleSceneBuilder.TryClipToProjection(projection, from, to, out var clippedFrom, out var clippedTo));
+        Assert.AreEqual(from, clippedFrom);
+        Assert.AreEqual(to, clippedTo);
+
+        var output = new List<ProjectedConstellationSegment>();
+        VisibleSceneBuilder.AddClippedChord(projection, "TST", "a", "b", from, to, output);
+        Assert.HasCount(1, output);
+        Assert.AreEqual(from, output[0].FromPixel);
+        Assert.AreEqual(to, output[0].ToPixel);
+    }
+
+    [TestMethod]
     public void PrimitiveClipping_CoversParallelDegenerateAndRejectedIntervals()
     {
         var minimum = 0d;

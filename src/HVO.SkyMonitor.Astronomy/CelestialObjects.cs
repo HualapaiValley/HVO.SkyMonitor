@@ -47,6 +47,9 @@ public interface IConstellationTopology
     /// <summary>Gets immutable topology source and preprocessing provenance.</summary>
     ConstellationTopologyMetadata Metadata { get; }
 
+    /// <summary>Gets the exact serialized topology artifact checksum when the provider has one.</summary>
+    string? ArtifactSha256 => null;
+
     /// <summary>Gets the ordered segments for a constellation identifier.</summary>
     IReadOnlyList<ConstellationSegment> GetSegments(string constellationId);
 }
