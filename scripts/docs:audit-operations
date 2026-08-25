@@ -93,6 +93,12 @@ if grep -En 'schema-v6 split-host|schema v6 split-host|Production source current
     exit 1
 fi
 
+if git grep --untracked -En 'test:phase14-(campaign|normal-campaign)|test:cameraagent-(dual-197|standalone-171|ui-106)|test:logichost-ui-107|deploy/acceptance/issue-197|logichost-ui-107-runtime-signals' \
+    -- . ':(exclude)scripts/docs:audit-operations'; then
+    printf 'A generalized interface still uses an obsolete issue or milestone name.\n' >&2
+    exit 1
+fi
+
 require_source_reference() {
     local value="$1"
     local source_file="$2"

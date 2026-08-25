@@ -48,7 +48,8 @@ committed public key.
 
 Dispatch `.github/workflows/release.yml` from `main` with the train, exact
 version, exact 40-character main commit, next index sequence, and `PUBLISH`
-confirmation. The source commit must already have successful `Required CI`.
+confirmation. The source commit must already have a completed exact-SHA
+main-push CI workflow whose `Required CI` job succeeded.
 
 The workflow:
 

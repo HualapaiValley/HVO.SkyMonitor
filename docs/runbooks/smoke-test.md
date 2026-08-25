@@ -162,7 +162,7 @@ Run the smoke against the installation root, not a bundle or SQLite file:
 
 ```bash
 HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
-  ./scripts/test:cameraagent-standalone-171
+  ./scripts/test:cameraagent-standalone-production-smoke
 ```
 
 The gate fails closed on package kind, version, manifest/schema/preprocessing
@@ -185,7 +185,8 @@ gate into the same result root.
 Issue #197 extends the standalone proof to concurrent Hualapai and explicitly
 synthetic Siding Spring CameraAgents. The opt-in runner builds CameraAgent once,
 uses that content-addressed image ID for both containers, and invokes
-`deploy/acceptance/issue-197/compose.yml` under two project names. Each project
+`deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml` under two
+project names. Each project
 owns a separate bridge, runtime root, catalog copy, owner secret, local Identity
 database, Data Protection directory, provisioning state, cookie, AgentId, and
 OTLP file collector. LogicHost and the shared SQL Server, Redis, MinIO, and
@@ -196,7 +197,7 @@ Stop LogicHost, install the approved Production HYG package, and run:
 ```bash
 HVO_CATALOG_PERF_ROOT=/var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
 HVO_OTEL_COLLECTOR_IMAGE=otel/opentelemetry-collector-contrib@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6 \
-  ./scripts/test:cameraagent-dual-197
+  ./scripts/test:cameraagent-dual-standalone-smoke
 ```
 
 On a direct Docker host, bind roots and published endpoints use the repository
@@ -204,12 +205,13 @@ path and loopback. In a devcontainer, the runner discovers the repository bind
 as seen by both the control container and Docker daemon, stages runtime state
 below the primary checkout's ignored `data/agent/issue-197`, and publishes only
 on the Docker bridge gateway used by the control container. Explicit
-`HVO_ISSUE_197_BIND_LOCAL_ROOT`, `HVO_ISSUE_197_BIND_HOST_ROOT`, and
-`HVO_ISSUE_197_DOCKER_HOST_ADDRESS` overrides are available when automatic bind
-discovery is not possible. Bind-root overrides are constrained to the dedicated
-repository `data/agent/issue-197` subtree; the runner requires its ownership
-marker and serializes executions with a PID lock directory before deleting any
-state.
+`HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_LOCAL_ROOT`,
+`HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_HOST_ROOT`, and
+`HVO_CAMERAAGENT_DUAL_STANDALONE_DOCKER_HOST_ADDRESS` overrides are available
+when automatic bind discovery is not possible. Bind-root overrides are
+constrained to the dedicated repository `data/agent/issue-197` subtree; the
+runner requires its ownership marker and serializes executions with a PID lock
+directory before deleting any state.
 
 The default workload runs five independent trials with five warm-up and 30
 measured W1 captures per agent at five-second cadence. Each trial verifies

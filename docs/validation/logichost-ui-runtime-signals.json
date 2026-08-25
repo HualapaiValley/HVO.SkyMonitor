@@ -93,7 +93,7 @@
     "identifiers": "Logs, metric labels, and span tags contain bounded categorical values only. Durable audit tables retain actor and subject identifiers under authenticated authority but do not export them as telemetry dimensions."
   },
   "collection": {
-    "testCommand": "./scripts/test:logichost-ui-107",
+    "testCommand": "./scripts/test:logichost-ui",
     "retainedArtifactPath": "TestResults/issue-107/<fingerprint>/<run-id>/",
     "payloadMeasurement": "The HTTP boundary records actual initial response and public artifact bytes; browser evidence separately records route and interactive transfer measurements.",
     "artifacts": ["logs.jsonl", "metrics.json", "traces.jsonl", "health.json", "process.csv", "sql.json", "map-requests.json", "cardinality-leak-scan.json", "dependency-outages.json"]

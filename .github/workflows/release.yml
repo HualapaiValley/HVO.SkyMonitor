@@ -61,8 +61,16 @@ jobs:
           else
             [[ "$SOURCE_SHA" == "$GITHUB_SHA" && "$SOURCE_SHA" == "$main_sha" ]]
           fi
-          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA/check-runs" --jq '[.check_runs[] | select(.name == "Required CI")][0].conclusion')
-          [[ "$conclusion" == "success" ]]
+          mapfile -t ci_run_ids < <(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f branch=main -f event=push -f status=completed -f head_sha="$SOURCE_SHA" -f per_page=100 \
+            --jq '.workflow_runs[].id')
+          ci_passed=false
+          for ci_run_id in "${ci_run_ids[@]}"; do
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ci_run_id/jobs" \
+              --jq '[.jobs[] | select(.name == "Required CI")][0].conclusion // empty')"
+            if [[ "$conclusion" == success ]]; then ci_passed=true; break; fi
+          done
+          [[ "$ci_passed" == true ]]
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

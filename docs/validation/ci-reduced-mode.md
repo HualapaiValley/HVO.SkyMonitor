@@ -13,7 +13,8 @@ Tests, Architecture & Publish, Migrations, and Coverage are expected to report
 Catalog Contracts also skips in reduced mode but is not currently aggregated by
 Required CI. Deployment selection is independent: ordinary full-mode application
 pull requests skip Deployment Contracts, deployment-relevant pull requests run
-them, and main/release pushes always run the complete matrix including deployment.
+the lightweight deployment contracts, and main/release/manual runs execute the
+complete matrix including exhaustive deployment rehearsal.
 The workflow applies to pull requests targeting `main` or `release/**`, including
 the `release/deploy-331` release strategy.
 
@@ -80,3 +81,13 @@ seconds (6.3%) because independently reproducible lifecycle setup is repeated;
 maximum reported resident set stayed within measurement noise at approximately
 202 MiB. Pull-request deployment relevance reduces unnecessary runner use but
 was not included in that execution-time comparison.
+
+Run
+[`32790325294`](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/32790325294)
+showed why the exhaustive suite was removed from pull-request critical paths:
+the nine fake-host shards took 11:43, catalog lifecycle plus product-layout
+recovery took 5:49, and the real disposable installer took another minute. The
+current coordinator and campaign-shape contracts took 21 seconds. Every
+deployment-relevant pull request retains that focused boundary, and classifier
+outputs add only the affected exhaustive catalog, product-layout, split-host, or
+installer suite. Main/release/manual runs continue to execute all four.

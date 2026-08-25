@@ -10,6 +10,10 @@ mode="full"
 reason="non-pull-request events always run the full matrix"
 deployment="true"
 deployment_reason="non-pull-request events always run deployment contracts"
+deployment_catalog="true"
+deployment_layout="true"
+deployment_shards="true"
+deployment_installer="true"
 path_count=0
 
 write_summary_header() {
@@ -24,13 +28,15 @@ write_summary_path() {
 
 finish() {
   if [[ -n "$summary_file" ]]; then
-    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nPath count: %s\n' \
-      "$mode" "$reason" "$deployment" "$deployment_reason" "$path_count" >> "$summary_file"
+    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive product layout: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nPath count: %s\n' \
+      "$mode" "$reason" "$deployment" "$deployment_reason" "$deployment_catalog" \
+      "$deployment_layout" "$deployment_shards" "$deployment_installer" "$path_count" >> "$summary_file"
   fi
 
   printf 'CI classification: mode=%s deployment=%s reason=%s deployment-reason=%s paths=%s\n' \
     "$mode" "$deployment" "$reason" "$deployment_reason" "$path_count" >&2
-  printf 'mode=%s\ndeployment=%s\n' "$mode" "$deployment"
+  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_layout=%s\ndeployment_shards=%s\ndeployment_installer=%s\n' \
+    "$mode" "$deployment" "$deployment_catalog" "$deployment_layout" "$deployment_shards" "$deployment_installer"
 }
 
 is_reduced_path() {
@@ -79,7 +85,7 @@ is_deployment_path() {
     scripts/deploy:environment | scripts/deploy:migrate-product-layout | scripts/deploy/* | scripts/install-hvo-skymonitor.sh)
       return 0
       ;;
-    scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:product-layout | scripts/test:phase14-campaign | scripts/test:phase14-normal-campaign)
+    scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:product-layout | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract)
       return 0
       ;;
     scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
@@ -108,6 +114,57 @@ is_deployment_path() {
   return 1
 }
 
+select_deployment_suites() {
+  local path="$1"
+
+  case "$path" in
+    .github/workflows/ci.yml | global.json | scripts/ci:classify | scripts/ci:require | scripts/test:ci-classification)
+      deployment_catalog="true"
+      deployment_layout="true"
+      deployment_shards="true"
+      deployment_installer="true"
+      ;;
+    scripts/catalog/catalog-common.sh | tests/fixtures/catalog/hyg-v42-bright-stars.sqlite)
+      deployment_catalog="true"
+      deployment_layout="true"
+      deployment_shards="true"
+      ;;
+    scripts/catalog:* | scripts/catalog/*)
+      deployment_catalog="true"
+      deployment_shards="true"
+      ;;
+    scripts/infra:operation-lock)
+      deployment_catalog="true"
+      deployment_layout="true"
+      deployment_shards="true"
+      ;;
+    scripts/deploy:migrate-product-layout | scripts/deploy/common.sh | scripts/deploy/product-layout.sh)
+      deployment_layout="true"
+      deployment_shards="true"
+      ;;
+    scripts/test:product-layout)
+      deployment_layout="true"
+      ;;
+    scripts/install-hvo-skymonitor.sh | scripts/test:deployment-installer | .github/workflows/release.yml | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
+      deployment_installer="true"
+      ;;
+    .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
+      deployment_shards="true"
+      deployment_installer="true"
+      ;;
+    .env.template | docker-compose.apps.yml | scripts/deploy:environment | scripts/deploy/* | scripts/test:deploy-environment | deploy/* | src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json | src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json)
+      deployment_shards="true"
+      ;;
+  esac
+}
+
+select_all_deployment_suites() {
+  deployment_catalog="true"
+  deployment_layout="true"
+  deployment_shards="true"
+  deployment_installer="true"
+}
+
 if [[ "$event_name" != "pull_request" ]]; then
   finish
   exit 0
@@ -116,10 +173,15 @@ fi
 reason="pull request contains only allowlisted documentation and developer-environment changes"
 deployment="false"
 deployment_reason="pull request does not change deployment-contract inputs"
+deployment_catalog="false"
+deployment_layout="false"
+deployment_shards="false"
+deployment_installer="false"
 
 if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
   || ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
   deployment="true"
+  select_all_deployment_suites
   reason="base or head commit is unavailable"
   deployment_reason="base or head commit is unavailable"
   finish
@@ -131,6 +193,7 @@ trap 'rm -f "$diff_file"' EXIT
 
 if ! git diff --name-status --no-renames -z "${base_sha}...${head_sha}" -- > "$diff_file"; then
   deployment="true"
+  select_all_deployment_suites
   reason="git diff failed"
   deployment_reason="git diff failed"
   finish
@@ -144,6 +207,7 @@ while IFS= read -r -d '' status; do
   if ! IFS= read -r -d '' path; then
     mode="full"
     deployment="true"
+    select_all_deployment_suites
     reason="git diff returned malformed name-status data"
     deployment_reason="git diff returned malformed name-status data"
     break
@@ -151,6 +215,7 @@ while IFS= read -r -d '' status; do
 
   ((path_count += 1))
   write_summary_path "$status" "$path"
+  select_deployment_suites "$path"
 
   if [[ "$status" != "A" && "$status" != "M" ]]; then
     mode="full"
@@ -180,6 +245,7 @@ done < "$diff_file"
 if [[ "$path_count" -eq 0 ]]; then
   mode="full"
   deployment="true"
+  select_all_deployment_suites
   reason="empty change sets require the full matrix"
   deployment_reason="empty change sets require deployment contracts"
 fi

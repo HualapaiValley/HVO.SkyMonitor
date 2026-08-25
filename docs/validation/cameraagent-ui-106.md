@@ -8,19 +8,22 @@ or central LogicHost UI behavior.
 ## Opt-In Gate
 
 Browser and performance acceptance live in the separate
-`HVO.SkyMonitor.CameraAgent.AcceptanceTests` assembly. The assembly and every
-test are categorized `Manual` and do not participate in the default Unit or
-Integration selections. Run the complete issue gate from the repository root:
+`HVO.SkyMonitor.CameraAgent.AcceptanceTests` assembly. The selected browser and
+gallery-performance classes are categorized `Manual` and do not participate in
+the default Unit or Integration selections. Run the complete issue gate from
+the repository root:
 
 ```bash
-./scripts/test:cameraagent-ui-106 --install-browser
+./scripts/test:cameraagent-ui --install-browser
 ```
 
 The install option downloads the Chromium revision pinned by
 `Microsoft.Playwright.MSTest`; omit it after that revision is installed. The
-runner performs a warning-as-error Release build and then runs all Manual tests
-in the acceptance assembly. The browser test becomes inconclusive with an
-explicit install command when the pinned executable is absent.
+runner performs a warning-as-error Release build and then runs the CameraAgent
+browser and gallery-performance acceptance classes. Other manual hardware,
+standalone, and evidence harnesses in the assembly have separate entry points.
+The browser test becomes inconclusive with an explicit install command when the
+pinned executable is absent.
 The development container installs that pinned revision during post-create and
 retains it in the `hvo-skymonitor-playwright` volume across rebuilds.
 

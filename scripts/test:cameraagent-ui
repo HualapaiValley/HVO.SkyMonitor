@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the opt-in CameraAgent UI acceptance and performance evidence for issue #106.
+# Run the opt-in CameraAgent UI acceptance and performance evidence.
 
 set -euo pipefail
 export LC_ALL=C
@@ -35,5 +35,5 @@ fi
 dotnet test "$PROJECT" \
     --no-build \
     --configuration "$CONFIGURATION" \
-    --filter "TestCategory=Manual" \
+    --filter "FullyQualifiedName~CameraAgentBrowserAcceptanceTests|FullyQualifiedName~CameraAgentGalleryPerformanceTests" \
     --logger "console;verbosity=normal"

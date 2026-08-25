@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the opt-in two-container standalone CameraAgent proof for issue #197.
+# Run the opt-in two-container standalone CameraAgent smoke.
 
 set -euo pipefail
 umask 077
@@ -8,8 +8,8 @@ export LC_ALL=C
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly PROJECT="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
-readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/issue-197/compose.yml"
-readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/issue-197/otel-collector.yml"
+readonly COMPOSE_FILE="$REPO_ROOT/deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml"
+readonly COLLECTOR_CONFIG="$REPO_ROOT/deploy/acceptance/cameraagent-dual-standalone-smoke/otel-collector.yml"
 readonly CONFIG_TEMPLATE="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-production-smoke.json"
 readonly SITING_FIXTURE="$REPO_ROOT/tests/fixtures/locations/siding-spring-synthetic-deployment-v1.json"
 readonly RESULTS="$REPO_ROOT/TestResults/issue-197/dual-agent"
@@ -18,11 +18,11 @@ readonly CENTRAL_DENY_IMAGE='alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b4
 readonly EXPECTED_CATALOG_SHA256='B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2'
 readonly LOCAL_UID="$(id -u)"
 readonly LOCAL_GID="$(id -g)"
-readonly HUALAPAI_PORT="${HVO_ISSUE_197_HUALAPAI_PORT:-51971}"
-readonly SIDING_PORT="${HVO_ISSUE_197_SIDING_PORT:-51972}"
-readonly TRIAL_COUNT="${HVO_ISSUE_197_TRIAL_COUNT:-5}"
-readonly WARMUP_CAPTURE_COUNT="${HVO_ISSUE_197_WARMUP_CAPTURES:-5}"
-readonly MEASURED_CAPTURE_COUNT="${HVO_ISSUE_197_MEASURED_CAPTURES:-30}"
+readonly HUALAPAI_PORT="${HVO_CAMERAAGENT_DUAL_STANDALONE_HUALAPAI_PORT:-51971}"
+readonly SIDING_PORT="${HVO_CAMERAAGENT_DUAL_STANDALONE_SIDING_PORT:-51972}"
+readonly TRIAL_COUNT="${HVO_CAMERAAGENT_DUAL_STANDALONE_TRIAL_COUNT:-5}"
+readonly WARMUP_CAPTURE_COUNT="${HVO_CAMERAAGENT_DUAL_STANDALONE_WARMUP_CAPTURES:-5}"
+readonly MEASURED_CAPTURE_COUNT="${HVO_CAMERAAGENT_DUAL_STANDALONE_MEASURED_CAPTURES:-30}"
 if [[ "$TRIAL_COUNT" == 5 && "$WARMUP_CAPTURE_COUNT" == 5 && "$MEASURED_CAPTURE_COUNT" == 30 ]]; then
     readonly EVIDENCE_MODE='final'
     readonly SUMMARY_SCHEMA='issue-197-five-trial-summary-v2'
@@ -34,13 +34,13 @@ else
 fi
 
 resolve_bind_roots() {
-    if [[ -n "${HVO_ISSUE_197_BIND_LOCAL_ROOT:-}" || -n "${HVO_ISSUE_197_BIND_HOST_ROOT:-}" ]]; then
-        [[ -n "${HVO_ISSUE_197_BIND_LOCAL_ROOT:-}" && -n "${HVO_ISSUE_197_BIND_HOST_ROOT:-}" ]] || {
-            printf 'HVO_ISSUE_197_BIND_LOCAL_ROOT and HVO_ISSUE_197_BIND_HOST_ROOT must be set together.\n' >&2
+    if [[ -n "${HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_LOCAL_ROOT:-}" || -n "${HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_HOST_ROOT:-}" ]]; then
+        [[ -n "${HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_LOCAL_ROOT:-}" && -n "${HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_HOST_ROOT:-}" ]] || {
+            printf 'HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_LOCAL_ROOT and HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_HOST_ROOT must be set together.\n' >&2
             exit 2
         }
-        BIND_LOCAL_ROOT="$(realpath -m "$HVO_ISSUE_197_BIND_LOCAL_ROOT")"
-        BIND_HOST_ROOT="$(realpath -m "$HVO_ISSUE_197_BIND_HOST_ROOT")"
+        BIND_LOCAL_ROOT="$(realpath -m "$HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_LOCAL_ROOT")"
+        BIND_HOST_ROOT="$(realpath -m "$HVO_CAMERAAGENT_DUAL_STANDALONE_BIND_HOST_ROOT")"
         return
     fi
 
@@ -56,11 +56,11 @@ resolve_bind_roots() {
     if [[ -n "$host_workspace" ]]; then
         BIND_LOCAL_ROOT="$container_workspace/data/agent/issue-197"
         BIND_HOST_ROOT="$host_workspace/data/agent/issue-197"
-        DOCKER_HOST_ADDRESS="${HVO_ISSUE_197_DOCKER_HOST_ADDRESS:-$(docker inspect "$(hostname)" --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}')}"
+        DOCKER_HOST_ADDRESS="${HVO_CAMERAAGENT_DUAL_STANDALONE_DOCKER_HOST_ADDRESS:-$(docker inspect "$(hostname)" --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}')}"
     else
         BIND_LOCAL_ROOT="$container_workspace/data/agent/issue-197"
         BIND_HOST_ROOT="$BIND_LOCAL_ROOT"
-        DOCKER_HOST_ADDRESS="${HVO_ISSUE_197_DOCKER_HOST_ADDRESS:-127.0.0.1}"
+        DOCKER_HOST_ADDRESS="${HVO_CAMERAAGENT_DUAL_STANDALONE_DOCKER_HOST_ADDRESS:-127.0.0.1}"
     fi
 }
 
@@ -182,7 +182,7 @@ dotnet build "$PROJECT" --configuration Release -warnaserror 8>&-
 
 baseline_json='null'
 if [[ "$EVIDENCE_MODE" == final ]]; then
-    HVO_CATALOG_PERF_ROOT="$HVO_CATALOG_PERF_ROOT" "$REPO_ROOT/scripts/test:cameraagent-standalone-171" 8>&-
+    HVO_CATALOG_PERF_ROOT="$HVO_CATALOG_PERF_ROOT" "$REPO_ROOT/scripts/test:cameraagent-standalone-production-smoke" 8>&-
     baseline_file="$REPO_ROOT/TestResults/issue-171/production-smoke/five-trial-summary.json"
     [[ -s "$baseline_file" ]] || { printf 'Issue #171 comparator evidence is missing.\n' >&2; exit 1; }
     baseline_json="$(jq -s --slurpfile summary "$baseline_file" '

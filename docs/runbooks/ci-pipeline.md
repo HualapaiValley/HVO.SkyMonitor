@@ -8,8 +8,8 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact. Skipped in classified reduced mode; its result is not currently aggregated by Required CI. |
-| **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, the active acceptance inventory contract, and pinned .NET tools; reduced mode does not restore or audit application packages it cannot affect. |
-| **Deployment Contracts** | One self-hosted job running the deployment coordinator and current campaign contracts, product-layout migration contracts, catalog lifecycle, the disposable offline installer contract, and nine isolated split-host shards with at most eight local child processes. Always runs for main/release pushes and deployment-relevant pull requests; otherwise its planned `skipped` result is required. |
+| **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
+| **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, product-layout, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
 | **Unit Tests** | 2018 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
 | **Integration Tests** | 563 Integration-category cases across SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, forwarded-header, host integration, and the six repository graph/publish cases in Architecture & Publish. Skipped only in classified reduced mode. |
@@ -49,8 +49,9 @@ dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "
 
 Use the exact per-project commands in `.github/workflows/ci.yml` when producing coverage evidence; solution-level TRX names are not collision-proof.
 
-The deployment harness defaults to the original serial all-contract mode for
-local validation:
+The exhaustive deployment harness runs on main/release/manual CI and on pull
+requests that change split-host inputs. It defaults to the original serial
+all-contract mode for local validation:
 
 ```bash
 ./scripts/test:deploy-environment
@@ -60,9 +61,10 @@ Its closed shard inventory is `preflight`, `prepare-images`,
 `existing-catalog-up`, `bootstrap-authority`, `bootstrap-credentials`, `smoke`,
 `measure`, `existing-down`, and `deploy-services`. Inspect it with
 `./scripts/test:deploy-environment --list-shards`, or run one isolated shard with
-`./scripts/test:deploy-environment --shard NAME`. Deployment-relevant CI uses
-`./scripts/test:deploy-environment --parallel`; each child creates an independent
-temporary fixture. The coordinator defaults to the smaller of the shard count,
+`./scripts/test:deploy-environment --shard NAME`. Main/release/manual CI and
+affected pull requests use `./scripts/test:deploy-environment --parallel`; each
+child creates an independent temporary fixture. The coordinator defaults to the
+smaller of the shard count,
 `nproc`, and eight local child processes. `DEPLOY_TEST_MAX_PARALLEL=1` through
 `8` can lower that bound. Every child runs in its own session. Fail-fast and
 signal cleanup send TERM to the complete process group, wait a bounded grace
@@ -84,13 +86,18 @@ without executing the nine full shards:
 ./scripts/test:deploy-environment-cli
 ```
 
-Full Quality retains the acceptance inventory contract, while the deployment
-gate owns the two supported campaign orchestration contracts:
+Manual dispatch retains the historical Phase 14 acceptance inventory contract:
 
 ```bash
 ./scripts/test:phase14-acceptance
-./scripts/test:phase14-campaign
-./scripts/test:phase14-normal-campaign
+```
+
+Deployment-relevant pull requests retain the lightweight coordinator and two
+current deployment orchestration contracts:
+
+```bash
+./scripts/test:deployment-logichost-outage-contract
+./scripts/test:deployment-normal-flow-contract
 ```
 
 The historical Phase 14 component/source importers are reproducibility tools,
@@ -177,12 +184,15 @@ and Quality succeeded and the deployment plan is explicitly `false`.
 Deployment selection is independent from full/reduced mode. A full-mode pull
 request with ordinary application or test changes runs the existing full build
 and test matrix but skips Deployment Contracts. A deployment-relevant pull
-request runs the sharded deployment gate. The closed deployment path map is:
+request runs the lightweight deployment gate plus the affected exhaustive suite
+selected by `deployment_catalog`, `deployment_layout`, `deployment_shards`, or
+`deployment_installer`. Main, `release/**`, and manual runs select all four. The
+closed deployment path map is:
 
 - `.github/workflows/ci.yml`, `.dockerignore`, `.env.template`, `docker-compose.apps.yml`, and `global.json`
 - `scripts/ci:classify`, `scripts/ci:require`, and `scripts/test:ci-classification`
 - `scripts/deploy:environment`, `scripts/deploy:migrate-product-layout`, and `scripts/deploy/**`
-- `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:deployment-installer`, `scripts/test:product-layout`, `scripts/test:phase14-campaign`, and `scripts/test:phase14-normal-campaign`
+- `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:deployment-installer`, `scripts/test:product-layout`, `scripts/test:deployment-logichost-outage-contract`, and `scripts/test:deployment-normal-flow-contract`
 - `scripts/catalog:*`, `scripts/catalog/**`, and `scripts/infra:operation-lock`
 - `deploy/**`
 - `tests/fixtures/catalog/hyg-v42-bright-stars.sqlite`
@@ -192,18 +202,19 @@ request runs the sharded deployment gate. The closed deployment path map is:
 - `src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json`
 - `src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json` and `src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json`
 
-The classifier emits both `mode` and `deployment` with reasons in the step
-summary. Missing commits, failed or malformed diffs, empty change sets,
-deletions, renames, type changes, and missing or non-regular entries fail closed
-to `mode=full` and `deployment=true`. `Required CI` requires Deployment
+The classifier emits `mode`, `deployment`, and the four exhaustive-suite outputs
+with reasons in the step summary. Missing commits, failed or malformed diffs,
+and empty change sets fail closed to every suite. Deletions, renames, type
+changes, and missing or non-regular entries use the affected path to select a
+suite while still forcing `mode=full` and `deployment=true`. `Required CI` requires Deployment
 Contracts to be `success` exactly when deployment is `true`, and `skipped`
 exactly when it is `false`; failed, canceled, missing, or mismatched results are
 rejected in either plan.
 
-Pushes to `main` or `release/**` always use the full matrix and deployment
-contracts. The existing full/reduced scope for Build, Unit Tests, Integration
-Tests, Architecture & Publish, Migrations, and Coverage is unchanged; this work
-does not implement broader subsystem targeting.
+Pushes to `main` or `release/**` and manual dispatches use the full matrix and
+exhaustive deployment contracts. The existing full/reduced scope for Build, Unit
+Tests, Integration Tests, Architecture & Publish, Migrations, and Coverage is
+unchanged; this work does not implement broader subsystem targeting.
 
 ## Failure Triage
 

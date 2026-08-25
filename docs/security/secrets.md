@@ -45,9 +45,10 @@ backup remain outside Git.
 
 The current GitHub billing plan cannot enforce required reviewers or a wait
 timer on the environment. Publication therefore remains manual, requires an
-exact protected-main SHA with successful `Required CI`, separates OIDC signing
-from release-write permission, and fails on tag or asset collision. Enable
-environment reviewers as soon as repository plan support is available.
+exact protected-main SHA with a completed main-push CI workflow whose `Required
+CI` job succeeded, separates OIDC signing from release-write permission, and
+fails on tag or asset collision. Enable environment reviewers as soon as
+repository plan support is available.
 
 ## Local Setup
 
