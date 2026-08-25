@@ -23,8 +23,11 @@ internal sealed class NoOpFileStorageProcessingStep(
     IArtifactOutbox artifactOutbox,
     IOptions<CameraAgentHostOptions> hostOptions,
     ILogger<NoOpFileStorageProcessingStep> logger,
-    CaptureProcessingPersistence? processingPersistence = null) : ConfigurableCaptureProcessingStep<NoOpFileStorageProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer
+    CaptureProcessingPersistence? processingPersistence = null) : ConfigurableCaptureProcessingStep<NoOpFileStorageProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer,
+    ILegacyCaptureProcessingPlanContract
 {
+    internal const string LegacyPlanContract = "storage-plan-v1";
+    public string LegacyPlanContractId => LegacyPlanContract;
     internal const string StableAlias = "Storage";
 
     private readonly ILatestFrameAccessor _latestFrameAccessor = latestFrameAccessor;

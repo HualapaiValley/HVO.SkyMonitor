@@ -143,7 +143,7 @@ public static class LayeredPresentationJson
         var suppliedSources = MaterializeBounded(sourceArtifactIds, MaximumSourceArtifactCount, nameof(sourceArtifactIds));
         var selectedSources = manifest.Layers.Where(layer => enabledSet.Contains(layer.LayerIdentitySha256))
             .Select(static layer => layer.SourceProduct.ArtifactId);
-        var sources = Freeze(suppliedSources.Append(manifest.BaseProduct.ArtifactId).Concat(selectedSources).Distinct().Order());
+        var sources = Freeze(suppliedSources.Append(manifest.BaseProduct.ArtifactId).Concat(selectedSources).Distinct());
         if (sources.Count > MaximumSourceArtifactCount)
             throw new ArgumentException("Source artifact count exceeds its bound.", nameof(sourceArtifactIds));
         var request = new PresentationMaterializationRequestV1(
@@ -214,7 +214,7 @@ public static class LayeredPresentationJson
             request.EnabledLayerIdentitySha256.Any(static value => value is null) ||
             request.SourceArtifactIds is null || request.SourceArtifactIds.Count > MaximumSourceArtifactCount ||
             request.SourceArtifactIds.Any(static id => id == Guid.Empty) ||
-            !request.SourceArtifactIds.SequenceEqual(request.SourceArtifactIds.Distinct().Order()))
+            !request.SourceArtifactIds.SequenceEqual(request.SourceArtifactIds.Distinct()))
             throw new ArgumentException("Materialization structure is invalid.", nameof(request));
         ValidateProduct(request.BaseProduct);
         ValidateSha256(request.ManifestIdentitySha256, nameof(request));

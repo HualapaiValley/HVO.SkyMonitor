@@ -43,6 +43,47 @@ public sealed record PresentationMetadataFactsV1(
     IReadOnlyList<string> BottomLeft,
     IReadOnlyList<string> BottomRight);
 
+public sealed record PresentationEnvironmentalFactV1(
+    string Kind,
+    string Status,
+    string PolicyIdentitySha256,
+    string AssociationIdentitySha256,
+    string? TargetRigId,
+    DateTimeOffset ExposureFromUtc,
+    DateTimeOffset ExposureThroughUtc,
+    DateTimeOffset EvaluatedUtc,
+    Guid? ObservationId,
+    string? ObservationSourceIdentitySha256,
+    string? ObservationSourceContentSha256,
+    string? ObservationContentSha256,
+    DateTimeOffset? ObservedAtUtc,
+    DateTimeOffset? StaleAfterUtc,
+    string? Quality,
+    IReadOnlyList<PresentationEnvironmentalConflictV1> ConflictingObservations,
+    string DisplayLine);
+
+public sealed record PresentationEnvironmentalConflictV1(
+    Guid ObservationId,
+    string SourceIdentitySha256,
+    string ContentSha256);
+
+public sealed record PresentationMetadataFactsProductV1(
+    string SchemaVersion,
+    string FactsIdentitySha256,
+    Guid CaptureId,
+    long CaptureSequence,
+    JsonElement Capture,
+    IReadOnlyList<PresentationEnvironmentalFactV1> Environment,
+    JsonElement Catalog,
+    JsonElement Calibration,
+    JsonElement Stack,
+    JsonElement ProcessingProfile,
+    PresentationMetadataFactsV1 Corners)
+{
+    public const string CurrentSchemaVersion = "presentation-metadata-facts-v1";
+    public const string MediaType = "application/vnd.hvo.presentation-metadata-facts+json";
+}
+
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
@@ -239,7 +280,7 @@ public static class PresentationLayerProducers
                     $"Precipitation {assessment.Environment.PrecipitationStatus}"
                 ]), 1, 0, 2, new PresentationColor(255, 255, 255))
         } : [];
-        var sourceIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(assessment));
+        var sourceIdentity = assessment.AssessmentIdentitySha256;
         return new(
             PresentationLayerPayloadJson.Create(sourceIdentity, widthPixels, heightPixels,
                 tileMask: new(assessment.Grid.Columns, assessment.Grid.Rows, PresentationTileMaskV1.RowMajorLsbFirst,

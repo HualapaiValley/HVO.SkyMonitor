@@ -14,14 +14,18 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     IProjectedSceneStagingReader stagingReader,
     CameraAgentRecipeExecutionAdapter adapter)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
-      IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit
+       IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
+       ILegacyCaptureProcessingPlanContract
 {
+    internal const string LegacyPlanContract = "projected-scene-plan-v1";
+    public string LegacyPlanContractId => LegacyPlanContract;
     private const string StageInputName = "virtual-render-scene";
 
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.ProjectedScene;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
+    public string? OutputSchemaVersion => ProjectedSceneV1.CurrentSchemaVersion;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
 
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)

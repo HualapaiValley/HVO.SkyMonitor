@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.TestSupport;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
@@ -111,6 +112,35 @@ public sealed class DurableCaptureDistributionTests
         var second = await fixture.ClaimAsync("standard").ConfigureAwait(false);
         Assert.IsNotNull(second);
         Assert.AreNotEqual(first.WorkId, second.WorkId);
+    }
+
+    [TestMethod]
+    public async Task DeferredEnvironmentAssociation_RestartDoesNotConsumeAttemptAndConverges()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions());
+        await fixture.AcceptAsync(0).ConfigureAwait(false);
+        var first = await fixture.ClaimAsync("standard").ConfigureAwait(false);
+        Assert.IsNotNull(first);
+
+        var disposition = await fixture.Store.FailAsync(
+            first, CaptureLaneHandlerResult.Wait(ProcessingReasonCodes.EnvironmentAssociationPending),
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Deferred, disposition);
+        fixture.Time.Advance(TimeSpan.FromSeconds(1));
+        var resumed = await fixture.Store.ClaimAsync(
+            fixture.Policy.Definitions.Single(static lane => lane.Name == "standard"),
+            "restart", fixture.Configuration, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(resumed);
+        Assert.AreEqual(first.WorkId, resumed.WorkId);
+        Assert.AreEqual(first.Attempt, resumed.Attempt);
+        await fixture.Store.CompleteAsync(resumed, CancellationToken.None).ConfigureAwait(false);
+
+        using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual("completed", await ScalarStringAsync(connection,
+            "SELECT state FROM capture_lane_work WHERE lane_name = 'standard';").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarLongAsync(connection,
+            "SELECT attempt_count FROM capture_lane_work WHERE lane_name = 'standard';").ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -252,6 +282,42 @@ public sealed class DurableCaptureDistributionTests
         Assert.AreEqual(expected, lease.Context.Submission.CycleEvidence);
         Assert.AreEqual(expected, lease.Context.RawCapture.Manifest.Descriptor.CycleEvidence);
         Assert.AreEqual(receipt.CommittedManifestSha256, lease.Context.RawCapture.CommittedManifestSha256);
+    }
+
+    [TestMethod]
+    public async Task InFlightOldPipelineEnvelopeSurvivesConfigurationMigrationUntilDrain()
+    {
+        using var fixture = CreateFixture(new CaptureDistributionOptions());
+        var oldStep = new CaptureProcessingStepConfig("Annotation", "sky-annotation", DependsOn: ["preview"]);
+        var oldConfiguration = fixture.Configuration with
+        {
+            ProcessingSteps = null,
+            Pipeline = new CapturePipelineConfig([oldStep], CapturePipelineSchemaVersions.ExplicitV2,
+                CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        };
+        var submission = fixture.CreateSubmission(0);
+        _ = await fixture.Ingress.AcceptAsync(oldConfiguration, submission, CancellationToken.None).ConfigureAwait(false);
+        var newConfiguration = fixture.Configuration with
+        {
+            ProcessingSteps = null,
+            Pipeline = new CapturePipelineConfig([
+                new CaptureProcessingStepConfig("OverlayManifest", "overlay-manifest", DependsOn: ["combined-preview"])
+            ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        };
+
+        var restarted = fixture.RestartLaneStore();
+        await restarted.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
+        var oldLease = await restarted.ClaimAsync(
+            fixture.Policy.Definitions.Single(static definition => definition.Name == "standard"),
+            "restart-owner", newConfiguration, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(oldLease);
+        Assert.AreEqual("sky-annotation", oldLease.Context.Configuration.Pipeline!.Steps.Single().Id);
+        await restarted.CompleteAsync(oldLease, CancellationToken.None).ConfigureAwait(false);
+        var newEnvelope = CaptureLaneEnvelopeSerializer.Serialize(newConfiguration, fixture.CreateSubmission(1));
+        var decoded = CaptureLaneEnvelopeSerializer.Deserialize(newEnvelope.Json, newEnvelope.Sha256);
+        Assert.AreEqual("overlay-manifest", decoded.Configuration.Pipeline!.Steps.Single().Id);
+        Assert.AreEqual("sky-annotation", oldLease.Context.Configuration.Pipeline!.Steps.Single().Id);
     }
 
     [TestMethod]

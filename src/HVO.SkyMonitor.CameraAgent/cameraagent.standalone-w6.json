@@ -289,6 +289,7 @@
         "id": "cloud",
         "type": "CloudAssessment",
         "order": 60,
+        "required": false,
         "dependsOn": [ "calibration" ],
         "options": {
           "clearReferenceManifestPath": "w6/clear-reference.manifest.json",
@@ -303,63 +304,81 @@
         }
       },
       {
-        "id": "sky-annotation",
-        "type": "Annotation",
+        "id": "scene-presentation",
+        "type": "ScenePresentationLayer",
         "order": 70,
-        "dependsOn": [ "combined-preview", "projected-scene" ],
+        "dependsOn": [ "projected-scene" ],
+        "publication": { "persistence": "durable-local" },
         "options": {
-          "markRadius": 6,
-          "markerValue": 144,
-          "drawLabels": true,
-          "maximumLabelMagnitude": 2.5,
-          "labelScale": 2,
-          "drawConstellationLines": true,
-          "constellationIds": [ "ORI", "UMA", "UMI", "CAS", "CYG", "LYR" ],
-          "constellationLineValue": 160,
-          "constellationLineRed": 96,
-          "constellationLineGreen": 160,
-          "constellationLineBlue": 255,
-          "constellationLineThickness": 2,
-          "constellationLineOpacity": 0.8,
-          "drawImageCircle": true,
-          "drawCardinalDirections": true,
-          "drawMetadataCorners": true,
-          "requireProjectedSceneDependency": true,
-          "topLeftTokens": [ "agent-identity", "capture-sequence", "utc" ],
-          "topRightTokens": [ "schedule-profile", "exposure", "cadence", "gain", "offset", "sensor-setpoint" ],
-          "bottomLeftTokens": [ "environment" ],
-          "bottomRightTokens": [ "catalog", "calibration", "stack", "processing-profile" ],
-          "environmentalKinds": [ "AirTemperature", "RelativeHumidity", "AtmosphericPressure", "WindSpeed", "RainState", "CloudCover" ],
-          "metadataValue": 255,
-          "metadataScale": 1,
-          "metadataInset": 4,
-          "metadataLineSpacing": 2,
-          "imageCircleValue": 96,
-          "cardinalValue": 255,
-          "cardinalScale": 2,
-          "recipeVersion": "projected-scene-annotation-v3",
-          "outputVariant": "w6-annotated"
+          "annotationOutputVariant": "w6-scene-annotation-layer",
+          "constellationOutputVariant": "w6-constellation-layer",
+          "constellationIds": [ "ORI", "UMA", "UMI", "CAS", "CYG", "LYR" ]
         }
       },
       {
-        "id": "weather-overlay",
-        "type": "WeatherCloudOverlay",
-        "order": 80,
+        "id": "cloud-presentation",
+        "type": "CloudPresentationLayer",
+        "order": 71,
         "required": false,
-        "dependsOn": [ "sky-annotation", "cloud" ],
+        "dependsOn": [ "cloud" ],
+        "publication": { "persistence": "durable-local" },
         "options": {
-          "recipeVersion": "weather-cloud-overlay-v1",
-          "outputVariant": "w6-weather-overlay",
-          "lineThickness": 1,
-          "drawLabels": true,
-          "maximumLabelCharacters": 32
+          "maskOutputVariant": "w6-cloud-mask-layer",
+          "labelOutputVariant": "w6-cloud-label-layer",
+          "widthPixels": 3552,
+          "heightPixels": 3552
+        }
+      },
+      {
+        "id": "environment-presentation",
+        "type": "EnvironmentPresentationLayer",
+        "order": 72,
+        "dependsOn": [ "projected-scene", "combined-preview" ],
+        "publication": { "persistence": "durable-local" },
+        "options": {
+          "factsOutputVariant": "w6-presentation-metadata-facts",
+          "outputVariant": "w6-environment-layer",
+          "widthPixels": 3552,
+          "heightPixels": 3552
+        }
+      },
+      {
+        "id": "overlay-manifest",
+        "type": "OverlayManifest",
+        "order": 80,
+        "dependsOn": [ "combined-preview", "scene-presentation", "cloud-presentation", "environment-presentation" ],
+        "publication": { "persistence": "durable-local" },
+        "options": {
+          "outputVariant": "w6-overlay-manifest",
+          "sceneAnnotationVariant": "w6-scene-annotation-layer",
+          "sceneConstellationVariant": "w6-constellation-layer",
+          "cloudMaskVariant": "w6-cloud-mask-layer",
+          "cloudLabelVariant": "w6-cloud-label-layer",
+          "environmentFactsVariant": "w6-presentation-metadata-facts",
+          "environmentVariant": "w6-environment-layer"
+        }
+      },
+      {
+        "id": "presentation-materializer",
+        "type": "PresentationMaterializer",
+        "order": 81,
+        "dependsOn": [ "combined-preview", "overlay-manifest", "scene-presentation", "cloud-presentation", "environment-presentation" ],
+        "publication": { "persistence": "durable-local" },
+        "options": {
+          "outputVariant": "w6-annotated-preview",
+          "sceneAnnotationVariant": "w6-scene-annotation-layer",
+          "sceneConstellationVariant": "w6-constellation-layer",
+          "cloudMaskVariant": "w6-cloud-mask-layer",
+          "cloudLabelVariant": "w6-cloud-label-layer",
+          "environmentFactsVariant": "w6-presentation-metadata-facts",
+          "environmentVariant": "w6-environment-layer"
         }
       },
       {
         "id": "storage",
         "type": "Storage",
         "order": 90,
-        "dependsOn": [ "projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud", "sky-annotation", "weather-overlay" ],
+        "dependsOn": [ "projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "scene-presentation", "environment-presentation", "overlay-manifest", "presentation-materializer" ],
         "options": {
           "storageRoot": "/var/lib/hvo/data/agent",
           "retentionDays": 1,
@@ -372,7 +391,7 @@
         "id": "telemetry",
         "type": "Telemetry",
         "order": 100,
-        "dependsOn": [ "projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "cloud", "sky-annotation", "weather-overlay", "storage" ]
+        "dependsOn": [ "projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "scene-presentation", "environment-presentation", "overlay-manifest", "presentation-materializer", "storage" ]
       }
     ]
   },

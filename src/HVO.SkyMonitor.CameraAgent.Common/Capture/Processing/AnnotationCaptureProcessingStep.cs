@@ -22,8 +22,10 @@ internal sealed class AnnotationCaptureProcessingStep(
     CameraAgentRecipeExecutionAdapter adapter,
     IServiceProvider? serviceProvider = null)
     : ConfigurableCaptureProcessingStep<AnnotationProcessingStepOptions>(metadata, options),
-      ICaptureProcessingGraphStep, ICompoundCaptureProcessingGraphStep
+       ICaptureProcessingGraphStep, ICompoundCaptureProcessingGraphStep, ILegacyCaptureProcessingPlanContract
 {
+    internal const string LegacyPlanContract = "annotation-plan-v1";
+    public string LegacyPlanContractId => LegacyPlanContract;
     public bool Enabled => Options.Enabled;
 
     public string RecipeName => BuiltInProcessingRecipes.Annotation;

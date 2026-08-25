@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
@@ -25,6 +26,13 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [DoNotParallelize]
 public sealed class DurableCaptureProcessingTests
 {
+    private const string Pre433CloudPlanSha256 = "C3937D26381FB9343A0C2439548D718B62CAA7778FE965B9E48D5E8C7BBD620E";
+    private static readonly string[] ExpectedProductionLayerOrder =
+        ["scene-constellations", "scene-annotation", "cloud-mask", "cloud-labels", "environment"];
+    private static readonly JsonSerializerOptions WebEnumJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+    };
     [TestMethod]
     [TestCategory("Unit")]
     public async Task NonGraphWorker_ValidRawDoesNotInvalidateEvidence()
@@ -467,6 +475,243 @@ public sealed class DurableCaptureProcessingTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task IncompatibleNewNode_CannotClaimLegacyPlanHash()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var annotation = new PackedAnnotationProducingStep();
+            var oldHash = new string('A', 64);
+            var oldNode = new CaptureProcessingGraphNode("sky-annotation", annotation, [], true,
+                annotation.RecipeName, annotation.OutputRole, annotation.OutputVariant, oldHash);
+            var first = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, new CaptureProcessingGraph([oldNode]), persistence, telemetry, 1,
+                NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, first.Outcome, first.Reason);
+            var persisted = (await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "sky-annotation", CancellationToken.None).ConfigureAwait(false))!;
+            Assert.AreEqual(oldHash, persisted.PlanSha256);
+
+            var incompatible = new PackedAnnotationProducingStep();
+            var graph = new CaptureProcessingGraph([
+                new CaptureProcessingGraphNode("sky-annotation", incompatible, [], true,
+                    incompatible.RecipeName, incompatible.OutputRole, incompatible.OutputVariant,
+                    new string('N', 64), LegacyPlanSha256: oldHash)
+            ]);
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item, graph, persistence, telemetry, 2,
+                    NullLogger.Instance, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual(0, incompatible.ExecutionCount);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task ProductionLayeredPresentation_RestartRestoresExactFinalBytesIdentityAndSourceOrder()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            string beforeIdentity;
+            byte[] beforePayload;
+            Guid[] beforeSources;
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var graph = await CreateProductionLayeredGraphAsync(fixture, root).ConfigureAwait(false);
+                var first = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item, graph, CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, first.Outcome, first.Reason);
+                var before = await ReadProductAsync(store, "presentation-materializer").ConfigureAwait(false);
+                beforeIdentity = before.OutputIdentitySha256;
+                beforePayload = await File.ReadAllBytesAsync(Path.Combine(root, before.PayloadRelativePath)).ConfigureAwait(false);
+                beforeSources = before.Artifact.SourceArtifactIds.ToArray();
+                var manifestOutput = await ReadProductAsync(store, "overlay-manifest").ConfigureAwait(false);
+                var manifest = LayeredPresentationJson.ParseManifest(
+                    await File.ReadAllBytesAsync(Path.Combine(root, manifestOutput.PayloadRelativePath)).ConfigureAwait(false)).Document;
+                Assert.IsNotNull(manifest);
+                CollectionAssert.AreEqual(
+                    ExpectedProductionLayerOrder,
+                    manifest.Layers.Select(static layer => layer.LayerKind).ToArray());
+                CollectionAssert.AreEqual(manifest.Layers.Select(static layer => layer.ZOrder).Order().ToArray(),
+                    manifest.Layers.Select(static layer => layer.ZOrder).ToArray());
+            }
+
+            var restartedFixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var restartedTelemetry = new CaptureProcessingTelemetry();
+            using var restartedStore = new SqliteCaptureProcessingStore(restartedFixture.Options);
+            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var replayGraph = await CreateProductionLayeredGraphAsync(restartedFixture, root).ConfigureAwait(false);
+            var replay = await FrameProcessingWorker.ProcessGraphItemAsync(
+                restartedFixture.Item, replayGraph,
+                CreatePersistence(restartedFixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                restartedTelemetry, 2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, replay.Outcome, replay.Reason);
+            var after = await ReadProductAsync(restartedStore, "presentation-materializer").ConfigureAwait(false);
+            var afterPayload = await File.ReadAllBytesAsync(Path.Combine(root, after.PayloadRelativePath)).ConfigureAwait(false);
+
+            Assert.AreEqual(beforeIdentity, after.OutputIdentitySha256);
+            CollectionAssert.AreEqual(beforePayload, afterPayload);
+            CollectionAssert.AreEqual(beforeSources, after.Artifact.SourceArtifactIds.ToArray());
+            Assert.HasCount(7, beforeSources);
+            foreach (var node in replayGraph.Nodes)
+            {
+                Assert.AreEqual(1, (await restartedStore.ReadNodeAsync(
+                    restartedFixture.Manifest.Descriptor.Capture.CaptureId, node.Id,
+                    CancellationToken.None).ConfigureAwait(false))!.Attempt);
+            }
+            var continuation = new DependencyCountingStep();
+            var continuationResult = await FrameProcessingWorker.ProcessGraphItemAsync(
+                restartedFixture.Item,
+                new CaptureProcessingGraph([
+                    .. replayGraph.Nodes,
+                    new CaptureProcessingGraphNode("continuation", continuation, ["overlay-manifest"], true,
+                        null, null, null, new string('C', 64))
+                ]),
+                CreatePersistence(restartedFixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                restartedTelemetry, 3, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, continuationResult.Outcome, continuationResult.Reason);
+            Assert.AreEqual(1, continuation.ExecutionCount);
+            Assert.AreEqual(OverlayManifestV1.CurrentSchemaVersion, continuation.DependencySchemaVersion);
+
+            async Task<DurableProcessingOutput> ReadProductAsync(SqliteCaptureProcessingStore store, string nodeId)
+            {
+                var node = await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                    nodeId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(node);
+                Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status);
+                Assert.HasCount(1, node.Outputs);
+                return node.Outputs[0];
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task PreTypedCloudRestoresOnlyInOldGraphAndCannotSatisfyLayeredCloud()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var productTemplate = CreateCloudAssessmentProduct(fixture.Item);
+            var environmentInput = CameraAgentCloudEnvironment.CreateMissingInput(new CaptureProcessingContext(
+                fixture.Item.Config, fixture.Item.Submission, fixture.Item.RawCapture));
+            var environment = JsonSerializer.Deserialize<CloudAssessmentEnvironmentV1>(
+                environmentInput.Payload.Span, WebEnumJsonOptions)!;
+            environment = environment with
+            {
+                InputIdentitySha256 = environmentInput.IdentitySha256
+            };
+            var assessment = CloudAssessmentJson.Parse(productTemplate.Payload).Assessment! with
+            {
+                Environment = environment,
+                RecipeIdentitySha256 = productTemplate.Recipe.IdentitySha256
+            };
+            var legacyPayload = CloudAssessmentJson.Serialize(assessment);
+            var legacyProduct = productTemplate with
+            {
+                Payload = legacyPayload,
+                ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(legacyPayload),
+                SchemaVersion = null,
+                ContentIdentitySha256 = null
+            };
+            using (var telemetry = new CaptureProcessingTelemetry())
+            using (var store = new SqliteCaptureProcessingStore(fixture.Options))
+            using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
+            {
+                var producer = new FixedMetadataProducingStep(legacyProduct);
+                var committed = await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([new CaptureProcessingGraphNode("cloud", producer, [], false,
+                        producer.RecipeName, producer.OutputRole, producer.OutputVariant, Pre433CloudPlanSha256)]),
+                    CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                    NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, committed.Outcome, committed.Reason);
+            }
+
+            var restartedFixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var restartedTelemetry = new CaptureProcessingTelemetry();
+            using var restartedStore = new SqliteCaptureProcessingStore(restartedFixture.Options);
+            using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var cloud = CreateRealCloudStep(root);
+            var annotationProduct = CreatePackedProduct(restartedFixture.Item, FrameArtifactRole.AnnotatedPreview,
+                BuiltInProcessingRecipes.Annotation, "w6-annotated", [0, 64, 128, 255]);
+            var annotation = new FixedArtifactProducingStep(annotationProduct);
+            var weather = new DependencyMetadataProducingStep("weather-overlay", "w6-weather-overlay");
+            var storageContinuation = new DependencyCountingStep();
+            var oldGraph = new CaptureProcessingGraph([
+                new CaptureProcessingGraphNode("sky-annotation", annotation, [], true, annotation.RecipeName,
+                    annotation.OutputRole, annotation.OutputVariant, new string('A', 64)),
+                new CaptureProcessingGraphNode("cloud", cloud, [], false, cloud.RecipeName,
+                    cloud.OutputRole, cloud.OutputVariant, new string('C', 64),
+                    LegacyPlanSha256: Pre433CloudPlanSha256),
+                new CaptureProcessingGraphNode("weather-overlay", weather, ["sky-annotation", "cloud"], true,
+                    BuiltInProcessingRecipes.WeatherCloudOverlay, weather.OutputRole, weather.OutputVariant,
+                    new string('W', 64)),
+                new CaptureProcessingGraphNode("storage", storageContinuation, ["weather-overlay"], true,
+                    null, null, null, new string('S', 64))
+            ]);
+            var resumed = await FrameProcessingWorker.ProcessGraphItemAsync(
+                restartedFixture.Item, oldGraph,
+                CreatePersistence(restartedFixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                restartedTelemetry, 2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, resumed.Outcome, resumed.Reason);
+            Assert.AreEqual(1, storageContinuation.ExecutionCount);
+            Assert.AreEqual("test-dependency-v1", storageContinuation.DependencySchemaVersion);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, (await restartedStore.ReadNodeAsync(
+                restartedFixture.Manifest.Descriptor.Capture.CaptureId, "weather-overlay",
+                CancellationToken.None).ConfigureAwait(false))!.Status);
+            var restored = await restartedStore.ReadNodeAsync(
+                restartedFixture.Manifest.Descriptor.Capture.CaptureId, "cloud", CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(restored);
+            Assert.IsNull(restored.Outputs.Single().ProductSchemaVersion);
+            Assert.IsNull(restored.Outputs.Single().ContentIdentitySha256);
+
+            var layeredCloud = CreateRealCloudStep(root);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    restartedFixture.Item,
+                    new CaptureProcessingGraph([new CaptureProcessingGraphNode("cloud", layeredCloud, [], false,
+                        layeredCloud.RecipeName, layeredCloud.OutputRole, layeredCloud.OutputVariant,
+                        new string('N', 64))]),
+                    CreatePersistence(restartedFixture.Options, restartedStore, restartedStorage, restartedTelemetry),
+                    restartedTelemetry, 3, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false))
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        static CloudAssessmentCaptureProcessingStep CreateRealCloudStep(string root) => new(
+            new CaptureProcessingStepMetadata("cloud", "CloudAssessment", 60),
+            new CloudAssessmentProcessingStepOptions { OutputVariant = "cloud-assessment-v1" },
+            new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()),
+            new CameraAgentClearReferenceLoader(Options.Create(new CameraAgentHostOptions { RawIngressRoot = root })));
     }
 
     [TestMethod]
@@ -2297,6 +2542,261 @@ public sealed class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task OptionalProducerRetry_DefersOptionalAndRequiredConsumersAndRetriesLane()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        var producer = new OutcomeStep(ProcessingOutcome.RetryableFailure("test.producer-retry"));
+        var optionalConsumer = new CountingStep();
+        var requiredConsumer = new CountingStep();
+        var graph = new CaptureProcessingGraph([
+            new CaptureProcessingGraphNode("P", producer, [], false, null, null, null),
+            new CaptureProcessingGraphNode("A", optionalConsumer, ["P"], true, null, null, null,
+                OptionalDependencies: new HashSet<string>(["P"], StringComparer.OrdinalIgnoreCase)),
+            new CaptureProcessingGraphNode("B", requiredConsumer, ["P"], true, null, null, null)
+        ]);
+
+        var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+            CreateEphemeralItem(), graph, null, telemetry, 1, NullLogger.Instance, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, result.Outcome);
+        Assert.AreEqual("test.producer-retry", result.Reason);
+        Assert.AreEqual(0, optionalConsumer.ExecutionCount);
+        Assert.AreEqual(0, requiredConsumer.ExecutionCount);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task OptionalProducerWait_DefersOptionalConsumerAndDefersLane()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        var producer = new OutcomeStep(ProcessingOutcome.RetryableFailure(
+            ProcessingReasonCodes.EnvironmentAssociationPending));
+        var optionalConsumer = new CountingStep();
+        var graph = new CaptureProcessingGraph([
+            new CaptureProcessingGraphNode("P", producer, [], false, null, null, null),
+            new CaptureProcessingGraphNode("A", optionalConsumer, ["P"], true, null, null, null,
+                OptionalDependencies: new HashSet<string>(["P"], StringComparer.OrdinalIgnoreCase))
+        ]);
+
+        var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+            CreateEphemeralItem(), graph, null, telemetry, 1, NullLogger.Instance, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Deferred, result.Outcome);
+        Assert.AreEqual(ProcessingReasonCodes.EnvironmentAssociationPending, result.Reason);
+        Assert.AreEqual(0, optionalConsumer.ExecutionCount);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task OptionalProducerTerminal_LetsOptionalConsumerSucceedAndRequiredConsumerTerminates()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        var producer = new OutcomeStep(ProcessingOutcome.TerminalFailure("test.producer-terminal"));
+        var optionalConsumer = new CountingStep();
+        var requiredConsumer = new CountingStep();
+        var graph = new CaptureProcessingGraph([
+            new CaptureProcessingGraphNode("P", producer, [], false, null, null, null),
+            new CaptureProcessingGraphNode("A", optionalConsumer, ["P"], true, null, null, null,
+                OptionalDependencies: new HashSet<string>(["P"], StringComparer.OrdinalIgnoreCase)),
+            new CaptureProcessingGraphNode("B", requiredConsumer, ["P"], true, null, null, null)
+        ]);
+
+        var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+            CreateEphemeralItem(), graph, null, telemetry, 1, NullLogger.Instance, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, result.Outcome);
+        Assert.AreEqual("processing.dependency-unavailable", result.Reason);
+        Assert.AreEqual(1, optionalConsumer.ExecutionCount);
+        Assert.AreEqual(0, requiredConsumer.ExecutionCount);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task W6OptionalCloudRetry_DefersFinalManifestAndMaterializationThenRetriesLane()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        var cloud = new OutcomeStep(ProcessingOutcome.RetryableFailure("cloud.reference-unavailable"));
+        var manifest = new CountingStep();
+        var materializer = new CountingStep();
+        var graph = CreateW6OptionalCloudGraph(cloud, manifest, materializer);
+
+        var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+            CreateEphemeralItem(), graph, null, telemetry, 1, NullLogger.Instance, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, result.Outcome);
+        Assert.AreEqual("cloud.reference-unavailable", result.Reason);
+        Assert.AreEqual(0, manifest.ExecutionCount);
+        Assert.AreEqual(0, materializer.ExecutionCount);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task W6OptionalCloudTerminal_StillBuildsFinalManifestAndMaterializationSuccessfully()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        var cloud = new OutcomeStep(ProcessingOutcome.TerminalFailure("cloud.invalid-reference"));
+        var manifest = new CountingStep();
+        var materializer = new CountingStep();
+        var graph = CreateW6OptionalCloudGraph(cloud, manifest, materializer);
+
+        var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+            CreateEphemeralItem(), graph, null, telemetry, 1, NullLogger.Instance, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+        Assert.AreEqual(1, manifest.ExecutionCount);
+        Assert.AreEqual(1, materializer.ExecutionCount);
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task OptionalCloudRetry_RestartCommitsManifestAndMaterializerWithExactCloudLineage()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var retryGraph = CreateDurableOptionalCloudGraph(
+                new OutcomeStep(ProcessingOutcome.RetryableFailure("cloud.retry")));
+
+            var retry = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, retryGraph.Graph, persistence, telemetry, 1,
+                NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, retry.Outcome);
+            Assert.AreEqual(DurableProcessingNodeStatus.RetryableFailure, (await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "cloud", CancellationToken.None).ConfigureAwait(false))!.Status);
+            Assert.IsNull(await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "cloud-presentation", CancellationToken.None).ConfigureAwait(false));
+            Assert.IsNull(await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "overlay-manifest", CancellationToken.None).ConfigureAwait(false));
+            Assert.IsNull(await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "presentation-materializer", CancellationToken.None).ConfigureAwait(false));
+
+            var restarted = CreateDurableOptionalCloudGraph(new MetadataProducingStep(variant: "cloud"));
+            var completed = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, restarted.Graph, persistence, telemetry, 2,
+                NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, completed.Outcome, completed.Reason);
+            var cloud = await RequiredOutputAsync("cloud").ConfigureAwait(false);
+            var cloudPresentation = await RequiredOutputAsync("cloud-presentation").ConfigureAwait(false);
+            var manifest = await RequiredOutputAsync("overlay-manifest").ConfigureAwait(false);
+            var materializer = await RequiredOutputAsync("presentation-materializer").ConfigureAwait(false);
+            CollectionAssert.AreEqual(new[] { cloud.ArtifactId },
+                cloudPresentation.ProductManifest!.Artifact.SourceArtifactIds.ToArray());
+            CollectionAssert.AreEqual(new[] { cloudPresentation.ArtifactId },
+                manifest.ProductManifest!.Artifact.SourceArtifactIds.ToArray());
+            CollectionAssert.AreEqual(new[] { manifest.ArtifactId, cloudPresentation.ArtifactId },
+                materializer.ProductManifest!.Artifact.SourceArtifactIds.ToArray());
+
+            async Task<DurableProcessingOutput> RequiredOutputAsync(string nodeId)
+            {
+                var node = await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                    nodeId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(node);
+                Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status);
+                Assert.HasCount(1, node.Outputs);
+                return node.Outputs[0];
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task OptionalCloudTerminal_CommitsCloudlessManifestAndMaterializerSuccessfully()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var graph = CreateDurableOptionalCloudGraph(
+                new OutcomeStep(ProcessingOutcome.TerminalFailure("cloud.terminal")));
+
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, graph.Graph, CreatePersistence(fixture.Options, store, storage, telemetry), telemetry, 1,
+                NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            Assert.AreEqual(DurableProcessingNodeStatus.TerminalFailure, (await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "cloud", CancellationToken.None).ConfigureAwait(false))!.Status);
+            Assert.AreEqual(DurableProcessingNodeStatus.Skipped, (await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "cloud-presentation",
+                CancellationToken.None).ConfigureAwait(false))!.Status);
+            var manifest = await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "overlay-manifest", CancellationToken.None).ConfigureAwait(false);
+            var materializer = await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "presentation-materializer", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, manifest!.Status);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, materializer!.Status);
+            CollectionAssert.AreEqual(new[] { fixture.Manifest.Descriptor.Artifact.ArtifactId },
+                manifest.Outputs.Single().ProductManifest!.Artifact.SourceArtifactIds.ToArray());
+            CollectionAssert.AreEqual(new[] { manifest.Outputs.Single().ArtifactId },
+                materializer.Outputs.Single().ProductManifest!.Artifact.SourceArtifactIds.ToArray());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static (CaptureProcessingGraph Graph, DependencyMetadataProducingStep CloudPresentation,
+        DependencyMetadataProducingStep Manifest, DependencyMetadataProducingStep Materializer)
+        CreateDurableOptionalCloudGraph(ICaptureProcessingStep cloud)
+    {
+        var cloudPresentation = new DependencyMetadataProducingStep("cloud-presentation", "cloud-layer");
+        var manifest = new DependencyMetadataProducingStep("overlay-manifest", "manifest");
+        var materializer = new DependencyMetadataProducingStep("presentation-materializer", "materialized");
+        var optionalCloud = new HashSet<string>(["cloud-presentation"], StringComparer.OrdinalIgnoreCase);
+        return (new CaptureProcessingGraph([
+            new CaptureProcessingGraphNode("cloud", cloud, [], false, "cloud", FrameArtifactRole.Metadata,
+                "cloud", new string('1', 64)),
+            new CaptureProcessingGraphNode("cloud-presentation", cloudPresentation, ["cloud"], false,
+                cloudPresentation.RecipeName, cloudPresentation.OutputRole, cloudPresentation.OutputVariant,
+                new string('2', 64)),
+            new CaptureProcessingGraphNode("overlay-manifest", manifest, ["cloud-presentation"], true,
+                manifest.RecipeName, manifest.OutputRole, manifest.OutputVariant, new string('3', 64),
+                OptionalDependencies: optionalCloud),
+            new CaptureProcessingGraphNode("presentation-materializer", materializer,
+                ["overlay-manifest", "cloud-presentation"], true, materializer.RecipeName,
+                materializer.OutputRole, materializer.OutputVariant, new string('4', 64),
+                OptionalDependencies: optionalCloud)
+        ]), cloudPresentation, manifest, materializer);
+    }
+
+    private static CaptureProcessingGraph CreateW6OptionalCloudGraph(
+        ICaptureProcessingStep cloud,
+        ICaptureProcessingStep manifest,
+        ICaptureProcessingStep materializer)
+    {
+        var optionalCloud = new HashSet<string>(["cloud-presentation"], StringComparer.OrdinalIgnoreCase);
+        return new CaptureProcessingGraph([
+            new CaptureProcessingGraphNode("cloud-presentation", cloud, [], false, null, null, null),
+            new CaptureProcessingGraphNode("overlay-manifest", manifest, ["cloud-presentation"], true,
+                null, null, null, OptionalDependencies: optionalCloud),
+            new CaptureProcessingGraphNode("presentation-materializer", materializer,
+                ["overlay-manifest", "cloud-presentation"], true, null, null, null,
+                OptionalDependencies: optionalCloud)
+        ]);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task CanonicalTerminalOutcome_RemainsTerminal()
     {
         using var telemetry = new CaptureProcessingTelemetry();
@@ -2474,6 +2974,165 @@ public sealed class DurableCaptureProcessingTests
             NullLogger.Instance,
             CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+    }
+
+    private static async Task<CaptureProcessingGraph> CreateProductionLayeredGraphAsync(Fixture fixture, string root)
+    {
+        var descriptor = fixture.Manifest.Descriptor;
+        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(
+            new VisibleSceneRequest(descriptor.Timing.ExposureStartedUtc, new ObserverLocation(0, 0, 0),
+                new EquidistantProjectionContext(1, 1, 1, 1, WidthPixels: 2, HeightPixels: 2),
+                new CatalogQuery(6.5, 10),
+                new CatalogMetadata("test", "1", new Uri("https://example.invalid"), new string('A', 64), "test", "1"),
+                projectionVersion: "projection-v1")).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
+            ProjectedSceneImageTransformV1.Identity(2, 2),
+            new ProjectedSceneSource(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(descriptor)), "calibration-v1", "projection-v1");
+        var projected = new FixedMetadataProducingStep(CreateProjectedSceneProduct(fixture.Item, scene, "projected-scene-v1"));
+        var cloud = new FixedMetadataProducingStep(CreateCloudAssessmentProduct(fixture.Item));
+        var rollingProduct = CreatePackedProduct(
+            fixture.Item, FrameArtifactRole.Combined, BuiltInProcessingRecipes.RollingMean, "rolling-mean", [0, 64, 128, 255]);
+        var rolling = new FixedArtifactProducingStep(rollingProduct);
+        var preview = new FixedArtifactProducingStep(CreatePackedProduct(
+            fixture.Item, FrameArtifactRole.Preview, "combined-preview", "combined-preview", [0, 64, 128, 255],
+            [CaptureProcessingContext.CreateArtifactId(rollingProduct.OutputIdentitySha256)]));
+        var sceneLayer = new ScenePresentationLayerCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("scene-presentation", "ScenePresentationLayer", 70),
+            new ScenePresentationLayerProcessingStepOptions
+            {
+                AnnotationOutputVariant = "scene-layer",
+                ConstellationOutputVariant = "constellation-layer"
+            });
+        var cloudLayer = new CloudPresentationLayerCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("cloud-presentation", "CloudPresentationLayer", 71),
+            new CloudPresentationLayerProcessingStepOptions
+            {
+                MaskOutputVariant = "cloud-mask",
+                LabelOutputVariant = "cloud-label",
+                WidthPixels = 2,
+                HeightPixels = 2,
+                DrawLabels = false
+            });
+        using var environmentStore = new SqliteEnvironmentalObservationOutbox();
+        var hostOptions = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+        var associationService = new EnvironmentalAssociationService(
+            environmentStore, environmentStore, hostOptions, TimeProvider.System);
+        var environment = new EnvironmentPresentationLayerCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("environment-presentation", "EnvironmentPresentationLayer", 72),
+            new EnvironmentPresentationLayerProcessingStepOptions
+            {
+                FactsOutputVariant = "environment-facts",
+                OutputVariant = "environment-layer",
+                StackPreviewVariant = "combined-preview",
+                WidthPixels = 2,
+                HeightPixels = 2,
+                EnvironmentalKinds = []
+            }, new PresentationMetadataFactsBuilder(associationService, environmentStore, hostOptions));
+        var manifest = new OverlayManifestCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("overlay-manifest", "OverlayManifest", 80),
+            new OverlayManifestProcessingStepOptions
+            {
+                OutputVariant = "overlay-manifest",
+                BasePreviewVariant = "combined-preview",
+                SceneAnnotationVariant = "scene-layer",
+                SceneConstellationVariant = "constellation-layer",
+                CloudMaskVariant = "cloud-mask",
+                CloudLabelVariant = "cloud-label",
+                EnvironmentFactsVariant = "environment-facts",
+                EnvironmentVariant = "environment-layer"
+            });
+        var materializer = new PresentationMaterializerCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("presentation-materializer", "PresentationMaterializer", 81),
+            new PresentationMaterializerProcessingStepOptions
+            {
+                OutputVariant = "annotated-preview",
+                BasePreviewVariant = "combined-preview",
+                SceneAnnotationVariant = "scene-layer",
+                SceneConstellationVariant = "constellation-layer",
+                CloudMaskVariant = "cloud-mask",
+                CloudLabelVariant = "cloud-label",
+                EnvironmentFactsVariant = "environment-facts",
+                EnvironmentVariant = "environment-layer"
+            });
+        return new CaptureProcessingGraph([
+            Node("projected-scene", projected, []),
+            Node("cloud", cloud, []),
+            Node("rolling", rolling, []),
+            Node("combined-preview", preview, ["rolling"]),
+            Node("scene-presentation", sceneLayer, ["projected-scene"]),
+            Node("cloud-presentation", cloudLayer, ["cloud"]),
+            Node("environment-presentation", environment, ["projected-scene", "rolling", "combined-preview"]),
+            Node("overlay-manifest", manifest,
+                ["combined-preview", "scene-presentation", "cloud-presentation", "environment-presentation"]),
+            Node("presentation-materializer", materializer,
+                ["combined-preview", "overlay-manifest", "scene-presentation", "cloud-presentation", "environment-presentation"])
+        ]);
+
+        static CaptureProcessingGraphNode Node(string id, ICaptureProcessingStep step, IReadOnlyList<string> dependencies)
+        {
+            var graphStep = (ICaptureProcessingGraphStep)step;
+            return new(id, step, dependencies, true, graphStep.RecipeName, graphStep.OutputRole,
+                graphStep.OutputVariant, CaptureContractJson.ComputeCanonicalJsonSha256(new { id }));
+        }
+    }
+
+    private static ProcessingProduct CreateCloudAssessmentProduct(FrameProcessingItem item)
+    {
+        var descriptor = item.RawCapture!.Manifest.Descriptor;
+        var source = new CloudAssessmentSourceV1(descriptor.Artifact.ArtifactId, FrameArtifactRole.Calibrated,
+            "calibrated", new string('A', 64));
+        var reference = source with { ArtifactId = Guid.Parse("90000000-0000-0000-0000-000000000001") };
+        var assessment = new CloudAssessmentV1(CloudAssessmentV1.CurrentSchemaVersion,
+            CloudAssessmentStatus.Quantified, CloudAssessmentQuality.Degraded,
+            [CloudAssessmentReasonCodes.EnvironmentMissing], 0, 850_000,
+            new CloudAssessmentGridV1(1, 1, 850_000, 1, 0, 4, 0),
+            [new CloudAssessmentRegionV1(0, 0, 0, 0, 2, 2, 4, 4, 0, 1_000_000, false)],
+            new CloudAssessmentMaskV1(CloudAssessmentMaskV1.RowMajorLsbFirst, 1, 1, new byte[] { 0 }), source, reference,
+            new CloudAssessmentCalibrationV1(0, ushort.MaxValue, ushort.MaxValue,
+                "calibration", "mask", "sensor", "processing"),
+            new CloudAssessmentEnvironmentV1(CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+                CaptureSolarRegime.Night, EnvironmentalObservationMatchStatus.Missing, null, null, false),
+            new string('B', 64), [new ProcessingAlgorithmIdentity("cloud", "v1")]);
+        var payload = CloudAssessmentJson.Serialize(assessment);
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+            BuiltInProcessingRecipes.CloudAssessment, "1.0.0", "test", JsonSerializer.SerializeToElement(new { })));
+        return new ProcessingProduct(FrameArtifactRole.Metadata, "cloud-assessment-v1",
+            ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, "cloud-assessment-v1",
+                recipe.IdentitySha256, [descriptor.Artifact.ArtifactId]), "application/json", null, payload,
+            ProcessingIdentity.ComputePayloadSha256(payload), recipe, assessment.Algorithms,
+            [descriptor.Artifact.ArtifactId], TimeSpan.Zero,
+            CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor))
+        {
+            Kind = ProcessingProductKind.Metadata,
+            SchemaVersion = CloudAssessmentV1.CurrentSchemaVersion,
+            ContentIdentitySha256 = assessment.AssessmentIdentitySha256
+        };
+    }
+
+    private static ProcessingProduct CreatePackedProduct(FrameProcessingItem item, FrameArtifactRole role,
+        string recipeName, string variant, byte[] payload, IReadOnlyList<Guid>? sources = null)
+    {
+        var descriptor = item.RawCapture!.Manifest.Descriptor;
+        sources ??= [descriptor.Artifact.ArtifactId];
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+            recipeName, "1.0.0", "test", JsonSerializer.SerializeToElement(new { variant })));
+        return new ProcessingProduct(role, variant,
+            ProcessingIdentity.CreateOutputIdentity(role, variant, recipe.IdentitySha256, sources),
+            "application/x-hvo-packed-image", descriptor.Layout with
+            {
+                PixelFormat = CameraPixelFormat.Mono8,
+                StrideBytes = 2,
+                ByteOrder = FrameByteOrder.NotApplicable,
+                ContainerDepthBits = 8,
+                SampleDepthBits = 8,
+                Packing = FrameSamplePacking.ByteAligned,
+                WhiteLevel = byte.MaxValue,
+                ByteLength = payload.Length
+            }, payload, ProcessingIdentity.ComputePayloadSha256(payload), recipe,
+            [new ProcessingAlgorithmIdentity(recipeName, "v1")], sources,
+            role == FrameArtifactRole.Combined ? TimeSpan.FromSeconds(5) : TimeSpan.Zero,
+            CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor));
     }
 
     private static FrameProcessingItem CreateEphemeralItem()
@@ -2729,6 +3388,88 @@ public sealed class DurableCaptureProcessingTests
         }
     }
 
+    private sealed class FixedArtifactProducingStep(ProcessingProduct product) :
+        ICaptureProcessingStep, ICaptureProcessingGraphStep
+    {
+        public bool Enabled => true;
+        public string Name => product.Variant;
+        public int Order => 0;
+        public string RecipeName => product.Recipe.Descriptor.Name;
+        public FrameArtifactRole OutputRole => product.Role;
+        public string OutputVariant => product.Variant;
+        public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+            new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw, FrameArtifactRole.Combined };
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            var raw = context.Artifacts!.Raw.Frame;
+            var frame = CameraAgentRecipeExecutionAdapter.CreateFrame(product, raw, Name);
+            var artifact = context.AddDerivative(product.Role, frame, product.Recipe.IdentitySha256,
+                product.SourceArtifactIds, CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
+            context.AssociateProcessingProduct(artifact, product);
+            context.AddProcessingOutcome(ProcessingOutcome.Produced(product));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class DependencyMetadataProducingStep(string name, string variant) :
+        ICaptureProcessingStep, ICaptureProcessingGraphStep
+    {
+        public bool Enabled => true;
+        public string Name => name;
+        public int Order => 0;
+        public string RecipeName => $"test-{name}";
+        public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
+        public string OutputVariant => variant;
+        public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+            new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            var dependencies = context.GetDependencyProducts();
+            var sources = dependencies.Count == 0
+                ? new[] { context.Artifacts!.Raw.ArtifactId }
+                : dependencies.Select(product =>
+                    CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256)).ToArray();
+            var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                RecipeName, "1.0.0", "test-v1", JsonSerializer.SerializeToElement(new { variant })));
+            var payload = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                sources = dependencies.Select(static product => product.OutputIdentitySha256).ToArray()
+            });
+            var compatibility = dependencies.Count > 0 ? dependencies[0].Compatibility :
+                new ProcessingCompatibilityIdentity(
+                    "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile");
+            var product = new ProcessingProduct(
+                OutputRole, OutputVariant,
+                ProcessingIdentity.CreateOutputIdentity(OutputRole, OutputVariant, recipe.IdentitySha256, sources),
+                "application/json", null, payload, ProcessingIdentity.ComputePayloadSha256(payload), recipe,
+                [new ProcessingAlgorithmIdentity("test", "v1")], sources, TimeSpan.Zero, compatibility)
+            {
+                Kind = ProcessingProductKind.Metadata,
+                SchemaVersion = "test-dependency-v1",
+                ContentIdentitySha256 = ProcessingIdentity.ComputePayloadSha256(payload)
+            };
+            context.AddProcessingOutcome(ProcessingOutcome.Produced(product));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class DependencyCountingStep : ICaptureProcessingStep
+    {
+        public string Name => "continuation";
+        public int Order => 100;
+        public int ExecutionCount { get; private set; }
+        public string? DependencySchemaVersion { get; private set; }
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            ExecutionCount++;
+            DependencySchemaVersion = context.GetDependencyProducts().Single().SchemaVersion;
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class RetentionConfigurationAccessor : ICameraAgentConfigurationAccessor
     {
         public bool IsConfigured => false;
@@ -2797,6 +3538,7 @@ public sealed class DurableCaptureProcessingTests
     private sealed class PackedAnnotationProducingStep : ICaptureProcessingStep, ICaptureProcessingGraphStep
     {
         public bool Enabled => true;
+        public int ExecutionCount { get; private set; }
         public string Name => "annotation";
         public int Order => 70;
         public string RecipeName => "test-packed-annotation";
@@ -2807,6 +3549,7 @@ public sealed class DurableCaptureProcessingTests
 
         public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
         {
+            ExecutionCount++;
             var raw = context.Artifacts!.Raw;
             var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
                 RecipeName,

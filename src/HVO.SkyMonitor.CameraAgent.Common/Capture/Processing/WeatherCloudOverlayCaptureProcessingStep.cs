@@ -14,8 +14,11 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
     CameraAgentCloudEnvironment? cloudEnvironment = null)
     : ConfigurableCaptureProcessingStep<WeatherCloudOverlayProcessingStepOptions>(metadata, options),
         ICaptureProcessingGraphStep,
-        ICompoundCaptureProcessingGraphStep
+        ICompoundCaptureProcessingGraphStep,
+        ILegacyCaptureProcessingPlanContract
 {
+    internal const string LegacyPlanContract = "weather-cloud-overlay-plan-v1";
+    public string LegacyPlanContractId => LegacyPlanContract;
     public bool Enabled => Options.Enabled;
 
     public string RecipeName => BuiltInProcessingRecipes.WeatherCloudOverlay;

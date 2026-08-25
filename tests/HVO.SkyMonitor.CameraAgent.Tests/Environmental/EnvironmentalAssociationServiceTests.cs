@@ -89,6 +89,93 @@ public sealed class EnvironmentalAssociationServiceTests
     }
 
     [TestMethod]
+    public async Task W6AllKindPolicyServesCloudAndPresentationSubsetsWithoutChangingPolicyIdentity()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var allKinds = new[]
+        {
+            EnvironmentalObservationKind.AirTemperature,
+            EnvironmentalObservationKind.RelativeHumidity,
+            EnvironmentalObservationKind.AtmosphericPressure,
+            EnvironmentalObservationKind.WindSpeed,
+            EnvironmentalObservationKind.RainState,
+            EnvironmentalObservationKind.CloudCover
+        };
+        var service = CreateService(store, allKinds);
+        var captureId = Guid.Parse("21000000-0000-0000-0000-000000000001");
+        var persisted = await service.AssociateAsync(captureId, 7, Epoch.AddSeconds(1), Epoch.AddSeconds(2),
+            "rig-1", allKinds, CancellationToken.None).ConfigureAwait(false);
+        var policy = EnvironmentalAssociationService.CreatePolicyIdentity(allKinds);
+
+        var cloud = await service.ReadCompletedAsync(captureId, 7, Epoch.AddSeconds(1), Epoch.AddSeconds(2),
+            "rig-1", [EnvironmentalObservationKind.RainState], CancellationToken.None).ConfigureAwait(false);
+        var presentationKinds = allKinds.Where(static kind => kind != EnvironmentalObservationKind.RainState).ToArray();
+        var presentation = await service.ReadCompletedAsync(captureId, 7, Epoch.AddSeconds(1), Epoch.AddSeconds(2),
+            "rig-1", presentationKinds, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(6, persisted);
+        Assert.IsNotNull(cloud);
+        Assert.IsNotNull(presentation);
+        Assert.HasCount(1, cloud);
+        Assert.HasCount(5, presentation);
+        Assert.IsTrue(cloud.All(item => item.PolicyIdentitySha256 == policy));
+        Assert.IsTrue(presentation.All(item => item.PolicyIdentitySha256 == policy));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () => await service.ReadCompletedAsync(
+            captureId, 7, Epoch.AddSeconds(1), Epoch.AddSeconds(2), "rig-1",
+            [EnvironmentalObservationKind.RainState, EnvironmentalObservationKind.RainState],
+            CancellationToken.None).AsTask().ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ChangedConfiguredKindPolicyRejectsOldPersistedSet()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var oldKinds = new[]
+        {
+            EnvironmentalObservationKind.RainState,
+            EnvironmentalObservationKind.CloudCover
+        };
+        var captureId = Guid.Parse("22000000-0000-0000-0000-000000000001");
+        _ = await CreateService(store, oldKinds).AssociateAsync(captureId, 8,
+            Epoch.AddSeconds(1), Epoch.AddSeconds(2), "rig-1", oldKinds, CancellationToken.None).ConfigureAwait(false);
+        var changed = CreateService(store,
+            [.. oldKinds, EnvironmentalObservationKind.RelativeHumidity]);
+
+        var result = await changed.ReadCompletedAsync(captureId, 8, Epoch.AddSeconds(1), Epoch.AddSeconds(2),
+            "rig-1", [EnvironmentalObservationKind.RainState], CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNull(result);
+    }
+
+    [TestMethod]
+    public void AssociationLanePolicyUsesOnlyEnabledConfiguredDistinctSortedKinds()
+    {
+        var sources = new[]
+        {
+            Source(EnvironmentalObservationKind.RainState, "rain"),
+            Source(EnvironmentalObservationKind.AirTemperature, "temperature"),
+            Source(EnvironmentalObservationKind.RainState, "rain-copy")
+        };
+
+        CollectionAssert.AreEqual(
+            new[] { EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationKind.RainState },
+            EnvironmentalAssociationCaptureLaneHandler.ResolvePolicyKinds(
+                new EnvironmentalAcquisitionOptions { Enabled = true, Sources = sources }));
+        Assert.IsEmpty(EnvironmentalAssociationCaptureLaneHandler.ResolvePolicyKinds(
+            new EnvironmentalAcquisitionOptions { Enabled = false, Sources = sources }));
+        Assert.IsEmpty(EnvironmentalAssociationCaptureLaneHandler.ResolvePolicyKinds(
+            new EnvironmentalAcquisitionOptions { Enabled = true, Sources = [] }));
+
+        static EnvironmentalSourceConfiguration Source(EnvironmentalObservationKind kind, string id) => new()
+        {
+            Id = id,
+            Type = "Test",
+            Kind = kind,
+            Triggers = [EnvironmentalAcquisitionTrigger.Periodic]
+        };
+    }
+
+    [TestMethod]
     public async Task EqualTierContradictionsRemainContradictoryAndDeterministicAfterRestart()
     {
         using (var store = new SqliteEnvironmentalObservationOutbox())
@@ -316,6 +403,25 @@ public sealed class EnvironmentalAssociationServiceTests
 
     private EnvironmentalAssociationService CreateService(SqliteEnvironmentalObservationOutbox store)
         => new(store, store, Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }), new FixedTimeProvider(Epoch));
+
+    private EnvironmentalAssociationService CreateService(
+        SqliteEnvironmentalObservationOutbox store,
+        IReadOnlyList<EnvironmentalObservationKind> configuredKinds)
+        => new(store, store, Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = _root!,
+            EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
+            {
+                Enabled = true,
+                Sources = configuredKinds.Select((kind, index) => new EnvironmentalSourceConfiguration
+                {
+                    Id = $"source-{index}",
+                    Type = "Test",
+                    Kind = kind,
+                    Triggers = [EnvironmentalAcquisitionTrigger.Periodic]
+                }).ToArray()
+            }
+        }), new FixedTimeProvider(Epoch));
 
     private static LocalEnvironmentalCaptureAssociation AssertSingle(
         IReadOnlyList<LocalEnvironmentalCaptureAssociation> associations)

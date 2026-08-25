@@ -158,18 +158,22 @@ internal sealed class FrameProcessingWorker
             {
                 context.BeginNode(node.Id, node.Dependencies);
                 var dependencyStopwatch = Stopwatch.StartNew();
+                var retryableDependency = node.Dependencies.FirstOrDefault(dependency =>
+                    statuses.TryGetValue(dependency, out var status) &&
+                    status == DurableProcessingNodeStatus.RetryableFailure);
+                if (retryableDependency is not null)
+                {
+                    statuses[node.Id] = DurableProcessingNodeStatus.RetryableFailure;
+                    deferredRetryReason ??= "processing.dependency-retry";
+                    dependencyStopwatch.Stop();
+                    telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
+                    continue;
+                }
                 var blockedDependency = node.Dependencies.FirstOrDefault(dependency =>
+                    node.OptionalDependencies?.Contains(dependency) != true &&
                     statuses.TryGetValue(dependency, out var status) && status != DurableProcessingNodeStatus.Completed);
                 if (blockedDependency is not null)
                 {
-                    if (statuses[blockedDependency] == DurableProcessingNodeStatus.RetryableFailure)
-                    {
-                        statuses[node.Id] = DurableProcessingNodeStatus.RetryableFailure;
-                        deferredRetryReason ??= "processing.dependency-retry";
-                        dependencyStopwatch.Stop();
-                        telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
-                        continue;
-                    }
                     const string dependencyReason = "processing.dependency-unavailable";
                     if (persistence is not null && rawCapture is not null)
                     {
@@ -196,7 +200,9 @@ internal sealed class FrameProcessingWorker
                     var durable = await persistence.ReadNodeAsync(
                         durableCaptureId, node.Id, cancellationToken).ConfigureAwait(false);
                     if (durable is not null && !string.Equals(
-                        durable.PlanSha256, node.PlanSha256, StringComparison.Ordinal))
+                        durable.PlanSha256, node.PlanSha256, StringComparison.Ordinal) &&
+                        !(IsAllowedLegacyPlanStep(node.Step) &&
+                          string.Equals(durable.PlanSha256, node.LegacyPlanSha256, StringComparison.Ordinal)))
                     {
                         throw new InvalidDataException(
                             $"Committed processing node '{node.Id}' does not match the current graph plan.");
@@ -450,6 +456,35 @@ internal sealed class FrameProcessingWorker
         => string.Equals(reason, ProcessingReasonCodes.EnvironmentAssociationPending, StringComparison.Ordinal)
             ? CaptureLaneHandlerResult.Wait(reason)
             : CaptureLaneHandlerResult.Retry(reason);
+
+    private static bool IsAllowedLegacyPlanStep(ICaptureProcessingStep step) => step switch
+    {
+        ProjectedSceneCaptureProcessingStep projected =>
+            projected.LegacyPlanContractId == ProjectedSceneCaptureProcessingStep.LegacyPlanContract,
+        CalibrationCaptureProcessingStep calibration =>
+            calibration.LegacyPlanContractId == CalibrationCaptureProcessingStep.LegacyPlanContract,
+        PreviewCaptureProcessingStep preview =>
+            preview.LegacyPlanContractId == PreviewCaptureProcessingStep.LegacyPlanContract,
+        CalibratedPreviewCaptureProcessingStep preview =>
+            preview.LegacyPlanContractId == CalibratedPreviewCaptureProcessingStep.LegacyPlanContract,
+        CombinedPreviewCaptureProcessingStep preview =>
+            preview.LegacyPlanContractId == CombinedPreviewCaptureProcessingStep.LegacyPlanContract,
+        RollingCombinationCaptureProcessingStep rolling =>
+            rolling.LegacyPlanContractId == RollingCombinationCaptureProcessingStep.LegacyPlanContract,
+        ImageQualityCaptureProcessingStep quality =>
+            quality.LegacyPlanContractId == ImageQualityCaptureProcessingStep.LegacyPlanContract,
+        CloudAssessmentCaptureProcessingStep cloud =>
+            cloud.LegacyPlanContractId == CloudAssessmentCaptureProcessingStep.LegacyPlanContract,
+        AnnotationCaptureProcessingStep annotation =>
+            annotation.LegacyPlanContractId == AnnotationCaptureProcessingStep.LegacyPlanContract,
+        WeatherCloudOverlayCaptureProcessingStep weather =>
+            weather.LegacyPlanContractId == WeatherCloudOverlayCaptureProcessingStep.LegacyPlanContract,
+        NoOpFileStorageProcessingStep storage =>
+            storage.LegacyPlanContractId == NoOpFileStorageProcessingStep.LegacyPlanContract,
+        TelemetryCaptureProcessingStep telemetry =>
+            telemetry.LegacyPlanContractId == TelemetryCaptureProcessingStep.LegacyPlanContract,
+        _ => false
+    };
 
     private static async ValueTask<CaptureProcessingContext> CreateContextAsync(
         FrameProcessingItem item,

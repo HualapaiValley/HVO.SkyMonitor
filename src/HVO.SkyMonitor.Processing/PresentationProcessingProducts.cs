@@ -16,6 +16,7 @@ public static class PresentationProcessingProducts
     public const string LayerRecipeName = "presentation-layer-payload";
     public const string ManifestRecipeName = "overlay-manifest";
     public const string MaterializationRecipeName = "presentation-materialization";
+    public const string MetadataFactsRecipeName = "presentation-metadata-facts";
     public const string ManifestMediaType = "application/vnd.hvo.overlay-manifest+json";
 
     /// <summary>Creates a reference bound to an actual artifact and an explicit image coordinate identity.</summary>
@@ -51,6 +52,32 @@ public static class PresentationProcessingProducts
             [new("presentation-layer-producer", producerVersion)], canonicalSources, TimeSpan.Zero,
             canonicalSources[0].Compatibility, ProcessingProductKind.Metadata,
             PresentationLayerPayloadV1.CurrentSchemaVersion, payload.ContentIdentitySha256);
+    }
+
+    public static ProcessingProduct CreateMetadataFactsProduct(
+        PresentationMetadataFactsProductV1 facts,
+        string outputVariant,
+        IReadOnlyList<ProcessingArtifact> canonicalSources)
+    {
+        ArgumentNullException.ThrowIfNull(facts);
+        ValidateSources(canonicalSources);
+        var identitySha256 = CaptureContractJson.ComputeCanonicalJsonSha256(
+            CaptureContractJson.SerializeToElement(facts with
+            {
+                FactsIdentitySha256 = string.Empty,
+                Corners = facts.Corners with { SourceIdentitySha256 = string.Empty }
+            }));
+        if (!string.Equals(identitySha256, facts.FactsIdentitySha256, StringComparison.Ordinal))
+            throw new ArgumentException("Presentation metadata facts identity is invalid.", nameof(facts));
+        var payload = System.Text.Encoding.UTF8.GetBytes(
+            CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(facts)).GetRawText());
+        var identity = Identity(MetadataFactsRecipeName, PresentationLayerProducers.MetadataProducerVersion,
+            new { facts.SchemaVersion, facts.FactsIdentitySha256 });
+        return ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata, outputVariant,
+            PresentationMetadataFactsProductV1.MediaType, null, payload, identity,
+            [new("presentation-metadata-facts", PresentationLayerProducers.MetadataProducerVersion)], canonicalSources,
+            canonicalSources[0].Integration, canonicalSources[0].Compatibility, ProcessingProductKind.Metadata,
+            PresentationMetadataFactsProductV1.CurrentSchemaVersion, facts.FactsIdentitySha256);
     }
 
     /// <summary>Aggregates an actual packed base and ordered validated typed layer artifacts into an overlay manifest product.</summary>
@@ -207,7 +234,7 @@ public static class PresentationMaterializationExecutor
             throw new ArgumentException("Packed materialization supports enabled ScenePixels layers only.", nameof(manifest));
         var sourceIds = new[] { baseArtifact.ArtifactId, manifestArtifact.ArtifactId }
             .Concat(manifest.Layers.Where(layer => enabled.Contains(layer.LayerIdentitySha256))
-                .Select(static layer => layer.SourceProduct.ArtifactId)).Distinct().Order().ToArray();
+                .Select(static layer => layer.SourceProduct.ArtifactId)).Distinct().ToArray();
         var request = LayeredPresentationJson.CreateMaterializationRequest(manifest, enabled,
             PresentationLayerCompositor.AlgorithmVersion, options.EncoderName, options.EncoderVersion,
             JsonSerializer.SerializeToElement(new { format = "packed" }), sourceIds);

@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.Processing.Tests;
@@ -72,6 +73,83 @@ public sealed class PresentationProcessingProductTests
             first.Product.ArtifactId, second.Product.ArtifactId }, all.SourceArtifactIds.ToArray());
         Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, all.Role);
         Assert.AreEqual(ProcessingProductKind.PixelData, all.Kind);
+    }
+
+    [TestMethod]
+    public void ConfiguredReorderedSubsetIsDeterministicAndRetainsCanonicalSourceOrder()
+    {
+        var baseArtifact = Artifact(Guid.Parse("31000000-0000-0000-0000-000000000003"), FrameArtifactRole.Preview,
+            "combined-preview", Layout(), new byte[64]);
+        var baseReference = PresentationProcessingProducts.CreateReference(baseArtifact, new string('E', 64));
+        var first = LayerInput("first", 30, 2, 2, new(200, 200, 200), baseReference.Compatibility);
+        var second = LayerInput("second", 10, 3, 3, new(50, 50, 50), baseReference.Compatibility);
+        var third = LayerInput("third", 20, 4, 4, new(100, 100, 100), baseReference.Compatibility);
+        var inputs = new[] { first, second, third };
+        var manifest = LayeredPresentationJson.CreateManifest(
+            baseReference, null, inputs.Select(static input => input.Layer));
+        var manifestArtifact = ToArtifact(PresentationProcessingProducts.CreateManifestProduct(
+            baseReference, null, inputs, "manifest", baseArtifact));
+        var enabled = new[] { second.Layer.LayerIdentitySha256, first.Layer.LayerIdentitySha256 };
+
+        var firstRun = PresentationMaterializationExecutor.MaterializePacked(
+            baseArtifact, manifestArtifact, manifest, inputs, enabled, "subset");
+        var restartRun = PresentationMaterializationExecutor.MaterializePacked(
+            baseArtifact, manifestArtifact, manifest, inputs, enabled, "subset");
+
+        Assert.AreEqual(firstRun.OutputIdentitySha256, restartRun.OutputIdentitySha256);
+        CollectionAssert.AreEqual(firstRun.Payload.ToArray(), restartRun.Payload.ToArray());
+        CollectionAssert.AreEqual(
+            new[] { baseArtifact.ArtifactId, manifestArtifact.ArtifactId, second.Product.ArtifactId, first.Product.ArtifactId },
+            firstRun.SourceArtifactIds.ToArray());
+    }
+
+    [TestMethod]
+    public void FullResolutionW6RepresentativeOldAndTypedPresentationAreNumericallyEquivalent()
+    {
+        const int width = 3552;
+        const int height = 3552;
+        var layout = new ImageLayout(width, height, CameraPixelFormat.Mono8, width);
+        var basePixels = new byte[checked(width * height)];
+        var objects = new[]
+        {
+            new ProjectedAnnotationObject("a", "", new PixelPoint(1776, 1776), DrawLabel: false),
+            new ProjectedAnnotationObject("b", "", new PixelPoint(900, 1200), DrawLabel: false)
+        };
+        var segments = new[]
+        {
+            new ProjectedAnnotationSegment("ORI", new PixelPoint(900, 1200), new PixelPoint(1776, 1776))
+        };
+        var annotationOptions = new AnnotationOptions { MarkRadius = 6, DrawLabels = false, MarkerValue = 144 };
+        var oldAnnotation = AnnotationRenderer.AnnotateMono8WithSegments(
+            basePixels, width, height, objects, segments, new PreviewTransform(1, 1), annotationOptions).Pixels;
+        var cloudMask = new byte[32];
+        cloudMask[0] = 1;
+        cloudMask[^1] = 0x80;
+        var oldFinal = WeatherCloudOverlayRenderer.Render(
+            layout, oldAnnotation, 16, 16, cloudMask, [],
+            new WeatherCloudOverlayRenderOptions(DrawLabels: false)).Pixels.ToArray();
+
+        var constellations = PresentationLayerPayloadJson.Create(new string('A', 64), width, height,
+            segments: segments.Select(item => new PresentationSegmentV1(item.FromPixel, item.ToPixel, 1,
+                new PresentationColor(annotationOptions.ConstellationLineValue,
+                    annotationOptions.ConstellationLineValue, annotationOptions.ConstellationLineValue))).ToArray());
+        var scene = PresentationLayerPayloadJson.Create(new string('A', 64), width, height,
+            markers: objects.Select(item => new PresentationMarkerV1(
+                item.Pixel, annotationOptions.MarkRadius,
+                new PresentationColor(annotationOptions.MarkerValue, annotationOptions.MarkerValue,
+                    annotationOptions.MarkerValue))).ToArray());
+        var cloud = PresentationLayerPayloadJson.Create(new string('B', 64), width, height,
+            tileMask: new PresentationTileMaskV1(16, 16, PresentationTileMaskV1.RowMajorLsbFirst,
+                cloudMask, 1, new PresentationColor(255, 255, 255)));
+        var typedFinal = PresentationLayerCompositor.Composite(layout, basePixels,
+        [
+            new(constellations, true, PresentationRasterBlendMode.Normal, 800_000),
+            new(scene, true, PresentationRasterBlendMode.Normal, 1_000_000),
+            new(cloud, true, PresentationRasterBlendMode.Normal, 1_000_000)
+        ]);
+
+        CollectionAssert.AreEqual(oldFinal, typedFinal);
+        Assert.AreEqual(3, new[] { constellations, scene, cloud }.Length);
     }
 
     [TestMethod]

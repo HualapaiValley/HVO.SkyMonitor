@@ -16,6 +16,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class CaptureProcessingGraphTests
 {
+    private const string HistoricalAnnotationPlanSha256 = "58C88E48E07E3297224DEC1894808E8E85E063D65F9B30EE4550C43EF16B6ADA";
+    private const string HistoricalWeatherPlanSha256 = "7BDBFFBDAA1D2A219494E5CF9C13A10C433E605E28C375990DA2FFD39271C57F";
     private static readonly string[] ExpectedTopologicalOrder = ["first", "middle", "last"];
     private static readonly string[] ExpectedLegacyOrder = ["producer", "consumer"];
     private static readonly string[] ExpectedLegacyDependencies = ["producer"];
@@ -108,6 +110,51 @@ public sealed class CaptureProcessingGraphTests
         Assert.AreEqual(first.Nodes.Single().PlanSha256, second.Nodes.Single().PlanSha256);
         first.DisposeSteps();
         second.DisposeSteps();
+    }
+
+    [TestMethod]
+    public void CreateGraph_PlanHashChangesForOutputSchemaAndOrderedMultiOutputContract()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection().BuildServiceProvider();
+        string Hash(Type type)
+        {
+            var factory = new CaptureProcessingPipelineFactory(services,
+                [new("Contract", type, typeof(GraphTestOptions))],
+                NullLogger<CaptureProcessingPipelineFactory>.Instance, telemetry);
+            var graph = factory.CreateGraph(CreateExplicitConfig(
+                new CaptureProcessingStepConfig("Contract", "contract", DependsOn: ["$raw"])));
+            var hash = graph.Nodes.Single().PlanSha256;
+            graph.DisposeSteps();
+            return hash;
+        }
+
+        Assert.AreNotEqual(Hash(typeof(GraphSchemaV1Step)), Hash(typeof(GraphSchemaV2Step)));
+        Assert.AreNotEqual(Hash(typeof(GraphMultiOutputStep)), Hash(typeof(GraphReorderedMultiOutputStep)));
+    }
+
+    [TestMethod]
+    public void CreateGraph_PlanHashChangesForExactDependencyRequirementContract()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection().BuildServiceProvider();
+        string Hash(Type consumerType)
+        {
+            var factory = new CaptureProcessingPipelineFactory(services,
+                [
+                    new("Producer", typeof(GraphSchemaV1Step), typeof(GraphTestOptions)),
+                    new("Consumer", consumerType, typeof(GraphTestOptions))
+                ], NullLogger<CaptureProcessingPipelineFactory>.Instance, telemetry);
+            var graph = factory.CreateGraph(CreateExplicitConfig(
+                new CaptureProcessingStepConfig("Producer", "producer", DependsOn: ["$raw"]),
+                new CaptureProcessingStepConfig("Consumer", "consumer", DependsOn: ["producer"])));
+            var hash = graph.Nodes.Single(static node => node.Id == "consumer").PlanSha256;
+            graph.DisposeSteps();
+            return hash;
+        }
+
+        Assert.AreNotEqual(Hash(typeof(GraphRequiredContractStep)), Hash(typeof(GraphOptionalContractStep)));
+        Assert.AreNotEqual(Hash(typeof(GraphRequiredContractStep)), Hash(typeof(GraphVariantContractStep)));
     }
 
     [TestMethod]
@@ -649,6 +696,118 @@ public sealed class CaptureProcessingGraphTests
     }
 
     [TestMethod]
+    public void CreateGraph_LayeredPresentationRejectsWrongBasePreviewVariant()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
+            }).Build());
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        var baseline = CreateConfig();
+        var config = CreateExplicitConfig(
+            new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"]),
+            new CaptureProcessingStepConfig("RollingCombination", "rolling", DependsOn: ["calibration"]),
+            new CaptureProcessingStepConfig("CombinedPreview", "wrong-preview", DependsOn: ["rolling"],
+                Options: JsonSerializer.SerializeToElement(new { outputVariant = "not-combined-preview" })),
+            new CaptureProcessingStepConfig("OverlayManifest", "manifest", DependsOn: ["wrong-preview"])) with
+        {
+            Rig = baseline.Rig with
+            {
+                Sensor = baseline.Rig.Sensor with { PixelFormat = CameraPixelFormat.Mono16 }
+            }
+        };
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(config));
+        StringAssert.Contains(exception.Message, "required dependency inputs", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void CreateGraph_LayeredPresentationRejectsWrongBasePreviewRecipe()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
+            }).Build());
+        using var provider = services.BuildServiceProvider();
+        var registrations = provider.GetServices<CaptureProcessingStepRegistration>().Append(
+            new CaptureProcessingStepRegistration("WrongPreview", typeof(GraphProductStep), typeof(GraphTestOptions)));
+        using var telemetry = new CaptureProcessingTelemetry();
+        var factory = new CaptureProcessingPipelineFactory(provider, registrations,
+            NullLogger<CaptureProcessingPipelineFactory>.Instance, telemetry);
+        var config = CreateExplicitConfig(
+            new CaptureProcessingStepConfig("WrongPreview", "wrong-preview", DependsOn: ["$raw"],
+                Options: JsonSerializer.SerializeToElement(new { variant = "combined-preview" })),
+            new CaptureProcessingStepConfig("OverlayManifest", "manifest", DependsOn: ["wrong-preview"]));
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(config));
+        StringAssert.Contains(exception.Message, "required dependency inputs", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void CreateGraph_LegacyPlanCompatibilityIsAllowlistedAndOptionExact()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
+            }).Build());
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        var baseline = CreateConfig();
+        CameraModuleConfig Config(int radius) => CreateExplicitConfig(
+            new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"]),
+            new CaptureProcessingStepConfig("RollingCombination", "rolling", DependsOn: ["calibration"]),
+            new CaptureProcessingStepConfig("CombinedPreview", "combined-preview", DependsOn: ["rolling"]),
+            new CaptureProcessingStepConfig("CloudAssessment", "cloud", DependsOn: ["calibration"]),
+            new CaptureProcessingStepConfig("Annotation", "sky-annotation", DependsOn: ["combined-preview"],
+                Options: JsonSerializer.SerializeToElement(new { markRadius = radius })),
+            new CaptureProcessingStepConfig("WeatherCloudOverlay", "weather-overlay",
+                DependsOn: ["sky-annotation", "cloud"])) with
+        {
+            Rig = baseline.Rig with
+            {
+                Sensor = baseline.Rig.Sensor with { PixelFormat = CameraPixelFormat.Mono16 }
+            }
+        };
+
+        var first = factory.CreateGraph(Config(4));
+        var changed = factory.CreateGraph(Config(5));
+        try
+        {
+            Assert.IsNotNull(first.Nodes.Single(static node => node.Id == "cloud").LegacyPlanSha256);
+            Assert.IsNotNull(first.Nodes.Single(static node => node.Id == "calibration").LegacyPlanSha256);
+            Assert.IsNotNull(first.Nodes.Single(static node => node.Id == "rolling").LegacyPlanSha256);
+            Assert.IsNotNull(first.Nodes.Single(static node => node.Id == "combined-preview").LegacyPlanSha256);
+            Assert.HasCount(64, first.Nodes.Single(static node => node.Id == "sky-annotation").LegacyPlanSha256!);
+            Assert.HasCount(64, first.Nodes.Single(static node => node.Id == "weather-overlay").LegacyPlanSha256!);
+            Assert.AreEqual(HistoricalAnnotationPlanSha256,
+                first.Nodes.Single(static node => node.Id == "sky-annotation").LegacyPlanSha256);
+            Assert.AreEqual(HistoricalWeatherPlanSha256,
+                first.Nodes.Single(static node => node.Id == "weather-overlay").LegacyPlanSha256);
+            Assert.AreNotEqual(
+                first.Nodes.Single(static node => node.Id == "sky-annotation").LegacyPlanSha256,
+                changed.Nodes.Single(static node => node.Id == "sky-annotation").LegacyPlanSha256);
+            Assert.AreEqual(
+                first.Nodes.Single(static node => node.Id == "weather-overlay").LegacyPlanSha256,
+                changed.Nodes.Single(static node => node.Id == "weather-overlay").LegacyPlanSha256);
+        }
+        finally
+        {
+            first.DisposeSteps();
+            changed.DisposeSteps();
+        }
+    }
+
+    [TestMethod]
     public async Task ConfigurationInitializer_RejectsInvalidGraphBeforePublishingConfiguration()
     {
         var config = CreateConfig(Step("invalid", 0));
@@ -663,6 +822,51 @@ public sealed class CaptureProcessingGraphTests
             initializer.StartAsync(CancellationToken.None)).ConfigureAwait(false);
 
         Assert.IsFalse(accessor.IsConfigured);
+    }
+
+    [TestMethod]
+    public void CreateGraph_RepeatedMetadataRequirementsUseOneToOneAssignment()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var factory = new CaptureProcessingPipelineFactory(
+            services,
+            [
+                new("MetadataA", typeof(GraphMetadataAStep), typeof(GraphTestOptions)),
+                new("MetadataB", typeof(GraphMetadataBStep), typeof(GraphTestOptions)),
+                new("RepeatedMetadata", typeof(GraphRepeatedMetadataStep), typeof(GraphTestOptions))
+            ],
+            NullLogger<CaptureProcessingPipelineFactory>.Instance,
+            telemetry);
+        var valid = CreateExplicitConfig(
+            new CaptureProcessingStepConfig("MetadataA", "a", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(new { variant = "a" })),
+            new CaptureProcessingStepConfig("MetadataB", "b", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(new { variant = "b" })),
+            new CaptureProcessingStepConfig("RepeatedMetadata", "consumer", DependsOn: ["a", "b"]));
+
+        var graph = factory.CreateGraph(valid);
+        try
+        {
+            Assert.HasCount(3, graph.Nodes);
+        }
+        finally
+        {
+            graph.DisposeSteps();
+        }
+
+        var wrong = valid with
+        {
+            Pipeline = valid.Pipeline! with
+            {
+                Steps =
+                [
+                    new CaptureProcessingStepConfig("MetadataA", "a", DependsOn: ["$raw"]),
+                    new CaptureProcessingStepConfig("MetadataA", "a2", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(new { variant = "second" })),
+                    new CaptureProcessingStepConfig("RepeatedMetadata", "consumer", DependsOn: ["a", "a2"])
+                ]
+            }
+        };
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(wrong));
+        StringAssert.Contains(exception.Message, "required dependency inputs", StringComparison.Ordinal);
     }
 
     private static CaptureProcessingPipelineFactory CreateFactory(
@@ -750,6 +954,83 @@ public sealed class GraphProductStep(
         => ValueTask.CompletedTask;
 }
 
+internal class GraphSchemaV1Step(
+    CaptureProcessingStepMetadata metadata,
+    GraphTestOptions options) : ConfigurableCaptureProcessingStep<GraphTestOptions>(metadata, options),
+        ICaptureProcessingGraphStep
+{
+    public bool Enabled => true;
+    public string RecipeName => "schema-product";
+    public FrameArtifactRole OutputRole => FrameArtifactRole.Preview;
+    public string OutputVariant => "preview";
+    public virtual string? OutputSchemaVersion => "schema-v1";
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+    public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+}
+
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812", Justification = "Instantiated through ActivatorUtilities in plan contract tests.")]
+internal sealed class GraphSchemaV2Step(CaptureProcessingStepMetadata metadata, GraphTestOptions options)
+    : GraphSchemaV1Step(metadata, options)
+{
+    public override string? OutputSchemaVersion => "schema-v2";
+}
+
+internal class GraphMultiOutputStep(
+    CaptureProcessingStepMetadata metadata,
+    GraphTestOptions options) : GraphSchemaV1Step(metadata, options), IMultiOutputCaptureProcessingGraphStep
+{
+    public virtual IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
+    [
+        new(FrameArtifactRole.Metadata, "first", "first-recipe", "first-schema"),
+        new(FrameArtifactRole.Metadata, "second", "second-recipe", "second-schema")
+    ];
+}
+
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812", Justification = "Instantiated through ActivatorUtilities in plan contract tests.")]
+internal sealed class GraphReorderedMultiOutputStep(CaptureProcessingStepMetadata metadata, GraphTestOptions options)
+    : GraphMultiOutputStep(metadata, options)
+{
+    public override IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
+    [
+        new(FrameArtifactRole.Metadata, "second", "second-recipe", "second-schema"),
+        new(FrameArtifactRole.Metadata, "first", "first-recipe", "first-schema")
+    ];
+}
+
+internal class GraphRequiredContractStep(
+    CaptureProcessingStepMetadata metadata,
+    GraphTestOptions options) : ConfigurableCaptureProcessingStep<GraphTestOptions>(metadata, options),
+        ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
+{
+    public bool Enabled => true;
+    public string RecipeName => "contract-consumer";
+    public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
+    public string OutputVariant => "consumer";
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview };
+    public virtual IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
+    [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview },
+        new HashSet<string> { "schema-product" }, new HashSet<string> { "schema-v1" }, "preview")];
+    public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+}
+
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812", Justification = "Instantiated through ActivatorUtilities in plan contract tests.")]
+internal sealed class GraphOptionalContractStep(CaptureProcessingStepMetadata metadata, GraphTestOptions options)
+    : GraphRequiredContractStep(metadata, options)
+{
+    public override IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
+    [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview },
+        new HashSet<string> { "schema-product" }, new HashSet<string> { "schema-v1" }, "preview", Required: false)];
+}
+
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1812", Justification = "Instantiated through ActivatorUtilities in plan contract tests.")]
+internal sealed class GraphVariantContractStep(CaptureProcessingStepMetadata metadata, GraphTestOptions options)
+    : GraphRequiredContractStep(metadata, options)
+{
+    public override IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
+    [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview },
+        new HashSet<string> { "schema-product" }, new HashSet<string> { "schema-v1" })];
+}
+
 public sealed class GraphCalibratedStep(
     CaptureProcessingStepMetadata metadata,
     GraphTestOptions options) : ConfigurableCaptureProcessingStep<GraphTestOptions>(metadata, options), ICaptureProcessingGraphStep
@@ -788,4 +1069,48 @@ public sealed class GraphDynamicStep(
 
 public sealed class GraphDynamicOptions
 {
+}
+
+public sealed class GraphMetadataAStep(
+    CaptureProcessingStepMetadata metadata,
+    GraphTestOptions options) : ConfigurableCaptureProcessingStep<GraphTestOptions>(metadata, options), ICaptureProcessingGraphStep
+{
+    public bool Enabled => true;
+    public string RecipeName => "metadata-a";
+    public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
+    public string OutputVariant => Options.Variant;
+    public string? OutputSchemaVersion => "schema-a";
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+    public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+}
+
+public sealed class GraphMetadataBStep(
+    CaptureProcessingStepMetadata metadata,
+    GraphTestOptions options) : ConfigurableCaptureProcessingStep<GraphTestOptions>(metadata, options), ICaptureProcessingGraphStep
+{
+    public bool Enabled => true;
+    public string RecipeName => "metadata-b";
+    public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
+    public string OutputVariant => Options.Variant;
+    public string? OutputSchemaVersion => "schema-b";
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+    public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+}
+
+public sealed class GraphRepeatedMetadataStep(
+    CaptureProcessingStepMetadata metadata,
+    GraphTestOptions options) : ConfigurableCaptureProcessingStep<GraphTestOptions>(metadata, options),
+        ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
+{
+    public bool Enabled => true;
+    public string RecipeName => "repeated-metadata";
+    public FrameArtifactRole OutputRole => FrameArtifactRole.Preview;
+    public string OutputVariant => Options.Variant;
+    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
+    IReadOnlyList<CaptureProcessingDependencyRequirement> IRequiredCaptureProcessingDependencies.DependencyRequirements { get; } =
+    [
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { "metadata-a" }, new HashSet<string> { "schema-a" }),
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { "metadata-b" }, new HashSet<string> { "schema-b" })
+    ];
+    public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }

@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Text.Json;
+using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -121,6 +122,9 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, context.ProcessingOutcomes.Single().Status);
         Assert.AreEqual(FrameArtifactRole.Metadata, product.Role);
         Assert.IsNull(product.Layout);
+        Assert.AreEqual(ProcessingProductKind.Metadata, product.Kind);
+        Assert.AreEqual(CloudAssessmentV1.CurrentSchemaVersion, product.SchemaVersion);
+        Assert.AreEqual(assessment.AssessmentIdentitySha256, product.ContentIdentitySha256);
         Assert.AreEqual(CloudAssessmentStatus.InsufficientEvidence, assessment.Status);
         Assert.IsNull(assessment.CoverageMillionths);
         Assert.HasCount(1, product.SourceArtifactIds);
@@ -129,6 +133,27 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
         Assert.IsFalse(context.AllArtifacts.Any(static artifact => artifact.Role == FrameArtifactRole.Metadata));
         Assert.IsTrue(context.GetCurrentInputEvidence().Any(static input =>
             input.Kind == "CanonicalContext" && input.Name == "environment" && input.IdentitySha256 is { Length: 64 }));
+
+        context.RegisterProcessingProduct(product);
+        context.BeginNode("cloud-presentation", ["cloud"]);
+        var layer = new CloudPresentationLayerCaptureProcessingStep(
+            new CaptureProcessingStepMetadata("cloud-presentation", "CloudPresentationLayer", 90),
+            new CloudPresentationLayerProcessingStepOptions
+            {
+                MaskOutputVariant = "cloud-mask",
+                LabelOutputVariant = "cloud-label",
+                WidthPixels = currentFrame.Width,
+                HeightPixels = currentFrame.Height,
+                DrawLabels = false
+            });
+        await layer.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+
+        var layers = context.ProcessingOutcomes[^1].Products;
+        Assert.HasCount(2, layers);
+        Assert.IsTrue(layers.All(item => item.Kind == ProcessingProductKind.Metadata &&
+            item.SchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion));
+        Assert.IsTrue(layers.All(item => PresentationLayerPayloadJson.Parse(item.Payload).Payload?.SourceIdentitySha256 ==
+            assessment.AssessmentIdentitySha256));
     }
 
     [TestMethod]

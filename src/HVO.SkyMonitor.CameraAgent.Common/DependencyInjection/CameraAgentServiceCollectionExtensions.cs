@@ -194,6 +194,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalOnDemandAcquisitionService>();
         services.AddSingleton<EnvironmentalAssociationService>();
         services.AddSingleton<CameraAgentCloudEnvironment>();
+        services.AddSingleton<PresentationMetadataFactsBuilder>();
         services.AddSingleton<EnvironmentalAssociationCaptureLaneHandler>();
         services.AddSingleton<EnvironmentalAcquisitionService>();
         services.AddSingleton<EnvironmentalCaptureTriggerBridge>();
@@ -282,6 +283,21 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "WeatherCloudOverlay", typeof(WeatherCloudOverlayCaptureProcessingStep),
             typeof(WeatherCloudOverlayProcessingStepOptions), 90, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "ScenePresentationLayer", typeof(ScenePresentationLayerCaptureProcessingStep),
+            typeof(ScenePresentationLayerProcessingStepOptions), 70, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "CloudPresentationLayer", typeof(CloudPresentationLayerCaptureProcessingStep),
+            typeof(CloudPresentationLayerProcessingStepOptions), 71, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "EnvironmentPresentationLayer", typeof(EnvironmentPresentationLayerCaptureProcessingStep),
+            typeof(EnvironmentPresentationLayerProcessingStepOptions), 72, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "OverlayManifest", typeof(OverlayManifestCaptureProcessingStep),
+            typeof(OverlayManifestProcessingStepOptions), 80, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "PresentationMaterializer", typeof(PresentationMaterializerCaptureProcessingStep),
+            typeof(PresentationMaterializerProcessingStepOptions), 81, AutoInclude: false));
         services.AddHostedService<CameraAgentConfigurationInitializer>();
         services.AddHostedService(provider => provider.GetRequiredService<EnvironmentalAcquisitionService>());
         services.AddHostedService<CalibrationLibraryValidationService>();

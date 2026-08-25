@@ -463,8 +463,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             {
                 continue;
             }
-            var outputKey = $"{graphStep.OutputRole}\0{graphStep.OutputVariant}";
-            if (!outputs.Add(outputKey))
+            var advertisedOutputs = GetOutputs(graphStep);
+            if (advertisedOutputs.Any(output => !outputs.Add($"{output.Role}\0{output.Variant}")))
             {
                 throw new InvalidOperationException(
                     $"Capture processing graph declares duplicate output {graphStep.OutputRole}/{graphStep.OutputVariant} from recipe '{graphStep.RecipeName}'.");
@@ -521,6 +521,15 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 .Cast<ICaptureProcessingGraphStep>()
                 .Where(dependency => graphStep.AcceptedInputRoles.Contains(dependency.OutputRole))
                 .ToArray();
+            if (item.Step is IRequiredCaptureProcessingDependencies required)
+            {
+                if (!TryAssignRequiredDependencies(matching, required.DependencyRequirements, out _))
+                {
+                    throw new InvalidOperationException(
+                        $"Capture processing step '{item.Step.Name}' does not have its required dependency inputs.");
+                }
+                continue;
+            }
             if (item.Step is ICompoundCaptureProcessingGraphStep compound)
             {
                 if (matching.Length != producers.Length ||
@@ -543,6 +552,80 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
         }
     }
+
+    private static bool TryAssignRequiredDependencies(
+        ICaptureProcessingGraphStep[] dependencies,
+        IReadOnlyList<CaptureProcessingDependencyRequirement> requirements,
+        out IReadOnlySet<int> optionalDependencyIndexes)
+    {
+        optionalDependencyIndexes = new HashSet<int>();
+        if (requirements.Any(static requirement => requirement.Roles is null || requirement.Roles.Count == 0 ||
+                requirement.Variant is { Length: 0 or > 128 }) ||
+            dependencies.Any(dependency => GetOutputs(dependency).Count == 0))
+        {
+            return false;
+        }
+        var products = dependencies.SelectMany((dependency, dependencyIndex) => GetOutputs(dependency)
+            .Select(output => (output, dependencyIndex))).ToArray();
+        var candidates = requirements.Select(requirement => products
+            .Select((product, index) => (product, index))
+            .Where(item => requirement.Roles.Contains(item.product.output.Role) &&
+                (requirement.RecipeNames is null || requirement.RecipeNames.Contains(item.product.output.RecipeName)) &&
+                (requirement.SchemaVersions is null || item.product.output.SchemaVersion is { } schemaVersion &&
+                    requirement.SchemaVersions.Contains(schemaVersion)) &&
+                (requirement.Variant is null || string.Equals(requirement.Variant, item.product.output.Variant, StringComparison.Ordinal)))
+            .Select(static item => item.index)
+            .ToArray()).ToArray();
+        if (requirements.Select((requirement, index) => (requirement, index))
+            .Any(item => item.requirement.Required && candidates[item.index].Length == 0))
+        {
+            return false;
+        }
+        var assignedProducts = new bool[products.Length];
+        var selectedProducts = new int?[requirements.Count];
+        if (!Assign(0)) return false;
+        var usedDependencies = selectedProducts.Where(static value => value.HasValue)
+            .Select(value => products[value!.Value].dependencyIndex).ToHashSet();
+        if (usedDependencies.Count != dependencies.Length) return false;
+        var requiredDependencies = requirements.Select((requirement, index) => (requirement, index))
+            .Where(item => item.requirement.Required && selectedProducts[item.index].HasValue)
+            .Select(item => products[selectedProducts[item.index]!.Value].dependencyIndex).ToHashSet();
+        optionalDependencyIndexes = usedDependencies.Where(index => !requiredDependencies.Contains(index)).ToHashSet();
+        return true;
+
+        bool Assign(int requirementIndex)
+        {
+            if (requirementIndex == requirements.Count)
+            {
+                return true;
+            }
+            foreach (var dependencyIndex in candidates[requirementIndex])
+            {
+                if (assignedProducts[dependencyIndex])
+                {
+                    continue;
+                }
+                assignedProducts[dependencyIndex] = true;
+                selectedProducts[requirementIndex] = dependencyIndex;
+                if (Assign(requirementIndex + 1))
+                {
+                    return true;
+                }
+                selectedProducts[requirementIndex] = null;
+                assignedProducts[dependencyIndex] = false;
+            }
+            if (!requirements[requirementIndex].Required && Assign(requirementIndex + 1))
+            {
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private static IReadOnlyList<CaptureProcessingOutputDescriptor> GetOutputs(ICaptureProcessingGraphStep step)
+        => step is IMultiOutputCaptureProcessingGraphStep multi
+            ? multi.Outputs
+            : [new(step.OutputRole, step.OutputVariant, step.RecipeName, step.OutputSchemaVersion)];
 
     private static bool RequiresLinear16(string recipeName)
         => recipeName is HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.RollingMean or
@@ -574,6 +657,9 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     : item.Config.DependsOn ?? [],
                 StringComparer.OrdinalIgnoreCase),
             StringComparer.OrdinalIgnoreCase);
+        var allowUntypedCloudLegacy = configured.Any(static item =>
+                item.Step is WeatherCloudOverlayCaptureProcessingStep) &&
+            configured.All(static item => item.Step is not CloudPresentationLayerCaptureProcessingStep);
         var ordered = new List<CaptureProcessingGraphNode>(configured.Count);
         while (ordered.Count < configured.Count)
         {
@@ -593,6 +679,15 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 var dependencies = explicitV2
                     ? item.Config.DependsOn?.Where(static dependency => !IsRawDependency(dependency)).ToArray() ?? []
                     : item.Config.DependsOn?.ToArray() ?? [];
+                IReadOnlySet<string>? optionalDependencies = null;
+                if (item.Step is IRequiredCaptureProcessingDependencies required && graphStep is not null)
+                {
+                    var producerSteps = dependencies.Select(dependency =>
+                        (ICaptureProcessingGraphStep)nodesById[dependency].Step).ToArray();
+                    if (!TryAssignRequiredDependencies(producerSteps, required.DependencyRequirements, out var optionalIndexes))
+                        throw new InvalidOperationException($"Capture processing step '{item.Step.Name}' dependency assignment changed during ordering.");
+                    optionalDependencies = optionalIndexes.Select(index => dependencies[index]).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                }
                 ordered.Add(new CaptureProcessingGraphNode(
                     item.Step.Name,
                     item.Step,
@@ -606,7 +701,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     item.Step.Order,
                     item.Config.Options,
                     item.Config.DependsOn?.ToArray(),
-                    item.Config.Publication));
+                    item.Config.Publication,
+                    optionalDependencies,
+                    ComputeAllowedLegacyPlanSha256(
+                        item.Config, item.Step, graphStep, dependencies, allowUntypedCloudLegacy)));
                 remainingDependencies.Remove(item.Step.Name);
                 foreach (var unresolved in remainingDependencies.Values)
                 {
@@ -618,6 +716,64 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     }
 
     private static string ComputeNodePlanSha256(
+        CaptureProcessingStepConfig config,
+        ICaptureProcessingStep step,
+        ICaptureProcessingGraphStep? graphStep,
+        IReadOnlyList<string> dependencies)
+    {
+        var outputs = graphStep is null ? [] : GetOutputs(graphStep).Select(static output => new
+        {
+            output.Role,
+            output.Variant,
+            output.RecipeName,
+            output.SchemaVersion
+        }).ToArray();
+        var dependencyRequirements = step is IRequiredCaptureProcessingDependencies required
+            ? required.DependencyRequirements.Select(static requirement => new
+            {
+                Roles = requirement.Roles.Order().ToArray(),
+                RecipeNames = requirement.RecipeNames?.Order(StringComparer.Ordinal).ToArray(),
+                SchemaVersions = requirement.SchemaVersions?.Order(StringComparer.Ordinal).ToArray(),
+                requirement.Variant,
+                requirement.Required
+            }).ToArray()
+            : null;
+        var plan = config.Publication is null
+            ? JsonSerializer.SerializeToElement(new
+            {
+                config.Type,
+                id = step.Name,
+                order = step.Order,
+                dependencies,
+                config.Required,
+                config.Options,
+                recipe = graphStep?.RecipeName,
+                outputRole = graphStep?.OutputRole,
+                outputVariant = graphStep?.OutputVariant,
+                outputSchemaVersion = graphStep?.OutputSchemaVersion,
+                outputs,
+                dependencyRequirements
+            })
+            : CaptureContractJson.SerializeToElement(new
+            {
+                config.Type,
+                id = step.Name,
+                order = step.Order,
+                dependencies,
+                config.Required,
+                config.Options,
+                recipe = graphStep?.RecipeName,
+                outputRole = graphStep?.OutputRole,
+                outputVariant = graphStep?.OutputVariant,
+                outputSchemaVersion = graphStep?.OutputSchemaVersion,
+                outputs,
+                dependencyRequirements,
+                config.Publication
+            });
+        return CaptureContractJson.ComputeCanonicalJsonSha256(plan);
+    }
+
+    private static string ComputeLegacyNodePlanSha256(
         CaptureProcessingStepConfig config,
         ICaptureProcessingStep step,
         ICaptureProcessingGraphStep? graphStep,
@@ -650,6 +806,46 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 config.Publication
             });
         return CaptureContractJson.ComputeCanonicalJsonSha256(plan);
+    }
+
+    private static string? ComputeAllowedLegacyPlanSha256(
+        CaptureProcessingStepConfig config,
+        ICaptureProcessingStep step,
+        ICaptureProcessingGraphStep? graphStep,
+        IReadOnlyList<string> dependencies,
+        bool allowUntypedCloudLegacy)
+    {
+        var allowed = step switch
+        {
+            ProjectedSceneCaptureProcessingStep projected when
+                projected.LegacyPlanContractId == ProjectedSceneCaptureProcessingStep.LegacyPlanContract => true,
+            CalibrationCaptureProcessingStep calibration when
+                calibration.LegacyPlanContractId == CalibrationCaptureProcessingStep.LegacyPlanContract => true,
+            PreviewCaptureProcessingStep preview when
+                preview.LegacyPlanContractId == PreviewCaptureProcessingStep.LegacyPlanContract => true,
+            CalibratedPreviewCaptureProcessingStep preview when
+                preview.LegacyPlanContractId == CalibratedPreviewCaptureProcessingStep.LegacyPlanContract => true,
+            CombinedPreviewCaptureProcessingStep preview when
+                preview.LegacyPlanContractId == CombinedPreviewCaptureProcessingStep.LegacyPlanContract => true,
+            RollingCombinationCaptureProcessingStep rolling when
+                rolling.LegacyPlanContractId == RollingCombinationCaptureProcessingStep.LegacyPlanContract => true,
+            ImageQualityCaptureProcessingStep quality when
+                quality.LegacyPlanContractId == ImageQualityCaptureProcessingStep.LegacyPlanContract => true,
+            CloudAssessmentCaptureProcessingStep cloud when allowUntypedCloudLegacy &&
+                cloud.LegacyPlanContractId == CloudAssessmentCaptureProcessingStep.LegacyPlanContract => true,
+            AnnotationCaptureProcessingStep annotation when
+                annotation.LegacyPlanContractId == AnnotationCaptureProcessingStep.LegacyPlanContract => true,
+            WeatherCloudOverlayCaptureProcessingStep weather when
+                weather.LegacyPlanContractId == WeatherCloudOverlayCaptureProcessingStep.LegacyPlanContract => true,
+            NoOpFileStorageProcessingStep storage when
+                storage.LegacyPlanContractId == NoOpFileStorageProcessingStep.LegacyPlanContract => true,
+            TelemetryCaptureProcessingStep telemetry when
+                telemetry.LegacyPlanContractId == TelemetryCaptureProcessingStep.LegacyPlanContract => true,
+            _ => false
+        };
+        return allowed
+            ? ComputeLegacyNodePlanSha256(config, step, graphStep, dependencies)
+            : null;
     }
 
     private ICaptureProcessingStep CreateStep(

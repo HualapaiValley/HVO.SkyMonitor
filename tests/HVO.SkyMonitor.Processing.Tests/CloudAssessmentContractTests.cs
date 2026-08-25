@@ -10,12 +10,14 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class CloudAssessmentContractTests
 {
+    private const string FrozenPreIdentityPropertyJson = "{\"algorithms\":[{\"name\":\"cloud-transmission\",\"version\":\"v1\"}],\"calibration\":{\"blackLevel\":0,\"calibrationIdentity\":\"calibration\",\"maskIdentity\":\"mask\",\"processingProfileIdentity\":\"processing\",\"saturationLevel\":65535,\"sensorIdentity\":\"sensor\",\"whiteLevel\":65535},\"clearReference\":{\"artifactId\":\"10000000-0000-0000-0000-000000000002\",\"recipeIdentitySha256\":\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"role\":\"Calibrated\",\"variant\":\"clear-v1\"},\"confidenceMillionths\":750000,\"coverageMillionths\":500000,\"current\":{\"artifactId\":\"10000000-0000-0000-0000-000000000001\",\"recipeIdentitySha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"role\":\"Calibrated\",\"variant\":\"linear-v1\"},\"environment\":{\"inputIdentitySha256\":null,\"precipitationContentSha256\":null,\"precipitationDetected\":false,\"precipitationObservationId\":null,\"precipitationStatus\":\"Missing\",\"schemaVersion\":\"cloud-assessment-environment-v1\",\"solarRegime\":\"Night\"},\"grid\":{\"cloudyRegionCount\":1,\"cloudySampleCount\":4,\"columns\":2,\"rows\":1,\"transmissionThresholdMillionths\":750000,\"validRegionCount\":2,\"validSampleCount\":8},\"mask\":{\"bits\":\"Ag==\",\"encoding\":\"row-major-lsb-first\",\"height\":1,\"width\":2},\"quality\":\"Degraded\",\"reasonCodes\":[\"cloud.environment-missing\"],\"recipeIdentitySha256\":\"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\",\"regions\":[{\"acceptedSampleCount\":4,\"column\":0,\"consideredSampleCount\":4,\"height\":2,\"isCloudy\":false,\"row\":0,\"saturatedSampleCount\":0,\"transmissionMillionths\":1000000,\"width\":2,\"x\":0,\"y\":0},{\"acceptedSampleCount\":4,\"column\":1,\"consideredSampleCount\":4,\"height\":2,\"isCloudy\":true,\"row\":0,\"saturatedSampleCount\":0,\"transmissionMillionths\":500000,\"width\":2,\"x\":2,\"y\":0}],\"schemaVersion\":\"cloud-assessment-v1\",\"status\":\"Quantified\"}";
     [TestMethod]
     public void QuantifiedAssessmentRoundTripsCanonicalMaskAndLineage()
     {
         var assessment = CreateValid();
 
         var json = CloudAssessmentJson.Serialize(assessment);
+        Assert.AreEqual(FrozenPreIdentityPropertyJson, Encoding.UTF8.GetString(json));
         var parsed = CloudAssessmentJson.Parse(json);
 
         Assert.IsTrue(parsed.Validation.IsValid, parsed.Validation.ReasonCode);
@@ -26,6 +28,9 @@ public sealed class CloudAssessmentContractTests
         CollectionAssert.AreEqual(json, CloudAssessmentJson.Serialize(parsed.Assessment));
         Assert.AreEqual((byte)'{', json[0]);
         StringAssert.Contains(Encoding.UTF8.GetString(json), "\"bits\":\"Ag==\"", StringComparison.Ordinal);
+        Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(
+            System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(FrozenPreIdentityPropertyJson)),
+            assessment.AssessmentIdentitySha256);
     }
 
     [TestMethod]
