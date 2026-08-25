@@ -578,7 +578,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
     private static bool IsDurableProductSchema(string? schema)
         => string.Equals(schema, DurableProcessingProductManifestV1.CurrentSchemaVersion, StringComparison.Ordinal) ||
-           string.Equals(schema, DurableEncodedProductManifestV2.CurrentSchemaVersion, StringComparison.Ordinal);
+           string.Equals(schema, DurableEncodedProductManifestV2.CurrentSchemaVersion, StringComparison.Ordinal) ||
+           string.Equals(schema, DurableTypedMetadataProductManifestV3.CurrentSchemaVersion, StringComparison.Ordinal);
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated value is a validated integer host option used only for SQLite PRAGMA configuration.")]
     private async ValueTask<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)

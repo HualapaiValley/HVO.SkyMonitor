@@ -17,6 +17,7 @@ public static class BuiltInProcessingRecipes
     public const string CloudAssessment = "cloud-assessment";
     public const string WeatherCloudOverlay = "weather-cloud-overlay";
     public const string ReferenceCalibration = "reference-calibration";
+    public const string ProjectedScene = "projected-scene";
 
     public static ProcessingRecipeIdentity CreateRequestedIdentity(
         string recipeName,
@@ -59,7 +60,8 @@ public static class BuiltInProcessingRecipes
         new NoOpAnalyzerRecipe(),
         new CloudAssessmentRecipe(),
         new WeatherCloudOverlayRecipe(),
-        new ReferenceCalibrationRecipe()
+        new ReferenceCalibrationRecipe(),
+        new ProjectedSceneRecipe()
     ];
 }
 
@@ -228,7 +230,10 @@ internal static class ProcessingRecipeSupport
         IReadOnlyList<ProcessingAlgorithmIdentity> algorithms,
         IReadOnlyList<ProcessingArtifact> sources,
         TimeSpan totalIntegration,
-        ProcessingCompatibilityIdentity compatibility)
+        ProcessingCompatibilityIdentity compatibility,
+        ProcessingProductKind? kind = null,
+        string? schemaVersion = null,
+        string? contentIdentitySha256 = null)
     {
         var sourceIds = sources.Select(static source => source.ArtifactId).ToArray();
         return new ProcessingProduct(
@@ -243,7 +248,14 @@ internal static class ProcessingRecipeSupport
             algorithms,
             sourceIds,
             totalIntegration,
-            compatibility);
+            compatibility)
+        {
+            Kind = kind ?? (role == FrameArtifactRole.Metadata
+                ? ProcessingProductKind.Metadata
+                : ProcessingProductKind.PixelData),
+            SchemaVersion = schemaVersion,
+            ContentIdentitySha256 = contentIdentitySha256
+        };
     }
 
     internal static bool TryValidateFrame(

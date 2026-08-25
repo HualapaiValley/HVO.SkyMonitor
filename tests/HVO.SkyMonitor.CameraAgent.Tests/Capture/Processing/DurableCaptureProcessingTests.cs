@@ -23,6 +23,247 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed class DurableCaptureProcessingTests
 {
     [TestMethod]
+    [TestCategory("Unit")]
+    public async Task NonGraphWorker_ValidRawDoesNotInvalidateEvidence()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var recovery = new RecordingRecoveryControl();
+
+            await RunWorkerAsync(fixture.Item, new RawObservingStep(), recovery, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            Assert.IsFalse(recovery.Invalidated);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task NonGraphWorker_MissingRawInvalidatesEvidence()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            File.Delete(fixture.Item.RawCapture!.StoredFrame.AbsolutePath);
+            var recovery = new RecordingRecoveryControl();
+
+            await Assert.ThrowsExactlyAsync<FileNotFoundException>(async () =>
+                await RunWorkerAsync(fixture.Item, new RawObservingStep(), recovery, CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsTrue(recovery.Invalidated);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task NonGraphWorker_CorruptRawInvalidatesEvidence()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(fixture.Item.RawCapture!.StoredFrame.AbsolutePath, [1]).ConfigureAwait(false);
+            var recovery = new RecordingRecoveryControl();
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await RunWorkerAsync(fixture.Item, new RawObservingStep(), recovery, CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsTrue(recovery.Invalidated);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task NonGraphWorker_CancellationPropagatesWithoutInvalidatingEvidence()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var recovery = new RecordingRecoveryControl();
+            using var cancellation = new CancellationTokenSource();
+
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+                await RunWorkerAsync(fixture.Item, new CancelingStep(cancellation), recovery, cancellation.Token)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.IsFalse(recovery.Invalidated);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task DescriptorOnlyStep_DoesNotOpenOrDecodeRawContent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            File.Delete(fixture.Item.RawCapture!.StoredFrame.AbsolutePath);
+            var step = new DescriptorOnlyStep();
+            using var telemetry = new CaptureProcessingTelemetry();
+
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item,
+                new CaptureProcessingGraph([CreateNode(step)]),
+                null,
+                telemetry,
+                1,
+                NullLogger.Instance,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, step.ArtifactId);
+            Assert.IsFalse(step.SawRawFrame);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task PixelStepThenDescriptorStep_DescriptorApiExposesNoPixels()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var descriptor = new DescriptorOnlyStep();
+            using var telemetry = new CaptureProcessingTelemetry();
+            var pixel = new ProducingStep();
+
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item,
+                new CaptureProcessingGraph([
+                    CreateNode(pixel),
+                    CreateNode(descriptor) with { Dependencies = ["normalize"] }
+                ]),
+                null,
+                telemetry,
+                1,
+                NullLogger.Instance,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            Assert.AreEqual(1, pixel.ExecutionCount);
+            Assert.IsFalse(descriptor.SawRawFrame);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void DescriptorOnlyContext_PublicApiIsTransitivelyPathAndPayloadFree()
+    {
+        var forbidden = new HashSet<Type>
+        {
+            typeof(RawCaptureReceipt),
+            typeof(StoredFrameReference),
+            typeof(CameraFrame),
+            typeof(FileInfo),
+            typeof(DirectoryInfo),
+            typeof(Stream),
+            typeof(ReadOnlyMemory<byte>),
+            typeof(Memory<byte>),
+            typeof(byte[])
+        };
+        var visited = new HashSet<Type>();
+        var pending = new Queue<Type>([typeof(CaptureDescriptorProcessingContext)]);
+        while (pending.TryDequeue(out var type))
+        {
+            if (!visited.Add(type))
+            {
+                continue;
+            }
+            Assert.IsFalse(forbidden.Any(candidate => candidate.IsAssignableFrom(type)), type.FullName);
+            if (type.Assembly != typeof(CaptureDescriptorProcessingContext).Assembly || type.IsEnum || type == typeof(string))
+            {
+                continue;
+            }
+            foreach (var memberType in type.GetProperties().Select(static property => property.PropertyType)
+                         .Concat(type.GetMethods().Where(static method => !method.IsSpecialName)
+                             .SelectMany(static method => method.GetParameters().Select(parameter => parameter.ParameterType)
+                                 .Append(method.ReturnType))))
+            {
+                foreach (var expanded in Expand(memberType))
+                {
+                    pending.Enqueue(expanded);
+                }
+            }
+        }
+
+        static IEnumerable<Type> Expand(Type type)
+        {
+            yield return type;
+            if (type.IsGenericType)
+            {
+                foreach (var argument in type.GetGenericArguments().SelectMany(Expand))
+                {
+                    yield return argument;
+                }
+            }
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task PixelBearingStep_ReconstructsRawOnFirstDemand()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(
+                fixture.Item.RawCapture!.StoredFrame.AbsolutePath,
+                [1]).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await FrameProcessingWorker.ProcessGraphItemAsync(
+                    fixture.Item,
+                    new CaptureProcessingGraph([CreateNode(new ProducingStep())]),
+                    null,
+                    telemetry,
+                    1,
+                    NullLogger.Instance,
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [TestCategory("Integration")]
     public async Task MemoryOnlyCompletedNode_IsNotCommittedAndReexecutesAfterRestart()
     {
@@ -692,8 +933,8 @@ public sealed class DurableCaptureProcessingTests
             Assert.HasCount(1, durable.Outputs);
             var output = durable.Outputs[0];
             Assert.IsNull(output.Descriptor);
-            var manifest = Assert.IsInstanceOfType<DurableProcessingProductManifestV1>(output.ProductManifest);
-            Assert.AreEqual(DurableProcessingProductManifestV1.CurrentSchemaVersion, manifest.SchemaVersion);
+            var manifest = Assert.IsInstanceOfType<DurableTypedMetadataProductManifestV3>(output.ProductManifest);
+            Assert.AreEqual(DurableTypedMetadataProductManifestV3.CurrentSchemaVersion, manifest.SchemaVersion);
             Assert.IsTrue(output.PayloadRelativePath.StartsWith("derived/", StringComparison.Ordinal));
             Assert.IsTrue(File.Exists(Path.Combine(root, output.PayloadRelativePath)));
             Assert.IsTrue(File.Exists(Path.Combine(root, output.SidecarRelativePath)));
@@ -703,6 +944,76 @@ public sealed class DurableCaptureProcessingTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task UntypedMetadataPersistsAsLegacyV1()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var step = new MetadataProducingStep(typed: false);
+
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item,
+                new CaptureProcessingGraph([CreateMetadataNode(step)]),
+                CreatePersistence(fixture.Options, store, storage, telemetry),
+                telemetry,
+                1,
+                NullLogger.Instance,
+                CancellationToken.None).ConfigureAwait(false);
+            var durable = await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "metadata", CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
+            Assert.IsInstanceOfType<DurableProcessingProductManifestV1>(durable!.Outputs.Single().ProductManifest);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void TypedMetadataV3_RejectsMissingNonCanonicalAndDuplicateTypedFacts()
+    {
+        var product = CreateTypedMetadataProduct();
+        var manifest = CreateTypedMetadataManifest(product);
+        var valid = DurableProcessingProductManifestJson.Serialize(manifest);
+
+        var parsed = Assert.IsInstanceOfType<DurableTypedMetadataProductManifestV3>(
+            DurableProcessingProductManifestJson.Parse(valid));
+        Assert.AreEqual(manifest.Kind, parsed.Kind);
+        Assert.AreEqual(manifest.ProductSchemaVersion, parsed.ProductSchemaVersion);
+        Assert.AreEqual(manifest.ContentIdentitySha256, parsed.ContentIdentitySha256);
+        Assert.ThrowsExactly<InvalidDataException>(() => DurableProcessingProductManifestJson.Serialize(
+            manifest with { ProductSchemaVersion = null! }));
+        Assert.ThrowsExactly<InvalidDataException>(() => DurableProcessingProductManifestJson.Serialize(
+            manifest with { ContentIdentitySha256 = null! }));
+        Assert.ThrowsExactly<InvalidDataException>(() => DurableProcessingProductManifestJson.Serialize(
+            manifest with { ProductSchemaVersion = " " }));
+        Assert.ThrowsExactly<InvalidDataException>(() => DurableProcessingProductManifestJson.Serialize(
+            manifest with { ProductSchemaVersion = new string('x', 129) }));
+        Assert.ThrowsExactly<InvalidDataException>(() => DurableProcessingProductManifestJson.Serialize(
+            manifest with { ContentIdentitySha256 = new string('a', 64) }));
+        Assert.ThrowsExactly<InvalidDataException>(() => DurableProcessingProductManifestJson.Serialize(
+            manifest with { ContentIdentitySha256 = new string('\u00C9', 64) }));
+        Assert.ThrowsExactly<InvalidDataException>(() => DurableProcessingProductManifestJson.Serialize(
+            manifest with { Kind = ProcessingProductKind.PixelData }));
+
+        var json = System.Text.Encoding.UTF8.GetString(valid);
+        var duplicate = json.Replace(
+            "\"productSchemaVersion\":",
+            "\"PRODUCTSCHEMAVERSION\":\"duplicate\",\"productSchemaVersion\":",
+            StringComparison.Ordinal);
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            DurableProcessingProductManifestJson.Parse(System.Text.Encoding.UTF8.GetBytes(duplicate)));
     }
 
     [TestMethod]
@@ -1246,11 +1557,84 @@ public sealed class DurableCaptureProcessingTests
         CaptureProcessingTelemetry telemetry)
         => new(options, store, storage, telemetry, NullLogger<CaptureProcessingPersistence>.Instance);
 
+    private static string CreateTestRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "skymonitor-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        return root;
+    }
+
+    private static async Task RunWorkerAsync(
+        FrameProcessingItem item,
+        ICaptureProcessingStep step,
+        IRawIngressRecoveryControl recovery,
+        CancellationToken cancellationToken)
+    {
+        var channel = new FrameProcessingChannel(2);
+        await channel.WriteAsync(item, CancellationToken.None).ConfigureAwait(false);
+        channel.Complete();
+        await new FrameProcessingWorker(channel, [step], NullLogger.Instance, recovery)
+            .RunAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private static CaptureProcessingGraphNode CreateNode(ProducingStep step)
         => new("normalize", step, [], true, step.RecipeName, step.OutputRole, step.OutputVariant, new string('D', 64));
 
+    private static CaptureProcessingGraphNode CreateNode(DescriptorOnlyStep step)
+        => new("descriptor", step, [], true, step.RecipeName, step.OutputRole, step.OutputVariant, new string('E', 64));
+
     private static CaptureProcessingGraphNode CreateMetadataNode(MetadataProducingStep step)
         => new("metadata", step, [], true, step.RecipeName, step.OutputRole, step.OutputVariant, new string('M', 64));
+
+    private static ProcessingProduct CreateTypedMetadataProduct()
+    {
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+            "typed-test", "1.0.0", "typed-test-v1", JsonSerializer.SerializeToElement(new { })));
+        var sources = new[] { Guid.Parse("10000000-0000-0000-0000-000000000001") };
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new { schemaVersion = "typed-test-v1" });
+        return new ProcessingProduct(
+            FrameArtifactRole.Metadata,
+            "typed-test",
+            ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, "typed-test", recipe.IdentitySha256, sources),
+            "application/json",
+            null,
+            payload,
+            ProcessingIdentity.ComputePayloadSha256(payload),
+            recipe,
+            [],
+            sources,
+            TimeSpan.Zero,
+            new ProcessingCompatibilityIdentity("rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile"))
+        {
+            Kind = ProcessingProductKind.Metadata,
+            SchemaVersion = "typed-test-v1",
+            ContentIdentitySha256 = new string('A', 64)
+        };
+    }
+
+    private static DurableTypedMetadataProductManifestV3 CreateTypedMetadataManifest(ProcessingProduct product)
+    {
+        var capture = new CaptureIdentityDescriptor(
+            "agent", "rig", 1, Guid.Parse("20000000-0000-0000-0000-000000000001"));
+        var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
+        using var nullDocument = JsonDocument.Parse("null");
+        return new DurableTypedMetadataProductManifestV3(
+            DurableTypedMetadataProductManifestV3.CurrentSchemaVersion,
+            capture,
+            new ArtifactDescriptor(
+                artifactId, product.Role, "typed-test", product.Variant, DateTimeOffset.UnixEpoch,
+                product.SourceArtifactIds, product.Recipe.Descriptor, product.MediaType, product.ChecksumSha256),
+            product.OutputIdentitySha256,
+            product.Algorithms,
+            product.Compatibility,
+            product.TotalIntegration.Ticks,
+            product.Payload.Length,
+            "derived/typed-test.json",
+            nullDocument.RootElement.Clone(),
+            product.Kind,
+            product.SchemaVersion!,
+            product.ContentIdentitySha256!);
+    }
 
     private static async Task DeleteProcessingCommitAsync(string root)
     {
@@ -1640,7 +2024,64 @@ public sealed class DurableCaptureProcessingTests
         }
     }
 
-    private sealed class MetadataProducingStep : ICaptureProcessingStep, ICaptureProcessingGraphStep
+    private sealed class RawObservingStep : ICaptureProcessingStep
+    {
+        public string Name => "raw-observer";
+        public int Order => 0;
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            Assert.IsNotNull(context.Artifacts?.Raw.Frame);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class CancelingStep(CancellationTokenSource cancellation) : ICaptureProcessingStep
+    {
+        public string Name => "cancel";
+        public int Order => 0;
+
+        public async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    private sealed class RecordingRecoveryControl : IRawIngressRecoveryControl
+    {
+        public bool Invalidated { get; private set; }
+
+        public void InvalidateEvidence() => Invalidated = true;
+    }
+
+    private sealed class DescriptorOnlyStep : IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep
+    {
+        public bool Enabled => true;
+        public string Name => "descriptor";
+        public int Order => 0;
+        public string RecipeName => "test-descriptor";
+        public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
+        public string OutputVariant => "descriptor";
+        public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+            new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+        public Guid? ArtifactId { get; private set; }
+        public bool SawRawFrame { get; private set; }
+
+        public ValueTask ProcessAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken)
+        {
+            ArtifactId = context.ReconstructionDescriptor?.Artifact.ArtifactId;
+            SawRawFrame = typeof(CaptureDescriptorProcessingContext).GetProperties().Any(property =>
+                property.PropertyType == typeof(CameraFrame) ||
+                property.PropertyType == typeof(CaptureLoopSubmission) ||
+                property.PropertyType == typeof(ProcessingProduct) ||
+                property.Name.Contains("Artifact", StringComparison.Ordinal));
+            context.AddProcessingOutcome(ProcessingOutcome.Produced());
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class MetadataProducingStep(bool typed = true) : ICaptureProcessingStep, ICaptureProcessingGraphStep
     {
         private static readonly IReadOnlySet<FrameArtifactRole> InputRoles =
             new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
@@ -1680,7 +2121,12 @@ public sealed class DurableCaptureProcessingTests
                 [new ProcessingAlgorithmIdentity("test-metadata", "v1")],
                 sources,
                 raw.Frame.Metadata.Exposure,
-                CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility);
+                CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility)
+            {
+                Kind = ProcessingProductKind.Metadata,
+                SchemaVersion = typed ? "test-metadata-v1" : null,
+                ContentIdentitySha256 = typed ? ProcessingIdentity.ComputePayloadSha256(payload) : null
+            };
             context.AddProcessingOutcome(ProcessingOutcome.Produced(Product));
             return ValueTask.CompletedTask;
         }
@@ -1829,6 +2275,9 @@ public sealed class DurableCaptureProcessingTests
         public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
         {
             Assert.AreEqual(expectedScene, context.GetDependencyArtifacts().Single().Frame.Metadata.Scene);
+            Assert.AreEqual(FrameArtifactRole.Raw, context.Artifacts!.Raw.Role);
+            Assert.AreEqual(FrameArtifactRole.Calibrated, context.Artifacts[FrameArtifactRole.Calibrated].Role);
+            Assert.HasCount(2, context.AllArtifacts);
             SawExpectedScene = true;
             return ValueTask.CompletedTask;
         }
@@ -1870,6 +2319,9 @@ public sealed class DurableCaptureProcessingTests
             CollectionAssert.AreEqual(expected.SourceArtifactIds.ToArray(), actual.SourceArtifactIds.ToArray());
             Assert.AreEqual(expected.TotalIntegration, actual.TotalIntegration);
             Assert.AreEqual(expected.Compatibility, actual.Compatibility);
+            Assert.AreEqual(expected.Kind, actual.Kind);
+            Assert.AreEqual(expected.SchemaVersion, actual.SchemaVersion);
+            Assert.AreEqual(expected.ContentIdentitySha256, actual.ContentIdentitySha256);
             CollectionAssert.AreEqual(expected.Payload.ToArray(), actual.Payload.ToArray());
             Assert.IsNull(actual.Layout);
             Assert.HasCount(1, context.AllArtifacts);

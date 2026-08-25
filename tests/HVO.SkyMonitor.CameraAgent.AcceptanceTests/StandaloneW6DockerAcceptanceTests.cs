@@ -4119,13 +4119,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
             {
                 continue;
             }
-            if (parsed is not DurableProcessingProductManifestV1 manifest)
+            if (parsed is not (DurableProcessingProductManifestV1 or DurableTypedMetadataProductManifestV3))
             {
                 continue;
             }
-            if (manifest.Capture.AgentId == agentId)
+            if (parsed.Capture.AgentId == agentId)
             {
-                yield return new ProductManifestObservation(path, manifest);
+                yield return new ProductManifestObservation(path, parsed);
             }
         }
     }
@@ -5194,7 +5194,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private sealed record ManifestObservation(string Path, ArtifactManifestV2 Manifest);
 
-    private sealed record ProductManifestObservation(string Path, DurableProcessingProductManifestV1 Manifest);
+    private sealed record ProductManifestObservation(string Path, IDurableProcessingProductManifest Manifest);
 
     private sealed record RawAdmissionEvidence(
         Guid CaptureId,

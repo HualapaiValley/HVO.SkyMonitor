@@ -90,6 +90,10 @@ public sealed record ProcessingArtifact(
     DateTimeOffset? ObservationEndedUtc = null,
     ProcessingCaptureConditions? Conditions = null)
 {
+    public Guid? CaptureId { get; init; }
+
+    public string? DescriptorIdentitySha256 { get; init; }
+
     /// <summary>
     /// Resolves the observation end. Accelerated captures may report an instantaneous acquisition while retaining a
     /// positive modeled integration; all execution locations expand that interval identically.
@@ -111,6 +115,12 @@ public sealed record ProcessingRecipeIdentity(
     string IdentitySha256);
 
 /// <summary>An owned recipe output with complete immediate lineage and implementation provenance.</summary>
+public enum ProcessingProductKind
+{
+    PixelData,
+    Metadata
+}
+
 public sealed record ProcessingProduct(
     FrameArtifactRole Role,
     string Variant,
@@ -123,7 +133,14 @@ public sealed record ProcessingProduct(
     IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms,
     IReadOnlyList<Guid> SourceArtifactIds,
     TimeSpan TotalIntegration,
-    ProcessingCompatibilityIdentity Compatibility);
+    ProcessingCompatibilityIdentity Compatibility)
+{
+    public ProcessingProductKind Kind { get; init; } = ProcessingProductKind.PixelData;
+
+    public string? SchemaVersion { get; init; }
+
+    public string? ContentIdentitySha256 { get; init; }
+}
 
 /// <summary>Explicit projected geometry; hosts remain responsible for catalog and scene acquisition.</summary>
 public sealed record ProcessingAnnotationInput(
@@ -148,7 +165,10 @@ public sealed record ProcessingAuxiliaryInput(
     string? SchemaVersion = null,
     string? IdentitySha256 = null,
     ReadOnlyMemory<byte> Payload = default,
-    Guid? ArtifactId = null);
+    Guid? ArtifactId = null)
+{
+    public string? ChecksumSha256 { get; init; }
+}
 
 public sealed record ProcessingExecutionRequest(
     string RecipeName,
@@ -193,6 +213,11 @@ public static class ProcessingReasonCodes
     public const string InvalidLineage = "processing.invalid-lineage";
     public const string MissingAnnotation = "processing.missing-annotation";
     public const string InvalidAnnotation = "processing.invalid-annotation";
+    public const string MissingProjectedScene = "processing.missing-projected-scene";
+    public const string InvalidProjectedScene = "processing.invalid-projected-scene";
+    public const string ProjectedSceneSourceMismatch = "processing.projected-scene-source-mismatch";
+    public const string ProjectedSceneDescriptorMismatch = "processing.projected-scene-descriptor-mismatch";
+    public const string ProjectedSceneDimensionMismatch = "processing.projected-scene-dimension-mismatch";
     public const string ExecutionFailed = "processing.execution-failed";
     public const string EnvironmentAssociationPending = "environment.association-pending";
     public const string MissingCalibrationProfile = "calibration.missing-profile";

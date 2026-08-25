@@ -66,6 +66,10 @@ internal sealed class FrameProcessingWorker
         var failed = false;
         foreach (var step in steps)
         {
+            if (step is not IDescriptorOnlyCaptureProcessingStep)
+            {
+                await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+            }
             var stopwatch = Stopwatch.StartNew();
             var succeeded = false;
             string? errorMessage = null;
@@ -232,6 +236,10 @@ internal sealed class FrameProcessingWorker
                     }
                 }
 
+                if (node.Step is not IDescriptorOnlyCaptureProcessingStep)
+                {
+                    await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+                }
                 if (persistence is not null && node.Step is IWindowCaptureProcessingGraphStep window &&
                     node.Dependencies.Count > 0 && graph.Nodes.FirstOrDefault(candidate =>
                         string.Equals(candidate.Id, node.Dependencies[0], StringComparison.OrdinalIgnoreCase)) is { OutputRole: { } sourceRole })
@@ -424,30 +432,28 @@ internal sealed class FrameProcessingWorker
             }
             receipt = receipt with { Manifest = persistedManifest };
             rawCapture = receipt;
-            var payload = await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, cancellationToken).ConfigureAwait(false);
-            var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
-            if (!reconstruction.IsValid || frame is null)
+            async ValueTask<CaptureResult> LoadRawFrameAsync(CancellationToken token)
             {
-                throw new InvalidDataException($"Committed raw evidence could not be reconstructed ({reconstruction.ReasonCode}).");
-            }
-            if (receipt.Manifest.Scene is not null)
-            {
-                frame = frame with { Metadata = frame.Metadata with { Scene = receipt.Manifest.Scene } };
-            }
-            var artifact = new FrameArtifact(
-                receipt.Manifest.Descriptor.Artifact.ArtifactId,
-                FrameArtifactRole.Raw,
-                frame,
-                recipeVersion: ProcessingIdentity.CreateRecipeIdentity(
-                    receipt.Manifest.Descriptor.Artifact.Recipe).IdentitySha256);
-            submission = submission with
-            {
-                Result = submission.Result with
+                var payload = await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false);
+                var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
+                if (!reconstruction.IsValid || frame is null)
                 {
-                    Frame = frame,
-                    Artifacts = new FrameArtifactSet(artifact)
+                    throw new InvalidDataException($"Committed raw evidence could not be reconstructed ({reconstruction.ReasonCode}).");
                 }
-            };
+                if (receipt.Manifest.Scene is not null)
+                {
+                    frame = frame with { Metadata = frame.Metadata with { Scene = receipt.Manifest.Scene } };
+                }
+                var artifact = new FrameArtifact(
+                    receipt.Manifest.Descriptor.Artifact.ArtifactId,
+                    FrameArtifactRole.Raw,
+                    frame,
+                    recipeVersion: ProcessingIdentity.CreateRecipeIdentity(
+                        receipt.Manifest.Descriptor.Artifact.Recipe).IdentitySha256);
+                return submission.Result with { Frame = frame, Artifacts = new FrameArtifactSet(artifact) };
+            }
+            submission = submission with { Result = submission.Result with { Frame = null, Artifacts = null } };
+            return new CaptureProcessingContext(item.Config, submission, rawCapture, LoadRawFrameAsync);
         }
         return new CaptureProcessingContext(item.Config, submission, rawCapture);
     }

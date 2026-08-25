@@ -449,9 +449,11 @@ internal sealed class CaptureProcessingPersistence(
             product.MediaType,
             product.ChecksumSha256);
         using var nullDocument = JsonDocument.Parse("null");
-        IDurableProcessingProductManifest manifest = encodedImage is null
-            ? new DurableProcessingProductManifestV1(
-                DurableProcessingProductManifestV1.CurrentSchemaVersion,
+        var isTypedMetadata = product.Kind == ProcessingProductKind.Metadata &&
+            (product.SchemaVersion is not null || product.ContentIdentitySha256 is not null);
+        IDurableProcessingProductManifest manifest = encodedImage is null && isTypedMetadata
+            ? new DurableTypedMetadataProductManifestV3(
+                DurableTypedMetadataProductManifestV3.CurrentSchemaVersion,
                 sourceDescriptor.Capture,
                 artifact,
                 product.OutputIdentitySha256,
@@ -460,8 +462,23 @@ internal sealed class CaptureProcessingPersistence(
                 product.TotalIntegration.Ticks,
                 product.Payload.Length,
                 payloadRelativePath,
-                nullDocument.RootElement.Clone())
-            : new DurableEncodedProductManifestV2(
+                nullDocument.RootElement.Clone(),
+                product.Kind,
+                product.SchemaVersion!,
+                product.ContentIdentitySha256!)
+            : encodedImage is null
+                ? new DurableProcessingProductManifestV1(
+                    DurableProcessingProductManifestV1.CurrentSchemaVersion,
+                    sourceDescriptor.Capture,
+                    artifact,
+                    product.OutputIdentitySha256,
+                    product.Algorithms,
+                    product.Compatibility,
+                    product.TotalIntegration.Ticks,
+                    product.Payload.Length,
+                    payloadRelativePath,
+                    nullDocument.RootElement.Clone())
+                : new DurableEncodedProductManifestV2(
                 DurableEncodedProductManifestV2.CurrentSchemaVersion,
                 sourceDescriptor.Capture,
                 artifact,
@@ -560,7 +577,7 @@ internal sealed class CaptureProcessingPersistence(
         {
             throw new InvalidDataException("Committed metadata payload conflicts with its manifest.");
         }
-        if (manifest is DurableProcessingProductManifestV1)
+        if (manifest is DurableProcessingProductManifestV1 or DurableTypedMetadataProductManifestV3)
         {
             try
             {
@@ -592,7 +609,12 @@ internal sealed class CaptureProcessingPersistence(
             manifest.Algorithms,
             manifest.Artifact.SourceArtifactIds,
             TimeSpan.FromTicks(manifest.TotalIntegrationTicks),
-            manifest.Compatibility);
+            manifest.Compatibility)
+        {
+            Kind = manifest.Kind,
+            SchemaVersion = manifest.ProductSchemaVersion,
+            ContentIdentitySha256 = manifest.ContentIdentitySha256
+        };
         return new RestoredProcessingOutput(
             manifest.Artifact.ArtifactId,
             manifest.Artifact.CreatedUtc,

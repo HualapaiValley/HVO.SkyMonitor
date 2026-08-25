@@ -16,6 +16,24 @@ public sealed class CaptureProcessingContextTests
         new(new ProcessingRecipeExecutor());
 
     [TestMethod]
+    public void PublicConstructor_PreservesOriginalThreeParameterClrSignature()
+    {
+        var constructors = typeof(CaptureProcessingContext).GetConstructors();
+
+        Assert.HasCount(1, constructors);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                typeof(CameraModuleConfig),
+                typeof(CaptureLoopSubmission),
+                typeof(HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureReceipt)
+            },
+            constructors[0].GetParameters().Select(static parameter => parameter.ParameterType).ToArray());
+        Assert.IsTrue(constructors[0].GetParameters()[2].HasDefaultValue);
+        Assert.IsNull(constructors[0].GetParameters()[2].DefaultValue);
+    }
+
+    [TestMethod]
     public void PreviewStep_RejectsInvertedPercentilesDuringConstruction()
     {
         var options = new PreviewProcessingStepOptions

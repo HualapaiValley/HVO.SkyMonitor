@@ -77,7 +77,13 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
                 : new ProcessingCaptureConditions(
                     reconstructionDescriptor.Controls.EffectiveGain,
                     reconstructionDescriptor.Controls.EffectiveOffset,
-                    reconstructionDescriptor.Controls.EffectiveTemperatureC));
+                    reconstructionDescriptor.Controls.EffectiveTemperatureC))
+        {
+            CaptureId = reconstructionDescriptor?.Capture.CaptureId,
+            DescriptorIdentitySha256 = reconstructionDescriptor is null
+                ? null
+                : CaptureContractJson.ComputeDescriptorSha256(reconstructionDescriptor)
+        };
     }
 
     public static CameraFrame CreateFrame(ProcessingProduct product, CameraFrame source, string sourceId)

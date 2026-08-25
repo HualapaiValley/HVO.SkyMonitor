@@ -1078,7 +1078,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 throw new InvalidDataException("Committed processing output descriptor is invalid.");
             }
             if (schema.GetString() is DurableProcessingProductManifestV1.CurrentSchemaVersion or
-                DurableEncodedProductManifestV2.CurrentSchemaVersion)
+                DurableEncodedProductManifestV2.CurrentSchemaVersion or
+                DurableTypedMetadataProductManifestV3.CurrentSchemaVersion)
             {
                 productManifest = DurableProcessingProductManifestJson.Parse(descriptorJson);
             }
