@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-08-24
+Status date: 2026-08-25
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -39,16 +39,18 @@ The planning horizons are:
 
 ## Current
 
-No initiative is active. Promote an accepted item from `Next` only after its
-owning epic records priority, readiness, and the coordination owner for the new
-milestone.
+| Priority | ID | Initiative | Active delivery |
+| --- | --- | --- | --- |
+| 1 | `RM-004` | Canonical layered capture products | [Epic #436](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/436). CameraAgent contracts, persistence, processing, and presentation complete before LogicHost ingestion and presentation. |
+| 2 | `RM-014` | CameraAgent presentation experience | [Epic #438](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/438). The design checkpoint may proceed in parallel; production presentation follows stable `RM-004` boundaries. |
+
+The owning epics record readiness, coordinator, active claims, and the approved
+consolidated-PR delivery sequence.
 
 ## Next
 
-| ID | Initiative | Outcome | Owning epic and children | Dependencies and boundary |
-| --- | --- | --- | --- | --- |
-| `RM-004` | Canonical layered capture products | Replace chained flattened annotations with durable projected scenes, analytical metadata, independently selectable layers, and explicit final materialization. Complete CameraAgent first, then add optional LogicHost ingestion and presentation. | [Epic #436](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/436); [#431](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/431) -> [#435](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/435) -> [#433](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/433) -> [#434](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/434) -> [#437](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/437) -> [#432](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/432) | CameraAgent remains fully operational without LogicHost. SVG is a cacheable presentation; canonical analysis remains structured metadata. General replay and distributed execution remain `RM-005`. |
-| `RM-014` | CameraAgent presentation experience | Make the local CameraAgent an image-led, presentation-friendly observatory experience with a clear current view, large-image viewing, capture-stage comparison, and approachable archive while retaining technical operations as a separate workspace. | [Epic #438](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/438); [#440](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/440) -> [#443](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/443) -> [#439](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/439), [#442](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/442) -> [#441](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/441) | Begins after `RM-003`. Presentation foundations may use existing durable artifacts, while canonical layers and materialization coordinate with `RM-004/#434`. The baseline remains authenticated and CameraAgent-local; anonymous or kiosk publication requires a separate security decision. |
+No additional initiative is approved for automatic start. Recompute this horizon
+after the active initiatives complete or release capacity.
 
 The blocked CameraAgent storage/upload naming cleanup
 [#142](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/142) also inherits
