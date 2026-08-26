@@ -1096,6 +1096,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private static async Task ValidateSchedulePreviewAsync(IPage page)
     {
+        await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
         var success = page.GetByText(
             "Schedule and desired graph previews are valid. No durable state changed.",
             new() { Exact = true });
@@ -1113,13 +1114,25 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 if (attempt == 9)
                 {
                     var banners = await page.Locator(".schedule-banner").AllTextContentsAsync().ConfigureAwait(false);
-                    Assert.Fail($"Schedule preview did not report success. Banners: {string.Join(" | ", banners)}");
+                    var scheduleText = await page.Locator(".schedule-console").InnerTextAsync().ConfigureAwait(false);
+                    var previewDisabled = await page.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" })
+                        .IsDisabledAsync().ConfigureAwait(false);
+                    Assert.Fail(
+                        $"Schedule preview did not report success at {page.Url}; preview disabled: {previewDisabled}; " +
+                        $"banners: {string.Join(" | ", banners)}; schedule: {scheduleText}");
                 }
                 await page.GotoAsync("/schedule").ConfigureAwait(false);
                 await page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control", Level = 1 })
                     .WaitForAsync().ConfigureAwait(false);
+                await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
             }
         }
+    }
+
+    private static async Task WaitForInteractiveBlazorAsync(IPage page)
+    {
+        await page.WaitForFunctionAsync("() => window.Blazor !== undefined").ConfigureAwait(false);
+        await page.WaitForTimeoutAsync(1_000).ConfigureAwait(false);
     }
 
     private static Task ActivateBootstrapCaptureProfileAsync(HttpClient client)
