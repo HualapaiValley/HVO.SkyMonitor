@@ -62,7 +62,6 @@ internal sealed class CameraAgentLayeredPresentationService(
     internal const string SvgRendererVersion = "cameraagent-grouped-svg-v1";
     private readonly object _cacheGate = new();
     private readonly Dictionary<string, CacheEntry> _cache = new(StringComparer.Ordinal);
-    private readonly Dictionary<Guid, string> _captureCache = [];
     private readonly Dictionary<Guid, Task<CameraAgentLayeredPresentationResult>> _flights = [];
     private long _cacheBytes;
     private long _sequence;
@@ -79,12 +78,6 @@ internal sealed class CameraAgentLayeredPresentationService(
         Task<CameraAgentLayeredPresentationResult> flight;
         lock (_cacheGate)
         {
-            if (_captureCache.TryGetValue(captureId, out var identity) &&
-                _cache.TryGetValue(identity, out var cached))
-            {
-                cached.Sequence = ++_sequence;
-                return new(CameraAgentLayeredPresentationStatus.Found, cached.Presentation);
-            }
             if (!_flights.TryGetValue(captureId, out flight!))
             {
                 flight = BuildAsync(captureId);
@@ -429,11 +422,9 @@ internal sealed class CameraAgentLayeredPresentationService(
                 var oldest = _cache.MinBy(static pair => pair.Value.Sequence);
                 if (oldest.Key is null) break;
                 _cache.Remove(oldest.Key);
-                _captureCache.Remove(oldest.Value.Presentation.CaptureId);
                 _cacheBytes -= oldest.Value.Presentation.Svg.Length;
             }
             _cache.Add(identity, new(presentation, ++_sequence));
-            _captureCache[presentation.CaptureId] = identity;
             _cacheBytes += bytes;
         }
     }

@@ -49,6 +49,41 @@ public sealed class CaptureHostContextTests
     }
 
     [TestMethod]
+    public async Task PhysicalProjectedSceneRetry_ReusesStableCaptureStageKey()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = new ProjectedSceneStagingStore(
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
+            var config = CreatePhysicalProjectedSceneConfig();
+            var submission = CreatePhysicalSubmission(config);
+            var stager = new CaptureProjectedSceneStager(staging, new MetadataCatalog());
+
+            var first = await stager.StageAsync(config, submission, CancellationToken.None).ConfigureAwait(false);
+            var retry = await stager.StageAsync(config, submission, CancellationToken.None).ConfigureAwait(false);
+
+            var firstKey = first.Result.Frame!.Metadata.Scene!.ProjectedSceneStageKey;
+            Assert.AreEqual(firstKey, retry.Result.Frame!.Metadata.Scene!.ProjectedSceneStageKey);
+            Assert.HasCount(1, Directory.EnumerateFiles(
+                Path.Combine(root, "staging", "projected-scenes"), "*.json"));
+
+            var changedConfig = config with
+            {
+                Rig = config.Rig with { ProfileVersion = string.Concat(config.Rig.ProfileVersion, "-changed") }
+            };
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await stager.StageAsync(changedConfig, submission, CancellationToken.None).ConfigureAwait(false))
+                .ConfigureAwait(false);
+            Assert.IsNotNull(await staging.ReadAsync(firstKey!, CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [DataRow(1, false)]
     [DataRow(2, true)]
     [DataRow(0, true)]
@@ -119,7 +154,7 @@ public sealed class CaptureHostContextTests
         await context.PublishAsync(original, CancellationToken.None).ConfigureAwait(false);
 
         AssertOptionalStagingFailure(ingress, original, "storage-unavailable");
-        Assert.AreEqual(1, staging.DeleteCount);
+        Assert.AreEqual(0, staging.DeleteCount);
         using var lease = await lifecycle.AcquireReconciliationLeaseAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.IsEmpty(lease.PendingStageKeys);
         Assert.IsFalse(staging.StageExists);
@@ -579,9 +614,17 @@ public sealed class CaptureHostContextTests
         public async ValueTask StageAsync(
             string stageKey, string sceneId, VisibleScene scene, CancellationToken cancellationToken)
         {
-            _ = await lifecycle.RegisterPendingAsync(stageKey, cancellationToken).ConfigureAwait(false);
-            StageExists = true;
-            throw failure;
+            var registered = await lifecycle.RegisterPendingAsync(stageKey, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                StageExists = true;
+                throw failure;
+            }
+            finally
+            {
+                StageExists = false;
+                if (registered) await lifecycle.ResolvePendingAsync(stageKey).ConfigureAwait(false);
+            }
         }
 
         public async ValueTask DeleteAsync(string stageKey, CancellationToken cancellationToken)
@@ -604,10 +647,18 @@ public sealed class CaptureHostContextTests
         public async ValueTask StageAsync(
             string stageKey, string sceneId, VisibleScene scene, CancellationToken cancellationToken)
         {
-            _ = await lifecycle.RegisterPendingAsync(stageKey, cancellationToken).ConfigureAwait(false);
-            StageExists = true;
-            await cancellation.CancelAsync().ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
+            var registered = await lifecycle.RegisterPendingAsync(stageKey, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                StageExists = true;
+                await cancellation.CancelAsync().ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            finally
+            {
+                StageExists = false;
+                if (registered) await lifecycle.ResolvePendingAsync(stageKey).ConfigureAwait(false);
+            }
         }
 
         public async ValueTask DeleteAsync(string stageKey, CancellationToken cancellationToken)

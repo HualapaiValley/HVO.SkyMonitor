@@ -797,7 +797,9 @@ public sealed class RawCaptureIngressTests
     {
         foreach (var (point, expected) in new[]
                  {
-                     (RawIngressFaultPoint.BeforeJournalCommit, RawCapturePublicationState.DefinitelyNotCommitted),
+                     (RawIngressFaultPoint.SidecarPublished, RawCapturePublicationState.Unknown),
+                     (RawIngressFaultPoint.SidecarDirectorySynced, RawCapturePublicationState.Unknown),
+                     (RawIngressFaultPoint.BeforeJournalCommit, RawCapturePublicationState.Unknown),
                      (RawIngressFaultPoint.AfterJournalCommit, RawCapturePublicationState.Committed),
                      (RawIngressFaultPoint.BeforeIndexProjection, RawCapturePublicationState.Committed),
                      (RawIngressFaultPoint.BeforeWakeUpNotification, RawCapturePublicationState.Committed)
@@ -823,6 +825,45 @@ public sealed class RawCaptureIngressTests
             {
                 DeleteRoot(root);
             }
+        }
+    }
+
+    [TestMethod]
+    public async Task OwnedStageKeys_AcceptsValidManifestReferenceFromNewerStageSchema()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var stageKey = new string('A', 64);
+            var submission = CreateSubmission(Timestamp(8).AddMinutes(1), [1, 2, 3, 4]);
+            var frame = submission.Result.Frame!;
+            submission = submission with
+            {
+                Result = submission.Result with
+                {
+                    Frame = frame with
+                    {
+                        Metadata = frame.Metadata with
+                        {
+                            Scene = new SceneProvenance(
+                                new string('B', 64), "rig-v1", "catalog", "1", new string('C', 64),
+                                "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
+                                ProjectedSceneStageSchemaVersion: "projected-scene-stage-v2",
+                                ProjectedSceneStageKey: stageKey)
+                        }
+                    }
+                }
+            };
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            await ingress.AcceptAsync(CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false);
+
+            var owned = await ingress.GetOwnedStageKeysAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(owned.Contains(stageKey));
+        }
+        finally
+        {
+            DeleteRoot(root);
         }
     }
 

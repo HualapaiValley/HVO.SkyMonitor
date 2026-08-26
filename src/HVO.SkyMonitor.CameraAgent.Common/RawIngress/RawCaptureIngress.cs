@@ -225,7 +225,6 @@ internal sealed class RawCaptureIngress :
             var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
             if (parsed.IsValid && parsed.Document?.Manifest?.Scene is
                 {
-                    ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
                     ProjectedSceneStageKey: { Length: 64 } stageKey
                 } && stageKey.All(Uri.IsHexDigit))
                 owned.Add(stageKey);
@@ -551,14 +550,35 @@ internal sealed class RawCaptureIngress :
         try
         {
             var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
-            return await _journal.IsCaptureArtifactCommittedAsync(ids.CaptureId, ids.ArtifactId, cancellationToken)
-                .ConfigureAwait(false)
-                ? RawCapturePublicationState.Committed
+            if (await _journal.IsCaptureArtifactCommittedAsync(ids.CaptureId, ids.ArtifactId, cancellationToken)
+                    .ConfigureAwait(false))
+                return RawCapturePublicationState.Committed;
+            var frame = submission.Result.Frame;
+            var paths = _files.GetPaths(RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, frame), ids.ArtifactId);
+            return DurablePathExists(paths.PayloadAbsolutePath) || DurablePathExists(paths.SidecarAbsolutePath)
+                ? RawCapturePublicationState.Unknown
                 : RawCapturePublicationState.DefinitelyNotCommitted;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
         {
             return RawCapturePublicationState.Unknown;
+        }
+    }
+
+    private static bool DurablePathExists(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
         }
     }
 

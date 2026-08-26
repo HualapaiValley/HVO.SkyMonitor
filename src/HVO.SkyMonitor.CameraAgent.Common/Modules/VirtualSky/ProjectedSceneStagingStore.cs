@@ -190,9 +190,9 @@ internal sealed class ProjectedSceneStagingStore :
         {
             EnsurePhysicalDirectory();
             var path = GetPath(stageKey);
-            if (!OperatingSystem.IsLinux() && File.Exists(path))
+            var existing = await ReadBoundedFileAsync(path, cancellationToken).ConfigureAwait(false);
+            if (existing is not null)
             {
-                var existing = await ReadBoundedFileAsync(path, cancellationToken).ConfigureAwait(false);
                 if (existing.AsSpan().SequenceEqual(bytes)) return;
                 throw new InvalidDataException("Projected-scene stage conflicts with existing capture geometry.");
             }
@@ -206,6 +206,7 @@ internal sealed class ProjectedSceneStagingStore :
                     .ConfigureAwait(false);
                 return;
             }
+            var published = false;
             try
             {
                 var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
@@ -221,11 +222,24 @@ internal sealed class ProjectedSceneStagingStore :
                     await stream.DisposeAsync().ConfigureAwait(false);
                 }
                 File.Move(temporary, path);
+                published = true;
                 RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
             }
             catch
             {
                 TryDeleteTemporaryPath(temporary);
+                if (published)
+                {
+                    TryDeleteTemporaryPath(path);
+                    try
+                    {
+                        RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        // Reconciliation removes a published stage when rollback durability cannot be confirmed.
+                    }
+                }
                 throw;
             }
         }
@@ -450,8 +464,13 @@ internal sealed class ProjectedSceneStagingStore :
                 }
                 if (!name.EndsWith(".json", StringComparison.Ordinal)) continue;
                 var stageKey = name[..^5];
-                if (stageKey.Length != 64 || stageKey.Any(static value => !Uri.IsHexDigit(value)) ||
-                    ownedStageKeys.Contains(stageKey))
+                if (stageKey.Length != 64 || stageKey.Any(static value => !Uri.IsHexDigit(value)))
+                {
+                    DeleteEntry(name);
+                    deleted++;
+                    continue;
+                }
+                if (ownedStageKeys.Contains(stageKey))
                     continue;
                 try
                 {
@@ -462,14 +481,15 @@ internal sealed class ProjectedSceneStagingStore :
                         document.SchemaVersion != StagedProjectedSceneDocument.CurrentSchemaVersion ||
                         !bytes.AsSpan().SequenceEqual(Serialize(document)) ||
                         !string.Equals(document.StageIdentitySha256, ComputeIdentity(document), StringComparison.Ordinal))
-                        continue;
+                        throw new InvalidDataException("Projected-scene stage identity is invalid.");
                     ValidateSemanticIdentity(document);
                     DeleteEntry(name);
                     deleted++;
                 }
-                catch (Exception exception) when (exception is JsonException or InvalidDataException or ArgumentException or IOException or UnauthorizedAccessException)
+                catch (Exception exception) when (exception is JsonException or InvalidDataException or ArgumentException)
                 {
-                    // Invalid evidence is retained for the future product reconciler; no payload details are logged.
+                    DeleteEntry(name);
+                    deleted++;
                 }
             }
             remaining = Math.Max(0, remaining - inspected);
@@ -759,6 +779,7 @@ internal sealed class ProjectedSceneStagingStore :
         CancellationToken cancellationToken)
     {
         using var directory = OpenLinuxStageDirectory(create: true)!;
+        var published = false;
         SafeFileHandle temporary = LinuxOpenAt(
             directory,
             temporaryName,
@@ -783,7 +804,27 @@ internal sealed class ProjectedSceneStagingStore :
                 if (!existingBytes.AsSpan().SequenceEqual(bytes))
                     throw new InvalidDataException("Projected-scene stage conflicts with existing capture geometry.");
             }
+            else
+            {
+                published = true;
+            }
             RandomAccess.FlushToDisk(directory);
+        }
+        catch
+        {
+            if (published)
+            {
+                try
+                {
+                    _ = LinuxUnlink(directory, finalName);
+                    RandomAccess.FlushToDisk(directory);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // Reconciliation removes a published stage when rollback durability cannot be confirmed.
+                }
+            }
+            throw;
         }
         finally
         {

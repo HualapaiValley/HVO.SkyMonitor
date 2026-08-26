@@ -115,10 +115,16 @@ internal sealed class CaptureProcessingPersistence(
                 {
                     throw new InvalidDataException("The materialized artifact identity conflicts with durable state.");
                 }
+                var restored = await RestoreOutputAsync(existing, cancellationToken).ConfigureAwait(false);
+                if (restored.ArtifactId != artifactId ||
+                    !string.Equals(restored.Product.ChecksumSha256, product.ChecksumSha256, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The materialized artifact facts conflict with durable evidence.");
+                }
                 _logger.PresentationMaterializationCompleted(
                     actor, product.OutputIdentitySha256, captureId, artifactId, replayed: true);
-                return new(artifactId, product.OutputIdentitySha256, existing.Artifact.ChecksumSha256,
-                    existing.Descriptor?.Layout.ByteLength ?? existing.ProductManifest?.ByteLength ?? 0, true);
+                return new(artifactId, product.OutputIdentitySha256, restored.Product.ChecksumSha256,
+                    restored.Product.Payload.Length, true);
             }
 
             var frame = restoredBase.Artifact.Frame with

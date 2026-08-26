@@ -1,9 +1,11 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -82,7 +84,9 @@ public sealed class CaptureProjectedSceneStager(
             IdentitySource,
             config.Rig.Optics.CalibrationVersion,
             config.Rig.Optics.CalibrationVersion);
-        var stageKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        var captureId = RawCaptureDescriptorFactory.CreateStableIds(config, submission).CaptureId;
+        var stageKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"hvo.skymonitor.projected-scene-stage-key.v1\0{captureId:N}")));
         var topologyMetadata = options.ConstellationIds.Count > 0 ? topology?.Metadata : null;
         var provenance = new SceneProvenance(
             stageKey,
@@ -117,31 +121,16 @@ public sealed class CaptureProjectedSceneStager(
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
             ProjectedSceneStageIdentitySha256: identityDocument.SceneIdentitySha256);
-        try
-        {
-            await stagingStore.StageAsync(
-                stageKey,
-                stageKey,
-                scene,
-                new CaptureProjectedSceneStageFacts(
-                    CameraRigProfileIdentity.ComputeSha256(config.Rig),
-                    layout,
-                    ProjectedSceneKind.Predicted,
-                    identityDocument.SceneIdentitySha256),
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            try
-            {
-                await stagingStore.DeleteAsync(stageKey, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception cleanupException) when (cleanupException is not (StackOverflowException or OutOfMemoryException))
-            {
-                // Startup reconciliation handles a stage that could not be removed after optional analysis failed.
-            }
-            throw;
-        }
+        await stagingStore.StageAsync(
+            stageKey,
+            stageKey,
+            scene,
+            new CaptureProjectedSceneStageFacts(
+                CameraRigProfileIdentity.ComputeSha256(config.Rig),
+                layout,
+                ProjectedSceneKind.Predicted,
+                identityDocument.SceneIdentitySha256),
+            cancellationToken).ConfigureAwait(false);
         return submission with
         {
             Result = submission.Result with

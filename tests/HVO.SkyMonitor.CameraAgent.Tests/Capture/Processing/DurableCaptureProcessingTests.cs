@@ -698,6 +698,8 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsTrue(replay.Replayed);
             Assert.AreEqual(first.ArtifactId, replay.ArtifactId);
             Assert.AreEqual(first.OutputIdentitySha256, replay.OutputIdentitySha256);
+            Assert.AreEqual(first.ChecksumSha256, replay.ChecksumSha256);
+            Assert.AreEqual(first.ByteLength, replay.ByteLength);
             var output = await store.ReadOutputByArtifactIdAsync(first.ArtifactId, CancellationToken.None)
                 .ConfigureAwait(false);
             Assert.IsNotNull(output);
@@ -721,6 +723,29 @@ public sealed partial class DurableCaptureProcessingTests
                 await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false),
                 out _);
             Assert.IsTrue(reconstruction.IsValid, reconstruction.ReasonCode);
+
+            var materializedPath = Path.Combine(root, output.PayloadRelativePath);
+            var corruptPayload = await File.ReadAllBytesAsync(materializedPath).ConfigureAwait(false);
+            corruptPayload[0] ^= 0xFF;
+            await File.WriteAllBytesAsync(materializedPath, corruptPayload).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await persistence.MaterializePresentationAsync(
+                    fixture.Manifest.Descriptor.Capture.CaptureId,
+                    manifestOutput.ArtifactId,
+                    selected,
+                    "operator-test",
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            var layerOutput = await store.ReadOutputByArtifactIdAsync(
+                manifest.Layers[0].SourceProduct.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(layerOutput);
+            await store.TransitionOutputUnavailableAsync(
+                layerOutput.OutputIdentitySha256, "Missing", "test-unavailable", null, CancellationToken.None)
+                .ConfigureAwait(false);
+            var staleAvailability = await presentationService.GetAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentLayeredPresentationStatus.Unavailable, staleAvailability.Status);
+            Assert.IsNull(staleAvailability.Presentation);
         }
         finally
         {

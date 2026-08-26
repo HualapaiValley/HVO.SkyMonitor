@@ -48,7 +48,7 @@ public sealed class ProjectedSceneStagingStoreTests
         var root = CreateRoot();
         try
         {
-            using var store = CreateStore(root);
+            using var store = CreateStore(root, maximumFileCount: 1);
             var sceneId = new string('B', 64);
             var stageKey = new string('2', 64);
             var original = await CreateSceneAsync(FixtureUtc, 10).ConfigureAwait(false);
@@ -210,7 +210,7 @@ public sealed class ProjectedSceneStagingStoreTests
     }
 
     [TestMethod]
-    public async Task ReconcileAsync_OverBoundReportsBacklogAndAdvancesCursor()
+    public async Task ReconcileAsync_OverBoundDeletesInvalidAndAdvancesCursor()
     {
         var root = CreateRoot();
         try
@@ -227,7 +227,7 @@ public sealed class ProjectedSceneStagingStoreTests
             var second = await store.ReconcileAsync(
                 new HashSet<string>(StringComparer.Ordinal), CancellationToken.None).ConfigureAwait(false);
 
-            Assert.IsTrue(File.Exists(invalid));
+            Assert.IsFalse(File.Exists(invalid));
             Assert.IsFalse(File.Exists(Path.Combine(directory, ".second.tmp")));
             Assert.IsTrue(first.BacklogCount > 0);
             Assert.AreEqual(0, second.BacklogCount);
@@ -239,7 +239,7 @@ public sealed class ProjectedSceneStagingStoreTests
     }
 
     [TestMethod]
-    public async Task ReconcileAsync_RepeatedRunsDoNotLetRetainedInvalidPrefixBlockValidOrphan()
+    public async Task ReconcileAsync_InvalidPrefixDoesNotBlockValidOrphanCleanup()
     {
         var root = CreateRoot();
         try
@@ -257,7 +257,7 @@ public sealed class ProjectedSceneStagingStoreTests
             await store.ReconcileAsync(new HashSet<string>(StringComparer.Ordinal), CancellationToken.None)
                 .ConfigureAwait(false);
 
-            Assert.IsTrue(File.Exists(invalid));
+            Assert.IsFalse(File.Exists(invalid));
             Assert.IsNull(await store.ReadAsync(validKey, CancellationToken.None).ConfigureAwait(false));
         }
         finally
@@ -299,7 +299,7 @@ public sealed class ProjectedSceneStagingStoreTests
     }
 
     [TestMethod]
-    public async Task ReconcileAsync_ManyInvalidEntriesCompleteCycleWithoutPerpetualBacklog()
+    public async Task ReconcileAsync_ManyInvalidEntriesAreDeletedWithoutPerpetualBacklog()
     {
         var root = CreateRoot();
         try
@@ -319,11 +319,96 @@ public sealed class ProjectedSceneStagingStoreTests
             } while (result.BacklogCount > 0);
 
             Assert.AreEqual(0, result.BacklogCount);
-            Assert.AreEqual(5, Directory.EnumerateFiles(directory, "*.json").Count());
+            Assert.AreEqual(0, Directory.EnumerateFiles(directory, "*.json").Count());
         }
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReconcileAsync_InvalidKeyReleasesHardCapacity()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var store = CreateStore(root, maximumFileCount: 1);
+            var directory = Path.Combine(root, "staging", "projected-scenes");
+            Directory.CreateDirectory(directory);
+            var invalid = Path.Combine(directory, "invalid.json");
+            await File.WriteAllTextAsync(invalid, "invalid").ConfigureAwait(false);
+            var scene = await CreateSceneAsync(FixtureUtc, 10).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await store.StageAsync(new string('A', 64), new string('B', 64), scene, CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+
+            await store.ReconcileAsync(new HashSet<string>(), CancellationToken.None).ConfigureAwait(false);
+            await store.StageAsync(new string('A', 64), new string('B', 64), scene, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            Assert.IsFalse(File.Exists(invalid));
+            Assert.IsNotNull(await store.ReadAsync(new string('A', 64), CancellationToken.None).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReconcileAsync_OwnedInvalidEvidenceIsRetainedUntouched()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var store = CreateStore(root);
+            var stageKey = new string('D', 64);
+            var directory = Path.Combine(root, "staging", "projected-scenes");
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, $"{stageKey}.json");
+            byte[] bytes = [1, 2, 3, 4];
+            await File.WriteAllBytesAsync(path, bytes).ConfigureAwait(false);
+
+            await store.ReconcileAsync(
+                new HashSet<string>([stageKey], StringComparer.Ordinal), CancellationToken.None).ConfigureAwait(false);
+
+            CollectionAssert.AreEqual(bytes, await File.ReadAllBytesAsync(path).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReconcileAsync_TransientInspectionFailureRemainsVisibleAndDoesNotDeleteEvidence()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        var root = CreateRoot();
+        var target = string.Concat(root, "-target");
+        try
+        {
+            using var store = CreateStore(root);
+            var stageKey = new string('E', 64);
+            var directory = Path.Combine(root, "staging", "projected-scenes");
+            Directory.CreateDirectory(directory);
+            await File.WriteAllTextAsync(target, "retained").ConfigureAwait(false);
+            var path = Path.Combine(directory, $"{stageKey}.json");
+            File.CreateSymbolicLink(path, target);
+
+            await Assert.ThrowsExactlyAsync<UnauthorizedAccessException>(async () =>
+                await store.ReconcileAsync(new HashSet<string>(), CancellationToken.None).ConfigureAwait(false))
+                .ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(path));
+            Assert.AreEqual("retained", await File.ReadAllTextAsync(target).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+            File.Delete(target);
         }
     }
 

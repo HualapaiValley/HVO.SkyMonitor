@@ -360,13 +360,17 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 .Select(id => (Id: id, Step: nodesById[id].Step as ICaptureProcessingGraphStep))
                 .Where(static target => target.Step is not null)
                 .ToArray();
+            var producerOutputs = producerDependencies
+                .SelectMany(static target => GetOutputs(target.Step!)
+                    .Select(output => (target.Id, Step: target.Step!, Output: output)))
+                .ToArray();
             foreach (var policy in options.Policies ?? [])
             {
-                var targets = producerDependencies
+                var targets = producerOutputs
                     .Where(target => policy.StepId is null || string.Equals(policy.StepId, target.Id, StringComparison.OrdinalIgnoreCase))
-                    .Where(target => policy.Role is null || policy.Role == target.Step!.OutputRole)
-                    .Where(target => policy.Variant is null || string.Equals(policy.Variant, target.Step!.OutputVariant, StringComparison.Ordinal))
-                    .Where(target => policy.RecipeName is null || string.Equals(policy.RecipeName, target.Step!.RecipeName, StringComparison.Ordinal))
+                    .Where(target => policy.Role is null || policy.Role == target.Output.Role)
+                    .Where(target => policy.Variant is null || string.Equals(policy.Variant, target.Output.Variant, StringComparison.Ordinal))
+                    .Where(target => policy.RecipeName is null || string.Equals(policy.RecipeName, target.Output.RecipeName, StringComparison.Ordinal))
                     .ToArray();
                 if (targets.Length == 0)
                 {
@@ -374,15 +378,15 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                         $"Storage policy does not select a declared producer dependency for step '{storage.Step.Name}'.");
                 }
             }
-            foreach (var target in producerDependencies.Where(target =>
-                         target.Step!.OutputRole == FrameArtifactRole.Metadata ||
-                         nodesById[target.Id].Step is JpegEncodingCaptureProcessingStep))
+            foreach (var target in producerOutputs.Where(target =>
+                         target.Output.Role == FrameArtifactRole.Metadata ||
+                         target.Step is JpegEncodingCaptureProcessingStep))
             {
                 var policy = (options.Policies ?? [])
                     .Where(candidate => candidate.StepId is null || string.Equals(candidate.StepId, target.Id, StringComparison.OrdinalIgnoreCase))
-                    .Where(candidate => candidate.Role is null || candidate.Role == target.Step!.OutputRole)
-                    .Where(candidate => candidate.Variant is null || string.Equals(candidate.Variant, target.Step!.OutputVariant, StringComparison.Ordinal))
-                    .Where(candidate => candidate.RecipeName is null || string.Equals(candidate.RecipeName, target.Step!.RecipeName, StringComparison.Ordinal))
+                    .Where(candidate => candidate.Role is null || candidate.Role == target.Output.Role)
+                    .Where(candidate => candidate.Variant is null || string.Equals(candidate.Variant, target.Output.Variant, StringComparison.Ordinal))
+                    .Where(candidate => candidate.RecipeName is null || string.Equals(candidate.RecipeName, target.Output.RecipeName, StringComparison.Ordinal))
                     .OrderByDescending(static candidate =>
                         (candidate.StepId is null ? 0 : 1) + (candidate.Role is null ? 0 : 1) +
                         (candidate.Variant is null ? 0 : 1) + (candidate.RecipeName is null ? 0 : 1))
@@ -390,7 +394,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 if (policy?.QueueForUpload ?? options.QueueForUpload)
                 {
                     throw new InvalidOperationException(
-                        $"Storage upload policy for step '{target.Id}' cannot target a layoutless metadata or JPEG product.");
+                        $"Storage upload policy for step '{target.Id}' output '{target.Output.Variant}' cannot target a layoutless metadata or JPEG product.");
                 }
             }
         }

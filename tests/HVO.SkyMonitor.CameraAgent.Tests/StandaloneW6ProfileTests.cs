@@ -196,6 +196,47 @@ public sealed class StandaloneW6ProfileTests
     }
 
     [TestMethod]
+    public async Task StoragePolicyMatchesSecondaryOutputAndRejectsItsUpload()
+    {
+        var configuration = await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false);
+        using var provider = CreateProvider();
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+
+        CameraModuleConfig WithSecondaryPolicy(bool queueForUpload)
+        {
+            var steps = configuration.Pipeline!.Steps.Select(step => step.Id == "storage"
+                ? step with
+                {
+                    Options = System.Text.Json.JsonSerializer.SerializeToElement(
+                        new NoOpFileStorageProcessingStepOptions
+                        {
+                            StorageRoot = "/var/lib/hvo/data/agent",
+                            RetentionDays = 1,
+                            UpdateLatestFrame = true,
+                            QueueForUpload = false,
+                            Policies =
+                            [
+                                new ArtifactStoragePolicyOptions
+                                {
+                                    StepId = "scene-presentation",
+                                    Variant = "w6-constellation-layer",
+                                    QueueForUpload = queueForUpload
+                                }
+                            ]
+                        })
+                }
+                : step).ToArray();
+            return configuration with { Pipeline = configuration.Pipeline with { Steps = steps } };
+        }
+
+        var accepted = factory.CreateGraph(WithSecondaryPolicy(queueForUpload: false));
+        accepted.DisposeSteps();
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            factory.CreateGraph(WithSecondaryPolicy(queueForUpload: true)));
+        StringAssert.Contains(exception.Message, "w6-constellation-layer", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task Pre433W6FixturePinsEveryAllowlistedHistoricalNodeAndExcludesChangedCloud()
     {
         var current = await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false);
