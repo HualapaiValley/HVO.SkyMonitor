@@ -257,7 +257,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.HasCount(requestedMeasuredCount, measuredCaptures);
         var captureProvenance = AssertCaptureContracts(
             runtimeRoot, measuredCaptures, expectedDeploymentLocation);
-        var geometry = await AssertRepresentativeGeometryAsync(runtimeRoot, measuredCaptures).ConfigureAwait(false);
+        var campaignCaptures = warmupCaptures.Captures.Concat(measuredCaptures).ToArray();
+        var geometry = await AssertRepresentativeGeometryAsync(runtimeRoot, campaignCaptures).ConfigureAwait(false);
         var calibration = ReadCalibrationEvidence(runtimeRoot);
         var calibrationResiduals = await AssertCalibrationResidualsAsync(
             runtimeRoot,
@@ -265,7 +266,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             calibration).ConfigureAwait(false);
         var representative = RetainRepresentativeEvidence(runtimeRoot, evidenceRoot, measuredCaptures[0].CaptureId);
         var comparisonPreview = await AssertComparisonApiAsync(
-            session, measuredCaptures[0], geometry, evidenceRoot).ConfigureAwait(false);
+            session, campaignCaptures.Single(capture => capture.CaptureId == geometry.CaptureId), geometry, evidenceRoot)
+            .ConfigureAwait(false);
         var environmental = await AssertEnvironmentalEvidenceAsync(
             session, page, runtimeRoot, measuredCaptures[^1]).ConfigureAwait(false);
         var pipelinePerformance = ReadPipelinePerformance(runtimeRoot, measuredCaptures);
@@ -2955,7 +2957,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private static async Task<GeometryEvidence> AssertRepresentativeGeometryAsync(
         string root,
-        IReadOnlyCollection<CameraAgentGalleryCapture> measuredCaptures)
+        IReadOnlyCollection<CameraAgentGalleryCapture> campaignCaptures)
     {
         using var fixture = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(
             AppContext.BaseDirectory,
@@ -2983,10 +2985,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var markerTolerance = tolerances.GetProperty("renderedMarkerPixels").GetDouble();
         var cardinalTolerance = tolerances.GetProperty("cardinalSensorPixels").GetDouble();
         var fixtureSceneUtc = fixtureRoot.GetProperty("sceneUtc").GetDateTimeOffset();
-        var measuredCaptureIds = measuredCaptures.Select(static capture => capture.CaptureId).ToHashSet();
+        var campaignCaptureIds = campaignCaptures.Select(static capture => capture.CaptureId).ToHashSet();
         var raw = ReadManifests(root).Single(item =>
             item.Manifest.Descriptor.Artifact.Role == FrameArtifactRole.Raw &&
-            measuredCaptureIds.Contains(item.Manifest.Descriptor.Capture.CaptureId) &&
+            campaignCaptureIds.Contains(item.Manifest.Descriptor.Capture.CaptureId) &&
             item.Manifest.Scene?.SceneUtc == fixtureSceneUtc);
         var captureId = raw.Manifest.Descriptor.Capture.CaptureId;
         var scene = raw.Manifest.Scene ?? throw new InvalidDataException("The W6 scene is missing.");
@@ -3145,6 +3147,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         return new GeometryEvidence(
             fixtureRoot.GetProperty("fixtureId").GetString()!,
             fixtureRoot.GetProperty("referenceModel").GetString()!,
+            captureId,
             sceneUtc,
             observations,
             fixtureLandmarks,
@@ -5686,6 +5689,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private sealed record GeometryEvidence(
         string FixtureId,
         string ReferenceModel,
+        Guid CaptureId,
         DateTimeOffset SceneUtc,
         IReadOnlyList<GeometryObjectEvidence> Objects,
         ProjectionAnnotationLandmarks CardinalLandmarks,
