@@ -11,6 +11,7 @@ export function bindLayerToggles(root) {
         const apply = () => {
             const group = root.querySelector(`#${CSS.escape(toggle.dataset.layerTarget)}`);
             if (group) {
+                group.removeAttribute("display");
                 group.style.display = toggle.checked ? "" : "none";
             }
         };

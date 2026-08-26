@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -45,41 +46,7 @@ internal static class CentralReconstructionDescriptorFactory
                 ToIdentity(profiles[CentralProfileKind.Mask]),
                 ToIdentity(profiles[CentralProfileKind.Sensor]),
                 ToIdentity(profiles[CentralProfileKind.Processing])),
-            new FrameLayoutDescriptor(
-                artifact.Layout.Width,
-                artifact.Layout.Height,
-                artifact.Layout.StrideBytes,
-                Enum.Parse<CameraPixelFormat>(artifact.Layout.PixelFormat),
-                Enum.Parse<FrameByteOrder>(artifact.Layout.ByteOrder),
-                artifact.Layout.SampleDepthBits,
-                artifact.Layout.ContainerDepthBits,
-                Enum.Parse<FrameSamplePacking>(artifact.Layout.Packing),
-                Enum.Parse<ColorFilterArrayPattern>(artifact.Layout.CfaPattern),
-                artifact.Layout.BlackLevel,
-                artifact.Layout.WhiteLevel,
-                artifact.Layout.ByteLength)
-            {
-                StoredCodeTransform = artifact.Layout.StoredCodeTransform is null
-                    ? null
-                    : Enum.Parse<FrameStoredCodeTransform>(artifact.Layout.StoredCodeTransform),
-                LevelCodeSpace = artifact.Layout.LevelCodeSpace is null
-                    ? null
-                    : Enum.Parse<FrameLevelCodeSpace>(artifact.Layout.LevelCodeSpace),
-                Readout = artifact.Layout.NativeWidth is null
-                    ? null
-                    : new FrameReadoutDescriptor(
-                        artifact.Layout.NativeWidth.Value,
-                        artifact.Layout.NativeHeight!.Value,
-                        artifact.Layout.RoiX!.Value,
-                        artifact.Layout.RoiY!.Value,
-                        artifact.Layout.RoiWidth!.Value,
-                        artifact.Layout.RoiHeight!.Value,
-                        artifact.Layout.BinX!.Value,
-                        artifact.Layout.BinY!.Value,
-                        Enum.Parse<FrameBinningAlgorithm>(artifact.Layout.BinningAlgorithm!),
-                        artifact.Layout.CfaOriginX,
-                        artifact.Layout.CfaOriginY)
-            },
+            CreateLayout(artifact.Layout),
             new ArtifactDescriptor(
                 artifact.ArtifactId,
                 artifact.Role,
@@ -120,6 +87,86 @@ internal static class CentralReconstructionDescriptorFactory
             throw new InvalidOperationException("The central frame location evidence was not loaded.");
         }
         return descriptor;
+    }
+
+    internal static StructuredProcessingProductDescriptorV1 CreateStructured(CentralArtifact artifact)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        if (artifact.ReconstructionState != CentralReconstructionState.Complete ||
+            artifact.StructuredProduct is not { } product)
+        {
+            throw new InvalidOperationException("The central structured product is not reconstructable.");
+        }
+        var descriptor = JsonSerializer.Deserialize<StructuredProcessingProductDescriptorV1>(product.DescriptorJson)
+            ?? throw new InvalidDataException("The persisted structured product descriptor is invalid.");
+        var validation = descriptor.Validate();
+        var persistedRecipe = artifact.Recipe;
+        var expectedRecipe = descriptor.Artifact.Recipe;
+        var persistedSources = artifact.Sources.OrderBy(static source => source.Ordinal).ToArray();
+        if (!validation.IsValid || descriptor.Artifact.ArtifactId != artifact.ArtifactId ||
+            descriptor.Artifact.ChecksumSha256 != artifact.ChecksumSha256 ||
+            descriptor.Artifact.Role != artifact.Role || descriptor.Artifact.MediaType != artifact.MediaType ||
+            descriptor.Artifact.SourceId != artifact.SourceId || descriptor.Artifact.Variant != artifact.Variant ||
+            descriptor.Artifact.CreatedUtc != artifact.CreatedUtc || descriptor.ByteLength != artifact.ByteLength ||
+            descriptor.OutputIdentitySha256 != product.OutputIdentitySha256 ||
+            descriptor.ContentIdentitySha256 != product.ContentIdentitySha256 ||
+            descriptor.Kind.ToString() != product.ProductKind ||
+            descriptor.ProductSchemaVersion != product.ProductSchemaVersion ||
+            descriptor.TotalIntegrationTicks != product.TotalIntegrationTicks ||
+            JsonSerializer.Serialize(descriptor.Algorithms) != product.AlgorithmsJson ||
+            JsonSerializer.Serialize(descriptor.Compatibility) != product.CompatibilityJson ||
+            persistedRecipe is null || persistedRecipe.Name != expectedRecipe.Name ||
+            persistedRecipe.SemanticVersion != expectedRecipe.SemanticVersion ||
+            persistedRecipe.ImplementationVersion != expectedRecipe.ImplementationVersion ||
+            persistedRecipe.OptionsSha256 != expectedRecipe.OptionsSha256 ||
+            persistedRecipe.OptionsJson != JsonSerializer.Serialize(CaptureContractJson.Canonicalize(expectedRecipe.Options)) ||
+            persistedSources.Length != descriptor.Artifact.SourceArtifactIds.Count ||
+            persistedSources.Where((source, ordinal) => source.Ordinal != ordinal ||
+                source.SourceArtifactId != descriptor.Artifact.SourceArtifactIds[ordinal]).Any())
+        {
+            throw new InvalidDataException("The persisted structured product descriptor does not match its artifact.");
+        }
+        return descriptor;
+    }
+
+    internal static FrameLayoutDescriptor CreateLayout(CentralArtifactLayout layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        return new FrameLayoutDescriptor(
+            layout.Width,
+            layout.Height,
+            layout.StrideBytes,
+            Enum.Parse<CameraPixelFormat>(layout.PixelFormat),
+            Enum.Parse<FrameByteOrder>(layout.ByteOrder),
+            layout.SampleDepthBits,
+            layout.ContainerDepthBits,
+            Enum.Parse<FrameSamplePacking>(layout.Packing),
+            Enum.Parse<ColorFilterArrayPattern>(layout.CfaPattern),
+            layout.BlackLevel,
+            layout.WhiteLevel,
+            layout.ByteLength)
+        {
+            StoredCodeTransform = layout.StoredCodeTransform is null
+                ? null
+                : Enum.Parse<FrameStoredCodeTransform>(layout.StoredCodeTransform),
+            LevelCodeSpace = layout.LevelCodeSpace is null
+                ? null
+                : Enum.Parse<FrameLevelCodeSpace>(layout.LevelCodeSpace),
+            Readout = layout.NativeWidth is null
+                ? null
+                : new FrameReadoutDescriptor(
+                    layout.NativeWidth.Value,
+                    layout.NativeHeight!.Value,
+                    layout.RoiX!.Value,
+                    layout.RoiY!.Value,
+                    layout.RoiWidth!.Value,
+                    layout.RoiHeight!.Value,
+                    layout.BinX!.Value,
+                    layout.BinY!.Value,
+                    Enum.Parse<FrameBinningAlgorithm>(layout.BinningAlgorithm!),
+                    layout.CfaOriginX,
+                    layout.CfaOriginY)
+        };
     }
 
     private static ProfileIdentityDescriptor ToIdentity(CentralCaptureProfile profile)

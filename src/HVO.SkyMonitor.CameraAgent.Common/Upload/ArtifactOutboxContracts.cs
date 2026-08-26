@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 
@@ -15,6 +16,7 @@ public enum ArtifactOutboxStatus
 public enum ArtifactOutboxManifestKind
 {
     ManifestV2,
+    StructuredProductV1,
     LegacyV1,
     MalformedLegacy
 }
@@ -63,7 +65,10 @@ public sealed record ArtifactOutboxRecord(
     DateTimeOffset? LeaseExpiresUtc,
     string? LastReason,
     ReadOnlyMemory<byte>? Acknowledgement,
-    string? LegacyEvidencePath);
+    string? LegacyEvidencePath)
+{
+    public StructuredProcessingProductManifestV1? ProductManifest { get; init; }
+}
 
 public sealed record ArtifactOutboxLease(
     ArtifactOutboxRecord Record,
@@ -74,6 +79,7 @@ public sealed record ArtifactOutboxLease(
 public sealed record ArtifactOutboxRetentionHold(
     Guid ArtifactId,
     string RelativeArtifactPath,
+    string RelativeSidecarPath,
     ArtifactOutboxStatus Status);
 
 public sealed record ArtifactOutboxSnapshot(

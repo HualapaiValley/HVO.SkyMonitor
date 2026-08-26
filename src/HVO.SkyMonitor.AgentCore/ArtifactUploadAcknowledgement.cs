@@ -25,8 +25,8 @@ public sealed record ArtifactUploadAcknowledgement(
             || ByteLength < 0
             || AcceptedAtUtc == default
             || AcceptedAtUtc.Offset != TimeSpan.Zero
-            || AcceptedManifestSchemaVersion is not ArtifactUploadManifest.CurrentSchemaVersion
-                and not ArtifactManifestV2.CurrentSchemaVersion)
+            || string.IsNullOrWhiteSpace(AcceptedManifestSchemaVersion)
+            || AcceptedManifestSchemaVersion.Length > 64)
         {
             throw new ArgumentException("Artifact upload acknowledgement is invalid.", nameof(ArtifactUploadAcknowledgement));
         }

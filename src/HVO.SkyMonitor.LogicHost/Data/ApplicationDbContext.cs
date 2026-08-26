@@ -35,6 +35,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<CentralCaptureProfile> CentralCaptureProfiles => Set<CentralCaptureProfile>();
     internal DbSet<CentralArtifactLayout> CentralArtifactLayouts => Set<CentralArtifactLayout>();
     internal DbSet<CentralArtifactRecipe> CentralArtifactRecipes => Set<CentralArtifactRecipe>();
+    internal DbSet<CentralStructuredProcessingProduct> CentralStructuredProcessingProducts =>
+        Set<CentralStructuredProcessingProduct>();
     internal DbSet<CentralArtifactSource> CentralArtifactSources => Set<CentralArtifactSource>();
     internal DbSet<CentralArtifactIngestIdentity> CentralArtifactIngestIdentities => Set<CentralArtifactIngestIdentity>();
     internal DbSet<CentralRecoveryCheckpoint> CentralRecoveryCheckpoints => Set<CentralRecoveryCheckpoint>();

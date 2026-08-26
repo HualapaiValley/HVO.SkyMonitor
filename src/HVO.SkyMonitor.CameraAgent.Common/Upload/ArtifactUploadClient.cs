@@ -3,6 +3,7 @@ using System.Net;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -191,6 +192,25 @@ public sealed class ArtifactUploadClient(
     internal static ArtifactDeliveryDescriptor ResolveDelivery(ArtifactOutboxRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
+        if (record.ProductManifest is { } productManifest)
+        {
+            var productValidation = productManifest.Validate();
+            if (!productValidation.IsValid)
+            {
+                throw new InvalidDataException("Outbox record contains an invalid structured product manifest.");
+            }
+            var productDescriptor = productManifest.Descriptor;
+            return new(
+                productManifest.SchemaVersion,
+                productManifest.IdempotencyKey,
+                productDescriptor.Artifact.ArtifactId,
+                productDescriptor.Artifact.Role,
+                productManifest.RelativeArtifactPath,
+                productDescriptor.Artifact.ChecksumSha256,
+                productDescriptor.ByteLength,
+                productDescriptor.Artifact.MediaType,
+                productDescriptor.SourceCapture.Timing.ExposureStartedUtc);
+        }
         if (record.Manifest?.LegacyManifest is { } legacy)
         {
             legacy.Validate();

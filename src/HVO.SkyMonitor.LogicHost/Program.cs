@@ -243,6 +243,7 @@ public sealed partial class Program
                 metrics.AddMeter("HVO.SkyMonitor.Authentication");
                 metrics.AddMeter(CentralIngestTelemetry.MeterName);
                 metrics.AddMeter(CentralArtifactRetrievalTelemetry.MeterName);
+                metrics.AddMeter(CentralPresentationTelemetry.MeterName);
                 metrics.AddMeter(CentralArtifactRetentionTelemetry.MeterName);
                 metrics.AddMeter(CentralDerivativeWorkerTelemetry.MeterName);
                 metrics.AddMeter(CentralTransientLifecycleTelemetry.MeterName);
@@ -815,6 +816,13 @@ public sealed partial class Program
         builder.Services.AddSingleton<CentralIngestTelemetry>();
         builder.Services.AddScoped<ICentralArtifactRetrievalService, CentralArtifactRetrievalService>();
         builder.Services.AddScoped<ICentralArtifactObjectReader, CentralArtifactObjectReader>();
+        builder.Services.AddSingleton<CentralLayeredPresentationCache>();
+        builder.Services.AddSingleton<CentralPresentationTelemetry>();
+        builder.Services.AddSingleton<CentralPresentationMaterializationGate>();
+        builder.Services.AddScoped<CentralLayeredPresentationService>();
+        builder.Services.AddScoped<ICentralLayeredPresentationService>(provider =>
+            provider.GetRequiredService<CentralLayeredPresentationService>());
+        builder.Services.AddScoped<ICentralPresentationMaterializer, CentralPresentationMaterializer>();
         builder.Services.AddScoped<ICentralArtifactRetentionReferences, CentralArtifactRetentionReferences>();
         builder.Services.AddScoped<ICentralTransientEventPersistence, CentralTransientEventPersistence>();
         builder.Services.AddScoped<ICentralTransientEventVersionAppender, CentralTransientEventVersionAppender>();

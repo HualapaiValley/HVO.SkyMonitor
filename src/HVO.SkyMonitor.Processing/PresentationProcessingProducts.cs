@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
 
@@ -18,6 +19,7 @@ public static class PresentationProcessingProducts
     public const string MaterializationRecipeName = "presentation-materialization";
     public const string MetadataFactsRecipeName = "presentation-metadata-facts";
     public const string ManifestMediaType = "application/vnd.hvo.overlay-manifest+json";
+    private static readonly JsonSerializerOptions MetadataFactsJsonOptions = CreateMetadataFactsJsonOptions();
 
     /// <summary>Creates a reference bound to an actual artifact and an explicit image coordinate identity.</summary>
     public static PresentationProductReference CreateReference(ProcessingArtifact artifact, string coordinateIdentitySha256)
@@ -61,14 +63,7 @@ public static class PresentationProcessingProducts
     {
         ArgumentNullException.ThrowIfNull(facts);
         ValidateSources(canonicalSources);
-        var identitySha256 = CaptureContractJson.ComputeCanonicalJsonSha256(
-            CaptureContractJson.SerializeToElement(facts with
-            {
-                FactsIdentitySha256 = string.Empty,
-                Corners = facts.Corners with { SourceIdentitySha256 = string.Empty }
-            }));
-        if (!string.Equals(identitySha256, facts.FactsIdentitySha256, StringComparison.Ordinal))
-            throw new ArgumentException("Presentation metadata facts identity is invalid.", nameof(facts));
+        ValidateMetadataFacts(facts);
         var payload = System.Text.Encoding.UTF8.GetBytes(
             CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(facts)).GetRawText());
         var identity = Identity(MetadataFactsRecipeName, PresentationLayerProducers.MetadataProducerVersion,
@@ -78,6 +73,62 @@ public static class PresentationProcessingProducts
             [new("presentation-metadata-facts", PresentationLayerProducers.MetadataProducerVersion)], canonicalSources,
             canonicalSources[0].Integration, canonicalSources[0].Compatibility, ProcessingProductKind.Metadata,
             PresentationMetadataFactsProductV1.CurrentSchemaVersion, facts.FactsIdentitySha256);
+    }
+
+    public static string ComputeMetadataFactsIdentity(PresentationMetadataFactsProductV1 facts)
+    {
+        ArgumentNullException.ThrowIfNull(facts);
+        return CaptureContractJson.ComputeCanonicalJsonSha256(
+            CaptureContractJson.SerializeToElement(facts with
+            {
+                FactsIdentitySha256 = string.Empty,
+                Corners = facts.Corners with { SourceIdentitySha256 = string.Empty }
+            }));
+    }
+
+    public static void ValidateMetadataFacts(PresentationMetadataFactsProductV1 facts)
+    {
+        ArgumentNullException.ThrowIfNull(facts);
+        if (facts.SchemaVersion != PresentationMetadataFactsProductV1.CurrentSchemaVersion ||
+            facts.CaptureId == Guid.Empty || facts.CaptureSequence < 0 || facts.Environment is null ||
+            facts.Environment.Count > 512 || facts.Environment.Any(static item => item is null ||
+                item.ConflictingObservations is null || item.ConflictingObservations.Count > 512) ||
+            facts.Corners is null || !ValidLines(facts.Corners.TopLeft) || !ValidLines(facts.Corners.TopRight) ||
+            !ValidLines(facts.Corners.BottomLeft) || !ValidLines(facts.Corners.BottomRight) ||
+            facts.Capture.ValueKind != JsonValueKind.Object || facts.Catalog.ValueKind != JsonValueKind.Object ||
+            facts.Calibration.ValueKind != JsonValueKind.Object || facts.Stack.ValueKind != JsonValueKind.Object ||
+            facts.ProcessingProfile.ValueKind != JsonValueKind.Object ||
+            !string.Equals(facts.Corners.SourceIdentitySha256, facts.FactsIdentitySha256, StringComparison.Ordinal) ||
+            !string.Equals(ComputeMetadataFactsIdentity(facts), facts.FactsIdentitySha256, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("Presentation metadata facts are invalid.", nameof(facts));
+        }
+    }
+
+    public static PresentationMetadataFactsProductV1 ParseMetadataFacts(ReadOnlyMemory<byte> payload)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            if (HasDuplicateProperties(document.RootElement))
+            {
+                throw new ArgumentException("Presentation metadata facts contain duplicate properties.", nameof(payload));
+            }
+            var facts = JsonSerializer.Deserialize<PresentationMetadataFactsProductV1>(payload.Span, MetadataFactsJsonOptions)
+                ?? throw new ArgumentException("Presentation metadata facts are empty.", nameof(payload));
+            ValidateMetadataFacts(facts);
+            var canonical = System.Text.Encoding.UTF8.GetBytes(
+                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(facts, MetadataFactsJsonOptions)).GetRawText());
+            if (!payload.Span.SequenceEqual(canonical))
+            {
+                throw new ArgumentException("Presentation metadata facts are not canonical JSON.", nameof(payload));
+            }
+            return facts;
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or FormatException)
+        {
+            throw new ArgumentException("Presentation metadata facts are invalid.", nameof(payload), exception);
+        }
     }
 
     /// <summary>Aggregates an actual packed base and ordered validated typed layer artifacts into an overlay manifest product.</summary>
@@ -133,7 +184,7 @@ public static class PresentationProcessingProducts
         if (!ReferenceMatches(reference, artifact) || requirePackedLayout &&
             (artifact.Layout is not { } layout || reference.Compatibility.WidthPixels != layout.Width ||
              reference.Compatibility.HeightPixels != layout.Height ||
-             !string.Equals(reference.Compatibility.LayoutIdentitySha256, LayoutIdentity(layout), StringComparison.Ordinal)))
+             !string.Equals(reference.Compatibility.LayoutIdentitySha256, ComputeLayoutIdentity(layout), StringComparison.Ordinal)))
             throw new ArgumentException("Product reference does not describe the actual artifact.", nameof(reference));
     }
 
@@ -142,13 +193,13 @@ public static class PresentationProcessingProducts
         string.Equals(reference.MediaType, artifact.MediaType, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(reference.ProductIdentitySha256, ArtifactIdentity(artifact), StringComparison.Ordinal);
 
-    internal static string LayoutIdentity(FrameLayoutDescriptor layout) =>
+    public static string ComputeLayoutIdentity(FrameLayoutDescriptor layout) =>
         CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(layout));
 
     private static PresentationCompatibilityDescriptor Compatibility(ProcessingArtifact artifact, string coordinateIdentitySha256)
     {
         if (artifact.Layout is { } layout)
-            return new(layout.Width, layout.Height, LayoutIdentity(layout), NormalizeSha256(coordinateIdentitySha256));
+            return new(layout.Width, layout.Height, ComputeLayoutIdentity(layout), NormalizeSha256(coordinateIdentitySha256));
         if (artifact.ProductKind == ProcessingProductKind.Metadata &&
             string.Equals(artifact.SchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, StringComparison.Ordinal) &&
             PresentationLayerPayloadJson.Parse(artifact.Payload).Payload is { } payload)
@@ -180,6 +231,33 @@ public static class PresentationProcessingProducts
         if (sources.Count is < 1 or > 512 || sources.Any(static source => source is null || source.ArtifactId == Guid.Empty))
             throw new ArgumentException("Canonical sources are invalid.", nameof(sources));
     }
+
+    private static bool ValidLines(IReadOnlyList<string>? lines)
+        => lines is not null && lines.Count <= 64 && lines.All(static line => line is not null && line.Length <= 512);
+
+    private static bool HasDuplicateProperties(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in value.EnumerateObject())
+            {
+                if (!names.Add(property.Name) || HasDuplicateProperties(property.Value)) return true;
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.Array && value.EnumerateArray().Any(HasDuplicateProperties))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    private static JsonSerializerOptions CreateMetadataFactsJsonOptions()
+        => new(JsonSerializerDefaults.Web)
+        {
+            UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+            RespectRequiredConstructorParameters = true
+        };
 }
 
 /// <summary>Host-neutral packed-frame materialization boundary with complete explicit immediate lineage.</summary>

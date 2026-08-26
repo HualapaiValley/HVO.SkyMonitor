@@ -54,12 +54,12 @@ internal sealed class CameraAgentLayeredPresentationService(
     SqliteCaptureProcessingStore processingStore,
     ICameraAgentArtifactService artifacts) : ICameraAgentLayeredPresentationService
 {
-    internal const int MaximumSvgBytes = 2 * 1024 * 1024;
-    internal const int MaximumSvgElements = 20_000;
+    internal const int MaximumSvgBytes = GroupedSvgPresentationRenderer.MaximumSvgBytes;
+    internal const int MaximumSvgElements = GroupedSvgPresentationRenderer.MaximumSvgElements;
     internal const int MaximumSourcePayloadBytes = 16 * 1024 * 1024;
     internal const int MaximumCacheEntries = 64;
     internal const long MaximumCacheBytes = 16L * 1024 * 1024;
-    internal const string SvgRendererVersion = "cameraagent-grouped-svg-v1";
+    internal const string SvgRendererVersion = GroupedSvgPresentationRenderer.RendererVersion;
     private readonly object _cacheGate = new();
     private readonly Dictionary<string, CacheEntry> _cache = new(StringComparer.Ordinal);
     private readonly Dictionary<Guid, Task<CameraAgentLayeredPresentationResult>> _flights = [];
@@ -183,7 +183,7 @@ internal sealed class CameraAgentLayeredPresentationService(
                 }
             }
 
-            var rendered = Render(captureId, manifest, payloads, identity);
+            var rendered = Render(captureId, manifest, payloads, baseChecksum);
             if (rendered.Status == CameraAgentLayeredPresentationStatus.Found && rendered.Presentation is { } presentation)
             {
                 AddCache(identity, presentation);
@@ -238,47 +238,38 @@ internal sealed class CameraAgentLayeredPresentationService(
         Guid captureId,
         OverlayManifestV1 manifest,
         List<PresentationLayerPayloadV1> payloads,
-        string presentationIdentity)
+        string baseChecksumSha256)
     {
-        var elementCount = payloads.Sum(ElementCount);
-        if (elementCount > MaximumSvgElements)
+        try
         {
-            return new(CameraAgentLayeredPresentationStatus.TooLarge, Reason: "The grouped presentation exceeds its element bound.");
+            var rendered = GroupedSvgPresentationRenderer.Render(manifest, payloads, baseChecksumSha256);
+            return new(CameraAgentLayeredPresentationStatus.Found, new CameraAgentLayeredPresentation(
+                captureId,
+                manifest.BaseProduct.ArtifactId,
+                manifest.ManifestIdentitySha256,
+                rendered.PresentationIdentitySha256,
+                rendered.SvgChecksumSha256,
+                rendered.WidthPixels,
+                rendered.HeightPixels,
+                rendered.Layers.Select(static layer => new CameraAgentPresentationLayer(
+                    layer.IdentitySha256,
+                    layer.Kind,
+                    layer.DomGroupId,
+                    layer.ZOrder,
+                    layer.EnabledByDefault,
+                    layer.OpacityMillionths,
+                    layer.RendererVersion,
+                    layer.StyleVersion)).ToArray(),
+                rendered.Svg));
         }
-
-        var buffer = new StringBuilder(Math.Min(MaximumSvgBytes, 4096 + elementCount * 64));
-        using (var writer = XmlWriter.Create(buffer, new XmlWriterSettings
+        catch (InvalidDataException)
         {
-            OmitXmlDeclaration = true,
-            ConformanceLevel = ConformanceLevel.Document,
-            NewLineHandling = NewLineHandling.None
-        }))
-        {
-            writer.WriteStartElement("svg", "http://www.w3.org/2000/svg");
-            writer.WriteAttributeString("viewBox", FormattableString.Invariant(
-                $"0 0 {manifest.BaseProduct.Compatibility.WidthPixels} {manifest.BaseProduct.Compatibility.HeightPixels}"));
-            writer.WriteAttributeString("role", "img");
-            writer.WriteAttributeString("aria-label", "Selectable capture presentation layers");
-            writer.WriteAttributeString("data-presentation-identity", presentationIdentity);
-            for (var index = 0; index < manifest.Layers.Count; index++)
-            {
-                WriteLayer(writer, manifest.Layers[index], payloads[index], index);
-            }
-            writer.WriteEndElement();
+            return new(CameraAgentLayeredPresentationStatus.TooLarge, Reason: "The grouped presentation exceeds its bounds.");
         }
-        var svg = Encoding.UTF8.GetBytes(buffer.ToString());
-        if (svg.Length > MaximumSvgBytes)
+        catch (ArgumentException)
         {
-            return new(CameraAgentLayeredPresentationStatus.TooLarge, Reason: "The grouped presentation exceeds its payload bound.");
+            return new(CameraAgentLayeredPresentationStatus.Malformed, Reason: "The retained presentation evidence is malformed.");
         }
-        var layers = manifest.Layers.Select((layer, index) => new CameraAgentPresentationLayer(
-            layer.LayerIdentitySha256, layer.LayerKind, DomGroupId(index), layer.ZOrder,
-            layer.EnabledByDefault, layer.OpacityMillionths, layer.RendererVersion, layer.StyleVersion)).ToArray();
-        var checksum = Convert.ToHexString(SHA256.HashData(svg));
-        return new(CameraAgentLayeredPresentationStatus.Found, new CameraAgentLayeredPresentation(
-            captureId, manifest.BaseProduct.ArtifactId, manifest.ManifestIdentitySha256, presentationIdentity,
-            checksum, manifest.BaseProduct.Compatibility.WidthPixels, manifest.BaseProduct.Compatibility.HeightPixels,
-            layers, svg));
     }
 
     private static void WriteLayer(
@@ -399,12 +390,7 @@ internal sealed class CameraAgentLayeredPresentationService(
     }
 
     private static string ComputePresentationIdentity(OverlayManifestV1 manifest, string baseChecksum)
-    {
-        var bytes = Encoding.ASCII.GetBytes(string.Join('|',
-            SvgRendererVersion, manifest.ManifestIdentitySha256, baseChecksum,
-            string.Join(',', manifest.Layers.Select(static layer => layer.LayerIdentitySha256))));
-        return Convert.ToHexString(SHA256.HashData(bytes));
-    }
+        => GroupedSvgPresentationRenderer.ComputeIdentity(manifest, baseChecksum);
 
     private static int ElementCount(PresentationLayerPayloadV1 payload) => checked(
         payload.Markers.Count + payload.Segments.Count + payload.Ellipses.Count +

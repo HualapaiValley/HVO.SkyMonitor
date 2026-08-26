@@ -106,6 +106,22 @@ internal sealed class CentralArtifactRecipe
     public string OptionsSha256 { get; set; } = string.Empty;
 }
 
+internal sealed class CentralStructuredProcessingProduct
+{
+    public Guid CentralArtifactId { get; set; }
+    public CentralArtifact? Artifact { get; set; }
+    public string OutputIdentitySha256 { get; set; } = string.Empty;
+    public string ProductKind { get; set; } = string.Empty;
+    public string ProductSchemaVersion { get; set; } = string.Empty;
+    public string ContentIdentitySha256 { get; set; } = string.Empty;
+    public string AlgorithmsJson { get; set; } = string.Empty;
+    public string CompatibilityJson { get; set; } = string.Empty;
+    public string DescriptorJson { get; set; } = string.Empty;
+    public long TotalIntegrationTicks { get; set; }
+
+    public string? SourceIdentitySha256 { get; set; }
+}
+
 internal sealed class CentralArtifactSource
 {
     public Guid Id { get; init; } = Guid.NewGuid();

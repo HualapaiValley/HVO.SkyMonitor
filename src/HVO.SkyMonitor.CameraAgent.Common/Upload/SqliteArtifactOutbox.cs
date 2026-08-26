@@ -5,6 +5,7 @@ using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -190,6 +191,41 @@ public sealed class SqliteArtifactOutbox(
             manifest.ByteLength,
             manifest.MediaType,
             manifest.CapturedAtUtc,
+            legacyEvidencePath: null,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask EnqueueAsync(
+        string root,
+        StructuredProcessingProductManifestV1 manifest,
+        CancellationToken cancellationToken)
+    {
+        using var activity = ArtifactOutboxTelemetry.ActivitySource.StartActivity("outbox.enqueue");
+        ArgumentNullException.ThrowIfNull(manifest);
+        var validation = manifest.Validate();
+        if (!validation.IsValid)
+        {
+            throw new ArgumentException(
+                $"Structured product manifest is invalid ({validation.ReasonCode}:{validation.FieldPath}).",
+                nameof(manifest));
+        }
+
+        root = NormalizeRoot(root);
+        await ValidatePayloadAsync(root, manifest, cancellationToken).ConfigureAwait(false);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        var descriptor = manifest.Descriptor;
+        await InsertAsync(
+            root,
+            manifest.IdempotencyKey,
+            ArtifactOutboxManifestKind.StructuredProductV1,
+            StructuredProcessingProductManifestJson.Serialize(manifest),
+            descriptor.Artifact.ArtifactId,
+            descriptor.Artifact.Role,
+            manifest.RelativeArtifactPath,
+            descriptor.Artifact.ChecksumSha256.ToUpperInvariant(),
+            descriptor.ByteLength,
+            descriptor.Artifact.MediaType,
+            descriptor.Artifact.CreatedUtc,
             legacyEvidencePath: null,
             cancellationToken).ConfigureAwait(false);
     }
@@ -678,7 +714,7 @@ public sealed class SqliteArtifactOutbox(
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT artifact_id, relative_artifact_path, status
+            SELECT artifact_id, relative_artifact_path, status, manifest_bytes, media_type
             FROM artifact_outbox_records
             WHERE status IN ('pending', 'leased', 'retry', 'quarantined')
               AND artifact_id IS NOT NULL AND relative_artifact_path IS NOT NULL
@@ -688,8 +724,15 @@ public sealed class SqliteArtifactOutbox(
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            var relativeArtifactPath = reader.GetString(1);
+            var manifestBytes = await reader.GetFieldValueAsync<byte[]>(3, cancellationToken).ConfigureAwait(false);
+            var structured = !reader.IsDBNull(4) && StructuredProcessingProductContracts.IsSupportedMediaType(reader.GetString(4)) ||
+                StructuredProcessingProductManifestJson.Parse(manifestBytes).IsValid;
             holds.Add(new ArtifactOutboxRetentionHold(
-                Guid.ParseExact(reader.GetString(0), "N"), reader.GetString(1), ParseStatus(reader.GetString(2))));
+                Guid.ParseExact(reader.GetString(0), "N"),
+                relativeArtifactPath,
+                Path.ChangeExtension(relativeArtifactPath, structured ? ".manifest.json" : ".json"),
+                ParseStatus(reader.GetString(2))));
         }
         return holds;
     }
@@ -793,6 +836,7 @@ public sealed class SqliteArtifactOutbox(
             .AsTask().GetAwaiter().GetResult();
         return records
             .Where(record => excludedIdempotencyKeys?.Contains(record.IdempotencyKey) != true)
+            .Where(static record => record.ProductManifest is null)
             .Select(ToLegacyManifest)
             .Take(maximumResults)
             .ToArray();
@@ -809,7 +853,10 @@ public sealed class SqliteArtifactOutbox(
         foreach (var record in records)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            yield return ToLegacyManifest(record);
+            if (record.ProductManifest is null)
+            {
+                yield return ToLegacyManifest(record);
+            }
         }
     }
 
@@ -1188,7 +1235,32 @@ public sealed class SqliteArtifactOutbox(
         var bytes = await reader.GetFieldValueAsync<byte[]>(3, cancellationToken).ConfigureAwait(false);
         var status = ParseStatus(reader.GetString(10));
         ArtifactManifestDocument? manifest = null;
-        if (kind != ArtifactOutboxManifestKind.MalformedLegacy)
+        StructuredProcessingProductManifestV1? productManifest = null;
+        if (kind == ArtifactOutboxManifestKind.ManifestV2)
+        {
+            var parsed = CaptureContractJson.ParseManifest(bytes);
+            if (parsed.IsValid && parsed.Document is not null)
+            {
+                manifest = parsed.Document;
+            }
+            else
+            {
+                var productParsed = StructuredProcessingProductManifestJson.Parse(bytes);
+                if (!productParsed.IsValid || productParsed.Manifest is null)
+                {
+                    if (status != ArtifactOutboxStatus.Quarantined)
+                    {
+                        throw new InvalidDataException("Committed current artifact outbox manifest bytes are invalid.");
+                    }
+                }
+                else
+                {
+                    kind = ArtifactOutboxManifestKind.StructuredProductV1;
+                    productManifest = productParsed.Manifest;
+                }
+            }
+        }
+        else if (kind != ArtifactOutboxManifestKind.MalformedLegacy)
         {
             var parsed = CaptureContractJson.ParseManifest(bytes);
             if (!parsed.IsValid || parsed.Document is null)
@@ -1220,7 +1292,10 @@ public sealed class SqliteArtifactOutbox(
             reader.IsDBNull(16) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(16)),
             reader.IsDBNull(17) ? null : reader.GetString(17),
             reader.IsDBNull(18) ? null : await reader.GetFieldValueAsync<byte[]>(18, cancellationToken).ConfigureAwait(false),
-            reader.IsDBNull(19) ? null : reader.GetString(19));
+            reader.IsDBNull(19) ? null : reader.GetString(19))
+        {
+            ProductManifest = productManifest
+        };
     }
 
     private async ValueTask EnsureOwnedAsync(
@@ -1603,22 +1678,54 @@ public sealed class SqliteArtifactOutbox(
         }
     }
 
+    private static async ValueTask ValidatePayloadAsync(
+        string root,
+        StructuredProcessingProductManifestV1 manifest,
+        CancellationToken cancellationToken)
+    {
+        var relativePath = manifest.RelativeArtifactPath.Replace('/', Path.DirectorySeparatorChar);
+        var path = Path.GetFullPath(Path.Combine(root, relativePath));
+        var prefix = string.Concat(Path.TrimEndingDirectorySeparator(root), Path.DirectorySeparatorChar);
+        if (!path.StartsWith(prefix, PathComparison))
+        {
+            throw new InvalidDataException("Structured product outbox payload path escapes its storage root.");
+        }
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
+        var info = new FileInfo(path);
+        if (!info.Exists || info.Length != manifest.Descriptor.ByteLength)
+        {
+            throw new InvalidDataException("Structured product payload length differs from its manifest.");
+        }
+        using var stream = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var checksum = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
+        if (!string.Equals(checksum, manifest.Descriptor.Artifact.ChecksumSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Structured product payload checksum differs from its manifest.");
+        }
+    }
+
     private static async ValueTask ValidateReplayEvidenceAsync(
         string root,
         ArtifactOutboxRecord record,
         CancellationToken cancellationToken)
     {
         if (record.ManifestKind == ArtifactOutboxManifestKind.MalformedLegacy
-            || record.Manifest is null
+            || record.Manifest is null && record.ProductManifest is null
             || string.IsNullOrWhiteSpace(record.RelativeArtifactPath)
             || string.IsNullOrWhiteSpace(record.PayloadSha256)
             || record.PayloadLength is null)
         {
             throw new InvalidOperationException("Malformed or incomplete evidence cannot be replayed.");
         }
-        if (record.Manifest.Manifest is { } manifest)
+        if (record.Manifest?.Manifest is { } manifest)
         {
             await ValidatePayloadAsync(root, manifest, cancellationToken).ConfigureAwait(false);
+        }
+        else if (record.ProductManifest is { } productManifest)
+        {
+            await ValidatePayloadAsync(root, productManifest, cancellationToken).ConfigureAwait(false);
         }
         var path = Path.GetFullPath(Path.Combine(
             root, record.RelativeArtifactPath.Replace('/', Path.DirectorySeparatorChar)));
@@ -1698,6 +1805,7 @@ public sealed class SqliteArtifactOutbox(
     private static string FormatKind(ArtifactOutboxManifestKind kind) => kind switch
     {
         ArtifactOutboxManifestKind.ManifestV2 => "v2",
+        ArtifactOutboxManifestKind.StructuredProductV1 => "v2",
         ArtifactOutboxManifestKind.LegacyV1 => "legacy-v1",
         ArtifactOutboxManifestKind.MalformedLegacy => "malformed-legacy",
         _ => throw new ArgumentOutOfRangeException(nameof(kind))

@@ -14,12 +14,32 @@ public sealed record DecodedImage(
     string MediaType,
     string AlgorithmVersion);
 
+/// <summary>Bounded JPEG header facts read without decoding a pixel buffer.</summary>
+public sealed record EncodedImageInfo(int Width, int Height, string MediaType);
+
 /// <summary>Encodes and decodes JPEG display images without exposing native codec objects.</summary>
 public static class JpegImageCodec
 {
     public const string MediaType = "image/jpeg";
     public const string AlgorithmVersion = "skia-jpeg-v1";
     public const int DefaultQuality = 80;
+
+    [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The native codec factory can return null for malformed input despite its managed nullability annotation.")]
+    public static EncodedImageInfo InspectJpeg(ReadOnlyMemory<byte> encodedData)
+    {
+        if (encodedData.IsEmpty)
+        {
+            throw new ArgumentException("JPEG data must not be empty.", nameof(encodedData));
+        }
+        using var data = SKData.CreateCopy(encodedData.Span);
+        using var codec = SKCodec.Create(data);
+        if (codec is null || codec.EncodedFormat != SKEncodedImageFormat.Jpeg ||
+            codec.Info.Width <= 0 || codec.Info.Height <= 0)
+        {
+            throw new ArgumentException("The supplied data is not a valid JPEG image.", nameof(encodedData));
+        }
+        return new(codec.Info.Width, codec.Info.Height, MediaType);
+    }
 
     /// <summary>Encodes a supported Mono8 or RGB24 image as JPEG.</summary>
     public static byte[] EncodeToJpeg(

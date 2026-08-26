@@ -2,8 +2,10 @@ using System.Security.Cryptography;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.Sqlite;
 
@@ -73,6 +75,60 @@ public sealed class SqliteArtifactOutboxTests
             null,
             ["canonical-duplicate-idempotent", "identity-conflict-quarantined", "conflict-audited", "quarantined-record-not-claimable"])
             .ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task StructuredProduct_RoundTripsAcrossRestartAndProjectsExactDelivery()
+    {
+        using var root = new TemporaryRoot();
+        var manifest = CreateStructuredManifest(root.Path, "derived/scene.json");
+        using (var outbox = new SqliteArtifactOutbox())
+        {
+            await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        using var restarted = new SqliteArtifactOutbox();
+        var lease = await restarted.ClaimAsync(
+            root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(lease);
+        Assert.AreEqual(ArtifactOutboxManifestKind.StructuredProductV1, lease.Record.ManifestKind);
+        Assert.IsNotNull(lease.Record.ProductManifest);
+        Assert.IsNull(lease.Record.Manifest);
+        var delivery = ArtifactUploadClient.ResolveDelivery(lease.Record);
+        Assert.AreEqual(StructuredProcessingProductManifestV1.CurrentSchemaVersion, delivery.SchemaVersion);
+        Assert.AreEqual(manifest.Descriptor.Artifact.ArtifactId, delivery.ArtifactId);
+        Assert.AreEqual(manifest.Descriptor.ByteLength, delivery.ByteLength);
+        Assert.AreEqual(manifest.IdempotencyKey, delivery.IdempotencyKey);
+        var holds = await restarted.GetRetentionHoldsAsync(
+            root.Path, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, holds);
+        Assert.AreEqual("derived/scene.manifest.json", holds[0].RelativeSidecarPath.Replace('\\', '/'));
+        Assert.IsEmpty(restarted.List(root.Path, 10));
+    }
+
+    [TestMethod]
+    public async Task StructuredProduct_CorruptQuarantinedManifestRetainsStructuredSidecar()
+    {
+        using var root = new TemporaryRoot();
+        var manifest = CreateStructuredManifest(root.Path, "derived/corrupt-scene.json");
+        using var outbox = new SqliteArtifactOutbox();
+        await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE artifact_outbox_records SET manifest_bytes = x'7B', status = 'quarantined';";
+            await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var holds = await outbox.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(1, holds);
+        Assert.AreEqual("derived/corrupt-scene.manifest.json", holds[0].RelativeSidecarPath.Replace('\\', '/'));
+        var record = await outbox.ReadAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(record);
+        Assert.IsNull(record.ProductManifest);
     }
 
     [TestMethod]
@@ -564,6 +620,46 @@ public sealed class SqliteArtifactOutboxTests
         StartUtc,
         "raw-v1",
         "frames/legacy.bin");
+
+    private static StructuredProcessingProductManifestV1 CreateStructuredManifest(string root, string relativePath)
+    {
+        var source = CreateManifest(root, "frames/structured-source.bin", StartUtc, 1).Descriptor;
+        var payload = "{}"u8.ToArray();
+        var path = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllBytes(path, payload);
+        var sourceIds = new[] { source.Artifact.ArtifactId };
+        var recipe = RecipeIdentityDescriptor.Create(
+            "projected-scene", "1.0.0", "test", JsonSerializer.SerializeToElement(new { mode = "predicted" }));
+        var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(recipe);
+        var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.Metadata, "projected-scene", recipeIdentity.IdentitySha256, sourceIds);
+        var artifact = new ArtifactDescriptor(
+            ProcessingIdentity.CreateArtifactId(outputIdentity),
+            FrameArtifactRole.Metadata,
+            "projected-scene-step",
+            "projected-scene",
+            StartUtc,
+            sourceIds,
+            recipe,
+            "application/vnd.hvo.projected-scene+json",
+            Convert.ToHexString(SHA256.HashData(payload)));
+        return new StructuredProcessingProductManifestV1(
+            StructuredProcessingProductManifestV1.CurrentSchemaVersion,
+            new StructuredProcessingProductDescriptorV1(
+                source,
+                artifact,
+                outputIdentity,
+                [new("projected-scene", "test")],
+                new("rig", "orientation", "calibration", "mask", "sensor", "night", "processing"),
+                TimeSpan.FromSeconds(1).Ticks,
+                payload.LongLength,
+                ProcessingProductKind.Metadata,
+                ProjectedSceneV1.CurrentSchemaVersion,
+                new string('A', 64)),
+            relativePath,
+            ProducerStepId: "projected-scene-step");
+    }
 
     private static void WritePayload(string root, string relativePath)
     {

@@ -1,4 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Minio;
@@ -18,7 +20,16 @@ internal interface IArtifactIngestService
 {
     Task<ArtifactIngestResult> IngestAsync(ArtifactManifestDocument manifest, Stream payload, CancellationToken cancellationToken);
 
+    Task<ArtifactIngestResult> IngestAsync(
+        StructuredProcessingProductManifestV1 manifest,
+        Stream payload,
+        CancellationToken cancellationToken);
+
     Task<ArtifactIngestResult?> CheckStatusAsync(ArtifactManifestDocument manifest, CancellationToken cancellationToken);
+
+    Task<ArtifactIngestResult?> CheckStatusAsync(
+        StructuredProcessingProductManifestV1 manifest,
+        CancellationToken cancellationToken);
 }
 
 internal sealed record ArtifactIngestResult(DeviceUploadResult Upload, bool ReadyForAcknowledgement);
@@ -37,9 +48,17 @@ internal sealed record ArtifactIngestManifest(
     string IdempotencyKey,
     SceneProvenance? Scene,
     ReconstructionDescriptor? Descriptor,
-    CaptureManifestCompleteness Completeness)
+    CaptureManifestCompleteness Completeness,
+    StructuredProcessingProductDescriptorV1? StructuredProduct = null,
+    string? StructuredSourceIdentitySha256 = null)
 {
-    public bool IsReconstructable => Descriptor is not null;
+    public ReconstructionDescriptor? CaptureDescriptor => Descriptor ?? StructuredProduct?.SourceCapture;
+
+    public ArtifactDescriptor? ArtifactDescriptor => StructuredProduct?.Artifact ?? Descriptor?.Artifact;
+
+    public IReadOnlyList<Guid> SourceArtifactIds => ArtifactDescriptor?.SourceArtifactIds ?? [];
+
+    public bool IsReconstructable => CaptureDescriptor is not null;
 
     public static ArtifactIngestManifest Create(ArtifactManifestDocument document)
     {
@@ -75,6 +94,37 @@ internal sealed record ArtifactIngestManifest(
             descriptor,
             document.Completeness);
     }
+
+    public static ArtifactIngestManifest Create(StructuredProcessingProductManifestV1 productManifest)
+    {
+        ArgumentNullException.ThrowIfNull(productManifest);
+        var validation = productManifest.Validate();
+        if (!validation.IsValid)
+        {
+            throw new ArgumentException(
+                $"Structured product manifest is invalid: {validation.ReasonCode} at {validation.FieldPath}.",
+                nameof(productManifest));
+        }
+        var descriptor = productManifest.Descriptor;
+        var source = descriptor.SourceCapture;
+        var artifact = descriptor.Artifact;
+        return new(
+            productManifest.SchemaVersion,
+            source.Capture.AgentId,
+            artifact.ArtifactId,
+            source.Capture.CaptureId,
+            artifact.Role,
+            artifact.MediaType,
+            descriptor.ByteLength,
+            artifact.ChecksumSha256,
+            source.Timing.ExposureStartedUtc,
+            artifact.Recipe.ImplementationVersion,
+            productManifest.IdempotencyKey,
+            null,
+            null,
+            CaptureManifestCompleteness.Complete,
+            descriptor);
+    }
 }
 
 /// <summary>Streams a versioned artifact into MinIO and records an idempotent metadata row.</summary>
@@ -98,13 +148,40 @@ internal sealed partial class ArtifactIngestService(
     public async Task<ArtifactIngestResult> IngestAsync(ArtifactManifestDocument document, Stream payload, CancellationToken cancellationToken)
     {
         var manifest = ArtifactIngestManifest.Create(document);
+        return await IngestAsync(manifest, payload, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ArtifactIngestResult> IngestAsync(
+        StructuredProcessingProductManifestV1 productManifest,
+        Stream payload,
+        CancellationToken cancellationToken)
+    {
+        var manifest = ArtifactIngestManifest.Create(productManifest);
+        return await IngestAsync(manifest, payload, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ArtifactIngestResult> IngestAsync(
+        ArtifactIngestManifest manifest,
+        Stream payload,
+        CancellationToken cancellationToken)
+    {
         telemetry.RecordValidation(manifest.SchemaVersion, "accepted");
         ArgumentNullException.ThrowIfNull(payload);
+        var structuredPayload = manifest.StructuredProduct is null
+            ? null
+            : await ReadStructuredPayloadAsync(manifest, payload, cancellationToken).ConfigureAwait(false);
+        manifest = structuredPayload?.SourceIdentitySha256 is null
+            ? manifest
+            : manifest with { StructuredSourceIdentitySha256 = structuredPayload.SourceIdentitySha256 };
+        using var structuredStream = structuredPayload is null
+            ? null
+            : new MemoryStream(structuredPayload.Bytes, writable: false);
+        var uploadPayload = structuredStream ?? payload;
         await EnsureBucketAsync(cancellationToken).ConfigureAwait(false);
         var stagingKey = $"staging/{Guid.NewGuid():N}";
         try
         {
-            using var verifyingPayload = new HashingReadStream(payload);
+            using var verifyingPayload = new HashingReadStream(uploadPayload);
             var writeStarted = timeProvider.GetTimestamp();
             try
             {
@@ -135,11 +212,145 @@ internal sealed partial class ArtifactIngestService(
         }
     }
 
+    private static async Task<StructuredPayloadRead> ReadStructuredPayloadAsync(
+        ArtifactIngestManifest manifest,
+        Stream payload,
+        CancellationToken cancellationToken)
+    {
+        if (manifest.StructuredProduct is not { } product ||
+            manifest.ByteLength is < 1 or > StructuredProcessingProductDescriptorV1.MaximumPayloadBytes)
+        {
+            throw new ArtifactIntegrityException("Structured product payload length is outside its accepted bound.");
+        }
+        var bytes = new byte[checked((int)manifest.ByteLength)];
+        var offset = 0;
+        while (offset < bytes.Length)
+        {
+            var read = await payload.ReadAsync(bytes.AsMemory(offset), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+            offset += read;
+        }
+        if (offset != bytes.Length || payload.ReadByte() != -1)
+        {
+            throw new ArtifactIntegrityException("Structured product payload length does not match its manifest.");
+        }
+        return new(bytes, ValidateStructuredPayload(product, bytes));
+    }
+
+    private static string? ValidateStructuredPayload(
+        StructuredProcessingProductDescriptorV1 product,
+        ReadOnlyMemory<byte> payload)
+    {
+        string? schemaVersion;
+        string? contentIdentity;
+        string? sourceIdentity = null;
+        switch (product.Artifact.MediaType.ToLowerInvariant())
+        {
+            case "application/vnd.hvo.projected-scene+json":
+                var projected = ProjectedSceneJson.Parse(payload);
+                schemaVersion = projected.Scene?.SchemaVersion;
+                contentIdentity = projected.Scene?.SceneIdentitySha256;
+                if (projected.Scene is { } scene)
+                {
+                    EnsureStructuredLineage(product, [scene.Source.ArtifactId]);
+                    if (scene.Source.CaptureId != product.SourceCapture.Capture.CaptureId)
+                    {
+                        throw new ArtifactIntegrityException("Projected scene capture lineage does not match its manifest.");
+                    }
+                }
+                break;
+            case "application/vnd.hvo.cloud-assessment+json":
+                var cloud = CloudAssessmentJson.Parse(payload);
+                schemaVersion = cloud.Assessment?.SchemaVersion;
+                contentIdentity = cloud.Assessment?.AssessmentIdentitySha256;
+                if (cloud.Assessment is { } assessment)
+                {
+                    EnsureStructuredLineage(product, assessment.ClearReference is null
+                        ? [assessment.Current.ArtifactId]
+                        : [assessment.Current.ArtifactId, assessment.ClearReference.ArtifactId]);
+                }
+                break;
+            case PresentationLayerPayloadJson.MediaType:
+                var layerPayload = PresentationLayerPayloadJson.Parse(payload);
+                schemaVersion = layerPayload.Payload?.SchemaVersion;
+                contentIdentity = layerPayload.Payload?.ContentIdentitySha256;
+                sourceIdentity = layerPayload.Payload?.SourceIdentitySha256;
+                break;
+            case PresentationProcessingProducts.ManifestMediaType:
+                var overlay = LayeredPresentationJson.ParseManifest(payload);
+                schemaVersion = overlay.Document?.SchemaVersion;
+                contentIdentity = overlay.Document?.ManifestIdentitySha256;
+                if (overlay.Document is { } overlayManifest)
+                {
+                    EnsureStructuredLineage(product,
+                        [overlayManifest.BaseProduct.ArtifactId, .. overlayManifest.Layers.Select(
+                            static layer => layer.SourceProduct.ArtifactId)]);
+                }
+                break;
+            case PresentationMetadataFactsProductV1.MediaType:
+                PresentationMetadataFactsProductV1 facts;
+                try
+                {
+                    facts = PresentationProcessingProducts.ParseMetadataFacts(payload);
+                }
+                catch (ArgumentException exception)
+                {
+                    throw new ArtifactIntegrityException("Presentation metadata facts are invalid.", exception);
+                }
+                schemaVersion = facts.SchemaVersion;
+                contentIdentity = facts.FactsIdentitySha256;
+                if (facts.CaptureId != product.SourceCapture.Capture.CaptureId ||
+                    facts.CaptureSequence != product.SourceCapture.Capture.CaptureSequence)
+                {
+                    throw new ArtifactIntegrityException("Presentation metadata capture lineage does not match its manifest.");
+                }
+                break;
+            default:
+                throw new ArtifactIntegrityException("Structured product media type is not supported.");
+        }
+        if (!string.Equals(schemaVersion, product.ProductSchemaVersion, StringComparison.Ordinal) ||
+            !string.Equals(contentIdentity, product.ContentIdentitySha256, StringComparison.Ordinal))
+        {
+            throw new ArtifactIntegrityException("Structured product schema or content identity does not match its manifest.");
+        }
+        return sourceIdentity;
+    }
+
+    private static void EnsureStructuredLineage(
+        StructuredProcessingProductDescriptorV1 product,
+        IReadOnlyList<Guid> payloadSourceArtifactIds)
+    {
+        if (!product.Artifact.SourceArtifactIds.SequenceEqual(payloadSourceArtifactIds))
+        {
+            throw new ArtifactIntegrityException("Structured product payload lineage does not match its manifest.");
+        }
+    }
+
+    private sealed record StructuredPayloadRead(byte[] Bytes, string? SourceIdentitySha256);
+
     public async Task<ArtifactIngestResult?> CheckStatusAsync(
         ArtifactManifestDocument document,
         CancellationToken cancellationToken)
     {
         var manifest = ArtifactIngestManifest.Create(document);
+        return await CheckStatusAsync(manifest, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ArtifactIngestResult?> CheckStatusAsync(
+        StructuredProcessingProductManifestV1 productManifest,
+        CancellationToken cancellationToken)
+    {
+        var manifest = ArtifactIngestManifest.Create(productManifest);
+        return await CheckStatusAsync(manifest, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ArtifactIngestResult?> CheckStatusAsync(
+        ArtifactIngestManifest manifest,
+        CancellationToken cancellationToken)
+    {
         return await RunGatedAsync(
             manifest,
             () => CheckStatusCoreAsync(manifest, cancellationToken),
@@ -302,6 +513,7 @@ internal sealed partial class ArtifactIngestService(
             if (compatibilityArtifact is not null
                 && compatibilityArtifact.ManifestSchemaVersion != manifest.SchemaVersion)
             {
+                EnsureCrossSchemaCompatibilityAllowed(compatibilityArtifact, manifest);
                 EnsureCompatibleArtifactMatches(compatibilityArtifact, manifest);
                 if (compatibilityArtifact.ObjectState == CentralArtifactObjectState.Available)
                 {
@@ -320,7 +532,8 @@ internal sealed partial class ArtifactIngestService(
             }
             else
             {
-                EnsureNoLogicalArtifactConflict(existingFrame, manifest);
+                await EnsureNoLogicalArtifactConflictAsync(existingFrame, manifest, cancellationToken)
+                    .ConfigureAwait(false);
             }
             dbContext.ChangeTracker.Clear();
         }
@@ -524,7 +737,7 @@ internal sealed partial class ArtifactIngestService(
             IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         await AcquireArtifactIdentityLocksAsync(
             registration.DevicePublicId!.Value,
-            manifest.Descriptor?.Artifact.SourceArtifactIds.Append(manifest.ArtifactId) ?? [manifest.ArtifactId],
+            manifest.SourceArtifactIds.Append(manifest.ArtifactId),
             cancellationToken).ConfigureAwait(false);
         await AcquireFrameIdentityLockAsync(
             registration.DevicePublicId.Value, manifest.FrameId, cancellationToken).ConfigureAwait(false);
@@ -578,7 +791,7 @@ internal sealed partial class ArtifactIngestService(
         else
         {
             EnsureFrameMatches(frame, registration, manifest);
-            EnsureNoLogicalArtifactConflict(frame, manifest);
+            await EnsureNoLogicalArtifactConflictAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
         }
 
         var artifact = CreateArtifact(frame, manifest, storageReference, receivedAtUtc);
@@ -828,11 +1041,12 @@ internal sealed partial class ArtifactIngestService(
             {
                 await AcquireArtifactIdentityLocksAsync(
                     verificationDevicePublicId.Value,
-                    manifest.Descriptor?.Artifact.SourceArtifactIds.Append(manifest.ArtifactId) ?? [manifest.ArtifactId],
+                    manifest.SourceArtifactIds.Append(manifest.ArtifactId),
                     cancellationToken).ConfigureAwait(false);
                 await AcquireFrameIdentityLockAsync(
                     verificationDevicePublicId.Value, identity.FrameId, cancellationToken).ConfigureAwait(false);
             }
+            dbContext.ChangeTracker.Clear();
             var existing = await LoadExistingArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(existing.StorageReference, lockedStorageReference, StringComparison.Ordinal))
             {
@@ -853,6 +1067,7 @@ internal sealed partial class ArtifactIngestService(
             {
                 var registration = compatibilityRegistration
                     ?? throw new InvalidOperationException("Cross-schema verification requires the device registration.");
+                EnsureCrossSchemaCompatibilityAllowed(existing, manifest);
                 EnsureCompatibleArtifactMatches(existing, manifest);
                 if (existing.DevicePublicId is null
                     && await dbContext.CentralArtifacts.AnyAsync(candidate =>
@@ -896,6 +1111,7 @@ internal sealed partial class ArtifactIngestService(
             else
             {
                 EnsureManifestMatches(existing, manifest);
+                EnsureStructuredProductMatches(existing, manifest);
                 EnrichSceneProvenance(existing.Frame!, manifest);
                 await TryResolvePendingReferenceAsync(
                     existing, manifest, receivedAtUtc, cancellationToken).ConfigureAwait(false);
@@ -1071,6 +1287,7 @@ internal sealed partial class ArtifactIngestService(
             .Include(artifact => artifact.Layout)
             .Include(artifact => artifact.Recipe)
             .Include(artifact => artifact.Sources)
+            .Include(artifact => artifact.StructuredProduct)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
@@ -1118,14 +1335,17 @@ internal sealed partial class ArtifactIngestService(
             {
                 await AcquireArtifactIdentityLocksAsync(
                     registration.DevicePublicId!.Value,
-                    manifest.Descriptor?.Artifact.SourceArtifactIds.Append(manifest.ArtifactId) ?? [manifest.ArtifactId],
+                    manifest.SourceArtifactIds.Append(manifest.ArtifactId),
                     cancellationToken).ConfigureAwait(false);
                 await AcquireFrameIdentityLockAsync(
                     registration.DevicePublicId.Value, manifest.FrameId, cancellationToken).ConfigureAwait(false);
                 await EnsureStorageReferenceNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
                 var existing = await dbContext.CentralArtifacts
                     .Include(artifact => artifact.IngestIdentities)
+                    .Include(artifact => artifact.Layout)
+                    .Include(artifact => artifact.Recipe)
                     .Include(artifact => artifact.Sources)
+                    .Include(artifact => artifact.StructuredProduct)
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
                     .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Profiles)
@@ -1140,9 +1360,11 @@ internal sealed partial class ArtifactIngestService(
                     if (existing.ManifestSchemaVersion == manifest.SchemaVersion)
                     {
                         EnsureManifestMatches(existing, manifest);
+                        EnsureStructuredProductMatches(existing, manifest);
                     }
                     else
                     {
+                        EnsureCrossSchemaCompatibilityAllowed(existing, manifest);
                         EnsureCompatibleArtifactMatches(existing, manifest);
                         EnsureSceneProvenanceMatches(existing.Frame!, manifest);
                     }
@@ -1195,6 +1417,10 @@ internal sealed partial class ArtifactIngestService(
                 var devicePublicId = registration.DevicePublicId!.Value;
                 var frame = await dbContext.CentralFrames
                     .Include(item => item.Artifacts).ThenInclude(artifact => artifact.IngestIdentities)
+                    .Include(item => item.Artifacts).ThenInclude(artifact => artifact.Layout)
+                    .Include(item => item.Artifacts).ThenInclude(artifact => artifact.Recipe)
+                    .Include(item => item.Artifacts).ThenInclude(artifact => artifact.Sources)
+                    .Include(item => item.Artifacts).ThenInclude(artifact => artifact.StructuredProduct)
                     .Include(item => item.Timing)
                     .Include(item => item.Control)
                     .Include(item => item.Profiles)
@@ -1228,6 +1454,7 @@ internal sealed partial class ArtifactIngestService(
                         && candidate.ManifestSchemaVersion != manifest.SchemaVersion);
                     if (crossSchemaArtifact is not null)
                     {
+                        EnsureCrossSchemaCompatibilityAllowed(crossSchemaArtifact, manifest);
                         EnsureCompatibleArtifactMatches(crossSchemaArtifact, manifest);
                         EnsureSceneProvenanceMatches(frame, manifest);
                         if (!string.Equals(
@@ -1271,7 +1498,7 @@ internal sealed partial class ArtifactIngestService(
                                 removePublishedObject: false);
                         }
                     }
-                    EnsureNoLogicalArtifactConflict(frame, manifest);
+                    await EnsureNoLogicalArtifactConflictAsync(frame, manifest, cancellationToken).ConfigureAwait(false);
                 }
 
                 var artifact = CreateArtifact(frame, manifest, storageReference, receivedAtUtc);
@@ -1443,7 +1670,7 @@ internal sealed partial class ArtifactIngestService(
     {
         artifact.ObjectState = CentralArtifactObjectState.Available;
         artifact.ReconciledAtUtc = receivedAtUtc;
-        if (manifest.Descriptor is not { } descriptor)
+        if (manifest.CaptureDescriptor is not { } descriptor)
         {
             artifact.ReconstructionState = CentralReconstructionState.LegacyIncomplete;
             artifact.StateReasonCode = "manifest.legacy-incomplete";
@@ -1509,55 +1736,77 @@ internal sealed partial class ArtifactIngestService(
             AddProfile(frame, CentralProfileKind.Processing, descriptor.Profiles.Processing);
         }
 
-        artifact.SourceId = descriptor.Artifact.SourceId;
-        artifact.Variant = descriptor.Artifact.Variant;
-        artifact.CreatedUtc = descriptor.Artifact.CreatedUtc;
-        artifact.Layout ??= new CentralArtifactLayout
+        var artifactDescriptor = manifest.ArtifactDescriptor
+            ?? throw new InvalidOperationException("Reconstructable ingest has no artifact descriptor.");
+        artifact.SourceId = artifactDescriptor.SourceId;
+        artifact.Variant = artifactDescriptor.Variant;
+        artifact.CreatedUtc = artifactDescriptor.CreatedUtc;
+        if (manifest.StructuredProduct is null)
         {
-            Width = descriptor.Layout.Width,
-            Height = descriptor.Layout.Height,
-            StrideBytes = descriptor.Layout.StrideBytes,
-            PixelFormat = descriptor.Layout.PixelFormat.ToString(),
-            ByteOrder = descriptor.Layout.ByteOrder.ToString(),
-            SampleDepthBits = descriptor.Layout.SampleDepthBits,
-            ContainerDepthBits = descriptor.Layout.ContainerDepthBits,
-            Packing = descriptor.Layout.Packing.ToString(),
-            CfaPattern = descriptor.Layout.CfaPattern.ToString(),
-            BlackLevel = descriptor.Layout.BlackLevel,
-            WhiteLevel = descriptor.Layout.WhiteLevel,
-            StoredCodeTransform = descriptor.Layout.StoredCodeTransform?.ToString(),
-            LevelCodeSpace = descriptor.Layout.LevelCodeSpace?.ToString(),
-            NativeWidth = descriptor.Layout.Readout?.NativeWidth,
-            NativeHeight = descriptor.Layout.Readout?.NativeHeight,
-            RoiX = descriptor.Layout.Readout?.RoiX,
-            RoiY = descriptor.Layout.Readout?.RoiY,
-            RoiWidth = descriptor.Layout.Readout?.RoiWidth,
-            RoiHeight = descriptor.Layout.Readout?.RoiHeight,
-            BinX = descriptor.Layout.Readout?.BinX,
-            BinY = descriptor.Layout.Readout?.BinY,
-            BinningAlgorithm = descriptor.Layout.Readout?.BinningAlgorithm.ToString(),
-            CfaOriginX = descriptor.Layout.Readout?.CfaOriginX,
-            CfaOriginY = descriptor.Layout.Readout?.CfaOriginY,
-            ByteLength = descriptor.Layout.ByteLength
-        };
+            artifact.Layout ??= new CentralArtifactLayout
+            {
+                Width = descriptor.Layout.Width,
+                Height = descriptor.Layout.Height,
+                StrideBytes = descriptor.Layout.StrideBytes,
+                PixelFormat = descriptor.Layout.PixelFormat.ToString(),
+                ByteOrder = descriptor.Layout.ByteOrder.ToString(),
+                SampleDepthBits = descriptor.Layout.SampleDepthBits,
+                ContainerDepthBits = descriptor.Layout.ContainerDepthBits,
+                Packing = descriptor.Layout.Packing.ToString(),
+                CfaPattern = descriptor.Layout.CfaPattern.ToString(),
+                BlackLevel = descriptor.Layout.BlackLevel,
+                WhiteLevel = descriptor.Layout.WhiteLevel,
+                StoredCodeTransform = descriptor.Layout.StoredCodeTransform?.ToString(),
+                LevelCodeSpace = descriptor.Layout.LevelCodeSpace?.ToString(),
+                NativeWidth = descriptor.Layout.Readout?.NativeWidth,
+                NativeHeight = descriptor.Layout.Readout?.NativeHeight,
+                RoiX = descriptor.Layout.Readout?.RoiX,
+                RoiY = descriptor.Layout.Readout?.RoiY,
+                RoiWidth = descriptor.Layout.Readout?.RoiWidth,
+                RoiHeight = descriptor.Layout.Readout?.RoiHeight,
+                BinX = descriptor.Layout.Readout?.BinX,
+                BinY = descriptor.Layout.Readout?.BinY,
+                BinningAlgorithm = descriptor.Layout.Readout?.BinningAlgorithm.ToString(),
+                CfaOriginX = descriptor.Layout.Readout?.CfaOriginX,
+                CfaOriginY = descriptor.Layout.Readout?.CfaOriginY,
+                ByteLength = descriptor.Layout.ByteLength
+            };
+        }
         artifact.Recipe ??= new CentralArtifactRecipe
         {
-            Name = descriptor.Artifact.Recipe.Name,
-            SemanticVersion = descriptor.Artifact.Recipe.SemanticVersion,
-            ImplementationVersion = descriptor.Artifact.Recipe.ImplementationVersion,
-            OptionsJson = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(descriptor.Artifact.Recipe.Options)),
-            OptionsSha256 = descriptor.Artifact.Recipe.OptionsSha256.ToUpperInvariant()
+            Name = artifactDescriptor.Recipe.Name,
+            SemanticVersion = artifactDescriptor.Recipe.SemanticVersion,
+            ImplementationVersion = artifactDescriptor.Recipe.ImplementationVersion,
+            OptionsJson = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(artifactDescriptor.Recipe.Options)),
+            OptionsSha256 = artifactDescriptor.Recipe.OptionsSha256.ToUpperInvariant()
         };
-        await AcquireArtifactIdentityLocksAsync(
-            devicePublicId, descriptor.Artifact.SourceArtifactIds, cancellationToken).ConfigureAwait(false);
-        for (var ordinal = artifact.Sources.Count; ordinal < descriptor.Artifact.SourceArtifactIds.Count; ordinal++)
+        if (manifest.StructuredProduct is { } structuredProduct)
         {
-            var sourceArtifactId = descriptor.Artifact.SourceArtifactIds[ordinal];
-            var resolved = await dbContext.CentralArtifacts.FirstOrDefaultAsync(candidate =>
-                    candidate.ArtifactId == sourceArtifactId
-                    && candidate.DevicePublicId == devicePublicId
-                    && candidate.ObjectState == CentralArtifactObjectState.Available
-                    && candidate.ReconstructionState == CentralReconstructionState.Complete,
+            artifact.StructuredProduct ??= new CentralStructuredProcessingProduct
+            {
+                OutputIdentitySha256 = structuredProduct.OutputIdentitySha256,
+                ProductKind = structuredProduct.Kind.ToString(),
+                ProductSchemaVersion = structuredProduct.ProductSchemaVersion,
+                ContentIdentitySha256 = structuredProduct.ContentIdentitySha256,
+                AlgorithmsJson = JsonSerializer.Serialize(structuredProduct.Algorithms),
+                CompatibilityJson = JsonSerializer.Serialize(structuredProduct.Compatibility),
+                DescriptorJson = JsonSerializer.Serialize(structuredProduct),
+                TotalIntegrationTicks = structuredProduct.TotalIntegrationTicks,
+                SourceIdentitySha256 = manifest.StructuredSourceIdentitySha256
+            };
+        }
+        await AcquireArtifactIdentityLocksAsync(
+            devicePublicId, artifactDescriptor.SourceArtifactIds, cancellationToken).ConfigureAwait(false);
+        for (var ordinal = artifact.Sources.Count; ordinal < artifactDescriptor.SourceArtifactIds.Count; ordinal++)
+        {
+            var sourceArtifactId = artifactDescriptor.SourceArtifactIds[ordinal];
+            var resolved = await dbContext.CentralArtifacts.Include(candidate => candidate.StructuredProduct)
+                .FirstOrDefaultAsync(candidate =>
+                        candidate.ArtifactId == sourceArtifactId
+                        && candidate.DevicePublicId == devicePublicId
+                        && (manifest.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
+                        && candidate.ObjectState == CentralArtifactObjectState.Available
+                        && candidate.ReconstructionState == CentralReconstructionState.Complete,
                     cancellationToken).ConfigureAwait(false);
             artifact.Sources.Add(new CentralArtifactSource
             {
@@ -1566,6 +1815,10 @@ internal sealed partial class ArtifactIngestService(
                 ResolvedCentralArtifactId = resolved?.Id,
                 ResolvedArtifact = resolved
             });
+        }
+        if (HasStructuredSourceIdentityMismatch(artifact))
+        {
+            throw new ArtifactIntegrityException("Structured presentation layer source identity does not match its lineage.");
         }
         SetReconstructionState(artifact, rigProfile is not null, manifestCompleteness: manifest.Completeness);
         AddIfDetached(frame.Timing);
@@ -1577,6 +1830,7 @@ internal sealed partial class ArtifactIngestService(
         }
         AddIfDetached(artifact.Layout);
         AddIfDetached(artifact.Recipe);
+        AddIfDetached(artifact.StructuredProduct);
         foreach (var source in artifact.Sources)
         {
             AddIfDetached(source);
@@ -1605,9 +1859,11 @@ internal sealed partial class ArtifactIngestService(
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Frame)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Layout)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Sources)
+            .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.StructuredProduct)
             .Where(source => source.SourceArtifactId == artifact.ArtifactId
                 && source.ResolvedCentralArtifactId == null
-                && source.Artifact!.DevicePublicId == devicePublicId)
+                && source.Artifact!.DevicePublicId == devicePublicId
+                && (source.Artifact.StructuredProduct == null || source.Artifact.CentralFrameId == artifact.CentralFrameId))
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         foreach (var waitingSource in waitingSources)
         {
@@ -1618,6 +1874,11 @@ internal sealed partial class ArtifactIngestService(
                 waitingArtifact,
                 waitingArtifact.Frame!.DeviceRigProfileId.HasValue,
                 waitingArtifact.Sources.Any(source => source != waitingSource && source.ResolvedCentralArtifactId == null));
+            if (HasStructuredSourceIdentityMismatch(waitingArtifact))
+            {
+                waitingArtifact.ReconstructionState = CentralReconstructionState.Quarantined;
+                waitingArtifact.StateReasonCode = "lineage.source-identity-mismatch";
+            }
             dbContext.Entry(waitingArtifact).Property(candidate => candidate.ReconciledAtUtc).IsModified = true;
         }
     }
@@ -1862,7 +2123,7 @@ internal sealed partial class ArtifactIngestService(
         DateTimeOffset reconciledAtUtc,
         CancellationToken cancellationToken)
     {
-        if (manifest.Descriptor is not { } descriptor)
+        if (manifest.CaptureDescriptor is not { } descriptor)
         {
             if (artifact.ManifestSchemaVersion == ArtifactManifestV2.CurrentSchemaVersion)
             {
@@ -1897,6 +2158,7 @@ internal sealed partial class ArtifactIngestService(
         {
             var usable = await dbContext.CentralArtifacts.AnyAsync(candidate =>
                 candidate.Id == source.ResolvedCentralArtifactId
+                && (artifact.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
                 && candidate.ObjectState == CentralArtifactObjectState.Available
                 && candidate.ReconstructionState == CentralReconstructionState.Complete,
                 cancellationToken).ConfigureAwait(false);
@@ -1912,6 +2174,7 @@ internal sealed partial class ArtifactIngestService(
             var resolved = await dbContext.CentralArtifacts.FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
+                && (artifact.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
                 && candidate.ObjectState == CentralArtifactObjectState.Available
                 && candidate.ReconstructionState == CentralReconstructionState.Complete,
                 cancellationToken).ConfigureAwait(false);
@@ -2005,6 +2268,22 @@ internal sealed partial class ArtifactIngestService(
     private static bool IsUsableLineageSource(CentralArtifact artifact)
         => artifact.ObjectState == CentralArtifactObjectState.Available
             && artifact.ReconstructionState == CentralReconstructionState.Complete;
+
+    internal static bool HasStructuredSourceIdentityMismatch(CentralArtifact artifact)
+    {
+        if (artifact.StructuredProduct?.SourceIdentitySha256 is not { } expected)
+        {
+            return false;
+        }
+        if (artifact.Sources.Count != 1 || artifact.Sources.Single().ResolvedArtifact is not { } source)
+        {
+            return artifact.Sources.All(static item => item.ResolvedCentralArtifactId is not null);
+        }
+        return !string.Equals(
+            source.StructuredProduct?.ContentIdentitySha256 ?? source.ChecksumSha256,
+            expected,
+            StringComparison.Ordinal);
+    }
 
     internal static async Task InvalidateDependentsAsync(
         ApplicationDbContext dbContext,
@@ -2265,6 +2544,7 @@ internal sealed partial class ArtifactIngestService(
             && existing.IngestIdentities.Any(identity => string.Equals(
                 identity.IdempotencyKey, manifest.IdempotencyKey, StringComparison.OrdinalIgnoreCase)))
         {
+            EnsureCrossSchemaCompatibilityAllowed(existing, manifest);
             EnsureCompatibleArtifactMatches(existing, manifest);
             return;
         }
@@ -2282,6 +2562,67 @@ internal sealed partial class ArtifactIngestService(
             throw new ArtifactIngestConflictException("The idempotency key is already associated with different artifact metadata.");
         }
         EnsureSceneProvenanceMatches(frame, manifest);
+    }
+
+    private static void EnsureCrossSchemaCompatibilityAllowed(
+        CentralArtifact existing,
+        ArtifactIngestManifest manifest)
+    {
+        if (existing.ManifestSchemaVersion == StructuredProcessingProductManifestV1.CurrentSchemaVersion
+            || manifest.SchemaVersion == StructuredProcessingProductManifestV1.CurrentSchemaVersion)
+        {
+            throw new ArtifactIngestConflictException(
+                "Structured products cannot be reconciled with a different manifest schema.");
+        }
+    }
+
+    private static void EnsureStructuredProductMatches(
+        CentralArtifact existing,
+        ArtifactIngestManifest manifest)
+    {
+        if (manifest.StructuredProduct is not { } descriptor)
+        {
+            if (existing.StructuredProduct is not null)
+            {
+                throw new ArtifactIngestConflictException(
+                    "The artifact identity is already associated with structured product metadata.");
+            }
+            return;
+        }
+        var product = existing.StructuredProduct
+            ?? throw new ArtifactIngestConflictException(
+                $"The structured product record is missing for artifact '{existing.ArtifactId:D}'.");
+        var recipe = existing.Recipe
+            ?? throw new ArtifactIngestConflictException("The structured product recipe is missing.");
+        var expectedRecipe = descriptor.Artifact.Recipe;
+        var expectedAlgorithms = JsonSerializer.Serialize(descriptor.Algorithms);
+        var expectedCompatibility = JsonSerializer.Serialize(descriptor.Compatibility);
+        var expectedDescriptor = JsonSerializer.Serialize(descriptor);
+        var expectedOptions = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(expectedRecipe.Options));
+        var sources = existing.Sources.OrderBy(static source => source.Ordinal).ToArray();
+        if (existing.Layout is not null
+            || product.OutputIdentitySha256 != descriptor.OutputIdentitySha256
+            || product.ProductKind != descriptor.Kind.ToString()
+            || product.ProductSchemaVersion != descriptor.ProductSchemaVersion
+            || product.ContentIdentitySha256 != descriptor.ContentIdentitySha256
+            || product.AlgorithmsJson != expectedAlgorithms
+            || product.CompatibilityJson != expectedCompatibility
+            || product.DescriptorJson != expectedDescriptor
+            || product.TotalIntegrationTicks != descriptor.TotalIntegrationTicks
+            || recipe.Name != expectedRecipe.Name
+            || recipe.SemanticVersion != expectedRecipe.SemanticVersion
+            || recipe.ImplementationVersion != expectedRecipe.ImplementationVersion
+            || recipe.OptionsSha256 != expectedRecipe.OptionsSha256
+            || recipe.OptionsJson != expectedOptions
+            || sources.Length != descriptor.Artifact.SourceArtifactIds.Count
+            || sources.Where((source, ordinal) =>
+                    source.Ordinal != ordinal
+                    || source.SourceArtifactId != descriptor.Artifact.SourceArtifactIds[ordinal])
+                .Any())
+        {
+            throw new ArtifactIngestConflictException(
+                "The structured product identity is already associated with different immutable metadata.");
+        }
     }
 
     private static void EnsureCompatibleArtifactMatches(CentralArtifact existing, ArtifactIngestManifest manifest)
@@ -2317,7 +2658,10 @@ internal sealed partial class ArtifactIngestService(
         EnrichSceneProvenance(frame, manifest);
     }
 
-    private static void EnsureNoLogicalArtifactConflict(CentralFrame frame, ArtifactIngestManifest manifest)
+    private async Task EnsureNoLogicalArtifactConflictAsync(
+        CentralFrame frame,
+        ArtifactIngestManifest manifest,
+        CancellationToken cancellationToken)
     {
         var existing = frame.Artifacts.FirstOrDefault(artifact =>
             artifact.ArtifactId == manifest.ArtifactId
@@ -2328,10 +2672,29 @@ internal sealed partial class ArtifactIngestService(
         {
             return;
         }
+        if (existing.ManifestSchemaVersion == StructuredProcessingProductManifestV1.CurrentSchemaVersion)
+        {
+            existing = await dbContext.CentralArtifacts.AsNoTracking()
+                .Include(artifact => artifact.Frame)
+                .Include(artifact => artifact.Layout)
+                .Include(artifact => artifact.Recipe)
+                .Include(artifact => artifact.Sources)
+                .Include(artifact => artifact.StructuredProduct)
+                .SingleAsync(artifact => artifact.Id == existing.Id, cancellationToken).ConfigureAwait(false);
+        }
         if (manifest.IsReconstructable && existing.ArtifactId == manifest.ArtifactId)
         {
-            EnsureCompatibleArtifactMatches(existing, manifest);
-            if (frame.CaptureSequence.HasValue && manifest.Descriptor is { } descriptor)
+            if (existing.ManifestSchemaVersion == manifest.SchemaVersion)
+            {
+                EnsureManifestMatches(existing, manifest);
+                EnsureStructuredProductMatches(existing, manifest);
+            }
+            else
+            {
+                EnsureCrossSchemaCompatibilityAllowed(existing, manifest);
+                EnsureCompatibleArtifactMatches(existing, manifest);
+            }
+            if (frame.CaptureSequence.HasValue && manifest.CaptureDescriptor is { } descriptor)
             {
                 var cycleEvidenceJson = descriptor.CycleEvidence is null
                     ? null

@@ -312,6 +312,93 @@ public sealed class InfrastructureCaptureProcessingStepTests
     }
 
     [TestMethod]
+    public async Task TypedLayoutlessMetadataPersistsAndQueuesThroughDurableOutbox()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "structured-storage", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var rawPayload = new byte[] { 0, 0, 0, 0 };
+            var rawManifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono8, 2, 2, 2, rawPayload);
+            var receipt = new RawCaptureReceipt(
+                RawIngressOutcome.Committed,
+                rawManifest,
+                new StoredFrameReference(
+                    "raw.bin",
+                    Path.Combine(root, "raw.bin"),
+                    rawManifest.Descriptor.Timing.ExposureStartedUtc,
+                    FrameArtifactRole.Raw),
+                CaptureContractJson.ComputeManifestSha256(rawManifest));
+            var context = CreateContext(receipt);
+            var raw = context.Artifacts!.Raw;
+            var processingRaw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "raw-source");
+            var layerPayload = PresentationLayerPayloadJson.Create(
+                processingRaw.ContentIdentitySha256 ?? processingRaw.DescriptorIdentitySha256 ??
+                    ProcessingIdentity.ComputePayloadSha256(processingRaw.Payload), 2, 2);
+            var product = PresentationProcessingProducts.CreateLayerProduct(
+                layerPayload, "scene-layer", [processingRaw], "storage-test-v1");
+            var artifactId = CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256);
+            context.RestoreProduct("layer", artifactId, product);
+            context.BeginNode("storage", ["layer"]);
+
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+            });
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(hostOptions);
+            var frameStorage = new Mock<IFrameStorageService>(MockBehavior.Strict);
+            var persistence = new CaptureProcessingPersistence(
+                hostOptions,
+                store,
+                frameStorage.Object,
+                telemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance);
+            using (var outbox = new SqliteArtifactOutbox())
+            {
+                var step = new NoOpFileStorageProcessingStep(
+                    new CaptureProcessingStepMetadata("storage", "Storage", 100),
+                    new NoOpFileStorageProcessingStepOptions
+                    {
+                        StorageRoot = root,
+                        QueueForUpload = true,
+                        UpdateLatestFrame = false
+                    },
+                    Mock.Of<ILatestFrameAccessor>(),
+                    frameStorage.Object,
+                    outbox,
+                    hostOptions,
+                    NullLogger<NoOpFileStorageProcessingStep>.Instance,
+                    persistence);
+
+                await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+            }
+
+            using var restarted = new SqliteArtifactOutbox();
+            var lease = await restarted.ClaimAsync(
+                root, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            Assert.AreEqual(ArtifactOutboxManifestKind.StructuredProductV1, lease.Record.ManifestKind);
+            var queued = lease.Record.ProductManifest!;
+            Assert.AreEqual(product.OutputIdentitySha256, queued.Descriptor.OutputIdentitySha256);
+            Assert.AreEqual(layerPayload.ContentIdentitySha256, queued.Descriptor.ContentIdentitySha256);
+            Assert.IsTrue(File.Exists(Path.Combine(root,
+                queued.RelativeArtifactPath.Replace('/', Path.DirectorySeparatorChar))));
+            var hold = await restarted.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(1, hold);
+            Assert.IsTrue(File.Exists(Path.Combine(root,
+                hold[0].RelativeSidecarPath.Replace('/', Path.DirectorySeparatorChar))));
+            frameStorage.VerifyNoOtherCalls();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task ExplicitTelemetryReportsOnlyDeclaredDependencyOutcomes()
     {
         var context = CreateContext();

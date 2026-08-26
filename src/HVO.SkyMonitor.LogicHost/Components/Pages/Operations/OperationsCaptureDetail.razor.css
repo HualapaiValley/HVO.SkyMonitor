@@ -1,0 +1,34 @@
+.layered-canvas {
+    position: relative;
+    overflow: hidden;
+    max-width: 78rem;
+    aspect-ratio: var(--presentation-aspect, 16 / 9);
+    border: 1px solid rgba(125, 211, 252, .24);
+    border-radius: .5rem;
+    background: #020617;
+}
+
+.layered-canvas > img,
+.layered-overlay,
+.layered-overlay ::deep svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.layered-canvas > img {
+    object-fit: contain;
+}
+
+.layered-overlay {
+    pointer-events: none;
+}
+
+.layered-overlay ::deep svg {
+    display: block;
+}
+
+.layer-controls .form-check {
+    min-width: 10rem;
+}

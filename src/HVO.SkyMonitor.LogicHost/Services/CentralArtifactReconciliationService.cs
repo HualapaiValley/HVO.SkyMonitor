@@ -1378,7 +1378,9 @@ internal sealed partial class CentralArtifactReconciliationService(
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Artifacts)
-            .Include(item => item.Sources)
+            .Include(item => item.StructuredProduct)
+            .Include(item => item.Sources).ThenInclude(source => source.ResolvedArtifact)!
+                .ThenInclude(source => source!.StructuredProduct)
             .AsSplitQuery()
             .SingleOrDefaultAsync(item => item.Id == artifactId, cancellationToken).ConfigureAwait(false);
         if (artifact is null)
@@ -1504,6 +1506,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         else if (artifact.ObjectState == CentralArtifactObjectState.Available
             && artifact.ReconstructionState == CentralReconstructionState.Quarantined
+            && artifact.StateReasonCode != "lineage.source-identity-mismatch"
             && artifact.StateReasonCode != CentralDerivativeJobScheduler.LocationUnresolvedReason
             && artifact.StateReasonCode != CentralDerivativeJobScheduler.LocationMismatchReason)
         {
@@ -2173,6 +2176,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         {
             var usable = await db.CentralArtifacts.AnyAsync(candidate =>
                 candidate.Id == source.ResolvedCentralArtifactId
+                && (artifact.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
                 && candidate.ObjectState == CentralArtifactObjectState.Available
                 && candidate.ReconstructionState == CentralReconstructionState.Complete,
                 cancellationToken).ConfigureAwait(false);
@@ -2185,9 +2189,11 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId == null))
         {
-            var resolved = await db.CentralArtifacts.FirstOrDefaultAsync(candidate =>
+            var resolved = await db.CentralArtifacts.Include(candidate => candidate.StructuredProduct)
+                .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
+                && (artifact.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
                 && candidate.ObjectState == CentralArtifactObjectState.Available
                 && candidate.ReconstructionState == CentralReconstructionState.Complete,
                 cancellationToken).ConfigureAwait(false);
@@ -2210,6 +2216,12 @@ internal sealed partial class CentralArtifactReconciliationService(
                 || artifact.StateReasonCode == "lineage.source-unavailable"
                     ? "lineage.source-unavailable"
                     : "lineage.source-not-found";
+            return;
+        }
+        if (ArtifactIngestService.HasStructuredSourceIdentityMismatch(artifact))
+        {
+            artifact.ReconstructionState = CentralReconstructionState.Quarantined;
+            artifact.StateReasonCode = "lineage.source-identity-mismatch";
             return;
         }
         artifact.ReconstructionState = CentralReconstructionState.Complete;

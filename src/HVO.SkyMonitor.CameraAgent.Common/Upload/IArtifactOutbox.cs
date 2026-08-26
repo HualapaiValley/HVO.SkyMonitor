@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 
@@ -10,6 +11,8 @@ public interface IArtifactOutbox
         => throw new NotSupportedException("This legacy outbox does not expose SQLite work state.");
     ValueTask EnqueueAsync(string root, ArtifactManifestV2 manifest, CancellationToken cancellationToken)
         => throw new NotSupportedException("This legacy outbox does not support manifest v2.");
+    ValueTask EnqueueAsync(string root, StructuredProcessingProductManifestV1 manifest, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This legacy outbox does not support structured processing products.");
     ValueTask EnqueueAsync(string root, ArtifactUploadManifest manifest, CancellationToken cancellationToken);
     ValueTask<ArtifactOutboxLease?> ClaimAsync(
         string root,
