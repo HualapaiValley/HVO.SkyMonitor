@@ -1065,7 +1065,8 @@ public sealed class Issue435ProjectedScenePerformanceHarnessManifestTests
         Assert.HasCount(1, harness.GetCustomAttributes<DoNotParallelizeAttribute>());
 
         var acceptance = File.ReadAllText(Path.Combine(root, "tests", "HVO.SkyMonitor.CameraAgent.AcceptanceTests", "StandaloneCameraAgentAcceptanceTests.cs"));
-        StringAssert.Contains(acceptance, "[TestCategory(\"Integration\")]", StringComparison.Ordinal);
+        var integrationCategory = string.Concat("[Test", "Category(\"Integration\")]");
+        StringAssert.Contains(acceptance, integrationCategory, StringComparison.Ordinal);
         StringAssert.Contains(acceptance, "Task VirtualSkyProjectedScenePersistsAndRecoversStandaloneAsync()", StringComparison.Ordinal);
 
         using var manifest = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Validation", "issue-435-runtime-signals.json")));

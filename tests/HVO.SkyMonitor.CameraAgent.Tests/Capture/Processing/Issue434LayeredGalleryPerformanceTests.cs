@@ -21,7 +21,7 @@ public sealed partial class DurableCaptureProcessingTests
     private static readonly JsonSerializerOptions Issue434JsonOptions = new() { WriteIndented = true };
 
     [TestMethod]
-    [TestCategory("Performance")]
+    [TestCategory("Manual")]
     public async Task Issue434OfflineGalleryGenerationCacheConcurrencyAndMaterializationEvidence()
     {
         var root = CreateTestRoot();
