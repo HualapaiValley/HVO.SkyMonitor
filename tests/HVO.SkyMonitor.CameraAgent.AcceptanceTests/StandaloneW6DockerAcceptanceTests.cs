@@ -1791,7 +1791,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     {
         var source = ReadManifests(runtimeRoot).Where(item =>
                 item.Manifest.Descriptor.Capture.CaptureId == captureId &&
-                item.Manifest.Descriptor.Artifact.Role is FrameArtifactRole.Raw or FrameArtifactRole.Calibrated)
+                item.Manifest.Descriptor.Artifact.Role is FrameArtifactRole.Raw or FrameArtifactRole.AnnotatedPreview)
             .OrderBy(item => item.Manifest.Descriptor.Artifact.Role)
             .ToArray();
         Assert.HasCount(2, source);
