@@ -1743,6 +1743,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         AssertArtifactFilesUnchanged(retainedRaw);
 
         var holdDuration = DateTimeOffset.UtcNow - holdStartedUtc;
+        await MarkDerivedRetentionEligibleAsync(runtimeRoot, eligibleRetention).ConfigureAwait(false);
         await WriteAcceptanceRetentionHoldsAsync(runtimeRoot, eligibleRetention, enabled: false).ConfigureAwait(false);
         var cleanup = Stopwatch.StartNew();
         await WaitForEligibleRetentionCleanupAsync(eligibleRetention, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
@@ -1801,13 +1802,25 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             var artifact = observation.Manifest.Descriptor.Artifact;
             var isRaw = artifact.Role == FrameArtifactRole.Raw;
-            var relativeDirectory = isRaw
-                ? Path.Combine("frames", "2020", "01", "01", "Raw")
-                : Path.Combine("derived", "retention-acceptance");
+            if (!isRaw)
+            {
+                var existingPayloadPath = Path.Combine(runtimeRoot, observation.Manifest.RelativeArtifactPath);
+                result.Add(new EligibleRetentionArtifactEvidence(
+                    artifact.ArtifactId,
+                    artifact.Role.ToString(),
+                    observation.Manifest.RelativeArtifactPath,
+                    Path.GetRelativePath(runtimeRoot, observation.Path).Replace(Path.DirectorySeparatorChar, '/'),
+                    existingPayloadPath,
+                    observation.Path,
+                    Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(existingPayloadPath).ConfigureAwait(false))),
+                    Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(observation.Path).ConfigureAwait(false)))));
+                continue;
+            }
+            var relativeDirectory = Path.Combine("frames", "2020", "01", "01", "Raw");
             var relativePayload = Path.Combine(relativeDirectory, $"{artifact.ArtifactId:N}.bin");
             var relativeSidecar = Path.Combine(
                 relativeDirectory,
-                $"{artifact.ArtifactId:N}{(isRaw ? ".json" : ".manifest.json")}");
+                $"{artifact.ArtifactId:N}.json");
             var payloadPath = Path.Combine(runtimeRoot, relativePayload);
             var sidecarPath = Path.Combine(runtimeRoot, relativeSidecar);
             Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
@@ -1830,6 +1843,32 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false)))));
         }
         return result;
+    }
+
+    private static async Task MarkDerivedRetentionEligibleAsync(
+        string runtimeRoot,
+        IReadOnlyList<EligibleRetentionArtifactEvidence> artifacts)
+    {
+        var derivative = artifacts.Single(static artifact => artifact.Role != nameof(FrameArtifactRole.Raw));
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(runtimeRoot, "journal", "raw-ingress.db"),
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE processing_outputs
+            SET availability_state = 'Missing', availability_reason = 'acceptance-retention-released',
+                unavailable_unix_ms = $expired
+            WHERE artifact_id = $artifact AND availability_state = 'Available';
+            """;
+        command.Parameters.AddWithValue(
+            "$expired",
+            new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$artifact", derivative.ArtifactId.ToString("N"));
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
     }
 
     private static async Task WriteAcceptanceRetentionHoldsAsync(
