@@ -1082,13 +1082,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await activeHeading.WaitForAsync().ConfigureAwait(false);
         await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
         Assert.AreEqual(originalBundleId, (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim());
-        await page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }).ClickAsync().ConfigureAwait(false);
         var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
-        await confirmation.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
+        await OpenDialogAsync(
+            page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }),
+            confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
         var activate = await WaitForCalibrationActivateAsync(page).ConfigureAwait(false);
-        await activate.ClickAsync().ConfigureAwait(false);
-        await confirmation.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
+        await OpenDialogAsync(activate, confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             "prior => document.querySelector('.calibration-card--active h2')?.textContent?.trim() !== prior",
@@ -1097,8 +1097,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var acquiredBundleId = (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim();
         Assert.AreNotEqual(originalBundleId, acquiredBundleId);
 
-        await page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }).ClickAsync().ConfigureAwait(false);
-        await confirmation.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
+        await OpenDialogAsync(
+            page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }),
+            confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             "expected => document.querySelector('.calibration-card--active h2')?.textContent?.trim() === expected",
