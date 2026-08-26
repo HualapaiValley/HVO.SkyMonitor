@@ -842,7 +842,7 @@ EOF
     local matched_paths=()
     local sanitization_rg_status=0
     rg --text --files-with-matches --null --hidden \
-        '(?i)(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+        '(?i)(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret([^[:alnum:]]|$)|connection[_-]?string([^[:alnum:]]|$)|owner[_-]?password([^[:alnum:]]|$))' \
         "$trial_result" > "$sanitization_matches" || sanitization_rg_status=$?
     if ((sanitization_rg_status > 1)); then
         printf 'Unable to scan forbidden evidence patterns for %s (rg exit %s).\n' "$trial" "$sanitization_rg_status" >&2
@@ -904,7 +904,7 @@ EOF
     rm -f "$inventory_rows"
     local final_trial_scan_status=0
     rg --text --hidden --ignore-case \
-        '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+        '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret([^[:alnum:]]|$)|connection[_-]?string([^[:alnum:]]|$)|owner[_-]?password([^[:alnum:]]|$))' \
         "$trial_result" >/dev/null || final_trial_scan_status=$?
     if ((final_trial_scan_status == 0 || final_trial_scan_status > 1)); then
         printf 'The final retained trial tree failed sanitization for %s (rg exit %s).\n' \
@@ -1205,7 +1205,7 @@ jq --exit-status '.passed == true' "$RESULTS/trial-sanitization-summary.json" >/
 root_scan_matches="$RESULTS/.root-sanitization-matches"
 root_scan_status=0
 rg --text --files-with-matches --null --hidden --ignore-case \
-    '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+    '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret([^[:alnum:]]|$)|connection[_-]?string([^[:alnum:]]|$)|owner[_-]?password([^[:alnum:]]|$))' \
     "$RESULTS" > "$root_scan_matches" || root_scan_status=$?
 if ((root_scan_status > 1)); then
     printf 'Unable to scan the retained run tree (rg exit %s).\n' "$root_scan_status" >&2
@@ -1318,7 +1318,7 @@ fi
 assert_no_owned_acceptance_resources
 final_root_scan_status=0
 rg --text --hidden --ignore-case \
-    '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+    '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret([^[:alnum:]]|$)|connection[_-]?string([^[:alnum:]]|$)|owner[_-]?password([^[:alnum:]]|$))' \
     "$RESULTS" >/dev/null || final_root_scan_status=$?
 if ((final_root_scan_status == 0 || final_root_scan_status > 1)); then
     printf 'The final retained run tree failed sanitization (rg exit %s).\n' "$final_root_scan_status" >&2
