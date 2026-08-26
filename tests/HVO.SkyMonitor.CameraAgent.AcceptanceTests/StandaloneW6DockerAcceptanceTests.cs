@@ -1079,6 +1079,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
     {
         await page.GotoAsync("/calibration").ConfigureAwait(false);
         var activeHeading = page.Locator(".calibration-card--active h2");
+        await activeHeading.WaitForAsync().ConfigureAwait(false);
+        await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
         Assert.AreEqual(originalBundleId, (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim());
         await page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }).ClickAsync().ConfigureAwait(false);
         var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
