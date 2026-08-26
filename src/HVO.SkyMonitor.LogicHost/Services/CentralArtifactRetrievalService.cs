@@ -75,6 +75,7 @@ internal sealed partial class CentralArtifactRetrievalService(
         ArgumentNullException.ThrowIfNull(principal);
         var artifact = await dbContext.CentralArtifacts
             .Include(candidate => candidate.Frame)
+            .Include(candidate => candidate.Layout)
             .Include(candidate => candidate.Recipe)
             .SingleOrDefaultAsync(candidate => candidate.DevicePublicId == devicePublicId
                 && candidate.ArtifactId == artifactId, cancellationToken).ConfigureAwait(false);

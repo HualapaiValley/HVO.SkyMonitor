@@ -307,6 +307,10 @@ internal sealed partial class ArtifactIngestService(
                 {
                     throw new ArtifactIntegrityException("Presentation metadata capture lineage does not match its manifest.");
                 }
+                if (facts.SourceArtifactIds is { } factsSourceArtifactIds)
+                {
+                    EnsureStructuredLineage(product, factsSourceArtifactIds);
+                }
                 break;
             default:
                 throw new ArtifactIntegrityException("Structured product media type is not supported.");

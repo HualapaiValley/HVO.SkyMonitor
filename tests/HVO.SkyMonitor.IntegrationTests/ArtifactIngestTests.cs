@@ -631,7 +631,7 @@ public sealed class ArtifactIngestTests
         using var rawResponse = await PostAsync(ingestClient, rawManifest, rawBytes).ConfigureAwait(false);
         rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
-        var baseBytes = JpegImageCodec.EncodeMono8ToJpeg(2, 2, rawBytes, quality: 90);
+        var baseBytes = rawBytes.ToArray();
         var baseArtifactId = Guid.NewGuid();
         var baseChecksum = Convert.ToHexString(SHA256.HashData(baseBytes));
         Guid centralCaptureId;
@@ -650,10 +650,10 @@ public sealed class ArtifactIngestTests
                 Role = FrameArtifactRole.Preview,
                 RecipeVersion = "encoded-preview-v1",
                 ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
-                MediaType = JpegImageCodec.MediaType,
+                MediaType = CentralPresentationBaseDecoder.PackedMediaType,
                 ByteLength = baseBytes.LongLength,
                 ChecksumSha256 = baseChecksum,
-                StorageReference = $"minio://skymonitor-artifacts/derivatives/presentation/{baseArtifactId:D}.jpg",
+                StorageReference = $"minio://skymonitor-artifacts/derivatives/presentation/{baseArtifactId:D}.bin",
                 ReceivedAtUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
                 IdempotencyKey = new string('3', 64),
                 SourceId = "integration-presentation",
@@ -680,7 +680,7 @@ public sealed class ArtifactIngestTests
                 {
                     Name = BuiltInProcessingRecipes.EncodedPreview,
                     SemanticVersion = "1.0.0",
-                    ImplementationVersion = JpegImageCodec.AlgorithmVersion,
+                    ImplementationVersion = CentralPresentationBaseDecoder.PackedDecoderVersion,
                     OptionsJson = "{}",
                     OptionsSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(
                         JsonSerializer.SerializeToElement(new { }))
@@ -697,10 +697,10 @@ public sealed class ArtifactIngestTests
             await using var stream = new MemoryStream(baseBytes, writable: false);
             await scope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
                 .WithBucket("skymonitor-artifacts")
-                .WithObject($"derivatives/presentation/{baseArtifactId:D}.jpg")
+                .WithObject($"derivatives/presentation/{baseArtifactId:D}.bin")
                 .WithStreamData(stream)
                 .WithObjectSize(baseBytes.LongLength)
-                .WithContentType(JpegImageCodec.MediaType)).ConfigureAwait(false);
+                .WithContentType(CentralPresentationBaseDecoder.PackedMediaType)).ConfigureAwait(false);
         }
 
         var sourceIdentity = Convert.ToHexString(SHA256.HashData(rawBytes));
@@ -730,7 +730,7 @@ public sealed class ArtifactIngestTests
             true,
             JsonSerializer.SerializeToElement(new { }));
         var overlay = LayeredPresentationJson.CreateManifest(
-            new(baseArtifactId, baseChecksum, JpegImageCodec.MediaType, compatibility),
+            new(baseArtifactId, baseChecksum, CentralPresentationBaseDecoder.PackedMediaType, compatibility),
             sourceIdentity,
             [layerContract]);
         var overlayBytes = LayeredPresentationJson.Serialize(overlay);
@@ -800,7 +800,11 @@ public sealed class ArtifactIngestTests
         using var baseResponse = await ownerClient.GetAsync(new Uri(
             $"/api/v1.0/captures/{centralCaptureId:D}/presentation/base", UriKind.Relative)).ConfigureAwait(false);
         baseResponse.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await baseResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false)).Should().Equal(baseBytes);
+        baseResponse.Content.Headers.ContentType!.MediaType.Should().Be(JpegImageCodec.MediaType);
+        var displayBase = JpegImageCodec.DecodeJpeg(
+            await baseResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        displayBase.Width.Should().Be(2);
+        displayBase.Height.Should().Be(2);
         using var conditional = new HttpRequestMessage(
             HttpMethod.Get, $"/api/v1.0/captures/{centralCaptureId:D}/presentation.svg");
         conditional.Headers.IfNoneMatch.Add(svgResponse.Headers.ETag!);
@@ -862,12 +866,19 @@ public sealed class ArtifactIngestTests
             unavailable.Status.Should().Be(CentralLayeredPresentationStatus.DependencyUnavailable);
         }
         var denied = await materializer.SaveAsync(
-            centralCaptureId, [layerContract.LayerIdentitySha256], viewerPrincipal).ConfigureAwait(false);
+            centralCaptureId, overlay.ManifestIdentitySha256,
+            [layerContract.LayerIdentitySha256], viewerPrincipal).ConfigureAwait(false);
+        var stale = await materializer.SaveAsync(
+            centralCaptureId, new string('F', 64),
+            [layerContract.LayerIdentitySha256], principal).ConfigureAwait(false);
         var first = await materializer.SaveAsync(
-            centralCaptureId, [layerContract.LayerIdentitySha256], principal).ConfigureAwait(false);
+            centralCaptureId, overlay.ManifestIdentitySha256,
+            [layerContract.LayerIdentitySha256], principal).ConfigureAwait(false);
         var replay = await materializer.SaveAsync(
-            centralCaptureId, [layerContract.LayerIdentitySha256], principal).ConfigureAwait(false);
+            centralCaptureId, overlay.ManifestIdentitySha256,
+            [layerContract.LayerIdentitySha256], principal).ConfigureAwait(false);
         denied.Status.Should().Be(CentralPresentationMaterializationStatus.Unavailable);
+        stale.Status.Should().Be(CentralPresentationMaterializationStatus.Unavailable);
         first.Status.Should().Be(CentralPresentationMaterializationStatus.Saved);
         first.Receipt.Should().NotBeNull();
         replay.Status.Should().Be(CentralPresentationMaterializationStatus.Saved);

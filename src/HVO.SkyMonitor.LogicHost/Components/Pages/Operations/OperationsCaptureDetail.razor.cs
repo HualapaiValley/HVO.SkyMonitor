@@ -97,6 +97,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
         }
         var requestedCaptureId = CaptureId;
         var requestedPresentationIdentity = Presentation.PresentationIdentitySha256;
+        var requestedManifestIdentity = Presentation.ManifestIdentitySha256;
         var generation = presentationGeneration;
         using var saveCancellation = new CancellationTokenSource();
         presentationSaveCancellation = saveCancellation;
@@ -111,7 +112,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
                 return;
             }
             var result = await PresentationMaterializer.SaveAsync(
-                requestedCaptureId, selected, principal, saveCancellation.Token);
+                requestedCaptureId, requestedManifestIdentity, selected, principal, saveCancellation.Token);
             if (!MatchesPresentation(generation, requestedCaptureId, requestedPresentationIdentity))
             {
                 return;

@@ -247,68 +247,92 @@ public sealed class InfrastructureCaptureProcessingStepTests
     [TestMethod]
     public async Task GlobalFrameUploadPolicyDoesNotApplyToDurableLayoutlessMetadata()
     {
-        var payload = new byte[] { 0, 0, 0, 0 };
-        var manifest = ReconstructableCaptureContractTests.CreateManifest(
-            CameraPixelFormat.Mono8, 2, 2, 2, payload);
-        var receipt = new RawCaptureReceipt(
-            RawIngressOutcome.Committed,
-            manifest,
-            new StoredFrameReference(
-                "raw.bin",
-                "/tmp/camera/raw.bin",
-                manifest.Descriptor.Timing.ExposureStartedUtc,
-                FrameArtifactRole.Raw),
-            CaptureContractJson.ComputeManifestSha256(manifest));
-        var context = CreateContext(receipt);
-        var raw = context.Artifacts!.Raw;
-        var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
-            "image-quality", "1.0.0", "integer-image-statistics-v1",
-            System.Text.Json.JsonSerializer.SerializeToElement(new { })));
-        var sources = new[] { raw.ArtifactId };
-        var metadataPayload = "{}"u8.ToArray();
-        var product = new ProcessingProduct(
-            FrameArtifactRole.Metadata,
-            "image-quality-v1",
-            ProcessingIdentity.CreateOutputIdentity(
-                FrameArtifactRole.Metadata, "image-quality-v1", recipe.IdentitySha256, sources),
-            "application/json",
-            null,
-            metadataPayload,
-            ProcessingIdentity.ComputePayloadSha256(metadataPayload),
-            recipe,
-            [new ProcessingAlgorithmIdentity("image-statistics", "v1")],
-            sources,
-            raw.Frame.Metadata.Exposure,
-            CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility);
-        context.RestoreProduct(
-            "quality",
-            CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256),
-            product);
-        context.BeginNode("storage", ["quality"]);
-        var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
-        var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
-        var step = new NoOpFileStorageProcessingStep(
-            new CaptureProcessingStepMetadata("storage", "Storage", 100),
-            new NoOpFileStorageProcessingStepOptions
+        var root = Path.Combine(Path.GetTempPath(), "unsupported-metadata-storage", Guid.NewGuid().ToString("N"));
+        var rawRoot = Path.Combine(root, "raw");
+        var archiveRoot = Path.Combine(root, "archive");
+        Directory.CreateDirectory(rawRoot);
+        try
+        {
+            var payload = new byte[] { 0, 0, 0, 0 };
+            var manifest = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono8, 2, 2, 2, payload);
+            var receipt = new RawCaptureReceipt(
+                RawIngressOutcome.Committed,
+                manifest,
+                new StoredFrameReference(
+                    "raw.bin",
+                    Path.Combine(rawRoot, "raw.bin"),
+                    manifest.Descriptor.Timing.ExposureStartedUtc,
+                    FrameArtifactRole.Raw),
+                CaptureContractJson.ComputeManifestSha256(manifest));
+            var context = CreateContext(receipt);
+            var raw = context.Artifacts!.Raw;
+            var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                "image-quality", "1.0.0", "integer-image-statistics-v1",
+                System.Text.Json.JsonSerializer.SerializeToElement(new { })));
+            var sources = new[] { raw.ArtifactId };
+            var metadataPayload = "{}"u8.ToArray();
+            var product = new ProcessingProduct(
+                FrameArtifactRole.Metadata,
+                "image-quality-v1",
+                ProcessingIdentity.CreateOutputIdentity(
+                    FrameArtifactRole.Metadata, "image-quality-v1", recipe.IdentitySha256, sources),
+                "application/json",
+                null,
+                metadataPayload,
+                ProcessingIdentity.ComputePayloadSha256(metadataPayload),
+                recipe,
+                [new ProcessingAlgorithmIdentity("image-statistics", "v1")],
+                sources,
+                raw.Frame.Metadata.Exposure,
+                CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, "source").Compatibility);
+            context.RestoreProduct(
+                "quality",
+                CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256),
+                product);
+            context.BeginNode("storage", ["quality"]);
+            var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
+            var outbox = new Mock<IArtifactOutbox>(MockBehavior.Strict);
+            var hostOptions = Options.Create(new CameraAgentHostOptions
             {
-                StorageRoot = "/tmp/camera",
-                QueueForUpload = true,
-                UpdateLatestFrame = false
-            },
-            Mock.Of<ILatestFrameAccessor>(),
-            storage.Object,
-            outbox.Object,
-            Options.Create(new CameraAgentHostOptions
-            {
+                RawIngressRoot = rawRoot,
                 CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
-            }),
-            NullLogger<NoOpFileStorageProcessingStep>.Instance);
+            });
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(hostOptions);
+            var persistence = new CaptureProcessingPersistence(
+                hostOptions,
+                store,
+                storage.Object,
+                telemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance);
+            var step = new NoOpFileStorageProcessingStep(
+                new CaptureProcessingStepMetadata("storage", "Storage", 100),
+                new NoOpFileStorageProcessingStepOptions
+                {
+                    StorageRoot = archiveRoot,
+                    QueueForUpload = true,
+                    UpdateLatestFrame = false
+                },
+                Mock.Of<ILatestFrameAccessor>(),
+                storage.Object,
+                outbox.Object,
+                hostOptions,
+                NullLogger<NoOpFileStorageProcessingStep>.Instance,
+                persistence);
 
-        await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+            await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
 
-        storage.VerifyNoOtherCalls();
-        outbox.VerifyNoOtherCalls();
-        Assert.IsEmpty(context.ProcessingOutcomes);
+            storage.VerifyNoOtherCalls();
+            outbox.VerifyNoOtherCalls();
+            Assert.HasCount(2, Directory.EnumerateFiles(archiveRoot, "*", SearchOption.AllDirectories));
+            Assert.IsEmpty(context.ProcessingOutcomes);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [TestMethod]

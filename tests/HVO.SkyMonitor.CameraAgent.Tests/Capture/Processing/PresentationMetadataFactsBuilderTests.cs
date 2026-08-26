@@ -64,7 +64,8 @@ public sealed class PresentationMetadataFactsBuilderTests
 
         fixture.Context.BeginNode("environment-presentation", []);
         var facts = await fixture.Builder.BuildAsync(
-            fixture.Context, fixture.Scene, fixture.Stack, kinds, CancellationToken.None).ConfigureAwait(false);
+            fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture), kinds, CancellationToken.None)
+            .ConfigureAwait(false);
 
         Assert.IsNotNull(facts);
         Assert.AreEqual("Fresh", FactFor(EnvironmentalObservationKind.AirTemperature).Status);
@@ -102,7 +103,8 @@ public sealed class PresentationMetadataFactsBuilderTests
         fixture.Context.BeginNode("environment-presentation", []);
 
         var facts = await fixture.Builder.BuildAsync(
-            fixture.Context, fixture.Scene, fixture.Stack, [], CancellationToken.None).ConfigureAwait(false);
+            fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture), [], CancellationToken.None)
+            .ConfigureAwait(false);
 
         Assert.IsNotNull(facts);
         Assert.AreEqual(CaptureCadenceMode.MinimumStartInterval,
@@ -132,7 +134,8 @@ public sealed class PresentationMetadataFactsBuilderTests
         fixture.Context.BeginNode("environment-presentation", []);
 
         _ = await fixture.Builder.BuildAsync(
-            fixture.Context, fixture.Scene, fixture.Stack, kinds, CancellationToken.None).ConfigureAwait(false);
+            fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture), kinds, CancellationToken.None)
+            .ConfigureAwait(false);
 
         var evidence = fixture.Context.GetCurrentInputEvidence();
         Assert.HasCount(2, evidence);
@@ -162,6 +165,22 @@ public sealed class PresentationMetadataFactsBuilderTests
                 result.Product.Payload.Span, ProductJson);
             Assert.IsNotNull(persistedFacts);
             Assert.AreEqual(firstFactsIdentity, persistedFacts.FactsIdentitySha256);
+            CollectionAssert.AreEqual(SourceIds(fixture), persistedFacts.SourceArtifactIds!.ToArray());
+            var mismatchedSources = WithRecomputedIdentity(result.Facts with
+            {
+                SourceArtifactIds = SourceIds(fixture).Reverse().ToArray()
+            });
+            Assert.Throws<ArgumentException>(() => PresentationProcessingProducts.CreateMetadataFactsProduct(
+                mismatchedSources,
+                "facts", [fixture.SceneArtifact, fixture.StackArtifact]));
+            var legacy = WithRecomputedIdentity(result.Facts with
+            {
+                SchemaVersion = PresentationMetadataFactsProductV1.LegacySchemaVersion,
+                SourceArtifactIds = null
+            });
+            Assert.Throws<ArgumentException>(() => PresentationProcessingProducts.CreateMetadataFactsProduct(
+                legacy,
+                "facts", [fixture.SceneArtifact, fixture.StackArtifact]));
             CollectionAssert.AreEqual(
                 new[] { fixture.SceneArtifact.ArtifactId, fixture.StackArtifact.ArtifactId },
                 result.Product.SourceArtifactIds.ToArray());
@@ -211,7 +230,8 @@ public sealed class PresentationMetadataFactsBuilderTests
 
         fixture.Context.BeginNode("changed-environment", []);
         var pending = await fixture.Builder.BuildAsync(
-            fixture.Context, fixture.Scene, fixture.Stack, changedKinds, CancellationToken.None).ConfigureAwait(false);
+            fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture), changedKinds, CancellationToken.None)
+            .ConfigureAwait(false);
         Assert.IsNull(pending);
         var changedAssociations = await fixture.Associations.AssociateAsync(
             fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
@@ -219,7 +239,8 @@ public sealed class PresentationMetadataFactsBuilderTests
             fixture.Descriptor.Capture.RigId, changedKinds, CancellationToken.None).ConfigureAwait(false);
         fixture.Context.BeginNode("changed-environment", []);
         var changed = await fixture.Builder.BuildAsync(
-            fixture.Context, fixture.Scene, fixture.Stack, changedKinds, CancellationToken.None).ConfigureAwait(false);
+            fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture), changedKinds, CancellationToken.None)
+            .ConfigureAwait(false);
 
         Assert.IsNotNull(changed);
         Assert.AreNotEqual(first.Facts.FactsIdentitySha256, changed.FactsIdentitySha256);
@@ -344,11 +365,31 @@ public sealed class PresentationMetadataFactsBuilderTests
     {
         fixture.Context.BeginNode("environment-presentation", []);
         var facts = await fixture.Builder.BuildAsync(
-            fixture.Context, fixture.Scene, fixture.Stack, [EnvironmentalObservationKind.AirTemperature],
+            fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture),
+            [EnvironmentalObservationKind.AirTemperature],
             CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(facts);
         return (facts, PresentationProcessingProducts.CreateMetadataFactsProduct(
             facts, "facts", [fixture.SceneArtifact, fixture.StackArtifact]));
+    }
+
+    private static Guid[] SourceIds(Fixture fixture) =>
+        [fixture.SceneArtifact.ArtifactId, fixture.StackArtifact.ArtifactId];
+
+    private static PresentationMetadataFactsProductV1 WithRecomputedIdentity(
+        PresentationMetadataFactsProductV1 facts)
+    {
+        facts = facts with
+        {
+            FactsIdentitySha256 = string.Empty,
+            Corners = facts.Corners with { SourceIdentitySha256 = string.Empty }
+        };
+        var identity = PresentationProcessingProducts.ComputeMetadataFactsIdentity(facts);
+        return facts with
+        {
+            FactsIdentitySha256 = identity,
+            Corners = facts.Corners with { SourceIdentitySha256 = identity }
+        };
     }
 
     private async Task CommitAsync(SqliteEnvironmentalObservationOutbox store, EnvironmentalObservationFactV1 fact) =>

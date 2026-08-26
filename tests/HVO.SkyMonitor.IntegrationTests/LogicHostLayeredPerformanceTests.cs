@@ -540,6 +540,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             baseChecksum,
             manifestUpload.Descriptor.Artifact.ArtifactId,
             manifestUpload.Descriptor.Artifact.ChecksumSha256,
+            manifest.ManifestIdentitySha256,
             layerArtifactIds.ToArray(),
             layerContracts.Select(static layer => layer.LayerIdentitySha256).ToArray(),
             rendered.SvgChecksumSha256);
@@ -1019,7 +1020,8 @@ public sealed partial class LogicHostIngestPerformanceTests
         var started = Stopwatch.GetTimestamp();
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var result = await scope.ServiceProvider.GetRequiredService<ICentralPresentationMaterializer>()
-            .SaveAsync(presentation.CaptureId, presentation.LayerIdentitySha256, principal).ConfigureAwait(false);
+            .SaveAsync(presentation.CaptureId, presentation.ManifestIdentitySha256,
+                presentation.LayerIdentitySha256, principal).ConfigureAwait(false);
         var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         var observed = protocol.Stop();
         await SettleIssues437432DevelopmentSamplerAsync().ConfigureAwait(false);
@@ -1229,6 +1231,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         string BaseChecksumSha256,
         Guid ManifestArtifactId,
         string ManifestChecksumSha256,
+        string ManifestIdentitySha256,
         Guid[] LayerArtifactIds,
         string[] LayerIdentitySha256,
         string SvgChecksumSha256);

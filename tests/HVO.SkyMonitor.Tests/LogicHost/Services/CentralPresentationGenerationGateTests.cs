@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
@@ -6,6 +8,20 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 [TestCategory("Unit")]
 public sealed class CentralPresentationGenerationGateTests
 {
+    [TestMethod]
+    public void Decode_RejectsJpegPixelBoundBeforeDecode()
+    {
+        var jpeg = JpegImageCodec.EncodeMono8ToJpeg(2, 2, new byte[4]);
+        var artifact = new CentralArtifact
+        {
+            MediaType = JpegImageCodec.MediaType,
+            ByteLength = jpeg.LongLength
+        };
+
+        Assert.Throws<InvalidDataException>(() =>
+            CentralPresentationBaseDecoder.Decode(artifact, jpeg, 3, CancellationToken.None));
+    }
+
     [TestMethod]
     public async Task TryEnterAsync_BoundsConcurrentAndWaitingGenerations()
     {

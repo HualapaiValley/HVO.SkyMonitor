@@ -116,7 +116,9 @@ public static class StructuredProcessingProductContracts
             (CloudAssessmentMediaType, CloudAssessmentV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
             (PresentationProcessingProducts.ManifestMediaType, OverlayManifestV1.CurrentSchemaVersion) => true,
-            (PresentationMetadataFactsProductV1.MediaType, PresentationMetadataFactsProductV1.CurrentSchemaVersion) => true,
+            (PresentationMetadataFactsProductV1.MediaType,
+                PresentationMetadataFactsProductV1.LegacySchemaVersion or
+                PresentationMetadataFactsProductV1.CurrentSchemaVersion) => true,
             _ => false
         };
 

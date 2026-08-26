@@ -64,6 +64,12 @@ public static class PresentationProcessingProducts
         ArgumentNullException.ThrowIfNull(facts);
         ValidateSources(canonicalSources);
         ValidateMetadataFacts(facts);
+        if (facts.SchemaVersion != PresentationMetadataFactsProductV1.CurrentSchemaVersion ||
+            facts.SourceArtifactIds is null ||
+            !facts.SourceArtifactIds.SequenceEqual(canonicalSources.Select(static source => source.ArtifactId)))
+        {
+            throw new ArgumentException("New metadata facts must bind their canonical source artifacts.", nameof(facts));
+        }
         var payload = System.Text.Encoding.UTF8.GetBytes(
             CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(facts)).GetRawText());
         var identity = Identity(MetadataFactsRecipeName, PresentationLayerProducers.MetadataProducerVersion,
@@ -79,7 +85,7 @@ public static class PresentationProcessingProducts
     {
         ArgumentNullException.ThrowIfNull(facts);
         return CaptureContractJson.ComputeCanonicalJsonSha256(
-            CaptureContractJson.SerializeToElement(facts with
+            SerializeMetadataFacts(facts with
             {
                 FactsIdentitySha256 = string.Empty,
                 Corners = facts.Corners with { SourceIdentitySha256 = string.Empty }
@@ -89,8 +95,13 @@ public static class PresentationProcessingProducts
     public static void ValidateMetadataFacts(PresentationMetadataFactsProductV1 facts)
     {
         ArgumentNullException.ThrowIfNull(facts);
-        if (facts.SchemaVersion != PresentationMetadataFactsProductV1.CurrentSchemaVersion ||
+        if (facts.SchemaVersion is not (PresentationMetadataFactsProductV1.LegacySchemaVersion or
+                PresentationMetadataFactsProductV1.CurrentSchemaVersion) ||
             facts.CaptureId == Guid.Empty || facts.CaptureSequence < 0 || facts.Environment is null ||
+            facts.SchemaVersion == PresentationMetadataFactsProductV1.CurrentSchemaVersion &&
+            (facts.SourceArtifactIds is null || facts.SourceArtifactIds.Count != 2 ||
+             facts.SourceArtifactIds.Any(static id => id == Guid.Empty) ||
+             facts.SourceArtifactIds.Distinct().Count() != facts.SourceArtifactIds.Count) ||
             facts.Environment.Count > 512 || facts.Environment.Any(static item => item is null ||
                 item.ConflictingObservations is null || item.ConflictingObservations.Count > 512) ||
             facts.Corners is null || !ValidLines(facts.Corners.TopLeft) || !ValidLines(facts.Corners.TopRight) ||
@@ -118,7 +129,7 @@ public static class PresentationProcessingProducts
                 ?? throw new ArgumentException("Presentation metadata facts are empty.", nameof(payload));
             ValidateMetadataFacts(facts);
             var canonical = System.Text.Encoding.UTF8.GetBytes(
-                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(facts, MetadataFactsJsonOptions)).GetRawText());
+                CaptureContractJson.Canonicalize(SerializeMetadataFacts(facts)).GetRawText());
             if (!payload.Span.SequenceEqual(canonical))
             {
                 throw new ArgumentException("Presentation metadata facts are not canonical JSON.", nameof(payload));
@@ -258,6 +269,24 @@ public static class PresentationProcessingProducts
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
             RespectRequiredConstructorParameters = true
         };
+
+    private static JsonElement SerializeMetadataFacts(PresentationMetadataFactsProductV1 facts) =>
+        facts.SchemaVersion == PresentationMetadataFactsProductV1.LegacySchemaVersion
+            ? CaptureContractJson.SerializeToElement(new
+            {
+                facts.SchemaVersion,
+                facts.FactsIdentitySha256,
+                facts.CaptureId,
+                facts.CaptureSequence,
+                facts.Capture,
+                facts.Environment,
+                facts.Catalog,
+                facts.Calibration,
+                facts.Stack,
+                facts.ProcessingProfile,
+                facts.Corners
+            })
+            : CaptureContractJson.SerializeToElement(facts);
 }
 
 /// <summary>Host-neutral packed-frame materialization boundary with complete explicit immediate lineage.</summary>

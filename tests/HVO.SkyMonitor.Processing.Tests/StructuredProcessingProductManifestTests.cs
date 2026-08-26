@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Processing;
@@ -108,7 +109,11 @@ public sealed class StructuredProcessingProductManifestTests
             JsonSerializer.SerializeToElement(new { }),
             JsonSerializer.SerializeToElement(new { }),
             JsonSerializer.SerializeToElement(new { }),
-            new(string.Empty, ["capture"], [], [], []));
+            new(string.Empty, ["capture"], [], [], []),
+            [
+                Guid.Parse("30000000-0000-0000-0000-000000000002"),
+                Guid.Parse("30000000-0000-0000-0000-000000000003")
+            ]);
         var identity = PresentationProcessingProducts.ComputeMetadataFactsIdentity(facts);
         facts = facts with
         {
@@ -120,6 +125,26 @@ public sealed class StructuredProcessingProductManifestTests
 
         Assert.AreEqual(facts.FactsIdentitySha256,
             PresentationProcessingProducts.ParseMetadataFacts(canonical).FactsIdentitySha256);
+
+        var legacy = facts with
+        {
+            SchemaVersion = PresentationMetadataFactsProductV1.LegacySchemaVersion,
+            FactsIdentitySha256 = string.Empty,
+            SourceArtifactIds = null,
+            Corners = facts.Corners with { SourceIdentitySha256 = string.Empty }
+        };
+        var legacyIdentity = PresentationProcessingProducts.ComputeMetadataFactsIdentity(legacy);
+        legacy = legacy with
+        {
+            FactsIdentitySha256 = legacyIdentity,
+            Corners = legacy.Corners with { SourceIdentitySha256 = legacyIdentity }
+        };
+        var legacyJson = JsonNode.Parse(CaptureContractJson.SerializeToElement(legacy).GetRawText())!.AsObject();
+        legacyJson.Remove("sourceArtifactIds");
+        var legacyBytes = Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(
+            JsonSerializer.SerializeToElement(legacyJson)).GetRawText());
+        Assert.AreEqual(legacyIdentity,
+            PresentationProcessingProducts.ParseMetadataFacts(legacyBytes).FactsIdentitySha256);
 
         var tampered = facts with { Capture = JsonSerializer.SerializeToElement(new { exposure = "tampered" }) };
         var tamperedBytes = Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -12,6 +14,9 @@ internal sealed class CentralPresentationController(
     ICentralArtifactRetrievalService retrieval,
     ICentralArtifactObjectReader objectReader) : ControllerBase
 {
+    private const int MaximumBaseBytes = 32 * 1024 * 1024;
+    private const long MaximumPixels = 32L * 1024 * 1024;
+
     [HttpGet("presentation")]
     public async Task<IActionResult> GetAsync(Guid captureId, CancellationToken cancellationToken)
     {
@@ -79,21 +84,50 @@ internal sealed class CentralPresentationController(
             workerAccess: null,
             cancellationToken).ConfigureAwait(false);
         if (lookup.Status != CentralArtifactLookupStatus.Found || lookup.Artifact is not { } artifact ||
-            artifact.MediaType is not ("image/jpeg" or "image/png"))
+            artifact.MediaType is not ("image/jpeg" or "image/png" or CentralPresentationBaseDecoder.PackedMediaType))
         {
             Response.StatusCode = StatusCodes.Status404NotFound;
-            return;
-        }
-        var etag = $"\"{artifact.ChecksumSha256.ToUpperInvariant()}\"";
-        SetImmutableHeaders(etag);
-        if (Matches(etag))
-        {
-            Response.StatusCode = StatusCodes.Status304NotModified;
             return;
         }
         try
         {
             var snapshot = await objectReader.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
+            if (artifact.MediaType == CentralPresentationBaseDecoder.PackedMediaType)
+            {
+                if (artifact.ByteLength is < 1 or > MaximumBaseBytes or > int.MaxValue)
+                {
+                    Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+                    return;
+                }
+                using var packed = new MemoryStream(checked((int)artifact.ByteLength));
+                await objectReader.CopyToAsync(snapshot, packed, null, cancellationToken).ConfigureAwait(false);
+                var image = CentralPresentationBaseDecoder.Decode(
+                    artifact, packed.ToArray(), MaximumPixels, cancellationToken);
+                var jpeg = JpegImageCodec.EncodeToJpeg(image.Layout, image.PixelData,
+                    cancellationToken: cancellationToken);
+                var packedEtag = $"\"{Convert.ToHexString(SHA256.HashData(jpeg))}\"";
+                SetImmutableHeaders(packedEtag);
+                if (Matches(packedEtag))
+                {
+                    Response.StatusCode = StatusCodes.Status304NotModified;
+                    return;
+                }
+                Response.StatusCode = StatusCodes.Status200OK;
+                Response.ContentType = JpegImageCodec.MediaType;
+                Response.ContentLength = jpeg.LongLength;
+                if (HttpMethods.IsGet(Request.Method))
+                {
+                    await Response.Body.WriteAsync(jpeg, cancellationToken).ConfigureAwait(false);
+                }
+                return;
+            }
+            var etag = $"\"{artifact.ChecksumSha256.ToUpperInvariant()}\"";
+            SetImmutableHeaders(etag);
+            if (Matches(etag))
+            {
+                Response.StatusCode = StatusCodes.Status304NotModified;
+                return;
+            }
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = artifact.MediaType;
             Response.ContentLength = artifact.ByteLength;
@@ -102,7 +136,8 @@ internal sealed class CentralPresentationController(
                 await objectReader.CopyToAsync(snapshot, Response.Body, null, cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (CentralArtifactIntegrityException)
+        catch (Exception exception) when (exception is CentralArtifactIntegrityException or
+            ArgumentException or InvalidDataException or InvalidOperationException)
         {
             Response.StatusCode = StatusCodes.Status409Conflict;
         }

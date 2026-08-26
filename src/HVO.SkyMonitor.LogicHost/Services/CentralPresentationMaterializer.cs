@@ -36,6 +36,7 @@ internal interface ICentralPresentationMaterializer
 {
     Task<CentralPresentationMaterializationResult> SaveAsync(
         Guid captureId,
+        string manifestIdentitySha256,
         IReadOnlyList<string> enabledLayerIdentitySha256,
         ClaimsPrincipal principal,
         CancellationToken cancellationToken = default);
@@ -58,14 +59,18 @@ internal sealed class CentralPresentationMaterializer(
 
     public async Task<CentralPresentationMaterializationResult> SaveAsync(
         Guid captureId,
+        string manifestIdentitySha256,
         IReadOnlyList<string> enabledLayerIdentitySha256,
         ClaimsPrincipal principal,
         CancellationToken cancellationToken = default)
     {
         var started = timeProvider.GetTimestamp();
+        ArgumentException.ThrowIfNullOrWhiteSpace(manifestIdentitySha256);
         ArgumentNullException.ThrowIfNull(enabledLayerIdentitySha256);
         ArgumentNullException.ThrowIfNull(principal);
-        if (captureId == Guid.Empty ||
+        if (captureId == Guid.Empty || manifestIdentitySha256.Length != 64 ||
+            manifestIdentitySha256.Any(static character =>
+                character is not (>= '0' and <= '9' or >= 'A' and <= 'F')) ||
             enabledLayerIdentitySha256.Count > LayeredPresentationJson.MaximumLayerCount ||
             enabledLayerIdentitySha256.Distinct(StringComparer.Ordinal).Count() != enabledLayerIdentitySha256.Count ||
             enabledLayerIdentitySha256.Any(static identity => identity is not { Length: 64 } ||
@@ -93,6 +98,7 @@ internal sealed class CentralPresentationMaterializer(
                 artifact.ReconstructionState == CentralReconstructionState.Complete &&
                 artifact.MediaType == PresentationProcessingProducts.ManifestMediaType &&
                 artifact.StructuredProduct != null &&
+                artifact.StructuredProduct.ContentIdentitySha256 == manifestIdentitySha256 &&
                 artifact.StructuredProduct.ProductSchemaVersion == OverlayManifestV1.CurrentSchemaVersion)
             .OrderByDescending(static artifact => artifact.CreatedUtc)
             .ThenByDescending(static artifact => artifact.ArtifactId)
@@ -146,7 +152,7 @@ internal sealed class CentralPresentationMaterializer(
                 .ToDictionaryAsync(static artifact => artifact.ArtifactId, cancellationToken)
                 .ConfigureAwait(false);
             if (!artifacts.TryGetValue(manifest.BaseProduct.ArtifactId, out var baseArtifact) ||
-                baseArtifact.MediaType != JpegImageCodec.MediaType ||
+                baseArtifact.MediaType is not (JpegImageCodec.MediaType or CentralPresentationBaseDecoder.PackedMediaType) ||
                 !string.Equals(baseArtifact.ChecksumSha256,
                     manifest.BaseProduct.ProductIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
                 baseArtifact.ByteLength > MaximumBaseBytes ||
@@ -156,16 +162,11 @@ internal sealed class CentralPresentationMaterializer(
             }
 
             var baseBytes = await ReadBytesAsync(baseArtifact, MaximumBaseBytes, cancellationToken).ConfigureAwait(false);
-            var encodedInfo = JpegImageCodec.InspectJpeg(baseBytes);
-            if (encodedInfo.Width != manifest.BaseProduct.Compatibility.WidthPixels ||
-                encodedInfo.Height != manifest.BaseProduct.Compatibility.HeightPixels ||
-                checked((long)encodedInfo.Width * encodedInfo.Height) > MaximumPixels)
-            {
-                return new(CentralPresentationMaterializationStatus.Conflict);
-            }
-            var decoded = JpegImageCodec.DecodeJpeg(baseBytes, cancellationToken);
-            if (decoded.Width != manifest.BaseProduct.Compatibility.WidthPixels ||
-                decoded.Height != manifest.BaseProduct.Compatibility.HeightPixels)
+            var baseImage = CentralPresentationBaseDecoder.Decode(
+                baseArtifact, baseBytes, MaximumPixels, cancellationToken);
+            if (baseImage.Layout.Width != manifest.BaseProduct.Compatibility.WidthPixels ||
+                baseImage.Layout.Height != manifest.BaseProduct.Compatibility.HeightPixels ||
+                checked((long)baseImage.Layout.Width * baseImage.Layout.Height) > MaximumPixels)
             {
                 return new(CentralPresentationMaterializationStatus.Conflict);
             }
@@ -200,9 +201,8 @@ internal sealed class CentralPresentationMaterializer(
                 }, layer.OpacityMillionths));
             }
 
-            var layout = new ImageLayout(decoded.Width, decoded.Height, decoded.PixelFormat, decoded.StrideBytes);
             var output = PresentationLayerCompositor.Composite(
-                layout, decoded.PixelData, compositorLayers, cancellationToken);
+                baseImage.Layout, baseImage.PixelData, compositorLayers, cancellationToken);
             if (output.Length > MaximumOutputBytes)
             {
                 return new(CentralPresentationMaterializationStatus.Invalid);
@@ -218,13 +218,17 @@ internal sealed class CentralPresentationMaterializer(
                 PresentationLayerCompositor.AlgorithmVersion,
                 PresentationMaterializationExecutor.PackedEncoderName,
                 PresentationMaterializationExecutor.PackedEncoderVersion,
-                JsonSerializer.SerializeToElement(new { format = "packed", pixelFormat = decoded.PixelFormat.ToString() }),
+                JsonSerializer.SerializeToElement(new
+                {
+                    format = "packed",
+                    pixelFormat = baseImage.Layout.PixelFormat.ToString()
+                }),
                 sourceIds);
             var recipeOptions = JsonSerializer.SerializeToElement(new
             {
                 request.MaterializationIdentitySha256,
-                decoder = JpegImageCodec.AlgorithmVersion,
-                pixelFormat = decoded.PixelFormat.ToString()
+                decoder = baseImage.DecoderVersion,
+                pixelFormat = baseImage.Layout.PixelFormat.ToString()
             });
             var recipe = RecipeIdentityDescriptor.Create(
                 PresentationProcessingProducts.MaterializationRecipeName,
@@ -251,10 +255,10 @@ internal sealed class CentralPresentationMaterializer(
             {
                 Layout = baseDescriptor.Layout with
                 {
-                    Width = decoded.Width,
-                    Height = decoded.Height,
-                    StrideBytes = decoded.StrideBytes,
-                    PixelFormat = decoded.PixelFormat,
+                    Width = baseImage.Layout.Width,
+                    Height = baseImage.Layout.Height,
+                    StrideBytes = baseImage.Layout.StrideBytes,
+                    PixelFormat = baseImage.Layout.PixelFormat,
                     ByteOrder = FrameByteOrder.NotApplicable,
                     SampleDepthBits = 8,
                     ContainerDepthBits = 8,
@@ -335,6 +339,64 @@ internal sealed class CentralPresentationMaterializer(
         using var output = new MemoryStream(checked((int)artifact.ByteLength));
         await objectReader.CopyToAsync(snapshot, output, null, cancellationToken).ConfigureAwait(false);
         return output.ToArray();
+    }
+}
+
+internal sealed record CentralPresentationBaseImage(
+    ImageLayout Layout,
+    ReadOnlyMemory<byte> PixelData,
+    string DecoderVersion);
+
+internal static class CentralPresentationBaseDecoder
+{
+    public const string PackedMediaType = "application/x-hvo-packed-image";
+    public const string PackedDecoderVersion = "packed-frame-v1";
+
+    public static CentralPresentationBaseImage Decode(
+        CentralArtifact artifact,
+        byte[] bytes,
+        long maximumPixels,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentNullException.ThrowIfNull(bytes);
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumPixels, 1);
+        if (artifact.MediaType == JpegImageCodec.MediaType)
+        {
+            var info = JpegImageCodec.InspectJpeg(bytes);
+            if (checked((long)info.Width * info.Height) > maximumPixels)
+            {
+                throw new InvalidDataException("The retained presentation base exceeds its pixel bound.");
+            }
+            var decoded = JpegImageCodec.DecodeJpeg(bytes, cancellationToken);
+            return new(
+                new(decoded.Width, decoded.Height, decoded.PixelFormat, decoded.StrideBytes),
+                decoded.PixelData,
+                decoded.AlgorithmVersion);
+        }
+        if (artifact.MediaType != PackedMediaType || artifact.Layout is not { } retained ||
+            !Enum.TryParse<CameraPixelFormat>(retained.PixelFormat, out var pixelFormat) ||
+            pixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24) ||
+            retained.ByteOrder != FrameByteOrder.NotApplicable.ToString() ||
+            retained.SampleDepthBits != 8 || retained.ContainerDepthBits != 8 ||
+            retained.Packing != FrameSamplePacking.ByteAligned.ToString() ||
+            retained.CfaPattern != ColorFilterArrayPattern.None.ToString() ||
+            retained.ByteLength != bytes.LongLength || artifact.ByteLength != bytes.LongLength)
+        {
+            throw new InvalidDataException("The retained presentation base format is unsupported.");
+        }
+        var layout = new ImageLayout(retained.Width, retained.Height, pixelFormat, retained.StrideBytes);
+        if (checked((long)layout.Width * layout.Height) > maximumPixels)
+        {
+            throw new InvalidDataException("The retained presentation base exceeds its pixel bound.");
+        }
+        ImageBuffer.Validate(layout, bytes);
+        if (layout.RequiredByteLength != bytes.Length)
+        {
+            throw new InvalidDataException("The packed presentation base length does not match its layout.");
+        }
+        return new(layout, bytes, PackedDecoderVersion);
     }
 }
 

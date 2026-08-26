@@ -201,10 +201,6 @@ internal sealed class NoOpFileStorageProcessingStep(
                     }
                     continue;
                 }
-                if (metadataAlreadyStoredUnderRoot && !queueForUpload)
-                {
-                    continue;
-                }
                 var isStructuredProduct = product.Kind == ProcessingProductKind.Metadata &&
                     product.SchemaVersion is not null && product.ContentIdentitySha256 is not null &&
                     StructuredProcessingProductContracts.IsSupported(product.MediaType, product.SchemaVersion);
@@ -214,6 +210,10 @@ internal sealed class NoOpFileStorageProcessingStep(
                     {
                         throw new InvalidDataException("Structured upload requires a supported typed metadata contract.");
                     }
+                    queueForUpload = false;
+                }
+                if (metadataAlreadyStoredUnderRoot && !queueForUpload)
+                {
                     continue;
                 }
                 if (_processingPersistence is null || context.ReconstructionDescriptor is not { } descriptor)
