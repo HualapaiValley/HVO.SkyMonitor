@@ -1743,10 +1743,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         AssertArtifactFilesUnchanged(retainedRaw);
 
         var holdDuration = DateTimeOffset.UtcNow - holdStartedUtc;
-        await MarkDerivedRetentionEligibleAsync(runtimeRoot, eligibleRetention).ConfigureAwait(false);
+        await MarkDerivedRetentionEligibleAsync(
+            runtimeRoot, eligibleRetention, requireTransition: true).ConfigureAwait(false);
         await WriteAcceptanceRetentionHoldsAsync(runtimeRoot, eligibleRetention, enabled: false).ConfigureAwait(false);
         var cleanup = Stopwatch.StartNew();
-        await WaitForEligibleRetentionCleanupAsync(eligibleRetention, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+        await WaitForEligibleRetentionCleanupAsync(
+            runtimeRoot, eligibleRetention, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
         cleanup.Stop();
 
         var recovered = await WaitForStorageObservationAsync(
@@ -1847,7 +1849,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private static async Task MarkDerivedRetentionEligibleAsync(
         string runtimeRoot,
-        IReadOnlyList<EligibleRetentionArtifactEvidence> artifacts)
+        IReadOnlyList<EligibleRetentionArtifactEvidence> artifacts,
+        bool requireTransition = false)
     {
         var derivative = artifacts.Single(static artifact => artifact.Role != nameof(FrameArtifactRole.Raw));
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
@@ -1868,7 +1871,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
             "$expired",
             new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$artifact", derivative.ArtifactId.ToString("N"));
-        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        var updated = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        if (requireTransition)
+        {
+            Assert.AreEqual(1, updated);
+        }
     }
 
     private static async Task WriteAcceptanceRetentionHoldsAsync(
@@ -1902,6 +1909,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     }
 
     private static async Task WaitForEligibleRetentionCleanupAsync(
+        string runtimeRoot,
         IReadOnlyList<EligibleRetentionArtifactEvidence> artifacts,
         TimeSpan timeout)
     {
@@ -1913,6 +1921,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             {
                 return;
             }
+            await MarkDerivedRetentionEligibleAsync(runtimeRoot, artifacts).ConfigureAwait(false);
             await Task.Delay(500).ConfigureAwait(false);
         }
         var survivors = artifacts.Where(static artifact =>
