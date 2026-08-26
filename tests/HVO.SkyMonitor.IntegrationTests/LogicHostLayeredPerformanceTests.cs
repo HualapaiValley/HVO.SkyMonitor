@@ -29,7 +29,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed partial class LogicHostIngestPerformanceTests
 {
     private const string Issues437432Baseline = "5febc8efaa4b4b6e5e45eb45e9df0c55525bfdde";
-    private const string Issues437432Product = "2e834fa765cc27bea4888aedde5a0b38eee9ffba";
+    private const string Issues437432Product = "c7a06d24fc761ec2fc61b1e366b0307c9c59da8a";
     private const string Issues437432ResultSchema = "issues-437-432-layered-performance-v2";
     private const int Issues437432Width = 3096;
     private const int Issues437432Height = 2080;
