@@ -97,8 +97,7 @@ internal static class CentralReconstructionDescriptorFactory
         {
             throw new InvalidOperationException("The central structured product is not reconstructable.");
         }
-        var descriptor = JsonSerializer.Deserialize<StructuredProcessingProductDescriptorV1>(product.DescriptorJson)
-            ?? throw new InvalidDataException("The persisted structured product descriptor is invalid.");
+        var descriptor = StructuredProcessingProductManifestJson.ParseDescriptor(product.DescriptorJson);
         var validation = descriptor.Validate();
         var persistedRecipe = artifact.Recipe;
         var expectedRecipe = descriptor.Artifact.Recipe;
@@ -118,7 +117,7 @@ internal static class CentralReconstructionDescriptorFactory
             persistedRecipe is null || persistedRecipe.Name != expectedRecipe.Name ||
             persistedRecipe.SemanticVersion != expectedRecipe.SemanticVersion ||
             persistedRecipe.ImplementationVersion != expectedRecipe.ImplementationVersion ||
-            persistedRecipe.OptionsSha256 != expectedRecipe.OptionsSha256 ||
+            !string.Equals(persistedRecipe.OptionsSha256, expectedRecipe.OptionsSha256, StringComparison.OrdinalIgnoreCase) ||
             persistedRecipe.OptionsJson != JsonSerializer.Serialize(CaptureContractJson.Canonicalize(expectedRecipe.Options)) ||
             persistedSources.Length != descriptor.Artifact.SourceArtifactIds.Count ||
             persistedSources.Where((source, ordinal) => source.Ordinal != ordinal ||
@@ -167,6 +166,29 @@ internal static class CentralReconstructionDescriptorFactory
                     layout.CfaOriginX,
                     layout.CfaOriginY)
         };
+    }
+
+    internal static string ComputeOutputIdentity(CentralArtifact artifact)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        if (artifact.Recipe is not { } recipe || string.IsNullOrWhiteSpace(artifact.Variant))
+        {
+            throw new InvalidOperationException("The central artifact output identity is not reconstructable.");
+        }
+        using var options = JsonDocument.Parse(recipe.OptionsJson);
+        var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(new RecipeIdentityDescriptor(
+            recipe.Name,
+            recipe.SemanticVersion,
+            recipe.ImplementationVersion,
+            options.RootElement.Clone(),
+            recipe.OptionsSha256));
+        return ProcessingIdentity.CreateOutputIdentity(
+            artifact.Role,
+            artifact.Variant,
+            recipeIdentity.IdentitySha256,
+            artifact.Sources.OrderBy(static source => source.Ordinal)
+                .Select(static source => source.SourceArtifactId)
+                .ToArray());
     }
 
     private static ProfileIdentityDescriptor ToIdentity(CentralCaptureProfile profile)

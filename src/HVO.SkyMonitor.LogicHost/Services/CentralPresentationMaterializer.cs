@@ -100,7 +100,7 @@ internal sealed class CentralPresentationMaterializer(
                 artifact.StructuredProduct != null &&
                 artifact.StructuredProduct.ContentIdentitySha256 == manifestIdentitySha256 &&
                 artifact.StructuredProduct.ProductSchemaVersion == OverlayManifestV1.CurrentSchemaVersion)
-            .OrderByDescending(static artifact => artifact.CreatedUtc)
+            .OrderByDescending(static artifact => artifact.ReceivedAtUtc)
             .ThenByDescending(static artifact => artifact.ArtifactId)
             .Take(1)
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -153,7 +153,7 @@ internal sealed class CentralPresentationMaterializer(
                 .ConfigureAwait(false);
             if (!artifacts.TryGetValue(manifest.BaseProduct.ArtifactId, out var baseArtifact) ||
                 baseArtifact.MediaType is not (JpegImageCodec.MediaType or CentralPresentationBaseDecoder.PackedMediaType) ||
-                !string.Equals(baseArtifact.ChecksumSha256,
+                !string.Equals(CentralReconstructionDescriptorFactory.ComputeOutputIdentity(baseArtifact),
                     manifest.BaseProduct.ProductIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
                 baseArtifact.ByteLength > MaximumBaseBytes ||
                 baseArtifact.ReconstructionState != CentralReconstructionState.Complete)
@@ -285,8 +285,9 @@ internal sealed class CentralPresentationMaterializer(
                 $"materializations/{artifactId:D}.bin",
                 ProducerStepId: "central-presentation");
             await using var payloadStream = new MemoryStream(output, writable: false);
-            var ingestResult = await ingest.IngestAsync(
-                ArtifactManifestDocument.FromCurrent(uploadManifest), payloadStream, cancellationToken).ConfigureAwait(false);
+            var ingestResult = await ingest.IngestCentralDerivativeAsync(
+                ArtifactManifestDocument.FromCurrent(uploadManifest), payloadStream,
+                baseArtifact.Frame!.DevicePublicId, cancellationToken).ConfigureAwait(false);
             if (!ingestResult.ReadyForAcknowledgement)
             {
                 telemetry.RecordMaterialization("pending", timeProvider.GetElapsedTime(started));

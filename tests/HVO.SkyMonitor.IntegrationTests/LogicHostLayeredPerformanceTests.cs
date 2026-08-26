@@ -365,7 +365,17 @@ public sealed partial class LogicHostIngestPerformanceTests
         var baseBytes = JpegImageCodec.EncodeMono8ToJpeg(
             Issues437432Width, Issues437432Height, basePixels, quality: 80);
         var baseChecksum = Convert.ToHexString(SHA256.HashData(baseBytes));
-        var baseArtifactId = Guid.NewGuid();
+        var recipe = RecipeIdentityDescriptor.Create(
+            BuiltInProcessingRecipes.EncodedPreview,
+            "1.0.0",
+            JpegImageCodec.AlgorithmVersion,
+            JsonSerializer.SerializeToElement(new { quality = 80 }));
+        var baseOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.Preview,
+            "presentation-base",
+            ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256,
+            [rawArtifactId]);
+        var baseArtifactId = ProcessingIdentity.CreateArtifactId(baseOutputIdentity);
         var baseLayout = new FrameLayoutDescriptor(
             Issues437432Width,
             Issues437432Height,
@@ -391,11 +401,6 @@ public sealed partial class LogicHostIngestPerformanceTests
             var raw = await db.CentralArtifacts.Include(static item => item.Frame)
                 .SingleAsync(item => item.ArtifactId == rawArtifactId).ConfigureAwait(false);
             centralCaptureId = raw.CentralFrameId;
-            var recipe = RecipeIdentityDescriptor.Create(
-                BuiltInProcessingRecipes.EncodedPreview,
-                "1.0.0",
-                JpegImageCodec.AlgorithmVersion,
-                JsonSerializer.SerializeToElement(new { quality = 80 }));
             var baseRow = new CentralArtifact
             {
                 CentralFrameId = raw.CentralFrameId,
@@ -507,7 +512,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         }
 
         var manifest = LayeredPresentationJson.CreateManifest(
-            new(baseArtifactId, baseChecksum, JpegImageCodec.MediaType, compatibility),
+            new(baseArtifactId, baseOutputIdentity, JpegImageCodec.MediaType, compatibility),
             sourceIdentity,
             layerContracts);
         var manifestBytes = LayeredPresentationJson.Serialize(manifest);

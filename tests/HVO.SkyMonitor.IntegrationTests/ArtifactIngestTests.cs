@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Diagnostics.Metrics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
@@ -632,8 +633,19 @@ public sealed class ArtifactIngestTests
         rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
         var baseBytes = rawBytes.ToArray();
-        var baseArtifactId = Guid.NewGuid();
         var baseChecksum = Convert.ToHexString(SHA256.HashData(baseBytes));
+        var baseRecipe = RecipeIdentityDescriptor.Create(
+            BuiltInProcessingRecipes.EncodedPreview,
+            "1.0.0",
+            CentralPresentationBaseDecoder.PackedDecoderVersion,
+            JsonSerializer.SerializeToElement(new { }));
+        var baseOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.Preview,
+            "presentation-base",
+            ProcessingIdentity.CreateRecipeIdentity(baseRecipe).IdentitySha256,
+            [rawManifest.Descriptor.Artifact.ArtifactId]);
+        var baseArtifactId = ProcessingIdentity.CreateArtifactId(baseOutputIdentity);
+        baseOutputIdentity.Should().NotBe(baseChecksum);
         Guid centralCaptureId;
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
@@ -678,12 +690,11 @@ public sealed class ArtifactIngestTests
                 },
                 Recipe = new CentralArtifactRecipe
                 {
-                    Name = BuiltInProcessingRecipes.EncodedPreview,
-                    SemanticVersion = "1.0.0",
-                    ImplementationVersion = CentralPresentationBaseDecoder.PackedDecoderVersion,
-                    OptionsJson = "{}",
-                    OptionsSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(
-                        JsonSerializer.SerializeToElement(new { }))
+                    Name = baseRecipe.Name,
+                    SemanticVersion = baseRecipe.SemanticVersion,
+                    ImplementationVersion = baseRecipe.ImplementationVersion,
+                    OptionsJson = baseRecipe.Options.GetRawText(),
+                    OptionsSha256 = baseRecipe.OptionsSha256
                 }
             };
             baseRow.Sources.Add(new CentralArtifactSource
@@ -713,6 +724,37 @@ public sealed class ArtifactIngestTests
         var layerUpload = CreateStructuredManifest(rawManifest, layer, layerBytes);
         using var layerResponse = await PostAsync(ingestClient, layerUpload, layerBytes).ConfigureAwait(false);
         layerResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        using (var reorderedOptions = JsonDocument.Parse("{\"beta\":2,\"alpha\":1}"))
+        {
+            var reorderedRecipe = layerUpload.Descriptor.Artifact.Recipe with
+            {
+                Options = reorderedOptions.RootElement.Clone(),
+                OptionsSha256 = ToLowerHex(layerUpload.Descriptor.Artifact.Recipe.OptionsSha256)
+            };
+            var reorderedUpload = layerUpload with
+            {
+                Descriptor = layerUpload.Descriptor with
+                {
+                    SourceCapture = layerUpload.Descriptor.SourceCapture with
+                    {
+                        Artifact = layerUpload.Descriptor.SourceCapture.Artifact with
+                        {
+                            ChecksumSha256 = ToLowerHex(
+                                layerUpload.Descriptor.SourceCapture.Artifact.ChecksumSha256)
+                        }
+                    },
+                    Artifact = layerUpload.Descriptor.Artifact with
+                    {
+                        Recipe = reorderedRecipe,
+                        ChecksumSha256 = ToLowerHex(layerUpload.Descriptor.Artifact.ChecksumSha256)
+                    }
+                }
+            };
+            reorderedUpload.IdempotencyKey.Should().Be(layerUpload.IdempotencyKey);
+            using var reorderedResponse = await PostAsync(
+                ingestClient, reorderedUpload, layerBytes).ConfigureAwait(false);
+            reorderedResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        }
 
         var compatibility = new PresentationCompatibilityDescriptor(
             2, 2, PresentationProcessingProducts.ComputeLayoutIdentity(rawManifest.Descriptor.Layout), sourceIdentity);
@@ -730,7 +772,7 @@ public sealed class ArtifactIngestTests
             true,
             JsonSerializer.SerializeToElement(new { }));
         var overlay = LayeredPresentationJson.CreateManifest(
-            new(baseArtifactId, baseChecksum, CentralPresentationBaseDecoder.PackedMediaType, compatibility),
+            new(baseArtifactId, baseOutputIdentity, CentralPresentationBaseDecoder.PackedMediaType, compatibility),
             sourceIdentity,
             [layerContract]);
         var overlayBytes = LayeredPresentationJson.Serialize(overlay);
@@ -805,11 +847,107 @@ public sealed class ArtifactIngestTests
             await baseResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
         displayBase.Width.Should().Be(2);
         displayBase.Height.Should().Be(2);
+        var packedReads = new PackedBaseReadCounter(baseArtifactId);
+        using (var conditionalFactory = fixture.Factory.WithWebHostBuilder(builder =>
+                   builder.ConfigureTestServices(services =>
+                   {
+                       services.AddScoped<CentralArtifactObjectReader>();
+                       services.RemoveAll<ICentralArtifactObjectReader>();
+                       services.AddScoped<ICentralArtifactObjectReader>(provider =>
+                           new CountingPackedBaseObjectReader(
+                               provider.GetRequiredService<CentralArtifactObjectReader>(), packedReads));
+                   })))
+        using (var conditionalClient = conditionalFactory.CreateClient())
+        {
+            conditionalClient.DefaultRequestHeaders.Authorization = ownerClient.DefaultRequestHeaders.Authorization;
+            using var baseConditional = new HttpRequestMessage(
+                HttpMethod.Get, $"/api/v1.0/captures/{centralCaptureId:D}/presentation/base");
+            baseConditional.Headers.TryAddWithoutValidation(
+                "If-None-Match", $"W/\"ignored\", {baseResponse.Headers.ETag}");
+            using var baseNotModified = await conditionalClient.SendAsync(baseConditional).ConfigureAwait(false);
+            baseNotModified.StatusCode.Should().Be(HttpStatusCode.NotModified);
+            using var baseHead = await conditionalClient.SendAsync(new HttpRequestMessage(
+                HttpMethod.Head, $"/api/v1.0/captures/{centralCaptureId:D}/presentation/base")).ConfigureAwait(false);
+            baseHead.StatusCode.Should().Be(HttpStatusCode.OK);
+            baseHead.Content.Headers.ContentLength.Should().BeNull();
+        }
+        packedReads.CopyCount.Should().Be(0);
+        var latestLayer = LayeredPresentationJson.CreateLayer(
+            "scene-annotation",
+            new(layerUpload.Descriptor.Artifact.ArtifactId, layer.ContentIdentitySha256,
+                PresentationLayerPayloadJson.MediaType, compatibility),
+            sourceIdentity,
+            PresentationCoordinateSpace.ScenePixels,
+            GroupedSvgPresentationRenderer.RendererVersion,
+            "integration-style-v2",
+            10,
+            PresentationBlendMode.Normal,
+            1_000_000,
+            true,
+            JsonSerializer.SerializeToElement(new { }));
+        var latestOverlay = LayeredPresentationJson.CreateManifest(
+            new(baseArtifactId, baseOutputIdentity, CentralPresentationBaseDecoder.PackedMediaType, compatibility),
+            sourceIdentity,
+            [latestLayer]);
+        var latestOverlayBytes = LayeredPresentationJson.Serialize(latestOverlay);
+        var latestRecipe = RecipeIdentityDescriptor.Create(
+            PresentationProcessingProducts.ManifestRecipeName,
+            "1.0.0",
+            "integration-v1",
+            JsonSerializer.SerializeToElement(new { revision = 2 }));
+        var latestOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.Metadata,
+            "overlay-manifest-v2",
+            ProcessingIdentity.CreateRecipeIdentity(latestRecipe).IdentitySha256,
+            overlaySources);
+        var latestArtifact = new ArtifactDescriptor(
+            ProcessingIdentity.CreateArtifactId(latestOutputIdentity),
+            FrameArtifactRole.Metadata,
+            "overlay-manifest-step",
+            "overlay-manifest-v2",
+            DateTimeOffset.UnixEpoch,
+            overlaySources,
+            latestRecipe,
+            PresentationProcessingProducts.ManifestMediaType,
+            Convert.ToHexString(SHA256.HashData(latestOverlayBytes)));
+        var latestUpload = new StructuredProcessingProductManifestV1(
+            StructuredProcessingProductManifestV1.CurrentSchemaVersion,
+            new StructuredProcessingProductDescriptorV1(
+                rawManifest.Descriptor,
+                latestArtifact,
+                latestOutputIdentity,
+                [new("grouped-svg", GroupedSvgPresentationRenderer.RendererVersion)],
+                new("rig", "orientation", "calibration", "mask", "sensor", "night", "processing"),
+                TimeSpan.FromSeconds(1).Ticks,
+                latestOverlayBytes.LongLength,
+                ProcessingProductKind.Metadata,
+                OverlayManifestV1.CurrentSchemaVersion,
+                latestOverlay.ManifestIdentitySha256),
+            "derived/overlay-manifest-v2.json",
+            ProducerStepId: "overlay-manifest-step");
+        using var latestUploadResponse = await PostAsync(
+            ingestClient, latestUpload, latestOverlayBytes).ConfigureAwait(false);
+        latestUploadResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        using var latestDescriptorResponse = await ownerClient.GetAsync(new Uri(
+            $"/api/v1.0/captures/{centralCaptureId:D}/presentation", UriKind.Relative)).ConfigureAwait(false);
+        latestDescriptorResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        using (var latestDescriptor = JsonDocument.Parse(
+                   await latestDescriptorResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false)))
+        {
+            latestDescriptor.RootElement.GetProperty("ManifestIdentitySha256").GetString()
+                .Should().Be(latestOverlay.ManifestIdentitySha256);
+        }
         using var conditional = new HttpRequestMessage(
             HttpMethod.Get, $"/api/v1.0/captures/{centralCaptureId:D}/presentation.svg");
         conditional.Headers.IfNoneMatch.Add(svgResponse.Headers.ETag!);
         using var notModified = await ownerClient.SendAsync(conditional).ConfigureAwait(false);
-        notModified.StatusCode.Should().Be(HttpStatusCode.NotModified);
+        notModified.StatusCode.Should().Be(HttpStatusCode.OK);
+        notModified.Headers.ETag.Should().NotBe(svgResponse.Headers.ETag);
+        using var latestConditional = new HttpRequestMessage(
+            HttpMethod.Get, $"/api/v1.0/captures/{centralCaptureId:D}/presentation.svg");
+        latestConditional.Headers.IfNoneMatch.Add(notModified.Headers.ETag!);
+        using var latestNotModified = await ownerClient.SendAsync(latestConditional).ConfigureAwait(false);
+        latestNotModified.StatusCode.Should().Be(HttpStatusCode.NotModified);
         using var foreignClient = await ArtifactRetrievalTests.CreateUserClientAsync(
             TestUsers.Viewer.Username, TestUsers.Viewer.Password).ConfigureAwait(false);
         using var foreignResponse = await foreignClient.GetAsync(new Uri(
@@ -830,6 +968,25 @@ public sealed class ArtifactIngestTests
             UserId = viewer.Id,
             Role = ObservatoryMembershipRole.Viewer,
             AddedAtUtc = DateTimeOffset.UnixEpoch
+        });
+        var materializationRegistration = await materializationDb.DeviceRegistrations
+            .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
+        materializationRegistration.Status = DeviceRegistrationStatus.Revoked;
+        materializationDb.DeviceRegistrations.Add(new DeviceRegistration
+        {
+            Id = Guid.NewGuid(),
+            DeviceId = deviceId,
+            ObservatoryId = materializationRegistration.ObservatoryId,
+            ObservatoryName = materializationRegistration.ObservatoryName,
+            ObservatoryTimeZoneId = materializationRegistration.ObservatoryTimeZoneId,
+            FriendlyName = "Re-paired Artifact Device",
+            OwnerUserId = materializationRegistration.OwnerUserId,
+            OwnerDisplayName = materializationRegistration.OwnerDisplayName,
+            OwnerConfirmationMethod = materializationRegistration.OwnerConfirmationMethod,
+            Status = DeviceRegistrationStatus.Pending,
+            VerificationCodeHash = DeviceRegistrationService.ComputeSha256("FGHIJ"),
+            IssuedAtUtc = DateTimeOffset.UtcNow,
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1)
         });
         await materializationDb.SaveChangesAsync().ConfigureAwait(false);
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
@@ -890,6 +1047,229 @@ public sealed class ArtifactIngestTests
         stored.MediaType.Should().Be("application/x-hvo-packed-image");
         stored.Sources.OrderBy(item => item.Ordinal).Select(item => item.SourceArtifactId)
             .Should().Equal(baseArtifactId, overlayArtifact.ArtifactId, layerUpload.Descriptor.Artifact.ArtifactId);
+    }
+
+    [TestMethod]
+    public void StructuredSourceIdentity_AcceptsExactlyOneMatchingCanonicalSource()
+    {
+        var expected = new string('A', 64);
+        var artifact = new CentralArtifact
+        {
+            StructuredProduct = new CentralStructuredProcessingProduct { SourceIdentitySha256 = expected }
+        };
+        var matching = new CentralArtifact
+        {
+            ChecksumSha256 = new string('B', 64),
+            StructuredProduct = new CentralStructuredProcessingProduct { ContentIdentitySha256 = expected }
+        };
+        var other = new CentralArtifact { ChecksumSha256 = new string('C', 64) };
+        artifact.Sources.Add(new CentralArtifactSource
+        {
+            Ordinal = 0,
+            SourceArtifactId = Guid.NewGuid(),
+            ResolvedCentralArtifactId = matching.Id,
+            ResolvedArtifact = matching
+        });
+        artifact.Sources.Add(new CentralArtifactSource
+        {
+            Ordinal = 1,
+            SourceArtifactId = Guid.NewGuid(),
+            ResolvedCentralArtifactId = other.Id,
+            ResolvedArtifact = other
+        });
+
+        ArtifactIngestService.HasStructuredSourceIdentityMismatch(artifact).Should().BeFalse();
+        other.ChecksumSha256 = expected;
+        ArtifactIngestService.HasStructuredSourceIdentityMismatch(artifact).Should().BeTrue();
+        artifact.Sources.Last().ResolvedCentralArtifactId = null;
+        artifact.Sources.Last().ResolvedArtifact = null;
+        ArtifactIngestService.HasStructuredSourceIdentityMismatch(artifact).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task StructuredCloudAssessment_ResolvesHistoricalClearReferenceAcrossFrames()
+    {
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("structured-cloud-history-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var clearBytes = new byte[] { 1, 2, 3, 4 };
+        var currentBytes = new byte[] { 5, 6, 7, 8 };
+        var clear = CreateManifestV2(
+            deviceId, rig, clearBytes, 91, capturedAtUtc: DateTimeOffset.UnixEpoch);
+        var current = CreateManifestV2(
+            deviceId, rig, currentBytes, 92, capturedAtUtc: DateTimeOffset.UnixEpoch.AddMinutes(1));
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var currentResponse = await PostAsync(client, current, currentBytes).ConfigureAwait(false);
+        currentResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        var cloudRecipe = RecipeIdentityDescriptor.Create(
+            BuiltInProcessingRecipes.CloudAssessment,
+            "1.0.0",
+            "integration-v1",
+            JsonSerializer.SerializeToElement(new { }));
+        var assessment = new CloudAssessmentV1(
+            CloudAssessmentV1.CurrentSchemaVersion,
+            CloudAssessmentStatus.Quantified,
+            CloudAssessmentQuality.Degraded,
+            [CloudAssessmentReasonCodes.EnvironmentMissing],
+            0,
+            1_000_000,
+            new CloudAssessmentGridV1(1, 1, 750_000, 1, 0, 1, 0),
+            [new CloudAssessmentRegionV1(0, 0, 0, 0, 2, 2, 1, 1, 0, 1_000_000, false)],
+            null,
+            new CloudAssessmentSourceV1(
+                current.Descriptor.Artifact.ArtifactId,
+                current.Descriptor.Artifact.Role,
+                current.Descriptor.Artifact.Variant,
+                ProcessingIdentity.CreateRecipeIdentity(current.Descriptor.Artifact.Recipe).IdentitySha256),
+            new CloudAssessmentSourceV1(
+                clear.Descriptor.Artifact.ArtifactId,
+                clear.Descriptor.Artifact.Role,
+                clear.Descriptor.Artifact.Variant,
+                ProcessingIdentity.CreateRecipeIdentity(clear.Descriptor.Artifact.Recipe).IdentitySha256),
+            new CloudAssessmentCalibrationV1(
+                0, 255, 255, "calibration", "mask", "sensor", "processing"),
+            new CloudAssessmentEnvironmentV1(
+                CloudAssessmentEnvironmentV1.CurrentSchemaVersion,
+                CaptureSolarRegime.Night,
+                EnvironmentalObservationMatchStatus.Missing,
+                null,
+                null,
+                false),
+            ProcessingIdentity.CreateRecipeIdentity(cloudRecipe).IdentitySha256,
+            [new ProcessingAlgorithmIdentity("cloud-transmission", "integration-v1")]);
+        var cloudBytes = CloudAssessmentJson.Serialize(assessment);
+        var sourceIds = new[]
+        {
+            current.Descriptor.Artifact.ArtifactId,
+            clear.Descriptor.Artifact.ArtifactId
+        };
+        var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.Metadata,
+            "cloud-assessment",
+            ProcessingIdentity.CreateRecipeIdentity(cloudRecipe).IdentitySha256,
+            sourceIds);
+        var artifact = new ArtifactDescriptor(
+            ProcessingIdentity.CreateArtifactId(outputIdentity),
+            FrameArtifactRole.Metadata,
+            "cloud-assessment-step",
+            "cloud-assessment",
+            current.Descriptor.Timing.ReadoutCompletedUtc,
+            sourceIds,
+            cloudRecipe,
+            StructuredProcessingProductContracts.CloudAssessmentMediaType,
+            Convert.ToHexString(SHA256.HashData(cloudBytes)));
+        var upload = new StructuredProcessingProductManifestV1(
+            StructuredProcessingProductManifestV1.CurrentSchemaVersion,
+            new StructuredProcessingProductDescriptorV1(
+                current.Descriptor,
+                artifact,
+                outputIdentity,
+                assessment.Algorithms,
+                new("rig", "orientation", "calibration", "mask", "sensor", "night", "processing"),
+                TimeSpan.FromSeconds(1).Ticks,
+                cloudBytes.LongLength,
+                ProcessingProductKind.Metadata,
+                CloudAssessmentV1.CurrentSchemaVersion,
+                assessment.AssessmentIdentitySha256),
+            "derived/cloud-assessment.json",
+            ProducerStepId: "cloud-assessment-step");
+        using var response = await PostAsync(client, upload, cloudBytes).ConfigureAwait(false);
+        response.StatusCode.Should().Be((HttpStatusCode)425);
+        using var clearResponse = await PostAsync(client, clear, clearBytes).ConfigureAwait(false);
+        clearResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var stored = await db.CentralArtifacts.Include(item => item.Sources)
+            .SingleAsync(item => item.ArtifactId == artifact.ArtifactId).ConfigureAwait(false);
+        stored.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        var clearSourceId = stored.Sources.Single(item => item.Ordinal == 1).ResolvedCentralArtifactId;
+        clearSourceId.Should().NotBeNull();
+        var clearFrameId = await db.CentralArtifacts.Where(item => item.Id == clearSourceId)
+            .Select(item => item.CentralFrameId).SingleAsync().ConfigureAwait(false);
+        clearFrameId.Should().NotBe(stored.CentralFrameId);
+    }
+
+    [TestMethod]
+    public async Task StructuredProjectedScene_RejectsMismatchedSourceDescriptorIdentity()
+    {
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("structured-projected-scene-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var rawBytes = new byte[] { 9, 8, 7, 6 };
+        var raw = CreateManifestV2(deviceId, rig, rawBytes, 93);
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+        using var rawResponse = await PostAsync(client, raw, rawBytes).ConfigureAwait(false);
+        rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        var utc = DateTimeOffset.Parse("2025-01-15T08:00:00Z", CultureInfo.InvariantCulture);
+        var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15;
+        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("zenith", "Zenith", siderealHours, 0, 1)
+        ])).BuildAsync(new VisibleSceneRequest(
+            utc,
+            new ObserverLocation(0, 0, 0),
+            new ProjectionContext(
+                ProjectionModel.Perspective, 1, 1, 1, 1, 2, 2, ProjectionAperture.Rectangular,
+                BoresightAltitudeDegrees: 90),
+            new CatalogQuery(6, 10),
+            new CatalogMetadata(
+                "fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
+            projectionVersion: "perspective-v1")).ConfigureAwait(false);
+        var scene = ProjectedSceneJson.Create(
+            ProjectedSceneKind.Predicted,
+            visible,
+            ProjectedSceneImageTransformV1.Identity(2, 2),
+            new ProjectedSceneSource(
+                raw.Descriptor.Capture.CaptureId,
+                raw.Descriptor.Artifact.ArtifactId,
+                new string('D', 64)),
+            "calibration-v1",
+            visible.Request.ProjectionVersion);
+        var payload = ProjectedSceneJson.Serialize(scene);
+        var recipe = RecipeIdentityDescriptor.Create(
+            BuiltInProcessingRecipes.ProjectedScene,
+            "1.0.0",
+            "integration-v1",
+            JsonSerializer.SerializeToElement(new { }));
+        var sourceIds = new[] { raw.Descriptor.Artifact.ArtifactId };
+        var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.Metadata,
+            "projected-scene",
+            ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256,
+            sourceIds);
+        var artifact = new ArtifactDescriptor(
+            ProcessingIdentity.CreateArtifactId(outputIdentity),
+            FrameArtifactRole.Metadata,
+            "projected-scene-step",
+            "projected-scene",
+            raw.Descriptor.Timing.ReadoutCompletedUtc,
+            sourceIds,
+            recipe,
+            StructuredProcessingProductContracts.ProjectedSceneMediaType,
+            Convert.ToHexString(SHA256.HashData(payload)));
+        var upload = new StructuredProcessingProductManifestV1(
+            StructuredProcessingProductManifestV1.CurrentSchemaVersion,
+            new StructuredProcessingProductDescriptorV1(
+                raw.Descriptor,
+                artifact,
+                outputIdentity,
+                [new ProcessingAlgorithmIdentity("projected-scene", "integration-v1")],
+                new("rig", "orientation", "calibration", "mask", "sensor", "night", "processing"),
+                TimeSpan.FromSeconds(1).Ticks,
+                payload.LongLength,
+                ProcessingProductKind.Metadata,
+                ProjectedSceneV1.CurrentSchemaVersion,
+                scene.SceneIdentitySha256),
+            "derived/projected-scene.json",
+            ProducerStepId: "projected-scene-step");
+
+        using var response = await PostAsync(client, upload, payload).ConfigureAwait(false);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [TestMethod]
@@ -4849,7 +5229,8 @@ public sealed class ArtifactIngestTests
     {
         var sourceIds = new[] { sourceManifest.Descriptor.Artifact.ArtifactId };
         var recipe = RecipeIdentityDescriptor.Create(
-            "presentation-layer", "1.0.0", "integration-v1", JsonSerializer.SerializeToElement(new { }));
+            "presentation-layer", "1.0.0", "integration-v1",
+            JsonSerializer.SerializeToElement(new { alpha = 1, beta = 2 }));
         var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(recipe);
         var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
             FrameArtifactRole.Metadata, "scene-layer", recipeIdentity.IdentitySha256, sourceIds);
@@ -5257,6 +5638,44 @@ public sealed class ArtifactIngestTests
             CentralArtifactByteRange? range,
             CancellationToken cancellationToken)
             => inner.CopyToAsync(snapshot, destination, range, cancellationToken);
+    }
+
+    private sealed class PackedBaseReadCounter(Guid artifactId)
+    {
+        private int copyCount;
+
+        public Guid ArtifactId { get; } = artifactId;
+        public int CopyCount => Volatile.Read(ref copyCount);
+        public void RecordCopy() => Interlocked.Increment(ref copyCount);
+    }
+
+    private sealed class CountingPackedBaseObjectReader(
+        ICentralArtifactObjectReader inner,
+        PackedBaseReadCounter counter) : ICentralArtifactObjectReader
+    {
+        public Task<CentralArtifactObjectSnapshot> VerifyAsync(
+            CentralArtifact artifact,
+            CancellationToken cancellationToken)
+            => inner.VerifyAsync(artifact, cancellationToken);
+
+        public Task<bool> IsCurrentGenerationAsync(
+            CentralArtifact artifact,
+            string storageETag,
+            CancellationToken cancellationToken)
+            => inner.IsCurrentGenerationAsync(artifact, storageETag, cancellationToken);
+
+        public Task CopyToAsync(
+            CentralArtifactObjectSnapshot snapshot,
+            Stream destination,
+            CentralArtifactByteRange? range,
+            CancellationToken cancellationToken)
+        {
+            if (snapshot.ObjectKey.Contains(counter.ArtifactId.ToString("D"), StringComparison.OrdinalIgnoreCase))
+            {
+                counter.RecordCopy();
+            }
+            return inner.CopyToAsync(snapshot, destination, range, cancellationToken);
+        }
     }
 
     private sealed class SchedulerConcurrencyInjection(

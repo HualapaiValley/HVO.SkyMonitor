@@ -1,6 +1,10 @@
+using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -99,13 +103,7 @@ internal sealed class CentralPresentationController(
                     Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
                     return;
                 }
-                using var packed = new MemoryStream(checked((int)artifact.ByteLength));
-                await objectReader.CopyToAsync(snapshot, packed, null, cancellationToken).ConfigureAwait(false);
-                var image = CentralPresentationBaseDecoder.Decode(
-                    artifact, packed.ToArray(), MaximumPixels, cancellationToken);
-                var jpeg = JpegImageCodec.EncodeToJpeg(image.Layout, image.PixelData,
-                    cancellationToken: cancellationToken);
-                var packedEtag = $"\"{Convert.ToHexString(SHA256.HashData(jpeg))}\"";
+                var packedEtag = CreatePackedRepresentationEtag(artifact);
                 SetImmutableHeaders(packedEtag);
                 if (Matches(packedEtag))
                 {
@@ -114,11 +112,18 @@ internal sealed class CentralPresentationController(
                 }
                 Response.StatusCode = StatusCodes.Status200OK;
                 Response.ContentType = JpegImageCodec.MediaType;
-                Response.ContentLength = jpeg.LongLength;
-                if (HttpMethods.IsGet(Request.Method))
+                if (HttpMethods.IsHead(Request.Method))
                 {
-                    await Response.Body.WriteAsync(jpeg, cancellationToken).ConfigureAwait(false);
+                    return;
                 }
+                using var packed = new MemoryStream(checked((int)artifact.ByteLength));
+                await objectReader.CopyToAsync(snapshot, packed, null, cancellationToken).ConfigureAwait(false);
+                var image = CentralPresentationBaseDecoder.Decode(
+                    artifact, packed.ToArray(), MaximumPixels, cancellationToken);
+                var jpeg = JpegImageCodec.EncodeToJpeg(image.Layout, image.PixelData,
+                    cancellationToken: cancellationToken);
+                Response.ContentLength = jpeg.LongLength;
+                await Response.Body.WriteAsync(jpeg, cancellationToken).ConfigureAwait(false);
                 return;
             }
             var etag = $"\"{artifact.ChecksumSha256.ToUpperInvariant()}\"";
@@ -139,11 +144,11 @@ internal sealed class CentralPresentationController(
         catch (Exception exception) when (exception is CentralArtifactIntegrityException or
             ArgumentException or InvalidDataException or InvalidOperationException)
         {
-            Response.StatusCode = StatusCodes.Status409Conflict;
+            await HandleStreamingFailureAsync(StatusCodes.Status409Conflict).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is CentralArtifactMissingException or CentralArtifactStorageException)
         {
-            Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await HandleStreamingFailureAsync(StatusCodes.Status503ServiceUnavailable).ConfigureAwait(false);
         }
     }
 
@@ -174,11 +179,47 @@ internal sealed class CentralPresentationController(
     private void SetImmutableHeaders(string etag)
     {
         Response.Headers.CacheControl = "private, no-cache, must-revalidate";
-        Response.Headers.Vary = "Cookie";
+        Response.Headers.Vary = "Authorization, X-API-Key, Cookie";
         Response.Headers.ETag = etag;
         Response.Headers.XContentTypeOptions = "nosniff";
     }
 
-    private bool Matches(string etag) => Request.Headers.IfNoneMatch.Any(value =>
-        string.Equals(value?.Trim(), etag, StringComparison.Ordinal) || value?.Trim() == "*");
+    private static string CreatePackedRepresentationEtag(CentralArtifact artifact)
+    {
+        var layout = artifact.Layout
+            ?? throw new InvalidDataException("The retained packed presentation base has no layout.");
+        var representationIdentity = string.Join('\n',
+            "packed-jpeg-v1",
+            artifact.ChecksumSha256.ToUpperInvariant(),
+            PresentationProcessingProducts.ComputeLayoutIdentity(
+                CentralReconstructionDescriptorFactory.CreateLayout(layout)),
+            CentralPresentationBaseDecoder.PackedDecoderVersion,
+            JpegImageCodec.AlgorithmVersion,
+            JpegImageCodec.DefaultQuality.ToString(CultureInfo.InvariantCulture),
+            JpegImageCodec.MediaType);
+        return $"\"{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(representationIdentity)))}\"";
+    }
+
+    private Task HandleStreamingFailureAsync(int statusCode)
+    {
+        if (Response.HasStarted)
+        {
+            HttpContext.Abort();
+            return Task.CompletedTask;
+        }
+        Response.Headers.Clear();
+        Response.ContentLength = null;
+        Response.StatusCode = statusCode;
+        Response.Headers.CacheControl = "private, no-store";
+        Response.Headers.Vary = "Authorization, X-API-Key, Cookie";
+        return Task.CompletedTask;
+    }
+
+    private bool Matches(string etag) => Request.Headers.IfNoneMatch
+        .SelectMany(value => value?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? [])
+        .Select(static value => value.Trim())
+        .Any(value => value == "*" || string.Equals(
+            value.StartsWith("W/", StringComparison.OrdinalIgnoreCase) ? value[2..].Trim() : value,
+            etag,
+            StringComparison.Ordinal));
 }

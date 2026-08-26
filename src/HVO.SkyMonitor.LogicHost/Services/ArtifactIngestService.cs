@@ -20,6 +20,12 @@ internal interface IArtifactIngestService
 {
     Task<ArtifactIngestResult> IngestAsync(ArtifactManifestDocument manifest, Stream payload, CancellationToken cancellationToken);
 
+    Task<ArtifactIngestResult> IngestCentralDerivativeAsync(
+        ArtifactManifestDocument manifest,
+        Stream payload,
+        Guid devicePublicId,
+        CancellationToken cancellationToken);
+
     Task<ArtifactIngestResult> IngestAsync(
         StructuredProcessingProductManifestV1 manifest,
         Stream payload,
@@ -148,7 +154,20 @@ internal sealed partial class ArtifactIngestService(
     public async Task<ArtifactIngestResult> IngestAsync(ArtifactManifestDocument document, Stream payload, CancellationToken cancellationToken)
     {
         var manifest = ArtifactIngestManifest.Create(document);
-        return await IngestAsync(manifest, payload, cancellationToken).ConfigureAwait(false);
+        return await IngestAsync(
+            manifest, payload, allowInactiveRegistration: false, devicePublicId: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ArtifactIngestResult> IngestCentralDerivativeAsync(
+        ArtifactManifestDocument document,
+        Stream payload,
+        Guid devicePublicId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(devicePublicId, Guid.Empty);
+        var manifest = ArtifactIngestManifest.Create(document);
+        return await IngestAsync(
+            manifest, payload, allowInactiveRegistration: true, devicePublicId, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<ArtifactIngestResult> IngestAsync(
@@ -157,12 +176,15 @@ internal sealed partial class ArtifactIngestService(
         CancellationToken cancellationToken)
     {
         var manifest = ArtifactIngestManifest.Create(productManifest);
-        return await IngestAsync(manifest, payload, cancellationToken).ConfigureAwait(false);
+        return await IngestAsync(
+            manifest, payload, allowInactiveRegistration: false, devicePublicId: null, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<ArtifactIngestResult> IngestAsync(
         ArtifactIngestManifest manifest,
         Stream payload,
+        bool allowInactiveRegistration,
+        Guid? devicePublicId,
         CancellationToken cancellationToken)
     {
         telemetry.RecordValidation(manifest.SchemaVersion, "accepted");
@@ -204,7 +226,8 @@ internal sealed partial class ArtifactIngestService(
             }
             telemetry.RecordChecksum("upload", "matched");
 
-            return await IngestVerifiedAsync(manifest, stagingKey, cancellationToken).ConfigureAwait(false);
+            return await IngestVerifiedAsync(
+                manifest, stagingKey, allowInactiveRegistration, devicePublicId, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -259,6 +282,14 @@ internal sealed partial class ArtifactIngestService(
                     if (scene.Source.CaptureId != product.SourceCapture.Capture.CaptureId)
                     {
                         throw new ArtifactIntegrityException("Projected scene capture lineage does not match its manifest.");
+                    }
+                    if (!string.Equals(
+                            scene.Source.ArtifactIdentitySha256,
+                            CaptureContractJson.ComputeDescriptorSha256(product.SourceCapture),
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new ArtifactIntegrityException(
+                            "Projected scene source descriptor identity does not match its manifest.");
                     }
                 }
                 break;
@@ -394,10 +425,13 @@ internal sealed partial class ArtifactIngestService(
     private async Task<ArtifactIngestResult> IngestVerifiedAsync(
         ArtifactIngestManifest manifest,
         string stagingKey,
+        bool allowInactiveRegistration,
+        Guid? expectedDevicePublicId,
         CancellationToken cancellationToken)
         => await RunGatedAsync(
             manifest,
-            () => IngestCoreAsync(manifest, stagingKey, cancellationToken),
+            () => IngestCoreAsync(
+                manifest, stagingKey, allowInactiveRegistration, expectedDevicePublicId, cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
     private static async Task<T> RunGatedAsync<T>(
@@ -440,15 +474,35 @@ internal sealed partial class ArtifactIngestService(
     private async Task<ArtifactIngestResult> IngestCoreAsync(
         ArtifactIngestManifest manifest,
         string stagingKey,
+        bool allowInactiveRegistration,
+        Guid? expectedDevicePublicId,
         CancellationToken cancellationToken)
     {
         var started = timeProvider.GetTimestamp();
         using var activity = CentralIngestTelemetry.StartActivity("central-artifact.ingest");
         activity?.SetTag("manifest.schema", manifest.SchemaVersion);
 
-        var registration = await dbContext.DeviceRegistrations.SingleOrDefaultAsync(
-            item => item.DeviceId == manifest.AgentId && item.Status == DeviceRegistrationStatus.Active, cancellationToken).ConfigureAwait(false)
-            ?? throw new DeviceRegistrationException("Agent is not registered or active.");
+        DeviceRegistration? registration;
+        if (allowInactiveRegistration)
+        {
+            var historicalRegistrationId = await dbContext.CentralFrames.AsNoTracking()
+                .Where(frame => frame.AgentId == manifest.AgentId && frame.FrameId == manifest.FrameId &&
+                    frame.DevicePublicId == expectedDevicePublicId)
+                .Select(static frame => (Guid?)frame.RegistrationId)
+                .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+                ?? throw new DeviceRegistrationException("The retained capture registration was not found.");
+            registration = await dbContext.DeviceRegistrations.SingleOrDefaultAsync(
+                item => item.Id == historicalRegistrationId, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            registration = await dbContext.DeviceRegistrations.SingleOrDefaultAsync(
+                item => item.DeviceId == manifest.AgentId && item.Status == DeviceRegistrationStatus.Active,
+                cancellationToken).ConfigureAwait(false);
+        }
+        registration = registration ?? throw new DeviceRegistrationException(allowInactiveRegistration
+            ? "The retained capture registration was not found."
+            : "Agent is not registered or active.");
         if (registration.DevicePublicId is null)
         {
             throw new DeviceRegistrationException("Agent is not fully activated.");
@@ -1291,6 +1345,7 @@ internal sealed partial class ArtifactIngestService(
             .Include(artifact => artifact.Layout)
             .Include(artifact => artifact.Recipe)
             .Include(artifact => artifact.Sources)
+                .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.StructuredProduct)
             .Include(artifact => artifact.StructuredProduct)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
@@ -1794,7 +1849,7 @@ internal sealed partial class ArtifactIngestService(
                 ContentIdentitySha256 = structuredProduct.ContentIdentitySha256,
                 AlgorithmsJson = JsonSerializer.Serialize(structuredProduct.Algorithms),
                 CompatibilityJson = JsonSerializer.Serialize(structuredProduct.Compatibility),
-                DescriptorJson = JsonSerializer.Serialize(structuredProduct),
+                DescriptorJson = CanonicalizeStructuredDescriptor(structuredProduct),
                 TotalIntegrationTicks = structuredProduct.TotalIntegrationTicks,
                 SourceIdentitySha256 = manifest.StructuredSourceIdentitySha256
             };
@@ -1804,11 +1859,12 @@ internal sealed partial class ArtifactIngestService(
         for (var ordinal = artifact.Sources.Count; ordinal < artifactDescriptor.SourceArtifactIds.Count; ordinal++)
         {
             var sourceArtifactId = artifactDescriptor.SourceArtifactIds[ordinal];
+            var requiresSameFrame = RequiresSameFrameSource(artifact, ordinal);
             var resolved = await dbContext.CentralArtifacts.Include(candidate => candidate.StructuredProduct)
                 .FirstOrDefaultAsync(candidate =>
                         candidate.ArtifactId == sourceArtifactId
                         && candidate.DevicePublicId == devicePublicId
-                        && (manifest.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
+                        && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
                         && candidate.ObjectState == CentralArtifactObjectState.Available
                         && candidate.ReconstructionState == CentralReconstructionState.Complete,
                     cancellationToken).ConfigureAwait(false);
@@ -1863,11 +1919,15 @@ internal sealed partial class ArtifactIngestService(
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Frame)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Layout)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Sources)
+                .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.StructuredProduct)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.StructuredProduct)
             .Where(source => source.SourceArtifactId == artifact.ArtifactId
                 && source.ResolvedCentralArtifactId == null
                 && source.Artifact!.DevicePublicId == devicePublicId
-                && (source.Artifact.StructuredProduct == null || source.Artifact.CentralFrameId == artifact.CentralFrameId))
+                && (source.Artifact.StructuredProduct == null ||
+                    source.Artifact.MediaType == StructuredProcessingProductContracts.CloudAssessmentMediaType &&
+                    source.Ordinal == 1 ||
+                    source.Artifact.CentralFrameId == artifact.CentralFrameId))
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         foreach (var waitingSource in waitingSources)
         {
@@ -2160,9 +2220,10 @@ internal sealed partial class ArtifactIngestService(
         var unavailableSource = false;
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId != null))
         {
+            var requiresSameFrame = RequiresSameFrameSource(artifact, source.Ordinal);
             var usable = await dbContext.CentralArtifacts.AnyAsync(candidate =>
                 candidate.Id == source.ResolvedCentralArtifactId
-                && (artifact.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
                 && candidate.ObjectState == CentralArtifactObjectState.Available
                 && candidate.ReconstructionState == CentralReconstructionState.Complete,
                 cancellationToken).ConfigureAwait(false);
@@ -2175,10 +2236,12 @@ internal sealed partial class ArtifactIngestService(
         }
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId == null))
         {
-            var resolved = await dbContext.CentralArtifacts.FirstOrDefaultAsync(candidate =>
+            var requiresSameFrame = RequiresSameFrameSource(artifact, source.Ordinal);
+            var resolved = await dbContext.CentralArtifacts.Include(candidate => candidate.StructuredProduct)
+                .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
-                && (artifact.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
                 && candidate.ObjectState == CentralArtifactObjectState.Available
                 && candidate.ReconstructionState == CentralReconstructionState.Complete,
                 cancellationToken).ConfigureAwait(false);
@@ -2193,6 +2256,12 @@ internal sealed partial class ArtifactIngestService(
             frame.DeviceRigProfileId.HasValue,
             unavailableSource: unavailableSource,
             manifestCompleteness: manifest.Completeness);
+        if (artifact.ReconstructionState == CentralReconstructionState.Complete &&
+            HasStructuredSourceIdentityMismatch(artifact))
+        {
+            artifact.ReconstructionState = CentralReconstructionState.Quarantined;
+            artifact.StateReasonCode = "lineage.source-identity-mismatch";
+        }
         artifact.ReconciledAtUtc = reconciledAtUtc;
     }
 
@@ -2273,20 +2342,24 @@ internal sealed partial class ArtifactIngestService(
         => artifact.ObjectState == CentralArtifactObjectState.Available
             && artifact.ReconstructionState == CentralReconstructionState.Complete;
 
+    internal static bool RequiresSameFrameSource(CentralArtifact artifact, int ordinal)
+        => artifact.StructuredProduct is not null &&
+            (artifact.MediaType != StructuredProcessingProductContracts.CloudAssessmentMediaType || ordinal != 1);
+
     internal static bool HasStructuredSourceIdentityMismatch(CentralArtifact artifact)
     {
         if (artifact.StructuredProduct?.SourceIdentitySha256 is not { } expected)
         {
             return false;
         }
-        if (artifact.Sources.Count != 1 || artifact.Sources.Single().ResolvedArtifact is not { } source)
+        if (artifact.Sources.Any(static source => source.ResolvedCentralArtifactId is null))
         {
-            return artifact.Sources.All(static item => item.ResolvedCentralArtifactId is not null);
+            return false;
         }
-        return !string.Equals(
-            source.StructuredProduct?.ContentIdentitySha256 ?? source.ChecksumSha256,
-            expected,
-            StringComparison.Ordinal);
+        return artifact.Sources.Count(source => source.ResolvedArtifact is { } resolved && string.Equals(
+                resolved.StructuredProduct?.ContentIdentitySha256 ?? resolved.ChecksumSha256,
+                expected,
+                StringComparison.Ordinal)) != 1;
     }
 
     internal static async Task InvalidateDependentsAsync(
@@ -2601,7 +2674,7 @@ internal sealed partial class ArtifactIngestService(
         var expectedRecipe = descriptor.Artifact.Recipe;
         var expectedAlgorithms = JsonSerializer.Serialize(descriptor.Algorithms);
         var expectedCompatibility = JsonSerializer.Serialize(descriptor.Compatibility);
-        var expectedDescriptor = JsonSerializer.Serialize(descriptor);
+        var expectedDescriptor = CanonicalizeStructuredDescriptor(descriptor);
         var expectedOptions = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(expectedRecipe.Options));
         var sources = existing.Sources.OrderBy(static source => source.Ordinal).ToArray();
         if (existing.Layout is not null
@@ -2611,12 +2684,12 @@ internal sealed partial class ArtifactIngestService(
             || product.ContentIdentitySha256 != descriptor.ContentIdentitySha256
             || product.AlgorithmsJson != expectedAlgorithms
             || product.CompatibilityJson != expectedCompatibility
-            || product.DescriptorJson != expectedDescriptor
+            || CanonicalizeStructuredDescriptor(product.DescriptorJson) != expectedDescriptor
             || product.TotalIntegrationTicks != descriptor.TotalIntegrationTicks
             || recipe.Name != expectedRecipe.Name
             || recipe.SemanticVersion != expectedRecipe.SemanticVersion
             || recipe.ImplementationVersion != expectedRecipe.ImplementationVersion
-            || recipe.OptionsSha256 != expectedRecipe.OptionsSha256
+            || !string.Equals(recipe.OptionsSha256, expectedRecipe.OptionsSha256, StringComparison.OrdinalIgnoreCase)
             || recipe.OptionsJson != expectedOptions
             || sources.Length != descriptor.Artifact.SourceArtifactIds.Count
             || sources.Where((source, ordinal) =>
@@ -2628,6 +2701,13 @@ internal sealed partial class ArtifactIngestService(
                 "The structured product identity is already associated with different immutable metadata.");
         }
     }
+
+    private static string CanonicalizeStructuredDescriptor(StructuredProcessingProductDescriptorV1 descriptor)
+        => Encoding.UTF8.GetString(StructuredProcessingProductManifestJson.SerializeDescriptor(descriptor));
+
+    private static string CanonicalizeStructuredDescriptor(string descriptorJson)
+        => CanonicalizeStructuredDescriptor(
+            StructuredProcessingProductManifestJson.ParseDescriptor(descriptorJson));
 
     private static void EnsureCompatibleArtifactMatches(CentralArtifact existing, ArtifactIngestManifest manifest)
     {

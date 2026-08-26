@@ -186,6 +186,11 @@ public sealed record StructuredProcessingProductManifestParseResult(
 public static class StructuredProcessingProductManifestJson
 {
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
+    private static readonly JsonSerializerOptions LegacyDescriptorSerializerOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
 
     public static byte[] Serialize(StructuredProcessingProductManifestV1 manifest)
     {
@@ -198,6 +203,46 @@ public static class StructuredProcessingProductManifestJson
                 nameof(manifest));
         }
         return JsonSerializer.SerializeToUtf8Bytes(Canonicalize(manifest), SerializerOptions);
+    }
+
+    public static byte[] SerializeDescriptor(StructuredProcessingProductDescriptorV1 descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        var validation = descriptor.Validate();
+        if (!validation.IsValid)
+        {
+            throw new ArgumentException(
+                $"Structured processing product descriptor is invalid ({validation.ReasonCode}:{validation.FieldPath}).",
+                nameof(descriptor));
+        }
+        return JsonSerializer.SerializeToUtf8Bytes(Canonicalize(descriptor), SerializerOptions);
+    }
+
+    public static StructuredProcessingProductDescriptorV1 ParseDescriptor(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        using var document = JsonDocument.Parse(json);
+        RejectDuplicateProperties(document.RootElement);
+        StructuredProcessingProductDescriptorV1? descriptor;
+        try
+        {
+            descriptor = JsonSerializer.Deserialize<StructuredProcessingProductDescriptorV1>(json, SerializerOptions);
+        }
+        catch (JsonException)
+        {
+            // DescriptorJson written before canonical transport persistence used numeric enums.
+            descriptor = JsonSerializer.Deserialize<StructuredProcessingProductDescriptorV1>(
+                json, LegacyDescriptorSerializerOptions);
+        }
+        descriptor = descriptor ?? throw new InvalidDataException(
+            "The structured processing product descriptor is empty.");
+        var validation = descriptor.Validate();
+        if (!validation.IsValid)
+        {
+            throw new InvalidDataException(
+                $"The structured processing product descriptor is invalid ({validation.ReasonCode}:{validation.FieldPath}).");
+        }
+        return descriptor;
     }
 
     public static StructuredProcessingProductManifestParseResult Parse(ReadOnlyMemory<byte> utf8Json)

@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.Processing;
@@ -1704,7 +1706,35 @@ public sealed class SqliteArtifactOutbox(
         {
             throw new InvalidDataException("Structured product payload checksum differs from its manifest.");
         }
+
+        var sidecarPath = Path.ChangeExtension(path, ".manifest.json");
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, sidecarPath);
+        if (!File.Exists(sidecarPath))
+        {
+            throw new InvalidDataException("Structured product durable sidecar is missing.");
+        }
+        var sidecarBytes = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+        var sidecar = DurableProcessingProductManifestJson.Parse(sidecarBytes) as DurableTypedMetadataProductManifestV3;
+        var descriptor = manifest.Descriptor;
+        if (sidecar is null ||
+            CanonicalJson(sidecar.Capture) != CanonicalJson(descriptor.SourceCapture.Capture) ||
+            CanonicalJson(sidecar.Artifact) != CanonicalJson(descriptor.Artifact) ||
+            sidecar.OutputIdentitySha256 != descriptor.OutputIdentitySha256 ||
+            CanonicalJson(sidecar.Algorithms) != CanonicalJson(descriptor.Algorithms) ||
+            CanonicalJson(sidecar.Compatibility) != CanonicalJson(descriptor.Compatibility) ||
+            sidecar.TotalIntegrationTicks != descriptor.TotalIntegrationTicks ||
+            sidecar.ByteLength != descriptor.ByteLength ||
+            !string.Equals(sidecar.RelativeArtifactPath, manifest.RelativeArtifactPath, StringComparison.Ordinal) ||
+            sidecar.Kind != descriptor.Kind ||
+            sidecar.ProductSchemaVersion != descriptor.ProductSchemaVersion ||
+            sidecar.ContentIdentitySha256 != descriptor.ContentIdentitySha256)
+        {
+            throw new InvalidDataException("Structured product manifest differs from its durable sidecar.");
+        }
     }
+
+    private static string CanonicalJson<T>(T value)
+        => CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(value)).GetRawText();
 
     private static async ValueTask ValidateReplayEvidenceAsync(
         string root,

@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.Processing;
@@ -129,6 +130,44 @@ public sealed class SqliteArtifactOutboxTests
         var record = await outbox.ReadAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(record);
         Assert.IsNull(record.ProductManifest);
+    }
+
+    [TestMethod]
+    public async Task StructuredProduct_RequiresMatchingDurableTypedSidecar()
+    {
+        using var root = new TemporaryRoot();
+        var manifest = CreateStructuredManifest(root.Path, "derived/sidecar-scene.json");
+        var sidecarPath = Path.ChangeExtension(
+            Path.Combine(root.Path, manifest.RelativeArtifactPath), ".manifest.json");
+        File.Delete(sidecarPath);
+        using var outbox = new SqliteArtifactOutbox();
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        manifest = CreateStructuredManifest(root.Path, "derived/mismatched-sidecar-scene.json");
+        var mismatch = manifest with
+        {
+            Descriptor = manifest.Descriptor with { ContentIdentitySha256 = new string('B', 64) }
+        };
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await outbox.EnqueueAsync(root.Path, mismatch, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        manifest = CreateStructuredManifest(root.Path, "derived/replay-sidecar-scene.json");
+        await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(
+            root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        await outbox.QuarantineAsync(
+            root.Path, lease, "test-quarantine", CancellationToken.None).ConfigureAwait(false);
+        File.Delete(Path.ChangeExtension(
+            Path.Combine(root.Path, manifest.RelativeArtifactPath), ".manifest.json"));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await outbox.ReplayAsync(
+                root.Path, manifest.IdempotencyKey, "operator", "retry", CancellationToken.None)
+                .ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -644,7 +683,7 @@ public sealed class SqliteArtifactOutboxTests
             recipe,
             "application/vnd.hvo.projected-scene+json",
             Convert.ToHexString(SHA256.HashData(payload)));
-        return new StructuredProcessingProductManifestV1(
+        var manifest = new StructuredProcessingProductManifestV1(
             StructuredProcessingProductManifestV1.CurrentSchemaVersion,
             new StructuredProcessingProductDescriptorV1(
                 source,
@@ -659,6 +698,23 @@ public sealed class SqliteArtifactOutboxTests
                 new string('A', 64)),
             relativePath,
             ProducerStepId: "projected-scene-step");
+        var sidecar = new DurableTypedMetadataProductManifestV3(
+            DurableTypedMetadataProductManifestV3.CurrentSchemaVersion,
+            source.Capture,
+            artifact,
+            outputIdentity,
+            manifest.Descriptor.Algorithms,
+            manifest.Descriptor.Compatibility,
+            manifest.Descriptor.TotalIntegrationTicks,
+            payload.LongLength,
+            relativePath,
+            JsonSerializer.SerializeToElement<object?>(null),
+            ProcessingProductKind.Metadata,
+            ProjectedSceneV1.CurrentSchemaVersion,
+            manifest.Descriptor.ContentIdentitySha256);
+        File.WriteAllBytes(Path.ChangeExtension(path, ".manifest.json"),
+            DurableProcessingProductManifestJson.Serialize(sidecar));
+        return manifest;
     }
 
     private static void WritePayload(string root, string relativePath)

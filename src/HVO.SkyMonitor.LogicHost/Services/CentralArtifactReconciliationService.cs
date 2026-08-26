@@ -2174,9 +2174,10 @@ internal sealed partial class CentralArtifactReconciliationService(
 
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId != null))
         {
+            var requiresSameFrame = ArtifactIngestService.RequiresSameFrameSource(artifact, source.Ordinal);
             var usable = await db.CentralArtifacts.AnyAsync(candidate =>
                 candidate.Id == source.ResolvedCentralArtifactId
-                && (artifact.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
                 && candidate.ObjectState == CentralArtifactObjectState.Available
                 && candidate.ReconstructionState == CentralReconstructionState.Complete,
                 cancellationToken).ConfigureAwait(false);
@@ -2189,11 +2190,12 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId == null))
         {
+            var requiresSameFrame = ArtifactIngestService.RequiresSameFrameSource(artifact, source.Ordinal);
             var resolved = await db.CentralArtifacts.Include(candidate => candidate.StructuredProduct)
                 .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
-                && (artifact.StructuredProduct == null || candidate.CentralFrameId == artifact.CentralFrameId)
+                && (!requiresSameFrame || candidate.CentralFrameId == artifact.CentralFrameId)
                 && candidate.ObjectState == CentralArtifactObjectState.Available
                 && candidate.ReconstructionState == CentralReconstructionState.Complete,
                 cancellationToken).ConfigureAwait(false);

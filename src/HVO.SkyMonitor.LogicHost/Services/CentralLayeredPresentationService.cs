@@ -93,7 +93,7 @@ internal sealed class CentralLayeredPresentationService(
                 artifact.MediaType == PresentationProcessingProducts.ManifestMediaType &&
                 artifact.StructuredProduct != null &&
                 artifact.StructuredProduct.ProductSchemaVersion == OverlayManifestV1.CurrentSchemaVersion)
-            .OrderByDescending(static artifact => artifact.CreatedUtc)
+            .OrderByDescending(static artifact => artifact.ReceivedAtUtc)
             .ThenByDescending(static artifact => artifact.ArtifactId)
             .Take(1)
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -180,6 +180,8 @@ internal sealed class CentralLayeredPresentationService(
             var referenced = await dbContext.CentralArtifacts.AsNoTracking()
                 .Include(static artifact => artifact.Frame)
                 .Include(static artifact => artifact.Layout)
+                .Include(static artifact => artifact.Recipe)
+                .Include(static artifact => artifact.Sources)
                 .Where(artifact => artifact.CentralFrameId == captureId &&
                     referencedIds.Contains(artifact.ArtifactId) &&
                     artifact.ObjectState == CentralArtifactObjectState.Available &&
@@ -190,7 +192,7 @@ internal sealed class CentralLayeredPresentationService(
                 !referenced.TryGetValue(manifest.BaseProduct.ArtifactId, out var baseArtifact) ||
                 baseArtifact.Role != FrameArtifactRole.Preview ||
                 !string.Equals(baseArtifact.MediaType, manifest.BaseProduct.MediaType, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(baseArtifact.ChecksumSha256,
+                !string.Equals(CentralReconstructionDescriptorFactory.ComputeOutputIdentity(baseArtifact),
                     manifest.BaseProduct.ProductIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
                 baseArtifact.Layout is not { } baseLayout ||
                 baseLayout.Width != manifest.BaseProduct.Compatibility.WidthPixels ||
@@ -417,6 +419,8 @@ internal sealed class CentralLayeredPresentationService(
                 .ToArray();
             var artifacts = await dbContext.CentralArtifacts.AsNoTracking()
                 .Include(static artifact => artifact.Layout)
+                .Include(static artifact => artifact.Recipe)
+                .Include(static artifact => artifact.Sources)
                 .Include(static artifact => artifact.StructuredProduct)
                 .Where(artifact => artifact.CentralFrameId == cached.CaptureId &&
                     referencedIds.Contains(artifact.ArtifactId) &&
@@ -427,7 +431,7 @@ internal sealed class CentralLayeredPresentationService(
                 !artifacts.TryGetValue(manifest.BaseProduct.ArtifactId, out var baseArtifact) ||
                 baseArtifact.Role != FrameArtifactRole.Preview ||
                 baseArtifact.MediaType != manifest.BaseProduct.MediaType ||
-                !string.Equals(baseArtifact.ChecksumSha256,
+                !string.Equals(CentralReconstructionDescriptorFactory.ComputeOutputIdentity(baseArtifact),
                     manifest.BaseProduct.ProductIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
                 baseArtifact.Layout is not { } baseLayout ||
                 PresentationProcessingProducts.ComputeLayoutIdentity(

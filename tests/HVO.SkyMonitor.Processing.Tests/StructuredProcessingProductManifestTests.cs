@@ -46,6 +46,22 @@ public sealed class StructuredProcessingProductManifestTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public void DescriptorParserAcceptsLegacyNumericEnumsAndWritesCanonicalStrings()
+    {
+        var descriptor = CreateManifest().Descriptor;
+        var legacyJson = JsonSerializer.Serialize(descriptor);
+
+        var parsed = StructuredProcessingProductManifestJson.ParseDescriptor(legacyJson);
+        var canonical = Encoding.UTF8.GetString(
+            StructuredProcessingProductManifestJson.SerializeDescriptor(parsed));
+
+        Assert.AreEqual(descriptor.Artifact.ArtifactId, parsed.Artifact.ArtifactId);
+        Assert.IsFalse(legacyJson.Contains("\"Role\":\"", StringComparison.Ordinal));
+        StringAssert.Contains(canonical, "\"role\":\"Metadata\"", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void ValidationRejectsIdentityPathAndPayloadBoundViolations()
     {
         var manifest = CreateManifest();
