@@ -597,8 +597,8 @@ EOF
          elif $event_id == 103 then
            $source == "Microsoft.Extensions.Diagnostics.HealthChecks.DefaultHealthCheckService" and
            ($body == "[REDACTED]" or
-              (($body | test("^Health check \"(calibration-library|capture-admission|capture-processing|environmental-acquisition|raw-ingress)\" with status Degraded ")) and
-               ($body | test("Calibration is required but no bundle is active|active calibration bundle has not completed startup validation|Calibration acquisition or reconciliation requires attention|Capture admission has not initialized|Capture processing has retryable graph work|Environmental acquisition has stale, missing, or failed sources|Raw ingress is accepting with reconciliation or pressure findings"))))
+              (($body | test("^Health check \"(calibration-library|capture-admission|capture-processing|disk-pressure|environmental-acquisition|raw-ingress)\" with status Degraded ")) and
+               ($body | test("Calibration is required but no bundle is active|active calibration bundle has not completed startup validation|Calibration acquisition or reconciliation requires attention|Capture admission has not initialized|Capture admission is draining an in-flight capture|Capture processing has retryable graph work|Storage capacity has not been evaluated|Environmental acquisition has stale, missing, or failed sources|Raw ingress is accepting with reconciliation or pressure findings"))))
          elif $event_id == 2029 then
            $strict and $body == "[REDACTED]" and
            $source == "HVO.SkyMonitor.CameraAgent.Common.Background.RetentionBackgroundService"
@@ -608,7 +608,7 @@ EOF
          elif $event_id == 2013 then
            ($trial == "trial-1" or $phase14) and
            $source == "HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.StandardCaptureLaneHandler" and
-           ($body | startswith("Capture processing step \"weather-overlay\" failed"))
+           ($body | test("^Capture processing step \"(weather-overlay|cloud-presentation)\" failed"))
          elif $event_id == 2055 then
            $source == "HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureIngress" and
            (((($trial == "trial-1") or $phase14) and ($body | test("^Capture lane \"standard\" scheduled retry attempt [23] because \"handler-failure\"$"))) or
