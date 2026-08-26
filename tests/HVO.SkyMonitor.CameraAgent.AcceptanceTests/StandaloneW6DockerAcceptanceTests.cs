@@ -1187,22 +1187,15 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var scheduleProfile = profile["schedule"]!.AsObject();
         scheduleProfile["blackouts"] = new JsonArray();
         scheduleProfile["setpointProfiles"]!.AsArray()[0]!["captureInterval"] = captureInterval;
-        foreach (var step in profile["processingSteps"]!.AsArray())
+        if (enableCanonicalTail)
         {
-            if (step?["id"]?.GetValue<string>() is "cloud" or "cloud-presentation" or "overlay-manifest" or "presentation-materializer" or "storage" or "telemetry")
+            foreach (var step in profile["processingSteps"]!.AsArray())
             {
-                if (enableCanonicalTail)
+                if (step?["id"]?.GetValue<string>() is "cloud" or "cloud-presentation" or "overlay-manifest" or "presentation-materializer" or "storage" or "telemetry")
                 {
                     _ = step.AsObject().Remove("enabled");
                 }
-                else
-                {
-                    step["enabled"] = false;
-                }
             }
-        }
-        if (enableCanonicalTail)
-        {
             var quality = profile["processingSteps"]!.AsArray()
                 .Single(step => step?["id"]?.GetValue<string>() == "quality")!.AsObject();
             _ = quality.Remove("enabled");
@@ -1248,8 +1241,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
             reason = "issue-211 canonical measured profile"
         });
         using var stageResponse = await client.SendAsync(stageRequest).ConfigureAwait(false);
-        stageResponse.EnsureSuccessStatusCode();
-        var staged = JsonNode.Parse(await stageResponse.Content.ReadAsStringAsync().ConfigureAwait(false))!.AsObject();
+        var stageBody = await stageResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, stageResponse.StatusCode, stageBody);
+        var staged = JsonNode.Parse(stageBody)!.AsObject();
         var pending = staged["pendingRevision"]!.AsObject();
         var pendingSha256 = pending["profileSha256"]!.GetValue<string>();
         if (expectedSha256 is null)
