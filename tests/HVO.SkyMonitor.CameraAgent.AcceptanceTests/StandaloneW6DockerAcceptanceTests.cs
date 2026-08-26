@@ -139,6 +139,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var containerEnvironment = await ReadContainerExecutionEnvironmentAsync(container).ConfigureAwait(false);
         var serviceImages = await ReadServiceImageProvenanceAsync(container).ConfigureAwait(false);
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
+        var ownerPassword = await CompleteOwnerBootstrapAsync(session, password).ConfigureAwait(false);
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -152,7 +153,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         var browserErrors = new List<string>();
         page.PageError += (_, error) => browserErrors.Add(error);
-        await BrowserLoginAsync(page, password).ConfigureAwait(false);
+        await BrowserLoginAsync(page, ownerPassword).ConfigureAwait(false);
 
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
         await AcquireCalibrationAsync(page).ConfigureAwait(false);
@@ -520,6 +521,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var containerEnvironment = await ReadContainerExecutionEnvironmentAsync(container).ConfigureAwait(false);
         var serviceImages = await ReadServiceImageProvenanceAsync(container).ConfigureAwait(false);
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
+        var ownerPassword = await CompleteOwnerBootstrapAsync(session, password).ConfigureAwait(false);
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
@@ -534,7 +536,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ReducedMotion = ReducedMotion.Reduce
         }).ConfigureAwait(false);
         var page = await context.NewPageAsync().ConfigureAwait(false);
-        await BrowserLoginAsync(page, password).ConfigureAwait(false);
+        await BrowserLoginAsync(page, ownerPassword).ConfigureAwait(false);
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
         await ActivateMonoCaptureProfileAsync(session).ConfigureAwait(false);
         var runtimeIdentity = await ReadRuntimeIdentityAsync(
@@ -752,6 +754,29 @@ public sealed class StandaloneW6DockerAcceptanceTests
         await page.WaitForURLAsync(
             url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase),
             new PageWaitForURLOptions { WaitUntil = WaitUntilState.Commit }).ConfigureAwait(false);
+    }
+
+    private static async Task<string> CompleteOwnerBootstrapAsync(HttpClient client, string temporaryPassword)
+    {
+        var replacementPassword = $"{temporaryPassword}Z9!";
+        using var page = await client.GetAsync(new Uri("/Account/ReplaceTemporaryPassword", UriKind.Relative)).ConfigureAwait(false);
+        page.EnsureSuccessStatusCode();
+        var html = await page.Content.ReadAsStringAsync().ConfigureAwait(false);
+        var token = Regex.Match(html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", RegexOptions.CultureInvariant);
+        Assert.IsTrue(token.Success);
+        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = WebUtility.HtmlDecode(token.Groups[1].Value),
+            ["Input.CurrentPassword"] = temporaryPassword,
+            ["Input.NewPassword"] = replacementPassword,
+            ["Input.ConfirmPassword"] = replacementPassword,
+            ["_handler"] = "replace-temporary-password"
+        });
+        using var response = await client.PostAsync(new Uri("/Account/ReplaceTemporaryPassword", UriKind.Relative), form)
+            .ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        Assert.AreEqual("/", response.RequestMessage?.RequestUri?.AbsolutePath);
+        return replacementPassword;
     }
 
     private static async Task SetCaptureStateAsync(IPage page, bool pause)
