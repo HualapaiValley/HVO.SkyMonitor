@@ -3156,6 +3156,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             fixtureRoot.GetProperty("referenceModel").GetString()!,
             captureId,
             sceneUtc,
+            markerTolerance,
             observations,
             fixtureLandmarks,
             renderedLandmarks,
@@ -4462,6 +4463,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.AreEqual(2_048, decoded.Height);
         var scaleX = decoded.Width / 3552d;
         var scaleY = decoded.Height / 3552d;
+        // Allow one encoded pixel beyond the scaled full-resolution fixture tolerance.
+        var encodedMarkerTolerance = geometry.RenderedMarkerTolerancePixels * Math.Max(scaleX, scaleY) + 1;
         var markerObservations = geometry.Objects.Select(item =>
         {
             var expectedX = item.ExpectedX * scaleX;
@@ -4476,7 +4479,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 radius: 4);
             var error = Distance(marker.X, marker.Y, expectedX, expectedY);
             Assert.IsGreaterThan(1, marker.ChangedPoints, item.RowId);
-            Assert.IsLessThanOrEqualTo(2, error, item.RowId);
+            Assert.IsLessThanOrEqualTo(encodedMarkerTolerance, error, item.RowId);
             return new JpegMarkerEvidence(item.RowId, expectedX, expectedY, marker.X, marker.Y, error,
                 marker.ChangedPoints);
         }).ToArray();
@@ -4500,7 +4503,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 radius: 6);
             var error = Distance(marker.X, marker.Y, expectedX, expectedY);
             Assert.IsGreaterThan(0, marker.ChangedPoints, item.Key);
-            Assert.IsLessThanOrEqualTo(2, error, item.Key);
+            Assert.IsLessThanOrEqualTo(encodedMarkerTolerance, error, item.Key);
             return new JpegMarkerEvidence(
                 item.Key, expectedX, expectedY, marker.X, marker.Y, error, marker.ChangedPoints);
         }).ToArray();
@@ -5698,6 +5701,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string ReferenceModel,
         Guid CaptureId,
         DateTimeOffset SceneUtc,
+        double RenderedMarkerTolerancePixels,
         IReadOnlyList<GeometryObjectEvidence> Objects,
         ProjectionAnnotationLandmarks CardinalLandmarks,
         IReadOnlyDictionary<string, PackedMarkerObservation> RenderedCardinalMarkers,
