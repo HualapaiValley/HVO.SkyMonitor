@@ -4281,6 +4281,25 @@ public sealed class StandaloneW6DockerAcceptanceTests
         }
         await page.GotoAsync($"/gallery/{capture.CaptureId:D}").ConfigureAwait(false);
         await page.GetByText("Capture detail", new() { Exact = true }).WaitForAsync().ConfigureAwait(false);
+        var layered = page.Locator(".layered-presentation");
+        await layered.WaitForAsync().ConfigureAwait(false);
+        Assert.AreEqual(1, await layered.Locator(".layered-canvas > img").CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(1, await layered.Locator(".layered-overlay svg").CountAsync().ConfigureAwait(false));
+        var layerToggles = layered.Locator(".layer-controls input[type='checkbox']");
+        Assert.IsGreaterThan(0, await layerToggles.CountAsync().ConfigureAwait(false));
+        var enabledToggles = layered.Locator(".layer-controls input[type='checkbox']:checked");
+        Assert.IsGreaterThan(0, await enabledToggles.CountAsync().ConfigureAwait(false));
+        var firstToggle = enabledToggles.First;
+        var target = await firstToggle.GetAttributeAsync("data-layer-target").ConfigureAwait(false);
+        Assert.IsNotNull(target);
+        var resourceCount = await page.EvaluateAsync<int>("() => performance.getEntriesByType('resource').length")
+            .ConfigureAwait(false);
+        await firstToggle.ClickAsync().ConfigureAwait(false);
+        await page.WaitForFunctionAsync(
+            "target => getComputedStyle(document.getElementById(target)).display === 'none'",
+            target).ConfigureAwait(false);
+        Assert.AreEqual(resourceCount,
+            await page.EvaluateAsync<int>("() => performance.getEntriesByType('resource').length").ConfigureAwait(false));
         var comparisonImages = page.Locator(".comparison-grid img");
         await comparisonImages.First.WaitForAsync().ConfigureAwait(false);
         Assert.AreEqual(2, await comparisonImages.CountAsync().ConfigureAwait(false));

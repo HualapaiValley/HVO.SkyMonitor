@@ -25,7 +25,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [DoNotParallelize]
-public sealed class DurableCaptureProcessingTests
+public sealed partial class DurableCaptureProcessingTests
 {
     private const string Pre433CloudPlanSha256 = "C3937D26381FB9343A0C2439548D718B62CAA7778FE965B9E48D5E8C7BBD620E";
     private static readonly string[] ExpectedProductionLayerOrder =
