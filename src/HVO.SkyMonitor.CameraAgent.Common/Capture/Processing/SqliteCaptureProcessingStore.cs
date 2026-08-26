@@ -62,6 +62,7 @@ internal sealed record DurableProcessingEvidence(
     string OutputIdentitySha256,
     Guid ArtifactId,
     Guid CaptureId,
+    FrameArtifactRole Role,
     string PayloadRelativePath,
     string SidecarRelativePath,
     byte[] EvidenceJson,
@@ -679,7 +680,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT output_identity_sha256, artifact_id, capture_id, payload_relative_path,
+            SELECT output_identity_sha256, artifact_id, capture_id, role, payload_relative_path,
                    sidecar_relative_path, descriptor_json, committed_unix_ms,
                    availability_state, availability_reason, unavailable_unix_ms,
                    quarantine_relative_path
@@ -696,12 +697,13 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         {
             values.Add(new(
                 reader.GetString(0), Guid.ParseExact(reader.GetString(1), "N"),
-                Guid.ParseExact(reader.GetString(2), "N"), reader.GetString(3), reader.GetString(4),
-                await reader.GetFieldValueAsync<byte[]>(5, cancellationToken).ConfigureAwait(false),
-                reader.GetInt64(6), reader.GetString(7),
-                await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(8),
-                await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(9),
-                await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(10)));
+                Guid.ParseExact(reader.GetString(2), "N"), Enum.Parse<FrameArtifactRole>(reader.GetString(3)),
+                reader.GetString(4), reader.GetString(5),
+                await reader.GetFieldValueAsync<byte[]>(6, cancellationToken).ConfigureAwait(false),
+                reader.GetInt64(7), reader.GetString(8),
+                await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(9),
+                await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(10),
+                await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(11)));
         }
         return new(values, values.Count == maximumCount ? values[^1].OutputIdentitySha256 : null);
     }
@@ -771,7 +773,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT output_identity_sha256, artifact_id, capture_id, payload_relative_path,
+            SELECT output_identity_sha256, artifact_id, capture_id, role, payload_relative_path,
                    sidecar_relative_path, descriptor_json, committed_unix_ms,
                    availability_state, availability_reason, unavailable_unix_ms,
                    quarantine_relative_path,
@@ -792,12 +794,13 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             values.Add(new(reader.GetString(0), Guid.ParseExact(reader.GetString(1), "N"),
-                Guid.ParseExact(reader.GetString(2), "N"), reader.GetString(3), reader.GetString(4),
-                await reader.GetFieldValueAsync<byte[]>(5, cancellationToken).ConfigureAwait(false),
-                reader.GetInt64(6), reader.GetString(7),
-                await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(8),
-                await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(9),
-                await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(10)));
+                Guid.ParseExact(reader.GetString(2), "N"), Enum.Parse<FrameArtifactRole>(reader.GetString(3)),
+                reader.GetString(4), reader.GetString(5),
+                await reader.GetFieldValueAsync<byte[]>(6, cancellationToken).ConfigureAwait(false),
+                reader.GetInt64(7), reader.GetString(8),
+                await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(9),
+                await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(10),
+                await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(11)));
         var last = values.LastOrDefault();
         return new(values,
             values.Count == maximumCount ? last!.CommittedUnixMilliseconds : null,
@@ -812,7 +815,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT output_identity_sha256, artifact_id, capture_id, payload_relative_path,
+            SELECT output_identity_sha256, artifact_id, capture_id, role, payload_relative_path,
                    sidecar_relative_path, descriptor_json, committed_unix_ms,
                    availability_state, availability_reason, unavailable_unix_ms,
                    quarantine_relative_path
@@ -830,9 +833,11 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             values.Add(new(reader.GetString(0), Guid.ParseExact(reader.GetString(1), "N"), Guid.ParseExact(reader.GetString(2), "N"),
-                reader.GetString(3), reader.GetString(4), await reader.GetFieldValueAsync<byte[]>(5, cancellationToken).ConfigureAwait(false),
-                reader.GetInt64(6), reader.GetString(7), await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(8),
-                reader.GetInt64(9), await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(10)));
+                Enum.Parse<FrameArtifactRole>(reader.GetString(3)), reader.GetString(4), reader.GetString(5),
+                await reader.GetFieldValueAsync<byte[]>(6, cancellationToken).ConfigureAwait(false),
+                reader.GetInt64(7), reader.GetString(8),
+                await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(9),
+                reader.GetInt64(10), await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(11)));
         var last = values.LastOrDefault();
         return new(values, values.Count == maximumCount ? last!.UnavailableUnixMilliseconds : null,
             values.Count == maximumCount ? last!.OutputIdentitySha256 : null);

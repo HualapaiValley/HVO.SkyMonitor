@@ -637,6 +637,30 @@ public sealed partial class DurableCaptureProcessingTests
             var selected = new[] { manifest.Layers[0].LayerIdentitySha256 };
             var rawJournal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
             await rawJournal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await rawJournal.ReserveIdentityAsync(
+                fixture.Manifest.Descriptor.Capture.AgentId,
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                fixture.Manifest.Descriptor.Artifact.ArtifactId,
+                CancellationToken.None).ConfigureAwait(false);
+            var rawManifestJson = CaptureContractJson.Serialize(fixture.Manifest);
+            await rawJournal.CommitAsync(new RawIngressJournalEntry(
+                fixture.Manifest.Descriptor.Capture.AgentId,
+                fixture.Manifest.Descriptor.Capture.CaptureSequence,
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                fixture.Manifest.Descriptor.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(fixture.Manifest.Descriptor),
+                CaptureContractJson.ComputeManifestSha256(rawManifestJson),
+                fixture.Manifest.Descriptor.Artifact.ChecksumSha256,
+                fixture.Manifest.Descriptor.Layout.ByteLength,
+                fixture.Manifest.RelativeArtifactPath,
+                Path.ChangeExtension(fixture.Manifest.RelativeArtifactPath, ".json"),
+                rawManifestJson,
+                fixture.Manifest.Descriptor.Timing.ExposureStartedUtc,
+                fixture.Manifest.Descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false);
+            var reconciliation = await new DerivedProductReconciler(root, store)
+                .RunAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(0, reconciliation.Quarantined);
+            Assert.IsGreaterThan(0, reconciliation.Available);
             using var artifactService = new CameraAgentArtifactService(
                 fixture.Options, store, new CameraAgentPreviewEncoder());
             var openedManifest = await artifactService.OpenContentAsync(

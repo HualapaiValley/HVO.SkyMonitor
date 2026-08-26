@@ -85,8 +85,8 @@ internal sealed class DerivedProductReconciler(
                 string sidecar;
                 try
                 {
-                    payload = ResolveDerived(row.PayloadRelativePath);
-                    sidecar = ResolveDerived(row.SidecarRelativePath);
+                    payload = ResolveCommitted(row, row.PayloadRelativePath);
+                    sidecar = ResolveCommitted(row, row.SidecarRelativePath);
                 }
                 catch (InvalidDataException)
                 {
@@ -353,7 +353,7 @@ internal sealed class DerivedProductReconciler(
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } legacy ||
                 !string.Equals(row.PayloadRelativePath, legacy.RelativeArtifactPath, StringComparison.Ordinal) ||
                 !string.Equals(row.SidecarRelativePath, Path.ChangeExtension(row.PayloadRelativePath, ".json"), StringComparison.Ordinal) ||
-                !PathsEqual(sidecarPath, ResolveDerived(row.SidecarRelativePath)) ||
+                !PathsEqual(sidecarPath, ResolveCommitted(row, row.SidecarRelativePath)) ||
                 row.ArtifactId != legacy.Descriptor.Artifact.ArtifactId || row.CaptureId != legacy.Descriptor.Capture.CaptureId)
                 return "committed-identity-conflict";
             var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
@@ -520,6 +520,22 @@ internal sealed class DerivedProductReconciler(
         var prefix = Path.TrimEndingDirectorySeparator(_derivedRoot) + Path.DirectorySeparatorChar;
         if (!path.StartsWith(prefix, PathComparison)) throw new InvalidDataException("Processing evidence is outside the derived root.");
         return path;
+    }
+
+    private string ResolveCommitted(DurableProcessingEvidence row, string relativePath)
+    {
+        if (relativePath.StartsWith("derived/", StringComparison.Ordinal))
+        {
+            return ResolveDerived(relativePath);
+        }
+        var parts = relativePath.Split('/');
+        if (row.Role == FrameArtifactRole.Raw || parts.Length != 6 || parts[0] != "frames" ||
+            parts[1].Length != 4 || parts[2].Length != 2 || parts[3].Length != 2 ||
+            !string.Equals(parts[4], row.Role.ToString(), StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Processing evidence is outside an allowed committed role path.");
+        }
+        return ResolveRoot(relativePath);
     }
 
     private string ResolveRoot(string relativePath)

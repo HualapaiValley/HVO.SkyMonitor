@@ -716,9 +716,27 @@ public sealed class StandaloneCameraAgentAcceptanceTests
                 manifest.Descriptor,
                 File.ReadAllBytes(payloadPath),
                 out _);
-            return $"Artifact reconstruction: {reconstruction.ReasonCode ?? "valid"} at {manifest.RelativeArtifactPath}";
+            return $"Artifact reconstruction: {reconstruction.ReasonCode ?? "valid"} at {manifest.RelativeArtifactPath}; {DescribeAvailability(root, artifactId)}";
         }
         return $"Artifact {artifactId:D} has no local manifest.";
+    }
+
+    private static string DescribeAvailability(string root, Guid artifactId)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(root, "journal", "raw-ingress.db"),
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT availability_state, availability_reason, quarantine_relative_path FROM processing_outputs WHERE artifact_id = $artifact;";
+        command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
+        using var reader = command.ExecuteReader();
+        return reader.Read()
+            ? $"availability={reader.GetString(0)}, reason={(reader.IsDBNull(1) ? "none" : reader.GetString(1))}, quarantine={(reader.IsDBNull(2) ? "none" : reader.GetString(2))}"
+            : "processing availability row missing";
     }
 
     private static ArtifactManifestV2 ReadManifest(string root, Guid artifactId)
