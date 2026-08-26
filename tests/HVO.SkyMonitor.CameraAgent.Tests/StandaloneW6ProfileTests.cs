@@ -3,6 +3,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -48,6 +49,11 @@ public sealed class StandaloneW6ProfileTests
             "7B395B8DD577024944C263E1EA642BB472E3144110FF3FE75DBBCE67B187F172",
             rigSha256,
             rigSha256);
+        var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
+        Assert.AreEqual(
+            "66EA97A4D415905A9DB7E197E3A465AC6C1555CDA680CD303B90DF171A1AF486",
+            processingSha256,
+            processingSha256);
         Assert.AreEqual(
             "DDD63791961E018687C7E6FA095CA17EFB88F1CC5AE5861D58690129FB9A27B2",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
@@ -98,6 +104,11 @@ public sealed class StandaloneW6ProfileTests
         Assert.AreEqual(
             "3233765432377F454526BAF795268FC9A73B3DEB8F0800A0D21BD652006E500C",
             CameraRigProfileIdentity.ComputeSha256(configuration.Rig));
+        var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
+        Assert.AreEqual(
+            "F5BA5B24130B8C2359E9518DBA7C4DC3E899FB2FDD826FA46269F1A2AC9DDC0B",
+            processingSha256,
+            processingSha256);
         Assert.AreEqual(
             "355D9C9A53CB600E6F1798109A4BFAC8D539F6A9B0A1DF9A9D44A9EF6283ED01",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
