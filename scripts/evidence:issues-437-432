@@ -8,7 +8,7 @@ PROJECT="tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.c
 OUTPUT_DIR="$ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0"
 EVIDENCE_ROOT=${HVO_ISSUES437432_EVIDENCE_ROOT:-"$ROOT/TestResults/issues-437-432"}
 EXPECTED_BASELINE=${HVO_ISSUES437432_BASELINE:-5febc8efaa4b4b6e5e45eb45e9df0c55525bfdde}
-EXPECTED_PRODUCT=${HVO_ISSUES437432_PRODUCT_COMMIT:-a5e9c38de85d265c8f10b4149d9fa854b2c2d6f2}
+EXPECTED_PRODUCT=${HVO_ISSUES437432_PRODUCT_COMMIT:-9b051a38aa58f06d01b6951239333d0127634f1e}
 
 command -v jq >/dev/null || { printf '%s\n' "jq is required." >&2; exit 1; }
 [[ $(git status --porcelain --untracked-files=all) == "" ]] || {
