@@ -4,6 +4,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
 
@@ -128,18 +129,18 @@ internal sealed class PresentationMetadataFactsBuilder(
             });
         var processing = JsonSerializer.SerializeToElement(descriptor.Profiles.Processing);
         var corners = new PresentationMetadataFactsV1(string.Empty,
-            [$"AGENT {descriptor.Capture.AgentId}", $"CAPTURE {descriptor.Capture.CaptureSequence.ToString(CultureInfo.InvariantCulture)}",
-             $"UTC {descriptor.Timing.ExposureStartedUtc.ToUniversalTime():yyyy-MM-ddTHH:mm:ss.fffZ}"],
-            [$"SCHEDULE {schedule?.SetpointProfileId ?? "UNAVAILABLE"}",
-             $"EXPOSURE {descriptor.Controls.EffectiveExposure.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
-             $"GAIN {descriptor.Controls.EffectiveGain.ToString("F3", CultureInfo.InvariantCulture)}",
-             $"OFFSET {descriptor.Controls.EffectiveOffset?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"}",
-             $"SETPOINT {descriptor.Controls.TemperatureSetpointC?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"} C"],
-            environment.Count == 0 ? ["ENVIRONMENT MISSING"] : environment.Select(static item => item.DisplayLine).ToArray(),
-            [$"CATALOG {scene.Catalog.Name} {scene.Catalog.Version} {scene.Catalog.ChecksumSha256[..12]}",
-             $"CALIBRATION {descriptor.Profiles.Calibration.Name} {descriptor.Profiles.Calibration.Version} {descriptor.Profiles.Calibration.Sha256[..12]}",
-             stackProduct is null ? "STACK UNAVAILABLE" : $"STACK {stackProduct.SourceArtifactIds.Count} {stackProduct.TotalIntegration.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
-             $"PROFILE {descriptor.Profiles.Processing.Name} {descriptor.Profiles.Processing.Version} {descriptor.Profiles.Processing.Sha256[..12]}"]);
+            DisplayLines([$"AGENT {descriptor.Capture.AgentId}", $"CAPTURE {descriptor.Capture.CaptureSequence.ToString(CultureInfo.InvariantCulture)}",
+             $"UTC {descriptor.Timing.ExposureStartedUtc.ToUniversalTime():yyyy-MM-ddTHH:mm:ss.fffZ}"]),
+            DisplayLines([$"SCHEDULE {schedule?.SetpointProfileId ?? "UNAVAILABLE"}",
+              $"EXPOSURE {descriptor.Controls.EffectiveExposure.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
+              $"GAIN {descriptor.Controls.EffectiveGain.ToString("F3", CultureInfo.InvariantCulture)}",
+              $"OFFSET {descriptor.Controls.EffectiveOffset?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"}",
+              $"SETPOINT {descriptor.Controls.TemperatureSetpointC?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"} C"]),
+            DisplayLines(environment.Count == 0 ? ["ENVIRONMENT MISSING"] : environment.Select(static item => item.DisplayLine)),
+            DisplayLines([$"CATALOG {scene.Catalog.Name} {scene.Catalog.Version} {scene.Catalog.ChecksumSha256[..12]}",
+              $"CALIBRATION {descriptor.Profiles.Calibration.Name} {descriptor.Profiles.Calibration.Version} {descriptor.Profiles.Calibration.Sha256[..12]}",
+              stackProduct is null ? "STACK UNAVAILABLE" : $"STACK {stackProduct.SourceArtifactIds.Count} {stackProduct.TotalIntegration.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
+              $"PROFILE {descriptor.Profiles.Processing.Name} {descriptor.Profiles.Processing.Version} {descriptor.Profiles.Processing.Sha256[..12]}"]));
         var facts = new PresentationMetadataFactsProductV1(
             PresentationMetadataFactsProductV1.CurrentSchemaVersion, string.Empty, descriptor.Capture.CaptureId,
             descriptor.Capture.CaptureSequence, capture, environment, catalog, calibration, stack, processing, corners);
@@ -171,4 +172,11 @@ internal sealed class PresentationMetadataFactsBuilder(
         var age = Math.Max(0, Math.Round((evaluatedUtc - selected.Fact.ObservedAtUtc).TotalSeconds));
         return $"{kind} {formatted} {value.Unit.ToString().ToUpperInvariant()} {status} {value.Quality.ToString().ToUpperInvariant()} AGE {age.ToString("F0", CultureInfo.InvariantCulture)} S";
     }
+
+    private static string[] DisplayLines(IEnumerable<string> lines) => lines
+        .Take(PresentationLayerPayloadV1.MaximumLinesPerBlock)
+        .Select(static line => line.Length <= PresentationLayerPayloadV1.MaximumLineCharacters
+            ? line
+            : line[..PresentationLayerPayloadV1.MaximumLineCharacters])
+        .ToArray();
 }
