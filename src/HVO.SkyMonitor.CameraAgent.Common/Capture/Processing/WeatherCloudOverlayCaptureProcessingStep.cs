@@ -14,8 +14,11 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
     CameraAgentCloudEnvironment? cloudEnvironment = null)
     : ConfigurableCaptureProcessingStep<WeatherCloudOverlayProcessingStepOptions>(metadata, options),
         ICaptureProcessingGraphStep,
-        ICompoundCaptureProcessingGraphStep
+        ICompoundCaptureProcessingGraphStep,
+        ILegacyCaptureProcessingPlanContract
 {
+    internal const string LegacyPlanContract = "weather-cloud-overlay-plan-v1";
+    public string LegacyPlanContractId => LegacyPlanContract;
     public bool Enabled => Options.Enabled;
 
     public string RecipeName => BuiltInProcessingRecipes.WeatherCloudOverlay;
@@ -87,7 +90,12 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
             assessmentProduct.TotalIntegration,
             assessmentProduct.Compatibility,
             ObservationStartedUtc: preview.ObservationStartedUtc,
-            ObservationEndedUtc: preview.ObservationEndedUtc);
+            ObservationEndedUtc: preview.ObservationEndedUtc)
+        {
+            ProductKind = assessmentProduct.Kind,
+            SchemaVersion = assessmentProduct.SchemaVersion,
+            ContentIdentitySha256 = assessmentProduct.ContentIdentitySha256
+        };
         var environment = cloudEnvironment is null
             ? CameraAgentCloudEnvironment.CreateMissingInput(context)
             : await cloudEnvironment.CreateInputAsync(context, cancellationToken).ConfigureAwait(false);

@@ -210,7 +210,10 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
             algorithms,
             sources,
             sources.Aggregate(TimeSpan.Zero, static (total, source) => total + source.Integration),
-            current.Compatibility)));
+            current.Compatibility,
+            ProcessingProductKind.Metadata,
+            CloudAssessmentV1.CurrentSchemaVersion,
+            assessment.AssessmentIdentitySha256)));
     }
 
     private static ProcessingArtifact? ResolveClearReference(

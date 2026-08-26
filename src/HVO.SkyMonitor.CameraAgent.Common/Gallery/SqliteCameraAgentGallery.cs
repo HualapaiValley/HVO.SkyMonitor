@@ -491,6 +491,18 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
     {
         DurableGalleryProcessingProjection processing;
         var unavailable = false;
+        IReadOnlySet<Guid> canonicalScenes;
+        var canonicalSceneQueryUnavailable = false;
+        try
+        {
+            canonicalScenes = await _processingStore.ReadCanonicalSceneCapturesAsync(
+                rows.Select(static row => row.CaptureId).ToArray(), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or FormatException or SqliteException)
+        {
+            canonicalScenes = new HashSet<Guid>();
+            canonicalSceneQueryUnavailable = true;
+        }
         try
         {
             processing = await _processingStore.ReadGalleryNodesAsync(
@@ -516,7 +528,22 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
             nodesByCapture[row.CaptureId],
             processing.TruncatedNodeCaptures.Contains(row.CaptureId),
             processing.TruncatedOutputCaptures.Contains(row.CaptureId),
-            unavailable)).ToArray();
+            unavailable,
+            canonicalSceneQueryUnavailable ? "ProjectionUnavailable" :
+                CanonicalSceneAvailability(row.CaptureId, nodesByCapture[row.CaptureId], canonicalScenes))).ToArray();
+    }
+
+    private static string CanonicalSceneAvailability(
+        Guid captureId,
+        IEnumerable<DurableGalleryProcessingNode> nodes,
+        IReadOnlySet<Guid> availableCaptures)
+    {
+        if (availableCaptures.Contains(captureId)) return "Available";
+        var state = nodes.SelectMany(static node => node.Outputs)
+            .Where(static output => string.Equals(output.ProductSchemaVersion, "projected-scene-v1", StringComparison.Ordinal))
+            .Select(static output => output.AvailabilityState)
+            .FirstOrDefault();
+        return state is "Quarantined" or "Missing" ? state : "Unavailable";
     }
 
     private static CameraAgentGalleryCapture ProjectCapture(
@@ -524,7 +551,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
         IEnumerable<DurableGalleryProcessingNode> durableNodes,
         bool nodesTruncated,
         bool outputsTruncated,
-        bool unavailable)
+        bool unavailable,
+        string canonicalSceneAvailability)
     {
         var trustedManifest = TryReadTrustedManifest(row);
         var rawDescriptor = trustedManifest?.Descriptor;
@@ -559,7 +587,12 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
                     output.Descriptor?.Layout.ByteLength ?? output.ProductManifest?.ByteLength,
                     output.RecipeIdentitySha256,
                     node.NodeId,
-                    output.Algorithms));
+                    output.Algorithms,
+                    output.ProductKind?.ToString(),
+                    output.ProductSchemaVersion,
+                    output.ContentIdentitySha256,
+                    output.AvailabilityState,
+                    output.AvailabilityReason));
             }
             nodes.Add(new CameraAgentGalleryProcessingNode(
                 node.NodeId,
@@ -584,7 +617,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
             nodes,
             ProcessingNodesTruncated: nodesTruncated,
             ArtifactsTruncated: outputsTruncated,
-            ProcessingProjectionUnavailable: unavailable);
+            ProcessingProjectionUnavailable: unavailable,
+            CanonicalSceneAvailability: canonicalSceneAvailability);
     }
 
     private static CameraAgentGalleryArtifact ProjectArtifact(
@@ -592,7 +626,12 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
         long? byteLength,
         string? recipeIdentity,
         string? processingNodeId,
-        IReadOnlyList<ProcessingAlgorithmIdentity>? algorithms = null)
+        IReadOnlyList<ProcessingAlgorithmIdentity>? algorithms = null,
+        string? productKind = null,
+        string? productSchemaVersion = null,
+        string? contentIdentitySha256 = null,
+        string availability = "Available",
+        string? availabilityReason = null)
     {
         recipeIdentity ??= ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256;
         return new CameraAgentGalleryArtifact(
@@ -613,7 +652,12 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
             artifact.SourceArtifactIds,
             processingNodeId,
             algorithms?.Select(static algorithm => new CameraAgentGalleryAlgorithm(
-                algorithm.Name, algorithm.Version)).ToArray());
+                algorithm.Name, algorithm.Version)).ToArray(),
+            productKind,
+            productSchemaVersion,
+            contentIdentitySha256,
+            availability,
+            availabilityReason);
     }
 
     private static ArtifactManifestV2? TryReadTrustedManifest(RawGalleryRow row)

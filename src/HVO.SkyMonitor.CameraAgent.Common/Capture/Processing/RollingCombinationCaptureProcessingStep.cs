@@ -10,8 +10,11 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 internal sealed class RollingCombinationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     RollingCombinationProcessingStepOptions options,
-    CameraAgentRecipeExecutionAdapter adapter) : ConfigurableCaptureProcessingStep<RollingCombinationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep, IWindowCaptureProcessingGraphStep
+    CameraAgentRecipeExecutionAdapter adapter) : ConfigurableCaptureProcessingStep<RollingCombinationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep, IWindowCaptureProcessingGraphStep,
+    ILegacyCaptureProcessingPlanContract
 {
+    internal const string LegacyPlanContract = "rolling-combination-plan-v1";
+    public string LegacyPlanContractId => LegacyPlanContract;
     private readonly Queue<ProcessingArtifact> _window = new();
 
     internal int BufferedFrameCount => _window.Count;

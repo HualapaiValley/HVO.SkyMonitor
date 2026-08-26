@@ -37,10 +37,13 @@ public sealed class CloudAssessmentRecipeTests
         Assert.AreEqual(FrameArtifactRole.Metadata, product.Role);
         Assert.IsNull(product.Layout);
         Assert.AreEqual("application/vnd.hvo.cloud-assessment+json", product.MediaType);
+        Assert.AreEqual(ProcessingProductKind.Metadata, product.Kind);
+        Assert.AreEqual(CloudAssessmentV1.CurrentSchemaVersion, product.SchemaVersion);
         CollectionAssert.AreEqual(new[] { current.ArtifactId, clear.ArtifactId }, product.SourceArtifactIds.ToArray());
         var parsed = CloudAssessmentJson.Parse(product.Payload);
         Assert.IsTrue(parsed.Validation.IsValid, parsed.Validation.ReasonCode);
         Assert.AreEqual(CloudAssessmentStatus.Quantified, parsed.Assessment!.Status);
+        Assert.AreEqual(parsed.Assessment.AssessmentIdentitySha256, product.ContentIdentitySha256);
         Assert.AreEqual(CloudAssessmentQuality.Degraded, parsed.Assessment.Quality);
         Assert.AreEqual(500_000, parsed.Assessment.CoverageMillionths);
         Assert.AreEqual(0b0000_0010, parsed.Assessment.Mask!.Bits.Span[0]);

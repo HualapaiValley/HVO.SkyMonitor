@@ -1665,6 +1665,75 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual("solar-system:Jupiter", provenance.Objects!.Single().Id);
     }
 
+    [TestMethod]
+    public async Task CaptureAsyncConfiguredProjectedSceneUsesUniqueStageOwnershipForSameSemanticScene()
+    {
+        var staging = new RecordingProjectedSceneStagingStore();
+        var module = new VirtualSkyCameraModule(
+            TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+        var config = CreateConfig() with
+        {
+            ProcessingSteps = [new CaptureProcessingStepConfig("ProjectedScene")]
+        };
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still);
+
+        var first = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var second = await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(2, staging.Stages);
+        Assert.AreEqual(staging.Stages[0].SceneId, staging.Stages[1].SceneId);
+        Assert.AreNotEqual(staging.Stages[0].StageKey, staging.Stages[1].StageKey);
+        Assert.AreEqual(StagedProjectedSceneDocument.CurrentSchemaVersion,
+            first.Frame!.Metadata.Scene!.ProjectedSceneStageSchemaVersion);
+        Assert.AreEqual(staging.Stages[0].StageKey, first.Frame.Metadata.Scene.ProjectedSceneStageKey);
+        Assert.AreEqual(staging.Stages[1].StageKey, second.Frame!.Metadata.Scene!.ProjectedSceneStageKey);
+        Assert.HasCount(0, staging.DeletedKeys);
+    }
+
+    [TestMethod]
+    public async Task CaptureAsyncCancelledAfterStageDeletesOnlyThatCaptureStage()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var staging = new RecordingProjectedSceneStagingStore(() => cancellation.Cancel());
+        var module = new VirtualSkyCameraModule(
+            TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+        var config = CreateConfig() with
+        {
+            ProcessingSteps = [new CaptureProcessingStepConfig("ProjectedScene")]
+        };
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+            await module.CaptureAsync(
+                new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still), cancellation.Token)
+                .ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.HasCount(1, staging.Stages);
+        Assert.HasCount(1, staging.DeletedKeys);
+        Assert.AreEqual(staging.Stages[0].StageKey, staging.DeletedKeys[0]);
+    }
+
+    [TestMethod]
+    public async Task CaptureAsyncStageFailurePreservesOriginalWhenCleanupAlsoFails()
+    {
+        var expected = new IOException("stage-write-failure");
+        var staging = new RecordingProjectedSceneStagingStore(stageFailure: expected, deleteFailure: new IOException("cleanup-failure"));
+        var module = new VirtualSkyCameraModule(
+            TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+        await module.InitializeAsync(CreateConfig() with
+        {
+            ProcessingSteps = [new CaptureProcessingStepConfig("ProjectedScene")]
+        }, CancellationToken.None).ConfigureAwait(false);
+
+        var actual = await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await module.CaptureAsync(
+                new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still), CancellationToken.None)
+                .ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreSame(expected, actual);
+    }
+
     private static VirtualSkyCameraModule CreateModule(DateTimeOffset utc)
     {
         var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(utc, -113.878) / 15d;
@@ -1686,6 +1755,38 @@ public sealed class VirtualSkyCameraModuleTests
             new CelestialCatalogObject("HIP 37279", "Procyon", 114.8254935 / 15, 5.22499307, 0.34, 0.42, "37279"),
             new CelestialCatalogObject("HIP 27989", "Betelgeuse", 88.792939 / 15, 7.407064, 0.45, 1.5, "27989")
         ]);
+
+    private sealed class RecordingProjectedSceneStagingStore(
+        Action? staged = null,
+        Exception? stageFailure = null,
+        Exception? deleteFailure = null) : IProjectedSceneStagingStore
+    {
+        internal List<(string StageKey, string SceneId)> Stages { get; } = [];
+        internal List<string> DeletedKeys { get; } = [];
+
+        public ValueTask StageAsync(
+            string stageKey,
+            string sceneId,
+            VisibleScene scene,
+            CancellationToken cancellationToken)
+        {
+            Stages.Add((stageKey, sceneId));
+            staged?.Invoke();
+            return stageFailure is null ? ValueTask.CompletedTask : ValueTask.FromException(stageFailure);
+        }
+
+        public ValueTask DeleteAsync(string stageKey, CancellationToken cancellationToken)
+        {
+            DeletedKeys.Add(stageKey);
+            return deleteFailure is null ? ValueTask.CompletedTask : ValueTask.FromException(deleteFailure);
+        }
+
+        public ValueTask MarkCompletedAsync(string stageKey, CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+
+        public ValueTask DeleteCompletedAsync(string stageKey, CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+    }
 
     private static async Task<CameraModuleConfig> LoadProfileAsync(string fileName)
     {

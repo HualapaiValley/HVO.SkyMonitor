@@ -402,15 +402,16 @@ internal sealed class PerspectiveProjector : IImageProjector
         var pixel = new PixelPoint(
             _context.PrincipalPointX + _context.FocalLengthXPixels * camera.East / camera.Up,
             _context.PrincipalPointY - _context.FocalLengthYPixels * camera.North / camera.Up);
-        return pixel.X >= 0 && pixel.X < _context.WidthPixels && pixel.Y >= 0 && pixel.Y < _context.HeightPixels
+        return !_context.EnforceSensorBounds ||
+            pixel.X >= 0 && pixel.X < _context.WidthPixels && pixel.Y >= 0 && pixel.Y < _context.HeightPixels
             ? pixel
             : null;
     }
 
     public AltAzPoint? Unproject(PixelPoint pixel)
     {
-        if (!double.IsFinite(pixel.X) || !double.IsFinite(pixel.Y) ||
-            pixel.X < 0 || pixel.X >= _context.WidthPixels || pixel.Y < 0 || pixel.Y >= _context.HeightPixels)
+        if (!double.IsFinite(pixel.X) || !double.IsFinite(pixel.Y) || _context.EnforceSensorBounds &&
+            (pixel.X < 0 || pixel.X >= _context.WidthPixels || pixel.Y < 0 || pixel.Y >= _context.HeightPixels))
         {
             return null;
         }

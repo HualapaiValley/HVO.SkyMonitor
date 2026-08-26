@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -19,6 +20,7 @@ internal sealed class RawCaptureIngress :
     IRawIngressWakeupReporter,
     ICaptureLaneStore,
     IOperationsQueueSnapshotRefresher,
+    IProjectedSceneStageOwnerProvider,
     IDisposable
 {
     private readonly CameraAgentHostOptions _options;
@@ -41,6 +43,8 @@ internal sealed class RawCaptureIngress :
     private bool _capacityRevalidationRequired;
     private long _minimumRecoveryCapacityBytes;
     private FileStream? _processLock;
+    private readonly IProjectedSceneStagingReconciler? _projectedSceneStaging;
+    private readonly ProjectedSceneStageLifecycleCoordinator? _projectedSceneLifecycle;
 
     public RawCaptureIngress(
         IOptions<CameraAgentHostOptions> options,
@@ -54,7 +58,9 @@ internal sealed class RawCaptureIngress :
         ICaptureLaneFaultInjector? laneFaultInjector = null,
         CaptureLaneState? laneState = null,
         CaptureLaneTelemetry? laneTelemetry = null,
-        CapturePipelineTraceStore? captureTraceStore = null)
+        CapturePipelineTraceStore? captureTraceStore = null,
+        IProjectedSceneStagingReconciler? projectedSceneStaging = null,
+        ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -67,6 +73,8 @@ internal sealed class RawCaptureIngress :
         _laneState = laneState;
         _laneTelemetry = laneTelemetry;
         _captureTraceStore = captureTraceStore;
+        _projectedSceneStaging = projectedSceneStaging;
+        _projectedSceneLifecycle = projectedSceneLifecycle;
         var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
         var root = Path.GetFullPath(_options.RawIngressRoot);
         _journal = new SqliteRawCaptureJournal(
@@ -124,6 +132,19 @@ internal sealed class RawCaptureIngress :
                     _telemetry.RecordDirectorySync,
                     _lanePolicy.Definitions)
                      .RunAsync(cancellationToken).ConfigureAwait(false);
+                var projectedSceneBacklog = 0;
+                if (_projectedSceneStaging is not null)
+                {
+                    using var stageLease = _projectedSceneLifecycle is null
+                        ? null
+                        : await _projectedSceneLifecycle.AcquireReconciliationLeaseAsync(cancellationToken).ConfigureAwait(false);
+                    var ownedStageKeys = await GetOwnedStageKeysAsync(cancellationToken).ConfigureAwait(false);
+                    var protectedStageKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
+                    if (stageLease is not null) protectedStageKeys.UnionWith(stageLease.PendingStageKeys);
+                    var staged = await _projectedSceneStaging.ReconcileAsync(protectedStageKeys, cancellationToken).ConfigureAwait(false);
+                    projectedSceneBacklog = staged.BacklogCount;
+                    reconciliation = reconciliation with { ProjectedSceneStageBacklog = projectedSceneBacklog };
+                }
                 await _laneStore.InitializeLanesAsync(cancellationToken).ConfigureAwait(false);
                 await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
                 reconciliationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
@@ -132,24 +153,26 @@ internal sealed class RawCaptureIngress :
                 var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
                 var health = await _journal.ReadHealthTotalsAsync(cancellationToken).ConfigureAwait(false);
                 RevalidateCapacityAfterFailure();
-                var availability = health.FailureCount > 0
+                var baseAvailability = health.FailureCount > 0
                     ? RawIngressAvailability.Unhealthy
                     : health.QuarantineCount > 0 || reconciliation.IndexProjectionFailures > 0
                         ? RawIngressAvailability.Degraded
                         : RawIngressAvailability.Accepting;
+                var baseReason = baseAvailability == RawIngressAvailability.Accepting
+                    ? "accepting"
+                    : reconciliation.IndexProjectionFailures > 0
+                        ? "index-projection-failed"
+                        : "reconciliation-findings";
                 _state.Set(
-                    availability,
-                    availability == RawIngressAvailability.Accepting
-                        ? "accepting"
-                        : reconciliation.IndexProjectionFailures > 0
-                            ? "index-projection-failed"
-                            : "reconciliation-findings",
+                    baseAvailability,
+                    baseReason,
                     held.Count,
                     held.Bytes,
                     health.QuarantineCount,
                     health.QuarantineBytes,
                     held.Oldest);
-                if (availability == RawIngressAvailability.Unhealthy)
+                _state.SetProjectedSceneBacklog(projectedSceneBacklog);
+                if (baseAvailability == RawIngressAvailability.Unhealthy)
                 {
                     throw new InvalidDataException("Raw ingress has committed records with missing evidence.");
                 }
@@ -190,6 +213,23 @@ internal sealed class RawCaptureIngress :
         {
             _initializeGate.Release();
         }
+    }
+
+    public async ValueTask<IReadOnlySet<string>> GetOwnedStageKeysAsync(
+        CancellationToken cancellationToken)
+    {
+        var owned = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in await _journal.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!string.Equals(entry.State, "committed", StringComparison.Ordinal)) continue;
+            var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
+            if (parsed.IsValid && parsed.Document?.Manifest?.Scene is
+                {
+                    ProjectedSceneStageKey: { Length: 64 } stageKey
+                } && stageKey.All(Uri.IsHexDigit))
+                owned.Add(stageKey);
+        }
+        return owned;
     }
 
     public async ValueTask<RawCaptureReceipt?> AcceptAsync(
@@ -397,16 +437,8 @@ internal sealed class RawCaptureIngress :
             }
             _logger.RawIngressSqliteResult("commit", "success");
             var held = await _journal.ReadHeldTotalsAsync(CancellationToken.None).ConfigureAwait(false);
-            var prior = _state.Snapshot;
-            var remainsDegraded = prior.Availability == RawIngressAvailability.Degraded || prior.QuarantineCount > 0;
-            _state.Set(
-                remainsDegraded ? RawIngressAvailability.Degraded : RawIngressAvailability.Accepting,
-                remainsDegraded ? prior.Reason : "accepting",
-                held.Count,
-                held.Bytes,
-                prior.QuarantineCount,
-                prior.QuarantineBytes,
-                held.Oldest);
+            _state.UpdateBaseHeldData(held.Count, held.Bytes, held.Oldest);
+            var prior = _state.GetBaseSnapshot();
             var receipt = new RawCaptureReceipt(
                 outcome,
                 manifest with { Scene = null },
@@ -441,14 +473,7 @@ internal sealed class RawCaptureIngress :
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
-                    _state.Set(
-                        RawIngressAvailability.Degraded,
-                        "index-projection-failed",
-                        held.Count,
-                        held.Bytes,
-                        prior.QuarantineCount,
-                        prior.QuarantineBytes,
-                        held.Oldest);
+                    _state.UpdateBaseStatus(RawIngressAvailability.Degraded, "index-projection-failed");
                     _logger.RawIngressIndexProjectionFailed();
                 }
             }
@@ -514,6 +539,49 @@ internal sealed class RawCaptureIngress :
         }
     }
 
+    async ValueTask<RawCapturePublicationState> IRawCaptureIngress.GetPublicationStateAsync(
+        CameraModuleConfig configuration,
+        CaptureLoopSubmission submission,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(submission);
+        if (submission.Result.Frame is null) return RawCapturePublicationState.DefinitelyNotCommitted;
+        try
+        {
+            var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
+            if (await _journal.IsCaptureArtifactCommittedAsync(ids.CaptureId, ids.ArtifactId, cancellationToken)
+                    .ConfigureAwait(false))
+                return RawCapturePublicationState.Committed;
+            var frame = submission.Result.Frame;
+            var paths = _files.GetPaths(RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, frame), ids.ArtifactId);
+            return DurablePathExists(paths.PayloadAbsolutePath) || DurablePathExists(paths.SidecarAbsolutePath)
+                ? RawCapturePublicationState.Unknown
+                : RawCapturePublicationState.DefinitelyNotCommitted;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            return RawCapturePublicationState.Unknown;
+        }
+    }
+
+    private static bool DurablePathExists(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
+
     public async ValueTask<IReadOnlyList<RawIngressRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
         CancellationToken cancellationToken)
@@ -537,20 +605,15 @@ internal sealed class RawCaptureIngress :
 
     public void ReportPressure(bool underPressure)
     {
-        var snapshot = _state.Snapshot;
-        if (snapshot.Availability is RawIngressAvailability.Initializing or RawIngressAvailability.Unhealthy)
+        var baseline = _state.GetBaseSnapshot();
+        if (baseline.Availability is RawIngressAvailability.Initializing or RawIngressAvailability.Unhealthy)
         {
             return;
         }
-        var degraded = underPressure || snapshot.QuarantineCount > 0 || snapshot.Reason == "index-projection-failed";
-        _state.Set(
+        var degraded = underPressure || baseline.QuarantineCount > 0 || baseline.Reason == "index-projection-failed";
+        _state.UpdateBaseStatus(
             degraded ? RawIngressAvailability.Degraded : RawIngressAvailability.Accepting,
-            underPressure ? "disk-pressure" : degraded ? snapshot.Reason : "accepting",
-            snapshot.PendingCount,
-            snapshot.PendingBytes,
-            snapshot.QuarantineCount,
-            snapshot.QuarantineBytes,
-            snapshot.OldestPendingUtc);
+            underPressure ? "disk-pressure" : degraded ? baseline.Reason : "accepting");
     }
 
     public void ReportWakeup(bool queued) => _telemetry.RecordWakeup(queued);
@@ -716,17 +779,7 @@ internal sealed class RawCaptureIngress :
     }
 
     private void SetAvailabilityPreservingTotals(RawIngressAvailability availability, string reason)
-    {
-        var snapshot = _state.Snapshot;
-        _state.Set(
-            availability,
-            reason,
-            snapshot.PendingCount,
-            snapshot.PendingBytes,
-            snapshot.QuarantineCount,
-            snapshot.QuarantineBytes,
-            snapshot.OldestPendingUtc);
-    }
+        => _state.UpdateBaseStatus(availability, reason);
 
     private async Task SetFailureAvailabilityAsync(string reason)
     {
@@ -752,15 +805,7 @@ internal sealed class RawCaptureIngress :
     private async Task RefreshHeldStateAsync(CancellationToken cancellationToken)
     {
         var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
-        var snapshot = _state.Snapshot;
-        _state.Set(
-            snapshot.Availability,
-            snapshot.Reason,
-            held.Count,
-            held.Bytes,
-            snapshot.QuarantineCount,
-            snapshot.QuarantineBytes,
-            held.Oldest);
+        _state.UpdateBaseHeldData(held.Count, held.Bytes, held.Oldest);
     }
 
     private async ValueTask<CaptureLaneLease?> ClaimCoreAsync(

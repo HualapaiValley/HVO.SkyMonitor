@@ -6,6 +6,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -30,7 +31,12 @@ internal sealed record DurableProcessingOutput(
     ProcessingCompatibilityIdentity Compatibility,
     TimeSpan TotalIntegration,
     long CaptureSequence,
-    string? LegacyRecipeVersion)
+    string? LegacyRecipeVersion,
+    ProcessingProductKind? ProductKind = null,
+    string? ProductSchemaVersion = null,
+    string? ContentIdentitySha256 = null,
+    string AvailabilityState = "Available",
+    string? AvailabilityReason = null)
 {
     internal CaptureIdentityDescriptor Capture => Descriptor?.Capture ?? ProductManifest?.Capture
         ?? throw new InvalidDataException("Durable processing output has no capture descriptor.");
@@ -38,6 +44,70 @@ internal sealed record DurableProcessingOutput(
     internal ArtifactDescriptor Artifact => Descriptor?.Artifact ?? ProductManifest?.Artifact
         ?? throw new InvalidDataException("Durable processing output has no artifact descriptor.");
 }
+
+internal sealed record DurableCaptureProduct(
+    string OutputIdentitySha256,
+    Guid ArtifactId,
+    Guid CaptureId,
+    string NodeId,
+    FrameArtifactRole Role,
+    string Variant,
+    ProcessingProductKind? ProductKind,
+    string? ProductSchemaVersion,
+    string? ContentIdentitySha256,
+    string AvailabilityState = "Available",
+    string? AvailabilityReason = null);
+
+internal sealed record DurableProcessingEvidence(
+    string OutputIdentitySha256,
+    Guid ArtifactId,
+    Guid CaptureId,
+    FrameArtifactRole Role,
+    string PayloadRelativePath,
+    string SidecarRelativePath,
+    byte[] EvidenceJson,
+    long CommittedUnixMilliseconds,
+    string AvailabilityState,
+    string? AvailabilityReason,
+    long? UnavailableUnixMilliseconds = null,
+    string? QuarantineRelativePath = null);
+
+internal sealed record ProcessingLifecycleOperation(
+    string OperationId,
+    string Kind,
+    string? OutputIdentitySha256,
+    string? SourceRelativePath,
+    string? CompanionRelativePath,
+    string DestinationRelativePath,
+    string Reason,
+    long ObservedBytes,
+    long PlannedUnixMilliseconds = 0,
+    string Phase = "planned");
+
+internal sealed record ProcessingEvidencePage(
+    IReadOnlyList<DurableProcessingEvidence> Items,
+    string? NextOutputIdentitySha256);
+
+internal sealed record ProcessingExpirationPage(
+    IReadOnlyList<DurableProcessingEvidence> Items,
+    long? NextTimestamp,
+    string? NextOutputIdentitySha256);
+
+internal sealed record ProcessingLifecyclePage(
+    IReadOnlyList<ProcessingLifecycleOperation> Items,
+    string? NextOperationId);
+
+internal sealed record ProcessingAvailabilityInventory(long MissingCount, long QuarantinedCount);
+internal sealed record ProcessingDiagnostic(long DiagnosticId, string? QuarantineRelativePath, long RecordedUnixMilliseconds);
+internal sealed record ProcessingDiagnosticPage(IReadOnlyList<ProcessingDiagnostic> Items, long? NextRecordedUnixMilliseconds, long? NextDiagnosticId);
+
+internal enum UnavailableNodeResolution { None, Reexecute, Terminal }
+internal sealed record UnavailableOutputTransition(bool Reactivated);
+
+internal sealed record DurableProcessingOutputSource(
+    string OutputIdentitySha256,
+    int Ordinal,
+    Guid ArtifactId);
 
 internal sealed record DurableProcessingNodeInput(
     int Ordinal,
@@ -108,6 +178,8 @@ internal sealed record CaptureProcessingOperationalState(
 internal sealed class SqliteCaptureProcessingStore : IDisposable
 {
     internal const int MaximumGalleryInputsPerNode = 8;
+    internal const int MaximumProductQueryCount = 128;
+    internal const int MaximumOutputSourceCount = LayeredPresentationJson.MaximumSourceArtifactCount;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly string _root;
     private readonly string _databasePath;
@@ -160,11 +232,11 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                         await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                         System.Globalization.CultureInfo.InvariantCulture);
                 }
-                if (version > 3)
+                if (version > 5)
                 {
-                    throw new InvalidOperationException($"Capture processing schema {version} is newer than supported schema 3.");
+                    throw new InvalidOperationException($"Capture processing schema {version} is newer than supported schema 5.");
                 }
-                if (version < 3)
+                if (version < 5)
                 {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
                     using var transaction = connection.BeginTransaction(deferred: false);
@@ -174,11 +246,23 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                     command.CommandText = version switch
                     {
                         0 => SchemaSql,
-                        1 => string.Concat(ProcessingV2MigrationSql, ProcessingV3MigrationSql),
-                        2 => ProcessingV3MigrationSql,
+                        1 => string.Concat(ProcessingV2MigrationSql, ProcessingV3MigrationSql, ProcessingV4MigrationSql, ProcessingV5MigrationSql),
+                        2 => string.Concat(ProcessingV3MigrationSql, ProcessingV4MigrationSql, ProcessingV5MigrationSql),
+                        3 => string.Concat(ProcessingV4MigrationSql, ProcessingV5MigrationSql),
+                        4 => ProcessingV5MigrationSql,
                         _ => throw new InvalidOperationException($"Unsupported capture processing schema {version}.")
                     };
                     await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    if (version is 1 or 2 or 3)
+                    {
+                        await BackfillV4FactsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                    }
+                    using (var finalizeVersion = connection.CreateCommand())
+                    {
+                        finalizeVersion.Transaction = transaction;
+                        finalizeVersion.CommandText = FinalizeV5VersionSql;
+                        await finalizeVersion.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    }
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
@@ -196,16 +280,21 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 SELECT COUNT(*) FROM sqlite_master WHERE name IN (
                     'capture_processing_schema', 'processing_nodes', 'processing_outputs',
                     'ix_processing_outputs_capture_node', 'ix_processing_outputs_window',
-                    'ix_processing_nodes_status', 'ix_processing_nodes_recipe',
-                    'ix_processing_outputs_role', 'ix_processing_outputs_recipe',
-                    'processing_node_inputs', 'ix_processing_node_inputs_artifact');
+                     'ix_processing_nodes_status', 'ix_processing_nodes_recipe',
+                     'ix_processing_outputs_role', 'ix_processing_outputs_recipe',
+                     'processing_node_inputs', 'ix_processing_node_inputs_artifact',
+                     'processing_output_sources', 'ix_processing_output_sources_artifact',
+                     'ix_processing_outputs_product', 'processing_lifecycle_operations',
+                     'ix_processing_outputs_retention_available', 'ix_processing_outputs_retention_unavailable',
+                     'processing_reconciliation_state', 'processing_output_diagnostics');
                 """;
             if (Convert.ToInt32(
                 await schemaObjects.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture) != 11)
+                System.Globalization.CultureInfo.InvariantCulture) != 19)
             {
                 throw new InvalidDataException("Capture processing SQLite schema is incomplete or drifted.");
             }
+            await VerifyV5SchemaDefinitionsAsync(connection, cancellationToken).ConfigureAwait(false);
             Volatile.Write(ref _initialized, true);
         }
         finally
@@ -261,6 +350,94 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         return new DurableProcessingNode(
             captureId, nodeId, required, status, reason, attempt, planSha256, profileIdentity,
             startedUtc, completedUtc, duration, outcome, inputs, outputs);
+    }
+
+    internal async ValueTask<UnavailableNodeResolution> ResolveUnavailableNodeAsync(
+        Guid captureId, string nodeId, string planSha256, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        var unavailable = new List<(string Output, string State, string? Reason, string? Schema, byte[] Evidence)>();
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = """
+                SELECT output.output_identity_sha256, output.availability_state, output.availability_reason,
+                       output.product_schema_version, output.descriptor_json
+                FROM processing_outputs output
+                JOIN processing_nodes node ON node.capture_id = output.capture_id AND node.node_id = output.node_id
+                WHERE output.capture_id = $capture AND output.node_id = $node
+                  AND node.plan_sha256 = $plan AND output.availability_state <> 'Available'
+                ORDER BY output.output_identity_sha256;
+                """;
+            read.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+            read.Parameters.AddWithValue("$node", nodeId);
+            read.Parameters.AddWithValue("$plan", planSha256);
+            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                unavailable.Add((reader.GetString(0), reader.GetString(1),
+                    await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(2),
+                    await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(3),
+                    await reader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false)));
+        }
+        if (unavailable.Count == 0) return UnavailableNodeResolution.None;
+        var deterministic = unavailable.All(static output =>
+            string.Equals(output.Schema, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal));
+        foreach (var output in unavailable)
+        {
+            using var history = connection.CreateCommand();
+            history.Transaction = transaction;
+            history.CommandText = """
+                INSERT INTO processing_output_diagnostics(
+                    output_identity_sha256, capture_id, node_id, availability_state,
+                    availability_reason, descriptor_json, recorded_unix_ms)
+                SELECT $output, $capture, $node, $state, $reason, $evidence, $now
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM processing_output_diagnostics diagnostic
+                    WHERE diagnostic.output_identity_sha256 = $output
+                      AND diagnostic.availability_state = $state
+                      AND diagnostic.availability_reason IS $reason
+                    ORDER BY diagnostic.recorded_unix_ms DESC, diagnostic.diagnostic_id DESC
+                    LIMIT 1);
+                DELETE FROM processing_output_diagnostics
+                WHERE output_identity_sha256 = $output AND diagnostic_id NOT IN (
+                    SELECT diagnostic_id FROM processing_output_diagnostics
+                    WHERE output_identity_sha256 = $output
+                    ORDER BY recorded_unix_ms DESC, diagnostic_id DESC LIMIT 16);
+                """;
+            history.Parameters.AddWithValue("$output", output.Output);
+            history.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+            history.Parameters.AddWithValue("$node", nodeId);
+            history.Parameters.AddWithValue("$state", output.State);
+            history.Parameters.AddWithValue("$reason", (object?)output.Reason ?? DBNull.Value);
+            history.Parameters.AddWithValue("$evidence", output.Evidence);
+            history.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+            await history.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            if (deterministic)
+                update.CommandText = """
+                    DELETE FROM processing_outputs
+                    WHERE capture_id = $capture AND node_id = $node AND availability_state <> 'Available';
+                    UPDATE processing_nodes SET status = 'RetryableFailure', reason = 'processing.output-unavailable'
+                    WHERE capture_id = $capture AND node_id = $node;
+                    """;
+            else
+                update.CommandText = """
+                    UPDATE processing_nodes SET status = 'TerminalFailure', reason = 'processing.output-unavailable'
+                    WHERE capture_id = $capture AND node_id = $node;
+                    """;
+            update.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+            update.Parameters.AddWithValue("$node", nodeId);
+            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return deterministic ? UnavailableNodeResolution.Reexecute : UnavailableNodeResolution.Terminal;
     }
 
     internal async ValueTask WriteNodeAsync(
@@ -348,6 +525,843 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             await InsertInputAsync(connection, transaction, captureId, node.Id, input, cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The selected query is one of two fixed internal statements and all values remain parameterized.")]
+    internal async ValueTask<IReadOnlyList<DurableCaptureProduct>> ReadCaptureProductsAsync(
+        Guid captureId,
+        string? productSchemaVersion,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        if (maximumCount is < 1 or > MaximumProductQueryCount) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+        if (productSchemaVersion is { Length: < 1 or > 128 }) throw new ArgumentOutOfRangeException(nameof(productSchemaVersion));
+
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = productSchemaVersion is null ? """
+             SELECT output_identity_sha256, artifact_id, capture_id, node_id, role, variant,
+                    product_kind, product_schema_version, content_identity_sha256,
+                    availability_state, availability_reason
+            FROM processing_outputs
+            WHERE capture_id = $capture_id
+            ORDER BY output_identity_sha256
+            LIMIT $limit;
+            """ : """
+             SELECT output_identity_sha256, artifact_id, capture_id, node_id, role, variant,
+                    product_kind, product_schema_version, content_identity_sha256,
+                    availability_state, availability_reason
+            FROM processing_outputs
+            WHERE capture_id = $capture_id AND product_schema_version = $schema
+            ORDER BY output_identity_sha256
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$schema", (object?)productSchemaVersion ?? DBNull.Value);
+        command.Parameters.AddWithValue("$limit", maximumCount);
+        var products = new List<DurableCaptureProduct>(maximumCount);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            products.Add(new DurableCaptureProduct(
+                reader.GetString(0),
+                Guid.ParseExact(reader.GetString(1), "N"),
+                Guid.ParseExact(reader.GetString(2), "N"),
+                reader.GetString(3),
+                Enum.Parse<FrameArtifactRole>(reader.GetString(4)),
+                reader.GetString(5),
+                await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
+                    ? null : Enum.Parse<ProcessingProductKind>(reader.GetString(6)),
+                await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7),
+                 await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(8),
+                 reader.GetString(9),
+                 await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(10)));
+        }
+        return products;
+    }
+
+    internal async ValueTask<DurableProcessingOutput?> ReadOutputByArtifactIdAsync(
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(artifactId, Guid.Empty);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
+                   descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
+                   algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version,
+                   product_kind, product_schema_version, content_identity_sha256,
+                   availability_state, availability_reason
+            FROM processing_outputs
+            WHERE artifact_id = $artifact_id
+            LIMIT 2;
+            """;
+        command.Parameters.AddWithValue("$artifact_id", artifactId.ToString("N"));
+        var rows = await ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false);
+        return rows.Count switch
+        {
+            0 => null,
+            1 => rows[0].Output,
+            _ => throw new InvalidDataException("A durable artifact identity is ambiguous.")
+        };
+    }
+
+    internal async ValueTask<IReadOnlyList<DurableProcessingOutputSource>> ReadOutputSourcesAsync(
+        string outputIdentitySha256,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        if (outputIdentitySha256 is not { Length: 64 }) throw new ArgumentOutOfRangeException(nameof(outputIdentitySha256));
+        if (maximumCount is < 1 or > MaximumOutputSourceCount) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, source_ordinal, source_artifact_id
+            FROM processing_output_sources
+            WHERE output_identity_sha256 = $output
+            ORDER BY source_ordinal
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$output", outputIdentitySha256);
+        command.Parameters.AddWithValue("$limit", maximumCount);
+        var sources = new List<DurableProcessingOutputSource>(maximumCount);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            sources.Add(new(reader.GetString(0), reader.GetInt32(1), Guid.ParseExact(reader.GetString(2), "N")));
+        }
+        return sources;
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Generated placeholders contain only bounded integer ordinals and capture identities remain parameterized.")]
+    internal async ValueTask<IReadOnlySet<Guid>> ReadCanonicalSceneCapturesAsync(
+        IReadOnlyList<Guid> captureIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(captureIds);
+        if (captureIds.Count > 101) throw new ArgumentOutOfRangeException(nameof(captureIds));
+        if (captureIds.Count == 0) return new HashSet<Guid>();
+
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        var placeholders = string.Join(", ", Enumerable.Range(0, captureIds.Count).Select(static index => $"$capture{index}"));
+        command.CommandText = $"""
+            SELECT DISTINCT capture_id
+            FROM processing_outputs INDEXED BY ix_processing_outputs_product
+            WHERE capture_id IN ({placeholders})
+              AND product_schema_version = 'projected-scene-v1'
+               AND product_kind = 'Metadata'
+               AND content_identity_sha256 IS NOT NULL
+               AND availability_state = 'Available'
+            LIMIT 101;
+            """;
+        AddCaptureParameters(command, captureIds);
+        var values = new HashSet<Guid>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            values.Add(Guid.ParseExact(reader.GetString(0), "N"));
+        return values;
+    }
+
+    internal async ValueTask<ProcessingEvidencePage> ReadProcessingEvidencePageAsync(
+        string? afterOutputIdentitySha256,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        if (maximumCount is < 1 or > 4096) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, artifact_id, capture_id, role, payload_relative_path,
+                   sidecar_relative_path, descriptor_json, committed_unix_ms,
+                   availability_state, availability_reason, unavailable_unix_ms,
+                   quarantine_relative_path
+            FROM processing_outputs
+            WHERE $after IS NULL OR output_identity_sha256 > $after
+            ORDER BY output_identity_sha256
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$after", (object?)afterOutputIdentitySha256 ?? DBNull.Value);
+        command.Parameters.AddWithValue("$limit", maximumCount);
+        var values = new List<DurableProcessingEvidence>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            values.Add(new(
+                reader.GetString(0), Guid.ParseExact(reader.GetString(1), "N"),
+                Guid.ParseExact(reader.GetString(2), "N"), Enum.Parse<FrameArtifactRole>(reader.GetString(3)),
+                reader.GetString(4), reader.GetString(5),
+                await reader.GetFieldValueAsync<byte[]>(6, cancellationToken).ConfigureAwait(false),
+                reader.GetInt64(7), reader.GetString(8),
+                await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(9),
+                await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(10),
+                await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(11)));
+        }
+        return new(values, values.Count == maximumCount ? values[^1].OutputIdentitySha256 : null);
+    }
+
+    internal async ValueTask<string?> ReadReconciliationCursorAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT output_identity_sha256 FROM processing_reconciliation_state WHERE state_key = 1;";
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is null or DBNull ? null : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    internal async ValueTask SetReconciliationCursorAsync(string? cursor, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO processing_reconciliation_state(state_key, output_identity_sha256)
+            VALUES(1, $cursor)
+            ON CONFLICT(state_key) DO UPDATE SET output_identity_sha256 = excluded.output_identity_sha256;
+            """;
+        command.Parameters.AddWithValue("$cursor", (object?)cursor ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<string?> ReadFileCursorAsync(string column, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        if (column == "modern") command.CommandText = "SELECT modern_sidecar_relative_path FROM processing_reconciliation_state WHERE state_key = 1;";
+        else if (column == "legacy") command.CommandText = "SELECT legacy_sidecar_relative_path FROM processing_reconciliation_state WHERE state_key = 1;";
+        else if (column == "payload") command.CommandText = "SELECT payload_relative_path FROM processing_reconciliation_state WHERE state_key = 1;";
+        else throw new ArgumentOutOfRangeException(nameof(column));
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is null or DBNull ? null : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    internal async ValueTask SetFileCursorAsync(string column, string? cursor, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        if (column == "modern") command.CommandText = "UPDATE processing_reconciliation_state SET modern_sidecar_relative_path = $cursor WHERE state_key = 1;";
+        else if (column == "legacy") command.CommandText = "UPDATE processing_reconciliation_state SET legacy_sidecar_relative_path = $cursor WHERE state_key = 1;";
+        else if (column == "payload") command.CommandText = "UPDATE processing_reconciliation_state SET payload_relative_path = $cursor WHERE state_key = 1;";
+        else throw new ArgumentOutOfRangeException(nameof(column));
+        command.Parameters.AddWithValue("$cursor", (object?)cursor ?? DBNull.Value);
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 0)
+        {
+            await SetReconciliationCursorAsync(null, cancellationToken).ConfigureAwait(false);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    internal async ValueTask<ProcessingExpirationPage> ReadAvailableExpirationPageAsync(
+        DateTimeOffset cutoffUtc,
+        long? afterTimestamp,
+        string? afterOutputIdentitySha256,
+        int maximumCount,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, artifact_id, capture_id, role, payload_relative_path,
+                   sidecar_relative_path, descriptor_json, committed_unix_ms,
+                   availability_state, availability_reason, unavailable_unix_ms,
+                   quarantine_relative_path,
+                   committed_unix_ms AS expiration_unix_ms
+            FROM processing_outputs INDEXED BY ix_processing_outputs_retention_available
+            WHERE availability_state = 'Available' AND committed_unix_ms < $cutoff
+              AND ($after_timestamp IS NULL OR
+                   committed_unix_ms > $after_timestamp OR
+                   (committed_unix_ms = $after_timestamp AND output_identity_sha256 > $after_output))
+            ORDER BY committed_unix_ms, output_identity_sha256
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$cutoff", cutoffUtc.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$after_timestamp", afterTimestamp.HasValue ? afterTimestamp.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$after_output", (object?)afterOutputIdentitySha256 ?? DBNull.Value);
+        command.Parameters.AddWithValue("$limit", maximumCount);
+        var values = new List<DurableProcessingEvidence>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            values.Add(new(reader.GetString(0), Guid.ParseExact(reader.GetString(1), "N"),
+                Guid.ParseExact(reader.GetString(2), "N"), Enum.Parse<FrameArtifactRole>(reader.GetString(3)),
+                reader.GetString(4), reader.GetString(5),
+                await reader.GetFieldValueAsync<byte[]>(6, cancellationToken).ConfigureAwait(false),
+                reader.GetInt64(7), reader.GetString(8),
+                await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(9),
+                await reader.IsDBNullAsync(10, cancellationToken).ConfigureAwait(false) ? null : reader.GetInt64(10),
+                await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(11)));
+        var last = values.LastOrDefault();
+        return new(values,
+            values.Count == maximumCount ? last!.CommittedUnixMilliseconds : null,
+            values.Count == maximumCount ? last!.OutputIdentitySha256 : null);
+    }
+
+    internal async ValueTask<ProcessingExpirationPage> ReadUnavailableExpirationPageAsync(
+        DateTimeOffset cutoffUtc, long? afterTimestamp, string? afterOutputIdentitySha256,
+        int maximumCount, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, artifact_id, capture_id, role, payload_relative_path,
+                   sidecar_relative_path, descriptor_json, committed_unix_ms,
+                   availability_state, availability_reason, unavailable_unix_ms,
+                   quarantine_relative_path
+            FROM processing_outputs INDEXED BY ix_processing_outputs_retention_unavailable
+            WHERE availability_state <> 'Available' AND unavailable_unix_ms < $cutoff
+              AND ($after_timestamp IS NULL OR unavailable_unix_ms > $after_timestamp OR
+                   (unavailable_unix_ms = $after_timestamp AND output_identity_sha256 > $after_output))
+            ORDER BY unavailable_unix_ms, output_identity_sha256 LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$cutoff", cutoffUtc.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$after_timestamp", afterTimestamp.HasValue ? afterTimestamp.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$after_output", (object?)afterOutputIdentitySha256 ?? DBNull.Value);
+        command.Parameters.AddWithValue("$limit", maximumCount);
+        var values = new List<DurableProcessingEvidence>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            values.Add(new(reader.GetString(0), Guid.ParseExact(reader.GetString(1), "N"), Guid.ParseExact(reader.GetString(2), "N"),
+                Enum.Parse<FrameArtifactRole>(reader.GetString(3)), reader.GetString(4), reader.GetString(5),
+                await reader.GetFieldValueAsync<byte[]>(6, cancellationToken).ConfigureAwait(false),
+                reader.GetInt64(7), reader.GetString(8),
+                await reader.IsDBNullAsync(9, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(9),
+                reader.GetInt64(10), await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(11)));
+        var last = values.LastOrDefault();
+        return new(values, values.Count == maximumCount ? last!.UnavailableUnixMilliseconds : null,
+            values.Count == maximumCount ? last!.OutputIdentitySha256 : null);
+    }
+
+    internal async ValueTask SetOutputAvailabilityAsync(
+        string outputIdentitySha256,
+        string state,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE processing_outputs
+            SET availability_state = $state, availability_reason = $reason,
+                unavailable_unix_ms = CASE WHEN $state = 'Available' THEN NULL ELSE COALESCE(unavailable_unix_ms, $now) END,
+                quarantine_relative_path = CASE WHEN $state = 'Available' THEN NULL ELSE quarantine_relative_path END
+            WHERE output_identity_sha256 = $output;
+            """;
+        command.Parameters.AddWithValue("$state", state);
+        command.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
+        command.Parameters.AddWithValue("$output", outputIdentitySha256);
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            throw new InvalidDataException("Processing output availability target is missing.");
+    }
+
+    internal async ValueTask<bool> RestoreMissingOutputAvailableAsync(
+        string outputIdentitySha256, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        string? captureId = null;
+        string? nodeId = null;
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = """
+                SELECT capture_id, node_id FROM processing_outputs
+                WHERE output_identity_sha256 = $output AND availability_state = 'Missing';
+                """;
+            read.Parameters.AddWithValue("$output", outputIdentitySha256);
+            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                captureId = reader.GetString(0);
+                nodeId = reader.GetString(1);
+            }
+        }
+        if (captureId is null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        using (var output = connection.CreateCommand())
+        {
+            output.Transaction = transaction;
+            output.CommandText = """
+                UPDATE processing_outputs
+                SET availability_state = 'Available', availability_reason = NULL,
+                    unavailable_unix_ms = NULL, quarantine_relative_path = NULL
+                WHERE output_identity_sha256 = $output AND availability_state = 'Missing';
+                """;
+            output.Parameters.AddWithValue("$output", outputIdentitySha256);
+            await output.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        var completed = false;
+        using (var node = connection.CreateCommand())
+        {
+            node.Transaction = transaction;
+            node.CommandText = """
+                UPDATE processing_nodes
+                SET status = 'Completed', reason = NULL, outcome = 'Produced'
+                WHERE capture_id = $capture AND node_id = $node
+                  AND status = 'TerminalFailure' AND reason = 'processing.output-unavailable'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM processing_outputs output
+                      WHERE output.capture_id = $capture AND output.node_id = $node
+                        AND output.availability_state <> 'Available');
+                """;
+            node.Parameters.AddWithValue("$capture", captureId);
+            node.Parameters.AddWithValue("$node", nodeId);
+            completed = await node.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return completed;
+    }
+
+    internal async ValueTask<UnavailableOutputTransition> TransitionOutputUnavailableAsync(
+        string outputIdentitySha256,
+        string state,
+        string reason,
+        string? quarantineRelativePath,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        string? captureId = null;
+        string? nodeId = null;
+        string? productSchema = null;
+        string? currentState = null;
+        string? currentReason = null;
+        byte[]? evidence = null;
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = """
+                SELECT capture_id, node_id, product_schema_version, descriptor_json,
+                       availability_state, availability_reason, unavailable_unix_ms
+                FROM processing_outputs WHERE output_identity_sha256 = $output;
+                """;
+            read.Parameters.AddWithValue("$output", outputIdentitySha256);
+            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                captureId = reader.GetString(0);
+                nodeId = reader.GetString(1);
+                productSchema = await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(2);
+                evidence = await reader.GetFieldValueAsync<byte[]>(3, cancellationToken).ConfigureAwait(false);
+                currentState = reader.GetString(4);
+                currentReason = await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5);
+            }
+        }
+        if (captureId is null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new(false);
+        }
+        var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        var unchanged = string.Equals(currentState, state, StringComparison.Ordinal) &&
+            string.Equals(currentReason, reason, StringComparison.Ordinal);
+        if (!unchanged)
+        {
+            using (var diagnostic = connection.CreateCommand())
+            {
+                diagnostic.Transaction = transaction;
+                diagnostic.CommandText = """
+                    INSERT INTO processing_output_diagnostics(
+                        output_identity_sha256, capture_id, node_id, availability_state,
+                        availability_reason, descriptor_json, quarantine_relative_path,
+                        recorded_unix_ms)
+                    VALUES($output, $capture, $node, $state, $reason, $evidence, $quarantine, $now);
+                    DELETE FROM processing_output_diagnostics
+                    WHERE output_identity_sha256 = $output AND diagnostic_id NOT IN (
+                        SELECT diagnostic_id FROM processing_output_diagnostics
+                        WHERE output_identity_sha256 = $output
+                        ORDER BY recorded_unix_ms DESC, diagnostic_id DESC LIMIT 16);
+                    """;
+                diagnostic.Parameters.AddWithValue("$output", outputIdentitySha256);
+                diagnostic.Parameters.AddWithValue("$capture", captureId);
+                diagnostic.Parameters.AddWithValue("$node", nodeId);
+                diagnostic.Parameters.AddWithValue("$state", state);
+                diagnostic.Parameters.AddWithValue("$reason", reason);
+                diagnostic.Parameters.AddWithValue("$evidence", evidence!);
+                diagnostic.Parameters.AddWithValue("$quarantine", (object?)quarantineRelativePath ?? DBNull.Value);
+                diagnostic.Parameters.AddWithValue("$now", now);
+                await diagnostic.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        var deterministic = string.Equals(productSchema, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal);
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            if (deterministic)
+            {
+                update.CommandText = """
+                    DELETE FROM processing_outputs WHERE output_identity_sha256 = $output;
+                    UPDATE processing_nodes SET status = 'RetryableFailure', reason = 'processing.output-unavailable'
+                    WHERE capture_id = $capture AND node_id = $node;
+                    UPDATE capture_lane_work
+                    SET state = 'pending', available_unix_ms = $now,
+                        lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL,
+                        completion_token = NULL, completed_unix_ms = NULL,
+                        failure_reason = 'processing-output-recovery', updated_unix_ms = $now
+                    WHERE lane_name = 'standard' AND raw_capture_row_id = (
+                        SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $capture)
+                      AND state IN ('completed', 'quarantined', 'abandoned');
+                    UPDATE raw_captures SET retention_hold = 1 WHERE capture_id = $capture;
+                    """;
+            }
+            else
+            {
+                update.CommandText = """
+                    UPDATE processing_outputs
+                    SET availability_state = $state, availability_reason = $reason,
+                        unavailable_unix_ms = COALESCE(unavailable_unix_ms, $now),
+                        quarantine_relative_path = $quarantine
+                    WHERE output_identity_sha256 = $output;
+                    UPDATE processing_nodes SET status = 'TerminalFailure', reason = 'processing.output-unavailable'
+                    WHERE capture_id = $capture AND node_id = $node;
+                    """;
+            }
+            update.Parameters.AddWithValue("$output", outputIdentitySha256);
+            update.Parameters.AddWithValue("$capture", captureId);
+            update.Parameters.AddWithValue("$node", nodeId);
+            update.Parameters.AddWithValue("$state", state);
+            update.Parameters.AddWithValue("$reason", reason);
+            update.Parameters.AddWithValue("$quarantine", (object?)quarantineRelativePath ?? DBNull.Value);
+            update.Parameters.AddWithValue("$now", now);
+            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new(deterministic);
+    }
+
+    internal async ValueTask<ProcessingAvailabilityInventory> ReadAvailabilityInventoryAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT SUM(CASE WHEN availability_state = 'Missing' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN availability_state = 'Quarantined' THEN 1 ELSE 0 END)
+            FROM processing_outputs;
+            """;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        return new(
+            await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(0),
+            await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(1));
+    }
+
+    internal async ValueTask<ProcessingDiagnosticPage> ReadDiagnosticExpirationPageAsync(
+        DateTimeOffset cutoffUtc, long? afterRecorded, long? afterId, int maximumCount, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT diagnostic_id, quarantine_relative_path, recorded_unix_ms
+            FROM processing_output_diagnostics
+            WHERE recorded_unix_ms < $cutoff AND
+                  ($after IS NULL OR recorded_unix_ms > $after OR
+                   (recorded_unix_ms = $after AND diagnostic_id > $id))
+            ORDER BY recorded_unix_ms, diagnostic_id LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$cutoff", cutoffUtc.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$after", afterRecorded.HasValue ? afterRecorded.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$id", afterId.HasValue ? afterId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$limit", maximumCount);
+        var values = new List<ProcessingDiagnostic>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            values.Add(new(reader.GetInt64(0), await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1), reader.GetInt64(2)));
+        var last = values.LastOrDefault();
+        return new(values, values.Count == maximumCount ? last!.RecordedUnixMilliseconds : null,
+            values.Count == maximumCount ? last!.DiagnosticId : null);
+    }
+
+    internal async ValueTask DeleteDiagnosticAsync(long diagnosticId, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM processing_output_diagnostics WHERE diagnostic_id = $id;";
+        command.Parameters.AddWithValue("$id", diagnosticId);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<bool> MatchesRawSourceAsync(
+        Guid captureId,
+        Guid artifactId,
+        string descriptorIdentitySha256,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS(
+                SELECT 1 FROM raw_captures
+                WHERE capture_id = $capture AND raw_artifact_id = $artifact
+                  AND descriptor_sha256 = $descriptor);
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
+        command.Parameters.AddWithValue("$descriptor", descriptorIdentitySha256);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
+    internal async ValueTask<bool> IsProcessingPathClaimedAsync(string relativePath, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS(SELECT 1 FROM processing_outputs
+                WHERE payload_relative_path = $path OR sidecar_relative_path = $path);
+            """;
+        command.Parameters.AddWithValue("$path", relativePath);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
+    internal ValueTask<ProcessingLifecyclePage> ReadActionableLifecyclePageAsync(
+        string? afterOperationId, int maximumCount, CancellationToken cancellationToken)
+        => ReadLifecyclePageAsync(orphan: false, afterOperationId, maximumCount, cancellationToken);
+
+    internal ValueTask<ProcessingLifecyclePage> ReadOrphanLifecyclePageAsync(
+        string? afterOperationId, int maximumCount, CancellationToken cancellationToken)
+        => ReadLifecyclePageAsync(orphan: true, afterOperationId, maximumCount, cancellationToken);
+
+    private async ValueTask<ProcessingLifecyclePage> ReadLifecyclePageAsync(
+        bool orphan, string? afterOperationId, int maximumCount, CancellationToken cancellationToken)
+    {
+        if (maximumCount is < 1 or > 4096) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT operation_id, kind, output_identity_sha256, source_relative_path,
+                   companion_relative_path, destination_relative_path, reason, observed_bytes,
+                   planned_unix_ms, phase
+            FROM processing_lifecycle_operations
+            WHERE (($orphan = 1 AND kind = 'orphan') OR ($orphan = 0 AND kind <> 'orphan'))
+              AND ($after IS NULL OR operation_id > $after)
+            ORDER BY operation_id LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$orphan", orphan ? 1 : 0);
+        command.Parameters.AddWithValue("$after", (object?)afterOperationId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$limit", maximumCount);
+        var values = new List<ProcessingLifecycleOperation>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            values.Add(new(reader.GetString(0), reader.GetString(1),
+                await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(2),
+                await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(3),
+                await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(4),
+                reader.GetString(5), reader.GetString(6), reader.GetInt64(7), reader.GetInt64(8), reader.GetString(9)));
+        return new(values, values.Count == maximumCount ? values[^1].OperationId : null);
+    }
+
+    internal async ValueTask PlanLifecycleOperationAsync(
+        ProcessingLifecycleOperation operation,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO processing_lifecycle_operations(
+                operation_id, kind, output_identity_sha256, source_relative_path,
+                companion_relative_path, destination_relative_path, reason, observed_bytes, planned_unix_ms, phase)
+            VALUES($id, $kind, $output, $source, $companion, $destination, $reason, $bytes, $now, $phase)
+            ON CONFLICT(operation_id) DO NOTHING;
+            """;
+        command.Parameters.AddWithValue("$id", operation.OperationId);
+        command.Parameters.AddWithValue("$kind", operation.Kind);
+        command.Parameters.AddWithValue("$output", (object?)operation.OutputIdentitySha256 ?? DBNull.Value);
+        command.Parameters.AddWithValue("$source", (object?)operation.SourceRelativePath ?? DBNull.Value);
+        command.Parameters.AddWithValue("$companion", (object?)operation.CompanionRelativePath ?? DBNull.Value);
+        command.Parameters.AddWithValue("$destination", operation.DestinationRelativePath);
+        command.Parameters.AddWithValue("$reason", operation.Reason);
+        command.Parameters.AddWithValue("$bytes", operation.ObservedBytes);
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$phase", operation.Phase);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask SetLifecyclePhaseAsync(string operationId, string phase, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE processing_lifecycle_operations SET phase = $phase WHERE operation_id = $id;";
+        command.Parameters.AddWithValue("$phase", phase);
+        command.Parameters.AddWithValue("$id", operationId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            throw new InvalidDataException("Processing lifecycle operation is missing.");
+    }
+
+    internal async ValueTask CompleteLifecycleOperationAsync(
+        ProcessingLifecycleOperation operation,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        if (operation.OutputIdentitySha256 is { } output)
+        {
+            string? owningCapture = null;
+            string? owningNode = null;
+            if (operation.Kind == "delete")
+            {
+                using var owner = connection.CreateCommand();
+                owner.Transaction = transaction;
+                owner.CommandText = "SELECT capture_id, node_id FROM processing_outputs WHERE output_identity_sha256 = $output;";
+                owner.Parameters.AddWithValue("$output", output);
+                using var ownerReader = await owner.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                if (await ownerReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    owningCapture = ownerReader.GetString(0);
+                    owningNode = ownerReader.GetString(1);
+                }
+            }
+            using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            if (operation.Kind == "delete")
+            {
+                update.CommandText = "DELETE FROM processing_outputs WHERE output_identity_sha256 = $output;";
+            }
+            else
+            {
+                update.CommandText = """
+                    UPDATE processing_outputs
+                    SET availability_state = 'Quarantined', availability_reason = $reason,
+                        unavailable_unix_ms = COALESCE(unavailable_unix_ms, $now),
+                        quarantine_relative_path = $destination
+                    WHERE output_identity_sha256 = $output;
+                    """;
+            }
+            update.Parameters.AddWithValue("$output", output);
+            update.Parameters.AddWithValue("$reason", operation.Reason);
+            update.Parameters.AddWithValue("$now", operation.PlannedUnixMilliseconds == 0
+                ? _timeProvider.GetUtcNow().ToUnixTimeMilliseconds() : operation.PlannedUnixMilliseconds);
+            update.Parameters.AddWithValue("$destination", operation.DestinationRelativePath);
+            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (operation.Kind == "delete" && owningCapture is not null)
+            {
+                using var deleteNode = connection.CreateCommand();
+                deleteNode.Transaction = transaction;
+                deleteNode.CommandText = """
+                    DELETE FROM processing_nodes
+                    WHERE capture_id = $capture AND node_id = $node
+                      AND NOT EXISTS (
+                          SELECT 1 FROM processing_outputs
+                          WHERE capture_id = $capture AND node_id = $node)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM capture_lane_work work
+                          JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+                          WHERE raw.capture_id = $capture AND work.lane_name = 'standard'
+                            AND work.state IN ('pending', 'leased', 'retry_wait'));
+                    """;
+                deleteNode.Parameters.AddWithValue("$capture", owningCapture);
+                deleteNode.Parameters.AddWithValue("$node", owningNode!);
+                await deleteNode.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        if (operation.Kind == "delete")
+            command.CommandText = "UPDATE processing_lifecycle_operations SET phase = 'database-completed' WHERE operation_id = $id;";
+        else
+            command.CommandText = "DELETE FROM processing_lifecycle_operations WHERE operation_id = $id;";
+        command.Parameters.AddWithValue("$id", operation.OperationId);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask DeleteLifecycleOperationAsync(string operationId, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM processing_lifecycle_operations WHERE operation_id = $id;";
+        command.Parameters.AddWithValue("$id", operationId);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<int> DeleteClaimedOrphanOperationsAsync(
+        string sidecarRelativePath, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DELETE FROM processing_lifecycle_operations
+            WHERE kind = 'orphan' AND companion_relative_path = $sidecar
+              AND EXISTS (
+                  SELECT 1 FROM processing_outputs output
+                  WHERE output.payload_relative_path = processing_lifecycle_operations.source_relative_path
+                    AND output.sidecar_relative_path = $sidecar);
+            """;
+        command.Parameters.AddWithValue("$sidecar", sidecarRelativePath);
+        var deleted = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return deleted;
+    }
+
+    internal async ValueTask<int> DeleteReclaimedOrphanPageAsync(
+        string? afterOperationId, int maximumCount, CancellationToken cancellationToken)
+    {
+        var page = await ReadOrphanLifecyclePageAsync(afterOperationId, maximumCount, cancellationToken).ConfigureAwait(false);
+        if (page.Items.Count == 0) return 0;
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        var deleted = 0;
+        foreach (var operation in page.Items)
+        {
+            if (operation.SourceRelativePath is null || operation.CompanionRelativePath is null) continue;
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                DELETE FROM processing_lifecycle_operations
+                WHERE operation_id = $id AND kind = 'orphan' AND EXISTS (
+                    SELECT 1 FROM processing_outputs output
+                    WHERE output.payload_relative_path = $payload
+                      AND output.sidecar_relative_path = $sidecar);
+                """;
+            command.Parameters.AddWithValue("$id", operation.OperationId);
+            command.Parameters.AddWithValue("$payload", operation.SourceRelativePath);
+            command.Parameters.AddWithValue("$sidecar", operation.CompanionRelativePath);
+            deleted += await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return deleted;
     }
 
     internal async ValueTask DeleteOutputlessNodeAsync(
@@ -514,9 +1528,12 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             SELECT output.output_identity_sha256, output.artifact_id, output.payload_relative_path, output.sidecar_relative_path,
                    output.descriptor_json, output.capture_id, output.agent_id, output.node_id, output.role, output.variant,
                    output.recipe_identity_sha256, output.algorithms_json, output.compatibility_json, output.total_integration_ticks,
-                   output.capture_sequence, output.legacy_recipe_version
+                    output.capture_sequence, output.legacy_recipe_version, output.product_kind,
+                     output.product_schema_version, output.content_identity_sha256,
+                     output.availability_state, output.availability_reason
             FROM processing_outputs AS output
             WHERE output.agent_id = $agent_id
+              AND output.availability_state = 'Available'
               AND output.capture_sequence <= $current_capture_sequence
               AND output.node_id = $node_id AND output.role = $role
             ORDER BY output.capture_sequence DESC, output.output_identity_sha256 DESC
@@ -593,7 +1610,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                     SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                            descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
                            algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                           legacy_recipe_version,
+                             legacy_recipe_version, product_kind, product_schema_version, content_identity_sha256,
+                             availability_state, availability_reason,
                            ROW_NUMBER() OVER (
                                PARTITION BY capture_id ORDER BY node_id, output_identity_sha256) AS gallery_rank
                     FROM processing_outputs
@@ -601,7 +1619,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 )
                 SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                        descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
-                       algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version
+                        algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version,
+                         product_kind, product_schema_version, content_identity_sha256,
+                         availability_state, availability_reason
                 FROM ranked_outputs
                 WHERE gallery_rank <= $maximum_outputs
                 ORDER BY capture_id, node_id, output_identity_sha256;
@@ -762,31 +1782,66 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using (var safety = connection.CreateCommand())
+        {
+            safety.CommandText = """
+                WITH RECURSIVE walk(root_artifact_id, artifact_id, path, depth, cycle) AS (
+                    SELECT artifact_id, artifact_id, '/' || artifact_id || '/', 0, 0
+                    FROM processing_outputs
+                    WHERE availability_state = 'Available'
+                    UNION ALL
+                    SELECT walk.root_artifact_id, source.source_artifact_id,
+                           walk.path || source.source_artifact_id || '/', walk.depth + 1,
+                           instr(walk.path, '/' || source.source_artifact_id || '/') > 0
+                    FROM walk
+                    JOIN processing_outputs output ON output.artifact_id = walk.artifact_id
+                    JOIN processing_output_sources source
+                      ON source.output_identity_sha256 = output.output_identity_sha256
+                    WHERE walk.depth < 512 AND walk.cycle = 0
+                )
+                SELECT COALESCE(MAX(cycle), 0), COALESCE(MAX(depth), 0) FROM walk;
+                """;
+            using var safetyReader = await safety.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            await safetyReader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (safetyReader.GetInt64(0) != 0 || safetyReader.GetInt64(1) >= 512)
+                throw new InvalidDataException("Processing retention lineage contains a cycle or exceeds its traversal bound.");
+        }
         using var command = connection.CreateCommand();
         command.CommandText = """
-            WITH ranked AS (
-                SELECT artifact_id, payload_relative_path, sidecar_relative_path, capture_id,
+            WITH RECURSIVE ranked AS (
+                SELECT artifact_id, capture_id, availability_state,
                        ROW_NUMBER() OVER (PARTITION BY agent_id, node_id ORDER BY capture_sequence DESC, output_identity_sha256 DESC) AS rank
                 FROM processing_outputs
-            )
-            SELECT DISTINCT artifact_id, payload_relative_path, sidecar_relative_path
-            FROM ranked
-            WHERE rank <= 100 OR EXISTS (
-                SELECT 1
-                FROM raw_captures raw
-                JOIN capture_lane_work work ON work.raw_capture_row_id = raw.raw_capture_row_id
-                WHERE raw.capture_id = ranked.capture_id
-                  AND work.lane_name = 'standard'
-                  AND work.state NOT IN ('completed', 'abandoned'))
-            UNION
-            SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
-            FROM (
-                SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path,
+                WHERE availability_state = 'Available'
+            ), raw_ranked AS (
+                SELECT raw_artifact_id,
                        ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY capture_sequence DESC) AS rank
                 FROM raw_captures
                 WHERE state = 'committed'
+            ), roots(artifact_id) AS (
+                SELECT artifact_id FROM ranked
+                WHERE rank <= 100 OR EXISTS (
+                    SELECT 1 FROM raw_captures raw
+                    JOIN capture_lane_work work ON work.raw_capture_row_id = raw.raw_capture_row_id
+                    WHERE raw.capture_id = ranked.capture_id AND work.lane_name = 'standard'
+                      AND work.state NOT IN ('completed', 'abandoned'))
+                UNION
+                SELECT raw_artifact_id FROM raw_ranked WHERE rank <= 100
+            ), held(artifact_id) AS (
+                SELECT artifact_id FROM roots
+                UNION
+                SELECT source.source_artifact_id
+                FROM held
+                JOIN processing_outputs output ON output.artifact_id = held.artifact_id
+                JOIN processing_output_sources source
+                  ON source.output_identity_sha256 = output.output_identity_sha256
             )
-            WHERE rank <= 100;
+            SELECT artifact_id, payload_relative_path, sidecar_relative_path
+            FROM processing_outputs WHERE artifact_id IN held AND availability_state = 'Available'
+            UNION
+            SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
+            FROM raw_captures WHERE raw_artifact_id IN held
+            LIMIT 4097;
             """;
         var holds = new List<ProcessingRetentionHold>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -797,6 +1852,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 reader.GetString(1),
                 reader.GetString(2)));
         }
+        if (holds.Count > 4096)
+            throw new InvalidDataException("Processing retention lineage exceeds its safety bound.");
         return holds;
     }
 
@@ -932,12 +1989,14 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
                 payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
                 algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                legacy_recipe_version, committed_unix_ms)
+                legacy_recipe_version, committed_unix_ms, product_kind, product_schema_version,
+                content_identity_sha256)
             VALUES (
                 $output_identity_sha256, $capture_id, $agent_id, $node_id, $artifact_id, $role, $variant,
                 $payload_relative_path, $sidecar_relative_path, $descriptor_json, $recipe_identity_sha256,
                 $algorithms_json, $compatibility_json, $total_integration_ticks, $capture_sequence,
-                $legacy_recipe_version, $committed_unix_ms)
+                $legacy_recipe_version, $committed_unix_ms, $product_kind, $product_schema_version,
+                $content_identity_sha256)
             ON CONFLICT(output_identity_sha256) DO NOTHING;
             """;
         AddOutputParameters(
@@ -949,14 +2008,16 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             algorithmsJson,
             compatibilityJson,
             _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        var inserted = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
 
         using var verify = connection.CreateCommand();
         verify.Transaction = transaction;
         verify.CommandText = """
             SELECT capture_id, node_id, artifact_id, payload_relative_path, sidecar_relative_path,
                    descriptor_json, recipe_identity_sha256, algorithms_json, compatibility_json,
-                   total_integration_ticks, capture_sequence, legacy_recipe_version
+                   total_integration_ticks, capture_sequence, legacy_recipe_version,
+                     product_kind, product_schema_version, content_identity_sha256,
+                     availability_state, availability_reason
             FROM processing_outputs WHERE output_identity_sha256 = $output_identity_sha256;
             """;
         verify.Parameters.AddWithValue("$output_identity_sha256", output.OutputIdentitySha256);
@@ -971,6 +2032,12 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         var existingLegacyRecipeVersion = await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false)
             ? null
             : reader.GetString(11);
+        var existingProductKind = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(12);
+        var existingProductSchemaVersion = await reader.IsDBNullAsync(13, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(13);
+        var existingContentIdentity = await reader.IsDBNullAsync(14, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(14);
         if (!string.Equals(reader.GetString(0), captureId.ToString("N"), StringComparison.Ordinal) ||
             !string.Equals(reader.GetString(1), nodeId, StringComparison.Ordinal) ||
             !string.Equals(reader.GetString(2), output.ArtifactId.ToString("N"), StringComparison.Ordinal) ||
@@ -982,10 +2049,51 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             !existingCompatibilityJson.AsSpan().SequenceEqual(compatibilityJson) ||
             reader.GetInt64(9) != output.TotalIntegration.Ticks ||
             reader.GetInt64(10) != output.CaptureSequence ||
-            !string.Equals(existingLegacyRecipeVersion, output.LegacyRecipeVersion, StringComparison.Ordinal))
+            !string.Equals(existingLegacyRecipeVersion, output.LegacyRecipeVersion, StringComparison.Ordinal) ||
+            !string.Equals(existingProductKind, output.ProductKind?.ToString(), StringComparison.Ordinal) ||
+            !string.Equals(existingProductSchemaVersion, output.ProductSchemaVersion, StringComparison.Ordinal) ||
+            !string.Equals(existingContentIdentity, output.ContentIdentitySha256, StringComparison.Ordinal))
         {
             throw new InvalidDataException("A processing output identity conflicts with committed immutable facts.");
         }
+        await reader.DisposeAsync().ConfigureAwait(false);
+
+        var sourceIds = output.Artifact.SourceArtifactIds;
+        if (inserted)
+        {
+            for (var ordinal = 0; ordinal < sourceIds.Count; ordinal++)
+            {
+                using var source = connection.CreateCommand();
+                source.Transaction = transaction;
+                source.CommandText = """
+                    INSERT INTO processing_output_sources(output_identity_sha256, source_ordinal, source_artifact_id)
+                    VALUES($output, $ordinal, $artifact);
+                    """;
+                source.Parameters.AddWithValue("$output", output.OutputIdentitySha256);
+                source.Parameters.AddWithValue("$ordinal", ordinal);
+                source.Parameters.AddWithValue("$artifact", sourceIds[ordinal].ToString("N"));
+                await source.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        using var verifySources = connection.CreateCommand();
+        verifySources.Transaction = transaction;
+        verifySources.CommandText = """
+            SELECT source_ordinal, source_artifact_id
+            FROM processing_output_sources
+            WHERE output_identity_sha256 = $output
+            ORDER BY source_ordinal;
+            """;
+        verifySources.Parameters.AddWithValue("$output", output.OutputIdentitySha256);
+        var existingSources = new List<Guid>();
+        using var sourceReader = await verifySources.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await sourceReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (sourceReader.GetInt32(0) != existingSources.Count)
+                throw new InvalidDataException("A processing output identity has non-contiguous source lineage.");
+            existingSources.Add(Guid.ParseExact(sourceReader.GetString(1), "N"));
+        }
+        if (!existingSources.SequenceEqual(sourceIds))
+            throw new InvalidDataException("A processing output identity conflicts with committed source lineage.");
     }
 
     private static void AddOutputParameters(
@@ -1015,6 +2123,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$capture_sequence", output.CaptureSequence);
         command.Parameters.AddWithValue("$legacy_recipe_version", (object?)output.LegacyRecipeVersion ?? DBNull.Value);
         command.Parameters.AddWithValue("$committed_unix_ms", committedUnixMilliseconds);
+        command.Parameters.AddWithValue("$product_kind", output.ProductKind?.ToString() ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("$product_schema_version", (object?)output.ProductSchemaVersion ?? DBNull.Value);
+        command.Parameters.AddWithValue("$content_identity_sha256", (object?)output.ContentIdentitySha256 ?? DBNull.Value);
     }
 
     private static async ValueTask<IReadOnlyList<DurableProcessingOutput>> ReadOutputsAsync(
@@ -1027,7 +2138,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.CommandText = """
             SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                    descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
-                   algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version
+                    algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version,
+                     product_kind, product_schema_version, content_identity_sha256,
+                     availability_state, availability_reason
             FROM processing_outputs
             WHERE capture_id = $capture_id AND node_id = $node_id
             ORDER BY output_identity_sha256;
@@ -1078,7 +2191,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 throw new InvalidDataException("Committed processing output descriptor is invalid.");
             }
             if (schema.GetString() is DurableProcessingProductManifestV1.CurrentSchemaVersion or
-                DurableEncodedProductManifestV2.CurrentSchemaVersion)
+                DurableEncodedProductManifestV2.CurrentSchemaVersion or
+                DurableTypedMetadataProductManifestV3.CurrentSchemaVersion)
             {
                 productManifest = DurableProcessingProductManifestJson.Parse(descriptorJson);
             }
@@ -1111,6 +2225,16 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         var recipeIdentity = reader.GetString(10);
         var totalIntegration = TimeSpan.FromTicks(reader.GetInt64(13));
         var captureSequence = reader.GetInt64(14);
+        ProcessingProductKind? productKind = await reader.IsDBNullAsync(16, cancellationToken).ConfigureAwait(false)
+            ? null : Enum.Parse<ProcessingProductKind>(reader.GetString(16));
+        var productSchemaVersion = await reader.IsDBNullAsync(17, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(17);
+        var contentIdentity = await reader.IsDBNullAsync(18, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(18);
+        var availabilityState = reader.GetString(19);
+        var availabilityReason = await reader.IsDBNullAsync(20, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(20);
+        var typedManifest = productManifest as DurableTypedMetadataProductManifestV3;
         var sourceMatchesManifest = productManifest is null ||
             (productManifest.ProducerStepId is { } producerStepId
                 ? string.Equals(reader.GetString(7), producerStepId, StringComparison.OrdinalIgnoreCase)
@@ -1128,7 +2252,10 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             !algorithms.SequenceEqual(productManifest?.Algorithms ?? algorithms) ||
             compatibility != (productManifest?.Compatibility ?? compatibility) ||
             totalIntegration.Ticks != (productManifest?.TotalIntegrationTicks ?? totalIntegration.Ticks) ||
-            captureSequence != capture.CaptureSequence)
+            captureSequence != capture.CaptureSequence ||
+            productKind != typedManifest?.Kind ||
+            !string.Equals(productSchemaVersion, typedManifest?.ProductSchemaVersion, StringComparison.Ordinal) ||
+            !string.Equals(contentIdentity, typedManifest?.ContentIdentitySha256, StringComparison.Ordinal))
         {
             throw new InvalidDataException("Committed processing output columns conflict with its descriptor.");
         }
@@ -1148,8 +2275,265 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 compatibility,
                 totalIntegration,
                 captureSequence,
-                await reader.IsDBNullAsync(15, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(15)));
+                await reader.IsDBNullAsync(15, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(15),
+                productKind,
+                productSchemaVersion,
+                 contentIdentity,
+                 availabilityState,
+                 availabilityReason));
     }
+
+    private static async ValueTask BackfillV4FactsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<LegacyOutputRow>();
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
+                       payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256
+                FROM processing_outputs
+                ORDER BY output_identity_sha256;
+                """;
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                rows.Add(new LegacyOutputRow(
+                    reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
+                    reader.GetString(4), reader.GetString(5), reader.GetString(6), reader.GetString(7),
+                    reader.GetString(8), await reader.GetFieldValueAsync<byte[]>(9, cancellationToken).ConfigureAwait(false),
+                    reader.GetString(10)));
+            }
+        }
+
+        foreach (var row in rows)
+        {
+            ArtifactDescriptor artifact;
+            CaptureIdentityDescriptor capture;
+            ProcessingProductKind? kind = null;
+            string? schemaVersion = null;
+            string? contentIdentity = null;
+            string expectedOutputIdentity;
+            string expectedPayloadPath;
+            string expectedSidecarPath;
+            string expectedNodeId;
+            try
+            {
+                using var document = JsonDocument.Parse(row.Evidence);
+                if (!document.RootElement.TryGetProperty("schemaVersion", out var schemaElement) ||
+                    schemaElement.ValueKind != JsonValueKind.String)
+                    throw new InvalidDataException("Legacy processing output evidence has no schema version.");
+                var evidenceSchema = schemaElement.GetString();
+                if (evidenceSchema is DurableProcessingProductManifestV1.CurrentSchemaVersion or
+                    DurableEncodedProductManifestV2.CurrentSchemaVersion or
+                    DurableTypedMetadataProductManifestV3.CurrentSchemaVersion)
+                {
+                    var manifest = DurableProcessingProductManifestJson.Parse(row.Evidence);
+                    artifact = manifest.Artifact;
+                    capture = manifest.Capture;
+                    expectedOutputIdentity = manifest.OutputIdentitySha256;
+                    expectedPayloadPath = manifest.RelativeArtifactPath;
+                    expectedSidecarPath = Path.ChangeExtension(expectedPayloadPath, ".manifest.json");
+                    expectedNodeId = manifest.ProducerStepId ?? artifact.SourceId;
+                    if (manifest is DurableTypedMetadataProductManifestV3 typed)
+                    {
+                        kind = typed.Kind;
+                        schemaVersion = typed.ProductSchemaVersion;
+                        contentIdentity = typed.ContentIdentitySha256;
+                    }
+                }
+                else
+                {
+                    var parsed = CaptureContractJson.ParseManifest(row.Evidence);
+                    if (!parsed.IsValid || parsed.Document?.Manifest?.Descriptor is not { } descriptor)
+                        throw new InvalidDataException("Legacy processing output descriptor is invalid.");
+                    artifact = descriptor.Artifact;
+                    capture = descriptor.Capture;
+                    expectedOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
+                        artifact.Role, artifact.Variant,
+                        ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256,
+                        artifact.SourceArtifactIds);
+                    expectedPayloadPath = parsed.Document.Manifest.RelativeArtifactPath;
+                    expectedSidecarPath = Path.ChangeExtension(expectedPayloadPath, ".json");
+                    expectedNodeId = parsed.Document.Manifest.ProducerStepId ?? artifact.SourceId;
+                }
+            }
+            catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException)
+            {
+                throw new InvalidDataException("Legacy processing output evidence is malformed.", exception);
+            }
+
+            var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256;
+            if (!IsCanonicalRelativePath(row.PayloadRelativePath) ||
+                !IsCanonicalRelativePath(row.SidecarRelativePath) ||
+                !string.Equals(row.OutputIdentity, expectedOutputIdentity, StringComparison.Ordinal) ||
+                !string.Equals(row.CaptureId, capture.CaptureId.ToString("N"), StringComparison.Ordinal) ||
+                !string.Equals(row.AgentId, capture.AgentId, StringComparison.Ordinal) ||
+                !string.Equals(row.NodeId, expectedNodeId, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(row.ArtifactId, artifact.ArtifactId.ToString("N"), StringComparison.Ordinal) ||
+                !string.Equals(row.Role, artifact.Role.ToString(), StringComparison.Ordinal) ||
+                !string.Equals(row.Variant, artifact.Variant, StringComparison.Ordinal) ||
+                !string.Equals(row.RecipeIdentitySha256, recipeIdentity, StringComparison.Ordinal) ||
+                !string.Equals(row.PayloadRelativePath, expectedPayloadPath, StringComparison.Ordinal) ||
+                !string.Equals(row.SidecarRelativePath, expectedSidecarPath, StringComparison.Ordinal) ||
+                artifact.SourceArtifactIds.Count > MaximumOutputSourceCount)
+                throw new InvalidDataException("Legacy processing output evidence conflicts with indexed identity facts.");
+
+            using (var update = connection.CreateCommand())
+            {
+                update.Transaction = transaction;
+                update.CommandText = """
+                    UPDATE processing_outputs
+                    SET product_kind = $kind, product_schema_version = $schema,
+                        content_identity_sha256 = $content
+                    WHERE output_identity_sha256 = $output;
+                    """;
+                update.Parameters.AddWithValue("$kind", kind?.ToString() ?? (object)DBNull.Value);
+                update.Parameters.AddWithValue("$schema", (object?)schemaVersion ?? DBNull.Value);
+                update.Parameters.AddWithValue("$content", (object?)contentIdentity ?? DBNull.Value);
+                update.Parameters.AddWithValue("$output", row.OutputIdentity);
+                await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            for (var ordinal = 0; ordinal < artifact.SourceArtifactIds.Count; ordinal++)
+            {
+                using var source = connection.CreateCommand();
+                source.Transaction = transaction;
+                source.CommandText = """
+                    INSERT INTO processing_output_sources(output_identity_sha256, source_ordinal, source_artifact_id)
+                    VALUES($output, $ordinal, $artifact);
+                    """;
+                source.Parameters.AddWithValue("$output", row.OutputIdentity);
+                source.Parameters.AddWithValue("$ordinal", ordinal);
+                source.Parameters.AddWithValue("$artifact", artifact.SourceArtifactIds[ordinal].ToString("N"));
+                await source.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static async ValueTask VerifyV5SchemaDefinitionsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT name, sql FROM sqlite_master
+            WHERE type = 'table' AND name IN ('processing_outputs', 'processing_output_sources', 'processing_lifecycle_operations')
+            ORDER BY name;
+            """;
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            definitions[reader.GetString(0)] = NormalizeSchemaSql(reader.GetString(1));
+        }
+        if (!definitions.TryGetValue("processing_outputs", out var outputs) ||
+             !outputs.Contains("check((product_kindisnullandproduct_schema_versionisnullandcontent_identity_sha256isnull)or(product_kindisnotnullandproduct_schema_versionisnotnullandcontent_identity_sha256isnotnull))", StringComparison.Ordinal) ||
+             !outputs.Contains("availability_statetextnotnulldefault'available'check(availability_statein('available','missing','quarantined'))", StringComparison.Ordinal) ||
+             !definitions.TryGetValue("processing_output_sources", out var sources) ||
+            !sources.Contains($"check(source_ordinal>=0andsource_ordinal<{MaximumOutputSourceCount})", StringComparison.Ordinal) ||
+            !sources.Contains("unique(output_identity_sha256,source_artifact_id)", StringComparison.Ordinal) ||
+             !sources.Contains("foreignkey(output_identity_sha256)referencesprocessing_outputs(output_identity_sha256)ondeletecascade", StringComparison.Ordinal) ||
+             !definitions.ContainsKey("processing_lifecycle_operations"))
+        {
+            throw new InvalidDataException("Capture processing SQLite schema definitions are drifted.");
+        }
+        await VerifyIndexDefinitionAsync(
+            connection,
+            "processing_outputs",
+            "ix_processing_outputs_product",
+            ["capture_id", "product_schema_version", "output_identity_sha256"],
+            cancellationToken).ConfigureAwait(false);
+        await VerifyIndexDefinitionAsync(
+            connection,
+            "processing_outputs",
+            "ix_processing_outputs_retention_available",
+            ["committed_unix_ms", "output_identity_sha256"],
+            cancellationToken).ConfigureAwait(false);
+        await VerifyIndexDefinitionAsync(
+            connection,
+            "processing_outputs",
+            "ix_processing_outputs_retention_unavailable",
+            ["unavailable_unix_ms", "output_identity_sha256"],
+            cancellationToken).ConfigureAwait(false);
+        await VerifyIndexDefinitionAsync(
+            connection,
+            "processing_output_sources",
+            "ix_processing_output_sources_artifact",
+            ["source_artifact_id", "output_identity_sha256"],
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Table and index names are fixed internal schema constants.")]
+    private static async ValueTask VerifyIndexDefinitionAsync(
+        SqliteConnection connection,
+        string tableName,
+        string indexName,
+        IReadOnlyList<string> expectedColumns,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA index_xinfo('{indexName}');";
+        var columns = new List<(string Name, bool Descending, string Collation)>();
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (reader.GetBoolean(5))
+                {
+                    columns.Add((reader.GetString(2), reader.GetBoolean(3), reader.GetString(4)));
+                }
+            }
+        }
+        var expected = expectedColumns.Select(static column => (column, false, "BINARY")).ToArray();
+        if (!columns.SequenceEqual(expected))
+        {
+            throw new InvalidDataException($"Capture processing SQLite index '{indexName}' is drifted.");
+        }
+
+        command.CommandText = $"PRAGMA index_list('{tableName}');";
+        var found = false;
+        using var listReader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await listReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (string.Equals(listReader.GetString(1), indexName, StringComparison.Ordinal))
+            {
+                found = listReader.GetInt64(2) == 0 &&
+                    string.Equals(listReader.GetString(3), "c", StringComparison.Ordinal);
+                break;
+            }
+        }
+        if (!found)
+        {
+            throw new InvalidDataException($"Capture processing SQLite index '{indexName}' ownership is drifted.");
+        }
+    }
+
+    private static string NormalizeSchemaSql(string sql) =>
+        new(sql.Where(static character => !char.IsWhiteSpace(character) && character != '"').Select(char.ToLowerInvariant).ToArray());
+
+    internal static bool IsCanonicalRelativePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path.Contains('\\', StringComparison.Ordinal) ||
+            Path.IsPathRooted(path) || path.Contains('\0', StringComparison.Ordinal)) return false;
+        var parts = path.Split('/');
+        return parts.All(static part => part.Length > 0 && part is not "." and not "..");
+    }
+
+    private sealed record LegacyOutputRow(
+        string OutputIdentity,
+        string CaptureId,
+        string AgentId,
+        string NodeId,
+        string ArtifactId,
+        string Role,
+        string Variant,
+        string PayloadRelativePath,
+        string SidecarRelativePath,
+        byte[] Evidence,
+        string RecipeIdentitySha256);
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated value is a validated integer host option used only for SQLite PRAGMA configuration.")]
     private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
@@ -1183,9 +2567,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
     private const string SchemaSql = """
         CREATE TABLE IF NOT EXISTS capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 3)
+            version INTEGER NOT NULL CHECK(version = 5)
         ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 3)
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 5)
             ON CONFLICT(schema_key) DO NOTHING;
         CREATE TABLE IF NOT EXISTS processing_nodes(
             capture_id TEXT NOT NULL,
@@ -1242,8 +2626,57 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             capture_sequence INTEGER NOT NULL CHECK(capture_sequence > 0),
             legacy_recipe_version TEXT NULL,
             committed_unix_ms INTEGER NOT NULL,
+            product_kind TEXT NULL CHECK(product_kind IS NULL OR product_kind IN ('PixelData', 'Metadata')),
+            product_schema_version TEXT NULL CHECK(product_schema_version IS NULL OR length(product_schema_version) BETWEEN 1 AND 128),
+            content_identity_sha256 TEXT NULL CHECK(content_identity_sha256 IS NULL OR length(content_identity_sha256) = 64),
+            availability_state TEXT NOT NULL DEFAULT 'Available' CHECK(availability_state IN ('Available', 'Missing', 'Quarantined')),
+            availability_reason TEXT NULL CHECK(availability_reason IS NULL OR length(availability_reason) BETWEEN 1 AND 128),
+            unavailable_unix_ms INTEGER NULL,
+            quarantine_relative_path TEXT NULL,
+            CHECK((product_kind IS NULL AND product_schema_version IS NULL AND content_identity_sha256 IS NULL) OR
+                  (product_kind IS NOT NULL AND product_schema_version IS NOT NULL AND content_identity_sha256 IS NOT NULL)),
             FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id)
                 DEFERRABLE INITIALLY DEFERRED
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS processing_output_sources(
+            output_identity_sha256 TEXT NOT NULL CHECK(length(output_identity_sha256) = 64),
+            source_ordinal INTEGER NOT NULL CHECK(source_ordinal >= 0 AND source_ordinal < 512),
+            source_artifact_id TEXT NOT NULL CHECK(length(source_artifact_id) = 32),
+            PRIMARY KEY(output_identity_sha256, source_ordinal),
+            UNIQUE(output_identity_sha256, source_artifact_id),
+            FOREIGN KEY(output_identity_sha256) REFERENCES processing_outputs(output_identity_sha256)
+                ON DELETE CASCADE
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS processing_lifecycle_operations(
+            operation_id TEXT PRIMARY KEY CHECK(length(operation_id) BETWEEN 1 AND 128),
+            kind TEXT NOT NULL CHECK(kind IN ('quarantine', 'delete', 'orphan')),
+            output_identity_sha256 TEXT NULL CHECK(output_identity_sha256 IS NULL OR length(output_identity_sha256) = 64),
+            source_relative_path TEXT NULL,
+            companion_relative_path TEXT NULL,
+            destination_relative_path TEXT NOT NULL,
+            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 128),
+            observed_bytes INTEGER NOT NULL CHECK(observed_bytes >= 0),
+            planned_unix_ms INTEGER NOT NULL
+            ,phase TEXT NOT NULL DEFAULT 'planned' CHECK(phase IN ('planned', 'moved', 'database-completed', 'files-deleted')),
+            CHECK((kind = 'quarantine' AND source_relative_path IS NOT NULL) OR kind IN ('orphan', 'delete'))
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS processing_reconciliation_state(
+            state_key INTEGER PRIMARY KEY CHECK(state_key = 1),
+            output_identity_sha256 TEXT NULL CHECK(output_identity_sha256 IS NULL OR length(output_identity_sha256) = 64),
+            modern_sidecar_relative_path TEXT NULL,
+            legacy_sidecar_relative_path TEXT NULL,
+            payload_relative_path TEXT NULL
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS processing_output_diagnostics(
+            diagnostic_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            output_identity_sha256 TEXT NOT NULL CHECK(length(output_identity_sha256) = 64),
+            capture_id TEXT NOT NULL CHECK(length(capture_id) = 32),
+            node_id TEXT NOT NULL,
+            availability_state TEXT NOT NULL CHECK(availability_state IN ('Missing', 'Quarantined')),
+            availability_reason TEXT NULL,
+            descriptor_json BLOB NOT NULL,
+            quarantine_relative_path TEXT NULL,
+            recorded_unix_ms INTEGER NOT NULL
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_processing_outputs_capture_node
             ON processing_outputs(capture_id, node_id);
@@ -1257,6 +2690,14 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             ON processing_outputs(role, capture_id);
         CREATE INDEX IF NOT EXISTS ix_processing_outputs_recipe
             ON processing_outputs(recipe_identity_sha256, capture_id);
+        CREATE INDEX IF NOT EXISTS ix_processing_outputs_product
+            ON processing_outputs(capture_id, product_schema_version, output_identity_sha256);
+        CREATE INDEX IF NOT EXISTS ix_processing_outputs_retention_available
+            ON processing_outputs(committed_unix_ms, output_identity_sha256) WHERE availability_state = 'Available';
+        CREATE INDEX IF NOT EXISTS ix_processing_outputs_retention_unavailable
+            ON processing_outputs(unavailable_unix_ms, output_identity_sha256) WHERE availability_state <> 'Available';
+        CREATE INDEX IF NOT EXISTS ix_processing_output_sources_artifact
+            ON processing_output_sources(source_artifact_id, output_identity_sha256);
         CREATE INDEX IF NOT EXISTS ix_processing_node_inputs_artifact
             ON processing_node_inputs(artifact_id, capture_id, node_id);
         """;
@@ -1313,5 +2754,136 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             version INTEGER NOT NULL CHECK(version = 3)
         ) STRICT;
         INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 3);
+        """;
+
+    private const string ProcessingV4MigrationSql = """
+        DROP INDEX ix_processing_outputs_capture_node;
+        DROP INDEX ix_processing_outputs_window;
+        DROP INDEX ix_processing_outputs_role;
+        DROP INDEX ix_processing_outputs_recipe;
+        ALTER TABLE processing_outputs RENAME TO processing_outputs_v3;
+        CREATE TABLE processing_outputs(
+            output_identity_sha256 TEXT PRIMARY KEY CHECK(length(output_identity_sha256) = 64),
+            capture_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            artifact_id TEXT NOT NULL UNIQUE CHECK(length(artifact_id) = 32),
+            role TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            payload_relative_path TEXT NOT NULL,
+            sidecar_relative_path TEXT NOT NULL,
+            descriptor_json BLOB NOT NULL,
+            recipe_identity_sha256 TEXT NOT NULL CHECK(length(recipe_identity_sha256) = 64),
+            algorithms_json BLOB NOT NULL,
+            compatibility_json BLOB NOT NULL,
+            total_integration_ticks INTEGER NOT NULL,
+            capture_sequence INTEGER NOT NULL CHECK(capture_sequence > 0),
+            legacy_recipe_version TEXT NULL,
+            committed_unix_ms INTEGER NOT NULL,
+            product_kind TEXT NULL CHECK(product_kind IS NULL OR product_kind IN ('PixelData', 'Metadata')),
+            product_schema_version TEXT NULL CHECK(product_schema_version IS NULL OR length(product_schema_version) BETWEEN 1 AND 128),
+            content_identity_sha256 TEXT NULL CHECK(content_identity_sha256 IS NULL OR length(content_identity_sha256) = 64),
+            CHECK((product_kind IS NULL AND product_schema_version IS NULL AND content_identity_sha256 IS NULL) OR
+                  (product_kind IS NOT NULL AND product_schema_version IS NOT NULL AND content_identity_sha256 IS NOT NULL)),
+            FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id)
+                DEFERRABLE INITIALLY DEFERRED
+        ) STRICT;
+        INSERT INTO processing_outputs(
+            output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
+            payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
+            algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+            legacy_recipe_version, committed_unix_ms)
+        SELECT output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
+               payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
+               algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+               legacy_recipe_version, committed_unix_ms
+        FROM processing_outputs_v3;
+        DROP TABLE processing_outputs_v3;
+        CREATE TABLE processing_output_sources(
+            output_identity_sha256 TEXT NOT NULL CHECK(length(output_identity_sha256) = 64),
+            source_ordinal INTEGER NOT NULL CHECK(source_ordinal >= 0 AND source_ordinal < 512),
+            source_artifact_id TEXT NOT NULL CHECK(length(source_artifact_id) = 32),
+            PRIMARY KEY(output_identity_sha256, source_ordinal),
+            UNIQUE(output_identity_sha256, source_artifact_id),
+            FOREIGN KEY(output_identity_sha256) REFERENCES processing_outputs(output_identity_sha256)
+                ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX ix_processing_outputs_capture_node
+            ON processing_outputs(capture_id, node_id);
+        CREATE INDEX ix_processing_outputs_window
+            ON processing_outputs(agent_id, node_id, role, capture_sequence);
+        CREATE INDEX ix_processing_outputs_role
+            ON processing_outputs(role, capture_id);
+        CREATE INDEX ix_processing_outputs_recipe
+            ON processing_outputs(recipe_identity_sha256, capture_id);
+        CREATE INDEX ix_processing_outputs_product
+            ON processing_outputs(capture_id, product_schema_version, output_identity_sha256);
+        CREATE INDEX ix_processing_output_sources_artifact
+            ON processing_output_sources(source_artifact_id, output_identity_sha256);
+        DROP TABLE capture_processing_schema;
+        CREATE TABLE capture_processing_schema(
+            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
+            version INTEGER NOT NULL CHECK(version = 4)
+        ) STRICT;
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 4);
+        """;
+
+    private const string ProcessingV5MigrationSql = """
+        ALTER TABLE processing_outputs ADD COLUMN availability_state TEXT NOT NULL DEFAULT 'Available'
+            CHECK(availability_state IN ('Available', 'Missing', 'Quarantined'));
+        ALTER TABLE processing_outputs ADD COLUMN availability_reason TEXT NULL
+            CHECK(availability_reason IS NULL OR length(availability_reason) BETWEEN 1 AND 128);
+        ALTER TABLE processing_outputs ADD COLUMN unavailable_unix_ms INTEGER NULL;
+        ALTER TABLE processing_outputs ADD COLUMN quarantine_relative_path TEXT NULL;
+        CREATE TABLE processing_lifecycle_operations(
+            operation_id TEXT PRIMARY KEY CHECK(length(operation_id) BETWEEN 1 AND 128),
+            kind TEXT NOT NULL CHECK(kind IN ('quarantine', 'delete', 'orphan')),
+            output_identity_sha256 TEXT NULL CHECK(output_identity_sha256 IS NULL OR length(output_identity_sha256) = 64),
+            source_relative_path TEXT NULL,
+            companion_relative_path TEXT NULL,
+            destination_relative_path TEXT NOT NULL,
+            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 128),
+            observed_bytes INTEGER NOT NULL CHECK(observed_bytes >= 0),
+            planned_unix_ms INTEGER NOT NULL,
+            phase TEXT NOT NULL DEFAULT 'planned' CHECK(phase IN ('planned', 'moved', 'database-completed', 'files-deleted')),
+            CHECK((kind = 'quarantine' AND source_relative_path IS NOT NULL) OR kind IN ('orphan', 'delete'))
+        ) STRICT;
+        CREATE TABLE processing_reconciliation_state(
+            state_key INTEGER PRIMARY KEY CHECK(state_key = 1),
+            output_identity_sha256 TEXT NULL CHECK(output_identity_sha256 IS NULL OR length(output_identity_sha256) = 64),
+            modern_sidecar_relative_path TEXT NULL,
+            legacy_sidecar_relative_path TEXT NULL,
+            payload_relative_path TEXT NULL
+        ) STRICT;
+        CREATE TABLE processing_output_diagnostics(
+            diagnostic_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            output_identity_sha256 TEXT NOT NULL CHECK(length(output_identity_sha256) = 64),
+            capture_id TEXT NOT NULL CHECK(length(capture_id) = 32),
+            node_id TEXT NOT NULL,
+            availability_state TEXT NOT NULL CHECK(availability_state IN ('Missing', 'Quarantined')),
+            availability_reason TEXT NULL,
+            descriptor_json BLOB NOT NULL,
+            quarantine_relative_path TEXT NULL,
+            recorded_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX ix_processing_outputs_retention_available
+            ON processing_outputs(committed_unix_ms, output_identity_sha256) WHERE availability_state = 'Available';
+        CREATE INDEX ix_processing_outputs_retention_unavailable
+            ON processing_outputs(unavailable_unix_ms, output_identity_sha256) WHERE availability_state <> 'Available';
+        DROP TABLE capture_processing_schema;
+        CREATE TABLE capture_processing_schema(
+            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
+            version INTEGER NOT NULL CHECK(version = 5)
+        ) STRICT;
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 5);
+        """;
+
+    private const string FinalizeV5VersionSql = """
+        DROP TABLE capture_processing_schema;
+        CREATE TABLE capture_processing_schema(
+            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
+            version INTEGER NOT NULL CHECK(version = 5)
+        ) STRICT;
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 5);
         """;
 }

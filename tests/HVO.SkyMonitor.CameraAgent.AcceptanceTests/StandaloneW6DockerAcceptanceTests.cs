@@ -15,6 +15,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -39,18 +40,18 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedAgentId = "cameraagent-standalone-w6-asi676mc";
     private const string ExpectedCatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
     private const string ExpectedRigSha256 = "7B395B8DD577024944C263E1EA642BB472E3144110FF3FE75DBBCE67B187F172";
-    private const string ExpectedProcessingSha256 = "D79F743C9BDBFE027D088ADCE2B95CF23ED6E07880348CF47E01DEFF95E1FCB9";
-    private const string ExpectedLocalProfileSha256 = "7D4B0803BE56ED1B898AB71FD141385C41B1D74331474AFB3A94DADEE7D7EE80";
+    private const string ExpectedProcessingSha256 = "66EA97A4D415905A9DB7E197E3A465AC6C1555CDA680CD303B90DF171A1AF486";
+    private const string ExpectedLocalProfileSha256 = "0B34090E5589D72D085597DAB3703C73566EA88AA48E8ACDFEF599C6A1D983A5";
     private const string ExpectedScheduleSha256 = "DDD63791961E018687C7E6FA095CA17EFB88F1CC5AE5861D58690129FB9A27B2";
-    private const string ExpectedDesiredGraphSha256 = "E17DB795563078FD0B8C054586A3F059C8968BD1ADB45FBBB88E188B28F76C6E";
-    private const string ExpectedEffectiveGraphSha256 = "9CC4C1FF098B9EAADE1EEA7646E8E9F8C248C8C494A40DCBB0834D89D51852D3";
+    private const string ExpectedDesiredGraphSha256 = "86053709D0818A19E574583EB30FB6BACFEB40AC2F5C0E3F491F7A580D331B3E";
+    private const string ExpectedEffectiveGraphSha256 = "40018B0AF40F40B641FFF7138C56559B28F4C57C00500D59A696B46B68FFFCA8";
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "3233765432377F454526BAF795268FC9A73B3DEB8F0800A0D21BD652006E500C";
     private const string ExpectedMonoProcessingSha256 = "F5BA5B24130B8C2359E9518DBA7C4DC3E899FB2FDD826FA46269F1A2AC9DDC0B";
     private const string ExpectedMonoLocalProfileSha256 = "5185EEA24AE697CD841FFF787F96D886AF8EF5DF08A162098671F6B6EBFCBDB4";
     private const string ExpectedMonoScheduleSha256 = "355D9C9A53CB600E6F1798109A4BFAC8D539F6A9B0A1DF9A9D44A9EF6283ED01";
     private const string ExpectedMonoDesiredGraphSha256 = "A5F687646DFBC2BFE5716E45AA2ED9028901EAE940D2A9FC8EC70F98C283512D";
-    private const string ExpectedMonoEffectiveGraphSha256 = "DBA167BAF1AAF12FDEBF9BAC029D72BBE0943CAE0AB00C9BB187D70DB0A78FEF";
+    private const string ExpectedMonoEffectiveGraphSha256 = "D234D4CF0B9447DDAE2E237EE5024B1756BEA591D9FA2C4D1DD0CF1DD560EA21";
     private const string CentralHandlerReadyRecord = "HVO211_HANDLER_READY";
     private const string CentralHandlerAttemptRecord = "HVO211_HANDLER_ATTEMPT";
     private static readonly string[] ExpectedCatalogRows = ["11734", "24378", "24549", "27919", "32263", "37173"];
@@ -81,6 +82,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         FrameArtifactRole.AnnotatedPreview,
         FrameArtifactRole.Metadata
     ];
+    private static readonly string[] ExpectedPresentationLayerKinds =
+        ["scene-constellations", "scene-annotation", "cloud-mask", "cloud-labels", "environment"];
     private static readonly FrameArtifactRole[] ExpectedMonoRoles =
     [
         FrameArtifactRole.Raw,
@@ -94,10 +97,17 @@ public sealed class StandaloneW6DockerAcceptanceTests
         "Combined/rolling-mean",
         "Preview/calibrated-preview",
         "Preview/combined-preview",
+        "Metadata/projected-scene-v1",
         "Metadata/image-quality-v1",
         "Metadata/cloud-assessment-v1",
-        "AnnotatedPreview/w6-annotated",
-        "AnnotatedPreview/w6-weather-overlay"
+        "Metadata/w6-constellation-layer",
+        "Metadata/w6-scene-annotation-layer",
+        "Metadata/w6-cloud-mask-layer",
+        "Metadata/w6-cloud-label-layer",
+        "Metadata/w6-presentation-metadata-facts",
+        "Metadata/w6-environment-layer",
+        "Metadata/w6-overlay-manifest",
+        "AnnotatedPreview/w6-annotated-preview"
     ];
     private static readonly JsonSerializerOptions EvidenceJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
@@ -136,6 +146,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var containerEnvironment = await ReadContainerExecutionEnvironmentAsync(container).ConfigureAwait(false);
         var serviceImages = await ReadServiceImageProvenanceAsync(container).ConfigureAwait(false);
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
+        var ownerPassword = await CompleteOwnerBootstrapAsync(session, password).ConfigureAwait(false);
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true }).ConfigureAwait(false);
         await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -149,7 +160,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         var browserErrors = new List<string>();
         page.PageError += (_, error) => browserErrors.Add(error);
-        await BrowserLoginAsync(page, password).ConfigureAwait(false);
+        await BrowserLoginAsync(page, ownerPassword).ConfigureAwait(false);
 
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
         await AcquireCalibrationAsync(page).ConfigureAwait(false);
@@ -168,6 +179,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             calibrationPublicationToRestartMilliseconds = publicationToRestart.TotalMilliseconds;
             var calibrationRestart = Stopwatch.StartNew();
             await RestartContainerAsync(baseUri, container).ConfigureAwait(false);
+            var token = await GetAntiforgeryTokenAsync(session).ConfigureAwait(false);
+            await SetCaptureStateAsync(session, pause: true, token).ConfigureAwait(false);
             calibrationRestart.Stop();
             Assert.IsLessThanOrEqualTo(TimeSpan.FromMinutes(3), calibrationRestart.Elapsed);
             calibrationRestartMilliseconds = calibrationRestart.Elapsed.TotalMilliseconds;
@@ -251,7 +264,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.HasCount(requestedMeasuredCount, measuredCaptures);
         var captureProvenance = AssertCaptureContracts(
             runtimeRoot, measuredCaptures, expectedDeploymentLocation);
-        var geometry = await AssertRepresentativeGeometryAsync(runtimeRoot, measuredCaptures).ConfigureAwait(false);
+        var campaignCaptures = warmupCaptures.Captures.Concat(measuredCaptures).ToArray();
+        var geometry = await AssertRepresentativeGeometryAsync(runtimeRoot, campaignCaptures).ConfigureAwait(false);
         var calibration = ReadCalibrationEvidence(runtimeRoot);
         var calibrationResiduals = await AssertCalibrationResidualsAsync(
             runtimeRoot,
@@ -259,12 +273,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
             calibration).ConfigureAwait(false);
         var representative = RetainRepresentativeEvidence(runtimeRoot, evidenceRoot, measuredCaptures[0].CaptureId);
         var comparisonPreview = await AssertComparisonApiAsync(
-            session, measuredCaptures[0], geometry, evidenceRoot).ConfigureAwait(false);
+            session, campaignCaptures.Single(capture => capture.CaptureId == geometry.CaptureId), geometry, evidenceRoot)
+            .ConfigureAwait(false);
         var environmental = await AssertEnvironmentalEvidenceAsync(
             session, page, runtimeRoot, measuredCaptures[^1]).ConfigureAwait(false);
         var pipelinePerformance = ReadPipelinePerformance(runtimeRoot, measuredCaptures);
         var transient = await WaitForTransientConvergenceAsync(runtimeRoot, TimeSpan.FromMinutes(3)).ConfigureAwait(false);
-        var transientEvidence = RetainTransientEvidence(runtimeRoot, evidenceRoot, measuredCaptures);
+        var transientEvidence = RetainTransientEvidence(runtimeRoot, evidenceRoot, campaignCaptures);
         var transientBrowser = await AssertTransientBrowserEvidenceAsync(page, transientEvidence).ConfigureAwait(false);
         var metricsText = await WaitForMetricSurfaceAsync(
             session,
@@ -517,6 +532,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var containerEnvironment = await ReadContainerExecutionEnvironmentAsync(container).ConfigureAwait(false);
         var serviceImages = await ReadServiceImageProvenanceAsync(container).ConfigureAwait(false);
         using var session = await LoginAsync(baseUri, password).ConfigureAwait(false);
+        var ownerPassword = await CompleteOwnerBootstrapAsync(session, password).ConfigureAwait(false);
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         if (!File.Exists(playwright.Chromium.ExecutablePath))
         {
@@ -531,7 +547,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             ReducedMotion = ReducedMotion.Reduce
         }).ConfigureAwait(false);
         var page = await context.NewPageAsync().ConfigureAwait(false);
-        await BrowserLoginAsync(page, password).ConfigureAwait(false);
+        await BrowserLoginAsync(page, ownerPassword).ConfigureAwait(false);
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
         await ActivateMonoCaptureProfileAsync(session).ConfigureAwait(false);
         var runtimeIdentity = await ReadRuntimeIdentityAsync(
@@ -572,7 +588,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.HasCount(5, measured);
         var readout = AssertMonoCaptureContracts(runtimeRoot, measured, expectedDeploymentLocation);
         var observedRawPayloadBytes = measuredWindow.Admissions.Sum(static admission => admission.PayloadLength);
-        await AssertBrowserEvidenceAsync(page, measured[^1]).ConfigureAwait(false);
+        await AssertBrowserEvidenceAsync(page, measured[^1], expectLayeredPresentation: false).ConfigureAwait(false);
         await WaitForDurableConditionAsync(
             runtimeRoot,
             static snapshot => snapshot.PendingRawCaptures == 0 && snapshot.PendingLaneWork == 0 &&
@@ -751,6 +767,29 @@ public sealed class StandaloneW6DockerAcceptanceTests
             new PageWaitForURLOptions { WaitUntil = WaitUntilState.Commit }).ConfigureAwait(false);
     }
 
+    private static async Task<string> CompleteOwnerBootstrapAsync(HttpClient client, string temporaryPassword)
+    {
+        var replacementPassword = $"{temporaryPassword}Z9!";
+        using var page = await client.GetAsync(new Uri("/Account/ReplaceTemporaryPassword", UriKind.Relative)).ConfigureAwait(false);
+        page.EnsureSuccessStatusCode();
+        var html = await page.Content.ReadAsStringAsync().ConfigureAwait(false);
+        var token = Regex.Match(html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", RegexOptions.CultureInvariant);
+        Assert.IsTrue(token.Success);
+        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = WebUtility.HtmlDecode(token.Groups[1].Value),
+            ["Input.CurrentPassword"] = temporaryPassword,
+            ["Input.NewPassword"] = replacementPassword,
+            ["Input.ConfirmPassword"] = replacementPassword,
+            ["_handler"] = "replace-temporary-password"
+        });
+        using var response = await client.PostAsync(new Uri("/Account/ReplaceTemporaryPassword", UriKind.Relative), form)
+            .ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        Assert.AreEqual("/", response.RequestMessage?.RequestUri?.AbsolutePath);
+        return replacementPassword;
+    }
+
     private static async Task SetCaptureStateAsync(IPage page, bool pause)
     {
         await page.GotoAsync("/operations").ConfigureAwait(false);
@@ -776,7 +815,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         TimeSpan timeout,
         string agentId = ExpectedAgentId,
         IReadOnlyList<FrameArtifactRole>? expectedRoles = null,
-        int expectedNodeCount = 10,
+        int expectedNodeCount = 14,
         DockerResourceSampler? sampler = null)
     {
         var token = await GetAntiforgeryTokenAsync(client).ConfigureAwait(false);
@@ -1040,14 +1079,16 @@ public sealed class StandaloneW6DockerAcceptanceTests
     {
         await page.GotoAsync("/calibration").ConfigureAwait(false);
         var activeHeading = page.Locator(".calibration-card--active h2");
+        await activeHeading.WaitForAsync().ConfigureAwait(false);
+        await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
         Assert.AreEqual(originalBundleId, (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim());
-        await page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }).ClickAsync().ConfigureAwait(false);
         var confirmation = page.Locator(".confirmation-panel[role='alertdialog']");
-        await confirmation.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
+        await OpenDialogAsync(
+            page.GetByRole(AriaRole.Button, new() { Name = "Review acquisition" }),
+            confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
         var activate = await WaitForCalibrationActivateAsync(page).ConfigureAwait(false);
-        await activate.ClickAsync().ConfigureAwait(false);
-        await confirmation.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
+        await OpenDialogAsync(activate, confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             "prior => document.querySelector('.calibration-card--active h2')?.textContent?.trim() !== prior",
@@ -1056,8 +1097,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var acquiredBundleId = (await activeHeading.InnerTextAsync().ConfigureAwait(false)).Trim();
         Assert.AreNotEqual(originalBundleId, acquiredBundleId);
 
-        await page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }).ClickAsync().ConfigureAwait(false);
-        await confirmation.WaitForAsync(new() { State = WaitForSelectorState.Visible }).ConfigureAwait(false);
+        await OpenDialogAsync(
+            page.GetByRole(AriaRole.Button, new() { Name = "Review rollback" }),
+            confirmation).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Confirm", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForFunctionAsync(
             "expected => document.querySelector('.calibration-card--active h2')?.textContent?.trim() === expected",
@@ -1068,6 +1110,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private static async Task ValidateSchedulePreviewAsync(IPage page)
     {
+        await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
         var success = page.GetByText(
             "Schedule and desired graph previews are valid. No durable state changed.",
             new() { Exact = true });
@@ -1085,13 +1128,25 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 if (attempt == 9)
                 {
                     var banners = await page.Locator(".schedule-banner").AllTextContentsAsync().ConfigureAwait(false);
-                    Assert.Fail($"Schedule preview did not report success. Banners: {string.Join(" | ", banners)}");
+                    var scheduleText = await page.Locator(".schedule-console").InnerTextAsync().ConfigureAwait(false);
+                    var previewDisabled = await page.GetByRole(AriaRole.Button, new() { Name = "Validate and preview" })
+                        .IsDisabledAsync().ConfigureAwait(false);
+                    Assert.Fail(
+                        $"Schedule preview did not report success at {page.Url}; preview disabled: {previewDisabled}; " +
+                        $"banners: {string.Join(" | ", banners)}; schedule: {scheduleText}");
                 }
                 await page.GotoAsync("/schedule").ConfigureAwait(false);
                 await page.GetByRole(AriaRole.Heading, new() { Name = "Schedule control", Level = 1 })
                     .WaitForAsync().ConfigureAwait(false);
+                await WaitForInteractiveBlazorAsync(page).ConfigureAwait(false);
             }
         }
+    }
+
+    private static async Task WaitForInteractiveBlazorAsync(IPage page)
+    {
+        await page.WaitForFunctionAsync("() => window.Blazor !== undefined").ConfigureAwait(false);
+        await page.WaitForTimeoutAsync(1_000).ConfigureAwait(false);
     }
 
     private static Task ActivateBootstrapCaptureProfileAsync(HttpClient client)
@@ -1135,22 +1190,15 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var scheduleProfile = profile["schedule"]!.AsObject();
         scheduleProfile["blackouts"] = new JsonArray();
         scheduleProfile["setpointProfiles"]!.AsArray()[0]!["captureInterval"] = captureInterval;
-        foreach (var step in profile["processingSteps"]!.AsArray())
+        if (enableCanonicalTail)
         {
-            if (step?["id"]?.GetValue<string>() is "cloud" or "weather-overlay" or "storage" or "telemetry")
+            foreach (var step in profile["processingSteps"]!.AsArray())
             {
-                if (enableCanonicalTail)
+                if (step?["id"]?.GetValue<string>() is "cloud" or "cloud-presentation" or "overlay-manifest" or "presentation-materializer" or "storage" or "telemetry")
                 {
                     _ = step.AsObject().Remove("enabled");
                 }
-                else
-                {
-                    step["enabled"] = false;
-                }
             }
-        }
-        if (enableCanonicalTail)
-        {
             var quality = profile["processingSteps"]!.AsArray()
                 .Single(step => step?["id"]?.GetValue<string>() == "quality")!.AsObject();
             _ = quality.Remove("enabled");
@@ -1161,8 +1209,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 var dependencies = step["dependsOn"]!.AsArray();
                 if (!dependencies.Any(item => item?.GetValue<string>() == "quality"))
                 {
-                    var cloudIndex = dependencies.IndexOf(dependencies.Single(item => item?.GetValue<string>() == "cloud"));
-                    dependencies.Insert(cloudIndex, "quality");
+                    var presentationIndex = dependencies.IndexOf(
+                        dependencies.Single(item => item?.GetValue<string>() == "scene-presentation"));
+                    dependencies.Insert(presentationIndex, "quality");
                 }
             }
         }
@@ -1195,8 +1244,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
             reason = "issue-211 canonical measured profile"
         });
         using var stageResponse = await client.SendAsync(stageRequest).ConfigureAwait(false);
-        stageResponse.EnsureSuccessStatusCode();
-        var staged = JsonNode.Parse(await stageResponse.Content.ReadAsStringAsync().ConfigureAwait(false))!.AsObject();
+        var stageBody = await stageResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, stageResponse.StatusCode, stageBody);
+        var staged = JsonNode.Parse(stageBody)!.AsObject();
         var pending = staged["pendingRevision"]!.AsObject();
         var pendingSha256 = pending["profileSha256"]!.GetValue<string>();
         if (expectedSha256 is null)
@@ -1282,7 +1332,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             minimumSequence,
             TimeSpan.FromMinutes(3),
             ExpectedRoles,
-            expectedNodeCount: 9).ConfigureAwait(false);
+            expectedNodeCount: 13).ConfigureAwait(false);
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
         Assert.IsTrue(captures.All(static capture => capture.ProcessingNodes.All(node => node.NodeId != "quality")));
         Assert.IsTrue(captures.All(static capture => capture.Artifacts.Any(
@@ -1296,7 +1346,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             minimumSequence,
             TimeSpan.FromMinutes(3)).ConfigureAwait(false)).Single();
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
-        Assert.HasCount(10, restored.ProcessingNodes);
+        Assert.HasCount(14, restored.ProcessingNodes);
         Assert.IsTrue(restored.ProcessingNodes.All(static node => node.Status == "Completed"));
         Assert.IsTrue(restored.ProcessingNodes.Any(static node => node.NodeId == "quality"));
         Assert.IsTrue(restored.ProcessingNodes.Any(static node => node.NodeId == "storage" && node.Required));
@@ -1335,7 +1385,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             nodes.Add(new RestoredNodeIdentity(reader.GetString(0), reader.GetString(1), reader.GetInt32(2)));
         }
-        Assert.HasCount(10, nodes);
+        Assert.HasCount(14, nodes);
         return new RestoredCaptureIdentity(
             capture.CaptureId,
             capture.CaptureSequence,
@@ -1536,12 +1586,14 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
         for (var index = 1; index <= 2; index++)
         {
-            var operationId = $"weather-failure-{index}";
-            ArmFault(runtimeRoot, operationId, "processing.BeforeNodeExecution", "throw", "weather-overlay");
+            var operationId = $"cloud-presentation-failure-{index}";
+            const string boundary = "processing.BeforeNodeExecution";
+            const string nodeId = "cloud-presentation";
+            ArmFault(runtimeRoot, operationId, boundary, "throw", nodeId);
             await SetCaptureStateAsync(page, pause: false).ConfigureAwait(false);
             var hit = await WaitForFaultHitAsync(runtimeRoot, operationId, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
-            AssertFaultHit(hit, operationId, "processing.BeforeNodeExecution", "weather-overlay");
-            var retry = await WaitForWeatherRetryAsync(
+            AssertFaultHit(hit, operationId, boundary, nodeId);
+            var retry = await WaitForCloudPresentationRetryAsync(
                 runtimeRoot, hit.HitUtc, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
             var degradedHealth = await WaitForHealthCheckStatusAsync(
                 session, "capture-processing", "Degraded", TimeSpan.FromSeconds(8)).ConfigureAwait(false);
@@ -1556,7 +1608,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             var healthy = await WaitForHealthyAsync(session, TimeSpan.FromMinutes(1)).ConfigureAwait(false);
             results.Add(new SemanticFaultEvidence(
                 operationId,
-                "processing.BeforeNodeExecution",
+                boundary,
                 hit,
                 ProcessKilled: false,
                 Recovered: true,
@@ -1694,9 +1746,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         AssertArtifactFilesUnchanged(retainedRaw);
 
         var holdDuration = DateTimeOffset.UtcNow - holdStartedUtc;
+        await MarkDerivedRetentionEligibleAsync(
+            runtimeRoot, eligibleRetention, requireTransition: true).ConfigureAwait(false);
         await WriteAcceptanceRetentionHoldsAsync(runtimeRoot, eligibleRetention, enabled: false).ConfigureAwait(false);
         var cleanup = Stopwatch.StartNew();
-        await WaitForEligibleRetentionCleanupAsync(eligibleRetention, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+        await WaitForEligibleRetentionCleanupAsync(
+            runtimeRoot, eligibleRetention, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
         cleanup.Stop();
 
         var recovered = await WaitForStorageObservationAsync(
@@ -1742,7 +1797,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     {
         var source = ReadManifests(runtimeRoot).Where(item =>
                 item.Manifest.Descriptor.Capture.CaptureId == captureId &&
-                item.Manifest.Descriptor.Artifact.Role is FrameArtifactRole.Raw or FrameArtifactRole.Calibrated)
+                item.Manifest.Descriptor.Artifact.Role is FrameArtifactRole.Raw or FrameArtifactRole.AnnotatedPreview)
             .OrderBy(item => item.Manifest.Descriptor.Artifact.Role)
             .ToArray();
         Assert.HasCount(2, source);
@@ -1752,29 +1807,34 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             var artifact = observation.Manifest.Descriptor.Artifact;
             var isRaw = artifact.Role == FrameArtifactRole.Raw;
-            var relativeDirectory = isRaw
-                ? Path.Combine("frames", "2020", "01", "01", "Raw")
-                : Path.Combine("derived", "retention-acceptance");
+            if (!isRaw)
+            {
+                var existingPayloadPath = Path.Combine(runtimeRoot, observation.Manifest.RelativeArtifactPath);
+                result.Add(new EligibleRetentionArtifactEvidence(
+                    artifact.ArtifactId,
+                    artifact.Role.ToString(),
+                    observation.Manifest.RelativeArtifactPath,
+                    Path.GetRelativePath(runtimeRoot, observation.Path).Replace(Path.DirectorySeparatorChar, '/'),
+                    existingPayloadPath,
+                    observation.Path,
+                    Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(existingPayloadPath).ConfigureAwait(false))),
+                    Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(observation.Path).ConfigureAwait(false)))));
+                continue;
+            }
+            var relativeDirectory = Path.Combine("frames", "2020", "01", "01", "Raw");
             var relativePayload = Path.Combine(relativeDirectory, $"{artifact.ArtifactId:N}.bin");
             var relativeSidecar = Path.Combine(
                 relativeDirectory,
-                $"{artifact.ArtifactId:N}{(isRaw ? ".json" : ".manifest.json")}");
+                $"{artifact.ArtifactId:N}.json");
             var payloadPath = Path.Combine(runtimeRoot, relativePayload);
             var sidecarPath = Path.Combine(runtimeRoot, relativeSidecar);
             Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
             File.Copy(Path.Combine(runtimeRoot, observation.Manifest.RelativeArtifactPath), payloadPath, overwrite: true);
-            if (isRaw)
-            {
-                var manifest = JsonNode.Parse(await File.ReadAllBytesAsync(observation.Path).ConfigureAwait(false))!.AsObject();
-                manifest["relativeArtifactPath"] = relativePayload.Replace(Path.DirectorySeparatorChar, '/');
-                manifest["descriptor"]!["artifact"]!["createdUtc"] = createdUtc;
-                await File.WriteAllBytesAsync(sidecarPath, JsonSerializer.SerializeToUtf8Bytes(manifest, EvidenceJson))
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                File.Copy(observation.Path, sidecarPath, overwrite: true);
-            }
+            var manifest = JsonNode.Parse(await File.ReadAllBytesAsync(observation.Path).ConfigureAwait(false))!.AsObject();
+            manifest["relativeArtifactPath"] = relativePayload.Replace(Path.DirectorySeparatorChar, '/');
+            manifest["descriptor"]!["artifact"]!["createdUtc"] = createdUtc;
+            await File.WriteAllBytesAsync(sidecarPath, JsonSerializer.SerializeToUtf8Bytes(manifest, EvidenceJson))
+                .ConfigureAwait(false);
             File.SetLastWriteTimeUtc(payloadPath, createdUtc.UtcDateTime);
             File.SetLastWriteTimeUtc(sidecarPath, createdUtc.UtcDateTime);
             result.Add(new EligibleRetentionArtifactEvidence(
@@ -1788,6 +1848,37 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false)))));
         }
         return result;
+    }
+
+    private static async Task MarkDerivedRetentionEligibleAsync(
+        string runtimeRoot,
+        IReadOnlyList<EligibleRetentionArtifactEvidence> artifacts,
+        bool requireTransition = false)
+    {
+        var derivative = artifacts.Single(static artifact => artifact.Role != nameof(FrameArtifactRole.Raw));
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(runtimeRoot, "journal", "raw-ingress.db"),
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE processing_outputs
+            SET availability_state = 'Missing', availability_reason = 'acceptance-retention-released',
+                unavailable_unix_ms = $expired
+            WHERE artifact_id = $artifact AND availability_state = 'Available';
+            """;
+        command.Parameters.AddWithValue(
+            "$expired",
+            new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$artifact", derivative.ArtifactId.ToString("N"));
+        var updated = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        if (requireTransition)
+        {
+            Assert.AreEqual(1, updated);
+        }
     }
 
     private static async Task WriteAcceptanceRetentionHoldsAsync(
@@ -1821,6 +1912,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     }
 
     private static async Task WaitForEligibleRetentionCleanupAsync(
+        string runtimeRoot,
         IReadOnlyList<EligibleRetentionArtifactEvidence> artifacts,
         TimeSpan timeout)
     {
@@ -1832,9 +1924,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
             {
                 return;
             }
+            await MarkDerivedRetentionEligibleAsync(runtimeRoot, artifacts).ConfigureAwait(false);
             await Task.Delay(500).ConfigureAwait(false);
         }
-        Assert.Fail("Eligible raw and derivative evidence was not removed after its acceptance hold was released.");
+        var survivors = artifacts.Where(static artifact =>
+            File.Exists(artifact.PayloadPath) || File.Exists(artifact.SidecarPath));
+        Assert.Fail("Eligible raw and derivative evidence was not removed after its acceptance hold was released: " +
+            string.Join(", ", survivors.Select(static artifact => artifact.Role)));
     }
 
     private static ArtifactFileEvidence SnapshotArtifactFiles(string root, ManifestObservation observation)
@@ -1949,7 +2045,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     {
         const string operationId = "annotation-publication";
         const string boundary = "processing.AfterOutputsPublishedBeforeNodeCommit";
-        const string nodeId = "sky-annotation";
+        const string nodeId = "presentation-materializer";
         var minimumSequence = ReadMaximumRawSequence(runtimeRoot);
         ArmFault(runtimeRoot, operationId, boundary, "block", nodeId);
         await SetCaptureStateAsync(page, pause: false).ConfigureAwait(false);
@@ -1977,7 +2073,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         AssertCommittedAnnotationOutput(runtimeRoot, after);
         Assert.AreEqual(1, ReadJournalCount(runtimeRoot, $"""
             SELECT COUNT(*) FROM processing_nodes
-            WHERE capture_id = '{before.CaptureId:N}' AND node_id = 'sky-annotation' AND status = 'Completed';
+            WHERE capture_id = '{before.CaptureId:N}' AND node_id = 'presentation-materializer' AND status = 'Completed';
             """));
         Assert.AreEqual(0, ReadDurableSnapshot(runtimeRoot).DuplicateLogicalOutputs);
         await Phase14ScenarioEvidence.RecordAsync(
@@ -2061,10 +2157,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
             var match = ReadManifests(runtimeRoot)
                 .Where(item => item.Manifest.Descriptor.Capture.CaptureSequence > minimumSequence &&
                     item.Manifest.Descriptor.Artifact.Role == FrameArtifactRole.AnnotatedPreview &&
-                    item.Manifest.Descriptor.Artifact.Variant == "w6-annotated")
+                    item.Manifest.Descriptor.Artifact.Variant == "w6-annotated-preview")
                 .OrderBy(static item => item.Manifest.Descriptor.Capture.CaptureSequence)
                 .FirstOrDefault(item => CountProcessingNodes(
-                    runtimeRoot, item.Manifest.Descriptor.Capture.CaptureId, "sky-annotation") == 0);
+                    runtimeRoot, item.Manifest.Descriptor.Capture.CaptureId, "presentation-materializer") == 0);
             if (match is not null)
             {
                 return ReadAnnotationPublication(
@@ -2150,7 +2246,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         command.CommandText = """
             SELECT artifact_id, output_identity_sha256, recipe_identity_sha256
             FROM processing_outputs
-            WHERE capture_id = $capture AND node_id = 'sky-annotation'
+            WHERE capture_id = $capture AND node_id = 'presentation-materializer'
               AND role = $role AND variant = $variant;
             """;
         command.Parameters.AddWithValue("$capture", expected.CaptureId.ToString("N"));
@@ -2408,7 +2504,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         _ => throw new ArgumentOutOfRangeException(nameof(state))
     };
 
-    private static async Task<WeatherRetrySnapshot> WaitForWeatherRetryAsync(
+    private static async Task<WeatherRetrySnapshot> WaitForCloudPresentationRetryAsync(
         string runtimeRoot,
         DateTimeOffset faultHitUtc,
         TimeSpan timeout)
@@ -2427,7 +2523,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                     JOIN raw_captures r ON r.capture_id = n.capture_id
                     JOIN capture_lane_work lane ON lane.raw_capture_row_id = r.raw_capture_row_id
                         AND lane.lane_name = 'standard'
-                    WHERE n.node_id = 'weather-overlay' AND n.status = 'RetryableFailure'
+                    WHERE n.node_id = 'cloud-presentation' AND n.status = 'RetryableFailure'
                       AND lane.state = 'retry_wait' AND n.completed_unix_ms >= $hit
                     ORDER BY n.completed_unix_ms DESC
                     LIMIT 1;
@@ -2438,7 +2534,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 {
                     var captureId = Guid.ParseExact(reader.GetString(0), "N");
                     var artifacts = ReadCaptureArtifactIdentities(runtimeRoot, captureId);
-                    Assert.IsFalse(artifacts.Any(static artifact => artifact.Variant == "w6-weather-overlay"));
+                    Assert.IsFalse(artifacts.Any(static artifact => artifact.Variant is
+                        "w6-overlay-manifest" or "w6-annotated-preview"));
                     return new WeatherRetrySnapshot(
                         captureId,
                         reader.GetInt64(1),
@@ -2456,7 +2553,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             }
             await Task.Delay(50).ConfigureAwait(false);
         }
-        Assert.Fail("The weather-overlay failure did not become retryable in both node and lane state.");
+        Assert.Fail("The cloud-presentation execution fault did not defer final presentation and enter lane retry.");
         throw new InvalidOperationException("Unreachable after Assert.Fail.");
     }
 
@@ -2464,12 +2561,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string runtimeRoot,
         CameraAgentGalleryCapture capture)
     {
-        Assert.HasCount(10, capture.ProcessingNodes);
+        Assert.HasCount(14, capture.ProcessingNodes);
         Assert.IsTrue(capture.ProcessingNodes.All(static node => node.Status == "Completed"));
         Assert.IsTrue(capture.ProcessingNodes.Any(static node => node.NodeId == "storage" && node.Required));
         Assert.IsTrue(capture.ProcessingNodes.Any(static node => node.NodeId == "telemetry" && node.Required));
         var artifacts = ReadCaptureArtifactIdentities(runtimeRoot, capture.CaptureId);
-        Assert.IsTrue(artifacts.Any(static artifact => artifact.Variant == "w6-weather-overlay"));
+        Assert.IsTrue(artifacts.Any(static artifact => artifact.Variant == "w6-annotated-preview"));
         using var connection = OpenJournal(runtimeRoot);
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -2491,7 +2588,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             laneAttempt ??= reader.GetInt32(2);
             Assert.AreEqual(laneAttempt.Value, reader.GetInt32(2));
         }
-        Assert.HasCount(10, attempts);
+        Assert.HasCount(14, attempts);
         Assert.IsNotNull(laneAttempt);
         Assert.AreEqual(0, ReadDurableSnapshot(runtimeRoot).DuplicateLogicalOutputs);
         return new WeatherRecoverySnapshot(capture.CaptureId, capture.CaptureSequence, laneAttempt.Value, attempts, artifacts);
@@ -2504,10 +2601,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.AreEqual(retry.NodeAttempt, retry.LaneAttempt);
         Assert.AreEqual(retry.LaneAttempt + 1, final.LaneAttempt);
         Assert.IsTrue(final.NodeAttempts
-            .Where(static item => item.NodeId is "weather-overlay" or "storage" or "telemetry")
+            .Where(static item => item.NodeId is "cloud-presentation" or "overlay-manifest" or "presentation-materializer" or "storage" or "telemetry")
             .All(item => item.Attempt == retry.NodeAttempt + 1));
         Assert.IsTrue(final.NodeAttempts
-            .Where(static item => item.NodeId is not ("weather-overlay" or "storage" or "telemetry"))
+            .Where(static item => item.NodeId is not ("cloud-presentation" or "overlay-manifest" or "presentation-materializer" or "storage" or "telemetry"))
             .All(item => item.Attempt is >= 1 && item.Attempt <= retry.NodeAttempt));
         foreach (var artifact in retry.Artifacts)
         {
@@ -2552,19 +2649,21 @@ public sealed class StandaloneW6DockerAcceptanceTests
         TimeSpan timeout)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
+        CameraAgentGalleryCapture? latest = null;
         while (DateTimeOffset.UtcNow < deadline)
         {
-            var capture = await client.GetFromJsonAsync<CameraAgentGalleryCapture>(
+            latest = await client.GetFromJsonAsync<CameraAgentGalleryCapture>(
                 $"/api/v1/operations/gallery/{captureId:D}").ConfigureAwait(false);
-            if (capture?.Detail is { EvidenceAvailability: "Available" } &&
-                capture.ProcessingNodes.Count == 10 &&
-                capture.ProcessingNodes.All(static node => node.Status == "Completed"))
+            if (latest?.Detail is { EvidenceAvailability: "Available" } &&
+                latest.ProcessingNodes.Count == 14 &&
+                latest.ProcessingNodes.All(static node => node.Status == "Completed"))
             {
-                return capture;
+                return latest;
             }
             await Task.Delay(250).ConfigureAwait(false);
         }
-        Assert.Fail($"Capture {captureId:D} did not recover all processing nodes.");
+        Assert.Fail($"Capture {captureId:D} did not recover all 14 processing nodes: " +
+            string.Join(", ", latest?.ProcessingNodes.Select(static node => $"{node.NodeId}={node.Status}") ?? []));
         throw new InvalidOperationException("Unreachable after Assert.Fail.");
     }
 
@@ -2719,7 +2818,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         long minimumSequence,
         TimeSpan timeout,
         IReadOnlyList<FrameArtifactRole>? expectedRoles = null,
-        int expectedNodeCount = 10)
+        int expectedNodeCount = 14)
     {
         expectedRoles ??= ExpectedRoles;
         var captures = new Dictionary<long, CameraAgentGalleryCapture>();
@@ -2772,7 +2871,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var provenance = new List<CaptureProvenanceEvidence>(captures.Length);
         foreach (var capture in captures)
         {
-            Assert.HasCount(10, capture.ProcessingNodes);
+            Assert.HasCount(14, capture.ProcessingNodes);
             foreach (var artifact in capture.Artifacts)
             {
                 if (manifests.TryGetValue(artifact.ArtifactId, out var manifest))
@@ -2801,6 +2900,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
                     CollectionAssert.AreEqual(
                         artifact.SourceArtifactIds.ToArray(),
                         product.Artifact.SourceArtifactIds.ToArray());
+                    if (product.ProductSchemaVersion == CloudAssessmentV1.CurrentSchemaVersion)
+                    {
+                        var assessment = CloudAssessmentJson.Parse(payload).Assessment;
+                        Assert.IsNotNull(assessment);
+                        Assert.AreEqual(assessment.AssessmentIdentitySha256, product.ContentIdentitySha256);
+                        Assert.AreEqual(assessment.AssessmentIdentitySha256, artifact.ContentIdentitySha256);
+                    }
                 }
             }
             var raw = manifests.Values.Single(item =>
@@ -2827,6 +2933,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(expectedDeploymentLocation.LocationId, admission.DeploymentLocationId);
             Assert.AreEqual(expectedDeploymentLocation.Version, admission.DeploymentLocationVersion);
             Assert.AreEqual(expectedDeploymentLocation.ToProvenance(), raw.Descriptor.Location);
+            AssertLayeredPresentationLineage(root, capture, productManifests);
             provenance.Add(new CaptureProvenanceEvidence(
                 capture.CaptureId,
                 capture.CaptureSequence,
@@ -2840,6 +2947,56 @@ public sealed class StandaloneW6DockerAcceptanceTests
         return provenance;
     }
 
+    private static void AssertLayeredPresentationLineage(
+        string root,
+        CameraAgentGalleryCapture capture,
+        Dictionary<Guid, IDurableProcessingProductManifest> productManifests)
+    {
+        var combined = capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Preview &&
+            artifact.Variant == "combined-preview");
+        var manifestArtifact = capture.Artifacts.Single(static artifact => artifact.Variant == "w6-overlay-manifest");
+        var final = capture.Artifacts.Single(static artifact => artifact.Variant == "w6-annotated-preview");
+        var facts = capture.Artifacts.Single(static artifact => artifact.Variant == "w6-presentation-metadata-facts");
+        var manifestProduct = productManifests[manifestArtifact.ArtifactId];
+        var manifest = LayeredPresentationJson.ParseManifest(
+            File.ReadAllBytes(Path.Combine(root, manifestProduct.RelativeArtifactPath))).Document;
+        Assert.IsNotNull(manifest);
+        Assert.AreEqual(combined.ArtifactId, manifest.BaseProduct.ArtifactId);
+        CollectionAssert.AreEqual(ExpectedPresentationLayerKinds,
+            manifest.Layers.Select(static layer => layer.LayerKind).ToArray());
+        Assert.IsTrue(manifest.Layers.Select(static layer => layer.ZOrder).SequenceEqual(
+            manifest.Layers.Select(static layer => layer.ZOrder).Order()));
+        CollectionAssert.AreEqual(new[] { combined.ArtifactId }
+                .Concat(manifest.Layers.Select(static layer => layer.SourceProduct.ArtifactId)).ToArray(),
+            manifestArtifact.SourceArtifactIds.ToArray());
+        Assert.IsTrue(facts.ContentIdentitySha256 is { Length: 64 });
+        var factsProduct = productManifests[facts.ArtifactId];
+        var parsedFacts = JsonSerializer.Deserialize<PresentationMetadataFactsProductV1>(
+            File.ReadAllBytes(Path.Combine(root, factsProduct.RelativeArtifactPath)), EvidenceJson);
+        Assert.IsNotNull(parsedFacts);
+        Assert.AreEqual(facts.ContentIdentitySha256, parsedFacts.FactsIdentitySha256);
+        Assert.HasCount(6, parsedFacts.Environment);
+        Assert.HasCount(1, parsedFacts.Environment.Select(static item => item.PolicyIdentitySha256)
+            .Distinct(StringComparer.Ordinal).ToArray());
+        Assert.IsTrue(parsedFacts.Environment.All(static item => item.Status is
+            nameof(LocalEnvironmentalAssociationStatus.Fresh) or
+            nameof(LocalEnvironmentalAssociationStatus.Stale) or
+            nameof(LocalEnvironmentalAssociationStatus.Missing) or
+            nameof(LocalEnvironmentalAssociationStatus.Contradictory)));
+        Assert.IsTrue(parsedFacts.Environment.Where(static item => item.ObservationId is not null).All(static item =>
+            item.ObservationSourceIdentitySha256 is { Length: 64 } &&
+            item.ObservationContentSha256 is { Length: 64 }));
+        var projectedScene = capture.Artifacts.Single(static artifact => artifact.Variant == "projected-scene-v1");
+        var rolling = capture.Artifacts.Single(static artifact => artifact.Variant == "rolling-mean");
+        CollectionAssert.AreEqual(new[] { projectedScene.ArtifactId, rolling.ArtifactId },
+            facts.SourceArtifactIds.ToArray());
+        Assert.IsTrue(manifest.Layers.Single(static layer => layer.LayerKind == "environment")
+            .SourceProduct.ArtifactId != facts.ArtifactId);
+        CollectionAssert.AreEqual(new[] { combined.ArtifactId, manifestArtifact.ArtifactId }
+                .Concat(manifest.Layers.Select(static layer => layer.SourceProduct.ArtifactId)).ToArray(),
+            final.SourceArtifactIds.ToArray());
+    }
+
     private static void AssertRightAlignedTwelveBit(ReadOnlySpan<byte> payload)
     {
         Assert.AreEqual(0, payload.Length % 2);
@@ -2851,7 +3008,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private static async Task<GeometryEvidence> AssertRepresentativeGeometryAsync(
         string root,
-        IReadOnlyCollection<CameraAgentGalleryCapture> measuredCaptures)
+        IReadOnlyCollection<CameraAgentGalleryCapture> campaignCaptures)
     {
         using var fixture = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(
             AppContext.BaseDirectory,
@@ -2879,10 +3036,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var markerTolerance = tolerances.GetProperty("renderedMarkerPixels").GetDouble();
         var cardinalTolerance = tolerances.GetProperty("cardinalSensorPixels").GetDouble();
         var fixtureSceneUtc = fixtureRoot.GetProperty("sceneUtc").GetDateTimeOffset();
-        var measuredCaptureIds = measuredCaptures.Select(static capture => capture.CaptureId).ToHashSet();
+        var campaignCaptureIds = campaignCaptures.Select(static capture => capture.CaptureId).ToHashSet();
         var raw = ReadManifests(root).Single(item =>
             item.Manifest.Descriptor.Artifact.Role == FrameArtifactRole.Raw &&
-            measuredCaptureIds.Contains(item.Manifest.Descriptor.Capture.CaptureId) &&
+            campaignCaptureIds.Contains(item.Manifest.Descriptor.Capture.CaptureId) &&
             item.Manifest.Scene?.SceneUtc == fixtureSceneUtc);
         var captureId = raw.Manifest.Descriptor.Capture.CaptureId;
         var scene = raw.Manifest.Scene ?? throw new InvalidDataException("The W6 scene is missing.");
@@ -2892,7 +3049,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var annotated = ReadManifests(root).Single(item =>
             item.Manifest.Descriptor.Capture.CaptureId == captureId &&
             item.Manifest.Descriptor.Artifact.Role == FrameArtifactRole.AnnotatedPreview &&
-            item.Manifest.Descriptor.Artifact.Variant == "w6-annotated");
+            item.Manifest.Descriptor.Artifact.Variant == "w6-annotated-preview");
         var combinedPreview = ReadManifests(root).Single(item =>
             item.Manifest.Descriptor.Capture.CaptureId == captureId &&
             item.Manifest.Descriptor.Artifact.Role == FrameArtifactRole.Preview &&
@@ -3026,29 +3183,29 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsFalse(assessment.Environment.PrecipitationDetected);
         Assert.IsNotNull(assessment.Environment.PrecipitationObservationId);
         Assert.IsFalse(string.IsNullOrWhiteSpace(assessment.Environment.PrecipitationContentSha256));
-        var weatherOverlay = ReadManifests(root).Single(item =>
+        var presentation = ReadManifests(root).Single(item =>
             item.Manifest.Descriptor.Capture.CaptureId == captureId &&
             item.Manifest.Descriptor.Artifact.Role == FrameArtifactRole.AnnotatedPreview &&
-            item.Manifest.Descriptor.Artifact.Variant == "w6-weather-overlay");
-        var weatherOverlayPayload = await File.ReadAllBytesAsync(
-            Path.Combine(root, weatherOverlay.Manifest.RelativeArtifactPath)).ConfigureAwait(false);
-        Assert.AreEqual(annotatedPayload.Length, weatherOverlayPayload.Length);
-        var weatherOverlayChangedPixels = CountPackedPixelDifferences(annotatedPayload, weatherOverlayPayload);
-        Assert.IsGreaterThan(0, weatherOverlayChangedPixels);
-        var weatherOverlayCorrespondence = AssertCloudOverlayCorrespondence(
+            item.Manifest.Descriptor.Artifact.Variant == "w6-annotated-preview");
+        Assert.AreEqual(previewPayload.Length, annotatedPayload.Length);
+        var presentationChangedPixels = CountPackedPixelDifferences(previewPayload, annotatedPayload);
+        Assert.IsGreaterThan(0, presentationChangedPixels);
+        var cloudCorrespondence = AssertCloudOverlayCorrespondence(
+            previewPayload,
             annotatedPayload,
-            weatherOverlayPayload,
-            weatherOverlay.Manifest.Descriptor.Layout,
+            presentation.Manifest.Descriptor.Layout,
             assessment);
         return new GeometryEvidence(
             fixtureRoot.GetProperty("fixtureId").GetString()!,
             fixtureRoot.GetProperty("referenceModel").GetString()!,
+            captureId,
             sceneUtc,
+            markerTolerance,
             observations,
             fixtureLandmarks,
             renderedLandmarks,
-            weatherOverlayChangedPixels,
-            weatherOverlayCorrespondence);
+            presentationChangedPixels,
+            cloudCorrespondence);
     }
 
     private static CloudOverlayCorrespondenceEvidence AssertCloudOverlayCorrespondence(
@@ -3354,7 +3511,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             Assert.IsTrue(manifests.TryGetValue(capture.CaptureId, out var manifest));
             Assert.IsTrue(nodesByCapture.TryGetValue(capture.CaptureId, out var nodes));
-            Assert.HasCount(10, nodes);
+            Assert.HasCount(14, nodes);
             var evidence = manifest.Descriptor.CycleEvidence!;
             var moduleDuration = evidence.Decision.StartedUtc - evidence.ModuleCallStartedUtc;
             var graphStartedUtc = DateTimeOffset.FromUnixTimeMilliseconds(nodes.Min(static node => node.StartedUnixMs));
@@ -3557,7 +3714,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private static TransientEvidence RetainTransientEvidence(
         string runtimeRoot,
         string evidenceRoot,
-        IReadOnlyCollection<CameraAgentGalleryCapture> measuredCaptures)
+        IReadOnlyCollection<CameraAgentGalleryCapture> campaignCaptures)
     {
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
@@ -3620,7 +3777,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.AreEqual("scn-3D134B0F05F1C937E4D5B301", scenarioId);
         Assert.AreEqual(new DateTimeOffset(2026, 1, 15, 8, 0, 20, TimeSpan.Zero), scenarioEpochUtc);
 
-        var measuredCaptureIds = measuredCaptures.Select(static capture => capture.CaptureId).ToHashSet();
+        var campaignCaptureIds = campaignCaptures.Select(static capture => capture.CaptureId).ToHashSet();
         TransientInjectedEventEvidence? injectedEvent = null;
         using (var command = connection.CreateCommand())
         {
@@ -3637,7 +3794,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             while (reader.Read())
             {
                 var captureId = Guid.ParseExact(reader.GetString(0), "N");
-                if (measuredCaptureIds.Contains(captureId))
+                if (campaignCaptureIds.Contains(captureId))
                 {
                     injectedEvent = new TransientInjectedEventEvidence(
                         captureId,
@@ -4119,13 +4276,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
             {
                 continue;
             }
-            if (parsed is not DurableProcessingProductManifestV1 manifest)
+            if (parsed is not (DurableProcessingProductManifestV1 or DurableTypedMetadataProductManifestV3))
             {
                 continue;
             }
-            if (manifest.Capture.AgentId == agentId)
+            if (parsed.Capture.AgentId == agentId)
             {
-                yield return new ProductManifestObservation(path, manifest);
+                yield return new ProductManifestObservation(path, parsed);
             }
         }
     }
@@ -4209,7 +4366,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
             uiAttemptCount);
     }
 
-    private static async Task AssertBrowserEvidenceAsync(IPage page, CameraAgentGalleryCapture capture)
+    private static async Task AssertBrowserEvidenceAsync(
+        IPage page,
+        CameraAgentGalleryCapture capture,
+        bool expectLayeredPresentation = true)
     {
         foreach (var route in new[] { "/operations", "/schedule", "/calibration", "/environmental", "/gallery", "/system" })
         {
@@ -4219,6 +4379,35 @@ public sealed class StandaloneW6DockerAcceptanceTests
         }
         await page.GotoAsync($"/gallery/{capture.CaptureId:D}").ConfigureAwait(false);
         await page.GetByText("Capture detail", new() { Exact = true }).WaitForAsync().ConfigureAwait(false);
+        var layered = page.Locator(".layered-presentation");
+        if (expectLayeredPresentation)
+        {
+            await layered.WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(1, await layered.Locator(".layered-canvas > img").CountAsync().ConfigureAwait(false));
+            Assert.AreEqual(1, await layered.Locator(".layered-overlay svg").CountAsync().ConfigureAwait(false));
+            var layerToggles = layered.Locator(".layer-controls input[type='checkbox']");
+            Assert.IsGreaterThan(0, await layerToggles.CountAsync().ConfigureAwait(false));
+            var enabledToggles = layered.Locator(".layer-controls input[type='checkbox']:checked");
+            Assert.IsGreaterThan(0, await enabledToggles.CountAsync().ConfigureAwait(false));
+            var firstToggle = enabledToggles.First;
+            var target = await firstToggle.GetAttributeAsync("data-layer-target").ConfigureAwait(false);
+            Assert.IsNotNull(target);
+            var resourceCount = await page.EvaluateAsync<int>("() => performance.getEntriesByType('resource').length")
+                .ConfigureAwait(false);
+            await firstToggle.ClickAsync().ConfigureAwait(false);
+            await page.WaitForFunctionAsync(
+                "target => getComputedStyle(document.getElementById(target)).display === 'none'",
+                target).ConfigureAwait(false);
+            Assert.AreEqual(resourceCount,
+                await page.EvaluateAsync<int>("() => performance.getEntriesByType('resource').length").ConfigureAwait(false));
+        }
+        else
+        {
+            var directPreview = page.Locator(".detail-hero figure > img");
+            await directPreview.WaitForAsync().ConfigureAwait(false);
+            Assert.AreEqual(0, await layered.CountAsync().ConfigureAwait(false));
+            Assert.AreEqual(1, await directPreview.CountAsync().ConfigureAwait(false));
+        }
         var comparisonImages = page.Locator(".comparison-grid img");
         await comparisonImages.First.WaitForAsync().ConfigureAwait(false);
         Assert.AreEqual(2, await comparisonImages.CountAsync().ConfigureAwait(false));
@@ -4331,6 +4520,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.AreEqual(2_048, decoded.Height);
         var scaleX = decoded.Width / 3552d;
         var scaleY = decoded.Height / 3552d;
+        // Allow one encoded pixel beyond the scaled full-resolution fixture tolerance.
+        var encodedMarkerTolerance = geometry.RenderedMarkerTolerancePixels * Math.Max(scaleX, scaleY) + 1;
         var markerObservations = geometry.Objects.Select(item =>
         {
             var expectedX = item.ExpectedX * scaleX;
@@ -4345,7 +4536,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 radius: 4);
             var error = Distance(marker.X, marker.Y, expectedX, expectedY);
             Assert.IsGreaterThan(1, marker.ChangedPoints, item.RowId);
-            Assert.IsLessThanOrEqualTo(2, error, item.RowId);
+            Assert.IsLessThanOrEqualTo(encodedMarkerTolerance, error, item.RowId);
             return new JpegMarkerEvidence(item.RowId, expectedX, expectedY, marker.X, marker.Y, error,
                 marker.ChangedPoints);
         }).ToArray();
@@ -4369,7 +4560,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 radius: 6);
             var error = Distance(marker.X, marker.Y, expectedX, expectedY);
             Assert.IsGreaterThan(0, marker.ChangedPoints, item.Key);
-            Assert.IsLessThanOrEqualTo(2, error, item.Key);
+            Assert.IsLessThanOrEqualTo(encodedMarkerTolerance, error, item.Key);
             return new JpegMarkerEvidence(
                 item.Key, expectedX, expectedY, marker.X, marker.Y, error, marker.ChangedPoints);
         }).ToArray();
@@ -5194,7 +5385,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
 
     private sealed record ManifestObservation(string Path, ArtifactManifestV2 Manifest);
 
-    private sealed record ProductManifestObservation(string Path, DurableProcessingProductManifestV1 Manifest);
+    private sealed record ProductManifestObservation(string Path, IDurableProcessingProductManifest Manifest);
 
     private sealed record RawAdmissionEvidence(
         Guid CaptureId,
@@ -5565,7 +5756,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private sealed record GeometryEvidence(
         string FixtureId,
         string ReferenceModel,
+        Guid CaptureId,
         DateTimeOffset SceneUtc,
+        double RenderedMarkerTolerancePixels,
         IReadOnlyList<GeometryObjectEvidence> Objects,
         ProjectionAnnotationLandmarks CardinalLandmarks,
         IReadOnlyDictionary<string, PackedMarkerObservation> RenderedCardinalMarkers,

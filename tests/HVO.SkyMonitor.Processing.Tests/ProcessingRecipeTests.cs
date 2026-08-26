@@ -121,6 +121,210 @@ public sealed class ProcessingRecipeTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task ProjectedSceneProducesTypedMetadataWithoutRawPixelsAndBindsSemanticIdentity()
+    {
+        var sourceId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var captureId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var descriptorIdentity = new string('A', 64);
+        var source = CreateArtifact(
+            FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono8, 2, 2, []) with
+        {
+            ArtifactId = sourceId,
+            CaptureId = captureId,
+            DescriptorIdentitySha256 = descriptorIdentity
+        };
+        var predicted = await CreateProjectedSceneAsync(
+            ProjectedSceneKind.Predicted, captureId, sourceId, descriptorIdentity).ConfigureAwait(false);
+        var authoritative = await CreateProjectedSceneAsync(
+            ProjectedSceneKind.VirtualRenderAuthoritative, captureId, sourceId, descriptorIdentity).ConfigureAwait(false);
+
+        var first = await ExecuteProjectedSceneAsync(source, predicted).ConfigureAwait(false);
+        var changed = await ExecuteProjectedSceneAsync(source, authoritative).ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, first.Status);
+        var product = first.Products.Single();
+        Assert.AreEqual(ProcessingProductKind.Metadata, product.Kind);
+        Assert.AreEqual(FrameArtifactRole.Metadata, product.Role);
+        Assert.IsNull(product.Layout);
+        Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, product.SchemaVersion);
+        Assert.AreEqual(predicted.SceneIdentitySha256, product.ContentIdentitySha256);
+        Assert.AreEqual(ProcessingIdentity.ComputePayloadSha256(product.Payload), product.ChecksumSha256);
+        Assert.AreNotEqual(product.ContentIdentitySha256, product.ChecksumSha256);
+        Assert.AreNotEqual(product.Recipe.IdentitySha256, changed.Products.Single().Recipe.IdentitySha256);
+        Assert.AreNotEqual(product.OutputIdentitySha256, changed.Products.Single().OutputIdentitySha256);
+
+        var projectedArtifact = new ProcessingArtifact(
+            ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), product.Role, product.Variant,
+            product.Recipe.IdentitySha256, product.MediaType, product.Layout, product.Payload,
+            DateTimeOffset.Parse("2026-08-25T00:00:00Z", CultureInfo.InvariantCulture), product.TotalIntegration,
+            product.Compatibility)
+        {
+            ProductKind = product.Kind,
+            SchemaVersion = product.SchemaVersion,
+            ContentIdentitySha256 = product.ContentIdentitySha256
+        };
+        var presentation = PresentationLayerProducers.FromProjectedScene(predicted,
+            new PresentationAnnotationStyleV1(ConstellationIds: []));
+        var layerProduct = PresentationProcessingProducts.CreateLayerProduct(
+            presentation, "scene-presentation", [projectedArtifact], PresentationLayerProducers.SceneProducerVersion);
+        Assert.AreEqual(presentation.ContentIdentitySha256, layerProduct.ContentIdentitySha256);
+        var w6Style = new PresentationAnnotationStyleV1(ConstellationIds: []);
+        Assert.AreEqual(new PresentationColor(96, 96, 96), w6Style.ImageCircleColor ?? new(96, 96, 96));
+        Assert.AreEqual(new PresentationColor(255, 255, 255), w6Style.CardinalColor ?? new(255, 255, 255));
+        Assert.AreEqual(2, w6Style.CardinalScale);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => PresentationLayerProducers.FromProjectedScene(
+            predicted, w6Style with { CardinalScale = 9 }));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task ProjectedSceneRejectsInvalidSourceDescriptorAndDimensionsWithStableReasons()
+    {
+        var sourceId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var captureId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var descriptorIdentity = new string('A', 64);
+        var source = CreateArtifact(
+            FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono8, 2, 2, []) with
+        {
+            ArtifactId = sourceId,
+            CaptureId = captureId,
+            DescriptorIdentitySha256 = descriptorIdentity
+        };
+        var scene = await CreateProjectedSceneAsync(
+            ProjectedSceneKind.Predicted, captureId, sourceId, descriptorIdentity).ConfigureAwait(false);
+
+        var missing = await new ProcessingRecipeExecutor().ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ProjectedScene, EmptyOptions(), ProcessingInputSelector.Raw("source"),
+            [source], "scene")).ConfigureAwait(false);
+        var sourceMismatch = await ExecuteProjectedSceneAsync(
+            source with { CaptureId = Guid.NewGuid() }, scene).ConfigureAwait(false);
+        var descriptorMismatch = await ExecuteProjectedSceneAsync(
+            source with { DescriptorIdentitySha256 = new string('B', 64) }, scene).ConfigureAwait(false);
+        var dimensionMismatch = await ExecuteProjectedSceneAsync(
+            source with { Layout = source.Layout! with { Width = 3, StrideBytes = 3, ByteLength = 6 } }, scene)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(ProcessingReasonCodes.MissingProjectedScene, missing.ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.ProjectedSceneSourceMismatch, sourceMismatch.ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.ProjectedSceneDescriptorMismatch, descriptorMismatch.ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.ProjectedSceneDimensionMismatch, dimensionMismatch.ReasonCode);
+
+        var payload = ProjectedSceneJson.Serialize(scene);
+        var badChecksum = await new ProcessingRecipeExecutor().ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ProjectedScene, EmptyOptions(), ProcessingInputSelector.Raw("source"), [source], "scene",
+            AuxiliaryInputs:
+            [
+                new ProcessingAuxiliaryInput(
+                    "scene", ProcessingAuxiliaryInputKind.CanonicalJson,
+                    SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion,
+                    IdentitySha256: scene.SceneIdentitySha256,
+                    Payload: payload)
+                {
+                    ChecksumSha256 = new string('F', 64)
+                }
+            ])).ConfigureAwait(false);
+        var badSemanticIdentity = await new ProcessingRecipeExecutor().ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ProjectedScene, EmptyOptions(), ProcessingInputSelector.Raw("source"), [source], "scene",
+            AuxiliaryInputs:
+            [
+                new ProcessingAuxiliaryInput(
+                    "scene", ProcessingAuxiliaryInputKind.CanonicalJson,
+                    SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion,
+                    IdentitySha256: new string('F', 64),
+                    Payload: payload)
+                {
+                    ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(payload)
+                }
+            ])).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidInput, badChecksum.ReasonCode);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, badSemanticIdentity.ReasonCode);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ProcessingProductPreservesOriginalPositionalConstructorAndDeconstructShape()
+    {
+        var source = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono8, 1, 1, [1]);
+        var recipe = BuiltInProcessingRecipes.CreateRequestedIdentity(
+            BuiltInProcessingRecipes.NoOpAnalyzer, EmptyOptions(), ProcessingInputSelector.Raw("source"));
+        var product = new ProcessingProduct(
+            FrameArtifactRole.Metadata, "facts", new string('A', 64), "application/json", null, new byte[] { 1 },
+            new string('B', 64), recipe, [], [source.ArtifactId], TimeSpan.Zero, Compatibility)
+        {
+            Kind = ProcessingProductKind.Metadata,
+            SchemaVersion = "facts-v1",
+            ContentIdentitySha256 = new string('C', 64)
+        };
+
+        var (_, _, _, _, _, _, _, _, _, _, _, compatibility) = product;
+
+        Assert.AreEqual(Compatibility, compatibility);
+        Assert.AreEqual(ProcessingProductKind.Metadata, product.Kind);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ProcessingArtifactPreservesOriginalPositionalConstructorAndDeconstructShape()
+    {
+        var artifact = new ProcessingArtifact(
+            Guid.Parse("10000000-0000-0000-0000-000000000001"),
+            FrameArtifactRole.Raw,
+            "source",
+            new string('A', 64),
+            "application/x-hvo-frame",
+            CreateLayout(1, 1, CameraPixelFormat.Mono8),
+            new byte[] { 1 },
+            DateTimeOffset.UnixEpoch,
+            TimeSpan.FromSeconds(1),
+            Compatibility,
+            1,
+            [],
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch.AddSeconds(1),
+            new ProcessingCaptureConditions(1, 0, 0))
+        {
+            CaptureId = Guid.Parse("20000000-0000-0000-0000-000000000001"),
+            DescriptorIdentitySha256 = new string('B', 64)
+        };
+
+        var (_, _, _, _, _, _, _, _, _, _, _, _, _, _, conditions) = artifact;
+
+        Assert.AreEqual(1, conditions!.Gain);
+        Assert.IsNotNull(artifact.CaptureId);
+        Assert.AreEqual(new string('B', 64), artifact.DescriptorIdentitySha256);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ProcessingAuxiliaryInputPreservesOriginalPositionalConstructorAndDeconstructShape()
+    {
+        var artifactId = Guid.Parse("10000000-0000-0000-0000-000000000001");
+        var auxiliary = new ProcessingAuxiliaryInput(
+            "scene",
+            ProcessingAuxiliaryInputKind.CanonicalJson,
+            null,
+            "scene-v1",
+            new string('A', 64),
+            new byte[] { 1 },
+            artifactId)
+        {
+            ChecksumSha256 = new string('B', 64)
+        };
+
+        var (name, kind, selector, schema, identity, payload, deconstructedArtifactId) = auxiliary;
+
+        Assert.AreEqual("scene", name);
+        Assert.AreEqual(ProcessingAuxiliaryInputKind.CanonicalJson, kind);
+        Assert.IsNull(selector);
+        Assert.AreEqual("scene-v1", schema);
+        Assert.AreEqual(new string('A', 64), identity);
+        Assert.AreEqual(1, payload.Length);
+        Assert.AreEqual(artifactId, deconstructedArtifactId);
+        Assert.AreEqual(new string('B', 64), auxiliary.ChecksumSha256);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task LinearNormalizationPacksRowsAndRecordsNoCorrectionProvenance()
     {
         var source = CreateArtifact(
@@ -324,6 +528,38 @@ public sealed class ProcessingRecipeTests
         Assert.AreEqual(previewArtifact.ArtifactId, outcome.Products[0].SourceArtifactIds[0]);
         Assert.IsTrue(outcome.Products[0].Algorithms.Any(item => item.Name == "jpeg-decode"));
         Assert.AreEqual(8, JpegImageCodec.DecodeJpeg(outcome.Products[0].Payload).Width);
+
+        var sceneArtifact = previewArtifact with
+        {
+            ArtifactId = Guid.Parse("30000000-0000-0000-0000-000000000001"),
+            Role = FrameArtifactRole.Metadata,
+            Variant = "projected-scene-v1",
+            RecipeIdentitySha256 = new string('C', 64),
+            MediaType = "application/json",
+            Layout = null,
+            Payload = "{}"u8.ToArray()
+        };
+        var sceneAuxiliary = new ProcessingAuxiliaryInput(
+            "projected-scene", ProcessingAuxiliaryInputKind.Artifact,
+            ProcessingInputSelector.RecipeResult(
+                sceneArtifact.Role, sceneArtifact.Variant, sceneArtifact.RecipeIdentitySha256),
+            ArtifactId: sceneArtifact.ArtifactId);
+        var withScene = await executor.ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.Annotation,
+            EmptyOptions(),
+            ProcessingInputSelector.RecipeResult(
+                FrameArtifactRole.Preview, previewProduct.Variant, previewProduct.Recipe.IdentitySha256),
+            [previewArtifact, sceneArtifact],
+            "stars",
+            annotation,
+            AuxiliaryInputs: [sceneAuxiliary],
+            InputArtifactId: previewArtifact.ArtifactId)).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, withScene.Status);
+        CollectionAssert.AreEqual(
+            new[] { previewArtifact.ArtifactId, sceneArtifact.ArtifactId },
+            withScene.Products[0].SourceArtifactIds.ToArray());
+        Assert.AreNotEqual(outcome.Products[0].Recipe.IdentitySha256, withScene.Products[0].Recipe.IdentitySha256);
+        Assert.AreNotEqual(outcome.Products[0].OutputIdentitySha256, withScene.Products[0].OutputIdentitySha256);
 
         var metadata = new MetadataCornerOverlay(["identity"], ["schedule"], ["environment"], ["provenance"]);
         var metadataOutcome = await executor.ExecuteAsync(Request(
@@ -1238,6 +1474,60 @@ public sealed class ProcessingRecipeTests
         string variant,
         ProcessingAnnotationInput? annotation = null) =>
         new(recipe, options, input, inputs, variant, annotation);
+
+    private static async Task<ProcessingOutcome> ExecuteProjectedSceneAsync(
+        ProcessingArtifact source,
+        ProjectedSceneV1 scene)
+    {
+        var payload = ProjectedSceneJson.Serialize(scene);
+        return await new ProcessingRecipeExecutor().ExecuteAsync(new ProcessingExecutionRequest(
+            BuiltInProcessingRecipes.ProjectedScene,
+            EmptyOptions(),
+            ProcessingInputSelector.Raw("source"),
+            [source],
+            "scene",
+            AuxiliaryInputs:
+            [
+                new ProcessingAuxiliaryInput(
+                    "scene",
+                    ProcessingAuxiliaryInputKind.CanonicalJson,
+                    SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion,
+                    IdentitySha256: scene.SceneIdentitySha256,
+                    Payload: payload)
+                {
+                    ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(payload)
+                }
+            ])).ConfigureAwait(false);
+    }
+
+    private static async Task<ProjectedSceneV1> CreateProjectedSceneAsync(
+        ProjectedSceneKind kind,
+        Guid captureId,
+        Guid artifactId,
+        string descriptorIdentity)
+    {
+        var utc = DateTimeOffset.Parse("2025-01-15T08:00:00Z", CultureInfo.InvariantCulture);
+        var siderealHours = AstronomyTime.LocalMeanSiderealDegrees(utc, 0) / 15;
+        var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("zenith", "Zenith", siderealHours, 0, 1)
+        ])).BuildAsync(new VisibleSceneRequest(
+            utc,
+            new ObserverLocation(0, 0, 0),
+            new ProjectionContext(
+                ProjectionModel.Perspective, 1, 1, 1, 1, 2, 2, ProjectionAperture.Rectangular,
+                BoresightAltitudeDegrees: 90),
+            new CatalogQuery(6, 10),
+            new CatalogMetadata(
+                "fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
+            projectionVersion: "perspective-v1")).ConfigureAwait(false);
+        return ProjectedSceneJson.Create(
+            kind,
+            visible,
+            ProjectedSceneImageTransformV1.Identity(2, 2),
+            new ProjectedSceneSource(captureId, artifactId, descriptorIdentity),
+            "calibration-v1",
+            visible.Request.ProjectionVersion);
+    }
 
     private static ProcessingArtifact CreateArtifact(
         FrameArtifactRole role,

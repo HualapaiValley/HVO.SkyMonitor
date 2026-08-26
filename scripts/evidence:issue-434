@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
+PROJECT="tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+EVIDENCE_ROOT=${HVO_ISSUE434_EVIDENCE_ROOT:-"$ROOT/TestResults/issue-434"}
+EXPECTED_PRODUCT=${HVO_ISSUE434_PRODUCT_COMMIT:-4d065d3}
+
+command -v jq >/dev/null || { printf '%s\n' "jq is required." >&2; exit 1; }
+[[ $(git status --porcelain --untracked-files=all) == "" ]] || {
+  printf '%s\n' "Issue #434 evidence requires a completely clean worktree." >&2
+  exit 1
+}
+
+EVIDENCE_HEAD=$(git rev-parse HEAD)
+EVIDENCE_TREE=$(git rev-parse 'HEAD^{tree}')
+PRODUCT_COMMIT=$(git rev-parse "$EXPECTED_PRODUCT^{commit}")
+PRODUCT_TREE=$(git rev-parse "$PRODUCT_COMMIT^{tree}")
+git merge-base --is-ancestor "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" || {
+  printf '%s\n' "Issue #434 product commit must be an ancestor of evidence HEAD." >&2
+  exit 1
+}
+
+EXPECTED_PATHS=(
+  "scripts/evidence:issue-434"
+)
+mapfile -t EVIDENCE_PATHS < <(git diff --name-only "$PRODUCT_COMMIT...$EVIDENCE_HEAD" | LC_ALL=C sort)
+[[ "${#EVIDENCE_PATHS[@]}" -eq "${#EXPECTED_PATHS[@]}" ]] || {
+  printf '%s\n' "Candidate-to-evidence diff must contain exactly the issue #434 runner binding." >&2
+  exit 1
+}
+for index in "${!EXPECTED_PATHS[@]}"; do
+  [[ "${EVIDENCE_PATHS[$index]}" == "${EXPECTED_PATHS[$index]}" ]] || {
+    printf '%s\n' "Unexpected candidate-to-evidence path: ${EVIDENCE_PATHS[$index]}" >&2
+    exit 1
+  }
+done
+
+REVISION=${HVO_EVIDENCE_REVISION:-$EVIDENCE_HEAD}
+[[ "$REVISION" == "$EVIDENCE_HEAD" ]] || {
+  printf '%s\n' "HVO_EVIDENCE_REVISION must equal evidence HEAD." >&2
+  exit 1
+}
+TRIAL=${HVO_EVIDENCE_TRIAL:-"$(date -u +%Y%m%dT%H%M%S%3NZ)-$$"}
+[[ "$TRIAL" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { printf '%s\n' "HVO_EVIDENCE_TRIAL is invalid." >&2; exit 1; }
+TRIAL_DIR="$EVIDENCE_ROOT/$EVIDENCE_HEAD/trials/$TRIAL"
+RECEIPT="$TRIAL_DIR/issue-434-build-receipt.json"
+RESULT="$TRIAL_DIR/issue-434-layered-gallery-performance.json"
+mkdir -p "$TRIAL_DIR"
+[[ ! -e "$RECEIPT" && ! -e "$RESULT" ]] || {
+  printf '%s\n' "Issue #434 evidence is create-only: $TRIAL_DIR" >&2
+  exit 1
+}
+
+HARNESS_DIFF="$TRIAL_DIR/.harness.diff"
+git diff --binary "$PRODUCT_COMMIT...$EVIDENCE_HEAD" > "$HARNESS_DIFF"
+HARNESS_DIFF_SHA256=$(sha256sum "$HARNESS_DIFF" | cut -d' ' -f1 | tr 'a-f' 'A-F')
+SOURCE_INVENTORY="$TRIAL_DIR/.source-inventory"
+git ls-files -- \
+  src/HVO.SkyMonitor.CameraAgent.Common src/HVO.SkyMonitor.CameraAgent \
+  tests/HVO.SkyMonitor.CameraAgent.Tests tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests \
+  scripts/evidence:issue-434 Directory.Build.props Directory.Packages.props global.json | \
+  LC_ALL=C sort | while IFS= read -r path; do
+    printf '%s\t%s\n' "$path" "$(sha256sum "$path" | cut -d' ' -f1 | tr 'a-f' 'A-F')"
+  done > "$SOURCE_INVENTORY"
+SOURCE_SHA256=$(sha256sum "$SOURCE_INVENTORY" | cut -d' ' -f1 | tr 'a-f' 'A-F')
+SOURCE_COUNT=$(wc -l < "$SOURCE_INVENTORY" | tr -d ' ')
+
+BUILD_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+dotnet build "$PROJECT" --configuration Release --no-restore --no-incremental -warnaserror
+BUILD_COMPLETED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+SDK_VERSION=$(dotnet --version)
+jq -n \
+  --arg schemaVersion "issue-434-build-receipt-v1" \
+  --arg evidenceHead "$EVIDENCE_HEAD" --arg evidenceTree "$EVIDENCE_TREE" \
+  --arg productCommit "$PRODUCT_COMMIT" --arg productTree "$PRODUCT_TREE" \
+  --arg harnessDiffSha256 "$HARNESS_DIFF_SHA256" --arg sourceInventorySha256 "$SOURCE_SHA256" \
+  --arg sdkVersion "$SDK_VERSION" --arg configuration "Release" --arg project "$PROJECT" \
+  --arg trial "$TRIAL" --arg buildStartedUtc "$BUILD_STARTED_UTC" --arg buildCompletedUtc "$BUILD_COMPLETED_UTC" \
+  --argjson sourceInventoryFileCount "$SOURCE_COUNT" \
+  '{schemaVersion:$schemaVersion,evidenceHead:$evidenceHead,evidenceTree:$evidenceTree,
+    productCommit:$productCommit,productTree:$productTree,harnessDiffSha256:$harnessDiffSha256,
+    sourceInventorySha256:$sourceInventorySha256,sourceInventoryFileCount:$sourceInventoryFileCount,
+    sdkVersion:$sdkVersion,configuration:$configuration,project:$project,trial:$trial,
+    buildStartedUtc:$buildStartedUtc,buildCompletedUtc:$buildCompletedUtc}' > "$RECEIPT"
+rm -f -- "$HARNESS_DIFF" "$SOURCE_INVENTORY"
+
+[[ $(git status --porcelain --untracked-files=all) == "" ]] || {
+  printf '%s\n' "Worktree changed during the evidence build." >&2
+  exit 1
+}
+export HVO_ISSUE434_EVIDENCE=1
+export HVO_ISSUE434_EVIDENCE_ROOT="$EVIDENCE_ROOT"
+export HVO_EVIDENCE_REVISION="$EVIDENCE_HEAD"
+export HVO_EVIDENCE_TRIAL="$TRIAL"
+dotnet test "$PROJECT" --configuration Release --no-build \
+  --filter "FullyQualifiedName=HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing.DurableCaptureProcessingTests.Issue434OfflineGalleryGenerationCacheConcurrencyAndMaterializationEvidence"
+
+[[ -s "$RESULT" ]] || { printf '%s\n' "Issue #434 performance result is missing." >&2; exit 1; }
+jq -e --arg revision "$EVIDENCE_HEAD" --arg trial "$TRIAL" \
+  '.schemaVersion == "issue-434-layered-gallery-performance-v1" and .revision == $revision and .trial == $trial and
+   .svg.deterministicAcrossUncachedRequests == true and .concurrency.sharedSingleFlightResult == true and
+   .materialization.replayConverged == true' "$RESULT" >/dev/null
+printf '%s\n' "$TRIAL_DIR"

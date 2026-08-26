@@ -176,6 +176,37 @@ public sealed class VisibleSceneCoverageTests
     }
 
     [TestMethod]
+    public async Task BuildAsync_UnboundedPerspectiveIncludesFrontFacingObjectOutsideSensorFov()
+    {
+        EquatorialPoint J2000(AltAzPoint horizontal)
+            => EquatorialPrecession.PrecessToJ2000(CoordinateTransforms.HorizontalToEquatorial(
+                horizontal, Utc, Observer.LatitudeDegrees, Observer.LongitudeDegrees), Utc);
+        var horizontal = new AltAzPoint(30, 90);
+        var point = J2000(horizontal);
+        var item = new CelestialCatalogObject(
+            "off-sensor", "Off sensor", point.RightAscensionHours, point.DeclinationDegrees, 1);
+        var boundedCatalog = new RecordingCatalog([item], honorRegion: true);
+        var unboundedCatalog = new RecordingCatalog([item], honorRegion: true);
+        var boundedProjection = new ProjectionContext(
+            ProjectionModel.Perspective, 100, 50, 100, 100, 200, 100,
+            ProjectionAperture.Rectangular, BoresightAltitudeDegrees: 90);
+        var unboundedProjection = boundedProjection with { EnforceSensorBounds = false };
+
+        var bounded = await new VisibleSceneBuilder(boundedCatalog).BuildAsync(CreateModelRequest(
+            boundedProjection, HorizonPolicy.ProjectionOnly)).ConfigureAwait(false);
+        var unbounded = await new VisibleSceneBuilder(unboundedCatalog).BuildAsync(CreateModelRequest(
+            unboundedProjection, HorizonPolicy.ProjectionOnly)).ConfigureAwait(false);
+
+        Assert.IsNotNull(boundedCatalog.LastQuery!.J2000Region);
+        Assert.IsNull(unboundedCatalog.LastQuery!.J2000Region);
+        Assert.IsEmpty(bounded.Objects);
+        Assert.HasCount(1, unbounded.Objects);
+        Assert.AreEqual("off-sensor", unbounded.Objects[0].Id);
+        Assert.IsGreaterThan(unboundedProjection.WidthPixels, unbounded.Objects[0].Pixel.X);
+        Assert.IsTrue(unbounded.Objects.Count <= unbounded.Request.CatalogQuery.MaximumResults);
+    }
+
+    [TestMethod]
     public async Task BuildAsync_RefractionUsesHorizonRegionOrFallsBackToAllSky()
     {
         var geometricCatalog = new RecordingCatalog([], honorRegion: true);

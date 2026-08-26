@@ -203,12 +203,28 @@ public sealed class OwnerAuthorizationTests
         using var anonymousResponse = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/gallery", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+        using var anonymousPresentation = await anonymousClient.GetAsync(
+            new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}/presentation", UriKind.Relative))
+            .ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousPresentation.StatusCode);
+        using var anonymousMaterialization = await anonymousClient.PostAsJsonAsync(
+            new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}/materializations", UriKind.Relative),
+            new { enabledLayerIdentitySha256 = Array.Empty<string>() }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousMaterialization.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
         using var nonOwnerResponse = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/gallery", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerResponse.StatusCode);
+        using var nonOwnerPresentation = await nonOwnerClient.GetAsync(
+            new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}/presentation.svg", UriKind.Relative))
+            .ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerPresentation.StatusCode);
+        using var nonOwnerMaterialization = await nonOwnerClient.PostAsJsonAsync(
+            new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}/materializations", UriKind.Relative),
+            new { enabledLayerIdentitySha256 = Array.Empty<string>() }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerMaterialization.StatusCode);
 
         using var ownerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         ownerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
@@ -221,6 +237,29 @@ public sealed class OwnerAuthorizationTests
         using var missingDetail = await ownerClient.GetAsync(
             new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.NotFound, missingDetail.StatusCode);
+        var missingCaptureId = Guid.NewGuid();
+        using var missingPresentation = await ownerClient.GetAsync(
+            new Uri($"/api/v1/operations/gallery/{missingCaptureId:D}/presentation", UriKind.Relative))
+            .ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, missingPresentation.StatusCode);
+        using var missingSvg = await ownerClient.GetAsync(
+            new Uri($"/api/v1/operations/gallery/{missingCaptureId:D}/presentation.svg", UriKind.Relative))
+            .ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, missingSvg.StatusCode);
+        using var missingAntiforgery = await ownerClient.PostAsJsonAsync(
+            new Uri($"/api/v1/operations/gallery/{missingCaptureId:D}/materializations", UriKind.Relative),
+            new { enabledLayerIdentitySha256 = Array.Empty<string>() }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.BadRequest, missingAntiforgery.StatusCode);
+        var antiforgery = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
+        using var missingMaterializationRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri($"/api/v1/operations/gallery/{missingCaptureId:D}/materializations", UriKind.Relative))
+        {
+            Content = JsonContent.Create(new { enabledLayerIdentitySha256 = Array.Empty<string>() })
+        };
+        missingMaterializationRequest.Headers.Add("RequestVerificationToken", antiforgery);
+        using var missingMaterialization = await ownerClient.SendAsync(missingMaterializationRequest).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, missingMaterialization.StatusCode);
     }
 
     [TestMethod]

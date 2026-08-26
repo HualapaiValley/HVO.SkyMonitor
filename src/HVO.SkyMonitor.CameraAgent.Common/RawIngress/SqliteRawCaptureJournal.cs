@@ -550,6 +550,19 @@ internal sealed class SqliteRawCaptureJournal(
         return (true, File.Exists(payload) && File.Exists(sidecar));
     }
 
+    internal async Task<bool> IsCaptureArtifactCommittedAsync(
+        Guid captureId,
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM raw_captures WHERE capture_id = $capture_id AND raw_artifact_id = $artifact_id AND state = 'committed';";
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$artifact_id", artifactId.ToString("N"));
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
+    }
+
     private async Task<RawCaptureIdentity> ReserveIdentityCoreAsync(
         string agentId,
         Guid captureId,

@@ -22,15 +22,36 @@
         var preview = GalleryPage.PreferredPreview(_capture);
         <header class="detail-heading"><div><p class="eyebrow">Sequence @_capture.CaptureSequence / @EvidenceLabel(_capture.EvidenceOrigin)</p><h1><time datetime="@_capture.ExposureStartedUtc.ToString("O")">@GalleryPage.FormatCaptureTime(_capture.ExposureStartedUtc)</time></h1><p>Exact local capture, artifact, recipe, lineage, and processing-node facts.</p></div><span>@OperationsPage.SplitWords(_capture.RawState)</span></header>
         <section class="detail-hero">
-                <figure>
-                @if (preview is not null)
+            <figure>
+                @if (_presentation is not null)
+                {
+                    <div class="layered-presentation" @ref="_presentationRoot" data-presentation-identity="@_presentation.PresentationIdentitySha256">
+                        <div class="layered-canvas">
+                            <img src="@PreviewUrl(_presentation.BaseArtifactId)" alt="Capture @_capture.CaptureSequence base image" />
+                            <div class="layered-overlay" aria-hidden="true">@PresentationSvg</div>
+                        </div>
+                        <fieldset class="layer-controls">
+                            <legend>Presentation layers</legend>
+                            @foreach (var layer in _presentation.Layers)
+                            {
+                                <label><input type="checkbox" checked="@layer.EnabledByDefault" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span>@OperationsPage.SplitWords(layer.Kind)</span><small>z @layer.ZOrder / @layer.StyleVersion</small></label>
+                            }
+                            <div class="layer-save"><button type="button" class="btn btn-primary" disabled="@_isSaving" @onclick="SaveSelectedStackAsync">@(_isSaving ? "Saving stack..." : "Save selected stack")</button><small>Creates one immutable flattened derivative without rerunning analysis.</small></div>
+                        </fieldset>
+                        @if (_saveMessage is not null) { <p class="layer-save-status" role="status">@_saveMessage</p> }
+                        @if (_saveError is not null) { <p class="layer-save-status layer-save-status--error" role="alert">@_saveError</p> }
+                        <dl class="layer-provenance"><div><dt>Manifest</dt><dd><code>@_presentation.ManifestIdentitySha256</code></dd></div><div><dt>Presentation</dt><dd><code>@_presentation.PresentationIdentitySha256</code></dd></div><div><dt>Registration</dt><dd>@_capture.CanonicalSceneAvailability</dd></div></dl>
+                    </div>
+                    <figcaption>Immutable base with one grouped same-host SVG; toggles run locally.</figcaption>
+                }
+                else if (preview is not null)
                 {
                     <img src="@GalleryPage.PreviewUrl(preview.ArtifactId)" alt="Capture @_capture.CaptureSequence @OperationsPage.SplitWords(preview.Role.ToString())" />
-                    <figcaption>@OperationsPage.SplitWords(preview.Role.ToString()) / direct same-host preview endpoint</figcaption>
+                    <figcaption>@OperationsPage.SplitWords(preview.Role.ToString()) / direct same-host preview endpoint. @(_presentationMessage ?? "Structured layers are unavailable.")</figcaption>
                 }
                 else
                 {
-                    <div class="unsupported-preview"><i class="bi bi-image" aria-hidden="true"></i><strong>Preview unsupported</strong><span>No AnnotatedPreview or Preview artifact is available for display.</span></div>
+                    <div class="unsupported-preview"><i class="bi bi-image" aria-hidden="true"></i><strong>Preview unsupported</strong><span>No AnnotatedPreview or Preview artifact is available for display. @(_presentationMessage ?? "Structured layers are unavailable.")</span></div>
                 }
             </figure>
             <dl class="capture-facts"><div><dt>Capture ID</dt><dd><code>@_capture.CaptureId</code></dd></div><div><dt>Agent</dt><dd>@_capture.AgentId</dd></div><div><dt>Rig</dt><dd>@(_capture.RigId ?? "Unspecified")</dd></div><div><dt>Sequence</dt><dd>@_capture.CaptureSequence</dd></div><div><dt>Exposure started</dt><dd><time datetime="@_capture.ExposureStartedUtc.ToString("O")">@GalleryPage.FormatCaptureTime(_capture.ExposureStartedUtc)</time></dd></div><div><dt>Durable ingress</dt><dd><time datetime="@_capture.DurableIngressUtc.ToString("O")">@GalleryPage.FormatCaptureTime(_capture.DurableIngressUtc)</time></dd></div><div><dt>Raw state</dt><dd>@OperationsPage.SplitWords(_capture.RawState)</dd></div><div><dt>Evidence origin</dt><dd>@EvidenceLabel(_capture.EvidenceOrigin)</dd></div></dl>

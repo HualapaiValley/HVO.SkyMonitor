@@ -93,16 +93,31 @@ public sealed class EnvironmentalAssociationService(
                 options.Value.RawIngressRoot,
                 captureId,
                 cancellationToken).ConfigureAwait(false);
-        var persisted = allPersisted
+        var configuredKinds = options.Value.EnvironmentalAcquisition.Sources
+            .Select(static source => source.Kind).Distinct().Order().ToArray();
+        var candidateSets = allPersisted
             .GroupBy(static association => association.PolicyIdentitySha256, StringComparer.Ordinal)
-            .Select(group => group.ToArray())
+            .Select(static group => group.ToArray())
             .Where(group => expectedKinds.All(kind => group.Any(association => association.Kind == kind)))
-            .OrderBy(static group => group.Length)
-            .ThenBy(static group => group[0].PolicyIdentitySha256, StringComparer.Ordinal)
-            .FirstOrDefault() ?? [];
-        persisted = persisted
-            .Where(association => expectedKinds.Contains(association.Kind))
             .ToArray();
+        if (configuredKinds.Length > 0)
+        {
+            if (expectedKinds.Except(configuredKinds).Any())
+                throw new EnvironmentalObservationIdentityConflictException(
+                    "The requested environmental kinds are not part of the configured association policy.");
+            var configuredPolicyIdentity = CreatePolicyIdentity(configuredKinds);
+            candidateSets = candidateSets.Where(group =>
+                string.Equals(group[0].PolicyIdentitySha256, configuredPolicyIdentity, StringComparison.Ordinal) &&
+                group.Select(static association => association.Kind).Order().SequenceEqual(configuredKinds)).ToArray();
+        }
+        if (candidateSets.Length > 1)
+            throw new EnvironmentalObservationIdentityConflictException(
+                "Multiple durable environmental association policies satisfy the requested subset.");
+        if (candidateSets.Length == 0) return null;
+        var completeSet = candidateSets[0];
+        ValidatePersisted(completeSet, captureSequence, exposureFromUtc, exposureThroughUtc, rigId,
+            completeSet.Select(static association => association.Kind).ToArray());
+        var persisted = completeSet.Where(association => expectedKinds.Contains(association.Kind)).ToArray();
         ValidatePersisted(
             persisted, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, expectedKinds);
         return persisted.Length == expectedKinds.Length
@@ -122,13 +137,14 @@ public sealed class EnvironmentalAssociationService(
         if (captureId == Guid.Empty || captureSequence < 1 || exposureFromUtc.Offset != TimeSpan.Zero ||
             exposureThroughUtc.Offset != TimeSpan.Zero || exposureFromUtc >= exposureThroughUtc ||
             rigId is { Length: > 128 } || rigId is not null && rigId != rigId.Trim() ||
-            kinds.Count == 0 || kinds.Any(static kind => !Enum.IsDefined(kind)))
+            kinds.Count == 0 || kinds.Any(static kind => !Enum.IsDefined(kind)) ||
+            kinds.Distinct().Count() != kinds.Count)
         {
             throw new ArgumentException("The environmental capture association request is invalid.");
         }
     }
 
-    private static string CreatePolicyIdentity(IReadOnlyList<EnvironmentalObservationKind> expectedKinds)
+    internal static string CreatePolicyIdentity(IReadOnlyList<EnvironmentalObservationKind> expectedKinds)
         => CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
             Schema = AlgorithmVersion,

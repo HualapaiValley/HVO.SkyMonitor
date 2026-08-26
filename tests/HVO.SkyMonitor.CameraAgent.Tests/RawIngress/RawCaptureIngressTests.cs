@@ -86,6 +86,69 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
+    public async Task AcceptAsync_BacklogOverlayUpdatesTotalsWithoutReplacingAcceptingBase()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = CreateIngress(root, state);
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            state.SetProjectedSceneBacklog(2);
+
+            await ingress.AcceptAsync(
+                CreateConfiguration(), CreateSubmission(Timestamp(3), [1, 2, 3, 4]), CancellationToken.None)
+                .ConfigureAwait(false);
+
+            Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
+            Assert.AreEqual("projected-scene-backlog", state.Snapshot.Reason);
+            Assert.AreEqual(1, state.Snapshot.PendingCount);
+            state.SetProjectedSceneBacklog(0);
+            Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
+            Assert.AreEqual("accepting", state.Snapshot.Reason);
+            Assert.AreEqual(1, state.Snapshot.PendingCount);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task HeldStateRefresh_BacklogDrainRestoresOriginalBaseStatus()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var state = new RawIngressState(TimeProvider.System);
+            using var ingress = CreateIngress(root, state);
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            state.Set(RawIngressAvailability.Degraded, "index-projection-failed");
+            state.SetProjectedSceneBacklog(3);
+            var configuration = CreateConfiguration();
+            var receipt = await ingress.AcceptAsync(
+                configuration, CreateSubmission(Timestamp(4), [4, 4, 4, 4]), CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            var lease = await ingress.ClaimAsync(
+                new CaptureLaneDefinition("standard", true, true, true, new string('A', 64)),
+                "test-owner", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            await ingress.ReleaseAsync(lease, CancellationToken.None).ConfigureAwait(false);
+
+            state.SetProjectedSceneBacklog(0);
+
+            Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
+            Assert.AreEqual("index-projection-failed", state.Snapshot.Reason);
+            Assert.AreEqual(1, state.Snapshot.PendingCount);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task AcceptAsync_EnrichedCycleEvidenceIsDurableAndDuplicateIsIdempotent()
     {
         var root = CreateRoot();
@@ -726,6 +789,81 @@ public sealed class RawCaptureIngressTests
             {
                 DeleteRoot(root);
             }
+        }
+    }
+
+    [TestMethod]
+    public async Task PublicationState_DistinguishesBeforeAndAfterJournalCommitFaults()
+    {
+        foreach (var (point, expected) in new[]
+                 {
+                     (RawIngressFaultPoint.SidecarPublished, RawCapturePublicationState.Unknown),
+                     (RawIngressFaultPoint.SidecarDirectorySynced, RawCapturePublicationState.Unknown),
+                     (RawIngressFaultPoint.BeforeJournalCommit, RawCapturePublicationState.Unknown),
+                     (RawIngressFaultPoint.AfterJournalCommit, RawCapturePublicationState.Committed),
+                     (RawIngressFaultPoint.BeforeIndexProjection, RawCapturePublicationState.Committed),
+                     (RawIngressFaultPoint.BeforeWakeUpNotification, RawCapturePublicationState.Committed)
+                 })
+        {
+            var root = CreateRoot();
+            try
+            {
+                using var ingress = CreateIngress(
+                    root, new RawIngressState(TimeProvider.System), new OneShotFaultInjector(point));
+                var configuration = CreateConfiguration();
+                var submission = CreateEnrichedSubmission(Timestamp(8), [8, 8, 8, 8]);
+                await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(async () =>
+                    await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false))
+                    .ConfigureAwait(false);
+
+                var state = await ((IRawCaptureIngress)ingress).GetPublicationStateAsync(
+                    configuration, submission, CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(expected, state, point.ToString());
+            }
+            finally
+            {
+                DeleteRoot(root);
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task OwnedStageKeys_AcceptsValidManifestReferenceFromNewerStageSchema()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var stageKey = new string('A', 64);
+            var submission = CreateSubmission(Timestamp(8).AddMinutes(1), [1, 2, 3, 4]);
+            var frame = submission.Result.Frame!;
+            submission = submission with
+            {
+                Result = submission.Result with
+                {
+                    Frame = frame with
+                    {
+                        Metadata = frame.Metadata with
+                        {
+                            Scene = new SceneProvenance(
+                                new string('B', 64), "rig-v1", "catalog", "1", new string('C', 64),
+                                "EquidistantFisheye", "projection-v1", "astronomy-v1", "sensor-v1",
+                                ProjectedSceneStageSchemaVersion: "projected-scene-stage-v2",
+                                ProjectedSceneStageKey: stageKey)
+                        }
+                    }
+                }
+            };
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+            await ingress.AcceptAsync(CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false);
+
+            var owned = await ingress.GetOwnedStageKeysAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(owned.Contains(stageKey));
+        }
+        finally
+        {
+            DeleteRoot(root);
         }
     }
 

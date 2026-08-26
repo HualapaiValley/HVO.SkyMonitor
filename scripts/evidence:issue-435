@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
+PROJECT="tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+SOLUTION="HVO.SkyMonitor.v9.slnx"
+PROJECT_DIR="$ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests"
+BIN_DIR="$PROJECT_DIR/bin/Release"
+OBJ_DIR="$PROJECT_DIR/obj/Release"
+OUTPUT_DIR="$BIN_DIR/net10.0"
+EVIDENCE_ROOT=${HVO_ISSUE435_EVIDENCE_ROOT:-"$ROOT/TestResults/issue-435"}
+
+command -v jq >/dev/null || { printf '%s\n' "jq is required." >&2; exit 1; }
+[[ -f "$ROOT/global.json" ]] || { printf '%s\n' "global.json is missing." >&2; exit 1; }
+[[ $(git status --porcelain --untracked-files=all) == "" ]] || {
+  printf '%s\n' "Claimable issue #435 evidence requires a completely clean tracked and untracked/unignored worktree." >&2
+  exit 1
+}
+git rev-parse --verify origin/main >/dev/null
+
+HEAD_COMMIT=$(git rev-parse HEAD)
+HEAD_TREE=$(git rev-parse 'HEAD^{tree}')
+MERGE_BASE=$(git merge-base origin/main HEAD)
+REVISION=${HVO_EVIDENCE_REVISION:-$HEAD_COMMIT}
+[[ "$REVISION" == "$HEAD_COMMIT" ]] || { printf '%s\n' "HVO_EVIDENCE_REVISION must equal HEAD." >&2; exit 1; }
+TRIAL=${HVO_EVIDENCE_TRIAL:-"$(date -u +%Y%m%dT%H%M%S%3NZ)-$$"}
+[[ "$TRIAL" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { printf '%s\n' "HVO_EVIDENCE_TRIAL is invalid." >&2; exit 1; }
+
+TRIAL_DIR="$EVIDENCE_ROOT/$HEAD_COMMIT/trials/$TRIAL"
+RECEIPT="$TRIAL_DIR/issue-435-build-receipt.json"
+mkdir -p "$TRIAL_DIR"
+[[ ! -e "$RECEIPT" ]] || { printf '%s\n' "Build receipt already exists: $RECEIPT" >&2; exit 1; }
+
+safe_clean() {
+  local target=$1 expected=$2
+  [[ "$target" == "$expected" ]] || { printf '%s\n' "Refusing unexpected clean target: $target" >&2; exit 1; }
+  [[ "$target" == "$PROJECT_DIR"/* ]] || { printf '%s\n' "Refusing clean outside test project: $target" >&2; exit 1; }
+  rm -rf -- "$target"
+}
+safe_clean "$BIN_DIR" "$PROJECT_DIR/bin/Release"
+safe_clean "$OBJ_DIR" "$PROJECT_DIR/obj/Release"
+
+BUILD_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+dotnet clean "$SOLUTION" --configuration Release
+dotnet restore "$PROJECT"
+dotnet build "$PROJECT" --configuration Release --no-restore --no-incremental -warnaserror
+BUILD_COMPLETED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+[[ -d "$OUTPUT_DIR" ]] || { printf '%s\n' "Release output is missing: $OUTPUT_DIR" >&2; exit 1; }
+
+inventory_hash() {
+  local base=$1 list=$2 manifest=$3
+  : > "$manifest"
+  while IFS= read -r relative; do
+    [[ "$relative" != *$'\n'* && "$relative" != *$'\t'* ]] || { printf '%s\n' "Unsupported inventory path." >&2; exit 1; }
+    local file="$base/$relative"
+    [[ -f "$file" ]] || { printf '%s\n' "Inventory file is missing: $file" >&2; exit 1; }
+    printf '%s\t%s\t%s\n' "$relative" "$(stat -c '%s' "$file")" "$(sha256sum "$file" | cut -d' ' -f1 | tr 'a-f' 'A-F')" >> "$manifest"
+  done < "$list"
+  sha256sum "$manifest" | cut -d' ' -f1
+}
+
+SOURCE_LIST="$TRIAL_DIR/.source-files"
+SOURCE_MANIFEST="$TRIAL_DIR/.source-inventory"
+git ls-files -- \
+  src/HVO.SkyMonitor.AgentCore \
+  src/HVO.SkyMonitor.Astronomy \
+  src/HVO.SkyMonitor.Processing \
+  src/HVO.SkyMonitor.CameraAgent.Common \
+  src/HVO.SkyMonitor.CameraAgent \
+  tests/HVO.SkyMonitor.CameraAgent.Tests \
+  scripts/evidence:issue-435 \
+  docs/validation/issue-435-runtime-signals.json \
+  Directory.Build.props Directory.Packages.props global.json | LC_ALL=C sort > "$SOURCE_LIST"
+SOURCE_HASH=$(inventory_hash "$ROOT" "$SOURCE_LIST" "$SOURCE_MANIFEST")
+SOURCE_COUNT=$(wc -l < "$SOURCE_LIST" | tr -d ' ')
+
+OUTPUT_LIST="$TRIAL_DIR/.output-files"
+OUTPUT_MANIFEST="$TRIAL_DIR/.output-inventory"
+(cd "$OUTPUT_DIR" && find . -type f -printf '%P\n' | LC_ALL=C sort) > "$OUTPUT_LIST"
+OUTPUT_HASH=$(inventory_hash "$OUTPUT_DIR" "$OUTPUT_LIST" "$OUTPUT_MANIFEST")
+OUTPUT_COUNT=$(wc -l < "$OUTPUT_LIST" | tr -d ' ')
+BRANCH_DIFF_HASH=$(git diff --binary origin/main...HEAD | sha256sum | cut -d' ' -f1)
+SDK_VERSION=$(dotnet --version)
+COMMAND="dotnet clean $SOLUTION --configuration Release && dotnet restore $PROJECT && dotnet build $PROJECT --configuration Release --no-restore --no-incremental -warnaserror"
+
+TMP_RECEIPT="$TRIAL_DIR/.issue-435-build-receipt.$$.tmp"
+jq -n \
+  --arg schemaVersion "issue-435-build-receipt-v1" \
+  --arg headCommit "$HEAD_COMMIT" --arg headTree "$HEAD_TREE" --arg mergeBase "$MERGE_BASE" \
+  --arg sourceDiffSha256 "${BRANCH_DIFF_HASH^^}" --arg measuredSourceTreeSha256 "${SOURCE_HASH^^}" \
+  --arg runtimeOutputSetSha256 "${OUTPUT_HASH^^}" --arg sdkVersion "$SDK_VERSION" \
+  --arg configuration "Release" --arg project "$PROJECT" --arg outputDirectory "$OUTPUT_DIR" \
+  --arg command "$COMMAND" --arg buildStartedUtc "$BUILD_STARTED_UTC" \
+  --arg buildCompletedUtc "$BUILD_COMPLETED_UTC" --arg trial "$TRIAL" \
+  --argjson measuredSourceFileCount "$SOURCE_COUNT" --argjson runtimeOutputFileCount "$OUTPUT_COUNT" \
+  '{schemaVersion:$schemaVersion,headCommit:$headCommit,headTree:$headTree,mergeBase:$mergeBase,
+    sourceDiffSha256:$sourceDiffSha256,measuredSourceTreeSha256:$measuredSourceTreeSha256,
+    measuredSourceFileCount:$measuredSourceFileCount,runtimeOutputSetSha256:$runtimeOutputSetSha256,
+    runtimeOutputFileCount:$runtimeOutputFileCount,sdkVersion:$sdkVersion,configuration:$configuration,
+    project:$project,outputDirectory:$outputDirectory,command:$command,buildStartedUtc:$buildStartedUtc,
+    buildCompletedUtc:$buildCompletedUtc,trial:$trial}' > "$TMP_RECEIPT"
+(set -o noclobber; exec 9>"$RECEIPT"; cat "$TMP_RECEIPT" >&9)
+rm -f -- "$TMP_RECEIPT" "$SOURCE_LIST" "$SOURCE_MANIFEST" "$OUTPUT_LIST" "$OUTPUT_MANIFEST"
+
+[[ $(git status --porcelain --untracked-files=all) == "" ]] || {
+  printf '%s\n' "Worktree changed during evidence build." >&2
+  exit 1
+}
+
+export HVO_ISSUE435_EVIDENCE=1
+export HVO_ISSUE435_EVIDENCE_ROOT="$EVIDENCE_ROOT"
+export HVO_EVIDENCE_REVISION="$HEAD_COMMIT"
+export HVO_EVIDENCE_TRIAL="$TRIAL"
+export HVO_ISSUE435_BUILD_RECEIPT="$RECEIPT"
+dotnet test "$PROJECT" --no-build --configuration Release \
+  --filter "FullyQualifiedName=HVO.SkyMonitor.CameraAgent.Tests.Issue435ProjectedScenePerformanceTests.W1ProjectedSceneStagePersistRetrieveAndReconciliationEvidence"

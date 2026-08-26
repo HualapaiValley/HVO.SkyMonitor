@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
@@ -16,7 +17,8 @@ public sealed class VirtualSkyCameraModule(
     ICelestialCatalog catalog,
     IProjectedSceneStore sceneStore,
     IConstellationTopology? constellationTopology = null,
-    IPlanetEphemeris? planetEphemeris = null) :
+    IPlanetEphemeris? planetEphemeris = null,
+    IProjectedSceneStagingStore? stagingStore = null) :
     ICameraModule,
     ICameraSetpointController,
     ICameraModuleConfigurationPreflight
@@ -35,6 +37,7 @@ public sealed class VirtualSkyCameraModule(
     private PreparedVirtualCalibration? _preparedVirtualCalibration;
     private long _captureSequence;
     private long _fixedSequenceElapsedTicks;
+    private bool _stageProjectedScene;
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public string DisplayName => "Virtual Sky Camera";
@@ -62,6 +65,10 @@ public sealed class VirtualSkyCameraModule(
             : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
         ValidateVirtualCalibration(_options.VirtualCalibration, _resolvedReadout);
         _config = config;
+        _stageProjectedScene = config.ResolveProcessingSteps().Any(static step =>
+            step.Enabled != false &&
+            (string.Equals(step.Type, "ProjectedScene", StringComparison.OrdinalIgnoreCase) ||
+             step.Type.Contains("ProjectedSceneCaptureProcessingStep", StringComparison.Ordinal)));
         var outputWidth = _resolvedReadout?.Layout.Width ?? config.Rig.Sensor.WidthPixels;
         var outputHeight = _resolvedReadout?.Layout.Height ?? config.Rig.Sensor.HeightPixels;
         if (_options.SyntheticCalibration is { } syntheticCalibration)
@@ -127,6 +134,7 @@ public sealed class VirtualSkyCameraModule(
         return ValueTask.FromResult(timeProvider.GetUtcNow().ToUniversalTime());
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort stage cleanup must preserve the original capture failure or cancellation.")]
     public async Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -207,6 +215,9 @@ public sealed class VirtualSkyCameraModule(
                 "\n",
                 CaptureContractJson.ComputeCanonicalJsonSha256(config.Rig.Readout)))));
         }
+        var stageKey = _stageProjectedScene && stagingStore is not null
+            ? Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
+            : null;
         var captureSequence = fixedSequence ?? (_cloudField is null && _transientScenario is null
             ? Interlocked.Increment(ref _captureSequence) - 1
             : CreateDeterministicCaptureSequence(sceneId));
@@ -306,7 +317,11 @@ public sealed class VirtualSkyCameraModule(
             ProjectionCalibrationVersion: config.Rig.Optics.CalibrationVersion,
             CloudScenario: cloudProvenance,
             TransientScenario: transientProvenance,
-            SceneUtc: sceneRequest.Utc);
+            SceneUtc: sceneRequest.Utc,
+            ProjectedSceneStageSchemaVersion: stageKey is null
+                ? null
+                : StagedProjectedSceneDocument.CurrentSchemaVersion,
+            ProjectedSceneStageKey: stageKey);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,
@@ -447,7 +462,7 @@ public sealed class VirtualSkyCameraModule(
         {
             Layout = frameLayout
         };
-        return new CaptureResult(frame, setpoint, timeProvider.GetElapsedTime(start), request.Mode, false)
+        var result = new CaptureResult(frame, setpoint, timeProvider.GetElapsedTime(start), request.Mode, false)
         {
             // VirtualSky models exposure energy without waiting wall-clock exposure time.
             AcquisitionTiming = new CaptureAcquisitionTiming(
@@ -455,6 +470,25 @@ public sealed class VirtualSkyCameraModule(
                 request.RequestedStartUtc,
                 request.RequestedStartUtc)
         };
+        if (stageKey is null || stagingStore is null) return result;
+        try
+        {
+            await stagingStore.StageAsync(stageKey, sceneId, scene, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch
+        {
+            try
+            {
+                await stagingStore.DeleteAsync(stageKey, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Capture failure or cancellation remains authoritative; host startup reconciles any orphan.
+            }
+            throw;
+        }
     }
 
     public ValueTask DisposeAsync()

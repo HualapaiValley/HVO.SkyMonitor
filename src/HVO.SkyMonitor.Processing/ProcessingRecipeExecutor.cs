@@ -239,10 +239,12 @@ public sealed class ProcessingRecipeExecutor : IProcessingRecipeExecutor
                 if (input.Selector is not null || string.IsNullOrWhiteSpace(input.SchemaVersion) ||
                     input.ArtifactId is not null ||
                     input.IdentitySha256 is not { Length: 64 } ||
-                    !input.IdentitySha256.All(Uri.IsHexDigit) || input.Payload.IsEmpty ||
+                    !input.IdentitySha256.All(Uri.IsHexDigit) ||
+                    input.ChecksumSha256 is { } checksum &&
+                        (checksum.Length != 64 || !checksum.All(Uri.IsHexDigit)) || input.Payload.IsEmpty ||
                     !string.Equals(
                         ProcessingIdentity.ComputePayloadSha256(input.Payload),
-                        input.IdentitySha256,
+                        input.ChecksumSha256 ?? input.IdentitySha256,
                         StringComparison.OrdinalIgnoreCase))
                 {
                     return false;

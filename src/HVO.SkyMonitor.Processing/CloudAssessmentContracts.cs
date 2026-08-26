@@ -111,6 +111,9 @@ public sealed record CloudAssessmentV1(
     [property: JsonRequired] IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms)
 {
     public const string CurrentSchemaVersion = "cloud-assessment-v1";
+
+    [JsonIgnore]
+    public string AssessmentIdentitySha256 => CloudAssessmentJson.ComputeIdentitySha256(this);
 }
 
 public readonly record struct CloudAssessmentValidationResult(
@@ -149,6 +152,13 @@ public static class CloudAssessmentJson
         CloudAssessmentReasonCodes.EnvironmentStale,
         CloudAssessmentReasonCodes.EnvironmentContradictory
     };
+
+    public static string ComputeIdentitySha256(CloudAssessmentV1 assessment)
+    {
+        ArgumentNullException.ThrowIfNull(assessment);
+        return CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(
+            assessment, SerializerOptions));
+    }
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
 
     public static byte[] Serialize(CloudAssessmentV1 assessment)

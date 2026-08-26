@@ -14,6 +14,19 @@ internal interface ICaptureProcessingGraphStep
     string OutputVariant { get; }
 
     IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; }
+
+    string? OutputSchemaVersion => null;
+}
+
+internal sealed record CaptureProcessingOutputDescriptor(
+    FrameArtifactRole Role,
+    string Variant,
+    string RecipeName,
+    string? SchemaVersion = null);
+
+internal interface IMultiOutputCaptureProcessingGraphStep
+{
+    IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs { get; }
 }
 
 internal interface IWindowCaptureProcessingGraphStep
@@ -28,6 +41,18 @@ internal interface ICompoundCaptureProcessingGraphStep
     IReadOnlyDictionary<FrameArtifactRole, IReadOnlySet<string>> RequiredDependencyRecipes { get; }
 }
 
+internal sealed record CaptureProcessingDependencyRequirement(
+    IReadOnlySet<FrameArtifactRole> Roles,
+    IReadOnlySet<string>? RecipeNames = null,
+    IReadOnlySet<string>? SchemaVersions = null,
+    string? Variant = null,
+    bool Required = true);
+
+internal interface IRequiredCaptureProcessingDependencies
+{
+    IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements { get; }
+}
+
 internal interface ICaptureProcessingArtifactConsumer
 {
     IReadOnlySet<FrameArtifactRole> AcceptedDependencyRoles { get; }
@@ -35,6 +60,11 @@ internal interface ICaptureProcessingArtifactConsumer
 
 internal interface ICaptureProcessingOutcomeConsumer
 {
+}
+
+internal interface ILegacyCaptureProcessingPlanContract
+{
+    string LegacyPlanContractId { get; }
 }
 
 public sealed record CaptureProcessingGraphNode(
@@ -50,7 +80,9 @@ public sealed record CaptureProcessingGraphNode(
     int? EffectiveOrder = null,
     JsonElement? EffectiveOptions = null,
     IReadOnlyList<string>? DeclaredDependencies = null,
-    CaptureProcessingPublicationPolicy? Publication = null);
+    CaptureProcessingPublicationPolicy? Publication = null,
+    IReadOnlySet<string>? OptionalDependencies = null,
+    string? LegacyPlanSha256 = null);
 
 public sealed record CaptureProcessingPlanNode(
     string Id,

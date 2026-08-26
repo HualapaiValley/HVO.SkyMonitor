@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "issue-435-runtime-signals-v1",
+  "issue": 435,
+  "resultSchema": "issue-435-projected-scene-performance-v2",
+  "resultPath": "$HVO_ISSUE435_EVIDENCE_ROOT/$HVO_EVIDENCE_REVISION/trials/$HVO_EVIDENCE_TRIAL/issue-435-projected-scene-performance.json",
+  "buildReceiptPath": "$HVO_ISSUE435_EVIDENCE_ROOT/$HVO_EVIDENCE_REVISION/trials/$HVO_EVIDENCE_TRIAL/issue-435-build-receipt.json",
+  "runner": "scripts/evidence:issue-435",
+  "retainedTrials": true,
+  "harness": "HVO.SkyMonitor.CameraAgent.Tests.Issue435ProjectedScenePerformanceTests.W1ProjectedSceneStagePersistRetrieveAndReconciliationEvidence",
+  "meter": "HVO.SkyMonitor.CameraAgent.ProcessingGraph",
+  "healthCheck": "capture-processing",
+  "metrics": [
+    "camera_agent.processing.reconciliation.outcomes",
+    "camera_agent.processing.reconciliation.bytes"
+  ],
+  "healthData": [
+    "ProcessingQuarantineCount"
+  ],
+  "logEventIds": [
+    2076,
+    2077
+  ],
+  "privacy": {
+    "forbiddenFields": [
+      "captureId",
+      "artifactId",
+      "outputIdentitySha256",
+      "path",
+      "payload",
+      "checksumSha256",
+      "coordinates"
+    ]
+  },
+  "performanceWorkloads": [
+    "representative-scene-publication",
+    "representative-scene-retrieval",
+    "bounded-stage-reconciliation"
+  ],
+  "measurements": [
+    "objectCount",
+    "segmentCount",
+    "canonicalBytes",
+    "storedBytes",
+    "fileOperations",
+    "sqliteOperations",
+    "cpuTime",
+    "allocatedBytes",
+    "workingSetBytes",
+    "latency",
+    "productsPerSecond",
+    "backlog",
+    "drainTime"
+  ],
+  "resultFieldMappings": {
+    "objectCount": "workload.objectCount",
+    "segmentCount": "workload.segmentCount",
+    "canonicalBytes": "bytes.canonicalTotal",
+    "storedBytes": "bytes.storedPayloadTotal",
+    "fileOperations": "logicalOperations.filesystem",
+    "sqliteOperations": "logicalOperations.sqlite",
+    "cpuTime": "processWideResources",
+    "allocatedBytes": "processWideResources",
+    "workingSetBytes": "processWideResources",
+    "latency": "latencyMilliseconds",
+    "productsPerSecond": "throughput.uniqueEndToEndProductsPerSecond",
+    "backlog": "reconciliation.initialBacklog",
+    "drainTime": "reconciliation.drainMilliseconds"
+  }
+}

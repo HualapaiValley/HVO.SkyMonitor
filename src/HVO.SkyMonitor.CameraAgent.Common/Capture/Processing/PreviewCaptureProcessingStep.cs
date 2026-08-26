@@ -10,9 +10,11 @@ internal abstract class PreviewCaptureProcessingStepBase<TOptions>(
     CaptureProcessingStepMetadata metadata,
     TOptions options,
     CameraAgentRecipeExecutionAdapter adapter,
-    IReadOnlySet<FrameArtifactRole> acceptedInputRoles) : ConfigurableCaptureProcessingStep<TOptions>(metadata, options), ICaptureProcessingGraphStep
+    IReadOnlySet<FrameArtifactRole> acceptedInputRoles) : ConfigurableCaptureProcessingStep<TOptions>(metadata, options), ICaptureProcessingGraphStep,
+    ILegacyCaptureProcessingPlanContract
     where TOptions : PreviewProcessingStepOptions, new()
 {
+    public abstract string LegacyPlanContractId { get; }
     public bool Enabled => Options.Enabled;
 
     public string RecipeName => BuiltInProcessingRecipes.EncodedPreview;
@@ -87,7 +89,11 @@ internal sealed class PreviewCaptureProcessingStep(
             FrameArtifactRole.Raw,
             FrameArtifactRole.Calibrated,
             FrameArtifactRole.Combined
-        });
+        })
+{
+    internal const string LegacyPlanContract = "preview-plan-v1";
+    public override string LegacyPlanContractId => LegacyPlanContract;
+}
 
 internal sealed class CalibratedPreviewCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
@@ -96,7 +102,11 @@ internal sealed class CalibratedPreviewCaptureProcessingStep(
         metadata,
         options,
         adapter,
-        new HashSet<FrameArtifactRole> { FrameArtifactRole.Calibrated });
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Calibrated })
+{
+    internal const string LegacyPlanContract = "calibrated-preview-plan-v1";
+    public override string LegacyPlanContractId => LegacyPlanContract;
+}
 
 internal sealed class CombinedPreviewCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
@@ -105,7 +115,11 @@ internal sealed class CombinedPreviewCaptureProcessingStep(
         metadata,
         options,
         adapter,
-        new HashSet<FrameArtifactRole> { FrameArtifactRole.Combined });
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Combined })
+{
+    internal const string LegacyPlanContract = "combined-preview-plan-v1";
+    public override string LegacyPlanContractId => LegacyPlanContract;
+}
 
 public class PreviewProcessingStepOptions : IValidatableObject
 {

@@ -1,8 +1,10 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
@@ -10,14 +12,23 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
 {
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryCapture? _capture;
+    private CameraAgentLayeredPresentation? _presentation;
+    private IJSObjectReference? _module;
+    private ElementReference _presentationRoot;
     private string? _errorMessage;
+    private string? _presentationMessage;
+    private string? _saveError;
+    private string? _saveMessage;
     private long _generation;
     private bool _isLoading;
+    private bool _bindPresentation;
+    private bool _isSaving;
     private string? _comparisonLeftArtifactId;
     private string? _comparisonRightArtifactId;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
+    [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
     [Parameter] public Guid CaptureId { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "returnUrl")]
     [SuppressMessage("Design", "CA1056:Uri properties should not be strings", Justification = "The raw query value is validated as an application-local return URL before use.")]
@@ -37,6 +48,18 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
 
     protected override Task OnParametersSetAsync() => LoadAsync();
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_bindPresentation)
+        {
+            return;
+        }
+        _bindPresentation = false;
+        _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
+            "import", "./Components/Pages/GalleryDetail.razor.js");
+        await _module.InvokeVoidAsync("bindLayerToggles", _presentationRoot);
+    }
+
     internal Task RefreshAuthorizationAsync() => LoadAsync();
 
     private async Task LoadAsync()
@@ -51,6 +74,8 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         }
         _isLoading = true;
         _errorMessage = null;
+        _presentation = null;
+        _presentationMessage = null;
         _capture = null;
         try
         {
@@ -69,6 +94,26 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             {
                 _capture = result.Value;
                 InitializeComparison(result.Value);
+                var presentation = await OperatorService.GetLayeredPresentationAsync(CaptureId, cancellation.Token);
+                if (generation != Volatile.Read(ref _generation))
+                {
+                    return;
+                }
+                if (presentation.Kind == OperatorUiResultKind.Unauthorized)
+                {
+                    _capture = null;
+                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                }
+                else if (presentation.IsSuccess && presentation.Value is not null)
+                {
+                    _presentation = presentation.Value;
+                    _bindPresentation = true;
+                }
+                else
+                {
+                    _presentationMessage = presentation.Message ??
+                        "Structured layers were not retained for this capture.";
+                }
             }
             else
             {
@@ -89,6 +134,52 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
 
     private static string ContentUrl(Guid artifactId) =>
         FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/content");
+
+    private MarkupString PresentationSvg => new(
+        _presentation is null ? string.Empty : Encoding.UTF8.GetString(_presentation.Svg.Span));
+
+    private static string PreviewUrl(Guid artifactId) =>
+        FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/preview");
+
+    private async Task SaveSelectedStackAsync()
+    {
+        if (_presentation is null || _isSaving)
+        {
+            return;
+        }
+        _isSaving = true;
+        _saveError = null;
+        _saveMessage = null;
+        try
+        {
+            _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
+                "import", "./Components/Pages/GalleryDetail.razor.js");
+            var selected = await _module.InvokeAsync<string[]>("selectedLayerIdentities", _presentationRoot) ?? [];
+            var result = await OperatorService.SaveLayeredPresentationAsync(
+                CaptureId, selected, _loadCancellation?.Token ?? CancellationToken.None);
+            if (result.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                NavigationManager.NavigateTo("/Account/AccessDenied");
+            }
+            else if (result.IsSuccess && result.Value is { } receipt)
+            {
+                _saveMessage = receipt.Replayed
+                    ? "This exact flattened stack was already saved."
+                    : "Flattened stack saved as a new immutable artifact.";
+            }
+            else
+            {
+                _saveError = result.Message ?? "The presentation stack could not be saved.";
+            }
+        }
+        catch (OperationCanceledException) when (_loadCancellation?.IsCancellationRequested == true)
+        {
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
 
     private static bool SupportsPreview(CameraAgentGalleryArtifact artifact) =>
         artifact.MediaType is not null && IsSupportedPreviewMediaType(artifact.MediaType) &&
@@ -252,6 +343,16 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         {
             await cancellation.CancelAsync().ConfigureAwait(false);
             cancellation.Dispose();
+        }
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (JSDisconnectedException)
+            {
+            }
         }
     }
 }

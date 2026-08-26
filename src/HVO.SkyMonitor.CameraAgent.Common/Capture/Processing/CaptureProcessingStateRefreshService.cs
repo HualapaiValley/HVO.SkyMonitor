@@ -8,18 +8,25 @@ internal sealed class CaptureProcessingStateRefreshService(
     CaptureProcessingState state,
     TimeProvider timeProvider) : BackgroundService
 {
+    internal async ValueTask RunOnceAsync(CancellationToken cancellationToken)
+    {
+        var durable = await store.ReadOperationalStateAsync(cancellationToken).ConfigureAwait(false);
+        var inventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
+        state.SetDurable(
+            durable.PendingCount,
+            durable.RetryCount,
+            durable.TerminalCount,
+            durable.OldestPendingUtc);
+        state.SetProcessingEvidence(inventory.MissingCount, inventory.QuarantinedCount);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var durable = await store.ReadOperationalStateAsync(stoppingToken).ConfigureAwait(false);
-                state.SetDurable(
-                    durable.PendingCount,
-                    durable.RetryCount,
-                    durable.TerminalCount,
-                    durable.OldestPendingUtc);
+                await RunOnceAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (SqliteException)
             {

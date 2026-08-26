@@ -194,6 +194,8 @@ public sealed class CameraAgentOperatorUiServiceTests
             null!,
             null!,
             null!,
+            null!,
+            null!,
             [],
             [],
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = "/unused" }),

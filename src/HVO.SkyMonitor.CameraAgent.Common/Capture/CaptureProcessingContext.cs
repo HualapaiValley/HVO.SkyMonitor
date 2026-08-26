@@ -24,11 +24,22 @@ public sealed class CaptureProcessingContext
     private IReadOnlyList<string> _currentDependencies = [];
     private IReadOnlyList<ProcessingArtifact> _historicalInputs = [];
     private readonly List<DurableProcessingNodeInput> _currentInputs = [];
+    private readonly Func<CancellationToken, ValueTask<CaptureResult>>? _rawFrameLoader;
+    private bool _rawFrameLoaded;
 
     public CaptureProcessingContext(
         CameraModuleConfig config,
         CaptureLoopSubmission submission,
         RawCaptureReceipt? rawCapture = null)
+        : this(config, submission, rawCapture, null)
+    {
+    }
+
+    internal CaptureProcessingContext(
+        CameraModuleConfig config,
+        CaptureLoopSubmission submission,
+        RawCaptureReceipt? rawCapture,
+        Func<CancellationToken, ValueTask<CaptureResult>>? rawFrameLoader)
     {
         Config = config ?? throw new ArgumentNullException(nameof(config));
         _submission = submission ?? throw new ArgumentNullException(nameof(submission));
@@ -37,8 +48,10 @@ public sealed class CaptureProcessingContext
         if (_artifacts is not null)
         {
             _allArtifacts.AddRange(_artifacts.Artifacts.Values);
+            _rawFrameLoaded = true;
         }
         RawCapture = rawCapture;
+        _rawFrameLoader = rawFrameLoader;
     }
 
     public CameraModuleConfig Config { get; }
@@ -54,6 +67,37 @@ public sealed class CaptureProcessingContext
     public RawCaptureReceipt? RawCapture { get; }
 
     public ReconstructionDescriptor? ReconstructionDescriptor => RawCapture?.Manifest.Descriptor;
+
+    internal async ValueTask EnsureRawFrameAsync(CancellationToken cancellationToken)
+    {
+        if (_rawFrameLoaded || _rawFrameLoader is null)
+        {
+            return;
+        }
+        var result = await _rawFrameLoader(cancellationToken).ConfigureAwait(false);
+        var rawArtifacts = result.Artifacts ?? (result.Frame is { } frame ? new FrameArtifactSet(frame) : null);
+        if (rawArtifacts is null)
+        {
+            throw new InvalidDataException("Raw reconstruction did not produce an artifact set.");
+        }
+        foreach (var derivative in _allArtifacts.Where(static artifact => artifact.Role != FrameArtifactRole.Raw).ToArray())
+        {
+            rawArtifacts = rawArtifacts.WithDerivative(
+                derivative.Role,
+                derivative.Frame,
+                derivative.RecipeVersion,
+                derivative.SourceArtifactIds,
+                derivative.ArtifactId);
+        }
+        _artifacts = rawArtifacts;
+        _rawFrameLoaded = true;
+        _allArtifacts.RemoveAll(static artifact => artifact.Role == FrameArtifactRole.Raw);
+        _allArtifacts.Insert(0, rawArtifacts.Raw);
+        _submission = _submission with
+        {
+            Result = result with { Frame = rawArtifacts.Raw.Frame, Artifacts = rawArtifacts }
+        };
+    }
 
     public IReadOnlyList<CaptureProcessingStepTelemetry> StepTelemetry => _stepTelemetry;
 
@@ -331,13 +375,16 @@ public sealed class CaptureProcessingContext
         }
         nodeArtifacts.Add(artifact);
         _allArtifacts.Add(artifact);
-        _artifacts = (_artifacts ?? new FrameArtifactSet(artifact.Frame)).WithDerivative(
-            artifact.Role,
-            artifact.Frame,
-            artifact.RecipeVersion,
-            artifact.SourceArtifactIds,
-            artifact.ArtifactId);
-        _submission = _submission with { Result = _submission.Result with { Artifacts = _artifacts } };
+        if (_rawFrameLoaded)
+        {
+            _artifacts = _artifacts!.WithDerivative(
+                artifact.Role,
+                artifact.Frame,
+                artifact.RecipeVersion,
+                artifact.SourceArtifactIds,
+                artifact.ArtifactId);
+            _submission = _submission with { Result = _submission.Result with { Artifacts = _artifacts } };
+        }
         RegisterProcessingProduct(product);
     }
 
@@ -384,4 +431,52 @@ public interface ICaptureProcessingStep
     int Order { get; }
 
     ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken);
+}
+
+/// <summary>Marks a step that consumes capture descriptors or auxiliary facts but never raw pixel content.</summary>
+internal sealed class CaptureDescriptorProcessingContext(CaptureProcessingContext context)
+{
+    public CameraModuleConfig Config => context.Config;
+
+    public CaptureAcquisitionTiming? AcquisitionTiming => context.AcquisitionTiming;
+
+    public ReconstructionDescriptor? ReconstructionDescriptor => context.ReconstructionDescriptor;
+
+    public string? CommittedManifestSha256 => context.RawCapture?.CommittedManifestSha256;
+
+    public SceneProvenance? SceneProvenance => context.RawCapture?.Manifest.Scene;
+
+    public void RecordCanonicalInput(string name, string schemaVersion, string identitySha256)
+        => context.RecordCanonicalInput(name, schemaVersion, identitySha256);
+
+    internal async ValueTask<ProcessingOutcome> ExecuteAsync(
+        CameraAgentRecipeExecutionAdapter adapter,
+        ProcessingExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(adapter);
+        context.RecordExecutionRequest(request);
+        var outcome = await adapter.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        context.RecordExecutionOutcome(outcome);
+        return outcome;
+    }
+
+    public void AddProcessingOutcome(ProcessingOutcome outcome) => context.AddProcessingOutcome(outcome);
+}
+
+/// <summary>Internal trusted contract for steps that cannot access frame artifacts or pixel payloads.</summary>
+internal interface IDescriptorOnlyCaptureProcessingStep : ICaptureProcessingStep
+{
+    ValueTask ProcessAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken);
+
+    ValueTask ICaptureProcessingStep.ProcessAsync(
+        CaptureProcessingContext context,
+        CancellationToken cancellationToken)
+        => ProcessAsync(new CaptureDescriptorProcessingContext(context), cancellationToken);
+}
+
+/// <summary>Runs only after a processing node and all of its outputs have committed durably.</summary>
+internal interface IDurableCaptureProcessingPostCommit
+{
+    ValueTask OnCommittedAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken);
 }

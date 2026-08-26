@@ -66,6 +66,10 @@ internal sealed class FrameProcessingWorker
         var failed = false;
         foreach (var step in steps)
         {
+            if (step is not IDescriptorOnlyCaptureProcessingStep)
+            {
+                await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+            }
             var stopwatch = Stopwatch.StartNew();
             var succeeded = false;
             string? errorMessage = null;
@@ -154,18 +158,22 @@ internal sealed class FrameProcessingWorker
             {
                 context.BeginNode(node.Id, node.Dependencies);
                 var dependencyStopwatch = Stopwatch.StartNew();
+                var retryableDependency = node.Dependencies.FirstOrDefault(dependency =>
+                    statuses.TryGetValue(dependency, out var status) &&
+                    status == DurableProcessingNodeStatus.RetryableFailure);
+                if (retryableDependency is not null)
+                {
+                    statuses[node.Id] = DurableProcessingNodeStatus.RetryableFailure;
+                    deferredRetryReason ??= "processing.dependency-retry";
+                    dependencyStopwatch.Stop();
+                    telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
+                    continue;
+                }
                 var blockedDependency = node.Dependencies.FirstOrDefault(dependency =>
+                    node.OptionalDependencies?.Contains(dependency) != true &&
                     statuses.TryGetValue(dependency, out var status) && status != DurableProcessingNodeStatus.Completed);
                 if (blockedDependency is not null)
                 {
-                    if (statuses[blockedDependency] == DurableProcessingNodeStatus.RetryableFailure)
-                    {
-                        statuses[node.Id] = DurableProcessingNodeStatus.RetryableFailure;
-                        deferredRetryReason ??= "processing.dependency-retry";
-                        dependencyStopwatch.Stop();
-                        telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
-                        continue;
-                    }
                     const string dependencyReason = "processing.dependency-unavailable";
                     if (persistence is not null && rawCapture is not null)
                     {
@@ -187,10 +195,14 @@ internal sealed class FrameProcessingWorker
 
                 if (persistence is not null && captureId is { } durableCaptureId)
                 {
+                    _ = await persistence.ResolveUnavailableNodeAsync(
+                        durableCaptureId, node.Id, node.PlanSha256, cancellationToken).ConfigureAwait(false);
                     var durable = await persistence.ReadNodeAsync(
                         durableCaptureId, node.Id, cancellationToken).ConfigureAwait(false);
                     if (durable is not null && !string.Equals(
-                        durable.PlanSha256, node.PlanSha256, StringComparison.Ordinal))
+                        durable.PlanSha256, node.PlanSha256, StringComparison.Ordinal) &&
+                        !(IsAllowedLegacyPlanStep(node.Step) &&
+                          string.Equals(durable.PlanSha256, node.LegacyPlanSha256, StringComparison.Ordinal)))
                     {
                         throw new InvalidDataException(
                             $"Committed processing node '{node.Id}' does not match the current graph plan.");
@@ -202,6 +214,12 @@ internal sealed class FrameProcessingWorker
                         if (durable.Status == DurableProcessingNodeStatus.Completed)
                         {
                             await persistence.RestoreNodeAsync(durable, context, cancellationToken).ConfigureAwait(false);
+                            if (node.Step is IDurableCaptureProcessingPostCommit restoredCommit)
+                            {
+                                await RunPostCommitCleanupAsync(
+                                    restoredCommit, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
+                                cancellationToken.ThrowIfCancellationRequested();
+                            }
                             logger.CaptureProcessingOutputExisting(node.Id);
                         }
                         statuses[node.Id] = durable.Status;
@@ -232,6 +250,10 @@ internal sealed class FrameProcessingWorker
                     }
                 }
 
+                if (node.Step is not IDescriptorOnlyCaptureProcessingStep)
+                {
+                    await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+                }
                 if (persistence is not null && node.Step is IWindowCaptureProcessingGraphStep window &&
                     node.Dependencies.Count > 0 && graph.Nodes.FirstOrDefault(candidate =>
                         string.Equals(candidate.Id, node.Dependencies[0], StringComparison.OrdinalIgnoreCase)) is { OutputRole: { } sourceRole })
@@ -318,6 +340,12 @@ internal sealed class FrameProcessingWorker
                             item.WorkId,
                             item.LeaseToken,
                             cancellationToken).ConfigureAwait(false);
+                        if (node.Step is IDurableCaptureProcessingPostCommit memoryOnlyCleanup)
+                        {
+                            await RunPostCommitCleanupAsync(
+                                memoryOnlyCleanup, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
                     }
                     else
                     {
@@ -327,6 +355,13 @@ internal sealed class FrameProcessingWorker
                             outcome?.Status,
                             item.WorkId, item.LeaseToken,
                             products, context, cancellationToken).ConfigureAwait(false);
+                        if (status == DurableProcessingNodeStatus.Completed &&
+                            node.Step is IDurableCaptureProcessingPostCommit committed)
+                        {
+                            await RunPostCommitCleanupAsync(
+                                committed, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
                     }
                 }
                 statuses[node.Id] = status;
@@ -370,6 +405,28 @@ internal sealed class FrameProcessingWorker
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Post-commit cleanup cannot invalidate a durable node or block its dependents.")]
+    private static async ValueTask RunPostCommitCleanupAsync(
+        IDurableCaptureProcessingPostCommit cleanup,
+        CaptureProcessingGraphNode node,
+        CaptureProcessingContext context,
+        CaptureProcessingTelemetry telemetry,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await cleanup.OnCommittedAsync(
+                new CaptureDescriptorProcessingContext(context), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            var reason = exception is OperationCanceledException ? "cancelled" : "failed";
+            telemetry.RecordPostCommitCleanupFailure(node, reason);
+            logger.CaptureProcessingPostCommitCleanupFailed(node.Id, exception);
+        }
+    }
+
     private static (DurableProcessingNodeStatus Status, string? Reason) ResolveStatus(
         CaptureProcessingGraphNode node,
         ProcessingOutcome? outcome,
@@ -400,6 +457,35 @@ internal sealed class FrameProcessingWorker
             ? CaptureLaneHandlerResult.Wait(reason)
             : CaptureLaneHandlerResult.Retry(reason);
 
+    private static bool IsAllowedLegacyPlanStep(ICaptureProcessingStep step) => step switch
+    {
+        ProjectedSceneCaptureProcessingStep projected =>
+            projected.LegacyPlanContractId == ProjectedSceneCaptureProcessingStep.LegacyPlanContract,
+        CalibrationCaptureProcessingStep calibration =>
+            calibration.LegacyPlanContractId == CalibrationCaptureProcessingStep.LegacyPlanContract,
+        PreviewCaptureProcessingStep preview =>
+            preview.LegacyPlanContractId == PreviewCaptureProcessingStep.LegacyPlanContract,
+        CalibratedPreviewCaptureProcessingStep preview =>
+            preview.LegacyPlanContractId == CalibratedPreviewCaptureProcessingStep.LegacyPlanContract,
+        CombinedPreviewCaptureProcessingStep preview =>
+            preview.LegacyPlanContractId == CombinedPreviewCaptureProcessingStep.LegacyPlanContract,
+        RollingCombinationCaptureProcessingStep rolling =>
+            rolling.LegacyPlanContractId == RollingCombinationCaptureProcessingStep.LegacyPlanContract,
+        ImageQualityCaptureProcessingStep quality =>
+            quality.LegacyPlanContractId == ImageQualityCaptureProcessingStep.LegacyPlanContract,
+        CloudAssessmentCaptureProcessingStep cloud =>
+            cloud.LegacyPlanContractId == CloudAssessmentCaptureProcessingStep.LegacyPlanContract,
+        AnnotationCaptureProcessingStep annotation =>
+            annotation.LegacyPlanContractId == AnnotationCaptureProcessingStep.LegacyPlanContract,
+        WeatherCloudOverlayCaptureProcessingStep weather =>
+            weather.LegacyPlanContractId == WeatherCloudOverlayCaptureProcessingStep.LegacyPlanContract,
+        NoOpFileStorageProcessingStep storage =>
+            storage.LegacyPlanContractId == NoOpFileStorageProcessingStep.LegacyPlanContract,
+        TelemetryCaptureProcessingStep telemetry =>
+            telemetry.LegacyPlanContractId == TelemetryCaptureProcessingStep.LegacyPlanContract,
+        _ => false
+    };
+
     private static async ValueTask<CaptureProcessingContext> CreateContextAsync(
         FrameProcessingItem item,
         CancellationToken cancellationToken)
@@ -424,30 +510,28 @@ internal sealed class FrameProcessingWorker
             }
             receipt = receipt with { Manifest = persistedManifest };
             rawCapture = receipt;
-            var payload = await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, cancellationToken).ConfigureAwait(false);
-            var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
-            if (!reconstruction.IsValid || frame is null)
+            async ValueTask<CaptureResult> LoadRawFrameAsync(CancellationToken token)
             {
-                throw new InvalidDataException($"Committed raw evidence could not be reconstructed ({reconstruction.ReasonCode}).");
-            }
-            if (receipt.Manifest.Scene is not null)
-            {
-                frame = frame with { Metadata = frame.Metadata with { Scene = receipt.Manifest.Scene } };
-            }
-            var artifact = new FrameArtifact(
-                receipt.Manifest.Descriptor.Artifact.ArtifactId,
-                FrameArtifactRole.Raw,
-                frame,
-                recipeVersion: ProcessingIdentity.CreateRecipeIdentity(
-                    receipt.Manifest.Descriptor.Artifact.Recipe).IdentitySha256);
-            submission = submission with
-            {
-                Result = submission.Result with
+                var payload = await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath, token).ConfigureAwait(false);
+                var reconstruction = FrameReconstructor.TryReconstruct(receipt.Manifest.Descriptor, payload, out var frame);
+                if (!reconstruction.IsValid || frame is null)
                 {
-                    Frame = frame,
-                    Artifacts = new FrameArtifactSet(artifact)
+                    throw new InvalidDataException($"Committed raw evidence could not be reconstructed ({reconstruction.ReasonCode}).");
                 }
-            };
+                if (receipt.Manifest.Scene is not null)
+                {
+                    frame = frame with { Metadata = frame.Metadata with { Scene = receipt.Manifest.Scene } };
+                }
+                var artifact = new FrameArtifact(
+                    receipt.Manifest.Descriptor.Artifact.ArtifactId,
+                    FrameArtifactRole.Raw,
+                    frame,
+                    recipeVersion: ProcessingIdentity.CreateRecipeIdentity(
+                        receipt.Manifest.Descriptor.Artifact.Recipe).IdentitySha256);
+                return submission.Result with { Frame = frame, Artifacts = new FrameArtifactSet(artifact) };
+            }
+            submission = submission with { Result = submission.Result with { Frame = null, Artifacts = null } };
+            return new CaptureProcessingContext(item.Config, submission, rawCapture, LoadRawFrameAsync);
         }
         return new CaptureProcessingContext(item.Config, submission, rawCapture);
     }

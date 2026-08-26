@@ -6,6 +6,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -14,6 +15,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Astronomy;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -279,6 +281,121 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         Assert.HasCount(4, Directory.EnumerateFiles(
             Path.Combine(fixture.Root, "calibration", "synthetic"), "*.bin", SearchOption.AllDirectories).ToArray());
         AssertNoOutboundAttempts(fixture);
+    }
+
+    [TestMethod]
+    public async Task VirtualSkyProjectedScenePersistsAndRecoversStandaloneAsync()
+    {
+        await using var fixture = await StandaloneCameraAgentKestrelFixture.CreateAsync(
+            useProjectedScene: true).ConfigureAwait(false);
+        var capture = await WaitForProjectedSceneCaptureAsync(fixture.Services).ConfigureAwait(false);
+        var raw = capture.Artifacts.Single(static artifact => artifact.Role == FrameArtifactRole.Raw);
+        var product = capture.Artifacts.Single(static artifact =>
+            artifact.ProductSchemaVersion == ProjectedSceneV1.CurrentSchemaVersion);
+        var rawManifest = ReadManifest(fixture.Root, raw.ArtifactId);
+        var provenance = rawManifest.Scene;
+        Assert.IsNotNull(provenance);
+        Assert.AreNotEqual(provenance.SceneId, provenance.ProjectedSceneStageKey);
+        Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, product.ProductSchemaVersion);
+        Assert.AreEqual("Available", capture.CanonicalSceneAvailability);
+        Assert.AreEqual(DurableTypedMetadataProductManifestV3.CurrentSchemaVersion,
+            ReadDurableProductManifest(fixture.Root, product.ArtifactId).SchemaVersion);
+        CollectionAssert.AreEqual(new[] { raw.ArtifactId }, product.SourceArtifactIds.ToArray());
+
+        var beforeRestart = await ReadArtifactBytesAsync(fixture.Services, product.ArtifactId).ConfigureAwait(false);
+        var parsed = ProjectedSceneJson.Parse(beforeRestart);
+        Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+        var scene = parsed.Scene!;
+        Assert.AreEqual(ProjectedSceneKind.VirtualRenderAuthoritative, scene.Kind);
+        Assert.AreNotEqual(provenance.SceneId, scene.SceneIdentitySha256);
+        Assert.AreNotEqual(provenance.ProjectedSceneStageKey, scene.SceneIdentitySha256);
+        Assert.AreEqual(product.ContentIdentitySha256, scene.SceneIdentitySha256);
+        Assert.AreEqual(product.ChecksumSha256, Convert.ToHexString(SHA256.HashData(beforeRestart)), ignoreCase: true);
+        Assert.AreEqual(product.ByteLength, beforeRestart.LongLength);
+        Assert.AreEqual(capture.CaptureId, scene.Source.CaptureId);
+        Assert.AreEqual(raw.ArtifactId, scene.Source.ArtifactId);
+        Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(rawManifest.Descriptor),
+            scene.Source.ArtifactIdentitySha256, ignoreCase: true);
+        CollectionAssert.AreEqual(
+            provenance.Objects!.Select(static item => (item.Id, item.DisplayName, item.PixelX, item.PixelY, item.Magnitude)).ToArray(),
+            scene.Objects.Select(static item => (item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray());
+        CollectionAssert.AreEqual(
+            provenance.Segments!.Select(static item => (item.ConstellationId, item.FromObjectId, item.ToObjectId,
+                item.FromPixelX, item.FromPixelY, item.ToPixelX, item.ToPixelY, item.PartIndex)).ToArray(),
+            scene.Segments.Select(static item => (item.ConstellationId, item.FromObjectId, item.ToObjectId,
+                item.FromPixel.X, item.FromPixel.Y, item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray());
+        Assert.IsGreaterThan(0, fixture.ProjectedSceneMemoryCacheCount);
+
+        var coordinator = fixture.Services.GetRequiredService<CaptureAdmissionCoordinator>();
+        var owner = await ReadOwnerAsync(fixture.Services).ConfigureAwait(false);
+        await coordinator.PauseAsync($"issue-435-{Guid.NewGuid():N}", coordinator.Snapshot.Version, owner.Id,
+            "restart projected-scene evidence", CancellationToken.None).ConfigureAwait(false);
+        await fixture.StopAsync().ConfigureAwait(false);
+        await fixture.ChangeCurrentProjectedSceneConfigurationAsync().ConfigureAwait(false);
+        await fixture.StartStoppedHostAsync().ConfigureAwait(false);
+        Assert.AreEqual(0, fixture.ProjectedSceneMemoryCacheCount);
+        Assert.AreEqual(5.75, await fixture.ReadLoadedMaximumMagnitudeAsync().ConfigureAwait(false), 1e-12);
+
+        var afterRestart = await ReadArtifactBytesAsync(fixture.Services, product.ArtifactId).ConfigureAwait(false);
+        CollectionAssert.AreEqual(beforeRestart, afterRestart);
+        var recovered = await fixture.Services.GetRequiredService<ICameraAgentGallery>()
+            .GetCaptureAsync(capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(recovered);
+        Assert.AreEqual("Available", recovered.CanonicalSceneAvailability);
+        Assert.AreEqual(product.ArtifactId, recovered.Artifacts.Single(static artifact =>
+            artifact.ProductSchemaVersion == ProjectedSceneV1.CurrentSchemaVersion).ArtifactId);
+        Assert.AreEqual(1L, ReadJournalCount(fixture.Root,
+            $"SELECT COUNT(*) FROM processing_outputs WHERE capture_id = '{capture.CaptureId:N}' AND product_schema_version = 'projected-scene-v1';"));
+        Assert.IsEmpty(Directory.Exists(Path.Combine(fixture.Root, "staging", "projected-scenes"))
+            ? Directory.EnumerateFiles(Path.Combine(fixture.Root, "staging", "projected-scenes")).ToArray()
+            : []);
+        await fixture.StopAsync().ConfigureAwait(false);
+        AssertNoOutboundAttempts(fixture);
+    }
+
+    private static async Task<CameraAgentGalleryCapture> WaitForProjectedSceneCaptureAsync(IServiceProvider services)
+    {
+        CameraAgentGalleryCapture? selected = null;
+        await WaitForConditionAsync(async () =>
+        {
+            var page = await services.GetRequiredService<ICameraAgentGallery>().GetPageAsync(
+                new CameraAgentGalleryQuery(PageSize: 20, EvidenceOrigin: GalleryEvidenceOrigin.Simulated),
+                CancellationToken.None).ConfigureAwait(false);
+            selected = page.Items.FirstOrDefault(static item => item.CanonicalSceneAvailability == "Available" &&
+                item.Artifacts.Any(static artifact => artifact.ProductSchemaVersion == ProjectedSceneV1.CurrentSchemaVersion));
+            if (selected is null) return false;
+            selected = await services.GetRequiredService<ICameraAgentGallery>()
+                .GetCaptureAsync(selected.CaptureId, CancellationToken.None).ConfigureAwait(false);
+            return selected is not null;
+        }, "a standalone V3 projected scene", TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        return selected!;
+    }
+
+    private static IDurableProcessingProductManifest ReadDurableProductManifest(string root, Guid artifactId)
+    {
+        foreach (var path in Directory.EnumerateFiles(root, "*.manifest.json", SearchOption.AllDirectories))
+        {
+            try
+            {
+                var manifest = DurableProcessingProductManifestJson.Parse(File.ReadAllBytes(path));
+                if (manifest.Artifact.ArtifactId == artifactId) return manifest;
+            }
+            catch (InvalidDataException)
+            {
+            }
+        }
+        throw new AssertFailedException($"Artifact {artifactId:D} has no durable product manifest.");
+    }
+
+    private static async Task<byte[]> ReadArtifactBytesAsync(IServiceProvider services, Guid artifactId)
+    {
+        var result = await services.GetRequiredService<ICameraAgentArtifactService>()
+            .OpenContentAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, result.Status);
+        await using var content = result.Content!;
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer).ConfigureAwait(false);
+        return buffer.ToArray();
     }
 
     private static async Task<CameraAgentGalleryCapture> WaitForCompleteCaptureAsync(
@@ -599,9 +716,27 @@ public sealed class StandaloneCameraAgentAcceptanceTests
                 manifest.Descriptor,
                 File.ReadAllBytes(payloadPath),
                 out _);
-            return $"Artifact reconstruction: {reconstruction.ReasonCode ?? "valid"} at {manifest.RelativeArtifactPath}";
+            return $"Artifact reconstruction: {reconstruction.ReasonCode ?? "valid"} at {manifest.RelativeArtifactPath}; {DescribeAvailability(root, artifactId)}";
         }
         return $"Artifact {artifactId:D} has no local manifest.";
+    }
+
+    private static string DescribeAvailability(string root, Guid artifactId)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(root, "journal", "raw-ingress.db"),
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT availability_state, availability_reason, quarantine_relative_path FROM processing_outputs WHERE artifact_id = $artifact;";
+        command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
+        using var reader = command.ExecuteReader();
+        return reader.Read()
+            ? $"availability={reader.GetString(0)}, reason={(reader.IsDBNull(1) ? "none" : reader.GetString(1))}, quarantine={(reader.IsDBNull(2) ? "none" : reader.GetString(2))}"
+            : "processing availability row missing";
     }
 
     private static ArtifactManifestV2 ReadManifest(string root, Guid artifactId)

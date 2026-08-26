@@ -77,7 +77,44 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
                 : new ProcessingCaptureConditions(
                     reconstructionDescriptor.Controls.EffectiveGain,
                     reconstructionDescriptor.Controls.EffectiveOffset,
-                    reconstructionDescriptor.Controls.EffectiveTemperatureC));
+                    reconstructionDescriptor.Controls.EffectiveTemperatureC))
+        {
+            ProductKind = product?.Kind ?? ProcessingProductKind.PixelData,
+            SchemaVersion = product?.SchemaVersion,
+            ContentIdentitySha256 = product?.ContentIdentitySha256,
+            CaptureId = reconstructionDescriptor?.Capture.CaptureId,
+            DescriptorIdentitySha256 = reconstructionDescriptor is null
+                ? null
+                : CaptureContractJson.ComputeDescriptorSha256(reconstructionDescriptor)
+        };
+    }
+
+    internal static ProcessingArtifact CreateArtifact(CaptureProcessingContext context, ProcessingProduct product)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(product);
+        var descriptor = context.ReconstructionDescriptor;
+        var startedUtc = descriptor?.Timing.ExposureStartedUtc ?? context.Frame?.TimestampUtc ?? DateTimeOffset.UnixEpoch;
+        var endedUtc = descriptor?.Timing.ExposureEndedUtc ?? startedUtc.Add(product.TotalIntegration);
+        return new ProcessingArtifact(
+            CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256), product.Role, product.Variant,
+            product.Recipe.IdentitySha256, product.MediaType, product.Layout, product.Payload,
+            context.Frame?.TimestampUtc ?? startedUtc, product.TotalIntegration, product.Compatibility,
+            descriptor?.Capture.CaptureSequence, product.SourceArtifactIds, startedUtc,
+            ProcessingArtifact.ResolveObservationEndedUtc(startedUtc, endedUtc, product.TotalIntegration),
+            descriptor is null
+                ? null
+                : new ProcessingCaptureConditions(
+                    descriptor.Controls.EffectiveGain,
+                    descriptor.Controls.EffectiveOffset,
+                    descriptor.Controls.EffectiveTemperatureC))
+        {
+            ProductKind = product.Kind,
+            SchemaVersion = product.SchemaVersion,
+            ContentIdentitySha256 = product.ContentIdentitySha256 ?? product.OutputIdentitySha256,
+            CaptureId = descriptor?.Capture.CaptureId,
+            DescriptorIdentitySha256 = null
+        };
     }
 
     public static CameraFrame CreateFrame(ProcessingProduct product, CameraFrame source, string sourceId)
