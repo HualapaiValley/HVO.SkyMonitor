@@ -1,4 +1,5 @@
 using Bunit;
+using Bunit.JSInterop;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -11,6 +12,100 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class GalleryDetailTests
 {
+    [TestMethod]
+    public void LayeredDetailRendersOneBaseOneGroupedSvgAndLocalToggleControls()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var capture = OperatorUiTestData.Capture();
+        var service = new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture)),
+            PresentationHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(new(
+                capture.CaptureId,
+                Guid.Parse("00000000-0000-0000-0000-000000000102"),
+                new string('A', 64),
+                new string('B', 64),
+                new string('C', 64),
+                640,
+                480,
+                [
+                    new(new string('D', 64), "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1"),
+                    new(new string('E', 64), "cloud-mask", "hvo-layer-1", 30, false, 500_000, "renderer-v1", "style-v1")
+                ],
+                System.Text.Encoding.UTF8.GetBytes(
+                    "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 480\"><g id=\"hvo-layer-0\"></g><g id=\"hvo-layer-1\" display=\"none\"></g></svg>"))))
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(1, cut.FindAll(".layered-canvas > img"));
+            Assert.HasCount(1, cut.FindAll(".layered-overlay svg"));
+            Assert.HasCount(2, cut.FindAll(".layer-controls input[type='checkbox']"));
+            StringAssert.Contains(cut.Markup, "toggles run locally", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll("script"));
+        });
+    }
+
+    [TestMethod]
+    public async Task SaveSelectedStackUsesLocalSelectionAndReportsSuccessOrFailure()
+    {
+        using var context = new BunitContext();
+        var capture = OperatorUiTestData.Capture();
+        var selectedIdentity = new string('D', 64);
+        var presentation = new CameraAgentLayeredPresentation(
+            capture.CaptureId,
+            Guid.Parse("00000000-0000-0000-0000-000000000102"),
+            new string('A', 64),
+            new string('B', 64),
+            new string('C', 64),
+            640,
+            480,
+            [new(selectedIdentity, "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1")],
+            System.Text.Encoding.UTF8.GetBytes(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 480\"><g id=\"hvo-layer-0\"></g></svg>"));
+        IReadOnlyList<string>? submitted = null;
+        var fail = false;
+        var service = new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture)),
+            PresentationHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(presentation)),
+            MaterializationHandler = (captureId, selected, _) =>
+            {
+                submitted = selected;
+                return ValueTask.FromResult(fail
+                    ? OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Failure(
+                        OperatorUiResultKind.Conflict, "The retained presentation conflicts with the selected stack.")
+                    : OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(new(
+                        captureId, Guid.Parse("00000000-0000-0000-0000-000000000104"), new string('F', 64),
+                        new string('A', 64), 1024, false)));
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var module = context.JSInterop.SetupModule("./Components/Pages/GalleryDetail.razor.js");
+        module.SetupVoid("bindLayerToggles", _ => true);
+        module.Setup<string[]>("selectedLayerIdentities", _ => true).SetResult([selectedIdentity]);
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+        cut.WaitForElement(".layer-save button");
+
+        await cut.Find(".layer-save button").ClickAsync().ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(new[] { selectedIdentity }, submitted?.ToArray());
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Find("[role='status']").TextContent, "new immutable artifact", StringComparison.Ordinal));
+
+        fail = true;
+        await cut.Find(".layer-save button").ClickAsync().ConfigureAwait(false);
+
+        cut.WaitForAssertion(() => StringAssert.Contains(
+            cut.Find("[role='alert']").TextContent, "conflicts with the selected stack", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Find(".layer-save button").HasAttribute("disabled"));
+    }
+
     [TestMethod]
     public void Detail_RendersExactLineageRecipesNodesAndDirectEndpointsWithoutDisclosure()
     {

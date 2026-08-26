@@ -133,6 +133,13 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryPage>.Success(new CameraAgentGalleryPage([], null)));
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryCapture>>> DetailHandler { get; set; } =
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(OperatorUiTestData.Capture()));
+    internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>> PresentationHandler { get; set; } =
+        (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
+            OperatorUiResultKind.NotFound, "Structured layers were not retained for this capture."));
+    internal Func<Guid, IReadOnlyList<string>, CancellationToken, ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>>> MaterializationHandler { get; set; } =
+        (captureId, _, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(new(
+            captureId, Guid.Parse("00000000-0000-0000-0000-000000000104"), new string('F', 64),
+            new string('A', 64), 1024, false)));
     internal Func<string, string?, string?, int, CancellationToken, ValueTask<OperatorUiResult<OperatorOutboxPage>>> QuarantineHandler { get; set; } =
         (kind, alias, _, _, _) => ValueTask.FromResult(OperatorUiResult<OperatorOutboxPage>.Success(new(
             kind, alias is null ? [] : [alias], alias, [], null)));
@@ -153,6 +160,8 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService
     public ValueTask<OperatorUiResult<CameraAgentOperationsView>> GetOperationsAsync(CancellationToken cancellationToken) => OperationsHandler(cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentGalleryPage>> GetGalleryPageAsync(CameraAgentGalleryQuery query, CancellationToken cancellationToken) => GalleryHandler(query, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetGalleryCaptureAsync(Guid captureId, CancellationToken cancellationToken) => DetailHandler(captureId, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(Guid captureId, CancellationToken cancellationToken) => PresentationHandler(captureId, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(Guid captureId, IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken) => MaterializationHandler(captureId, enabledLayerIdentitySha256, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(string kind, string? storageAlias, string? cursor, int pageSize, CancellationToken cancellationToken) => QuarantineHandler(kind, storageAlias, cursor, pageSize, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken) => SystemHandler(cancellationToken);
     public Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(bool paused, long expectedVersion, string idempotencyKey, CancellationToken cancellationToken) => CaptureHandler(paused, expectedVersion, idempotencyKey, cancellationToken);

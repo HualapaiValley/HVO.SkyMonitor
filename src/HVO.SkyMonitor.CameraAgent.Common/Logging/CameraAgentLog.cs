@@ -219,6 +219,15 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2072, Level = LogLevel.Information, Message = "Capture processing graph completed with {Outcome}")]
     public static partial void CaptureProcessingGraphCompleted(this ILogger logger, string outcome);
 
+    [LoggerMessage(EventId = 2079, Level = LogLevel.Information, Message = "CameraAgent operator {Actor} completed presentation materialization {OutputIdentity} for capture {CaptureId} as artifact {ArtifactId} (Replayed={Replayed})")]
+    public static partial void PresentationMaterializationCompleted(
+        this ILogger logger,
+        string actor,
+        string outputIdentity,
+        Guid captureId,
+        Guid artifactId,
+        bool replayed);
+
     [LoggerMessage(EventId = 2073, Level = LogLevel.Debug, Message = "Capture control decision completed (Cadence={Cadence}, ExposureControl={ExposureControl}, GainControl={GainControl}, Regime={Regime}, Reason={Reason}, Samples={Samples}, ScannedBytes={ScannedBytes})")]
     public static partial void CaptureControlDecision(
         this ILogger logger,

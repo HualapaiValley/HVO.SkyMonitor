@@ -208,6 +208,15 @@ internal interface ICameraAgentOperatorUiService
         Guid captureId,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(
+        Guid captureId,
+        CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(
+        Guid captureId,
+        IReadOnlyList<string> enabledLayerIdentitySha256,
+        CancellationToken cancellationToken);
+
     ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken);
 
     Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(
@@ -237,6 +246,8 @@ internal sealed class CameraAgentOperatorUiService(
     IAuthorizationService authorizationService,
     CameraAgentOperationsSummaryProvider operationsProvider,
     ICameraAgentGallery gallery,
+    ICameraAgentLayeredPresentationService layeredPresentations,
+    ICameraAgentPresentationMaterializer presentationMaterializer,
     CaptureAdmissionCoordinator captureControl,
     ICameraAgentStorageResolver storageResolver,
     IArtifactOutbox artifactOutbox,
@@ -546,6 +557,74 @@ internal sealed class CameraAgentOperatorUiService(
         {
             logger.LogWarning(exception, "CameraAgent gallery detail UI read failed.");
             return Unavailable<CameraAgentGalleryCapture>("The capture detail is temporarily unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentLayeredPresentation>();
+        }
+        try
+        {
+            var result = await layeredPresentations.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+            return result.Status == CameraAgentLayeredPresentationStatus.Found && result.Presentation is { } presentation
+                ? OperatorUiResult<CameraAgentLayeredPresentation>.Success(presentation)
+                : OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
+                    result.Status == CameraAgentLayeredPresentationStatus.Unavailable
+                        ? OperatorUiResultKind.NotFound
+                        : OperatorUiResultKind.Unavailable,
+                    result.Reason ?? "Structured layers are unavailable for this capture.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent layered presentation UI read failed.");
+            return Unavailable<CameraAgentLayeredPresentation>("Structured layers are temporarily unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(
+        Guid captureId,
+        IReadOnlyList<string> enabledLayerIdentitySha256,
+        CancellationToken cancellationToken)
+    {
+        var actor = await GetAuthorizedActorAsync().ConfigureAwait(false);
+        if (actor is null)
+        {
+            return Denied<CameraAgentPresentationMaterializationReceipt>();
+        }
+        try
+        {
+            var result = await presentationMaterializer.SaveAsync(
+                captureId, enabledLayerIdentitySha256, actor, cancellationToken).ConfigureAwait(false);
+            return result.Status == CameraAgentPresentationMaterializationStatus.Saved && result.Receipt is { } receipt
+                ? OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(receipt)
+                : OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Failure(
+                    result.Status switch
+                    {
+                        CameraAgentPresentationMaterializationStatus.Invalid => OperatorUiResultKind.Invalid,
+                        CameraAgentPresentationMaterializationStatus.Conflict => OperatorUiResultKind.Conflict,
+                        _ => OperatorUiResultKind.NotFound
+                    }, result.Reason ?? "The presentation stack could not be saved.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent presentation materialization UI command failed.");
+            return Unavailable<CameraAgentPresentationMaterializationReceipt>(
+                "The presentation stack could not be saved.");
         }
     }
 

@@ -581,6 +581,34 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         return products;
     }
 
+    internal async ValueTask<DurableProcessingOutput?> ReadOutputByArtifactIdAsync(
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(artifactId, Guid.Empty);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
+                   descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
+                   algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version,
+                   product_kind, product_schema_version, content_identity_sha256,
+                   availability_state, availability_reason
+            FROM processing_outputs
+            WHERE artifact_id = $artifact_id
+            LIMIT 2;
+            """;
+        command.Parameters.AddWithValue("$artifact_id", artifactId.ToString("N"));
+        var rows = await ReadOutputRowsAsync(command, cancellationToken).ConfigureAwait(false);
+        return rows.Count switch
+        {
+            0 => null,
+            1 => rows[0].Output,
+            _ => throw new InvalidDataException("A durable artifact identity is ambiguous.")
+        };
+    }
+
     internal async ValueTask<IReadOnlyList<DurableProcessingOutputSource>> ReadOutputSourcesAsync(
         string outputIdentitySha256,
         int maximumCount,

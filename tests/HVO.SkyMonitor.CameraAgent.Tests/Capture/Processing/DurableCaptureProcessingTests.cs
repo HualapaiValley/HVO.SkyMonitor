@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
@@ -601,6 +602,101 @@ public sealed class DurableCaptureProcessingTests
                 Assert.HasCount(1, node.Outputs);
                 return node.Outputs[0];
             }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task OperatorMaterializationPersistsSelectedStackOnceWithExactAuditAndLineage()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var telemetry = new CaptureProcessingTelemetry();
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
+            var graph = await CreateProductionLayeredGraphAsync(fixture, root).ConfigureAwait(false);
+            var processed = await FrameProcessingWorker.ProcessGraphItemAsync(
+                fixture.Item, graph, persistence, telemetry, 1, NullLogger.Instance, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Outcome, processed.Reason);
+            var manifestNode = await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, "overlay-manifest", CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(manifestNode);
+            var manifestOutput = manifestNode.Outputs.Single();
+            var manifest = LayeredPresentationJson.ParseManifest(
+                await File.ReadAllBytesAsync(Path.Combine(root, manifestOutput.PayloadRelativePath)).ConfigureAwait(false))
+                .Document!;
+            var selected = new[] { manifest.Layers[0].LayerIdentitySha256 };
+            var rawJournal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
+            await rawJournal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using var artifactService = new CameraAgentArtifactService(
+                fixture.Options, store, new CameraAgentPreviewEncoder());
+            var openedManifest = await artifactService.OpenContentAsync(
+                manifestOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, openedManifest.Status);
+            if (openedManifest.Content is not null)
+            {
+                await openedManifest.Content.DisposeAsync().ConfigureAwait(false);
+            }
+            var presentationService = new CameraAgentLayeredPresentationService(store, artifactService);
+            var presentation = await presentationService.GetAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+            var cachedPresentation = await presentationService.GetAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, presentation.Status, presentation.Reason);
+            Assert.IsNotNull(presentation.Presentation);
+            Assert.AreEqual(manifest.Layers.Count, presentation.Presentation.Layers.Count);
+            Assert.IsGreaterThan(0, presentation.Presentation.Svg.Length);
+            Assert.AreSame(presentation.Presentation, cachedPresentation.Presentation);
+
+            var first = await persistence.MaterializePresentationAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                manifestOutput.ArtifactId,
+                selected,
+                "operator-test",
+                CancellationToken.None).ConfigureAwait(false);
+            var replay = await persistence.MaterializePresentationAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                manifestOutput.ArtifactId,
+                selected,
+                "operator-test",
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(first.Replayed);
+            Assert.IsTrue(replay.Replayed);
+            Assert.AreEqual(first.ArtifactId, replay.ArtifactId);
+            Assert.AreEqual(first.OutputIdentitySha256, replay.OutputIdentitySha256);
+            var output = await store.ReadOutputByArtifactIdAsync(first.ArtifactId, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(output);
+            CollectionAssert.AreEqual(
+                new[] { manifest.BaseProduct.ArtifactId, manifestOutput.ArtifactId, manifest.Layers[0].SourceProduct.ArtifactId },
+                output.Artifact.SourceArtifactIds.ToArray());
+            var node = await store.ReadNodeAsync(
+                fixture.Manifest.Descriptor.Capture.CaptureId,
+                $"gallery-materialization-{first.OutputIdentitySha256[..16]}",
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(node);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status);
+            Assert.HasCount(1, node.Outputs);
+            Assert.IsNotNull(node.Inputs);
+            var audit = node.Inputs.Single(static input => input.Kind == "CanonicalContext");
+            Assert.AreEqual("operator", audit.Name);
+            Assert.AreEqual(64, audit.IdentitySha256?.Length);
+            Assert.AreNotEqual("operator-test", audit.IdentitySha256);
+            var reconstruction = FrameReconstructor.TryReconstruct(
+                output.Descriptor!,
+                await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath)).ConfigureAwait(false),
+                out _);
+            Assert.IsTrue(reconstruction.IsValid, reconstruction.ReasonCode);
         }
         finally
         {

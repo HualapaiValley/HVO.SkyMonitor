@@ -9,9 +9,18 @@ using Microsoft.Extensions.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+
+internal sealed record OnDemandMaterializationResult(
+    Guid ArtifactId,
+    string OutputIdentitySha256,
+    string ChecksumSha256,
+    long ByteLength,
+    bool Replayed);
 
 internal sealed class CaptureProcessingPersistence(
     IOptions<CameraAgentHostOptions> options,
@@ -43,6 +52,173 @@ internal sealed class CaptureProcessingPersistence(
     internal ValueTask<UnavailableNodeResolution> ResolveUnavailableNodeAsync(
         Guid captureId, string nodeId, string planSha256, CancellationToken cancellationToken)
         => _store.ResolveUnavailableNodeAsync(captureId, nodeId, planSha256, cancellationToken);
+
+    internal async ValueTask<OnDemandMaterializationResult> MaterializePresentationAsync(
+        Guid captureId,
+        Guid manifestArtifactId,
+        IReadOnlyList<string> enabledLayerIdentitySha256,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(manifestArtifactId, Guid.Empty);
+        ArgumentNullException.ThrowIfNull(enabledLayerIdentitySha256);
+        if (enabledLayerIdentitySha256.Count > LayeredPresentationJson.MaximumLayerCount ||
+            string.IsNullOrWhiteSpace(actor) || actor.Length > 128)
+        {
+            throw new ArgumentException("The on-demand materialization request is invalid.");
+        }
+
+        var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var manifestOutput = await RequireOutputAsync(manifestArtifactId, captureId, cancellationToken).ConfigureAwait(false);
+            var restoredManifest = await RestoreOutputAsync(manifestOutput, cancellationToken).ConfigureAwait(false);
+            var manifest = LayeredPresentationJson.ParseManifest(restoredManifest.Product.Payload).Document
+                ?? throw new InvalidDataException("The retained overlay manifest is invalid.");
+            if (!string.Equals(manifest.ManifestIdentitySha256, restoredManifest.Product.ContentIdentitySha256, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("The retained overlay manifest identity is invalid.");
+            }
+
+            var baseOutput = await RequireOutputAsync(manifest.BaseProduct.ArtifactId, captureId, cancellationToken).ConfigureAwait(false);
+            var restoredBase = await RestoreOutputAsync(baseOutput, cancellationToken).ConfigureAwait(false);
+            if (baseOutput.Descriptor is null || restoredBase.Artifact is null)
+            {
+                throw new InvalidDataException("The retained presentation base is not reconstructable.");
+            }
+            var baseArtifact = CreateProcessingArtifact(baseOutput, restoredBase);
+            var manifestArtifact = CreateProcessingArtifact(manifestOutput, restoredManifest);
+            var layerProducts = new List<PresentationLayerProductInput>(manifest.Layers.Count);
+            foreach (var layer in manifest.Layers)
+            {
+                var output = await RequireOutputAsync(layer.SourceProduct.ArtifactId, captureId, cancellationToken).ConfigureAwait(false);
+                var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
+                layerProducts.Add(new(layer, CreateProcessingArtifact(output, restored)));
+            }
+
+            var started = _timeProvider.GetUtcNow();
+            var product = PresentationMaterializationExecutor.MaterializePacked(
+                baseArtifact,
+                manifestArtifact,
+                manifest,
+                layerProducts,
+                enabledLayerIdentitySha256,
+                "operator-stack-v1",
+                cancellationToken: cancellationToken);
+            var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
+            if (await _store.ReadOutputByArtifactIdAsync(artifactId, cancellationToken).ConfigureAwait(false) is { } existing)
+            {
+                if (existing.Capture.CaptureId != captureId || existing.AvailabilityState != "Available" ||
+                    !string.Equals(existing.OutputIdentitySha256, product.OutputIdentitySha256, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The materialized artifact identity conflicts with durable state.");
+                }
+                _logger.PresentationMaterializationCompleted(
+                    actor, product.OutputIdentitySha256, captureId, artifactId, replayed: true);
+                return new(artifactId, product.OutputIdentitySha256, existing.Artifact.ChecksumSha256,
+                    existing.Descriptor?.Layout.ByteLength ?? existing.ProductManifest?.ByteLength ?? 0, true);
+            }
+
+            var frame = restoredBase.Artifact.Frame with
+            {
+                PixelData = product.Payload,
+                Metadata = restoredBase.Artifact.Frame.Metadata with { SourceId = "gallery-materialization" },
+                Layout = product.Layout
+            };
+            var artifact = new FrameArtifact(
+                artifactId, product.Role, frame, product.SourceArtifactIds,
+                product.Recipe.Descriptor.ImplementationVersion);
+            var descriptor = DerivativeDescriptorFactory.Create(
+                baseOutput.Descriptor, artifactId, "gallery-materialization", product);
+            var stored = await _frameStorage.SaveAsync(
+                _storageRoot, artifact, descriptor, "gallery-materialization", cancellationToken).ConfigureAwait(false);
+            var relativePayloadPath = NormalizeRelativePath(stored.RelativePath);
+            var evidenceJson = CaptureContractJson.Serialize(new ArtifactManifestV2(
+                ArtifactManifestV2.CurrentSchemaVersion,
+                descriptor,
+                relativePayloadPath,
+                frame.Metadata.Scene,
+                "gallery-materialization"));
+            var durableOutput = new DurableProcessingOutput(
+                product.OutputIdentitySha256,
+                artifactId,
+                relativePayloadPath,
+                NormalizeRelativePath(Path.ChangeExtension(stored.RelativePath, ".json")),
+                evidenceJson,
+                descriptor,
+                null,
+                product.Recipe.IdentitySha256,
+                product.Algorithms,
+                product.Compatibility,
+                product.TotalIntegration,
+                baseOutput.CaptureSequence,
+                product.Recipe.Descriptor.ImplementationVersion);
+            var nodeId = $"gallery-materialization-{product.OutputIdentitySha256[..16]}";
+            var planSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
+            {
+                Version = "gallery-materialization-node-v1",
+                product.OutputIdentitySha256
+            }));
+            var node = new CaptureProcessingGraphNode(
+                nodeId,
+                OnDemandMaterializationStep.Instance,
+                [],
+                false,
+                PresentationProcessingProducts.MaterializationRecipeName,
+                FrameArtifactRole.AnnotatedPreview,
+                product.Variant,
+                planSha256);
+            var selected = enabledLayerIdentitySha256.ToHashSet(StringComparer.Ordinal);
+            var inputs = new List<DurableProcessingNodeInput>
+            {
+                Input(0, "base", baseArtifact, true),
+                Input(1, "manifest", manifestArtifact, true)
+            };
+            inputs.AddRange(layerProducts.Select((layer, index) => Input(
+                index + 2,
+                layer.Layer.LayerKind,
+                layer.Product,
+                selected.Contains(layer.Layer.LayerIdentitySha256))));
+            inputs.Add(new DurableProcessingNodeInput(
+                inputs.Count, "CanonicalContext", "operator", null, null, null, null,
+                "cameraagent-operator-v1", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(actor))), false));
+            var completed = _timeProvider.GetUtcNow();
+            await _store.WriteNodeAsync(
+                captureId,
+                node,
+                DurableProcessingNodeStatus.Completed,
+                null,
+                1,
+                null,
+                started,
+                completed,
+                completed - started,
+                ProcessingOutcomeStatus.Produced,
+                inputs,
+                0,
+                null,
+                [durableOutput],
+                cancellationToken).ConfigureAwait(false);
+            _logger.PresentationMaterializationCompleted(
+                actor, product.OutputIdentitySha256, captureId, artifactId, replayed: false);
+            return new(artifactId, product.OutputIdentitySha256, product.ChecksumSha256, product.Payload.Length, false);
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+
+        static DurableProcessingNodeInput Input(
+            int ordinal,
+            string name,
+            ProcessingArtifact artifact,
+            bool selected) => new(
+                ordinal, "Artifact", name, artifact.ArtifactId, artifact.Role, artifact.Variant,
+                artifact.RecipeIdentitySha256, artifact.SchemaVersion,
+                artifact.ContentIdentitySha256 ?? artifact.DescriptorIdentitySha256, selected);
+    }
 
     internal ValueTask DeleteOutputlessNodeAsync(
         Guid captureId,
@@ -772,6 +948,71 @@ internal sealed class CaptureProcessingPersistence(
         DateTimeOffset CreatedUtc,
         FrameArtifact? Artifact,
         ProcessingProduct Product);
+
+    private async ValueTask<DurableProcessingOutput> RequireOutputAsync(
+        Guid artifactId,
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        var output = await _store.ReadOutputByArtifactIdAsync(artifactId, cancellationToken).ConfigureAwait(false);
+        if (output is null || output.Capture.CaptureId != captureId || output.AvailabilityState != "Available")
+        {
+            throw new InvalidDataException("A retained presentation source is unavailable.");
+        }
+        return output;
+    }
+
+    private static ProcessingArtifact CreateProcessingArtifact(
+        DurableProcessingOutput output,
+        RestoredProcessingOutput restored)
+    {
+        var descriptor = output.Descriptor;
+        return new ProcessingArtifact(
+            output.ArtifactId,
+            restored.Product.Role,
+            restored.Product.Variant,
+            restored.Product.Recipe.IdentitySha256,
+            restored.Product.MediaType,
+            restored.Product.Layout,
+            restored.Product.Payload,
+            restored.CreatedUtc,
+            restored.Product.TotalIntegration,
+            restored.Product.Compatibility,
+            output.CaptureSequence,
+            restored.Product.SourceArtifactIds,
+            descriptor?.Timing.ExposureStartedUtc,
+            descriptor is null
+                ? null
+                : ProcessingArtifact.ResolveObservationEndedUtc(
+                    descriptor.Timing.ExposureStartedUtc,
+                    descriptor.Timing.ExposureEndedUtc,
+                    restored.Product.TotalIntegration),
+            descriptor is null
+                ? null
+                : new ProcessingCaptureConditions(
+                    descriptor.Controls.EffectiveGain,
+                    descriptor.Controls.EffectiveOffset,
+                    descriptor.Controls.EffectiveTemperatureC))
+        {
+            ProductKind = restored.Product.Kind,
+            SchemaVersion = restored.Product.SchemaVersion,
+            ContentIdentitySha256 = restored.Product.ContentIdentitySha256 ?? restored.Product.OutputIdentitySha256,
+            CaptureId = output.Capture.CaptureId,
+            DescriptorIdentitySha256 = null
+        };
+    }
+
+    private sealed class OnDemandMaterializationStep : ICaptureProcessingStep
+    {
+        internal static OnDemandMaterializationStep Instance { get; } = new();
+
+        public string Name => "GalleryMaterialization";
+
+        public int Order => int.MaxValue;
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The on-demand materialization step is a durable operation descriptor only.");
+    }
 
     private string ResolveSafePath(string relativePath)
     {
