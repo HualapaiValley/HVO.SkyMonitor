@@ -2602,19 +2602,21 @@ public sealed class StandaloneW6DockerAcceptanceTests
         TimeSpan timeout)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
+        CameraAgentGalleryCapture? latest = null;
         while (DateTimeOffset.UtcNow < deadline)
         {
-            var capture = await client.GetFromJsonAsync<CameraAgentGalleryCapture>(
+            latest = await client.GetFromJsonAsync<CameraAgentGalleryCapture>(
                 $"/api/v1/operations/gallery/{captureId:D}").ConfigureAwait(false);
-            if (capture?.Detail is { EvidenceAvailability: "Available" } &&
-                capture.ProcessingNodes.Count == 10 &&
-                capture.ProcessingNodes.All(static node => node.Status == "Completed"))
+            if (latest?.Detail is { EvidenceAvailability: "Available" } &&
+                latest.ProcessingNodes.Count == 14 &&
+                latest.ProcessingNodes.All(static node => node.Status == "Completed"))
             {
-                return capture;
+                return latest;
             }
             await Task.Delay(250).ConfigureAwait(false);
         }
-        Assert.Fail($"Capture {captureId:D} did not recover all processing nodes.");
+        Assert.Fail($"Capture {captureId:D} did not recover all 14 processing nodes: " +
+            string.Join(", ", latest?.ProcessingNodes.Select(static node => $"{node.NodeId}={node.Status}") ?? []));
         throw new InvalidOperationException("Unreachable after Assert.Fail.");
     }
 
