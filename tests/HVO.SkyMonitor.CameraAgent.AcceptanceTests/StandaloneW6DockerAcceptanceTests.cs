@@ -1213,8 +1213,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 var dependencies = step["dependsOn"]!.AsArray();
                 if (!dependencies.Any(item => item?.GetValue<string>() == "quality"))
                 {
-                    var cloudIndex = dependencies.IndexOf(dependencies.Single(item => item?.GetValue<string>() == "cloud"));
-                    dependencies.Insert(cloudIndex, "quality");
+                    var presentationIndex = dependencies.IndexOf(
+                        dependencies.Single(item => item?.GetValue<string>() == "scene-presentation"));
+                    dependencies.Insert(presentationIndex, "quality");
                 }
             }
         }
