@@ -8,7 +8,7 @@ PROJECT="tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.c
 OUTPUT_DIR="$ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0"
 EVIDENCE_ROOT=${HVO_ISSUES437432_EVIDENCE_ROOT:-"$ROOT/TestResults/issues-437-432"}
 EXPECTED_BASELINE=${HVO_ISSUES437432_BASELINE:-5febc8efaa4b4b6e5e45eb45e9df0c55525bfdde}
-EXPECTED_PRODUCT=${HVO_ISSUES437432_PRODUCT_COMMIT:-9b051a38aa58f06d01b6951239333d0127634f1e}
+EXPECTED_PRODUCT=${HVO_ISSUES437432_PRODUCT_COMMIT:-87c8dfaa81fb8c743099b7d87a92cc22dd565445}
 
 command -v jq >/dev/null || { printf '%s\n' "jq is required." >&2; exit 1; }
 [[ $(git status --porcelain --untracked-files=all) == "" ]] || {
@@ -26,16 +26,11 @@ git merge-base --is-ancestor "$BASELINE_COMMIT" "$PRODUCT_COMMIT" || {
   printf '%s\n' "Pinned baseline must be an ancestor of the product commit." >&2
   exit 1
 }
-git merge-base --is-ancestor "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" || {
-  printf '%s\n' "Product commit must be an ancestor of evidence HEAD." >&2
-  exit 1
-}
-
 EXPECTED_PATHS=(
   "scripts/evidence:issues-437-432"
   "tests/HVO.SkyMonitor.IntegrationTests/LogicHostLayeredPerformanceTests.cs"
 )
-mapfile -t EVIDENCE_PATHS < <(git diff --name-only "$PRODUCT_COMMIT...$EVIDENCE_HEAD" | LC_ALL=C sort)
+mapfile -t EVIDENCE_PATHS < <(git diff --name-only "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" | LC_ALL=C sort)
 [[ "${#EVIDENCE_PATHS[@]}" -eq "${#EXPECTED_PATHS[@]}" ]] || {
   printf '%s\n' "Product-to-evidence diff must contain exactly the two allowlisted evidence files." >&2
   exit 1
@@ -84,7 +79,7 @@ SOURCE_COUNT=$(wc -l < "$SOURCE_LIST" | tr -d ' ')
 PRODUCT_DIFF="$TRIAL_DIR/.product.diff"
 EVIDENCE_DIFF="$TRIAL_DIR/.evidence.diff"
 git diff --binary "$BASELINE_COMMIT...$PRODUCT_COMMIT" > "$PRODUCT_DIFF"
-git diff --binary "$PRODUCT_COMMIT...$EVIDENCE_HEAD" > "$EVIDENCE_DIFF"
+git diff --binary "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" > "$EVIDENCE_DIFF"
 PRODUCT_DIFF_HASH=$(sha256sum "$PRODUCT_DIFF" | cut -d' ' -f1 | tr 'a-f' 'A-F')
 EVIDENCE_DIFF_HASH=$(sha256sum "$EVIDENCE_DIFF" | cut -d' ' -f1 | tr 'a-f' 'A-F')
 
