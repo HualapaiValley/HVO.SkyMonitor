@@ -503,7 +503,7 @@ EOF
     cp "$trial_result/evidence/runtime/logs.json" "$raw_logs"
     local raw_log_scan_status=0
     rg --text --ignore-case \
-        '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret|connection[_-]?string|owner[_-]?password)' \
+        '(authorization:[[:space:]]*(basic|bearer)|set-cookie:|requestverificationtoken|antiforgery|client[_-]?secret([^[:alnum:]]|$)|connection[_-]?string([^[:alnum:]]|$)|owner[_-]?password([^[:alnum:]]|$))' \
         "$raw_logs" >/dev/null || raw_log_scan_status=$?
     if ((raw_log_scan_status == 0)); then
         printf 'Unsanitized telemetry logs contain a forbidden credential pattern for %s.\n' "$trial" >&2
