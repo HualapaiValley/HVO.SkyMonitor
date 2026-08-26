@@ -172,6 +172,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             calibrationPublicationToRestartMilliseconds = publicationToRestart.TotalMilliseconds;
             var calibrationRestart = Stopwatch.StartNew();
             await RestartContainerAsync(baseUri, container).ConfigureAwait(false);
+            var token = await GetAntiforgeryTokenAsync(session).ConfigureAwait(false);
+            await SetCaptureStateAsync(session, pause: true, token).ConfigureAwait(false);
             calibrationRestart.Stop();
             Assert.IsLessThanOrEqualTo(TimeSpan.FromMinutes(3), calibrationRestart.Elapsed);
             calibrationRestartMilliseconds = calibrationRestart.Elapsed.TotalMilliseconds;
