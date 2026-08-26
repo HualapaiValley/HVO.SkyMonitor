@@ -1812,18 +1812,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
             var sidecarPath = Path.Combine(runtimeRoot, relativeSidecar);
             Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
             File.Copy(Path.Combine(runtimeRoot, observation.Manifest.RelativeArtifactPath), payloadPath, overwrite: true);
-            if (isRaw)
-            {
-                var manifest = JsonNode.Parse(await File.ReadAllBytesAsync(observation.Path).ConfigureAwait(false))!.AsObject();
-                manifest["relativeArtifactPath"] = relativePayload.Replace(Path.DirectorySeparatorChar, '/');
-                manifest["descriptor"]!["artifact"]!["createdUtc"] = createdUtc;
-                await File.WriteAllBytesAsync(sidecarPath, JsonSerializer.SerializeToUtf8Bytes(manifest, EvidenceJson))
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                File.Copy(observation.Path, sidecarPath, overwrite: true);
-            }
+            var manifest = JsonNode.Parse(await File.ReadAllBytesAsync(observation.Path).ConfigureAwait(false))!.AsObject();
+            manifest["relativeArtifactPath"] = relativePayload.Replace(Path.DirectorySeparatorChar, '/');
+            manifest["descriptor"]!["artifact"]!["createdUtc"] = createdUtc;
+            await File.WriteAllBytesAsync(sidecarPath, JsonSerializer.SerializeToUtf8Bytes(manifest, EvidenceJson))
+                .ConfigureAwait(false);
             File.SetLastWriteTimeUtc(payloadPath, createdUtc.UtcDateTime);
             File.SetLastWriteTimeUtc(sidecarPath, createdUtc.UtcDateTime);
             result.Add(new EligibleRetentionArtifactEvidence(
@@ -1883,7 +1876,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
             }
             await Task.Delay(500).ConfigureAwait(false);
         }
-        Assert.Fail("Eligible raw and derivative evidence was not removed after its acceptance hold was released.");
+        var survivors = artifacts.Where(static artifact =>
+            File.Exists(artifact.PayloadPath) || File.Exists(artifact.SidecarPath));
+        Assert.Fail("Eligible raw and derivative evidence was not removed after its acceptance hold was released: " +
+            string.Join(", ", survivors.Select(static artifact => artifact.Role)));
     }
 
     private static ArtifactFileEvidence SnapshotArtifactFiles(string root, ManifestObservation observation)
