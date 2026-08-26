@@ -202,7 +202,7 @@ internal sealed class CentralPresentationMaterializer(
 
             var layout = new ImageLayout(decoded.Width, decoded.Height, decoded.PixelFormat, decoded.StrideBytes);
             var output = PresentationLayerCompositor.Composite(
-                layout, decoded.PixelData, compositorLayers, cancellationToken).ToArray();
+                layout, decoded.PixelData, compositorLayers, cancellationToken);
             if (output.Length > MaximumOutputBytes)
             {
                 return new(CentralPresentationMaterializationStatus.Invalid);

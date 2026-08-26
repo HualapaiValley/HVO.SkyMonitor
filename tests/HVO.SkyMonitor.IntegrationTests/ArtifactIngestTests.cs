@@ -772,6 +772,10 @@ public sealed class ArtifactIngestTests
             ProducerStepId: "overlay-manifest-step");
         using var overlayResponse = await PostAsync(ingestClient, overlayUpload, overlayBytes).ConfigureAwait(false);
         overlayResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        CentralLayeredPresentationService.CreateCacheKey(
+                centralCaptureId, overlayArtifact.ArtifactId, overlayArtifact.ChecksumSha256)
+            .Should().NotBe(CentralLayeredPresentationService.CreateCacheKey(
+                Guid.NewGuid(), overlayArtifact.ArtifactId, overlayArtifact.ChecksumSha256));
 
         using var ownerClient = await ArtifactRetrievalTests.CreateUserClientAsync(
             TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);

@@ -816,6 +816,7 @@ public sealed partial class Program
         builder.Services.AddSingleton<CentralIngestTelemetry>();
         builder.Services.AddScoped<ICentralArtifactRetrievalService, CentralArtifactRetrievalService>();
         builder.Services.AddScoped<ICentralArtifactObjectReader, CentralArtifactObjectReader>();
+        builder.Services.AddSingleton<CentralPresentationGenerationGate>();
         builder.Services.AddSingleton<CentralLayeredPresentationCache>();
         builder.Services.AddSingleton<CentralPresentationTelemetry>();
         builder.Services.AddSingleton<CentralPresentationMaterializationGate>();

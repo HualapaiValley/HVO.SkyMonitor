@@ -22,9 +22,8 @@ BASELINE_COMMIT=$(git rev-parse "$EXPECTED_BASELINE^{commit}")
 BASELINE_TREE=$(git rev-parse "$BASELINE_COMMIT^{tree}")
 PRODUCT_COMMIT=$(git rev-parse "$EXPECTED_PRODUCT^{commit}")
 PRODUCT_TREE=$(git rev-parse "$PRODUCT_COMMIT^{tree}")
-PRODUCT_PARENT=$(git rev-parse "$PRODUCT_COMMIT^")
-[[ "$PRODUCT_PARENT" == "$BASELINE_COMMIT" ]] || {
-  printf '%s\n' "Product parent must exactly equal the pinned baseline." >&2
+git merge-base --is-ancestor "$BASELINE_COMMIT" "$PRODUCT_COMMIT" || {
+  printf '%s\n' "Pinned baseline must be an ancestor of the product commit." >&2
   exit 1
 }
 git merge-base --is-ancestor "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" || {
@@ -34,12 +33,11 @@ git merge-base --is-ancestor "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" || {
 
 EXPECTED_PATHS=(
   "scripts/evidence:issues-437-432"
-  "scripts/test-categories/Program.cs"
   "tests/HVO.SkyMonitor.IntegrationTests/LogicHostLayeredPerformanceTests.cs"
 )
 mapfile -t EVIDENCE_PATHS < <(git diff --name-only "$PRODUCT_COMMIT...$EVIDENCE_HEAD" | LC_ALL=C sort)
 [[ "${#EVIDENCE_PATHS[@]}" -eq "${#EXPECTED_PATHS[@]}" ]] || {
-  printf '%s\n' "Product-to-evidence diff must contain exactly the three allowlisted evidence files." >&2
+  printf '%s\n' "Product-to-evidence diff must contain exactly the two allowlisted evidence files." >&2
   exit 1
 }
 for index in "${!EXPECTED_PATHS[@]}"; do

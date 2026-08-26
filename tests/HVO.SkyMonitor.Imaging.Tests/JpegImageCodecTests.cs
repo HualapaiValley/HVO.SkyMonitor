@@ -87,6 +87,7 @@ public sealed class JpegImageCodecTests
         Assert.Throws<ArgumentException>(() => JpegImageCodec.EncodeToJpeg(
             new ImageLayout(1, 1, CameraPixelFormat.Mono16, 2), new byte[2]));
         Assert.Throws<ArgumentException>(() => JpegImageCodec.DecodeJpeg(ReadOnlyMemory<byte>.Empty));
+        Assert.Throws<ArgumentException>(() => JpegImageCodec.InspectJpeg(ReadOnlyMemory<byte>.Empty));
         Assert.Throws<ArgumentException>(() => JpegImageCodec.DecodeJpeg(new byte[] { 1, 2, 3 }));
         Assert.Throws<ArgumentException>(() => JpegImageCodec.InspectJpeg(new byte[] { 1, 2, 3 }));
         Assert.Throws<ArgumentException>(() => JpegImageCodec.DecodeJpeg(Convert.FromBase64String(

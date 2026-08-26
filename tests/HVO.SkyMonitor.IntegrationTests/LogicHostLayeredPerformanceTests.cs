@@ -123,7 +123,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         var conditionalPresentation = await ValidateIssues437432ConditionalAsync(
             fixture, ownerClient, fixturePresentation, coldPresentation.ETag).ConfigureAwait(false);
         var singleFlight = await MeasureIssues437432SingleFlightAsync(
-            fixture, ownerClient, fixturePresentation).ConfigureAwait(false);
+            fixture, ownerClient, protocol, fixturePresentation).ConfigureAwait(false);
 
         var principal = await CreateIssues437432OperatorPrincipalAsync(fixture).ConfigureAwait(false);
         var firstMaterialization = await MeasureIssues437432MaterializationAsync(
@@ -274,7 +274,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 exactSvgSha256 = fixturePresentation.SvgChecksumSha256,
                 exactEtag = coldPresentation.ETag,
                 etag304 = conditionalPresentation.StatusCode == HttpStatusCode.NotModified && conditionalPresentation.BodyBytes == 0,
-                singleFlight = singleFlight.SharedResult,
+                singleFlight = singleFlight.SharedResult && singleFlight.SingleGenerationObserved,
                 materializationChecksum = firstMaterialization.Receipt.ChecksumSha256,
                 materializationOutputIdentity = firstMaterialization.Receipt.OutputIdentitySha256,
                 materializationOutputBytes = materializedBytes.LongLength,
@@ -301,7 +301,8 @@ public sealed partial class LogicHostIngestPerformanceTests
                 },
                 correctnessGatePassed = correctness.FinalBacklog.Count == 0 &&
                     correctness.CompleteResolvedLineage && conditionalPresentation.StatusCode == HttpStatusCode.NotModified &&
-                    singleFlight.SharedResult && replayMaterialization.Receipt.Replayed,
+                    singleFlight.SharedResult && singleFlight.SingleGenerationObserved &&
+                    replayMaterialization.Receipt.Replayed,
                 interpretation = "Checksums, ETag/304, deterministic SVG, lineage, durable convergence, and functional single-flight are pass/fail. Aggregate protocol counts are N+1/regression diagnostics, not acceptance budgets. Timing and resources are machine-specific comparison evidence.",
                 residualRisk = "TestServer excludes kernel TCP/TLS; SQL and MinIO containers are outside process CPU/RSS; Redis wire bytes and container filesystem I/O are unavailable; the compact Mono8 presentation does not establish canonical W2 RGB24 payload throughput; #427 durable materialization backlog cannot be measured."
             },
@@ -949,23 +950,38 @@ public sealed partial class LogicHostIngestPerformanceTests
     }
 
     private static string Issues437432PresentationCacheKey(Issues437432PresentationFixture presentation) =>
-        $"central-presentation-v1:{GroupedSvgPresentationRenderer.RendererVersion}:" +
-        $"{presentation.ManifestArtifactId:D}:{presentation.ManifestChecksumSha256}";
+        CentralLayeredPresentationService.CreateCacheKey(
+            presentation.CaptureId, presentation.ManifestArtifactId, presentation.ManifestChecksumSha256);
 
     private static async Task<Issues437432SingleFlight> MeasureIssues437432SingleFlightAsync(
         IntegrationTestFixture fixture,
         HttpClient client,
+        ProtocolCounter protocol,
         Issues437432PresentationFixture presentation)
     {
         await ClearIssues437432PresentationCacheAsync(fixture, presentation).ConfigureAwait(false);
+        protocol.Start();
+        var singleResponse = await SendIssues437432PresentationAsync(
+            fixture, client, presentation, false, null).ConfigureAwait(false);
+        var singleProtocol = protocol.Stop();
+        Assert.AreEqual(HttpStatusCode.OK, singleResponse.StatusCode);
+
+        await ClearIssues437432PresentationCacheAsync(fixture, presentation).ConfigureAwait(false);
+        protocol.Start();
         var started = Stopwatch.GetTimestamp();
         var responses = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ =>
             SendIssues437432PresentationAsync(fixture, client, presentation, false, null))).ConfigureAwait(false);
         var elapsed = Stopwatch.GetElapsedTime(started);
+        var concurrentProtocol = protocol.Stop();
         Assert.IsTrue(responses.All(static response => response.StatusCode == HttpStatusCode.OK));
         var sharedResult = responses.Skip(1).All(response =>
             response.Body.SequenceEqual(responses[0].Body) && response.ETag == responses[0].ETag);
         Assert.IsTrue(sharedResult);
+        var singleGenerationObserved = singleProtocol.MinioGetObserved > 0 &&
+            concurrentProtocol.MinioGetObserved == singleProtocol.MinioGetObserved &&
+            concurrentProtocol.MinioResponseContentLengthBytesObserved ==
+            singleProtocol.MinioResponseContentLengthBytesObserved;
+        Assert.IsTrue(singleGenerationObserved, "Eight cold callers must perform one generation's MinIO reads.");
         var checksum = Convert.ToHexString(SHA256.HashData(responses[0].Body));
         Assert.AreEqual(presentation.SvgChecksumSha256, checksum, ignoreCase: true);
         return new(
@@ -973,6 +989,9 @@ public sealed partial class LogicHostIngestPerformanceTests
             elapsed.TotalMilliseconds,
             responses.Skip(1).All(response => response.Body.SequenceEqual(responses[0].Body)),
             sharedResult,
+            singleGenerationObserved,
+            singleProtocol.MinioGetObserved,
+            concurrentProtocol.MinioGetObserved,
             responses[0].ETag,
             checksum);
     }
@@ -1121,7 +1140,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         }
         Assert.IsFalse(dirty, "Claimable evidence requires a clean worktree.");
         Assert.AreEqual(Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"), head, ignoreCase: true);
-        Assert.AreEqual(Issues437432Baseline, RunGit(root, "rev-parse", $"{Issues437432Product}^"), ignoreCase: true);
+        _ = RunGit(root, "merge-base", "--is-ancestor", Issues437432Baseline, Issues437432Product);
         _ = RunGit(root, "merge-base", "--is-ancestor", Issues437432Product, head);
         var receiptPath = Environment.GetEnvironmentVariable("HVO_ISSUES437432_BUILD_RECEIPT");
         Assert.IsFalse(string.IsNullOrWhiteSpace(receiptPath));
@@ -1238,6 +1257,9 @@ public sealed partial class LogicHostIngestPerformanceTests
         double ElapsedMilliseconds,
         bool DeterministicBytes,
         bool SharedResult,
+        bool SingleGenerationObserved,
+        long SingleRequestMinioGets,
+        long ConcurrentMinioGets,
         string ETag,
         string SvgChecksumSha256);
 

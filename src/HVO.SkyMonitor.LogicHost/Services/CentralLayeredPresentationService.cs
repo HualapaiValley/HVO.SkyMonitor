@@ -102,8 +102,7 @@ internal sealed class CentralLayeredPresentationService(
             return new(CentralLayeredPresentationStatus.Unavailable);
         }
         var manifestArtifact = manifests[0];
-        var cacheKey = $"central-presentation-v1:{GroupedSvgPresentationRenderer.RendererVersion}:" +
-            $"{manifestArtifact.ArtifactId:D}:{manifestArtifact.ChecksumSha256}";
+        var cacheKey = CreateCacheKey(captureId, manifestArtifact.ArtifactId, manifestArtifact.ChecksumSha256);
         if (memoryCache.TryGet(cacheKey, out var memoryHit))
         {
             if (IsValidCached(memoryHit, captureId, manifestArtifact) &&
@@ -144,6 +143,10 @@ internal sealed class CentralLayeredPresentationService(
             manifestArtifact,
             cancellationToken).ConfigureAwait(false);
     }
+
+    internal static string CreateCacheKey(Guid captureId, Guid manifestArtifactId, string manifestChecksumSha256) =>
+        $"central-presentation-v2:{GroupedSvgPresentationRenderer.RendererVersion}:" +
+        $"{captureId:D}:{manifestArtifactId:D}:{manifestChecksumSha256}";
 
     internal async Task<CentralLayeredPresentationResult> BuildAsync(
         Guid captureId,
@@ -460,7 +463,8 @@ internal sealed class CentralLayeredPresentationService(
 
 internal sealed class CentralLayeredPresentationCache(
     IServiceScopeFactory scopeFactory,
-    CentralPresentationTelemetry telemetry)
+    CentralPresentationTelemetry telemetry,
+    CentralPresentationGenerationGate generationGate)
 {
     private const int MaximumEntries = 64;
     private const long MaximumBytes = 16L * 1024 * 1024;
@@ -550,6 +554,12 @@ internal sealed class CentralLayeredPresentationCache(
         CentralArtifact manifestArtifact,
         string key)
     {
+        using var lease = await generationGate.TryEnterAsync().ConfigureAwait(false);
+        if (lease is null)
+        {
+            telemetry.RecordGeneration("overloaded", 0, TimeSpan.Zero);
+            return new(CentralLayeredPresentationStatus.DependencyUnavailable);
+        }
         await using var scope = scopeFactory.CreateAsyncScope();
         return await scope.ServiceProvider.GetRequiredService<CentralLayeredPresentationService>()
             .BuildAsync(captureId, manifestArtifact, key).ConfigureAwait(false);
@@ -559,5 +569,51 @@ internal sealed class CentralLayeredPresentationCache(
     {
         public CentralLayeredPresentation Presentation { get; } = presentation;
         public long Sequence { get; set; } = sequence;
+    }
+}
+
+[SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification =
+    "This process-lifetime gate must remain usable until detached presentation flights finish during shutdown.")]
+internal sealed class CentralPresentationGenerationGate
+{
+    internal const int MaximumConcurrent = 2;
+    internal const int MaximumAdmitted = 18;
+    private readonly SemaphoreSlim _semaphore = new(MaximumConcurrent, MaximumConcurrent);
+    private int _admitted;
+
+    public async ValueTask<IDisposable?> TryEnterAsync()
+    {
+        if (Interlocked.Increment(ref _admitted) > MaximumAdmitted)
+        {
+            Interlocked.Decrement(ref _admitted);
+            return null;
+        }
+
+        try
+        {
+            await _semaphore.WaitAsync().ConfigureAwait(false);
+            return new Lease(this);
+        }
+        catch
+        {
+            Interlocked.Decrement(ref _admitted);
+            throw;
+        }
+    }
+
+    private sealed class Lease(CentralPresentationGenerationGate owner) : IDisposable
+    {
+        private CentralPresentationGenerationGate? _owner = owner;
+
+        public void Dispose()
+        {
+            var owner = Interlocked.Exchange(ref _owner, null);
+            if (owner is null)
+            {
+                return;
+            }
+            Interlocked.Decrement(ref owner._admitted);
+            owner._semaphore.Release();
+        }
     }
 }
