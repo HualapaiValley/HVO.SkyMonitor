@@ -308,7 +308,22 @@ public sealed class RetentionBackgroundServiceTests
             var sidecarPath = Path.Combine(root, relativeSidecar.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
             await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
-            await File.WriteAllBytesAsync(sidecarPath, StructuredProcessingProductManifestJson.Serialize(manifest))
+            var durableSidecar = new DurableTypedMetadataProductManifestV3(
+                DurableTypedMetadataProductManifestV3.CurrentSchemaVersion,
+                source.Capture,
+                artifact,
+                outputIdentity,
+                manifest.Descriptor.Algorithms,
+                manifest.Descriptor.Compatibility,
+                manifest.Descriptor.TotalIntegrationTicks,
+                payload.LongLength,
+                relativePayload,
+                JsonSerializer.SerializeToElement<object?>(null),
+                ProcessingProductKind.Metadata,
+                PresentationLayerPayloadV1.CurrentSchemaVersion,
+                layer.ContentIdentitySha256);
+            await File.WriteAllBytesAsync(
+                    sidecarPath, DurableProcessingProductManifestJson.Serialize(durableSidecar))
                 .ConfigureAwait(false);
             File.SetLastWriteTimeUtc(payloadPath, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
             File.SetLastWriteTimeUtc(sidecarPath, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
