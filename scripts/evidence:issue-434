@@ -6,7 +6,7 @@ cd "$ROOT"
 
 PROJECT="tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
 EVIDENCE_ROOT=${HVO_ISSUE434_EVIDENCE_ROOT:-"$ROOT/TestResults/issue-434"}
-EXPECTED_PRODUCT=${HVO_ISSUE434_PRODUCT_COMMIT:-c7939cc}
+EXPECTED_PRODUCT=${HVO_ISSUE434_PRODUCT_COMMIT:-22fceeb}
 
 command -v jq >/dev/null || { printf '%s\n' "jq is required." >&2; exit 1; }
 [[ $(git status --porcelain --untracked-files=all) == "" ]] || {
@@ -25,13 +25,10 @@ git merge-base --is-ancestor "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" || {
 
 EXPECTED_PATHS=(
   "scripts/evidence:issue-434"
-  "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/StandaloneW6DockerAcceptanceTests.cs"
-  "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/DurableCaptureProcessingTests.cs"
-  "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/Issue434LayeredGalleryPerformanceTests.cs"
 )
 mapfile -t EVIDENCE_PATHS < <(git diff --name-only "$PRODUCT_COMMIT...$EVIDENCE_HEAD" | LC_ALL=C sort)
 [[ "${#EVIDENCE_PATHS[@]}" -eq "${#EXPECTED_PATHS[@]}" ]] || {
-  printf '%s\n' "Candidate-to-evidence diff must contain exactly the four issue #434 evidence files." >&2
+  printf '%s\n' "Candidate-to-evidence diff must contain exactly the issue #434 runner binding." >&2
   exit 1
 }
 for index in "${!EXPECTED_PATHS[@]}"; do
