@@ -607,6 +607,17 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<Guid>("CentralArtifactId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("ExpectedRecipeIdentitySha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int?>("ExpectedRole")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ExpectedVariant")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
                     b.Property<int>("Ordinal")
                         .HasColumnType("int");
 

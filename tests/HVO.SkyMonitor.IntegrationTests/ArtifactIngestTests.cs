@@ -814,10 +814,30 @@ public sealed class ArtifactIngestTests
             ProducerStepId: "overlay-manifest-step");
         using var overlayResponse = await PostAsync(ingestClient, overlayUpload, overlayBytes).ConfigureAwait(false);
         overlayResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
-        CentralLayeredPresentationService.CreateCacheKey(
-                centralCaptureId, overlayArtifact.ArtifactId, overlayArtifact.ChecksumSha256)
+        var presentationCacheKey = CentralLayeredPresentationService.CreateCacheKey(
+            centralCaptureId, overlayArtifact.ArtifactId, overlayArtifact.ChecksumSha256);
+        presentationCacheKey
             .Should().NotBe(CentralLayeredPresentationService.CreateCacheKey(
                 Guid.NewGuid(), overlayArtifact.ArtifactId, overlayArtifact.ChecksumSha256));
+        await using (var cacheScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var invalidCacheEntry = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                captureId = centralCaptureId,
+                devicePublicId,
+                baseArtifactId,
+                baseMediaType = CentralPresentationBaseDecoder.PackedMediaType,
+                manifestIdentitySha256 = overlay.ManifestIdentitySha256,
+                presentationIdentitySha256 = new string('A', 64),
+                svgChecksumSha256 = new string('B', 64),
+                widthPixels = 2,
+                heightPixels = 2,
+                layers = (object?)null,
+                svg = (byte[]?)null
+            });
+            await cacheScope.ServiceProvider.GetRequiredService<IDistributedCache>()
+                .SetAsync(presentationCacheKey, invalidCacheEntry).ConfigureAwait(false);
+        }
 
         using var ownerClient = await ArtifactRetrievalTests.CreateUserClientAsync(
             TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
@@ -836,6 +856,30 @@ public sealed class ArtifactIngestTests
         svgResponse.Headers.ETag.Should().NotBeNull();
         Encoding.UTF8.GetString(concurrentBodies[0]).Should()
             .Contain($"data-layer-identity=\"{layerContract.LayerIdentitySha256}\"");
+        await using (var cacheScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var cache = cacheScope.ServiceProvider.GetRequiredService<IDistributedCache>();
+            var validCacheBytes = await cache.GetAsync(presentationCacheKey).ConfigureAwait(false);
+            var cacheJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+            var validCache = JsonSerializer.Deserialize<CentralLayeredPresentation>(
+                validCacheBytes!, cacheJsonOptions);
+            validCache.Should().NotBeNull();
+            var invalidLayerCache = validCache! with
+            {
+                Layers = [null!]
+            };
+            fixture.Factory.Services.GetRequiredService<CentralLayeredPresentationCache>()
+                .Remove(presentationCacheKey);
+            await cache.SetAsync(
+                presentationCacheKey,
+                JsonSerializer.SerializeToUtf8Bytes(
+                    invalidLayerCache, cacheJsonOptions)).ConfigureAwait(false);
+        }
+        using (var invalidLayerResponse = await ownerClient.GetAsync(new Uri(
+                   $"/api/v1.0/captures/{centralCaptureId:D}/presentation.svg", UriKind.Relative)).ConfigureAwait(false))
+        {
+            invalidLayerResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
         using var descriptorResponse = await ownerClient.GetAsync(new Uri(
             $"/api/v1.0/captures/{centralCaptureId:D}/presentation", UriKind.Relative)).ConfigureAwait(false);
         descriptorResponse.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -1087,6 +1131,57 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    public void StructuredCloudSourceFacts_RequireExactResolvedArtifactFacts()
+    {
+        var recipeDescriptor = RecipeIdentityDescriptor.Create(
+            "source-recipe", "1.0.0", "integration-v1", JsonSerializer.SerializeToElement(new { }));
+        var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(recipeDescriptor).IdentitySha256;
+        var resolved = new CentralArtifact
+        {
+            Role = FrameArtifactRole.Raw,
+            Variant = "source",
+            Recipe = new CentralArtifactRecipe
+            {
+                Name = recipeDescriptor.Name,
+                SemanticVersion = recipeDescriptor.SemanticVersion,
+                ImplementationVersion = recipeDescriptor.ImplementationVersion,
+                OptionsJson = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(recipeDescriptor.Options)),
+                OptionsSha256 = recipeDescriptor.OptionsSha256
+            }
+        };
+        var source = new CentralArtifactSource
+        {
+            SourceArtifactId = Guid.NewGuid(),
+            ExpectedRole = resolved.Role,
+            ExpectedVariant = resolved.Variant,
+            ExpectedRecipeIdentitySha256 = recipeIdentity,
+            ResolvedCentralArtifactId = resolved.Id,
+            ResolvedArtifact = resolved
+        };
+        var artifact = new CentralArtifact();
+        artifact.Sources.Add(source);
+
+        ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact).Should().BeFalse();
+        source.ExpectedRole = FrameArtifactRole.Preview;
+        ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact).Should().BeTrue();
+        source.ExpectedRole = resolved.Role;
+        source.ExpectedVariant = "other";
+        ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact).Should().BeTrue();
+        source.ExpectedVariant = resolved.Variant;
+        source.ExpectedRecipeIdentitySha256 = new string('F', 64);
+        ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact).Should().BeTrue();
+        source.ExpectedRecipeIdentitySha256 = recipeIdentity;
+        source.ResolvedCentralArtifactId = null;
+        source.ResolvedArtifact = null;
+        ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact).Should().BeFalse();
+        artifact.MediaType = StructuredProcessingProductContracts.CloudAssessmentMediaType;
+        source.ExpectedRole = null;
+        source.ExpectedVariant = null;
+        source.ExpectedRecipeIdentitySha256 = null;
+        ArtifactIngestService.HasStructuredSourceFactsMismatch(artifact).Should().BeTrue();
+    }
+
+    [TestMethod]
     public async Task StructuredCloudAssessment_ResolvesHistoricalClearReferenceAcrossFrames()
     {
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
@@ -1176,6 +1271,25 @@ public sealed class ArtifactIngestTests
                 assessment.AssessmentIdentitySha256),
             "derived/cloud-assessment.json",
             ProducerStepId: "cloud-assessment-step");
+        var staleAssessment = assessment with
+        {
+            Current = assessment.Current with { Variant = "stale-source-variant" }
+        };
+        var staleBytes = CloudAssessmentJson.Serialize(staleAssessment);
+        var staleUpload = upload with
+        {
+            Descriptor = upload.Descriptor with
+            {
+                ByteLength = staleBytes.LongLength,
+                ContentIdentitySha256 = staleAssessment.AssessmentIdentitySha256,
+                Artifact = upload.Descriptor.Artifact with
+                {
+                    ChecksumSha256 = Convert.ToHexString(SHA256.HashData(staleBytes))
+                }
+            }
+        };
+        using var staleResponse = await PostAsync(client, staleUpload, staleBytes).ConfigureAwait(false);
+        staleResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         using var response = await PostAsync(client, upload, cloudBytes).ConfigureAwait(false);
         response.StatusCode.Should().Be((HttpStatusCode)425);
         using var clearResponse = await PostAsync(client, clear, clearBytes).ConfigureAwait(false);
@@ -1185,11 +1299,33 @@ public sealed class ArtifactIngestTests
         var stored = await db.CentralArtifacts.Include(item => item.Sources)
             .SingleAsync(item => item.ArtifactId == artifact.ArtifactId).ConfigureAwait(false);
         stored.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        var currentSource = stored.Sources.Single(item => item.Ordinal == 0);
+        currentSource.ExpectedRole.Should().Be(assessment.Current.Role);
+        currentSource.ExpectedVariant.Should().Be(assessment.Current.Variant);
+        currentSource.ExpectedRecipeIdentitySha256.Should().Be(assessment.Current.RecipeIdentitySha256);
+        var clearSource = stored.Sources.Single(item => item.Ordinal == 1);
+        clearSource.ExpectedRole.Should().Be(assessment.ClearReference!.Role);
+        clearSource.ExpectedVariant.Should().Be(assessment.ClearReference.Variant);
+        clearSource.ExpectedRecipeIdentitySha256.Should().Be(assessment.ClearReference.RecipeIdentitySha256);
         var clearSourceId = stored.Sources.Single(item => item.Ordinal == 1).ResolvedCentralArtifactId;
         clearSourceId.Should().NotBeNull();
         var clearFrameId = await db.CentralArtifacts.Where(item => item.Id == clearSourceId)
             .Select(item => item.CentralFrameId).SingleAsync().ConfigureAwait(false);
         clearFrameId.Should().NotBe(stored.CentralFrameId);
+        clearSource.ExpectedVariant = "persisted-corrupt-variant";
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralIngestTelemetry();
+        var reconciler = new CentralArtifactReconciliationService(
+            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
+            new MutableTimeProvider(DateTimeOffset.UtcNow.AddHours(1)),
+            telemetry,
+            NullLogger<CentralArtifactReconciliationService>.Instance);
+        await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        var reconciled = await db.CentralArtifacts.SingleAsync(item => item.ArtifactId == artifact.ArtifactId)
+            .ConfigureAwait(false);
+        reconciled.ReconstructionState.Should().Be(CentralReconstructionState.Quarantined);
+        reconciled.StateReasonCode.Should().Be("lineage.source-identity-mismatch");
     }
 
     [TestMethod]

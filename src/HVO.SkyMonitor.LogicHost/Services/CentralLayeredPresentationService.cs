@@ -117,6 +117,7 @@ internal sealed class CentralLayeredPresentationService(
         }
         telemetry.RecordCache("memory", "miss");
         var distributed = await ReadDistributedAsync(cacheKey, cancellationToken).ConfigureAwait(false);
+        var invalidDistributed = distributed is not null;
         if (distributed is { Length: > 0 and <= GroupedSvgPresentationRenderer.MaximumSvgBytes * 2 })
         {
             try
@@ -132,8 +133,11 @@ internal sealed class CentralLayeredPresentationService(
             }
             catch (JsonException)
             {
-                await RemoveDistributedAsync(cacheKey, cancellationToken).ConfigureAwait(false);
             }
+        }
+        if (invalidDistributed)
+        {
+            await RemoveDistributedAsync(cacheKey, cancellationToken).ConfigureAwait(false);
         }
         telemetry.RecordCache("distributed", "miss");
 
@@ -339,9 +343,14 @@ internal sealed class CentralLayeredPresentationService(
         Guid captureId,
         CentralArtifact manifestArtifact)
     {
-        if (cached.CaptureId != captureId || cached.BaseArtifactId == Guid.Empty ||
+        if (cached.CaptureId != captureId || cached.DevicePublicId == Guid.Empty || cached.BaseArtifactId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(cached.BaseMediaType) || string.IsNullOrWhiteSpace(cached.ManifestIdentitySha256) ||
+            string.IsNullOrWhiteSpace(cached.PresentationIdentitySha256) ||
+            string.IsNullOrWhiteSpace(cached.SvgChecksumSha256) ||
+            cached.Svg is null || cached.Layers is null ||
             cached.Svg.Length is < 1 or > GroupedSvgPresentationRenderer.MaximumSvgBytes ||
             cached.Layers.Count > LayeredPresentationJson.MaximumLayerCount ||
+            cached.Layers.Any(static layer => layer is null) ||
             !string.Equals(cached.ManifestIdentitySha256,
                 manifestArtifact.StructuredProduct!.ContentIdentitySha256, StringComparison.Ordinal) ||
             !string.Equals(cached.SvgChecksumSha256,

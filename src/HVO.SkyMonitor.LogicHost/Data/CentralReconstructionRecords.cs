@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.AgentCore;
+
 namespace HVO.SkyMonitor.LogicHost.Data;
 
 internal enum CentralArtifactObjectState
@@ -129,6 +131,9 @@ internal sealed class CentralArtifactSource
     public CentralArtifact? Artifact { get; set; }
     public int Ordinal { get; set; }
     public Guid SourceArtifactId { get; set; }
+    public FrameArtifactRole? ExpectedRole { get; set; }
+    public string? ExpectedVariant { get; set; }
+    public string? ExpectedRecipeIdentitySha256 { get; set; }
     public Guid? ResolvedCentralArtifactId { get; set; }
     public CentralArtifact? ResolvedArtifact { get; set; }
 }

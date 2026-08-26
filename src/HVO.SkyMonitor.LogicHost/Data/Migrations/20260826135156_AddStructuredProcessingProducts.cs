@@ -13,6 +13,26 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
         {
             ArgumentNullException.ThrowIfNull(migrationBuilder);
 
+            migrationBuilder.AddColumn<int>(
+                name: "ExpectedRole",
+                table: "CentralArtifactSources",
+                type: "int",
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "ExpectedVariant",
+                table: "CentralArtifactSources",
+                type: "nvarchar(128)",
+                maxLength: 128,
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "ExpectedRecipeIdentitySha256",
+                table: "CentralArtifactSources",
+                type: "nvarchar(64)",
+                maxLength: 64,
+                nullable: true);
+
             migrationBuilder.AlterColumn<string>(
                 name: "ManifestSchemaVersion",
                 table: "CentralArtifacts",
@@ -85,6 +105,18 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             migrationBuilder.DropTable(
                 name: "CentralStructuredProcessingProducts");
+
+            migrationBuilder.DropColumn(
+                name: "ExpectedRecipeIdentitySha256",
+                table: "CentralArtifactSources");
+
+            migrationBuilder.DropColumn(
+                name: "ExpectedRole",
+                table: "CentralArtifactSources");
+
+            migrationBuilder.DropColumn(
+                name: "ExpectedVariant",
+                table: "CentralArtifactSources");
 
             migrationBuilder.AlterColumn<string>(
                 name: "ManifestSchemaVersion",

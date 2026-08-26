@@ -56,7 +56,8 @@ internal sealed record ArtifactIngestManifest(
     ReconstructionDescriptor? Descriptor,
     CaptureManifestCompleteness Completeness,
     StructuredProcessingProductDescriptorV1? StructuredProduct = null,
-    string? StructuredSourceIdentitySha256 = null)
+    string? StructuredSourceIdentitySha256 = null,
+    IReadOnlyList<CloudAssessmentSourceV1>? StructuredSourceFacts = null)
 {
     public ReconstructionDescriptor? CaptureDescriptor => Descriptor ?? StructuredProduct?.SourceCapture;
 
@@ -192,9 +193,14 @@ internal sealed partial class ArtifactIngestService(
         var structuredPayload = manifest.StructuredProduct is null
             ? null
             : await ReadStructuredPayloadAsync(manifest, payload, cancellationToken).ConfigureAwait(false);
-        manifest = structuredPayload?.SourceIdentitySha256 is null
-            ? manifest
-            : manifest with { StructuredSourceIdentitySha256 = structuredPayload.SourceIdentitySha256 };
+        if (structuredPayload is not null)
+        {
+            manifest = manifest with
+            {
+                StructuredSourceIdentitySha256 = structuredPayload.SourceIdentitySha256,
+                StructuredSourceFacts = structuredPayload.SourceFacts
+            };
+        }
         using var structuredStream = structuredPayload is null
             ? null
             : new MemoryStream(structuredPayload.Bytes, writable: false);
@@ -263,13 +269,14 @@ internal sealed partial class ArtifactIngestService(
         return new(bytes, ValidateStructuredPayload(product, bytes));
     }
 
-    private static string? ValidateStructuredPayload(
+    private static StructuredPayloadValidation ValidateStructuredPayload(
         StructuredProcessingProductDescriptorV1 product,
         ReadOnlyMemory<byte> payload)
     {
         string? schemaVersion;
         string? contentIdentity;
         string? sourceIdentity = null;
+        IReadOnlyList<CloudAssessmentSourceV1>? sourceFacts = null;
         switch (product.Artifact.MediaType.ToLowerInvariant())
         {
             case "application/vnd.hvo.projected-scene+json":
@@ -302,6 +309,9 @@ internal sealed partial class ArtifactIngestService(
                     EnsureStructuredLineage(product, assessment.ClearReference is null
                         ? [assessment.Current.ArtifactId]
                         : [assessment.Current.ArtifactId, assessment.ClearReference.ArtifactId]);
+                    sourceFacts = assessment.ClearReference is null
+                        ? [assessment.Current]
+                        : [assessment.Current, assessment.ClearReference];
                 }
                 break;
             case PresentationLayerPayloadJson.MediaType:
@@ -351,7 +361,7 @@ internal sealed partial class ArtifactIngestService(
         {
             throw new ArtifactIntegrityException("Structured product schema or content identity does not match its manifest.");
         }
-        return sourceIdentity;
+        return new(sourceIdentity, sourceFacts);
     }
 
     private static void EnsureStructuredLineage(
@@ -364,7 +374,18 @@ internal sealed partial class ArtifactIngestService(
         }
     }
 
-    private sealed record StructuredPayloadRead(byte[] Bytes, string? SourceIdentitySha256);
+    private sealed record StructuredPayloadValidation(
+        string? SourceIdentitySha256,
+        IReadOnlyList<CloudAssessmentSourceV1>? SourceFacts);
+
+    private sealed record StructuredPayloadRead(
+        byte[] Bytes,
+        StructuredPayloadValidation Validation)
+    {
+        public string? SourceIdentitySha256 => Validation.SourceIdentitySha256;
+
+        public IReadOnlyList<CloudAssessmentSourceV1>? SourceFacts => Validation.SourceFacts;
+    }
 
     public async Task<ArtifactIngestResult?> CheckStatusAsync(
         ArtifactManifestDocument document,
@@ -1346,6 +1367,8 @@ internal sealed partial class ArtifactIngestService(
             .Include(artifact => artifact.Recipe)
             .Include(artifact => artifact.Sources)
                 .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.StructuredProduct)
+            .Include(artifact => artifact.Sources)
+                .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.Recipe)
             .Include(artifact => artifact.StructuredProduct)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
@@ -1859,8 +1882,11 @@ internal sealed partial class ArtifactIngestService(
         for (var ordinal = artifact.Sources.Count; ordinal < artifactDescriptor.SourceArtifactIds.Count; ordinal++)
         {
             var sourceArtifactId = artifactDescriptor.SourceArtifactIds[ordinal];
+            var expected = manifest.StructuredSourceFacts?.ElementAtOrDefault(ordinal);
             var requiresSameFrame = RequiresSameFrameSource(artifact, ordinal);
-            var resolved = await dbContext.CentralArtifacts.Include(candidate => candidate.StructuredProduct)
+            var resolved = await dbContext.CentralArtifacts
+                .Include(candidate => candidate.StructuredProduct)
+                .Include(candidate => candidate.Recipe)
                 .FirstOrDefaultAsync(candidate =>
                         candidate.ArtifactId == sourceArtifactId
                         && candidate.DevicePublicId == devicePublicId
@@ -1872,13 +1898,16 @@ internal sealed partial class ArtifactIngestService(
             {
                 Ordinal = ordinal,
                 SourceArtifactId = sourceArtifactId,
+                ExpectedRole = expected?.Role,
+                ExpectedVariant = expected?.Variant,
+                ExpectedRecipeIdentitySha256 = expected?.RecipeIdentitySha256,
                 ResolvedCentralArtifactId = resolved?.Id,
                 ResolvedArtifact = resolved
             });
         }
-        if (HasStructuredSourceIdentityMismatch(artifact))
+        if (HasStructuredSourceMismatch(artifact))
         {
-            throw new ArtifactIntegrityException("Structured presentation layer source identity does not match its lineage.");
+            throw new ArtifactIntegrityException("Structured product source facts do not match its lineage.");
         }
         SetReconstructionState(artifact, rigProfile is not null, manifestCompleteness: manifest.Completeness);
         AddIfDetached(frame.Timing);
@@ -1920,6 +1949,8 @@ internal sealed partial class ArtifactIngestService(
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Layout)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Sources)
                 .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.StructuredProduct)
+            .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Sources)
+                .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.Recipe)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.StructuredProduct)
             .Where(source => source.SourceArtifactId == artifact.ArtifactId
                 && source.ResolvedCentralArtifactId == null
@@ -1938,7 +1969,7 @@ internal sealed partial class ArtifactIngestService(
                 waitingArtifact,
                 waitingArtifact.Frame!.DeviceRigProfileId.HasValue,
                 waitingArtifact.Sources.Any(source => source != waitingSource && source.ResolvedCentralArtifactId == null));
-            if (HasStructuredSourceIdentityMismatch(waitingArtifact))
+            if (HasStructuredSourceMismatch(waitingArtifact))
             {
                 waitingArtifact.ReconstructionState = CentralReconstructionState.Quarantined;
                 waitingArtifact.StateReasonCode = "lineage.source-identity-mismatch";
@@ -2237,7 +2268,9 @@ internal sealed partial class ArtifactIngestService(
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId == null))
         {
             var requiresSameFrame = RequiresSameFrameSource(artifact, source.Ordinal);
-            var resolved = await dbContext.CentralArtifacts.Include(candidate => candidate.StructuredProduct)
+            var resolved = await dbContext.CentralArtifacts
+                .Include(candidate => candidate.StructuredProduct)
+                .Include(candidate => candidate.Recipe)
                 .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
@@ -2257,7 +2290,7 @@ internal sealed partial class ArtifactIngestService(
             unavailableSource: unavailableSource,
             manifestCompleteness: manifest.Completeness);
         if (artifact.ReconstructionState == CentralReconstructionState.Complete &&
-            HasStructuredSourceIdentityMismatch(artifact))
+            HasStructuredSourceMismatch(artifact))
         {
             artifact.ReconstructionState = CentralReconstructionState.Quarantined;
             artifact.StateReasonCode = "lineage.source-identity-mismatch";
@@ -2361,6 +2394,71 @@ internal sealed partial class ArtifactIngestService(
                 expected,
                 StringComparison.Ordinal)) != 1;
     }
+
+    internal static bool HasStructuredSourceFactsMismatch(CentralArtifact artifact)
+    {
+        var requiresExpectedFacts = string.Equals(
+            artifact.MediaType,
+            StructuredProcessingProductContracts.CloudAssessmentMediaType,
+            StringComparison.OrdinalIgnoreCase);
+        foreach (var source in artifact.Sources)
+        {
+            var hasExpectedFacts = source.ExpectedRole.HasValue || source.ExpectedVariant is not null ||
+                source.ExpectedRecipeIdentitySha256 is not null;
+            if (!hasExpectedFacts)
+            {
+                if (requiresExpectedFacts)
+                {
+                    return true;
+                }
+                continue;
+            }
+            if (!source.ExpectedRole.HasValue || source.ExpectedVariant is null ||
+                source.ExpectedRecipeIdentitySha256 is null)
+            {
+                return true;
+            }
+            if (source.ResolvedArtifact is not { } resolved)
+            {
+                continue;
+            }
+            if (resolved.Role != source.ExpectedRole.Value ||
+                !string.Equals(resolved.Variant, source.ExpectedVariant, StringComparison.Ordinal) ||
+                resolved.Recipe is not { } recipe)
+            {
+                return true;
+            }
+            try
+            {
+                using var options = JsonDocument.Parse(recipe.OptionsJson);
+                var descriptor = new RecipeIdentityDescriptor(
+                    recipe.Name,
+                    recipe.SemanticVersion,
+                    recipe.ImplementationVersion,
+                    options.RootElement.Clone(),
+                    recipe.OptionsSha256);
+                if (!string.Equals(
+                        ProcessingIdentity.CreateRecipeIdentity(descriptor).IdentitySha256,
+                        source.ExpectedRecipeIdentitySha256,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            catch (JsonException)
+            {
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    internal static bool HasStructuredSourceMismatch(CentralArtifact artifact)
+        => HasStructuredSourceIdentityMismatch(artifact) || HasStructuredSourceFactsMismatch(artifact);
 
     internal static async Task InvalidateDependentsAsync(
         ApplicationDbContext dbContext,

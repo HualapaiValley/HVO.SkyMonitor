@@ -81,6 +81,8 @@ internal static class CentralReconstructionConfiguration
         var source = builder.Entity<CentralArtifactSource>();
         source.ToTable("CentralArtifactSources");
         source.HasKey(item => item.Id);
+        source.Property(item => item.ExpectedVariant).HasMaxLength(128);
+        source.Property(item => item.ExpectedRecipeIdentitySha256).HasMaxLength(64);
         source.HasIndex(item => new { item.CentralArtifactId, item.Ordinal }).IsUnique();
         source.HasIndex(item => new { item.CentralArtifactId, item.SourceArtifactId }).IsUnique();
         source.HasOne(item => item.Artifact).WithMany(item => item.Sources)

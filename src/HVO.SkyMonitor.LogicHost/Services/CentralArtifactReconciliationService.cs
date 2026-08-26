@@ -1381,6 +1381,8 @@ internal sealed partial class CentralArtifactReconciliationService(
             .Include(item => item.StructuredProduct)
             .Include(item => item.Sources).ThenInclude(source => source.ResolvedArtifact)!
                 .ThenInclude(source => source!.StructuredProduct)
+            .Include(item => item.Sources).ThenInclude(source => source.ResolvedArtifact)!
+                .ThenInclude(source => source!.Recipe)
             .AsSplitQuery()
             .SingleOrDefaultAsync(item => item.Id == artifactId, cancellationToken).ConfigureAwait(false);
         if (artifact is null)
@@ -1490,6 +1492,13 @@ internal sealed partial class CentralArtifactReconciliationService(
             }
         }
 
+        if (artifact.ObjectState == CentralArtifactObjectState.Available &&
+            artifact.ReconstructionState == CentralReconstructionState.Complete &&
+            ArtifactIngestService.HasStructuredSourceMismatch(artifact))
+        {
+            artifact.ReconstructionState = CentralReconstructionState.Quarantined;
+            artifact.StateReasonCode = "lineage.source-identity-mismatch";
+        }
         if (artifact.ReconstructionState == CentralReconstructionState.PendingReference)
         {
             await ResolveReferencesAsync(db, artifact, cancellationToken).ConfigureAwait(false);
@@ -2191,7 +2200,9 @@ internal sealed partial class CentralArtifactReconciliationService(
         foreach (var source in artifact.Sources.Where(source => source.ResolvedCentralArtifactId == null))
         {
             var requiresSameFrame = ArtifactIngestService.RequiresSameFrameSource(artifact, source.Ordinal);
-            var resolved = await db.CentralArtifacts.Include(candidate => candidate.StructuredProduct)
+            var resolved = await db.CentralArtifacts
+                .Include(candidate => candidate.StructuredProduct)
+                .Include(candidate => candidate.Recipe)
                 .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
@@ -2220,7 +2231,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                     : "lineage.source-not-found";
             return;
         }
-        if (ArtifactIngestService.HasStructuredSourceIdentityMismatch(artifact))
+        if (ArtifactIngestService.HasStructuredSourceMismatch(artifact))
         {
             artifact.ReconstructionState = CentralReconstructionState.Quarantined;
             artifact.StateReasonCode = "lineage.source-identity-mismatch";
