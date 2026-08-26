@@ -20,6 +20,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed class PresentationMetadataFactsBuilderTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 8, 25, 12, 0, 0, TimeSpan.Zero);
+    private static readonly JsonSerializerOptions ProductJson = new(JsonSerializerDefaults.Web);
     private string? _root;
 
     [TestInitialize]
@@ -157,6 +158,10 @@ public sealed class PresentationMetadataFactsBuilderTests
             var result = await CreateFactsProductAsync(fixture).ConfigureAwait(false);
             firstFactsIdentity = result.Facts.FactsIdentitySha256;
             firstOutputIdentity = result.Product.OutputIdentitySha256;
+            var persistedFacts = JsonSerializer.Deserialize<PresentationMetadataFactsProductV1>(
+                result.Product.Payload.Span, ProductJson);
+            Assert.IsNotNull(persistedFacts);
+            Assert.AreEqual(firstFactsIdentity, persistedFacts.FactsIdentitySha256);
             CollectionAssert.AreEqual(
                 new[] { fixture.SceneArtifact.ArtifactId, fixture.StackArtifact.ArtifactId },
                 result.Product.SourceArtifactIds.ToArray());

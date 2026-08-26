@@ -2917,7 +2917,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsTrue(facts.ContentIdentitySha256 is { Length: 64 });
         var factsProduct = productManifests[facts.ArtifactId];
         var parsedFacts = JsonSerializer.Deserialize<PresentationMetadataFactsProductV1>(
-            File.ReadAllBytes(Path.Combine(root, factsProduct.RelativeArtifactPath)));
+            File.ReadAllBytes(Path.Combine(root, factsProduct.RelativeArtifactPath)), EvidenceJson);
         Assert.IsNotNull(parsedFacts);
         Assert.AreEqual(facts.ContentIdentitySha256, parsedFacts.FactsIdentitySha256);
         Assert.HasCount(6, parsedFacts.Environment);
