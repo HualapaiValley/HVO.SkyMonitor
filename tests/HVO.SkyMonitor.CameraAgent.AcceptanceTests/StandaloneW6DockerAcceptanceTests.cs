@@ -279,7 +279,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             session, page, runtimeRoot, measuredCaptures[^1]).ConfigureAwait(false);
         var pipelinePerformance = ReadPipelinePerformance(runtimeRoot, measuredCaptures);
         var transient = await WaitForTransientConvergenceAsync(runtimeRoot, TimeSpan.FromMinutes(3)).ConfigureAwait(false);
-        var transientEvidence = RetainTransientEvidence(runtimeRoot, evidenceRoot, measuredCaptures);
+        var transientEvidence = RetainTransientEvidence(runtimeRoot, evidenceRoot, campaignCaptures);
         var transientBrowser = await AssertTransientBrowserEvidenceAsync(page, transientEvidence).ConfigureAwait(false);
         var metricsText = await WaitForMetricSurfaceAsync(
             session,
@@ -3670,7 +3670,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private static TransientEvidence RetainTransientEvidence(
         string runtimeRoot,
         string evidenceRoot,
-        IReadOnlyCollection<CameraAgentGalleryCapture> measuredCaptures)
+        IReadOnlyCollection<CameraAgentGalleryCapture> campaignCaptures)
     {
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
@@ -3733,7 +3733,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.AreEqual("scn-3D134B0F05F1C937E4D5B301", scenarioId);
         Assert.AreEqual(new DateTimeOffset(2026, 1, 15, 8, 0, 20, TimeSpan.Zero), scenarioEpochUtc);
 
-        var measuredCaptureIds = measuredCaptures.Select(static capture => capture.CaptureId).ToHashSet();
+        var campaignCaptureIds = campaignCaptures.Select(static capture => capture.CaptureId).ToHashSet();
         TransientInjectedEventEvidence? injectedEvent = null;
         using (var command = connection.CreateCommand())
         {
@@ -3750,7 +3750,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             while (reader.Read())
             {
                 var captureId = Guid.ParseExact(reader.GetString(0), "N");
-                if (measuredCaptureIds.Contains(captureId))
+                if (campaignCaptureIds.Contains(captureId))
                 {
                     injectedEvent = new TransientInjectedEventEvidence(
                         captureId,
