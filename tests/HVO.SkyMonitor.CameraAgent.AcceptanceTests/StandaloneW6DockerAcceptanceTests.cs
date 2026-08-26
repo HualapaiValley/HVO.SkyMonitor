@@ -97,8 +97,15 @@ public sealed class StandaloneW6DockerAcceptanceTests
         "Combined/rolling-mean",
         "Preview/calibrated-preview",
         "Preview/combined-preview",
+        "Metadata/projected-scene-v1",
         "Metadata/image-quality-v1",
         "Metadata/cloud-assessment-v1",
+        "Metadata/w6-constellation-layer",
+        "Metadata/w6-scene-annotation-layer",
+        "Metadata/w6-cloud-mask-layer",
+        "Metadata/w6-cloud-label-layer",
+        "Metadata/w6-presentation-metadata-facts",
+        "Metadata/w6-environment-layer",
         "Metadata/w6-overlay-manifest",
         "AnnotatedPreview/w6-annotated-preview"
     ];
