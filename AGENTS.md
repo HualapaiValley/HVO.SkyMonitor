@@ -89,6 +89,13 @@
   green required checks. Return every planned post-ready head change, including a
   failed-CI correction or base synchronization, to draft for narrow delta review
   before final CI; do not repeat unchanged successful gates.
+- Opening a PR assigns its implementing agent ownership of the complete lifecycle:
+  request review, actively monitor review and checks, disposition findings, drive
+  corrections and bounded rereviews, mark the converged head ready, monitor final
+  protected CI, merge when green, synchronize `main`, and remove merged branches.
+  Continue without a routine operator prompt unless the operator explicitly
+  pauses, limits, or reserves the merge decision, or a real blocker requires a
+  decision.
 - Performance-sensitive work requires reproducible baseline/after evidence for relevant I/O, CPU, allocations/working set, throughput, latency, and backlog. Unexplained regression blocks merge.
 - Validate produced outputs through checksums, numerical invariants, provenance, lineage, and durable state where applicable. Inspect logs, metrics, traces, and health behavior for host/worker changes.
 - If work stops or blocks, leave the resumable handoff required by the execution protocol and update the owning roadmap epic with the exact next action.
