@@ -1,6 +1,8 @@
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using SkiaSharp;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -20,6 +22,34 @@ public sealed class CentralPresentationGenerationGateTests
 
         Assert.Throws<InvalidDataException>(() =>
             CentralPresentationBaseDecoder.Decode(artifact, jpeg, 3, CancellationToken.None));
+    }
+
+    [TestMethod]
+    public void Decode_AcceptsPngForMaterialization()
+    {
+        var pixels = new byte[]
+        {
+            255, 0, 0, 255,
+            0, 255, 0, 255,
+            0, 0, 255, 255,
+            255, 255, 255, 255
+        };
+        using var image = SKImage.FromPixelCopy(
+            new SKImageInfo(2, 2, SKColorType.Rgba8888, SKAlphaType.Opaque), pixels, 8);
+        using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
+        var png = encoded.ToArray();
+        var artifact = new CentralArtifact
+        {
+            MediaType = PngImageCodec.MediaType,
+            ByteLength = png.LongLength
+        };
+
+        var decoded = CentralPresentationBaseDecoder.Decode(artifact, png, 4, CancellationToken.None);
+
+        Assert.AreEqual(2, decoded.Layout.Width);
+        Assert.AreEqual(2, decoded.Layout.Height);
+        Assert.AreEqual(CameraPixelFormat.Rgb24, decoded.Layout.PixelFormat);
+        Assert.AreEqual(PngImageCodec.AlgorithmVersion, decoded.DecoderVersion);
     }
 
     [TestMethod]

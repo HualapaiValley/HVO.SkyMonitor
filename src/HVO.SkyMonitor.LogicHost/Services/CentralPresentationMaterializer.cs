@@ -152,7 +152,8 @@ internal sealed class CentralPresentationMaterializer(
                 .ToDictionaryAsync(static artifact => artifact.ArtifactId, cancellationToken)
                 .ConfigureAwait(false);
             if (!artifacts.TryGetValue(manifest.BaseProduct.ArtifactId, out var baseArtifact) ||
-                baseArtifact.MediaType is not (JpegImageCodec.MediaType or CentralPresentationBaseDecoder.PackedMediaType) ||
+                baseArtifact.MediaType is not (JpegImageCodec.MediaType or PngImageCodec.MediaType or
+                    CentralPresentationBaseDecoder.PackedMediaType) ||
                 !string.Equals(CentralReconstructionDescriptorFactory.ComputeOutputIdentity(baseArtifact),
                     manifest.BaseProduct.ProductIdentitySha256, StringComparison.OrdinalIgnoreCase) ||
                 baseArtifact.ByteLength > MaximumBaseBytes ||
@@ -371,6 +372,19 @@ internal static class CentralPresentationBaseDecoder
                 throw new InvalidDataException("The retained presentation base exceeds its pixel bound.");
             }
             var decoded = JpegImageCodec.DecodeJpeg(bytes, cancellationToken);
+            return new(
+                new(decoded.Width, decoded.Height, decoded.PixelFormat, decoded.StrideBytes),
+                decoded.PixelData,
+                decoded.AlgorithmVersion);
+        }
+        if (artifact.MediaType == PngImageCodec.MediaType)
+        {
+            var info = PngImageCodec.InspectPng(bytes);
+            if (checked((long)info.Width * info.Height) > maximumPixels)
+            {
+                throw new InvalidDataException("The retained presentation base exceeds its pixel bound.");
+            }
+            var decoded = PngImageCodec.DecodePng(bytes, cancellationToken);
             return new(
                 new(decoded.Width, decoded.Height, decoded.PixelFormat, decoded.StrideBytes),
                 decoded.PixelData,
