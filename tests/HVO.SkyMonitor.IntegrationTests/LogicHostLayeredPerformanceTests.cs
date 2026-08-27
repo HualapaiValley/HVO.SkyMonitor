@@ -29,7 +29,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed partial class LogicHostIngestPerformanceTests
 {
     private const string Issues437432Baseline = "5febc8efaa4b4b6e5e45eb45e9df0c55525bfdde";
-    private const string Issues437432Product = "b6c357101d314c20b87b54c92da97d7482eb1b48";
+    private const string Issues437432Product = "67cbba1f438650503957fe2d9b5596fd6ecc0a56";
     private const string Issues437432ResultSchema = "issues-437-432-layered-performance-v2";
     private const int Issues437432Width = 3096;
     private const int Issues437432Height = 2080;
@@ -1157,7 +1157,16 @@ public sealed partial class LogicHostIngestPerformanceTests
         Assert.IsFalse(dirty, "Claimable evidence requires a clean worktree.");
         Assert.AreEqual(Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"), head, ignoreCase: true);
         _ = RunGit(root, "merge-base", "--is-ancestor", Issues437432Baseline, Issues437432Product);
-        _ = RunGit(root, "merge-base", "--is-ancestor", Issues437432Product, head);
+        var evidencePaths = RunGit(root, "diff", "--name-only", Issues437432Product, head)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        string[] expectedEvidencePaths =
+        [
+            "scripts/evidence:issues-437-432",
+            "tests/HVO.SkyMonitor.IntegrationTests/LogicHostLayeredPerformanceTests.cs"
+        ];
+        CollectionAssert.AreEqual(expectedEvidencePaths, evidencePaths);
         var receiptPath = Environment.GetEnvironmentVariable("HVO_ISSUES437432_BUILD_RECEIPT");
         Assert.IsFalse(string.IsNullOrWhiteSpace(receiptPath));
         var receiptBytes = File.ReadAllBytes(receiptPath!);
