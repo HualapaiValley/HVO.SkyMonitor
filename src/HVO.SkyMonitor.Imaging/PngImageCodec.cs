@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Imaging;
 public static class PngImageCodec
 {
     public const string MediaType = "image/png";
-    public const string AlgorithmVersion = "skia-png-v1";
+    public const string AlgorithmVersion = "skia-png-v2";
 
     [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The native codec factory can return null for malformed input despite its managed nullability annotation.")]
     public static EncodedImageInfo InspectPng(ReadOnlyMemory<byte> encodedData)

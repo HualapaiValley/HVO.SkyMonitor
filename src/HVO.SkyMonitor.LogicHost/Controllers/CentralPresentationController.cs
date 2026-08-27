@@ -96,16 +96,14 @@ internal sealed class CentralPresentationController(
         try
         {
             var snapshot = await objectReader.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
-            if (artifact.MediaType is CentralPresentationBaseDecoder.PackedMediaType or PngImageCodec.MediaType)
+            if (artifact.MediaType == CentralPresentationBaseDecoder.PackedMediaType)
             {
                 if (artifact.ByteLength is < 1 or > MaximumBaseBytes or > int.MaxValue)
                 {
                     Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
                     return;
                 }
-                var representationEtag = artifact.MediaType == CentralPresentationBaseDecoder.PackedMediaType
-                    ? CreatePackedRepresentationEtag(artifact)
-                    : CreatePngRepresentationEtag(artifact);
+                var representationEtag = CreatePackedRepresentationEtag(artifact);
                 SetImmutableHeaders(representationEtag);
                 if (Matches(representationEtag))
                 {
@@ -122,6 +120,36 @@ internal sealed class CentralPresentationController(
                 await objectReader.CopyToAsync(snapshot, packed, null, cancellationToken).ConfigureAwait(false);
                 var image = CentralPresentationBaseDecoder.Decode(
                     artifact, packed.ToArray(), MaximumPixels, cancellationToken);
+                var jpeg = JpegImageCodec.EncodeToJpeg(image.Layout, image.PixelData,
+                    cancellationToken: cancellationToken);
+                Response.ContentLength = jpeg.LongLength;
+                await Response.Body.WriteAsync(jpeg, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            if (artifact.MediaType == PngImageCodec.MediaType)
+            {
+                if (artifact.ByteLength is < 1 or > MaximumBaseBytes or > int.MaxValue)
+                {
+                    Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+                    return;
+                }
+                using var png = new MemoryStream(checked((int)artifact.ByteLength));
+                await objectReader.CopyToAsync(snapshot, png, null, cancellationToken).ConfigureAwait(false);
+                var image = CentralPresentationBaseDecoder.Decode(
+                    artifact, png.ToArray(), MaximumPixels, cancellationToken);
+                var representationEtag = CreatePngRepresentationEtag(artifact);
+                SetImmutableHeaders(representationEtag);
+                if (Matches(representationEtag))
+                {
+                    Response.StatusCode = StatusCodes.Status304NotModified;
+                    return;
+                }
+                Response.StatusCode = StatusCodes.Status200OK;
+                Response.ContentType = JpegImageCodec.MediaType;
+                if (HttpMethods.IsHead(Request.Method))
+                {
+                    return;
+                }
                 var jpeg = JpegImageCodec.EncodeToJpeg(image.Layout, image.PixelData,
                     cancellationToken: cancellationToken);
                 Response.ContentLength = jpeg.LongLength;
