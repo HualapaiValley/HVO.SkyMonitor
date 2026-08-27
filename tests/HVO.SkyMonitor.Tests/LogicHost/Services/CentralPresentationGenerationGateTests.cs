@@ -35,7 +35,7 @@ public sealed class CentralPresentationGenerationGateTests
             255, 255, 255, 255
         };
         using var image = SKImage.FromPixelCopy(
-            new SKImageInfo(2, 2, SKColorType.Rgba8888, SKAlphaType.Opaque), pixels, 8);
+            new SKImageInfo(2, 2, SKColorType.Rgb888x, SKAlphaType.Opaque), pixels, 8);
         using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
         var png = encoded.ToArray();
         var artifact = new CentralArtifact
@@ -50,6 +50,31 @@ public sealed class CentralPresentationGenerationGateTests
         Assert.AreEqual(2, decoded.Layout.Height);
         Assert.AreEqual(CameraPixelFormat.Rgb24, decoded.Layout.PixelFormat);
         Assert.AreEqual(PngImageCodec.AlgorithmVersion, decoded.DecoderVersion);
+        CollectionAssert.AreEqual(new byte[]
+        {
+            255, 0, 0,
+            0, 255, 0,
+            0, 0, 255,
+            255, 255, 255
+        }, decoded.PixelData.ToArray());
+    }
+
+    [TestMethod]
+    public void Decode_RejectsTransparentPng()
+    {
+        var pixels = new byte[] { 255, 0, 0, 127 };
+        using var image = SKImage.FromPixelCopy(
+            new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Unpremul), pixels, 4);
+        using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
+        var png = encoded.ToArray();
+        var artifact = new CentralArtifact
+        {
+            MediaType = PngImageCodec.MediaType,
+            ByteLength = png.LongLength
+        };
+
+        Assert.Throws<ArgumentException>(() =>
+            CentralPresentationBaseDecoder.Decode(artifact, png, 1, CancellationToken.None));
     }
 
     [TestMethod]

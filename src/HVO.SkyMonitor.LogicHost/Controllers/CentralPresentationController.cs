@@ -96,16 +96,18 @@ internal sealed class CentralPresentationController(
         try
         {
             var snapshot = await objectReader.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
-            if (artifact.MediaType == CentralPresentationBaseDecoder.PackedMediaType)
+            if (artifact.MediaType is CentralPresentationBaseDecoder.PackedMediaType or PngImageCodec.MediaType)
             {
                 if (artifact.ByteLength is < 1 or > MaximumBaseBytes or > int.MaxValue)
                 {
                     Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
                     return;
                 }
-                var packedEtag = CreatePackedRepresentationEtag(artifact);
-                SetImmutableHeaders(packedEtag);
-                if (Matches(packedEtag))
+                var representationEtag = artifact.MediaType == CentralPresentationBaseDecoder.PackedMediaType
+                    ? CreatePackedRepresentationEtag(artifact)
+                    : CreatePngRepresentationEtag(artifact);
+                SetImmutableHeaders(representationEtag);
+                if (Matches(representationEtag))
                 {
                     Response.StatusCode = StatusCodes.Status304NotModified;
                     return;
@@ -194,6 +196,18 @@ internal sealed class CentralPresentationController(
             PresentationProcessingProducts.ComputeLayoutIdentity(
                 CentralReconstructionDescriptorFactory.CreateLayout(layout)),
             CentralPresentationBaseDecoder.PackedDecoderVersion,
+            JpegImageCodec.AlgorithmVersion,
+            JpegImageCodec.DefaultQuality.ToString(CultureInfo.InvariantCulture),
+            JpegImageCodec.MediaType);
+        return $"\"{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(representationIdentity)))}\"";
+    }
+
+    private static string CreatePngRepresentationEtag(CentralArtifact artifact)
+    {
+        var representationIdentity = string.Join('\n',
+            "png-jpeg-v1",
+            artifact.ChecksumSha256.ToUpperInvariant(),
+            PngImageCodec.AlgorithmVersion,
             JpegImageCodec.AlgorithmVersion,
             JpegImageCodec.DefaultQuality.ToString(CultureInfo.InvariantCulture),
             JpegImageCodec.MediaType);
