@@ -529,16 +529,9 @@ public sealed class DurableCaptureDistributionPerformanceTests
         Assert.IsGreaterThanOrEqualTo(0L, initializationAllocatedBytes);
         var databaseBytesBefore = FileBytes(databasePath);
         var walBytesBefore = FileBytes(string.Concat(databasePath, "-wal"));
-        var insertionAllocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
-        var insertionCpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
-        var insertionRssBefore = Environment.WorkingSet;
         var insertion = await PopulateCanonicalDatabaseAsync(
             databasePath, input, configuration, policy.Definitions).ConfigureAwait(false);
         SqliteConnection.ClearAllPools();
-        var insertionCpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - insertionCpuBefore).TotalMilliseconds;
-        var insertionAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - insertionAllocatedBefore;
-        var insertionRssAfter = Environment.WorkingSet;
-        Assert.IsGreaterThanOrEqualTo(0L, insertionAllocatedBytes);
 
         using var connection = await OpenDatabaseAsync(root).ConfigureAwait(false);
         var rawRows = await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false);
@@ -618,10 +611,10 @@ public sealed class DurableCaptureDistributionPerformanceTests
             InitializationAllocatedBytes: initializationAllocatedBytes,
             RssBeforeInitializationBytes: rssBefore,
             RssAfterInitializationBytes: rssAfterInitialization,
-            CanonicalInsertionCpuMilliseconds: insertionCpuMilliseconds,
-            CanonicalInsertionAllocatedBytes: insertionAllocatedBytes,
-            RssBeforeCanonicalInsertionBytes: insertionRssBefore,
-            RssAfterCanonicalInsertionBytes: insertionRssAfter,
+            CanonicalInsertionCpuMilliseconds: insertion.CpuMilliseconds,
+            CanonicalInsertionAllocatedBytes: insertion.AllocatedBytes,
+            RssBeforeCanonicalInsertionBytes: insertion.RssBefore,
+            RssAfterCanonicalInsertionBytes: insertion.RssAfter,
             DatabaseBytesAfterInitialization: databaseBytesBefore,
             WalBytesAfterInitialization: walBytesBefore,
             DatabaseBytesAfterCanonicalInsertion: databaseBytesAfter,
@@ -663,6 +656,9 @@ public sealed class DurableCaptureDistributionPerformanceTests
             2,
             [1, 2, 3, 4]);
 
+        var allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+        var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
+        var rssBefore = Environment.WorkingSet;
         var started = Stopwatch.GetTimestamp();
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
         using var transaction = connection.BeginTransaction(deferred: false);
@@ -807,9 +803,18 @@ public sealed class DurableCaptureDistributionPerformanceTests
             }
         }
         await transaction.CommitAsync().ConfigureAwait(false);
+        var durationMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        var cpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
+        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
+        var rssAfter = Environment.WorkingSet;
+        Assert.IsGreaterThanOrEqualTo(0L, allocatedBytes);
         return new CanonicalInsertionMeasurement(
-            Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-            1 + W3MetadataCount * (2 + laneDefinitions.Count(static lane => lane.Enabled)) + W3LegacyContextCount);
+            durationMilliseconds,
+            1 + W3MetadataCount * (2 + laneDefinitions.Count(static lane => lane.Enabled)) + W3LegacyContextCount,
+            cpuMilliseconds,
+            allocatedBytes,
+            rssBefore,
+            rssAfter);
     }
 
     private static async Task<LiveScenarioMeasurement> MeasureLiveScenarioAsync(
@@ -2002,7 +2007,13 @@ public sealed class DurableCaptureDistributionPerformanceTests
 
     private sealed record WalCheckpoint(long Busy, long LogFrames, long CheckpointedFrames);
 
-    private sealed record CanonicalInsertionMeasurement(double DurationMilliseconds, int StatementCount);
+    private sealed record CanonicalInsertionMeasurement(
+        double DurationMilliseconds,
+        int StatementCount,
+        double CpuMilliseconds,
+        long AllocatedBytes,
+        long RssBefore,
+        long RssAfter);
 
     private sealed record W3MetadataMeasurement(
         long RawRows,

@@ -1502,12 +1502,75 @@ internal sealed class SqliteRawCaptureJournal(
     private static string ReadSchemaDefinitionRow(SqliteDataReader reader)
     {
         var definition = new System.Text.StringBuilder();
-        foreach (var ordinal in new[] { 0, 2, 3 })
+        foreach (var ordinal in new[] { 0, 2 })
         {
             var value = reader.GetString(ordinal);
             definition.Append(value.Length).Append(':').Append(value);
         }
+        var sql = NormalizeSchemaSql(reader.GetString(3));
+        definition.Append(sql.Length).Append(':').Append(sql);
         return definition.ToString();
+    }
+
+    internal static string NormalizeSchemaSql(string sql)
+    {
+        var tokens = new List<string>();
+        for (var index = 0; index < sql.Length;)
+        {
+            if (char.IsWhiteSpace(sql[index]))
+            {
+                index++;
+                continue;
+            }
+            if (sql[index] is '\'' or '"' or '`' or '[')
+            {
+                var start = index;
+                var closing = sql[index] == '[' ? ']' : sql[index];
+                index++;
+                while (index < sql.Length)
+                {
+                    if (sql[index] != closing)
+                    {
+                        index++;
+                        continue;
+                    }
+                    index++;
+                    if (index < sql.Length && sql[index] == closing)
+                    {
+                        index++;
+                        continue;
+                    }
+                    break;
+                }
+                tokens.Add(sql[start..index]);
+                continue;
+            }
+            if (char.IsLetterOrDigit(sql[index]) || sql[index] is '_' or '$')
+            {
+                var start = index++;
+                while (index < sql.Length &&
+                       (char.IsLetterOrDigit(sql[index]) || sql[index] is '_' or '$'))
+                {
+                    index++;
+                }
+                tokens.Add(sql[start..index].ToUpperInvariant());
+                continue;
+            }
+            tokens.Add(sql[index++].ToString());
+        }
+
+        var normalized = new System.Text.StringBuilder();
+        for (var index = 0; index < tokens.Count; index++)
+        {
+            if (index + 2 < tokens.Count &&
+                tokens[index] == "IF" && tokens[index + 1] == "NOT" && tokens[index + 2] == "EXISTS")
+            {
+                index += 2;
+                continue;
+            }
+            normalized.Append(tokens[index].Length).Append(':').Append(tokens[index]);
+        }
+        return normalized.ToString();
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only internal constant schema and PRAGMA statements are passed to this helper.")]

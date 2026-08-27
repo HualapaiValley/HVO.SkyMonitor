@@ -24,7 +24,7 @@ public sealed class RawCaptureIngressTests
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
-    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV11Idempotently()
+    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV11AndAcceptsEquivalentLegacyFormatting()
     {
         var root = CreateRoot();
         try
@@ -33,10 +33,25 @@ public sealed class RawCaptureIngressTests
 
             await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var canonicalDefinition = SqliteRawCaptureJournal.NormalizeSchemaSql(
+                "CREATE TABLE IF NOT EXISTS sample (value TEXT DEFAULT 'Unknown', note TEXT DEFAULT 'it''s')");
+            Assert.AreEqual(
+                canonicalDefinition,
+                SqliteRawCaptureJournal.NormalizeSchemaSql(
+                    "create table sample(value text default 'Unknown',note text default 'it''s')"));
+            Assert.AreNotEqual(
+                canonicalDefinition,
+                SqliteRawCaptureJournal.NormalizeSchemaSql(
+                    "CREATE TABLE sample (value TEXT DEFAULT 'unknown', note TEXT DEFAULT 'it''s')"));
+            Assert.AreNotEqual(
+                canonicalDefinition,
+                SqliteRawCaptureJournal.NormalizeSchemaSql(
+                    "CREATE TABLE sample (note TEXT DEFAULT 'it''s', value TEXT DEFAULT 'Unknown')"));
 
-            using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(11L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
-            Assert.AreEqual(63L, await ScalarLongAsync(connection, """
+            using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
+            {
+                Assert.AreEqual(11L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+                Assert.AreEqual(63L, await ScalarLongAsync(connection, """
                 SELECT COUNT(*) FROM sqlite_master
                 WHERE name IN (
                     'raw_capture_sequences', 'raw_capture_assignments', 'raw_captures', 'raw_ingress_reconciliation',
@@ -66,18 +81,33 @@ public sealed class RawCaptureIngressTests
                     'ux_calibration_acquisition_jobs_camera_nonterminal',
                     'ix_calibration_library_reconciliation_state');
                 """).ConfigureAwait(false));
-            Assert.AreEqual(1L, await ScalarLongAsync(
-                connection, "SELECT COUNT(*) FROM capture_lane_definitions WHERE lane_name = 'standard';")
-                .ConfigureAwait(false));
-            Assert.AreEqual(1L, await ScalarLongAsync(
-                connection, "SELECT COUNT(*) FROM transient_runtime_policy WHERE policy_key = 1;")
-                .ConfigureAwait(false));
-            Assert.AreEqual(1L, await ScalarLongAsync(
-                connection, "SELECT COUNT(*) FROM capture_control_state WHERE state_key = 1 AND state = 'running' AND version = 0;")
-                .ConfigureAwait(false));
-            Assert.AreEqual(1L, await ScalarLongAsync(
-                connection, "SELECT COUNT(*) FROM calibration_library_state WHERE state_key = 1 AND active_bundle_id IS NULL AND version = 0;")
-                .ConfigureAwait(false));
+                Assert.AreEqual(1L, await ScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM capture_lane_definitions WHERE lane_name = 'standard';")
+                    .ConfigureAwait(false));
+                Assert.AreEqual(1L, await ScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM transient_runtime_policy WHERE policy_key = 1;")
+                    .ConfigureAwait(false));
+                Assert.AreEqual(1L, await ScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM capture_control_state WHERE state_key = 1 AND state = 'running' AND version = 0;")
+                    .ConfigureAwait(false));
+                Assert.AreEqual(1L, await ScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM calibration_library_state WHERE state_key = 1 AND active_bundle_id IS NULL AND version = 0;")
+                    .ConfigureAwait(false));
+                using var legacyFormatting = connection.CreateCommand();
+                legacyFormatting.CommandText = """
+                    PRAGMA writable_schema = ON;
+                    UPDATE sqlite_schema
+                    SET sql = replace(
+                        replace(sql, char(10), ' '),
+                        'CREATE TABLE raw_captures',
+                        'CREATE TABLE IF NOT EXISTS raw_captures')
+                    WHERE name IN ('raw_captures', 'transient_candidates');
+                    PRAGMA writable_schema = OFF;
+                    """;
+                await legacyFormatting.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            SqliteConnection.ClearAllPools();
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
