@@ -90,7 +90,7 @@
         "type": "Storage",
         "order": 100,
         "enabled": true,
-        "dependsOn": ["Preview"],
+        "dependsOn": ["$raw", "Preview"],
         "options": {
           "storageRoot": __STORAGE_ROOT__,
           "retentionDays": 1,

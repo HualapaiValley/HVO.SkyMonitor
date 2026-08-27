@@ -665,9 +665,40 @@ public sealed class CaptureProcessingGraphTests
             telemetry));
         StringAssert.Contains(duplicate.Message, "conflicting registrations", StringComparison.Ordinal);
 
-        var rawStorage = Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(
-            CreateExplicitConfig(new CaptureProcessingStepConfig("Storage", "storage", DependsOn: ["$raw"]))));
-        StringAssert.Contains(rawStorage.Message, "unsupported artifact dependency", StringComparison.Ordinal);
+        var rawStorage = factory.PreviewPlan(
+            CreateExplicitConfig(new CaptureProcessingStepConfig("Storage", "storage", DependsOn: ["$raw"])));
+        var rawStorageDependencies = rawStorage.EffectiveNodes
+            .Single(static node => node.Id == "storage").Dependencies!;
+        Assert.HasCount(1, rawStorageDependencies);
+        Assert.AreEqual("$raw", rawStorageDependencies[0]);
+        var storageWithoutRaw = factory.PreviewPlan(CreateExplicitConfig(
+            new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"]),
+            new CaptureProcessingStepConfig("Storage", "storage", DependsOn: ["calibration"])));
+        var storageWithRaw = factory.PreviewPlan(CreateExplicitConfig(
+            new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"]),
+            new CaptureProcessingStepConfig("Storage", "storage", DependsOn: ["$raw", "calibration"])));
+        Assert.AreNotEqual(storageWithoutRaw.EffectiveSha256, storageWithRaw.EffectiveSha256);
+        _ = factory.PreviewPlan(CreateExplicitConfig(new CaptureProcessingStepConfig(
+            "Storage",
+            "storage",
+            DependsOn: ["$raw"],
+            Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+            {
+                Policies = [new ArtifactStoragePolicyOptions { Role = FrameArtifactRole.Raw, RetentionDays = 60 }]
+            }))));
+        var syntheticRawStepPolicy = Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(
+            CreateExplicitConfig(new CaptureProcessingStepConfig(
+                "Storage",
+                "storage",
+                DependsOn: ["$raw"],
+                Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
+                {
+                    Policies = [new ArtifactStoragePolicyOptions { StepId = "$raw", Role = FrameArtifactRole.Raw }]
+                })))));
+        StringAssert.Contains(
+            syntheticRawStepPolicy.Message,
+            "does not select a declared producer dependency",
+            StringComparison.Ordinal);
 
         var wrongMetadata = CreateExplicitConfig(
             new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"]),

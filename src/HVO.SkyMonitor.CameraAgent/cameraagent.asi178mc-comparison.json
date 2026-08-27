@@ -118,7 +118,7 @@
       "id": "LocalStorage",
       "type": "Storage",
       "order": 100,
-      "dependsOn": ["Annotation"],
+      "dependsOn": ["$raw", "RollingCombination", "Annotation"],
       "options": {
         "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
         "retentionDays": 7,

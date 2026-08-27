@@ -360,7 +360,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     .Where(target => policy.Variant is null || string.Equals(policy.Variant, target.Output.Variant, StringComparison.Ordinal))
                     .Where(target => policy.RecipeName is null || string.Equals(policy.RecipeName, target.Output.RecipeName, StringComparison.Ordinal))
                     .ToArray();
-                if (targets.Length == 0)
+                var selectsRaw = dependencyIds.Any(IsRawDependency) &&
+                    policy.StepId is null &&
+                    (policy.Role is null or FrameArtifactRole.Raw) &&
+                    policy.Variant is null && policy.RecipeName is null;
+                if (targets.Length == 0 && !selectsRaw)
                 {
                     throw new InvalidOperationException(
                         $"Storage policy does not select a declared producer dependency for step '{storage.Step.Name}'.");
@@ -431,11 +435,13 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             if (explicitV2 && item.Step is ICaptureProcessingArtifactConsumer consumer)
             {
                 var consumerDependencies = item.Config.DependsOn ?? [];
-                if (consumerDependencies.Any(IsRawDependency) || consumerDependencies
-                    .Where(static dependency => !IsRawDependency(dependency))
-                    .Select(dependency => nodesById[dependency].Step)
-                    .Any(dependency => dependency is not ICaptureProcessingGraphStep producer ||
-                        !consumer.AcceptedDependencyRoles.Contains(producer.OutputRole)))
+                if ((consumerDependencies.Any(IsRawDependency) &&
+                     !consumer.AcceptedDependencyRoles.Contains(FrameArtifactRole.Raw)) ||
+                    consumerDependencies
+                        .Where(static dependency => !IsRawDependency(dependency))
+                        .Select(dependency => nodesById[dependency].Step)
+                        .Any(dependency => dependency is not ICaptureProcessingGraphStep producer ||
+                            !consumer.AcceptedDependencyRoles.Contains(producer.OutputRole)))
                 {
                     throw new InvalidOperationException(
                         $"Capture processing step '{item.Step.Name}' declares an unsupported artifact dependency.");
@@ -688,7 +694,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     graphStep?.RecipeName,
                     graphStep?.OutputRole,
                     graphStep?.OutputVariant,
-                    ComputeNodePlanSha256(item.Config, item.Step, graphStep, dependencies),
+                    ComputeNodePlanSha256(
+                        item.Config,
+                        item.Step,
+                        graphStep,
+                        item.Config.DependsOn?.ToArray() ?? dependencies),
                     item.Config.Type,
                     item.Step.Order,
                     item.Config.Options,

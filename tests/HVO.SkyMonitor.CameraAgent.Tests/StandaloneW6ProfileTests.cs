@@ -51,7 +51,7 @@ public sealed class StandaloneW6ProfileTests
             rigSha256);
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
-            "66EA97A4D415905A9DB7E197E3A465AC6C1555CDA680CD303B90DF171A1AF486",
+            "8F9EC413736CCF95026581287D8FFA6C8B05BAF1174420D95A3E49B185A3E18D",
             processingSha256,
             processingSha256);
         Assert.AreEqual(
@@ -60,15 +60,15 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "594C84F10D861B746672D89D11EFF1BD1D85EF9F3C1B913FFD40ED988A47186D",
+            "966C360EA52CDCE8AC150A138D94903587B56B2D2F0EC2618AE5E6506259388C",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(
-            "86053709D0818A19E574583EB30FB6BACFEB40AC2F5C0E3F491F7A580D331B3E",
+            "13DBCBB11F6FBF633B2259FFC668F5109E33F664501ED38B03F6F7ED4AE3F363",
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "5C696669DE7814EC2301D80BA703C11D09387D65AA909999C8D0AA66004F1B14",
+            "FD3E214AD0A65808F481789D341CEE763443DA8383A52EC55FE52E07DD42F07F",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -78,6 +78,9 @@ public sealed class StandaloneW6ProfileTests
         CollectionAssert.DoesNotContain(
             preview.EffectiveNodes.Single(static node => node.Id == "storage").Dependencies!.ToArray(),
             "cloud-presentation");
+        CollectionAssert.Contains(
+            preview.EffectiveNodes.Single(static node => node.Id == "storage").Dependencies!.ToArray(),
+            "$raw");
         CollectionAssert.DoesNotContain(
             preview.EffectiveNodes.Single(static node => node.Id == "telemetry").Dependencies!.ToArray(),
             "cloud-presentation");
@@ -106,26 +109,29 @@ public sealed class StandaloneW6ProfileTests
             CameraRigProfileIdentity.ComputeSha256(configuration.Rig));
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
-            "F5BA5B24130B8C2359E9518DBA7C4DC3E899FB2FDD826FA46269F1A2AC9DDC0B",
+            "2F106F303DE1CD41AE1E1B8B001B15BD521A6121A9595BD3BB0D38B00DE30631",
             processingSha256,
             processingSha256);
         Assert.AreEqual(
             "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
         Assert.AreEqual(
-            "3CF3E28D7253CB414EF7153F053E6D9E98A4C239ABD5F1840FF62F4CEE521711",
+            "72473832303887743861B9C82F1F11A55147254E34948C628EE1FBE77DF42B7D",
             LocalCaptureProfileContract.ComputeSha256(
                 LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!)));
         Assert.AreEqual(
-            "A5F687646DFBC2BFE5716E45AA2ED9028901EAE940D2A9FC8EC70F98C283512D",
+            "2538EB75560857DA6319DD4F20533C6F6B768E7DB47F95B661150B85D6ECFBAB",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "D234D4CF0B9447DDAE2E237EE5024B1756BEA591D9FA2C4D1DD0CF1DD560EA21",
+            "14225DF460F651A0F51C578F2BE55A6B81E3F1B5770E15B2D65AFBC2DBBDC1D9",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(4, preview.EffectiveNodes);
         Assert.IsFalse(preview.EffectiveNodes.Any(static node =>
             node.Alias is "Calibration" or "RollingCombination"));
+        CollectionAssert.Contains(
+            preview.EffectiveNodes.Single(static node => node.Id == "storage").Dependencies!.ToArray(),
+            "$raw");
         var layout = SensorReadoutResolver.Resolve(configuration.Rig.Sensor, configuration.Rig.Readout!).Layout;
         Assert.AreEqual(160, layout.Width);
         Assert.AreEqual(120, layout.Height);

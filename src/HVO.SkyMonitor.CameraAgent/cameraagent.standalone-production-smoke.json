@@ -215,7 +215,7 @@
       "id": "LocalStorage",
       "type": "Storage",
       "order": 100,
-      "dependsOn": [ "Annotation", "CalibratedPreview" ],
+      "dependsOn": [ "$raw", "RollingCombination", "Annotation", "CalibratedPreview" ],
       "options": {
         "storageRoot": "/var/lib/hvo/data/agent",
         "retentionDays": 7,

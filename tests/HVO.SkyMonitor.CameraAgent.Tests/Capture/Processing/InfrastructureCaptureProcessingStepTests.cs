@@ -156,6 +156,45 @@ public sealed class InfrastructureCaptureProcessingStepTests
     }
 
     [TestMethod]
+    public async Task ExplicitStorageRawDependencyPublishesOnlyRawLatestFrame()
+    {
+        var context = CreateContext();
+        var raw = context.Artifacts!.Raw;
+        context.BeginNode("excluded", []);
+        _ = context.AddDerivative(FrameArtifactRole.Preview, CreateFrame(1), "preview-v1");
+        context.BeginNode("storage", [], ["$raw"]);
+        var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
+        storage.Setup(service => service.SaveAsync(
+                "/tmp/camera", raw, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StoredFrameReference(
+                "raw.bin", "/tmp/camera/raw.bin", raw.Frame.TimestampUtc, raw.Role));
+        var latest = new Mock<ILatestFrameAccessor>(MockBehavior.Strict);
+        latest.Setup(accessor => accessor.Update(raw));
+        var step = new NoOpFileStorageProcessingStep(
+            new CaptureProcessingStepMetadata("storage", "Storage", 100),
+            new NoOpFileStorageProcessingStepOptions
+            {
+                UpdateLatestFrame = true,
+                Policies = [new ArtifactStoragePolicyOptions { Role = FrameArtifactRole.Raw, RetentionDays = 60 }]
+            },
+            latest.Object,
+            storage.Object,
+            Mock.Of<IArtifactOutbox>(),
+            Options.Create(new CameraAgentHostOptions()),
+            NullLogger<NoOpFileStorageProcessingStep>.Instance);
+
+        await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+
+        storage.Verify(service => service.SaveAsync(
+            "/tmp/camera", raw, It.IsAny<CancellationToken>()), Times.Once);
+        storage.VerifyNoOtherCalls();
+        latest.Verify(accessor => accessor.Update(raw), Times.Once);
+        latest.VerifyNoOtherCalls();
+        Assert.HasCount(1, context.GetCurrentInputEvidence());
+        Assert.AreEqual(raw.ArtifactId, context.GetCurrentInputEvidence()[0].ArtifactId);
+    }
+
+    [TestMethod]
     public async Task StorageStepIdPolicy_DoesNotChangeDescriptorIdentityOrSemanticSource()
     {
         var payload = new byte[] { 0, 0, 0, 0 };

@@ -22,7 +22,7 @@ public sealed class DeploymentAsi676ProfileTests
 {
     private static readonly ObservatoryLocation Location = new(35.5599378, -113.9119818, 520, "America/Phoenix");
     private static readonly string[] ExpectedStorageDependencies =
-        ["sky-annotation", "final-jpeg", "thumbnail-large", "thumbnail-small"];
+        ["$raw", "rolling", "sky-annotation", "final-jpeg", "thumbnail-large", "thumbnail-small"];
     private static readonly JsonSerializerOptions StrictJsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = false,

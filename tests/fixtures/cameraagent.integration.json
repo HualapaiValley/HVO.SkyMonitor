@@ -203,7 +203,7 @@
       "id": "LocalStorage",
       "type": "Storage",
       "order": 100,
-      "dependsOn": ["Annotation", "CalibratedPreview"],
+      "dependsOn": ["$raw", "RollingCombination", "Annotation", "CalibratedPreview"],
       "options": {
         "storageRoot": __STORAGE_ROOT__,
         "retentionDays": 1,
@@ -224,7 +224,7 @@
       "id": "Telemetry",
       "type": "Telemetry",
       "order": 1000,
-      "dependsOn": ["Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage"]
+      "dependsOn": ["CloudObservation", "Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage"]
     }]
   },
   "schedule": {

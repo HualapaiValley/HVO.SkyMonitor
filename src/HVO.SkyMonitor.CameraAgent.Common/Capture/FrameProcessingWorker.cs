@@ -156,7 +156,7 @@ internal sealed class FrameProcessingWorker
             string? deferredRetryReason = null;
             foreach (var node in graph.Nodes)
             {
-                context.BeginNode(node.Id, node.Dependencies);
+                context.BeginNode(node.Id, node.Dependencies, node.DeclaredDependencies);
                 var dependencyStopwatch = Stopwatch.StartNew();
                 var retryableDependency = node.Dependencies.FirstOrDefault(dependency =>
                     statuses.TryGetValue(dependency, out var status) &&

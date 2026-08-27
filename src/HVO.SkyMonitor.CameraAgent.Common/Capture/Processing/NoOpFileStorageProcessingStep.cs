@@ -42,6 +42,7 @@ internal sealed class NoOpFileStorageProcessingStep(
 
     public IReadOnlySet<FrameArtifactRole> AcceptedDependencyRoles { get; } = new HashSet<FrameArtifactRole>
     {
+        FrameArtifactRole.Raw,
         FrameArtifactRole.Calibrated,
         FrameArtifactRole.Combined,
         FrameArtifactRole.Preview,
