@@ -71,6 +71,7 @@ internal static class CentralTransientDerivativeConfiguration
         entity.ToTable("CentralTransientDerivativeOutputIntents", table =>
         {
             table.HasTrigger("TR_CentralTransientDerivativeOutputIntents_TerminalImmutable");
+            table.HasTrigger("TR_CentralTransientDerivativeOutputIntents_Closed");
             table.HasCheckConstraint("CK_CentralTransientDerivativeOutputIntents_ByteLength", "[ByteLength] > 0");
             table.HasCheckConstraint("CK_CentralTransientDerivativeOutputIntents_Commit", "[CommittedAtUtc] IS NULL OR ([ObjectState] IN ('Available', 'Expired') AND [ObjectVerifiedAtUtc] IS NOT NULL AND [StorageETag] IS NOT NULL)");
         });
@@ -111,6 +112,7 @@ internal static class CentralTransientDerivativeConfiguration
         entity.ToTable("CentralTransientDerivatives", table =>
         {
             table.HasTrigger("TR_CentralTransientDerivatives_Immutable");
+            table.HasTrigger("TR_CentralTransientDerivatives_Closed");
             table.HasCheckConstraint("CK_CentralTransientDerivatives_ByteLength", "[ByteLength] > 0");
             table.HasCheckConstraint("CK_CentralTransientDerivatives_ReviewAssessment", "[ReviewId] IS NULL OR [AssessmentId] IS NOT NULL");
         });
@@ -187,6 +189,7 @@ internal static class CentralTransientDerivativeConfiguration
         entity.ToTable("CentralTransientDerivativeSources", table =>
         {
             table.HasTrigger("TR_CentralTransientDerivativeSources_Immutable");
+            table.HasTrigger("TR_CentralTransientDerivativeSources_Closed");
             table.HasCheckConstraint("CK_CentralTransientDerivativeSources_Ordinal", "[Ordinal] >= 0");
             table.HasCheckConstraint("CK_CentralTransientDerivativeSources_ObservedInterval", "[ObservationStartedUtc] <= [ObservationEndedUtc]");
         });
@@ -233,6 +236,7 @@ internal static class CentralTransientDerivativeConfiguration
         entity.ToTable("CentralTransientDerivativeBackgrounds", table =>
         {
             table.HasTrigger("TR_CentralTransientDerivativeBackgrounds_Immutable");
+            table.HasTrigger("TR_CentralTransientDerivativeBackgrounds_Closed");
             table.HasCheckConstraint("CK_CentralTransientDerivativeBackgrounds_Ordinals", "[ObservationOrdinal] >= 0 AND [BackgroundOrdinal] >= 0");
         });
         entity.HasKey(item => new { item.DerivativeId, item.ObservationOrdinal, item.BackgroundOrdinal });

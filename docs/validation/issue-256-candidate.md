@@ -1,5 +1,11 @@
 # Issue 256 Candidate Evidence
 
+This file records historical evidence for issue #256 at the cited revision.
+Issue #457 supersedes its legacy-database convergence scenario; that result is
+not a current compatibility promise or validation gate. Clean/current-layout
+idempotency, initialization locking, role separation, and runtime permission
+evidence remain relevant.
+
 ## Candidate
 
 - Base revision: `85694f432742f5ae258035406502dbc56c2c0dc4`
@@ -10,7 +16,8 @@
 
 ## Database Results
 
-`DatabaseInitializationAcceptanceTests` passed all seven scenarios in Release:
+`DatabaseInitializationAcceptanceTests` passed all seven scenarios in Release at
+the cited revision:
 
 - clean and current initialization convergence;
 - interrupted `Running` state rejection and successful restart;

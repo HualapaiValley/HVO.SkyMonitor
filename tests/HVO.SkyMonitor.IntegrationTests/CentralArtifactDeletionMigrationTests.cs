@@ -5,8 +5,6 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -15,34 +13,14 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class CentralArtifactDeletionMigrationTests
 {
-    private const string PreviousMigration = "20260731002623_AddNetworkOperationsReadIndexes";
-
     [TestMethod]
-    public async Task LegacyRowsRemainValidAndDeletionSchemaIsAdditive()
+    public async Task CurrentSchemaEnforcesDeletionInvariants()
     {
         await using var database = CreateDatabase();
         try
         {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            await database.Context.Database.ExecuteSqlRawAsync("""
-                INSERT INTO [CentralObjectRecoveryDispositions]
-                    ([Id], [SourceObjectIdentitySha256], [SourceObjectKey], [Kind], [State], [ByteLength],
-                     [CreatedAtUtc], [UpdatedAtUtc])
-                VALUES
-                    (NEWID(), REPLICATE('A', 64), N'legacy/retention.bin', N'ExpiredDelete',
-                     N'PendingDelete', 12, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET());
-                """).ConfigureAwait(false);
-
-            await migrator.MigrateAsync().ConfigureAwait(false);
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
             (await database.Context.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
-            var legacy = await database.Context.CentralObjectRecoveryDispositions.AsNoTracking().SingleAsync()
-                .ConfigureAwait(false);
-            legacy.CentralArtifactId.Should().BeNull();
-            legacy.OperationToken.Should().BeNull();
-            legacy.AttemptCount.Should().Be(0);
-            legacy.NextAttemptAtUtc.Should().BeNull();
-
             var indexes = await database.Context.Database.SqlQuery<string>($"""
                 SELECT [name] AS [Value] FROM [sys].[indexes]
                 WHERE [object_id] = OBJECT_ID(N'[CentralObjectRecoveryDispositions]')

@@ -6,12 +6,13 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace HVO.SkyMonitor.CameraAgent.Data.Migrations
 {
     /// <inheritdoc />
-    public partial class CreateLocalIdentity : Migration
+    public partial class InitialIdentity : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             ArgumentNullException.ThrowIfNull(migrationBuilder);
+
             migrationBuilder.CreateTable(
                 name: "AspNetRoles",
                 columns: table => new
@@ -32,6 +33,7 @@ namespace HVO.SkyMonitor.CameraAgent.Data.Migrations
                 {
                     Id = table.Column<string>(type: "TEXT", nullable: false),
                     IsSiteOwner = table.Column<bool>(type: "INTEGER", nullable: false),
+                    PasswordChangeRequired = table.Column<bool>(type: "INTEGER", nullable: false),
                     UserName = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
                     NormalizedUserName = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
                     Email = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
@@ -200,6 +202,7 @@ namespace HVO.SkyMonitor.CameraAgent.Data.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             ArgumentNullException.ThrowIfNull(migrationBuilder);
+
             migrationBuilder.DropTable(
                 name: "AspNetRoleClaims");
 

@@ -17,8 +17,6 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -36,14 +34,13 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
     private const int FrameCount = AgentCount * FramesPerAgent;
     private const int Warmups = 5;
     private const int MaximumDeadlockRetries = 3;
-    private const string PreviousMigration = "20260721201807_AddCentralTransientReviewAndDerivatives";
     private static readonly int[] ConcurrencyLevels = [1, 8, 32];
     private static readonly DateTimeOffset InitialEffectiveUtc = new(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset ChangedEffectiveUtc = new(2026, 7, 24, 0, 0, 0, TimeSpan.Zero);
     private static long deadlockRetries;
 
     [TestMethod]
-    public async Task MigrationFleetReconciliationAndPaging_RecordPerformanceEvidence()
+    public async Task FleetReconciliationAndPaging_RecordPerformanceEvidence()
     {
         Assert.AreEqual("Release", typeof(DeploymentLocationAuthorityPerformanceTests).Assembly
             .GetCustomAttributes(typeof(System.Reflection.AssemblyConfigurationAttribute), false)
@@ -52,7 +49,6 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
         var fixture = AssemblyHooks.Fixture;
         var counter = new SqlCommandCounter();
         using var factory = CreateFactory(fixture, counter);
-        var migration = await MeasureMigrationAsync(fixture.SqlServerConnectionString).ConfigureAwait(false);
         var populationBefore = await ReadDatabaseSizeAsync(factory).ConfigureAwait(false);
         var populationStarted = Stopwatch.GetTimestamp();
         var scale = await SeedScaleAsync(factory).ConfigureAwait(false);
@@ -161,7 +157,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             },
             BuildCommand = Issue170PerformanceEvidence.BuildCommand,
             Command = evidenceRun.CreateTestCommand(
-                "DeploymentLocationAuthorityPerformanceTests.MigrationFleetReconciliationAndPaging_RecordPerformanceEvidence"),
+                "DeploymentLocationAuthorityPerformanceTests.FleetReconciliationAndPaging_RecordPerformanceEvidence"),
             Workload = new
             {
                 ObservatoryCount,
@@ -171,7 +167,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
                 Warmups,
                 ConcurrencyLevels,
                 ArrivalModel = "closed-loop Parallel.ForEachAsync; one production DI scope and DbContext per logical operation",
-                Migration = "predecessor schema with 100 Observatories, 1,000 active registrations, and 10,000 legacy frames",
+                Persistence = "canonical current schema initialized from an empty database",
                 Fleet = "1,000 acknowledged deployments with ten exact capture-location rows each; matched replay, changed outside-boundary proposal, owner resolution",
                 Paging = "30 first-page samples at take=100 plus complete keyset traversal"
             },
@@ -179,14 +175,13 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             {
                 Trials = "Run five separate Release test processes from the same immutable evidence revision with trial ordinals 1 through 5.",
                 Percentiles = "nearest-rank over 1,000 measured logical operations after five warmups; paging uses 30 samples",
-                Resources = "CPU, 100 ms System.Runtime allocation-rate samples with boundary uncertainty, and sampled process working set cover fleet phases; migration/population cover CPU/allocation and database growth; paging covers latency and SQL commands.",
+                Resources = "CPU, 100 ms System.Runtime allocation-rate samples with boundary uncertainty, and sampled process working set cover fleet phases; population covers database growth; paging covers latency and SQL commands.",
                 Sql = "EF command interceptor plus SQL Server STATISTICS IO and SHOWPLAN_XML on the owner/status paging query",
                 Retries = "SQL Server deadlock 1205 retries use a fresh production scope, are limited to three, remain inside logical-operation latency, and are reported per phase.",
                 Reset = "Changed deployment rows and audits are removed between concurrency levels; initial acknowledged rows and 10,000 links are restored."
             },
             Measurements = new
             {
-                Migration = migration,
                 PostMigrationPopulation = population,
                 Initialization = initialization,
                 Matched = matched,
@@ -209,7 +204,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             Result = new
             {
                 Before = "N/A for new schema; this file is an absolute candidate baseline.",
-                Acceptance = "All durable counts, exact capture bindings, pending/mismatch convergence, keyset uniqueness, restart backfill idempotence, and required indexes are pass/fail.",
+                Acceptance = "All durable counts, exact capture bindings, pending/mismatch convergence, keyset uniqueness, restart reconciliation, and required indexes are pass/fail.",
                 ResidualRisk = "Process counters exclude SQL Server. EF command count is not physical row count. SHOWPLAN and logical reads are environment/statistics specific."
             },
             RecordedAtUtc = DateTimeOffset.UtcNow
@@ -784,131 +779,6 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
             operators);
     }
 
-    private static async Task<MigrationEvidence> MeasureMigrationAsync(string baseConnectionString)
-    {
-        var builder = new SqlConnectionStringBuilder(baseConnectionString)
-        {
-            InitialCatalog = $"SkyMonitorIssue170Performance_{Guid.NewGuid():N}"
-        };
-        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
-            .UseSqlServer(builder.ConnectionString)
-            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
-            .Options;
-        await using var db = new ApplicationDbContext(options);
-        try
-        {
-            var migrator = db.GetService<IMigrator>();
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            await SeedPredecessorScaleAsync(db).ConfigureAwait(false);
-            var before = await ReadDatabaseSizeAsync(db).ConfigureAwait(false);
-            StabilizeGc();
-            using var process = Process.GetCurrentProcess();
-            var cpuBefore = process.TotalProcessorTime;
-            using var allocations = new Issue170AllocationSampler();
-            allocations.Start();
-            var started = Stopwatch.GetTimestamp();
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            var migrationAllocation = await allocations.StopAsync().ConfigureAwait(false);
-            var migrationElapsed = Stopwatch.GetElapsedTime(started);
-            var migrationCpu = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
-            var after = await ReadDatabaseSizeAsync(db).ConfigureAwait(false);
-            var backfillStarted = Stopwatch.GetTimestamp();
-            var backfilled = await ObservatoryLocationBackfill.RunAsync(db, TimeProvider.System).ConfigureAwait(false);
-            var backfillElapsed = Stopwatch.GetElapsedTime(backfillStarted);
-            db.ChangeTracker.Clear();
-            var restartStarted = Stopwatch.GetTimestamp();
-            var restartBackfilled = await ObservatoryLocationBackfill.RunAsync(db, TimeProvider.System)
-                .ConfigureAwait(false);
-            var restartElapsed = Stopwatch.GetElapsedTime(restartStarted);
-            Assert.AreEqual(ObservatoryCount, backfilled);
-            Assert.AreEqual(0, restartBackfilled);
-            Assert.AreEqual(ObservatoryCount, await db.ObservatoryLocationVersions.CountAsync().ConfigureAwait(false));
-            Assert.AreEqual(AgentCount, await db.DeviceRegistrations.CountAsync().ConfigureAwait(false));
-            Assert.AreEqual(FrameCount, await db.CentralFrames.CountAsync().ConfigureAwait(false));
-            Assert.AreEqual(0, await db.DeviceDeploymentLocationVersions.CountAsync().ConfigureAwait(false));
-            return new MigrationEvidence(
-                ObservatoryCount,
-                AgentCount,
-                FrameCount,
-                migrationElapsed.TotalMilliseconds,
-                migrationCpu,
-                migrationAllocation.SampledBytes,
-                migrationAllocation.Samples,
-                migrationAllocation.IntervalMilliseconds,
-                before,
-                after,
-                after.DataAllocatedBytes - before.DataAllocatedBytes,
-                after.LogAllocatedBytes - before.LogAllocatedBytes,
-                after.DataUsedBytes - before.DataUsedBytes,
-                after.LogUsedBytes - before.LogUsedBytes,
-                backfilled,
-                backfillElapsed.TotalMilliseconds,
-                restartBackfilled,
-                restartElapsed.TotalMilliseconds);
-        }
-        finally
-        {
-            await db.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    private static async Task SeedPredecessorScaleAsync(ApplicationDbContext db)
-    {
-        await db.Database.ExecuteSqlRawAsync("""
-            ;WITH numbers AS
-            (
-                SELECT TOP (100) ROW_NUMBER() OVER (ORDER BY first.object_id, second.object_id) - 1 AS n
-                FROM sys.all_objects AS first CROSS JOIN sys.all_objects AS second
-            )
-            INSERT INTO [Observatories]
-                ([Id], [OwnerUserId], [Name], [LatitudeDegrees], [LongitudeDegrees], [ElevationMeters],
-                 [TimeZoneId], [CreatedAtUtc], [UpdatedAtUtc], [IsActive])
-            SELECT NEWID(), N'issue170-migration-performance', CONCAT(N'Migration Observatory ', n),
-                   35 + n / 10000.0, -113, 500, N'UTC', SYSUTCDATETIME(), NULL, 1
-            FROM numbers;
-
-            ;WITH ordered_observatories AS
-            (
-                SELECT [Id], [Name], ROW_NUMBER() OVER (ORDER BY [Id]) AS rn
-                FROM [Observatories] WHERE [OwnerUserId] = N'issue170-migration-performance'
-            ),
-            numbers AS
-            (
-                SELECT TOP (1000) ROW_NUMBER() OVER (ORDER BY first.object_id, second.object_id) - 1 AS n
-                FROM sys.all_objects AS first CROSS JOIN sys.all_objects AS second
-            )
-            INSERT INTO [DeviceRegistrations]
-                ([Id], [DeviceId], [ObservatoryId], [FriendlyName], [ObservatoryName],
-                 [ObservatoryLatitudeDegrees], [ObservatoryLongitudeDegrees], [ObservatoryElevationMeters],
-                 [ObservatoryTimeZoneId], [OwnerUserId], [OwnerDisplayName], [OwnerConfirmationMethod],
-                 [Status], [VerificationCodeHash], [DevicePublicId], [IssuedAtUtc])
-            SELECT NEWID(), CONCAT(N'migration-device-', n), ordered_observatories.[Id], CONCAT(N'Migration Device ', n),
-                   ordered_observatories.[Name], 35, -113, 500, N'UTC', N'issue170-migration-performance',
-                   N'Migration Performance', N'SelfAttested', N'Active', REPLICATE(N'A', 64), NEWID(), SYSUTCDATETIME()
-            FROM numbers
-            INNER JOIN ordered_observatories ON ordered_observatories.rn = (numbers.n % 100) + 1;
-
-            ;WITH registrations AS
-            (
-                SELECT [Id], [DeviceId], [DevicePublicId], [ObservatoryId],
-                       ROW_NUMBER() OVER (ORDER BY [Id]) AS rn
-                FROM [DeviceRegistrations] WHERE [OwnerUserId] = N'issue170-migration-performance'
-            ),
-            numbers AS
-            (
-                SELECT TOP (10000) ROW_NUMBER() OVER (ORDER BY first.object_id, second.object_id) - 1 AS n
-                FROM sys.all_objects AS first CROSS JOIN sys.all_objects AS second
-            )
-            INSERT INTO [CentralFrames]
-                ([Id], [RegistrationId], [DevicePublicId], [ObservatoryId], [AgentId], [FrameId],
-                 [CapturedAtUtc], [FirstReceivedAtUtc], [RigProfileVersion], [SceneProvenanceJson])
-            SELECT NEWID(), registrations.[Id], registrations.[DevicePublicId], registrations.[ObservatoryId],
-                   registrations.[DeviceId], NEWID(), SYSUTCDATETIME(), SYSUTCDATETIME(), NULL, NULL
-            FROM numbers
-            INNER JOIN registrations ON registrations.rn = (numbers.n % 1000) + 1;
-            """).ConfigureAwait(false);
-    }
-
     private static async Task<DatabaseSize> ReadDatabaseSizeAsync(ApplicationDbContext db)
     {
         var rows = await db.Database.SqlQuery<DatabaseFileSize>($"""
@@ -1152,13 +1022,6 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
     private sealed record PlanIndexUse(string Index, string PhysicalOperator);
     private sealed record DatabaseFileSize(string Type, long AllocatedBytes, long UsedBytes);
     private sealed record DatabaseSize(long DataAllocatedBytes, long DataUsedBytes, long LogAllocatedBytes, long LogUsedBytes);
-    private sealed record MigrationEvidence(
-        int Observatories, int Registrations, int Frames, double MigrationMilliseconds, double CpuMilliseconds,
-        long SampledAllocationRateBytes, int AllocationRateSamples, int AllocationSamplingIntervalMilliseconds,
-        DatabaseSize Before, DatabaseSize After, long DataAllocatedGrowthBytes,
-        long LogAllocatedGrowthBytes, long DataUsedGrowthBytes, long LogUsedGrowthBytes,
-        int BackfilledObservatories, double BackfillMilliseconds,
-        int RestartBackfilledObservatories, double RestartConvergenceMilliseconds);
     private sealed record PopulationEvidence(
         int Observatories,
         int Registrations,

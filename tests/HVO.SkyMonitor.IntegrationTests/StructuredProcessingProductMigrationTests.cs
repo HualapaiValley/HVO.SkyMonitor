@@ -3,8 +3,6 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -13,10 +11,8 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class StructuredProcessingProductMigrationTests
 {
-    private const string PreviousMigration = "20260806022101_AddDatabaseInitializationState";
-
     [TestMethod]
-    public async Task UpgradeDowngradeAndReapplyProduceBoundedStructuredSchema()
+    public async Task CleanDatabaseProducesBoundedStructuredSchema()
     {
         var builder = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
         {
@@ -29,19 +25,9 @@ public sealed class StructuredProcessingProductMigrationTests
         await using var db = new ApplicationDbContext(options);
         try
         {
-            var migrator = db.GetService<IMigrator>();
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            await migrator.MigrateAsync().ConfigureAwait(false);
+            await db.Database.MigrateAsync().ConfigureAwait(false);
             await AssertCurrentSchemaAsync(db).ConfigureAwait(false);
-
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            (await db.Database.SqlQuery<int>($"""
-                    SELECT COUNT(*) AS [Value]
-                    FROM [sys].[tables]
-                    WHERE [name] = N'CentralStructuredProcessingProducts'
-                    """).SingleAsync().ConfigureAwait(false)).Should().Be(0);
-
-            await migrator.MigrateAsync().ConfigureAwait(false);
+            await db.Database.MigrateAsync().ConfigureAwait(false);
             await AssertCurrentSchemaAsync(db).ConfigureAwait(false);
             (await db.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
         }

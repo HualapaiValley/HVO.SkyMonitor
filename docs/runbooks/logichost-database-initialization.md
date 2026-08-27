@@ -6,6 +6,19 @@ migration connection string or DDL authority. Runtime validates the exact EF
 migration set, durable initialization state, and absence of effective DDL
 authority before serving requests.
 
+## Pre-Release Support Boundary
+
+Until the first product release, this procedure supports only a precreated empty
+LogicHost database. Prior unreleased schemas and data are disposable;
+initialization does not upgrade, downgrade, backfill, or converge them. The
+candidate contains one canonical initial EF migration. Its migration ID and
+`DatabaseInitializationState` target identify the exact current schema and
+initialization provenance; they do not promise compatibility with an earlier
+unreleased database. Same-revision retries, idempotent SQL, locking, seed
+convergence, role separation, and runtime fail-closed validation remain required.
+Recreate a superseded pre-release database instead of editing EF migration
+history.
+
 ## Principals And Configuration
 
 Provision the database and two externally managed logins or managed identities
@@ -77,13 +90,18 @@ roles retain.
 
 ## Preflight And Evidence
 
-Before each production change:
+Before the first pre-release initialization of a target database:
 
-1. Confirm a tested encrypted full backup and point-in-time restore path.
-2. Confirm the target database is precreated and no restore, schema change, or other initializer is active.
-3. Record current migration, database data/log size, free space, autogrowth settings, and volume headroom.
-4. Generate the canonical idempotent SQL and SHA-256 from the exact candidate revision.
-5. Review all destructive operations, long scans, backfills, index builds, and expected lock/log growth against the approved maintenance window.
+1. Confirm the target database is precreated and empty, with no application schema or EF migration history, and that no restore, schema change, runtime replica, or other initializer is active.
+2. Record the candidate's canonical migration ID, database data/log size, free space, autogrowth settings, and volume headroom.
+3. Generate the canonical idempotent SQL and SHA-256 from the exact candidate revision.
+4. Review the initial DDL, constraints, defaults, indexes, triggers, provider-specific annotations, and expected lock/log growth.
+
+For an approved same-revision rerun or retry, instead confirm that the existing
+schema, migration history, and durable initialization state are attributable to
+that exact revision and that no restore, schema change, runtime replica, or other
+initializer is active. Recreate an empty database when that attribution cannot
+be established.
 
 Generate the review artifact outside tracked source:
 
@@ -92,11 +110,13 @@ Generate the review artifact outside tracked source:
 sha256sum --check TestResults/logichost-idempotent.sql.sha256
 ```
 
-Record the Git revision, SQL hash, source and target migration IDs, backup ID,
-data/log before values, free volume space, and reviewer approval. The script is
-idempotent for inspection and recovery; production execution remains owned by
-the controlled command so migration, seed, backfill, locking, and durable state
-are one operational phase.
+Record the Git revision, SQL hash, canonical target migration ID, data/log before
+values, free volume space, reviewer approval, and either empty-database proof for
+a first initialization or exact same-revision attribution evidence for a rerun.
+The script is idempotent for clean initialization and same-current-layout reruns;
+it is not an upgrade artifact. Production execution remains owned by the
+controlled command so migration, seed, locking, and durable state are one
+operational phase.
 
 ## Execute
 
@@ -118,6 +138,8 @@ fails before schema or durable state mutation. Success requires a `Completed`
 singleton whose target equals the executable's latest migration. Capture
 duration, blocked sessions, peak data/log growth, autogrowth events, final free
 space, and sanitized sessions showing the initialization application name.
+The `v1` suffix identifies the current lock protocol and resource; it does not
+imply support for a prior EF schema.
 
 After success, apply or reapply the runtime grants. This enumerates all current
 application tables and sequences while leaving `__EFMigrationsHistory` and
@@ -140,11 +162,10 @@ lock operations before scaling out.
 ## Failure And Recovery
 
 - Lock acquisition failure: identify the session by application name. Wait for the approved owner or terminate it only through the database incident process; then rerun.
-- Migration failure: do not start runtime. Preserve logs and the SQL hash, inspect EF migration history and the durable state, correct the cause, and rerun the idempotent command.
-- Seed or backfill failure: a `Failed` or stale `Running` state blocks runtime. Correct configuration/data and rerun; seed and backfill operations are convergent.
-- Process or host loss: confirm the session lock was released, inspect backup/log/headroom and durable state, then rerun the same revision.
-- Expand-compatible application rollback: retain the expanded schema and deploy the prior compatible application revision.
-- Destructive or incompatible migration rollback: stop all application traffic and restore the approved database backup. Do not manually edit `__EFMigrationsHistory` or the initialization singleton.
+- Migration failure: do not start runtime. Preserve logs and the SQL hash, correct the cause, and rerun the same canonical revision only when migration history and durable state are attributable to that revision; otherwise recreate an empty database.
+- Seed or initialization failure: a `Failed` or stale `Running` state blocks runtime. Correct configuration or current-layout data and rerun; current initialization operations remain convergent.
+- Process or host loss: confirm the session lock was released, inspect logs, headroom, and durable state, then rerun the same revision.
+- Pre-release revision rollback: stop all application traffic, deploy the selected revision, and initialize a new empty database. Do not edit `__EFMigrationsHistory` or the initialization singleton to manufacture compatibility.
 
 Every retry records a new attempt ID. Retain command logs, final state, migration
 history, SQL hash, timings, blocked-session samples, data/log growth, and the

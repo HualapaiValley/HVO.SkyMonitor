@@ -11,8 +11,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace HVO.SkyMonitor.CameraAgent.Data.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20260822082123_RequireOwnerPasswordReplacement")]
-    partial class RequireOwnerPasswordReplacement
+    [Migration("20260827053715_InitialIdentity")]
+    partial class InitialIdentity
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
