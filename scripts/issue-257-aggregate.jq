@@ -48,6 +48,8 @@ def stats:
         w3MInitializationCpuMilliseconds: ($lane | map(.w3M.initializationCpuMilliseconds) | stats),
         w3MInitializationAllocatedBytes: ($lane | map(.w3M.initializationAllocatedBytes) | stats),
         w3MInitializationRssDeltaBytes: ($lane | map(.w3M.rssAfterInitializationBytes - .w3M.rssBeforeInitializationBytes) | stats),
+        w3MCanonicalInsertionMilliseconds: ($lane | map(.w3M.canonicalInsertionMilliseconds) | stats),
+        w3MCanonicalInsertionRecordsPerSecond: ($lane | map(.w3M.canonicalInsertionRecordsPerSecond) | stats),
         w3MCanonicalInsertionCpuMilliseconds: ($lane | map(.w3M.canonicalInsertionCpuMilliseconds) | stats),
         w3MCanonicalInsertionAllocatedBytes: ($lane | map(.w3M.canonicalInsertionAllocatedBytes) | stats),
         w3MCanonicalInsertionRssDeltaBytes: ($lane | map(.w3M.rssAfterCanonicalInsertionBytes - .w3M.rssBeforeCanonicalInsertionBytes) | stats),

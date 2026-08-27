@@ -155,6 +155,7 @@ for trial in 1 2 3 4 5; do
         ([.w3M.initializationMilliseconds,
           .w3M.initializationCpuMilliseconds, .w3M.initializationAllocatedBytes,
           .w3M.rssBeforeInitializationBytes, .w3M.rssAfterInitializationBytes,
+          .w3M.canonicalInsertionMilliseconds, .w3M.canonicalInsertionRecordsPerSecond,
           .w3M.canonicalInsertionCpuMilliseconds, .w3M.canonicalInsertionAllocatedBytes,
           .w3M.rssBeforeCanonicalInsertionBytes, .w3M.rssAfterCanonicalInsertionBytes] |
           all(type == "number" and . >= 0)) and
@@ -207,6 +208,8 @@ jq --exit-status '
       .metrics.w3MInitializationCpuMilliseconds,
       .metrics.w3MInitializationAllocatedBytes,
       .metrics.w3MInitializationRssDeltaBytes,
+      .metrics.w3MCanonicalInsertionMilliseconds,
+      .metrics.w3MCanonicalInsertionRecordsPerSecond,
       .metrics.w3MCanonicalInsertionCpuMilliseconds,
       .metrics.w3MCanonicalInsertionAllocatedBytes,
       .metrics.w3MCanonicalInsertionRssDeltaBytes] |
