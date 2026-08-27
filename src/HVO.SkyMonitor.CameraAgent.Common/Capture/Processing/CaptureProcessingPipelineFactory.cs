@@ -54,16 +54,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
     }
 
-    public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config)
-        => CreateGraph(config).Nodes.Select(static node => node.Step).ToArray();
-
     public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
-        var pipeline = config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 }
-            ? config.Pipeline
-            : new CapturePipelineConfig(config.ResolveProcessingSteps());
-        var schemaVersion = pipeline.EffectiveSchemaVersion;
+        var pipeline = config.Pipeline;
+        var schemaVersion = pipeline.SchemaVersion;
         var desired = pipeline.Steps.Select(static step => new CaptureProcessingPlanNode(
             string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim(),
             step.Type,
@@ -134,64 +129,58 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2,
             DependencyPolicy: CapturePipelineDependencyPolicy.RejectEnabledDependent
         };
-        if (explicitV2 && config.ProcessingSteps is not null)
+        var legacyV1 = config.Pipeline is
         {
-            throw new InvalidOperationException(
-                "Capture pipeline v2 cannot be combined with the legacy processingSteps property.");
-        }
-        var configuredSteps = explicitV2 ? config.Pipeline!.Steps : config.ResolveProcessingSteps();
-        if (config.Pipeline is { SchemaVersion: not null } pipeline && pipeline.SchemaVersion is not
+            SchemaVersion: CapturePipelineSchemaVersions.LegacyV1,
+            DependencyPolicy: CapturePipelineDependencyPolicy.LegacyInference
+        };
+        if (config.Pipeline.SchemaVersion is not
             (CapturePipelineSchemaVersions.LegacyV1 or CapturePipelineSchemaVersions.ExplicitV2))
         {
-            throw new InvalidOperationException($"Unsupported capture pipeline schema '{pipeline.SchemaVersion}'.");
+            throw new InvalidOperationException(
+                $"Unsupported capture pipeline schema '{config.Pipeline.SchemaVersion}'.");
         }
-        if (config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 } explicitPipeline &&
-            explicitPipeline.DependencyPolicy != CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        if (!explicitV2 && !legacyV1)
         {
             throw new InvalidOperationException(
-                $"Unsupported capture pipeline v2 dependency policy '{explicitPipeline.DependencyPolicy}'.");
+                $"Capture pipeline schema '{config.Pipeline.SchemaVersion}' cannot use dependency policy '{config.Pipeline.DependencyPolicy}'.");
         }
-        if (!explicitV2 && config.Pipeline is { DependencyPolicy: not CapturePipelineDependencyPolicy.LegacyInference } legacyPipeline)
-        {
-            throw new InvalidOperationException(
-                $"Capture pipeline schema '{legacyPipeline.EffectiveSchemaVersion}' cannot use dependency policy '{legacyPipeline.DependencyPolicy}'.");
-        }
+        var configuredSteps = config.Pipeline.Steps;
         var effectiveLayout = config.Rig.Readout is null
             ? null
             : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout).Layout;
-        var effectivePixelFormat = effectiveLayout?.PixelFormat ?? config.Rig.Sensor.PixelFormat;
         IReadOnlyList<CaptureProcessingStepConfig> pipelineConfig = configuredSteps;
-
-        if (!explicitV2 && configuredSteps.Any(static step => step.Enabled is not null))
+        if (legacyV1 && configuredSteps.Any(static step => step.Enabled is not null))
         {
             throw new InvalidOperationException("The top-level enabled field is supported only by capture pipeline v2.");
         }
-        if (!explicitV2 && configuredSteps.Any(static step => step.Publication is not null))
+        if (legacyV1 && configuredSteps.Any(static step => step.Publication is not null))
         {
             throw new InvalidOperationException("Per-step publication policy is supported only by capture pipeline v2.");
         }
-
         if (explicitV2)
         {
             ValidateExplicitConfiguration(configuredSteps);
             pipelineConfig = configuredSteps.Where(static step => step.Enabled != false).ToArray();
         }
-
-        if (!explicitV2 && pipelineConfig.Count == 0 && _registrationsByType.Count > 0)
+        if (legacyV1 && pipelineConfig.Count == 0 && _registrationsByType.Count > 0)
         {
+            var effectivePixelFormat = effectiveLayout?.PixelFormat ?? config.Rig.Sensor.PixelFormat;
             pipelineConfig = _registrationsByType.Values
                 .Where(registration => registration.AutoInclude &&
                     (effectivePixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 ||
                      registration.ImplementationType != typeof(CalibrationCaptureProcessingStep) &&
                      registration.ImplementationType != typeof(RollingCombinationCaptureProcessingStep)))
-                .OrderBy(r => r.DefaultOrder)
-                .Select(r => new CaptureProcessingStepConfig(
-                    r.Alias,
-                    r.Alias,
-                    r.DefaultOrder,
+                .OrderBy(static registration => registration.DefaultOrder)
+                .Select(static registration => new CaptureProcessingStepConfig(
+                    registration.Alias,
+                    registration.Alias,
+                    registration.DefaultOrder,
                     null,
-                    string.Equals(r.Alias, "Annotation", StringComparison.OrdinalIgnoreCase) ? ["Preview"] : null))
-                .ToList();
+                    string.Equals(registration.Alias, "Annotation", StringComparison.OrdinalIgnoreCase)
+                        ? ["Preview"]
+                        : null))
+                .ToArray();
         }
 
         var configured = new List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)>(pipelineConfig.Count);
@@ -210,19 +199,18 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 }
                 if (step is ICaptureProcessingGraphStep { Enabled: false })
                 {
+                    (step as IDisposable)?.Dispose();
                     if (explicitV2)
                     {
-                        (step as IDisposable)?.Dispose();
                         throw new InvalidOperationException(
-                            $"Capture processing step '{step.Name}' must use the v2 enabled field instead of an options-level enabled value.");
+                            $"Capture processing step '{step.Name}' must use the top-level enabled field instead of an options-level enabled value.");
                     }
-                    (step as IDisposable)?.Dispose();
                     continue;
                 }
                 configured.Add((effectiveConfig, step));
             }
 
-            if (!explicitV2)
+            if (legacyV1)
             {
                 InferLegacyDependencies(configured);
             }
@@ -372,7 +360,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     .Where(target => policy.Variant is null || string.Equals(policy.Variant, target.Output.Variant, StringComparison.Ordinal))
                     .Where(target => policy.RecipeName is null || string.Equals(policy.RecipeName, target.Output.RecipeName, StringComparison.Ordinal))
                     .ToArray();
-                if (targets.Length == 0)
+                var selectsRaw = dependencyIds.Any(IsRawDependency) &&
+                    policy.StepId is null &&
+                    (policy.Role is null or FrameArtifactRole.Raw) &&
+                    policy.Variant is null && policy.RecipeName is null;
+                if (targets.Length == 0 && !selectsRaw)
                 {
                     throw new InvalidOperationException(
                         $"Storage policy does not select a declared producer dependency for step '{storage.Step.Name}'.");
@@ -443,11 +435,13 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             if (explicitV2 && item.Step is ICaptureProcessingArtifactConsumer consumer)
             {
                 var consumerDependencies = item.Config.DependsOn ?? [];
-                if (consumerDependencies.Any(IsRawDependency) || consumerDependencies
-                    .Where(static dependency => !IsRawDependency(dependency))
-                    .Select(dependency => nodesById[dependency].Step)
-                    .Any(dependency => dependency is not ICaptureProcessingGraphStep producer ||
-                        !consumer.AcceptedDependencyRoles.Contains(producer.OutputRole)))
+                if ((consumerDependencies.Any(IsRawDependency) &&
+                     !consumer.AcceptedDependencyRoles.Contains(FrameArtifactRole.Raw)) ||
+                    consumerDependencies
+                        .Where(static dependency => !IsRawDependency(dependency))
+                        .Select(dependency => nodesById[dependency].Step)
+                        .Any(dependency => dependency is not ICaptureProcessingGraphStep producer ||
+                            !consumer.AcceptedDependencyRoles.Contains(producer.OutputRole)))
                 {
                     throw new InvalidOperationException(
                         $"Capture processing step '{item.Step.Name}' declares an unsupported artifact dependency.");
@@ -700,7 +694,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     graphStep?.RecipeName,
                     graphStep?.OutputRole,
                     graphStep?.OutputVariant,
-                    ComputeNodePlanSha256(item.Config, item.Step, graphStep, dependencies),
+                    ComputeNodePlanSha256(
+                        item.Config,
+                        item.Step,
+                        graphStep,
+                        item.Config.DependsOn?.ToArray() ?? dependencies),
                     item.Config.Type,
                     item.Step.Order,
                     item.Config.Options,

@@ -196,7 +196,7 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
         CameraModuleConfig config,
         CameraFrame frame)
     {
-        var processing = JsonSerializer.SerializeToElement(config.ResolveProcessingSteps());
+        var processing = JsonSerializer.SerializeToElement(config.Pipeline.Steps);
         var temperatureSetpoint = config.Rig.ControlPolicy?.Temperature.Mode == TemperatureControlMode.Target
             ? config.Rig.ControlPolicy.Temperature.TargetC
             : null;

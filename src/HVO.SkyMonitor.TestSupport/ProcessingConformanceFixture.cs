@@ -32,10 +32,6 @@ public static class ProcessingConformanceFixture
         "virtual-raw-v1",
         JsonSerializer.SerializeToElement(new { seed = 2025 }));
 
-    public static string ProcessingProfileSha256 { get; } =
-        CaptureContractJson.ComputeCanonicalJsonSha256(
-            JsonSerializer.SerializeToElement(Array.Empty<CaptureProcessingStepConfig>()));
-
     public static CameraModuleConfig CameraConfig { get; } = new(
         new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix"),
         new CameraModuleDescriptor("VirtualSky"),
@@ -46,7 +42,17 @@ public static class ProcessingConformanceFixture
             new RigOrientation(90, 0, 0),
             new PipelineExposureProfile(
                 TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(20), 150, 150),
-            ProfileVersion: "rig-v1"));
+            new CameraControlPolicy
+            {
+                ExposureControl = AutomaticControlOwnership.Disabled,
+                GainControl = AutomaticControlOwnership.Disabled
+            },
+            ProfileVersion: "rig-v1"),
+        CapturePipelineConfig.Empty);
+
+    public static string ProcessingProfileSha256 { get; } =
+        CaptureContractJson.ComputeCanonicalJsonSha256(
+            JsonSerializer.SerializeToElement(CameraConfig.Pipeline.Steps));
 
     public static string RigProfileSha256 { get; } =
         RigProjectionContextFactory.CreateProfileHashSha256(CameraConfig.Rig);

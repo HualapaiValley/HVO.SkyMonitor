@@ -30,7 +30,8 @@ public sealed class RealCameraAnnotationPipelineTests
             new string('A', 64), "CC0", "fixture-v1"));
         var config = CreateConfig();
         using var provider = CreateServices(catalog, topology);
-        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreatePipeline(config);
+        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+            .Select(static node => node.Step).ToArray();
         var rawBytes = new byte[checked(200 * 200 * 2)];
         var expectedRawBytes = rawBytes.ToArray();
         var raw = new CameraFrame(
@@ -87,7 +88,8 @@ public sealed class RealCameraAnnotationPipelineTests
         var topology = new InMemoryConstellationTopology([]);
         var config = CreateConfig(constellationIds: []);
         using var provider = CreateServices(catalog, topology);
-        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreatePipeline(config);
+        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+            .Select(static node => node.Step).ToArray();
         var raw = new CameraFrame(
             Utc, 200, 200, CameraPixelFormat.Mono16, new byte[200 * 200 * 2],
             new FrameMetadata(TimeSpan.FromSeconds(20), 150, -10), 400);
@@ -107,7 +109,8 @@ public sealed class RealCameraAnnotationPipelineTests
         ]);
         var config = CreateConfig(pixelFormat: CameraPixelFormat.BayerRggb16);
         using var provider = CreateServices(catalog, topology);
-        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreatePipeline(config);
+        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+            .Select(static node => node.Step).ToArray();
         var rawBytes = new byte[200 * 200 * 2];
         var expectedRawBytes = rawBytes.ToArray();
         var raw = new CameraFrame(
@@ -233,26 +236,28 @@ public sealed class RealCameraAnnotationPipelineTests
                 new PipelineExposureProfile(
                     TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(20), 0, 150),
                 ProfileVersion: "physical-test-rig-v1"),
-            ProcessingSteps:
+            Pipeline: new CapturePipelineConfig(
             [
                 new CaptureProcessingStepConfig(
                     "Preview", "Preview", 50,
-                    JsonSerializer.SerializeToElement(new PreviewProcessingStepOptions())),
+                    JsonSerializer.SerializeToElement(new { }),
+                    ["$raw"]),
                 new CaptureProcessingStepConfig(
                     "Annotation", "Annotation", 75,
-                    JsonSerializer.SerializeToElement(new AnnotationProcessingStepOptions
+                    JsonSerializer.SerializeToElement(new
                     {
-                        DrawLabels = false,
-                        DrawImageCircle = false,
-                        DrawCardinalDirections = false,
-                        DrawConstellationLines = true,
-                        ConstellationIds = constellationIds ?? ExpectedConstellationIds,
-                        ConstellationLineValue = 200,
-                        ConstellationLineThickness = 1,
-                        ConstellationLineOpacity = 1,
-                        RecipeVersion = "real-constellation-test-v1"
-                    }))
-            ])
+                        drawLabels = false,
+                        drawImageCircle = false,
+                        drawCardinalDirections = false,
+                        drawConstellationLines = true,
+                        constellationIds = constellationIds ?? ExpectedConstellationIds,
+                        constellationLineValue = 200,
+                        constellationLineThickness = 1,
+                        constellationLineOpacity = 1,
+                        recipeVersion = "real-constellation-test-v1"
+                    }),
+                    ["Preview"])
+            ]))
         {
             DeploymentLocation = DeploymentLocationSnapshot.Create(
                 "physical-test-location", 1, "synthetic test", null,

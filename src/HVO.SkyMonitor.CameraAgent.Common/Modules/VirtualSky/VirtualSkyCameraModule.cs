@@ -65,9 +65,10 @@ public sealed class VirtualSkyCameraModule(
             : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
         ValidateVirtualCalibration(_options.VirtualCalibration, _resolvedReadout);
         _config = config;
-        _stageProjectedScene = config.ResolveProcessingSteps().Any(static step =>
+        _stageProjectedScene = config.Pipeline.Steps.Any(step =>
             step.Enabled != false &&
             (string.Equals(step.Type, "ProjectedScene", StringComparison.OrdinalIgnoreCase) ||
+             config.Pipeline.SchemaVersion == CapturePipelineSchemaVersions.LegacyV1 &&
              step.Type.Contains("ProjectedSceneCaptureProcessingStep", StringComparison.Ordinal)));
         var outputWidth = _resolvedReadout?.Layout.Width ?? config.Rig.Sensor.WidthPixels;
         var outputHeight = _resolvedReadout?.Layout.Height ?? config.Rig.Sensor.HeightPixels;

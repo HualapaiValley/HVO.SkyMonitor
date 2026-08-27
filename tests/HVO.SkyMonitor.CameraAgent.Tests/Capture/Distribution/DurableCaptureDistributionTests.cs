@@ -13,6 +13,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Processing;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Nodes;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
@@ -245,7 +248,7 @@ public sealed class DurableCaptureDistributionTests
     }
 
     [TestMethod]
-    public async Task EnrichedEvidence_SurvivesFrameStrippedContextClaimAndRestart()
+    public async Task InFlightNullPipelineEnvelopeClaimsAndProcessesAfterRestart()
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions());
         var submission = fixture.CreateSubmission(0, includeCycleEvidence: true);
@@ -261,13 +264,24 @@ public sealed class DurableCaptureDistributionTests
         {
             contextJson = await ScalarBytesAsync(
                 connection, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
-            contextSha256 = await ScalarStringAsync(
-                connection, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false);
+            var root = JsonNode.Parse(contextJson)!.AsObject();
+            var configuration = root["configuration"]!.AsObject();
+            configuration["processingSteps"] = null;
+            configuration["pipeline"] = null;
+            contextJson = Encoding.UTF8.GetBytes(root.ToJsonString());
+            contextSha256 = Convert.ToHexString(SHA256.HashData(contextJson));
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE capture_lane_contexts SET context_json = $json, context_sha256 = $sha;";
+            command.Parameters.AddWithValue("$json", contextJson);
+            command.Parameters.AddWithValue("$sha", contextSha256);
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
         }
         var envelope = CaptureLaneEnvelopeSerializer.Deserialize(contextJson, contextSha256);
         Assert.IsNull(envelope.Submission.Result.Frame);
         Assert.IsNull(envelope.Submission.Result.Artifacts);
         Assert.AreEqual(expected, envelope.Submission.CycleEvidence);
+        Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, envelope.Configuration.Pipeline.SchemaVersion);
+        Assert.IsEmpty(envelope.Configuration.Pipeline.Steps);
 
         var restarted = fixture.RestartLaneStore();
         await restarted.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
@@ -282,24 +296,65 @@ public sealed class DurableCaptureDistributionTests
         Assert.AreEqual(expected, lease.Context.Submission.CycleEvidence);
         Assert.AreEqual(expected, lease.Context.RawCapture.Manifest.Descriptor.CycleEvidence);
         Assert.AreEqual(receipt.CommittedManifestSha256, lease.Context.RawCapture.CommittedManifestSha256);
+        var pipelineFactory = new RecordingLegacyAutoIncludePipelineFactory();
+        using var handler = new StandardCaptureLaneHandler(
+            pipelineFactory,
+            NullLogger<StandardCaptureLaneHandler>.Instance,
+            fixture.Ingress);
+
+        var result = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome);
+        Assert.IsTrue(pipelineFactory.Step.Processed);
+        await restarted.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+        using var verification = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual(
+            "completed",
+            await ScalarStringAsync(verification, "SELECT state FROM capture_lane_work WHERE lane_name = 'standard';")
+                .ConfigureAwait(false));
+        Assert.AreEqual(
+            0L,
+            await ScalarLongAsync(verification, "SELECT COUNT(*) FROM capture_lane_work WHERE state = 'quarantined';")
+                .ConfigureAwait(false));
     }
 
     [TestMethod]
-    public async Task InFlightOldPipelineEnvelopeSurvivesConfigurationMigrationUntilDrain()
+    public async Task InFlightPrePipelineEnvelopeNormalizesAndSurvivesConfigurationMigrationUntilDrain()
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions());
         var oldStep = new CaptureProcessingStepConfig("Annotation", "sky-annotation", DependsOn: ["preview"]);
         var oldConfiguration = fixture.Configuration with
         {
-            ProcessingSteps = null,
+            Rig = fixture.Configuration.Rig with
+            {
+                ControlPolicy = new CameraControlPolicy
+                {
+                    AutoExposure = CameraFeatureDirective.Enabled,
+                    AutoGain = CameraFeatureDirective.Disabled
+                }
+            },
             Pipeline = new CapturePipelineConfig([oldStep], CapturePipelineSchemaVersions.ExplicitV2,
                 CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };
         var submission = fixture.CreateSubmission(0);
         _ = await fixture.Ingress.AcceptAsync(oldConfiguration, submission, CancellationToken.None).ConfigureAwait(false);
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            var currentJson = await ScalarBytesAsync(
+                connection, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
+            var root = JsonNode.Parse(currentJson)!.AsObject();
+            var configuration = root["configuration"]!.AsObject();
+            configuration["processingSteps"] = configuration["pipeline"]!["steps"]!.DeepClone();
+            configuration["pipeline"] = null;
+            var legacyJson = Encoding.UTF8.GetBytes(root.ToJsonString());
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE capture_lane_contexts SET context_json = $json, context_sha256 = $sha;";
+            command.Parameters.AddWithValue("$json", legacyJson);
+            command.Parameters.AddWithValue("$sha", Convert.ToHexString(SHA256.HashData(legacyJson)));
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
         var newConfiguration = fixture.Configuration with
         {
-            ProcessingSteps = null,
             Pipeline = new CapturePipelineConfig([
                 new CaptureProcessingStepConfig("OverlayManifest", "overlay-manifest", DependsOn: ["combined-preview"])
             ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
@@ -313,6 +368,14 @@ public sealed class DurableCaptureDistributionTests
 
         Assert.IsNotNull(oldLease);
         Assert.AreEqual("sky-annotation", oldLease.Context.Configuration.Pipeline!.Steps.Single().Id);
+        Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, oldLease.Context.Configuration.Pipeline.SchemaVersion);
+        Assert.IsNull(oldLease.Context.Configuration.ProcessingSteps);
+        Assert.AreEqual(
+            AutomaticControlOwnership.HostMetered,
+            oldLease.Context.Configuration.Rig.ControlPolicy!.ExposureControl);
+        Assert.AreEqual(
+            AutomaticControlOwnership.Disabled,
+            oldLease.Context.Configuration.Rig.ControlPolicy.GainControl);
         await restarted.CompleteAsync(oldLease, CancellationToken.None).ConfigureAwait(false);
         var newEnvelope = CaptureLaneEnvelopeSerializer.Serialize(newConfiguration, fixture.CreateSubmission(1));
         var decoded = CaptureLaneEnvelopeSerializer.Deserialize(newEnvelope.Json, newEnvelope.Sha256);
@@ -1446,6 +1509,7 @@ public sealed class DurableCaptureDistributionTests
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty,
             AgentId: "agent-lanes");
 
     private static CameraModuleConfig CreateCadenceConfiguration(
@@ -1464,7 +1528,13 @@ public sealed class DurableCaptureDistributionTests
                     TimeSpan.FromMilliseconds(100),
                     1,
                     1,
-                    CadenceMode: cadenceMode)),
+                    CadenceMode: cadenceMode),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }),
+            CapturePipelineConfig.Empty,
             AgentId: "agent-durable-cadence");
 
     private sealed record CadenceScenario(
@@ -1489,7 +1559,43 @@ public sealed class DurableCaptureDistributionTests
 
     private sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
     {
-        public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config) => [];
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => new([]);
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingLegacyAutoIncludePipelineFactory : ICaptureProcessingPipelineFactory
+    {
+        internal RecordingProcessingStep Step { get; } = new();
+
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config)
+        {
+            Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, config.Pipeline.SchemaVersion);
+            Assert.AreEqual(CapturePipelineDependencyPolicy.LegacyInference, config.Pipeline.DependencyPolicy);
+            Assert.IsEmpty(config.Pipeline.Steps);
+            return new CaptureProcessingGraph([
+                new CaptureProcessingGraphNode("auto-included", Step, [], true, null, null, null)
+            ]);
+        }
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingProcessingStep : ICaptureProcessingStep
+    {
+        public string Name => "auto-included";
+
+        public int Order => 0;
+
+        internal bool Processed { get; private set; }
+
+        public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+        {
+            Processed = true;
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class ConfigurationAccessor(CameraModuleConfig configuration) : ICameraAgentConfigurationAccessor

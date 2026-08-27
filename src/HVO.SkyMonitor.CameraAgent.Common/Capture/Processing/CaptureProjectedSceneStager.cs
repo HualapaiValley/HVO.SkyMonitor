@@ -142,7 +142,7 @@ public sealed class CaptureProjectedSceneStager(
 
     private static ProjectedSceneCaptureProcessingStepOptions? ResolveOptions(CameraModuleConfig config)
     {
-        var step = config.ResolveProcessingSteps().FirstOrDefault(static candidate =>
+        var step = config.Pipeline.Steps.FirstOrDefault(static candidate =>
             candidate.Enabled is not false && string.Equals(candidate.Type, "ProjectedScene", StringComparison.OrdinalIgnoreCase));
         if (step is null) return null;
         return step.Options is { ValueKind: not (JsonValueKind.Null or JsonValueKind.Undefined) } value

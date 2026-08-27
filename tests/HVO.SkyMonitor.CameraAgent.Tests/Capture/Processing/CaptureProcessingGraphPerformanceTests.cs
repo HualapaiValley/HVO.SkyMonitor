@@ -369,11 +369,11 @@ public sealed class CaptureProcessingGraphPerformanceTests
                     new RigOrientation(0, 0, 0),
                     new PipelineExposureProfile(
                         TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
-                [
-                    new CaptureProcessingStepConfig("Calibration", "calibration", 0),
+                new CapturePipelineConfig([
+                    new CaptureProcessingStepConfig("Calibration", "calibration", 0, DependsOn: ["$raw"]),
                     new CaptureProcessingStepConfig("RollingCombination", "rolling", 25, DependsOn: ["calibration"]),
                     new CaptureProcessingStepConfig("Preview", "preview", 50, DependsOn: ["rolling"])
-                ],
+                ]),
                 AgentId: "performance");
             var options = Options.Create(new HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions
             {
@@ -845,7 +845,7 @@ public sealed class CaptureProcessingGraphPerformanceTests
                 new OpticsProfile("Performance", 1, 1, 0),
                 new RigOrientation(0, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
-            steps,
+            new CapturePipelineConfig(steps),
             AgentId: "performance");
     }
 
@@ -904,10 +904,10 @@ internal sealed class PerformanceOutcomeStep(ProcessingOutcome? outcome) : ICapt
 
 internal sealed class FixedGraphFactory(CaptureProcessingGraph graph) : ICaptureProcessingPipelineFactory
 {
-    public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config)
-        => graph.Nodes.Select(static node => node.Step).ToArray();
-
     public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => graph;
+
+    public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+        => throw new NotSupportedException();
 }
 
 internal sealed class ProcessingRuntimeObservation : ILogger, IDisposable

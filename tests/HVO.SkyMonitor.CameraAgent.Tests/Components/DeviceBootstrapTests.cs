@@ -147,6 +147,7 @@ public sealed class DeviceBootstrapTests
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
+            CapturePipelineConfig.Empty,
             AgentId: captureAgentId));
         workflow ??= Mock.Of<IDeviceBootstrapWorkflow>();
 

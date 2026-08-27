@@ -115,7 +115,7 @@ public sealed class FleetStatusCollector(
                 Bound(configuration.ModuleType, 64),
                 Bound(configuration.Rig.ProfileVersion, 64),
                 CameraRigProfileIdentity.ComputeSha256(configuration.Rig),
-                CaptureContractJson.ComputeCanonicalJsonSha256(configuration.ResolveProcessingSteps()))
+                CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Pipeline))
             {
                 ActiveLocalProfileRevisionId = scheduleRuntime?.Revision.RevisionId,
                 ActiveLocalProfileSha256 = scheduleRuntime?.Revision.ProfileSha256,
@@ -156,7 +156,7 @@ public sealed class FleetStatusCollector(
                 configuration.AgentId,
                 configuration.Module,
                 configuration.Rig,
-                ProcessingSteps = configuration.ResolveProcessingSteps(),
+                ProcessingSteps = configuration.Pipeline.Steps,
                 Location = configuration.DeploymentLocation?.ToProvenance()
             })
             : CaptureContractJson.ComputeCanonicalJsonSha256(new
@@ -164,7 +164,7 @@ public sealed class FleetStatusCollector(
                 configuration.AgentId,
                 configuration.Module,
                 configuration.Rig,
-                ProcessingSteps = configuration.ResolveProcessingSteps(),
+                ProcessingSteps = configuration.Pipeline.Steps,
                 Location = configuration.DeploymentLocation?.ToProvenance(),
                 ScheduleSha256 = CaptureScheduleContract.ComputeSha256(configuration.Schedule)
             });

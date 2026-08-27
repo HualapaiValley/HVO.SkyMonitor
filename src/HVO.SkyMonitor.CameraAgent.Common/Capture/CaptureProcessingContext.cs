@@ -22,6 +22,7 @@ public sealed class CaptureProcessingContext
     private readonly Dictionary<string, List<FrameArtifact>> _artifactsByNode = new(StringComparer.OrdinalIgnoreCase);
     private string? _currentNodeId;
     private IReadOnlyList<string> _currentDependencies = [];
+    private IReadOnlyList<string> _currentDeclaredDependencies = [];
     private IReadOnlyList<ProcessingArtifact> _historicalInputs = [];
     private readonly List<DurableProcessingNodeInput> _currentInputs = [];
     private readonly Func<CancellationToken, ValueTask<CaptureResult>>? _rawFrameLoader;
@@ -179,18 +180,31 @@ public sealed class CaptureProcessingContext
     internal ProcessingProduct? GetProcessingProduct(Guid artifactId) =>
         _processingProductsByArtifactId.GetValueOrDefault(artifactId);
 
-    internal void BeginNode(string nodeId, IReadOnlyList<string> dependencies)
+    internal void BeginNode(
+        string nodeId,
+        IReadOnlyList<string> dependencies,
+        IReadOnlyList<string>? declaredDependencies = null)
     {
         _currentNodeId = nodeId;
         _currentDependencies = dependencies;
+        _currentDeclaredDependencies = declaredDependencies ?? dependencies;
         _currentInputs.Clear();
     }
 
     internal IReadOnlyList<FrameArtifact> GetDependencyArtifacts()
-        => _currentDependencies
+    {
+        var artifacts = _currentDependencies
             .Where(_artifactsByNode.ContainsKey)
             .SelectMany(dependency => _artifactsByNode[dependency])
-            .ToArray();
+            .ToList();
+        if (_currentDeclaredDependencies.Any(static dependency =>
+                string.Equals(dependency, "$raw", StringComparison.OrdinalIgnoreCase)) &&
+            _artifacts?.Raw is { } raw)
+        {
+            artifacts.Insert(0, raw);
+        }
+        return artifacts;
+    }
 
     internal IReadOnlyList<ProcessingProduct> GetDependencyProducts()
         => _currentDependencies
@@ -220,7 +234,7 @@ public sealed class CaptureProcessingContext
             .Where(telemetry => _currentDependencies.Contains(telemetry.Name, StringComparer.OrdinalIgnoreCase))
             .ToArray();
 
-    internal bool HasDeclaredDependencies => _currentDependencies.Count > 0;
+    internal bool HasDeclaredDependencies => _currentDeclaredDependencies.Count > 0;
 
     internal void SetHistoricalInputs(IReadOnlyList<ProcessingArtifact> historicalInputs)
         => _historicalInputs = historicalInputs;

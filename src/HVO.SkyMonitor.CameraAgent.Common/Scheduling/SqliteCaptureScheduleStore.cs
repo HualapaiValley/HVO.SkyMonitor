@@ -132,6 +132,15 @@ public sealed class SqliteCaptureScheduleStore(
             }
             else
             {
+                var hasRedundantPending = snapshot.PendingRevision is { } pendingRevision &&
+                    string.Equals(
+                        snapshot.ActiveRevision.ProfileSha256,
+                        pendingRevision.ProfileSha256,
+                        StringComparison.OrdinalIgnoreCase);
+                if (hasRedundantPending)
+                {
+                    snapshot = snapshot with { PendingRevision = null };
+                }
                 if (!string.Equals(fileSha256, snapshot.ActiveRevision.ProfileSha256, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(fileSha256, snapshot.PendingRevision?.ProfileSha256, StringComparison.OrdinalIgnoreCase))
                 {
@@ -151,6 +160,20 @@ public sealed class SqliteCaptureScheduleStore(
                     snapshot = snapshot with
                     {
                         PendingRevision = pending,
+                        Version = snapshot.Version + 1,
+                        UpdatedUtc = now
+                    };
+                }
+                else if (hasRedundantPending)
+                {
+                    var now = Now();
+                    await ExecuteAsync(connection, transaction, """
+                        UPDATE capture_schedule_state
+                        SET pending_revision_id = NULL, version = version + 1, updated_unix_ms = $now
+                        WHERE state_key = 1;
+                        """, cancellationToken, ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+                    snapshot = snapshot with
+                    {
                         Version = snapshot.Version + 1,
                         UpdatedUtc = now
                     };
@@ -183,9 +206,11 @@ public sealed class SqliteCaptureScheduleStore(
         long? expectedVersion,
         string actor,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? validateNewProfile = null)
         => await StageWithCurrentCoreAsync(
-            profile, profile, basisRevisionId: null, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+            profile, profile, basisRevisionId: null, idempotencyKey, expectedVersion, actor, reason,
+            validateNewProfile, cancellationToken)
             .ConfigureAwait(false);
 
     internal async Task<CaptureScheduleMutationResult> StageWithCurrentFromBasisAsync(
@@ -195,7 +220,8 @@ public sealed class SqliteCaptureScheduleStore(
         long? expectedVersion,
         string actor,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? validateNewProfile = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(basisRevisionId);
         return await StageWithCurrentCoreAsync(
@@ -206,6 +232,7 @@ public sealed class SqliteCaptureScheduleStore(
             expectedVersion,
             actor,
             reason,
+            validateNewProfile,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -217,17 +244,21 @@ public sealed class SqliteCaptureScheduleStore(
         long? expectedVersion,
         string actor,
         string? reason,
+        Action? validateNewProfile,
         CancellationToken cancellationToken)
     {
         ValidateCommand(idempotencyKey, expectedVersion, actor, reason);
-        var validation = LocalCaptureProfileContract.Validate(profile);
-        if (!validation.IsValid)
-        {
-            throw new ArgumentException($"The local capture profile is invalid ({validation.FieldPath}).", nameof(profile));
-        }
         return await MutateWithCurrentAsync(idempotencyKey, "stage", command, expectedVersion, actor, reason,
             async (connection, transaction, snapshot, now, token) =>
             {
+                var validation = LocalCaptureProfileContract.Validate(profile);
+                if (!validation.IsValid)
+                {
+                    throw new ArgumentException(
+                        $"The local capture profile is invalid ({validation.FieldPath}).",
+                        nameof(profile));
+                }
+                validateNewProfile?.Invoke();
                 if (basisRevisionId is not null &&
                     !string.Equals(snapshot.ActiveRevision.RevisionId, basisRevisionId, StringComparison.Ordinal) &&
                     !string.Equals(snapshot.PendingRevision?.RevisionId, basisRevisionId, StringComparison.Ordinal))
@@ -235,9 +266,15 @@ public sealed class SqliteCaptureScheduleStore(
                     throw new CaptureScheduleStoreConflictException("The profile basis revision is stale.");
                 }
                 var sha256 = LocalCaptureProfileContract.ComputeSha256(profile);
-                var pending = await FindRevisionBySha256Async(connection, transaction, sha256, token)
-                    .ConfigureAwait(false) ?? await InsertRevisionAsync(
-                        connection, transaction, profile, "operator-draft", actor, reason, token).ConfigureAwait(false);
+                var pending = string.Equals(
+                        sha256, snapshot.ActiveRevision.ProfileSha256, StringComparison.OrdinalIgnoreCase)
+                    ? snapshot.ActiveRevision
+                    : string.Equals(sha256, snapshot.PendingRevision?.ProfileSha256, StringComparison.OrdinalIgnoreCase)
+                        ? snapshot.PendingRevision!
+                        : await FindRevisionBySha256Async(connection, transaction, sha256, token)
+                            .ConfigureAwait(false) ?? await InsertRevisionAsync(
+                                connection, transaction, profile, "operator-draft", actor, reason, token)
+                                .ConfigureAwait(false);
                 if (pending.RevisionId == snapshot.ActiveRevision.RevisionId)
                 {
                     if (snapshot.PendingRevision is null)
@@ -1282,23 +1319,38 @@ public sealed class SqliteCaptureScheduleStore(
         {
             return null;
         }
-        var profile = JsonSerializer.Deserialize<LocalCaptureProfileDefinition>((byte[])reader.GetValue(1), SerializerOptions)
+        var persistedProfile = JsonSerializer.Deserialize<LocalCaptureProfileDefinition>(
+            (byte[])reader.GetValue(1), SerializerOptions)
             ?? throw new InvalidDataException("A durable local capture profile is invalid JSON.");
-        var validation = LocalCaptureProfileContract.Validate(profile);
-        var profileSha256 = reader.GetString(2);
+        var validation = LocalCaptureProfileContract.ValidatePersistedRevision(persistedProfile);
+        var persistedProfileSha256 = reader.GetString(2);
         var scheduleSha256 = reader.GetString(3);
-        if (!validation.IsValid || !string.Equals(
-                profileSha256, LocalCaptureProfileContract.ComputeSha256(profile), StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(
-                scheduleSha256, CaptureScheduleContract.ComputeSha256(profile.Schedule), StringComparison.OrdinalIgnoreCase))
+        if (!validation.IsValid)
         {
             throw new InvalidDataException("A durable capture schedule revision failed validation.");
         }
+        var computedPersistedProfileSha256 = LocalCaptureProfileContract.ComputePersistedRevisionSha256(persistedProfile);
+        if (!string.Equals(
+                persistedProfileSha256,
+                computedPersistedProfileSha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("A durable capture schedule revision failed profile checksum validation.");
+        }
+        if (!string.Equals(
+                scheduleSha256,
+                CaptureScheduleContract.ComputeSha256(persistedProfile.Schedule),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("A durable capture schedule revision failed validation.");
+        }
+        var profile = persistedProfile.NormalizePersistedRevisionForRead();
+        var effectiveProfileSha256 = LocalCaptureProfileContract.ComputeEffectiveSha256(profile);
         return new CaptureScheduleRevisionSnapshot(
             revisionId,
             reader.GetInt64(0),
             profile,
-            profileSha256,
+            effectiveProfileSha256,
             scheduleSha256,
             reader.GetString(4),
             reader.GetString(5),
@@ -1382,22 +1434,10 @@ public sealed class SqliteCaptureScheduleStore(
     internal static LocalCaptureProfileDefinition CreateFileProfile(CameraModuleConfig fileConfiguration)
     {
         ArgumentNullException.ThrowIfNull(fileConfiguration);
-        var schedule = fileConfiguration.Schedule ?? CreateLegacySchedule(fileConfiguration.Rig);
+        var schedule = fileConfiguration.Schedule ?? throw new InvalidOperationException(
+            "CameraAgent file configuration requires an explicit capture schedule.");
         return LocalCaptureProfileDefinition.CreateForConfiguration(fileConfiguration, schedule);
     }
-
-    private static CaptureScheduleDefinition CreateLegacySchedule(CameraRigConfig rig)
-        => new(
-            "capture-schedule-v1",
-            [new CaptureScheduleSetpointProfile(
-                "legacy-pipeline",
-                rig.Pipeline.NightExposure,
-                rig.Pipeline.NightGain,
-                rig.Pipeline.CaptureInterval,
-                rig.Pipeline.CadenceMode)],
-            [],
-            LegacyAlwaysOpen: true,
-            LegacySetpointProfileId: "legacy-pipeline");
 
     private static bool ValidOverride(
         CaptureScheduleOverride scheduleOverride,

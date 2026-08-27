@@ -238,7 +238,7 @@ write_camera_config() {
         .agentId = $agentId |
         .module.options.seed = $seed |
         .module.options.fixedSceneUtc = $fixedSceneUtc |
-        (.processingSteps[] | select(.id == "LocalStorage").options.storageRoot) = $storageRoot
+        (.pipeline.steps[] | select(.id == "LocalStorage").options.storageRoot) = $storageRoot
        ' "$CONFIG_TEMPLATE" > "$output"
 }
 

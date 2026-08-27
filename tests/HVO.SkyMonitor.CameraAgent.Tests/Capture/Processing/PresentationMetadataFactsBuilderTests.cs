@@ -295,15 +295,25 @@ public sealed class PresentationMetadataFactsBuilderTests
             CameraPixelFormat.Mono16, 2, 2, 4, payload);
         var schedule = new CaptureScheduleDefinition("capture-schedule-v1",
             [new CaptureScheduleSetpointProfile("night", TimeSpan.FromSeconds(5), 82,
-                TimeSpan.FromSeconds(10), CaptureCadenceMode.MinimumStartInterval)], [],
-            LegacyAlwaysOpen: true, LegacySetpointProfileId: "night");
+                TimeSpan.FromSeconds(10), CaptureCadenceMode.MinimumStartInterval)],
+            [new CaptureWeeklyScheduleWindow(
+                "weekly-night",
+                DayOfWeek.Thursday,
+                new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue),
+                new CaptureScheduleBoundary(
+                    CaptureScheduleBoundaryKind.FixedLocalTime,
+                    TimeOnly.MinValue,
+                    DayOffset: 1),
+                "night")]);
         var config = new CameraModuleConfig(
             new ObservatoryLocation(0, 0, 0, "UTC"), new CameraModuleDescriptor("VirtualSky"),
             new CameraRigConfig(
                 new SensorProfile("test", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono16),
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0), new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5),
-                    TimeSpan.FromSeconds(10), 82, 82)), AgentId: "agent")
+                    TimeSpan.FromSeconds(10), 82, 82)),
+            CapturePipelineConfig.Empty,
+            AgentId: "agent")
         {
             Schedule = schedule
         };
@@ -436,7 +446,7 @@ public sealed class PresentationMetadataFactsBuilderTests
 
     private static CaptureScheduleAdmissionEvidence CreateScheduleAdmission() => new(
         CaptureScheduleAdmissionEvidence.CurrentSchemaVersion, "revision", new string('1', 64), new string('2', 64),
-        "night", CaptureScheduleAdmissionReason.LegacyCompatibility, CaptureScheduleIntervalSource.LegacyCompatibility,
+        "night", CaptureScheduleAdmissionReason.WeeklyWindow, CaptureScheduleIntervalSource.WeeklyWindow,
         Epoch, Epoch, Epoch.AddDays(1), "interval", "expansion-v1", new string('3', 64), new string('4', 64),
         "location", 1);
 

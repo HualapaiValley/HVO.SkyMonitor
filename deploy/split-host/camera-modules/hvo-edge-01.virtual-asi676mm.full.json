@@ -162,16 +162,22 @@
       { "id": "final-jpeg", "type": "JpegEncoding", "order": 80, "dependsOn": ["sky-annotation"], "publication": { "persistence": "durable-local" }, "options": { "outputVariant": "annotated-final-jpeg", "jpegQuality": 90 } },
       { "id": "thumbnail-large", "type": "JpegEncoding", "order": 81, "dependsOn": ["sky-annotation"], "publication": { "persistence": "durable-local" }, "options": { "outputVariant": "annotated-thumbnail-1024-jpeg", "jpegQuality": 85, "maximumDimension": 1024 } },
       { "id": "thumbnail-small", "type": "JpegEncoding", "order": 82, "dependsOn": ["sky-annotation"], "publication": { "persistence": "durable-local" }, "options": { "outputVariant": "annotated-thumbnail-320-jpeg", "jpegQuality": 80, "maximumDimension": 320 } },
-      { "id": "storage", "type": "Storage", "order": 90, "dependsOn": ["sky-annotation", "final-jpeg", "thumbnail-large", "thumbnail-small"], "options": { "storageRoot": "/app/data/raw", "retentionDays": 1, "updateLatestFrame": true, "queueForUpload": false, "policies": [] } },
+      { "id": "storage", "type": "Storage", "order": 90, "dependsOn": ["$raw", "rolling", "sky-annotation", "final-jpeg", "thumbnail-large", "thumbnail-small"], "options": { "storageRoot": "/app/data/raw", "retentionDays": 1, "updateLatestFrame": true, "queueForUpload": false, "policies": [] } },
       { "id": "telemetry", "type": "Telemetry", "order": 100, "dependsOn": ["calibration", "calibrated-preview", "rolling", "combined-preview", "quality", "sky-annotation", "final-jpeg", "thumbnail-large", "thumbnail-small", "storage"] }
     ]
   },
   "schedule": {
     "schemaVersion": "capture-schedule-v1",
     "setpointProfiles": [{ "id": "hvo-edge-01-asi676mm-continuous", "exposure": "00:00:20", "gain": 82.0, "captureInterval": "00:00:20", "cadenceMode": "MinimumStartInterval" }],
-    "weeklyWindows": [],
-    "blackouts": [],
-    "legacyAlwaysOpen": true,
-    "legacySetpointProfileId": "hvo-edge-01-asi676mm-continuous"
+    "weeklyWindows": [
+      { "id": "continuous-sunday", "day": "Sunday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-monday", "day": "Monday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-tuesday", "day": "Tuesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-wednesday", "day": "Wednesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-thursday", "day": "Thursday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-friday", "day": "Friday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-saturday", "day": "Saturday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" }
+    ],
+    "blackouts": []
   }
 }

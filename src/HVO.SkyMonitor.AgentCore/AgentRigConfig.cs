@@ -316,11 +316,13 @@ public sealed record CameraControlPolicy
 
     public TemperatureControlDirective Temperature { get; init; } = new();
 
-    public CameraFeatureDirective AutoGain { get; init; }
-        = CameraFeatureDirective.Unspecified;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CameraFeatureDirective? AutoGain { get; init; }
+        = null;
 
-    public CameraFeatureDirective AutoExposure { get; init; }
-        = CameraFeatureDirective.Unspecified;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CameraFeatureDirective? AutoExposure { get; init; }
+        = null;
 }
 
 /// <summary>Identifies the component that owns an automatic camera control.</summary>

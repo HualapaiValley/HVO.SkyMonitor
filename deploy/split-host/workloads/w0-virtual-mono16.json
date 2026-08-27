@@ -63,20 +63,41 @@
       "dayGain": 10.0,
       "nightGain": 10.0
     },
+    "controlPolicy": {
+      "exposureControl": "Disabled",
+      "gainControl": "Disabled"
+    },
     "profileVersion": "w0-deterministic-mono16-v1"
   },
-  "processingSteps": [
-    {
-      "id": "Preview",
-      "type": "Preview",
-      "order": 50,
-      "options": {
-        "enabled": true,
-        "recipeVersion": "mono16-asinh-v2",
-        "blackPercentile": 0.5,
-        "whitePercentile": 0.9999,
-        "asinhStrength": 4.0
+  "pipeline": {
+    "schemaVersion": "cameraagent-capture-pipeline-v2",
+    "dependencyPolicy": "reject-enabled-dependent-v1",
+    "steps": [
+      {
+        "id": "Preview",
+        "type": "Preview",
+        "order": 50,
+        "dependsOn": ["$raw"],
+        "options": {
+          "recipeVersion": "mono16-asinh-v2",
+          "blackPercentile": 0.5,
+          "whitePercentile": 0.9999,
+          "asinhStrength": 4.0
+        }
       }
-    }
-  ]
+    ]
+  },
+  "schedule": {
+    "schemaVersion": "capture-schedule-v1",
+    "setpointProfiles": [{ "id": "continuous", "exposure": "00:00:01", "gain": 10.0, "captureInterval": "00:05:00", "cadenceMode": "MinimumStartInterval" }],
+    "weeklyWindows": [
+      { "id": "continuous-sunday", "day": "Sunday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-monday", "day": "Monday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-tuesday", "day": "Tuesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-wednesday", "day": "Wednesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-thursday", "day": "Thursday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-friday", "day": "Friday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-saturday", "day": "Saturday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" }
+    ]
+  }
 }

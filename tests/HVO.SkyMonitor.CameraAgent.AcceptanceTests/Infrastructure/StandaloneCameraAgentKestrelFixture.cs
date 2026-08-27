@@ -249,7 +249,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
     {
         var config = await Services.GetRequiredService<ICameraAgentConfigurationLoader>()
             .LoadAsync(CancellationToken.None).ConfigureAwait(false);
-        return config.ResolveProcessingSteps().Single(static step => step.Type == "ProjectedScene")
+        return config.Pipeline.Steps.Single(static step => step.Type == "ProjectedScene")
             .Options!.Value.GetProperty("maximumMagnitude").GetDouble();
     }
 
@@ -508,7 +508,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
         var configuration = JsonNode.Parse(json)?.AsObject()
             ?? throw new InvalidDataException("The standalone CameraAgent fixture configuration is invalid.");
         configuration["agentId"] = AgentId;
-        var localStorage = configuration["processingSteps"]!.AsArray()
+        var steps = configuration["pipeline"]!["steps"]!.AsArray();
+        var localStorage = steps
             .Select(static node => node!.AsObject())
             .Single(static step => step["id"]!.GetValue<string>() == "LocalStorage");
         var options = localStorage["options"]!.AsObject();
@@ -531,28 +532,8 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
                   "options": { "outputVariant": "projected-scene-v1", "maximumMagnitude": 6.5, "maximumResults": 9 }
                 }
                 """)!;
-            configuration["processingSteps"]!.AsArray().Insert(0, projectedScene);
+            steps.Insert(0, projectedScene);
             localStorage["dependsOn"]!.AsArray().Add("ProjectedScene");
-            foreach (var stepNode in configuration["processingSteps"]!.AsArray())
-            {
-                var step = stepNode!.AsObject();
-                var type = step["type"]!.GetValue<string>();
-                if (type.Contains("NoOpFileStorageProcessingStep", StringComparison.Ordinal)) step["type"] = "Storage";
-                if (type.Contains("TelemetryCaptureProcessingStep", StringComparison.Ordinal)) step["type"] = "Telemetry";
-                step["dependsOn"] ??= new JsonArray("$raw");
-                var stepOptions = step["options"]?.AsObject();
-                if (stepOptions?.Remove("enabled", out var enabled) == true)
-                {
-                    step["enabled"] = enabled;
-                }
-            }
-            configuration["pipeline"] = new JsonObject
-            {
-                ["schemaVersion"] = "cameraagent-capture-pipeline-v2",
-                ["dependencyPolicy"] = "reject-enabled-dependent-v1",
-                ["steps"] = configuration["processingSteps"]!.DeepClone()
-            };
-            configuration.Remove("processingSteps");
         }
         if (useSyntheticCalibration)
         {
@@ -578,7 +559,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             var moduleOptions = configuration["module"]!["options"]!.AsObject();
             moduleOptions["asi174Sensor"] = new JsonObject { ["enabled"] = false };
             moduleOptions["syntheticCalibration"] = model.DeepClone();
-            var calibration = configuration["processingSteps"]!.AsArray()
+            var calibration = configuration["pipeline"]!["steps"]!.AsArray()
                 .Select(static node => node!.AsObject())
                 .Single(static step => step["id"]!.GetValue<string>() == "Calibration");
             calibration["type"] = "Calibration";
@@ -598,7 +579,7 @@ internal sealed class StandaloneCameraAgentKestrelFixture : IAsyncDisposable
             Path.Combine(AppContext.BaseDirectory, "cameraagent.standalone-production-smoke.json")).ConfigureAwait(false))?.AsObject()
             ?? throw new InvalidDataException("The production smoke CameraAgent configuration is invalid.");
         configuration["agentId"] = AgentId;
-        var localStorage = configuration["processingSteps"]!.AsArray()
+        var localStorage = configuration["pipeline"]!["steps"]!.AsArray()
             .Select(static node => node!.AsObject())
             .Single(static step => step["id"]!.GetValue<string>() == "LocalStorage");
         localStorage["options"]!["storageRoot"] = root;

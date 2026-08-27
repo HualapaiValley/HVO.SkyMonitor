@@ -33,11 +33,11 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             {
                 Module = new CameraModuleDescriptor("PhysicalCamera"),
                 DeploymentLocation = location,
-                ProcessingSteps =
+                Pipeline = new CapturePipelineConfig(
                 [
                     new CaptureProcessingStepConfig("ProjectedScene", Options: JsonSerializer.SerializeToElement(
-                        new ProjectedSceneCaptureProcessingStepOptions()))
-                ]
+                        new ProjectedSceneCaptureProcessingStepOptions()), DependsOn: ["$raw"])
+                ])
             };
             var catalog = new MetadataCatalog([new CelestialCatalogObject("star", "Star", 0, 0, 1)]);
             var stager = new CaptureProjectedSceneStager(staging, catalog);
@@ -100,7 +100,8 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             {
                 Module = new CameraModuleDescriptor("PhysicalCamera"),
                 DeploymentLocation = location,
-                ProcessingSteps = [new CaptureProcessingStepConfig("ProjectedScene")]
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig("ProjectedScene", DependsOn: ["$raw"])])
             };
             var catalog = new MetadataCatalog([new CelestialCatalogObject("star", "Star", 0, 0, 1)]);
             var stager = new CaptureProjectedSceneStager(staging, catalog);
@@ -301,7 +302,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             var changedConfig = config with
             {
                 Observatory = new ObservatoryLocation(-45, 90, 0, "UTC"),
-                ProcessingSteps = []
+                Pipeline = CapturePipelineConfig.Empty
             };
             var fixture = CreatePhysicalContext(root, config, location, new SceneProvenance(
                 sceneId, config.Rig.ProfileVersion, catalog.Metadata.Name, catalog.Metadata.Version,
@@ -348,11 +349,11 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             {
                 Module = new CameraModuleDescriptor("PhysicalCamera"),
                 DeploymentLocation = location,
-                ProcessingSteps =
+                Pipeline = new CapturePipelineConfig(
                 [
                     new CaptureProcessingStepConfig("ProjectedScene", Options: JsonSerializer.SerializeToElement(
-                        new ProjectedSceneCaptureProcessingStepOptions()))
-                ]
+                        new ProjectedSceneCaptureProcessingStepOptions()), DependsOn: ["$raw"])
+                ])
             };
             var startedUtc = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
             var midpoint = startedUtc.AddSeconds(1);
@@ -477,7 +478,8 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 CalibrationVersion: "projection-v1"),
             new RigOrientation(90, 0, 0),
             new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1),
-                TimeSpan.FromSeconds(1), 1, 1)));
+                TimeSpan.FromSeconds(1), 1, 1)),
+        CapturePipelineConfig.Empty);
 
     private static (CaptureProcessingContext Context, ReconstructionDescriptor Descriptor, string PayloadPath)
         CreatePhysicalContext(

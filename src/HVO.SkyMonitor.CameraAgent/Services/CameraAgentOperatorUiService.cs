@@ -640,10 +640,13 @@ internal sealed class CameraAgentOperatorUiService(
         try
         {
             var config = await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
-            var pipeline = config.ResolveProcessingSteps()
+            var pipeline = config.Pipeline.Steps
                 .Select((step, index) => new CameraAgentPipelineNodeStatus(
                     string.IsNullOrWhiteSpace(step.Id) ? $"node-{index + 1}" : step.Id,
-                    ResolveProcessingAlias(step.Type, processingRegistrations),
+                    config.Pipeline.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2
+                        ? processingRegistrations.FirstOrDefault(registration => string.Equals(
+                            step.Type, registration.Alias, StringComparison.OrdinalIgnoreCase))?.Alias ?? "Unavailable"
+                        : ResolveProcessingAlias(step.Type, processingRegistrations),
                     step.Required,
                     step.DependsOn?.Order(StringComparer.Ordinal).ToArray() ?? []))
                 .OrderBy(static node => node.Id, StringComparer.Ordinal)

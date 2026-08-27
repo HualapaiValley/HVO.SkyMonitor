@@ -8,6 +8,10 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestCategory("Unit")]
 public sealed class ConfigurationTests
 {
+    private static readonly string[] ExpectedArchiveDependencies = ["Annotation"];
+    private static readonly string[] ExpectedTelemetryDependencies =
+        ["Calibration", "Preview", "Annotation", "LocalStorage", "ArchiveStorage"];
+
     [TestMethod]
     public void Generate_ProducesValidatedSunsetToSunriseStandaloneConfiguration()
     {
@@ -26,6 +30,7 @@ public sealed class ConfigurationTests
         var generated = CameraConfiguration.Generate(request, Guid.Parse("65c0dd43-6490-4f10-b972-0f68c79e45a8"));
         using var json = JsonDocument.Parse(generated.Json);
         var schedule = json.RootElement.GetProperty("schedule");
+        var steps = json.RootElement.GetProperty("pipeline").GetProperty("steps").EnumerateArray().ToArray();
 
         Assert.AreEqual("VirtualSky", json.RootElement.GetProperty("module").GetProperty("type").GetString());
         Assert.IsFalse(json.RootElement.TryGetProperty("observatory", out _));
@@ -36,8 +41,19 @@ public sealed class ConfigurationTests
             window.GetProperty("end").GetProperty("kind").GetString() == nameof(CaptureScheduleBoundaryKind.Sunrise)));
         Assert.IsFalse(generated.Json.Contains("example.invalid", StringComparison.Ordinal));
         Assert.IsFalse(generated.Json.Contains("/workspaces", StringComparison.Ordinal));
+        CollectionAssert.AreEqual(
+            ExpectedArchiveDependencies,
+            Dependencies(steps.Single(static step => step.GetProperty("id").GetString() == "ArchiveStorage")));
+        CollectionAssert.AreEquivalent(
+            ExpectedTelemetryDependencies,
+            Dependencies(steps.Single(static step => step.GetProperty("id").GetString() == "Telemetry")));
         Assert.AreEqual(64, generated.Sha256.Length);
         Assert.AreEqual(64, generated.RigProfileSha256.Length);
         Assert.AreEqual(64, generated.ScheduleSha256.Length);
     }
+
+    private static string[] Dependencies(JsonElement step)
+        => step.GetProperty("dependsOn").EnumerateArray()
+            .Select(static dependency => dependency.GetString()!)
+            .ToArray();
 }

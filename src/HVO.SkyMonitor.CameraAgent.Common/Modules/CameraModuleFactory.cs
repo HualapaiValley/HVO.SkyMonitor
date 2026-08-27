@@ -37,9 +37,10 @@ public sealed class CameraModuleFactory(
             {
                 preflight.ValidateConfiguration(configuration);
             }
-            var controlPolicy = configuration.Rig.ControlPolicy;
-            var automaticControl = IsEnabled(controlPolicy?.ExposureControl, controlPolicy?.AutoExposure) ||
-                IsEnabled(controlPolicy?.GainControl, controlPolicy?.AutoGain);
+            var controlPolicy = configuration.Rig.ControlPolicy ?? throw new InvalidOperationException(
+                "Camera control ownership must be configured explicitly.");
+            var automaticControl = controlPolicy.ExposureControl != AutomaticControlOwnership.Disabled ||
+                controlPolicy.GainControl != AutomaticControlOwnership.Disabled;
             if (automaticControl && module is not ICameraSetpointController)
             {
                 throw new InvalidOperationException(
@@ -51,13 +52,6 @@ public sealed class CameraModuleFactory(
             module.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
     }
-
-    private static bool IsEnabled(
-        AutomaticControlOwnership? ownership,
-        CameraFeatureDirective? legacy)
-        => ownership is { } explicitOwnership && explicitOwnership != AutomaticControlOwnership.Unspecified
-            ? explicitOwnership != AutomaticControlOwnership.Disabled
-            : legacy == CameraFeatureDirective.Enabled;
 
     private Type ResolveModuleType(string moduleType)
     {

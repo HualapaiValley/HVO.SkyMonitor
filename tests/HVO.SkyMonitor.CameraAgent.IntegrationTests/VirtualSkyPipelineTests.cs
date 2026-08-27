@@ -156,8 +156,15 @@ public sealed class VirtualSkyPipelineTests
         Assert.IsTrue(HasPendingOrRetryOutboxRecord());
         Assert.AreEqual(RawIngressAvailability.Accepting,
             services.GetRequiredService<RawIngressState>().Snapshot.Availability);
-        Assert.AreEqual(CaptureProcessingAvailability.Healthy,
-            services.GetRequiredService<CaptureProcessingState>().Snapshot.Availability);
+        var processingStateService = services.GetRequiredService<CaptureProcessingState>();
+        await WaitUntilAsync(
+            () => processingStateService.Snapshot.Availability == CaptureProcessingAvailability.Healthy,
+            TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        var processingState = processingStateService.Snapshot;
+        Assert.AreEqual(
+            CaptureProcessingAvailability.Healthy,
+            processingState.Availability,
+            processingState.Reason);
     }
 
     [TestMethod]
@@ -324,10 +331,14 @@ public sealed class VirtualSkyPipelineTests
         await WaitUntilAsync(() =>
         {
             var state = processingStateService.Snapshot;
-            return state.PendingCount == 0 && state.RetryCount == 0 && state.TerminalCount == 0;
+            return state.Availability == CaptureProcessingAvailability.Healthy &&
+                state.PendingCount == 0 && state.RetryCount == 0 && state.TerminalCount == 0;
         }, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         var processingState = processingStateService.Snapshot;
-        Assert.AreEqual(CaptureProcessingAvailability.Healthy, processingState.Availability);
+        Assert.AreEqual(
+            CaptureProcessingAvailability.Healthy,
+            processingState.Availability,
+            processingState.Reason);
         Assert.AreEqual(0L, processingState.PendingCount);
         Assert.AreEqual(0L, processingState.RetryCount);
         Assert.AreEqual(0L, processingState.TerminalCount);

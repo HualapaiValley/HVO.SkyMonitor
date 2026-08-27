@@ -22,6 +22,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestCategory("Unit")]
 public sealed class VirtualSkyCameraModuleTests
 {
+    private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
+
     [TestMethod]
     public void ConfigurationPreflight_RejectsUnmappedVirtualSkyOptions()
     {
@@ -98,16 +100,15 @@ public sealed class VirtualSkyCameraModuleTests
         Assert.AreEqual(1d, envelope.DayDefaults.Gain);
         Assert.AreEqual(1d, envelope.NightDefaults.Gain);
 
-        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var moduleModel = config.ModuleOptions!.Value.GetProperty("syntheticCalibration")
-            .Deserialize<SyntheticCalibrationModelV1>(jsonOptions);
+            .Deserialize<SyntheticCalibrationModelV1>(WebJsonOptions);
         Assert.AreEqual(
             new DateTimeOffset(2026, 1, 15, 8, 0, 0, TimeSpan.Zero),
             config.ModuleOptions.Value.GetProperty("fixedSceneUtc").GetDateTimeOffset());
-        var calibrationConfig = config.ResolveProcessingSteps()
+        var calibrationConfig = config.Pipeline.Steps
             .Single(static step => step.Id == "Calibration");
         var calibrationOptions = calibrationConfig.Options!.Value
-            .Deserialize<CalibrationProcessingStepOptions>(jsonOptions);
+            .Deserialize<CalibrationProcessingStepOptions>(WebJsonOptions);
         Assert.IsNotNull(moduleModel);
         Assert.IsNotNull(calibrationOptions?.SyntheticCalibration);
         moduleModel.Validate(sensor.WidthPixels, sensor.HeightPixels);
@@ -117,7 +118,7 @@ public sealed class VirtualSkyCameraModuleTests
             SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(calibrationOptions.SyntheticCalibration));
         Assert.IsFalse(config.ModuleOptions.Value.GetProperty("asi174Sensor").GetProperty("enabled").GetBoolean());
 
-        var steps = config.ResolveProcessingSteps();
+        var steps = config.Pipeline.Steps;
         CollectionAssert.AreEqual(
             ExpectedStandaloneGraph,
             steps.OrderBy(static step => step.Order).Select(static step => step.Id).ToArray());
@@ -357,14 +358,15 @@ public sealed class VirtualSkyCameraModuleTests
 
         var incompatible = config with
         {
-            ProcessingSteps =
+            Pipeline = new CapturePipelineConfig(
             [
                 new CaptureProcessingStepConfig(
                     "RollingCombination",
                     "rolling",
                     25,
-                    JsonSerializer.SerializeToElement(new RollingCombinationProcessingStepOptions { WindowSize = 2 }))
-            ]
+                    JsonSerializer.SerializeToElement(new { windowSize = 2 }),
+                    ["$raw"])
+            ])
         };
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(incompatible));
         StringAssert.Contains(exception.Message, "rolling", StringComparison.Ordinal);
@@ -619,11 +621,11 @@ public sealed class VirtualSkyCameraModuleTests
         CollectionAssert.AreEqual(ExpectedRgbGraph, graph.Nodes.Select(static node => node.Id).ToArray());
         graph.DisposeSteps();
 
-        var legacyGraph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(
-            config with { ProcessingSteps = [] });
-        Assert.IsFalse(legacyGraph.Nodes.Any(static node => node.RecipeName == BuiltInProcessingRecipes.RollingMean));
-        Assert.IsFalse(legacyGraph.Nodes.Any(static node => node.RecipeName == BuiltInProcessingRecipes.LinearNormalization));
-        legacyGraph.DisposeSteps();
+        var emptyGraph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(
+            config with { Pipeline = CapturePipelineConfig.Empty });
+        Assert.IsFalse(emptyGraph.Nodes.Any(static node => node.RecipeName == BuiltInProcessingRecipes.RollingMean));
+        Assert.IsFalse(emptyGraph.Nodes.Any(static node => node.RecipeName == BuiltInProcessingRecipes.LinearNormalization));
+        emptyGraph.DisposeSteps();
     }
 
     [TestMethod]
@@ -653,7 +655,8 @@ public sealed class VirtualSkyCameraModuleTests
 
         var submission = new CaptureLoopSubmission(request, result, FixtureUtc, request.TargetInterval, TimeSpan.Zero);
         var context = new CaptureProcessingContext(config, submission);
-        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreatePipeline(config);
+        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+            .Select(static node => node.Step).ToArray();
         foreach (var step in pipeline)
         {
             await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
@@ -1673,7 +1676,8 @@ public sealed class VirtualSkyCameraModuleTests
             TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
         var config = CreateConfig() with
         {
-            ProcessingSteps = [new CaptureProcessingStepConfig("ProjectedScene")]
+            Pipeline = new CapturePipelineConfig(
+                [new CaptureProcessingStepConfig("ProjectedScene", DependsOn: ["$raw"])])
         };
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
         var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still);
@@ -1700,7 +1704,8 @@ public sealed class VirtualSkyCameraModuleTests
             TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
         var config = CreateConfig() with
         {
-            ProcessingSteps = [new CaptureProcessingStepConfig("ProjectedScene")]
+            Pipeline = new CapturePipelineConfig(
+                [new CaptureProcessingStepConfig("ProjectedScene", DependsOn: ["$raw"])])
         };
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
 
@@ -1723,7 +1728,8 @@ public sealed class VirtualSkyCameraModuleTests
             TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
         await module.InitializeAsync(CreateConfig() with
         {
-            ProcessingSteps = [new CaptureProcessingStepConfig("ProjectedScene")]
+            Pipeline = new CapturePipelineConfig(
+                [new CaptureProcessingStepConfig("ProjectedScene", DependsOn: ["$raw"])])
         }, CancellationToken.None).ConfigureAwait(false);
 
         var actual = await Assert.ThrowsExactlyAsync<IOException>(async () =>
@@ -1934,7 +1940,8 @@ public sealed class VirtualSkyCameraModuleTests
                 width / 2d, height / 2d, 0.98 * Math.Min(width, height) / 2d,
                 CalibrationVersion: "virtual-fisheye-180-equidistant-v1"),
              new RigOrientation(90, 0, 0),
-              new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)));
+              new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+        CapturePipelineConfig.Empty);
 
     private static CameraModuleConfig CreateVirtualCalibrationConfig(VirtualCalibrationLightOptions? calibration)
     {

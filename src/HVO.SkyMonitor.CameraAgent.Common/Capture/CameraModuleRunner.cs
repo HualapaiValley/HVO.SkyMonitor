@@ -77,8 +77,10 @@ internal sealed class CameraModuleRunner
         var targetInterval = config.Rig.Pipeline.CaptureInterval;
         var initialFailureDelay = config.Rig.Pipeline.CaptureFailureInitialDelay ?? DefaultInitialFailureDelay;
         var maximumFailureDelay = config.Rig.Pipeline.CaptureFailureMaximumDelay ?? DefaultMaximumFailureDelay;
-        var exposureControl = ResolveOwnership(config.Rig.ControlPolicy?.ExposureControl, config.Rig.ControlPolicy?.AutoExposure);
-        var gainControl = ResolveOwnership(config.Rig.ControlPolicy?.GainControl, config.Rig.ControlPolicy?.AutoGain);
+        var controlPolicy = config.Rig.ControlPolicy ?? throw new InvalidOperationException(
+            "Camera control ownership must be configured explicitly.");
+        var exposureControl = controlPolicy.ExposureControl;
+        var gainControl = controlPolicy.GainControl;
         var hostMetered = exposureControl == AutomaticControlOwnership.HostMetered ||
             gainControl == AutomaticControlOwnership.HostMetered;
         var automaticControlEnabled = exposureControl != AutomaticControlOwnership.Disabled ||
@@ -90,7 +92,7 @@ internal sealed class CameraModuleRunner
         var initialRegime = hostMetered ? ResolveSolarRegime(config, UtcNow()) : CaptureSolarRegime.Night;
         CaptureSolarRegime? previousRegime = hostMetered ? initialRegime : null;
         var excludedRegions = hostMetered
-            ? CreateExcludedRegions(config.Rig.ControlPolicy?.Metering?.ExcludedRegions)
+            ? CreateExcludedRegions(controlPolicy.Metering?.ExcludedRegions)
             : Array.Empty<MeteringRegion>();
         var nextSetpoint = ExposureController.Initial(config.Rig.Pipeline, initialRegime);
         var captureMode = CaptureMode.Still;
@@ -701,19 +703,6 @@ internal sealed class CameraModuleRunner
             result[index] = new MeteringRegion(region.X, region.Y, region.Width, region.Height);
         }
         return result;
-    }
-
-    internal static AutomaticControlOwnership ResolveOwnership(
-        AutomaticControlOwnership? ownership,
-        CameraFeatureDirective? legacy)
-    {
-        if (ownership is { } explicitOwnership && explicitOwnership != AutomaticControlOwnership.Unspecified)
-        {
-            return explicitOwnership;
-        }
-        return legacy == CameraFeatureDirective.Enabled
-            ? AutomaticControlOwnership.HostMetered
-            : AutomaticControlOwnership.Disabled;
     }
 
     private CaptureSolarRegime ResolveSolarRegime(CameraModuleConfig config, DateTimeOffset utc)

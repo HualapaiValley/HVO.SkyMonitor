@@ -773,6 +773,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
                     TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(32), TimeSpan.FromMilliseconds(32), 82, 82),
                 ProfileVersion: "c208-w0-rig-v1",
                 Readout: readout),
+            CapturePipelineConfig.Empty,
             AgentId: "c208-w0-agent");
     }
 

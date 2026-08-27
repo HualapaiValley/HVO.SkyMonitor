@@ -161,7 +161,13 @@ public sealed class CameraCaptureServiceTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
                     TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1),
-                    TimeSpan.FromMilliseconds(1), 0, 0)));
+                    TimeSpan.FromMilliseconds(1), 0, 0),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }),
+            CapturePipelineConfig.Empty);
 
     private sealed class ConfigurationAccessor(CameraModuleConfig config) : ICameraAgentConfigurationAccessor
     {

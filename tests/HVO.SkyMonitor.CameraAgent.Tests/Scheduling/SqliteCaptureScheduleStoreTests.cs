@@ -3,7 +3,10 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
@@ -13,7 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 public sealed class SqliteCaptureScheduleStoreTests
 {
     [TestMethod]
-    public async Task InitializeAsync_LegacyBootstrapAndFileChangePreserveActiveRevision()
+    public async Task InitializeAsync_ExplicitBootstrapAndFileChangePreserveActiveRevision()
     {
         var root = CreateRoot();
         try
@@ -21,17 +24,17 @@ public sealed class SqliteCaptureScheduleStoreTests
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
             using var store = new SqliteCaptureScheduleStore(
                 new JournalInitializer(root), options, TimeProvider.System);
-            var legacy = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var initial = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
 
-            Assert.AreEqual(1, legacy.ActiveRevision.RevisionNumber);
-            Assert.IsTrue(legacy.ActiveRevision.Definition.LegacyAlwaysOpen);
-            Assert.IsNull(legacy.PendingRevision);
+            Assert.AreEqual(1, initial.ActiveRevision.RevisionNumber);
+            Assert.AreEqual("initial", initial.ActiveRevision.Definition.SetpointProfiles.Single().Id);
+            Assert.IsNull(initial.PendingRevision);
 
             var changed = await store.InitializeAsync(
                 Configuration() with { Schedule = Definition("night", 2) },
                 CancellationToken.None).ConfigureAwait(false);
 
-            Assert.AreEqual(legacy.ActiveRevision.RevisionId, changed.ActiveRevision.RevisionId);
+            Assert.AreEqual(initial.ActiveRevision.RevisionId, changed.ActiveRevision.RevisionId);
             Assert.IsNotNull(changed.PendingRevision);
             Assert.AreEqual("night", changed.PendingRevision.Definition.SetpointProfiles.Single().Id);
         }
@@ -53,7 +56,6 @@ public sealed class SqliteCaptureScheduleStoreTests
             var baseline = Configuration();
             var configuration = baseline with
             {
-                ProcessingSteps = null,
                 Pipeline = new CapturePipelineConfig(
                     [new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"])],
                     CapturePipelineSchemaVersions.ExplicitV2,
@@ -69,13 +71,780 @@ public sealed class SqliteCaptureScheduleStoreTests
                 LocalCaptureProfileContract.ComputeSha256(
                     LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule)),
                 snapshot.ActiveRevision.ProfileSha256);
-            Assert.IsNull(effective.ProcessingSteps);
-            Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, effective.Pipeline!.SchemaVersion);
+            Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, effective.Pipeline.SchemaVersion);
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_PersistedLegacyControlPoliciesNormalizeDuringHostRestart()
+    {
+        var cases = new[]
+        {
+            new LegacyControlCase(
+                LocalCaptureProfileDefinition.LegacySchemaVersion,
+                new CameraControlPolicy
+                {
+                    AutoExposure = CameraFeatureDirective.Enabled,
+                    AutoGain = CameraFeatureDirective.Disabled
+                },
+                AutomaticControlOwnership.HostMetered,
+                AutomaticControlOwnership.Disabled,
+                CapturePipelineSchemaVersions.LegacyV1),
+            new LegacyControlCase(
+                LocalCaptureProfileDefinition.LegacySchemaVersion,
+                null,
+                AutomaticControlOwnership.Disabled,
+                AutomaticControlOwnership.Disabled,
+                CapturePipelineSchemaVersions.LegacyV1),
+            new LegacyControlCase(
+                LocalCaptureProfileDefinition.CurrentSchemaVersion,
+                new CameraControlPolicy
+                {
+                    AutoExposure = CameraFeatureDirective.Enabled,
+                    AutoGain = CameraFeatureDirective.Disabled
+                },
+                AutomaticControlOwnership.HostMetered,
+                AutomaticControlOwnership.Disabled,
+                CapturePipelineSchemaVersions.ExplicitV2),
+            new LegacyControlCase(
+                LocalCaptureProfileDefinition.CurrentSchemaVersion,
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.CameraNative,
+                    GainControl = AutomaticControlOwnership.CameraNative,
+                    AutoExposure = CameraFeatureDirective.Enabled,
+                    AutoGain = CameraFeatureDirective.Disabled
+                },
+                AutomaticControlOwnership.CameraNative,
+                AutomaticControlOwnership.CameraNative,
+                CapturePipelineSchemaVersions.ExplicitV2)
+        };
+        foreach (var testCase in cases)
+        {
+            var root = CreateRoot();
+            try
+            {
+                var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+                var journalInitializer = new JournalInitializer(root);
+                var configuration = HostConfiguration();
+                string revisionId;
+                byte[] profileJson;
+                using (var store = new SqliteCaptureScheduleStore(
+                    journalInitializer, options, TimeProvider.System))
+                {
+                    var initial = await store.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                    var legacyConfiguration = configuration with
+                    {
+                        Rig = configuration.Rig with { ControlPolicy = testCase.Policy }
+                    };
+                    var profile = testCase.ProfileSchemaVersion == LocalCaptureProfileDefinition.CurrentSchemaVersion
+                        ? LocalCaptureProfileDefinition.CreateV2(legacyConfiguration, Definition("legacy", 2))
+                        : LocalCaptureProfileDefinition.Create(legacyConfiguration, Definition("legacy", 2));
+                    revisionId = initial.ActiveRevision.RevisionId;
+                    profileJson = System.Text.Encoding.UTF8.GetBytes(
+                        CaptureContractJson.SerializeToElement(profile).GetRawText());
+                    using var connection = new SqliteConnection(
+                        $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+                    await connection.OpenAsync().ConfigureAwait(false);
+                    using var command = connection.CreateCommand();
+                    command.CommandText = """
+                        UPDATE capture_schedule_revisions
+                        SET profile_json = $json, profile_sha256 = $profile_sha, schedule_sha256 = $schedule_sha
+                        WHERE revision_id = $id;
+                        """;
+                    command.Parameters.AddWithValue("$json", profileJson);
+                    command.Parameters.AddWithValue(
+                        "$profile_sha",
+                        LocalCaptureProfileContract.ComputePersistedRevisionSha256(profile));
+                    command.Parameters.AddWithValue("$schedule_sha", CaptureScheduleContract.ComputeSha256(profile.Schedule));
+                    command.Parameters.AddWithValue("$id", revisionId);
+                    Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+                }
+                using (var document = System.Text.Json.JsonDocument.Parse(profileJson))
+                {
+                    var serializedPolicy = document.RootElement.GetProperty("rig").GetProperty("controlPolicy");
+                    if (testCase.Policy is null)
+                    {
+                        Assert.AreEqual(System.Text.Json.JsonValueKind.Null, serializedPolicy.ValueKind);
+                    }
+                    else if (testCase.ProfileSchemaVersion == LocalCaptureProfileDefinition.CurrentSchemaVersion)
+                    {
+                        Assert.AreEqual(
+                            testCase.Policy!.ExposureControl == AutomaticControlOwnership.Unspecified,
+                            !serializedPolicy.TryGetProperty("exposureControl", out _));
+                        Assert.AreEqual(
+                            testCase.Policy.GainControl == AutomaticControlOwnership.Unspecified,
+                            !serializedPolicy.TryGetProperty("gainControl", out _));
+                        Assert.AreEqual("Enabled", serializedPolicy.GetProperty("autoExposure").GetString());
+                        Assert.AreEqual("Disabled", serializedPolicy.GetProperty("autoGain").GetString());
+                    }
+                }
+
+                using var restarted = new SqliteCaptureScheduleStore(
+                    journalInitializer, options, TimeProvider.System);
+                var accessor = new CameraAgentConfigurationAccessor();
+                var hostInitializer = new CameraAgentConfigurationInitializer(
+                    new StaticConfigurationLoader(configuration),
+                    accessor,
+                    new EmptyPipelineFactory(),
+                    NullLogger<CameraAgentConfigurationInitializer>.Instance,
+                    restarted);
+
+                await hostInitializer.StartAsync(CancellationToken.None).ConfigureAwait(false);
+                var effective = await accessor.WaitForConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+                var recovered = await restarted.GetRevisionAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(testCase.ExpectedPipelineSchemaVersion, effective.Pipeline.SchemaVersion);
+                Assert.AreEqual(
+                    testCase.ExpectedExposure,
+                    effective.Rig.ControlPolicy!.ExposureControl);
+                Assert.AreEqual(
+                    testCase.ExpectedGain,
+                    effective.Rig.ControlPolicy.GainControl);
+                Assert.AreEqual(testCase.ExpectedExposure, recovered.Profile.Rig.ControlPolicy!.ExposureControl);
+                Assert.AreEqual(testCase.ExpectedGain, recovered.Profile.Rig.ControlPolicy.GainControl);
+                Assert.IsNull(recovered.Profile.Rig.ControlPolicy.AutoExposure);
+                Assert.IsNull(recovered.Profile.Rig.ControlPolicy.AutoGain);
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private sealed record LegacyControlCase(
+        string ProfileSchemaVersion,
+        CameraControlPolicy? Policy,
+        AutomaticControlOwnership ExpectedExposure,
+        AutomaticControlOwnership ExpectedGain,
+        string ExpectedPipelineSchemaVersion);
+
+    [TestMethod]
+    public async Task InitializeAsync_CollapsesNormalizedDuplicatePendingRevisionDuringRecovery()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            var configuration = HostConfiguration();
+            var timeProvider = new SettableTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+            var seed = await SeedNormalizedDuplicateRevisionsAsync(
+                root, options, initializer, configuration, timeProvider).ConfigureAwait(false);
+            var staged = seed.Snapshot;
+            var activePersistedSha256 = LocalCaptureProfileContract.ComputePersistedRevisionSha256(
+                seed.ActivePersistedProfile);
+            var pendingPersistedSha256 = LocalCaptureProfileContract.ComputePersistedRevisionSha256(
+                seed.PendingPersistedProfile);
+            Assert.AreNotEqual(activePersistedSha256, pendingPersistedSha256);
+            Assert.AreEqual(
+                LocalCaptureProfileContract.ComputeEffectiveSha256(
+                    seed.ActivePersistedProfile.NormalizePersistedRevisionForRead()),
+                LocalCaptureProfileContract.ComputeEffectiveSha256(
+                    seed.PendingPersistedProfile.NormalizePersistedRevisionForRead()));
+            Assert.AreEqual(
+                CaptureScheduleContract.ComputeSha256(seed.ActivePersistedProfile.Schedule),
+                CaptureScheduleContract.ComputeSha256(seed.PendingPersistedProfile.Schedule));
+            var recoveryUtc = new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
+            timeProvider.UtcNow = recoveryUtc;
+            using var restarted = new SqliteCaptureScheduleStore(initializer, options, timeProvider);
+
+            var recovered = await restarted.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            var operatorState = await restarted.GetOperatorStateAsync(10, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(staged.ActiveRevision.RevisionId, recovered.ActiveRevision.RevisionId);
+            Assert.IsNull(recovered.PendingRevision);
+            Assert.AreEqual(staged.Version + 1, recovered.Version);
+            Assert.AreEqual(recoveryUtc, recovered.UpdatedUtc);
+            Assert.AreEqual(2, operatorState.History.Count);
+            CollectionAssert.AreEquivalent(
+                new[] { staged.ActiveRevision.RevisionId, staged.PendingRevision!.RevisionId },
+                operatorState.History.Select(revision => revision.RevisionId).ToArray());
+            Assert.AreEqual(
+                LocalCaptureProfileContract.ComputeSha256(SqliteCaptureScheduleStore.CreateFileProfile(configuration)),
+                operatorState.FileConfigurationProfileSha256);
+            using (var verification = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await verification.OpenAsync().ConfigureAwait(false);
+                Assert.AreEqual(2, await CountRevisionsAsync(verification).ConfigureAwait(false));
+                Assert.AreEqual(1, await CountActivationsAsync(verification).ConfigureAwait(false));
+                using var command = verification.CreateCommand();
+                command.CommandText = "SELECT profile_sha256 FROM capture_schedule_revisions ORDER BY revision_number;";
+                using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+                Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+                Assert.AreEqual(activePersistedSha256, reader.GetString(0));
+                Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+                Assert.AreEqual(pendingPersistedSha256, reader.GetString(0));
+                Assert.IsFalse(await reader.ReadAsync().ConfigureAwait(false));
+            }
+            timeProvider.UtcNow = recoveryUtc.AddDays(1);
+
+            var repeated = await restarted.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(recovered.ActiveRevision.RevisionId, repeated.ActiveRevision.RevisionId);
+            Assert.IsNull(repeated.PendingRevision);
+            Assert.AreEqual(recovered.Version, repeated.Version);
+            Assert.AreEqual(recovered.UpdatedUtc, repeated.UpdatedUtc);
+            using var repeatedVerification = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await repeatedVerification.OpenAsync().ConfigureAwait(false);
+            Assert.AreEqual(2, await CountRevisionsAsync(repeatedVerification).ConfigureAwait(false));
+            Assert.AreEqual(1, await CountActivationsAsync(repeatedVerification).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_ReplacesNormalizedDuplicatePendingWithDistinctFileDraftOnce()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            var persistedConfiguration = HostConfiguration();
+            var fileConfiguration = persistedConfiguration with { Schedule = Definition("file-current", 3) };
+            var timeProvider = new SettableTimeProvider(new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero));
+            var seed = await SeedNormalizedDuplicateRevisionsAsync(
+                root, options, initializer, persistedConfiguration, timeProvider).ConfigureAwait(false);
+            using (var setup = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await setup.OpenAsync().ConfigureAwait(false);
+                using var command = setup.CreateCommand();
+                command.CommandText = """
+                    CREATE TABLE recovery_state_updates(marker INTEGER NOT NULL);
+                    CREATE TRIGGER count_recovery_state_updates
+                    AFTER UPDATE ON capture_schedule_state
+                    BEGIN
+                        INSERT INTO recovery_state_updates(marker) VALUES (1);
+                    END;
+                    """;
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            var recoveryUtc = new DateTimeOffset(2026, 2, 2, 0, 0, 0, TimeSpan.Zero);
+            timeProvider.UtcNow = recoveryUtc;
+            var expectedFileProfile = SqliteCaptureScheduleStore.CreateFileProfile(fileConfiguration);
+            var expectedFileSha256 = LocalCaptureProfileContract.ComputeSha256(expectedFileProfile);
+            using var restarted = new SqliteCaptureScheduleStore(initializer, options, timeProvider);
+
+            var recovered = await restarted.InitializeAsync(
+                fileConfiguration, CancellationToken.None).ConfigureAwait(false);
+            var operatorState = await restarted.GetOperatorStateAsync(10, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(seed.Snapshot.ActiveRevision.RevisionId, recovered.ActiveRevision.RevisionId);
+            Assert.IsNotNull(recovered.PendingRevision);
+            Assert.AreEqual(expectedFileSha256, recovered.PendingRevision.ProfileSha256);
+            Assert.AreEqual("file-draft", recovered.PendingRevision.Source);
+            Assert.AreEqual(3, recovered.PendingRevision.RevisionNumber);
+            Assert.AreEqual($"profile-00000003-{expectedFileSha256[..12]}", recovered.PendingRevision.RevisionId);
+            Assert.AreEqual(seed.Snapshot.Version + 1, recovered.Version);
+            Assert.AreEqual(recoveryUtc, recovered.UpdatedUtc);
+            Assert.AreEqual(expectedFileSha256, operatorState.FileConfigurationProfileSha256);
+            Assert.AreEqual(3, operatorState.History.Count);
+            CollectionAssert.AreEquivalent(
+                new[]
+                {
+                    seed.Snapshot.ActiveRevision.RevisionId,
+                    seed.Snapshot.PendingRevision!.RevisionId,
+                    recovered.PendingRevision.RevisionId
+                },
+                operatorState.History.Select(revision => revision.RevisionId).ToArray());
+            using (var verification = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await verification.OpenAsync().ConfigureAwait(false);
+                Assert.AreEqual(3, await CountRevisionsAsync(verification).ConfigureAwait(false));
+                Assert.AreEqual(1, await CountActivationsAsync(verification).ConfigureAwait(false));
+                Assert.AreEqual(1, await CountRecoveryStateUpdatesAsync(verification).ConfigureAwait(false));
+            }
+            timeProvider.UtcNow = recoveryUtc.AddDays(1);
+
+            var repeated = await restarted.InitializeAsync(
+                fileConfiguration, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(recovered.ActiveRevision.RevisionId, repeated.ActiveRevision.RevisionId);
+            Assert.AreEqual(recovered.PendingRevision.RevisionId, repeated.PendingRevision!.RevisionId);
+            Assert.AreEqual(recovered.Version, repeated.Version);
+            Assert.AreEqual(recovered.UpdatedUtc, repeated.UpdatedUtc);
+            using var repeatedVerification = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await repeatedVerification.OpenAsync().ConfigureAwait(false);
+            Assert.AreEqual(3, await CountRevisionsAsync(repeatedVerification).ConfigureAwait(false));
+            Assert.AreEqual(1, await CountActivationsAsync(repeatedVerification).ConfigureAwait(false));
+            Assert.AreEqual(1, await CountRecoveryStateUpdatesAsync(repeatedVerification).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_DoesNotCollapsePendingRevisionForMatchingScheduleOnly()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            var configuration = HostConfiguration();
+            CaptureScheduleStoreSnapshot staged;
+            using (var seedStore = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System))
+            {
+                var initial = await seedStore.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                var pendingProfile = LocalCaptureProfileDefinition.CreateV2(
+                    configuration with
+                    {
+                        Rig = configuration.Rig with
+                        {
+                            ControlPolicy = new CameraControlPolicy
+                            {
+                                ExposureControl = AutomaticControlOwnership.CameraNative,
+                                GainControl = AutomaticControlOwnership.Disabled
+                            }
+                        }
+                    },
+                    configuration.Schedule!);
+                staged = await seedStore.StageAsync(
+                    pendingProfile,
+                    "matching-schedule",
+                    initial.Version,
+                    "test",
+                    null,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(staged.ActiveRevision.ScheduleSha256, staged.PendingRevision!.ScheduleSha256);
+                Assert.AreNotEqual(staged.ActiveRevision.ProfileSha256, staged.PendingRevision.ProfileSha256);
+            }
+            using var restarted = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System);
+
+            var recovered = await restarted.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(staged.ActiveRevision.RevisionId, recovered.ActiveRevision.RevisionId);
+            Assert.AreEqual(staged.PendingRevision!.RevisionId, recovered.PendingRevision!.RevisionId);
+            Assert.AreEqual(staged.Version, recovered.Version);
+            Assert.AreEqual(staged.UpdatedUtc, recovered.UpdatedUtc);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion, true)]
+    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion, false)]
+    [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion, true)]
+    [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion, false)]
+    public async Task InitializeAsync_ChecksumValidUndefinedLegacyDirectiveFailsBeforeNormalization(
+        string schemaVersion,
+        bool invalidExposure)
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            var configuration = HostConfiguration();
+            LocalCaptureProfileDefinition malformedProfile;
+            string revisionId;
+            using (var seedStore = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System))
+            {
+                var initial = await seedStore.InitializeAsync(
+                    configuration, CancellationToken.None).ConfigureAwait(false);
+                var malformedConfiguration = configuration with
+                {
+                    Rig = configuration.Rig with
+                    {
+                        ControlPolicy = new CameraControlPolicy
+                        {
+                            AutoExposure = invalidExposure
+                                ? (CameraFeatureDirective)int.MaxValue
+                                : CameraFeatureDirective.Enabled,
+                            AutoGain = invalidExposure
+                                ? CameraFeatureDirective.Disabled
+                                : (CameraFeatureDirective)int.MaxValue
+                        }
+                    }
+                };
+                malformedProfile = schemaVersion == LocalCaptureProfileDefinition.LegacySchemaVersion
+                    ? LocalCaptureProfileDefinition.Create(malformedConfiguration, configuration.Schedule!)
+                    : LocalCaptureProfileDefinition.CreateV2(malformedConfiguration, configuration.Schedule!);
+                var serializableConfiguration = malformedConfiguration with
+                {
+                    Rig = malformedConfiguration.Rig with
+                    {
+                        ControlPolicy = new CameraControlPolicy
+                        {
+                            AutoExposure = CameraFeatureDirective.Enabled,
+                            AutoGain = CameraFeatureDirective.Disabled
+                        }
+                    }
+                };
+                var serializableProfile = schemaVersion == LocalCaptureProfileDefinition.LegacySchemaVersion
+                    ? LocalCaptureProfileDefinition.Create(serializableConfiguration, configuration.Schedule!)
+                    : LocalCaptureProfileDefinition.CreateV2(serializableConfiguration, configuration.Schedule!);
+                revisionId = initial.ActiveRevision.RevisionId;
+                var profileNode = System.Text.Json.Nodes.JsonNode.Parse(
+                    CaptureContractJson.SerializeToElement(serializableProfile).GetRawText())!.AsObject();
+                profileNode["rig"]!["controlPolicy"]![invalidExposure ? "autoExposure" : "autoGain"] = int.MaxValue;
+                var profileJson = System.Text.Encoding.UTF8.GetBytes(profileNode.ToJsonString());
+                using var profileDocument = System.Text.Json.JsonDocument.Parse(profileJson);
+                var rawProfileSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(profileDocument.RootElement);
+                using var connection = new SqliteConnection(
+                    $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE capture_schedule_revisions
+                    SET profile_json = $json, profile_sha256 = $profile_sha
+                    WHERE revision_id = $revision;
+                    """;
+                command.Parameters.AddWithValue("$json", profileJson);
+                command.Parameters.AddWithValue("$profile_sha", rawProfileSha256);
+                command.Parameters.AddWithValue("$revision", revisionId);
+                Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+            var validation = LocalCaptureProfileContract.ValidatePersistedRevision(malformedProfile);
+            Assert.IsFalse(validation.IsValid);
+            Assert.AreEqual(
+                invalidExposure
+                    ? "localProfile.rig.controlPolicy.autoExposure"
+                    : "localProfile.rig.controlPolicy.autoGain",
+                validation.FieldPath);
+            using var restarted = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System);
+
+            _ = await Assert.ThrowsAsync<InvalidDataException>(() => restarted.GetRevisionAsync(
+                revisionId, CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task StageAsync_RejectsLegacyAndMalformedCurrentProfiles()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            using var store = new SqliteCaptureScheduleStore(
+                new JournalInitializer(root), options, TimeProvider.System);
+            var configuration = HostConfiguration();
+            var initial = await store.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            var legacy = LocalCaptureProfileDefinition.Create(configuration, Definition("legacy", 2));
+            var malformedCurrentProfiles = new[]
+            {
+                LocalCaptureProfileDefinition.CreateV2(
+                    configuration with
+                    {
+                        Rig = configuration.Rig with { ControlPolicy = new CameraControlPolicy() }
+                    },
+                    Definition("unspecified", 2)),
+                LocalCaptureProfileDefinition.CreateV2(
+                    configuration with
+                    {
+                        Rig = configuration.Rig with
+                        {
+                            ControlPolicy = configuration.Rig.ControlPolicy! with
+                            {
+                                AutoExposure = CameraFeatureDirective.Enabled,
+                                AutoGain = CameraFeatureDirective.Disabled
+                            }
+                        }
+                    },
+                    Definition("legacy-directives", 2)),
+                LocalCaptureProfileDefinition.CreateV2(
+                    configuration,
+                    Definition("legacy-schedule", 2) with
+                    {
+                        WeeklyWindows = [],
+                        LegacyAlwaysOpen = true,
+                        LegacySetpointProfileId = "legacy-schedule"
+                    })
+            };
+
+            _ = await Assert.ThrowsAsync<ArgumentException>(() => store.StageAsync(
+                legacy, "stage-v1", initial.Version, "test", null, CancellationToken.None)).ConfigureAwait(false);
+            foreach (var (malformedCurrent, index) in malformedCurrentProfiles.Select((profile, index) => (profile, index)))
+            {
+                _ = await Assert.ThrowsAsync<ArgumentException>(() => store.StageAsync(
+                    malformedCurrent,
+                    $"stage-malformed-v2-{index}",
+                    initial.Version,
+                    "test",
+                    null,
+                    CancellationToken.None)).ConfigureAwait(false);
+            }
+
+            var unchanged = await store.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(initial.Version, unchanged.Version);
+            Assert.IsNull(unchanged.PendingRevision);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion)]
+    [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion)]
+    public async Task StageAsync_PreUpgradeLegacyCommandReplaysButNewKeyIsRejected(string schemaVersion)
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            var configuration = HostConfiguration();
+            const string idempotencyKey = "pre-upgrade-stage";
+            const string actor = "test";
+            const string reason = "pre-upgrade";
+            long? expectedVersion;
+            CaptureScheduleStoreSnapshot staged;
+            LocalCaptureProfileDefinition persistedProfile;
+            using (var store = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System))
+            {
+                var initial = await store.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                expectedVersion = initial.Version;
+                var schedule = Definition("upgrade", 2);
+                staged = await store.StageAsync(
+                    LocalCaptureProfileDefinition.CreateV2(configuration, schedule),
+                    idempotencyKey,
+                    expectedVersion,
+                    actor,
+                    reason,
+                    CancellationToken.None).ConfigureAwait(false);
+                var legacyConfiguration = configuration with
+                {
+                    Rig = configuration.Rig with
+                    {
+                        ControlPolicy = new CameraControlPolicy
+                        {
+                            AutoExposure = CameraFeatureDirective.Enabled,
+                            AutoGain = CameraFeatureDirective.Disabled
+                        }
+                    }
+                };
+                persistedProfile = schemaVersion == LocalCaptureProfileDefinition.LegacySchemaVersion
+                    ? LocalCaptureProfileDefinition.Create(legacyConfiguration, schedule)
+                    : LocalCaptureProfileDefinition.CreateV2(legacyConfiguration, schedule);
+            }
+            var profileJson = System.Text.Encoding.UTF8.GetBytes(
+                CaptureContractJson.SerializeToElement(persistedProfile).GetRawText());
+            var commandSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                CommandKind = "stage",
+                Payload = persistedProfile,
+                expectedVersion,
+                actor,
+                reason
+            });
+            using (var connection = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE capture_schedule_revisions
+                    SET profile_json = $json, profile_sha256 = $profile_sha, schedule_sha256 = $schedule_sha
+                    WHERE revision_id = $revision;
+                    UPDATE capture_schedule_commands
+                    SET payload_sha256 = $command_sha
+                    WHERE idempotency_key = $operation;
+                    """;
+                command.Parameters.AddWithValue("$json", profileJson);
+                command.Parameters.AddWithValue(
+                    "$profile_sha",
+                    LocalCaptureProfileContract.ComputePersistedRevisionSha256(persistedProfile));
+                command.Parameters.AddWithValue(
+                    "$schedule_sha",
+                    CaptureScheduleContract.ComputeSha256(persistedProfile.Schedule));
+                command.Parameters.AddWithValue("$revision", staged.PendingRevision!.RevisionId);
+                command.Parameters.AddWithValue("$command_sha", commandSha256);
+                command.Parameters.AddWithValue("$operation", idempotencyKey);
+                Assert.AreEqual(2, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+
+            using var restarted = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System);
+            var replay = await restarted.StageAsync(
+                persistedProfile,
+                idempotencyKey,
+                expectedVersion,
+                actor,
+                reason,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(staged.Version, replay.Version);
+            Assert.IsNotNull(replay.PendingRevision);
+            Assert.AreEqual(schemaVersion, replay.PendingRevision.Profile.SchemaVersion);
+            Assert.AreEqual(
+                LocalCaptureProfileContract.ComputeEffectiveSha256(replay.PendingRevision.Profile),
+                replay.PendingRevision.ProfileSha256);
+            _ = await Assert.ThrowsAsync<ArgumentException>(() => restarted.StageAsync(
+                persistedProfile,
+                $"{idempotencyKey}-new",
+                staged.Version,
+                actor,
+                reason,
+                CancellationToken.None)).ConfigureAwait(false);
+            _ = await Assert.ThrowsAsync<CaptureScheduleStoreConflictException>(() => restarted.StageAsync(
+                persistedProfile with { Schedule = Definition("mismatch", 3) },
+                idempotencyKey,
+                expectedVersion,
+                actor,
+                reason,
+                CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task StageAsync_RecoveredNormalizedActiveProfileIsEffectiveNoOp()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            var configuration = HostConfiguration();
+            using (var seedStore = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System))
+            {
+                var initial = await seedStore.InitializeAsync(
+                    configuration, CancellationToken.None).ConfigureAwait(false);
+                var persistedConfiguration = configuration with
+                {
+                    Rig = configuration.Rig with
+                    {
+                        ControlPolicy = new CameraControlPolicy
+                        {
+                            AutoExposure = CameraFeatureDirective.Disabled,
+                            AutoGain = CameraFeatureDirective.Disabled
+                        }
+                    }
+                };
+                var persistedProfile = LocalCaptureProfileDefinition.CreateV2(
+                    persistedConfiguration, configuration.Schedule!);
+                var profileJson = System.Text.Encoding.UTF8.GetBytes(
+                    CaptureContractJson.SerializeToElement(persistedProfile).GetRawText());
+                using var connection = new SqliteConnection(
+                    $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE capture_schedule_revisions
+                    SET profile_json = $json, profile_sha256 = $profile_sha
+                    WHERE revision_id = $revision;
+                    """;
+                command.Parameters.AddWithValue("$json", profileJson);
+                command.Parameters.AddWithValue(
+                    "$profile_sha",
+                    LocalCaptureProfileContract.ComputePersistedRevisionSha256(persistedProfile));
+                command.Parameters.AddWithValue("$revision", initial.ActiveRevision.RevisionId);
+                Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+            }
+
+            using var restarted = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System);
+            var recovered = await restarted.InitializeAsync(
+                configuration, CancellationToken.None).ConfigureAwait(false);
+            using var before = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await before.OpenAsync().ConfigureAwait(false);
+            var revisionCount = await CountRevisionsAsync(before).ConfigureAwait(false);
+            await before.CloseAsync().ConfigureAwait(false);
+
+            var replayed = await restarted.StageAsync(
+                recovered.ActiveRevision.Profile,
+                "stage-normalized-active",
+                recovered.Version,
+                "test",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(recovered.ActiveRevision.RevisionId, replayed.ActiveRevision.RevisionId);
+            Assert.AreEqual(recovered.Version, replayed.Version);
+            Assert.IsNull(replayed.PendingRevision);
+            using var verification = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await verification.OpenAsync().ConfigureAwait(false);
+            Assert.AreEqual(
+                revisionCount,
+                await CountRevisionsAsync(verification).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static CameraModuleConfig HostConfiguration()
+    {
+        var configuration = Configuration();
+        return configuration with
+        {
+            AgentId = "test-agent",
+            Rig = configuration.Rig with
+            {
+                Optics = configuration.Rig.Optics with { ImageCircleRadiusPixels = 1 },
+                Pipeline = configuration.Rig.Pipeline with
+                {
+                    Envelope = new ExposureEnvelope(
+                        TimeSpan.FromSeconds(1),
+                        TimeSpan.FromSeconds(5),
+                        1,
+                        10,
+                        new ExposureDefaults(TimeSpan.FromSeconds(1), 1),
+                        new ExposureDefaults(TimeSpan.FromSeconds(5), 10),
+                        0.5)
+                },
+                ControlPolicy = new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }
+            },
+            DeploymentLocation = DeploymentLocationSnapshot.Create(
+                "test-location",
+                1,
+                "test",
+                null,
+                DateTimeOffset.UnixEpoch,
+                null,
+                configuration.Observatory.LatitudeDegrees,
+                configuration.Observatory.LongitudeDegrees,
+                configuration.Observatory.ElevationMeters,
+                configuration.Observatory.TimeZoneId)
+        };
+    }
+
+    private sealed class StaticConfigurationLoader(CameraModuleConfig configuration)
+        : ICameraAgentConfigurationLoader
+    {
+        public Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
+            => Task.FromResult(configuration);
+    }
+
+    private sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
+    {
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => new([]);
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+            => throw new NotSupportedException();
     }
 
     [TestMethod]
@@ -90,7 +859,7 @@ public sealed class SqliteCaptureScheduleStoreTests
             _ = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
 
             _ = await Assert.ThrowsAsync<ArgumentException>(() => store.StageAsync(
-                LocalCaptureProfileDefinition.Create(Configuration(), Definition("night", 2)),
+                LocalCaptureProfileDefinition.CreateV2(Configuration(), Definition("night", 2)),
                 "missing-version",
                 null,
                 "owner",
@@ -156,7 +925,7 @@ public sealed class SqliteCaptureScheduleStoreTests
             using (var store = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System))
             {
                 var initial = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
-                var profile = LocalCaptureProfileDefinition.Create(Configuration(), Definition("night", 2));
+                var profile = LocalCaptureProfileDefinition.CreateV2(Configuration(), Definition("night", 2));
                 var staged = (await store.StageWithCurrentFromBasisAsync(
                     profile,
                     initial.ActiveRevision.RevisionId,
@@ -273,7 +1042,7 @@ public sealed class SqliteCaptureScheduleStoreTests
             var initializer = new JournalInitializer(root);
             using var store = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System);
             var initial = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
-            var profile = LocalCaptureProfileDefinition.Create(Configuration(), Definition("night", 2));
+            var profile = LocalCaptureProfileDefinition.CreateV2(Configuration(), Definition("night", 2));
             var staged = await store.StageAsync(
                 profile, "stage-for-rollback", initial.Version, "owner", null, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -392,7 +1161,16 @@ public sealed class SqliteCaptureScheduleStoreTests
                     TimeSpan.FromSeconds(1),
                     TimeSpan.FromSeconds(5),
                     1,
-                    10)));
+                    10),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }),
+            CapturePipelineConfig.Empty)
+        {
+            Schedule = Definition("initial", 1)
+        };
 
     private static CaptureScheduleDefinition Definition(string profileId, double gain)
         => new(
@@ -408,6 +1186,128 @@ public sealed class SqliteCaptureScheduleStoreTests
                 new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(18, 0)),
                 new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(6, 0), DayOffset: 1),
                 profileId)]);
+
+    private static async Task<long> CountRevisionsAsync(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM capture_schedule_revisions;";
+        return (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+    }
+
+    private static async Task<long> CountActivationsAsync(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM capture_schedule_activations;";
+        return (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+    }
+
+    private static async Task<long> CountRecoveryStateUpdatesAsync(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM recovery_state_updates;";
+        return (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+    }
+
+    private static async Task<NormalizedDuplicateSeed> SeedNormalizedDuplicateRevisionsAsync(
+        string root,
+        IOptions<CameraAgentHostOptions> options,
+        JournalInitializer initializer,
+        CameraModuleConfig configuration,
+        TimeProvider timeProvider)
+    {
+        CaptureScheduleStoreSnapshot staged;
+        using (var seedStore = new SqliteCaptureScheduleStore(initializer, options, timeProvider))
+        {
+            var initial = await seedStore.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            staged = await seedStore.StageAsync(
+                LocalCaptureProfileDefinition.CreateV2(configuration, Definition("temporary-draft", 2)),
+                "seed-pending",
+                initial.Version,
+                "test",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        var activePersistedProfile = LocalCaptureProfileDefinition.CreateV2(
+            configuration with
+            {
+                Rig = configuration.Rig with
+                {
+                    ControlPolicy = new CameraControlPolicy
+                    {
+                        AutoExposure = CameraFeatureDirective.Disabled,
+                        AutoGain = CameraFeatureDirective.Disabled
+                    }
+                }
+            },
+            configuration.Schedule!);
+        var pendingPersistedProfile = LocalCaptureProfileDefinition.CreateV2(
+            configuration with
+            {
+                Rig = configuration.Rig with
+                {
+                    ControlPolicy = new CameraControlPolicy
+                    {
+                        ExposureControl = AutomaticControlOwnership.Disabled,
+                        GainControl = AutomaticControlOwnership.Disabled,
+                        AutoExposure = CameraFeatureDirective.Enabled,
+                        AutoGain = CameraFeatureDirective.Enabled
+                    }
+                }
+            },
+            configuration.Schedule!);
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE capture_schedule_revisions
+            SET profile_json = $active_json,
+                profile_sha256 = $active_profile_sha,
+                schedule_sha256 = $schedule_sha
+            WHERE revision_id = $active;
+            UPDATE capture_schedule_revisions
+            SET profile_json = $pending_json,
+                profile_sha256 = $pending_profile_sha,
+                schedule_sha256 = $schedule_sha
+            WHERE revision_id = $pending;
+            """;
+        command.Parameters.AddWithValue(
+            "$active_json",
+            System.Text.Encoding.UTF8.GetBytes(
+                CaptureContractJson.SerializeToElement(activePersistedProfile).GetRawText()));
+        command.Parameters.AddWithValue(
+            "$active_profile_sha",
+            LocalCaptureProfileContract.ComputePersistedRevisionSha256(activePersistedProfile));
+        command.Parameters.AddWithValue(
+            "$pending_json",
+            System.Text.Encoding.UTF8.GetBytes(
+                CaptureContractJson.SerializeToElement(pendingPersistedProfile).GetRawText()));
+        command.Parameters.AddWithValue(
+            "$pending_profile_sha",
+            LocalCaptureProfileContract.ComputePersistedRevisionSha256(pendingPersistedProfile));
+        command.Parameters.AddWithValue(
+            "$schedule_sha",
+            CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
+        command.Parameters.AddWithValue("$active", staged.ActiveRevision.RevisionId);
+        command.Parameters.AddWithValue("$pending", staged.PendingRevision!.RevisionId);
+        if (await command.ExecuteNonQueryAsync().ConfigureAwait(false) != 2)
+        {
+            throw new InvalidOperationException("The duplicate recovery seed revisions were not updated.");
+        }
+        return new NormalizedDuplicateSeed(staged, activePersistedProfile, pendingPersistedProfile);
+    }
+
+    private sealed record NormalizedDuplicateSeed(
+        CaptureScheduleStoreSnapshot Snapshot,
+        LocalCaptureProfileDefinition ActivePersistedProfile,
+        LocalCaptureProfileDefinition PendingPersistedProfile);
+
+    private sealed class SettableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public DateTimeOffset UtcNow { get; set; } = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => UtcNow;
+    }
 
     private sealed class JournalInitializer(string root) : IRawCaptureIngress
     {

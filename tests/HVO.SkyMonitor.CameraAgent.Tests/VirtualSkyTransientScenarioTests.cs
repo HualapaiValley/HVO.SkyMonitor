@@ -652,7 +652,8 @@ public sealed class VirtualSkyTransientScenarioTests
                     32, 24, 23, CalibrationVersion: "transient-fixture-optics-v1"),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
-                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)));
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty);
     }
 
     private static VirtualTransientScenarioDefinition Definition() => new()

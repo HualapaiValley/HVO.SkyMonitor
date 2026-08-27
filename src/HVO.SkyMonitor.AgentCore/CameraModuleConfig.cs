@@ -9,10 +9,13 @@ public sealed record CameraModuleConfig(
     ObservatoryLocation Observatory,
     CameraModuleDescriptor Module,
     CameraRigConfig Rig,
-    IReadOnlyList<CaptureProcessingStepConfig>? ProcessingSteps = null,
-    CapturePipelineConfig? Pipeline = null,
+    CapturePipelineConfig Pipeline,
     string? AgentId = null)
 {
+    /// <summary>Gets processing steps retained only for replaying pre-pipeline durable envelopes.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<CaptureProcessingStepConfig>? ProcessingSteps { get; init; }
+
     /// <summary>Gets the validated immutable deployment location selected for this process lifetime.</summary>
     [JsonIgnore]
     public DeploymentLocationSnapshot? DeploymentLocation { get; init; }
@@ -43,8 +46,6 @@ public sealed record CameraModuleConfig(
 
     public JsonElement? ModuleOptions => Module?.Options;
 
-    public IReadOnlyList<CaptureProcessingStepConfig> ResolveProcessingSteps()
-        => ProcessingSteps ?? Pipeline?.Steps ?? CapturePipelineConfig.Empty.Steps;
 }
 
 public sealed record CameraModuleDescriptor(
@@ -52,15 +53,12 @@ public sealed record CameraModuleDescriptor(
     JsonElement? Options = null);
 
 public sealed record CapturePipelineConfig(
-    IReadOnlyList<CaptureProcessingStepConfig> Steps,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SchemaVersion = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    CapturePipelineDependencyPolicy DependencyPolicy = CapturePipelineDependencyPolicy.LegacyInference)
+    [property: JsonRequired] IReadOnlyList<CaptureProcessingStepConfig> Steps,
+    [property: JsonRequired] string SchemaVersion = CapturePipelineSchemaVersions.ExplicitV2,
+    [property: JsonRequired]
+    CapturePipelineDependencyPolicy DependencyPolicy = CapturePipelineDependencyPolicy.RejectEnabledDependent)
 {
     public static CapturePipelineConfig Empty { get; } = new(Array.Empty<CaptureProcessingStepConfig>());
-
-    [JsonIgnore]
-    public string EffectiveSchemaVersion => SchemaVersion ?? CapturePipelineSchemaVersions.LegacyV1;
 }
 
 public static class CapturePipelineSchemaVersions

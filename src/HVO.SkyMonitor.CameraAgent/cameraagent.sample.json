@@ -73,22 +73,23 @@
             }
         },
         "controlPolicy": {
+            "exposureControl": "Disabled",
+            "gainControl": "Disabled",
             "temperature": {
                 "mode": "Target",
                 "targetC": -5.0
-            },
-            "autoGain": "Disabled",
-            "autoExposure": "Disabled"
+            }
         }
     },
-    "processingSteps": [
-        {
+    "pipeline": {
+        "schemaVersion": "cameraagent-capture-pipeline-v2",
+        "dependencyPolicy": "reject-enabled-dependent-v1",
+        "steps": [{
             "id": "RollingCombination",
             "type": "RollingCombination",
             "order": 25,
             "dependsOn": ["Calibration"],
             "options": {
-                "enabled": true,
                 "windowSize": 5
             }
         },
@@ -98,7 +99,6 @@
             "order": 45,
             "dependsOn": ["Calibration"],
             "options": {
-                "enabled": true,
                 "recipeVersion": "calibrated-preview-v1",
                 "outputVariant": "calibrated-display",
                 "blackPercentile": 0.5,
@@ -112,7 +112,6 @@
             "order": 50,
             "dependsOn": ["RollingCombination"],
             "options": {
-                "enabled": true,
                 "recipeVersion": "mono16-asinh-v2",
                 "blackPercentile": 0.5,
                 "whitePercentile": 0.9999,
@@ -125,7 +124,6 @@
             "order": 75,
             "dependsOn": ["Preview"],
             "options": {
-                "enabled": true,
                 "markRadius": 6,
                 "markerValue": 144,
                 "drawLabels": true,
@@ -151,8 +149,8 @@
             "id": "Calibration",
             "type": "Calibration",
             "order": -1000,
+            "dependsOn": ["$raw"],
             "options": {
-                "enabled": true,
                 "calibrationPasses": 2,
                 "maxCalibrationSeconds": 30,
                 "strategy": "None",
@@ -161,9 +159,9 @@
         },
         {
             "id": "LocalStorage",
-            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "type": "Storage",
             "order": 100,
-            "dependsOn": ["Annotation", "CalibratedPreview"],
+            "dependsOn": ["$raw", "RollingCombination", "Annotation", "CalibratedPreview"],
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
                 "retentionDays": 7,
@@ -173,9 +171,9 @@
         },
         {
             "id": "ArchiveStorage",
-            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "type": "Storage",
             "order": 110,
-            "dependsOn": ["LocalStorage"],
+            "dependsOn": ["Annotation", "CalibratedPreview"],
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/archive",
                 "retentionDays": 30,
@@ -185,11 +183,10 @@
         },
         {
             "id": "Upload",
-            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpUploadProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "type": "Upload",
             "order": 500,
             "dependsOn": ["LocalStorage"],
             "options": {
-                "enabled": true,
                 "uploadAllFrames": false,
                 "batchSize": 3,
                 "warmupSeconds": 5,
@@ -198,9 +195,22 @@
         },
         {
             "id": "Telemetry",
-            "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            "type": "Telemetry",
             "order": 1000,
-            "dependsOn": ["ArchiveStorage", "Upload"]
-        }
-    ]
+            "dependsOn": ["Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "ArchiveStorage", "Upload"]
+        }]
+    },
+    "schedule": {
+        "schemaVersion": "capture-schedule-v1",
+        "setpointProfiles": [{ "id": "continuous", "exposure": "00:00:20", "gain": 150.0, "captureInterval": "00:00:25", "cadenceMode": "MinimumStartInterval" }],
+        "weeklyWindows": [
+            { "id": "continuous-sunday", "day": "Sunday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+            { "id": "continuous-monday", "day": "Monday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+            { "id": "continuous-tuesday", "day": "Tuesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+            { "id": "continuous-wednesday", "day": "Wednesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+            { "id": "continuous-thursday", "day": "Thursday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+            { "id": "continuous-friday", "day": "Friday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+            { "id": "continuous-saturday", "day": "Saturday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" }
+        ]
+    }
 }

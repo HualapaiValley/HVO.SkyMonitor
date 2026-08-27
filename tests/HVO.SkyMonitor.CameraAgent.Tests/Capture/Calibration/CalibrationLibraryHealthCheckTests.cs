@@ -100,13 +100,14 @@ public sealed class CalibrationLibraryHealthCheckTests
                     TimeSpan.FromSeconds(5),
                     1,
                     10)),
-            [new CaptureProcessingStepConfig(
+            new CapturePipelineConfig([new CaptureProcessingStepConfig(
                 "Calibration",
                 Options: JsonSerializer.SerializeToElement(new CalibrationProcessingStepOptions
                 {
                     Strategy = strategy
                 }),
-                Required: required)]);
+                DependsOn: ["$raw"],
+                Required: required)]));
 
     private static string CreateRoot()
     {

@@ -2099,6 +2099,7 @@ public sealed class RawCaptureIngressTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1),
                 ProfileVersion: "rig-v1"),
+            CapturePipelineConfig.Empty,
             AgentId: "agent-94");
 
     private static CameraModuleConfig CreateMono16Configuration()

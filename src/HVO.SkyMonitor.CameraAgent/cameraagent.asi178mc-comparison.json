@@ -58,18 +58,20 @@
       "nightGain": 150.0
     },
     "controlPolicy": {
-      "autoGain": "Disabled",
-      "autoExposure": "Disabled"
+      "exposureControl": "Disabled",
+      "gainControl": "Disabled"
     },
     "profileVersion": "virtual-asi178mc-fujinon-unverified-v5"
   },
-  "processingSteps": [
-    {
+  "pipeline": {
+    "schemaVersion": "cameraagent-capture-pipeline-v2",
+    "dependencyPolicy": "reject-enabled-dependent-v1",
+    "steps": [{
       "id": "RollingCombination",
       "type": "RollingCombination",
       "order": 25,
+      "dependsOn": ["$raw"],
       "options": {
-        "enabled": true,
         "windowSize": 5
       }
     },
@@ -79,7 +81,6 @@
       "order": 50,
       "dependsOn": ["RollingCombination"],
       "options": {
-        "enabled": true,
         "recipeVersion": "bayer-rggb16-bilinear-asinh-v1",
         "blackPercentile": 0.5,
         "whitePercentile": 0.9999,
@@ -92,7 +93,6 @@
       "order": 75,
       "dependsOn": ["Preview"],
       "options": {
-        "enabled": true,
         "markRadius": 6,
         "markerValue": 144,
         "drawLabels": true,
@@ -116,9 +116,9 @@
     },
     {
       "id": "LocalStorage",
-      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "type": "Storage",
       "order": 100,
-      "dependsOn": ["Annotation"],
+      "dependsOn": ["$raw", "RollingCombination", "Annotation"],
       "options": {
         "storageRoot": "/workspaces/HVO.SkyMonitor/data/agent",
         "retentionDays": 7,
@@ -128,9 +128,22 @@
     },
     {
       "id": "Telemetry",
-      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "type": "Telemetry",
       "order": 1000,
-      "dependsOn": ["LocalStorage"]
-    }
-  ]
+      "dependsOn": ["RollingCombination", "Preview", "Annotation", "LocalStorage"]
+    }]
+  },
+  "schedule": {
+    "schemaVersion": "capture-schedule-v1",
+    "setpointProfiles": [{ "id": "continuous", "exposure": "00:00:20", "gain": 150.0, "captureInterval": "00:00:25", "cadenceMode": "MinimumStartInterval" }],
+    "weeklyWindows": [
+      { "id": "continuous-sunday", "day": "Sunday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-monday", "day": "Monday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-tuesday", "day": "Tuesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-wednesday", "day": "Wednesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-thursday", "day": "Thursday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-friday", "day": "Friday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-saturday", "day": "Saturday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" }
+    ]
+  }
 }

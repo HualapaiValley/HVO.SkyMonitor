@@ -38,7 +38,7 @@ internal static class CameraAgentScheduleOperatorProjection
     {
         ArgumentNullException.ThrowIfNull(candidate);
         ArgumentNullException.ThrowIfNull(basis);
-        var validation = LocalCaptureProfileContract.Validate(candidate);
+        var validation = LocalCaptureProfileContract.ValidatePersistedRevision(candidate);
         if (!validation.IsValid || candidate.ProcessingSteps.Any(static step => step is null))
         {
             throw new ArgumentException("The local capture profile structure is invalid.", nameof(candidate));

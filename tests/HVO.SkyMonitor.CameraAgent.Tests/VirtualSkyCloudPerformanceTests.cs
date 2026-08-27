@@ -533,7 +533,8 @@ public sealed partial class VirtualSkyCloudPerformanceTests
                     HorizontalFlip: true,
                     CalibrationVersion: $"{workload.Id}-performance-optics-v1"),
                 new RigOrientation(90, 0, 0),
-                new PipelineExposureProfile(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)));
+                new PipelineExposureProfile(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
+            CapturePipelineConfig.Empty);
     }
 
     private sealed record CloudRenderMeasurement(

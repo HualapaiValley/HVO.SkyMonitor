@@ -40,6 +40,13 @@ internal static class CameraAgentPipelineOperatorProjection
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(currentConfiguration);
         ArgumentNullException.ThrowIfNull(pipelineFactory);
+        var validation = LocalCaptureProfileContract.Validate(profile);
+        if (!validation.IsValid)
+        {
+            throw new ArgumentException(
+                $"The local capture profile is invalid ({validation.FieldPath}).",
+                nameof(profile));
+        }
         return pipelineFactory.PreviewPlan(profile.ApplyTo(currentConfiguration));
     }
 
@@ -106,9 +113,6 @@ internal static class CameraAgentPipelineOperatorProjection
             revision.RevisionId,
             revision.RevisionNumber,
             revision.ProfileSha256,
-            string.Equals(
-                revision.Profile.SchemaVersion,
-                LocalCaptureProfileDefinition.CurrentSchemaVersion,
-                StringComparison.Ordinal),
-            Preview(revision.Profile, currentConfiguration, pipelineFactory));
+            LocalCaptureProfileContract.Validate(revision.Profile).IsValid,
+            pipelineFactory.PreviewPlan(revision.Profile.ApplyTo(currentConfiguration)));
 }

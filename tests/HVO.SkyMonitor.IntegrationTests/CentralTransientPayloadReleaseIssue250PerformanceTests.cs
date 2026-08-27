@@ -4847,7 +4847,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
                     TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 10, 10)),
-            Array.Empty<CaptureProcessingStepConfig>(),
+            CapturePipelineConfig.Empty,
             AgentId: "accelerated-soak");
         var clock = new Issue250FixedTimeProvider(start);
         await using var module = new VirtualSkyCameraModule(

@@ -63,6 +63,66 @@ public sealed class SchedulePageTests
     }
 
     [TestMethod]
+    public void PipelineState_CanToggleOnlyStrictCanonicalV2Profile()
+    {
+        var baseline = Profile();
+        var canonical = baseline with
+        {
+            SchemaVersion = LocalCaptureProfileDefinition.CurrentSchemaVersion,
+            DependencyPolicy = CapturePipelineDependencyPolicy.RejectEnabledDependent,
+            Rig = baseline.Rig with
+            {
+                ControlPolicy = new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }
+            }
+        };
+        var legacyScheduleV2 = canonical with
+        {
+            Schedule = canonical.Schedule with
+            {
+                WeeklyWindows = [],
+                LegacyAlwaysOpen = true,
+                LegacySetpointProfileId = "night"
+            }
+        };
+        var legacyV1 = canonical with
+        {
+            SchemaVersion = LocalCaptureProfileDefinition.LegacySchemaVersion,
+            DependencyPolicy = CapturePipelineDependencyPolicy.LegacyInference
+        };
+        var currentConfiguration = new CameraModuleConfig(
+            new ObservatoryLocation(0, 0, 0, "UTC"),
+            canonical.Module,
+            canonical.Rig,
+            CapturePipelineConfig.Empty,
+            AgentId: "test-agent")
+        {
+            Schedule = canonical.Schedule
+        };
+
+        Assert.IsTrue(CanToggle(canonical));
+        Assert.IsFalse(CanToggle(legacyScheduleV2));
+        Assert.IsFalse(CanToggle(legacyV1));
+
+        bool CanToggle(LocalCaptureProfileDefinition profile)
+        {
+            var state = State();
+            var revision = state.ActiveRevision with
+            {
+                Profile = profile,
+                ProfileSha256 = LocalCaptureProfileContract.ComputeEffectiveSha256(profile)
+            };
+            return CameraAgentPipelineOperatorProjection.CreateState(
+                state with { ActiveRevision = revision, PendingRevision = null },
+                currentConfiguration,
+                new ProjectionPipelineFactory()).Active.CanToggle;
+        }
+    }
+
+    [TestMethod]
     public void Render_WhenAuthorizationIsRevoked_NavigatesToAccessDenied()
     {
         using var context = new BunitContext();
@@ -245,8 +305,8 @@ public sealed class SchedulePageTests
             DateTimeOffset.UnixEpoch);
         var prior = revision with { RevisionId = "profile-00000001-123456ABCDEF", RevisionNumber = 1 };
         var interval = new ExpandedScheduleInterval(
-            "legacy-always-open",
-            CaptureScheduleIntervalSource.LegacyCompatibility,
+            "weekly-night",
+            CaptureScheduleIntervalSource.WeeklyWindow,
             ExpandedScheduleDisposition.Open,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch.AddDays(1),
@@ -264,7 +324,7 @@ public sealed class SchedulePageTests
             []);
         var decision = new CaptureScheduleDecision(
             true,
-            CaptureScheduleAdmissionReason.LegacyCompatibility,
+            CaptureScheduleAdmissionReason.WeeklyWindow,
             CaptureScheduleSafetyState.Available,
             DateTimeOffset.UnixEpoch,
             "night",
@@ -290,9 +350,15 @@ public sealed class SchedulePageTests
                 "capture-schedule-v1",
                 [new CaptureScheduleSetpointProfile(
                     "night", TimeSpan.FromSeconds(1), 1, TimeSpan.FromSeconds(2))],
-                [],
-                LegacyAlwaysOpen: true,
-                LegacySetpointProfileId: "night"));
+                [new CaptureWeeklyScheduleWindow(
+                    "weekly-night",
+                    DayOfWeek.Thursday,
+                    new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue),
+                    new CaptureScheduleBoundary(
+                        CaptureScheduleBoundaryKind.FixedLocalTime,
+                        TimeOnly.MinValue,
+                        DayOffset: 1),
+                    "night")]));
 
     private sealed class ScheduleUiService(CaptureScheduleOperatorState? state) : ICameraAgentScheduleUiService
     {
@@ -317,8 +383,8 @@ public sealed class SchedulePageTests
                 "Preview", "Preview", true, true, 10, null, RawDependency,
                 "encoded-preview", FrameArtifactRole.Preview, "display");
             var plan = new CaptureProcessingPlanPreview(
-                CapturePipelineSchemaVersions.LegacyV1,
-                CapturePipelineDependencyPolicy.LegacyInference,
+                CapturePipelineSchemaVersions.ExplicitV2,
+                CapturePipelineDependencyPolicy.RejectEnabledDependent,
                 new string('D', 64),
                 new string('E', 64),
                 [node],
@@ -369,6 +435,20 @@ public sealed class SchedulePageTests
             string overrideId, long expectedVersion, string idempotencyKey, string? reason,
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
+    }
+
+    private sealed class ProjectionPipelineFactory : ICaptureProcessingPipelineFactory
+    {
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => new([]);
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+            => new(
+                config.Pipeline.SchemaVersion,
+                config.Pipeline.DependencyPolicy,
+                new string('A', 64),
+                new string('B', 64),
+                [],
+                []);
     }
 
     private sealed class RetryingScheduleUiService(CaptureScheduleOperatorState state) : ICameraAgentScheduleUiService

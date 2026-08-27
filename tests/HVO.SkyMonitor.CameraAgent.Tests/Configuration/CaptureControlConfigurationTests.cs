@@ -15,7 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 public sealed class CaptureControlConfigurationTests
 {
     [TestMethod]
-    public void LegacyDefaults_AreOmittedFromCanonicalRigJson()
+    public void ExplicitControlOwnership_IsSerializedInCanonicalRigJson()
     {
         var pipeline = new PipelineExposureProfile(
             TimeSpan.FromSeconds(5),
@@ -33,39 +33,72 @@ public sealed class CaptureControlConfigurationTests
                 0.65));
         var policy = new CameraControlPolicy
         {
-            AutoExposure = CameraFeatureDirective.Disabled,
-            AutoGain = CameraFeatureDirective.Disabled
+            ExposureControl = AutomaticControlOwnership.Disabled,
+            GainControl = AutomaticControlOwnership.Disabled
         };
 
-        var json = JsonSerializer.Serialize(new { pipeline, policy });
+        var json = CaptureContractJson.SerializeToElement(new { pipeline, policy }).GetRawText();
 
         foreach (var property in new[]
                  {
                      "cadenceMode", "twilightDefaults", "hysteresis", "adjustmentFactor", "gainStep",
-                     "exposureControl", "gainControl", "metering", "solarRegimes"
+                     "metering", "solarRegimes"
                  })
         {
             Assert.IsFalse(json.Contains(property, StringComparison.Ordinal), property);
         }
+        StringAssert.Contains(json, "\"exposureControl\":\"Disabled\"", StringComparison.Ordinal);
+        StringAssert.Contains(json, "\"gainControl\":\"Disabled\"", StringComparison.Ordinal);
     }
 
     [TestMethod]
-    public async Task LoadAsync_OmittedCadenceAndOwnership_UsesFixedCadenceAndDisabledControls()
+    public async Task LoadAsync_OmittedOwnership_IsRejected()
     {
-        var config = await LoadAsync(root =>
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(root =>
         {
             Remove(root, "rig.controlPolicy.exposureControl");
             Remove(root, "rig.controlPolicy.gainControl");
-        }).ConfigureAwait(false);
+        })).ConfigureAwait(false);
+    }
 
-        Assert.AreEqual(CaptureCadenceMode.MinimumStartInterval, config.Rig.Pipeline.CadenceMode);
-        Assert.IsNotNull(config.Rig.ControlPolicy);
-        Assert.AreEqual(AutomaticControlOwnership.Unspecified, config.Rig.ControlPolicy.ExposureControl);
-        Assert.AreEqual(AutomaticControlOwnership.Unspecified, config.Rig.ControlPolicy.GainControl);
-        Assert.AreEqual(AutomaticControlOwnership.Disabled, CameraModuleRunner.ResolveOwnership(
-            config.Rig.ControlPolicy.ExposureControl, config.Rig.ControlPolicy.AutoExposure));
-        Assert.AreEqual(AutomaticControlOwnership.Disabled, CameraModuleRunner.ResolveOwnership(
-            config.Rig.ControlPolicy.GainControl, config.Rig.ControlPolicy.AutoGain));
+    [TestMethod]
+    [DataRow("pipeline")]
+    [DataRow("schedule")]
+    public async Task LoadAsync_OmittedCurrentContractSection_IsRejected(string path)
+    {
+        await Assert.ThrowsExactlyAsync<JsonException>(() => LoadAsync(root => Remove(root, path)))
+            .ConfigureAwait(false);
+        if (path == "pipeline")
+        {
+            foreach (var member in new[] { "steps", "schemaVersion", "dependencyPolicy" })
+            {
+                await Assert.ThrowsExactlyAsync<JsonException>(() => LoadAsync(root => Remove(root, $"pipeline.{member}")))
+                    .ConfigureAwait(false);
+            }
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(root =>
+                Set(root, "pipeline.schemaVersion", "\"cameraagent-capture-pipeline-v3\"")))
+                .ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(root =>
+                Set(root, "pipeline.dependencyPolicy", "\"legacy-inference-v1\"")))
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(root =>
+                Set(root, "schedule.schemaVersion", "\"capture-schedule-v2\"")))
+                .ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(root =>
+                root["schedule"]!["weeklyWindows"]!.AsArray()[0]!["start"]!["localTime"] = null))
+                .ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(root =>
+                root["schedule"]!["weeklyWindows"] = new JsonArray()))
+                .ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(root =>
+            {
+                root["schedule"]!["legacyAlwaysOpen"] = true;
+                root["schedule"]!["legacySetpointProfileId"] = "night";
+            })).ConfigureAwait(false);
+        }
     }
 
     [TestMethod]
@@ -144,6 +177,8 @@ public sealed class CaptureControlConfigurationTests
     [DataRow("rig.controlPolicy.solarRegimes.nightAltitudeThresholdDegrees", "90.01")]
     [DataRow("rig.controlPolicy.solarRegimes.nightAltitudeThresholdDegrees", "-90.01")]
     [DataRow("rig.controlPolicy.solarRegimes.nightAltitudeThresholdDegrees", "\"Infinity\"")]
+    [DataRow("rig.controlPolicy.autoExposure", "\"Enabled\"")]
+    [DataRow("rig.controlPolicy.autoGain", "\"Disabled\"")]
     [DataRow("rig.pipeline.envelope.minExposure", "\"00:00:00\"")]
     [DataRow("rig.pipeline.envelope.minExposure", "\"00:00:20\"")]
     [DataRow("rig.pipeline.envelope.minGain", "\"NaN\"")]
@@ -260,6 +295,9 @@ public sealed class CaptureControlConfigurationTests
 
         Assert.IsNotNull(config.Schedule);
         Assert.AreEqual("night", config.Schedule.SetpointProfiles.Single().Id);
+        Assert.IsNotEmpty(config.Schedule.WeeklyWindows);
+        Assert.IsFalse(config.Schedule.LegacyAlwaysOpen);
+        Assert.IsNull(config.Schedule.LegacySetpointProfileId);
 
         var locationStore = new RecordingDeploymentLocationStore();
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(
@@ -437,6 +475,26 @@ public sealed class CaptureControlConfigurationTests
                 "nightAltitudeThresholdDegrees": -15
               }
             }
+          },
+          "pipeline": {
+            "schemaVersion": "cameraagent-capture-pipeline-v2",
+            "dependencyPolicy": "reject-enabled-dependent-v1",
+            "steps": []
+          },
+          "schedule": {
+            "schemaVersion": "capture-schedule-v1",
+            "setpointProfiles": [
+              { "id": "night", "exposure": "00:00:05", "gain": 100, "captureInterval": "00:00:10" }
+            ],
+            "weeklyWindows": [
+              {
+                "id": "monday-night",
+                "day": "Monday",
+                "start": { "kind": "FixedLocalTime", "localTime": "18:00:00" },
+                "end": { "kind": "FixedLocalTime", "localTime": "06:00:00", "dayOffset": 1 },
+                "setpointProfileId": "night"
+              }
+            ]
           }
         }
         """;

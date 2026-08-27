@@ -401,7 +401,8 @@ public sealed class TransientStarMaskStrategyTests
                     HorizontalFlip: true,
                     CalibrationVersion: $"{workload.Id}-issue-115-star-mask-optics-v1"),
                 new RigOrientation(90, 0, 0),
-                new PipelineExposureProfile(TimeSpan.FromSeconds(25), TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(20), 150, 150)));
+                new PipelineExposureProfile(TimeSpan.FromSeconds(25), TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(20), 150, 150)),
+            CapturePipelineConfig.Empty);
     }
 
     private static DetectorFrame ConvertFrame(CameraFrame frame)

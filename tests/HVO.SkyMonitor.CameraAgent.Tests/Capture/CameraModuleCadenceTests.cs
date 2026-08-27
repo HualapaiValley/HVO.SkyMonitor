@@ -880,7 +880,8 @@ public sealed class CameraModuleCadenceTests
                         UseImageCircle = false,
                         CfaSelection = CaptureMeteringCfaSelection.Green
                     }
-                }));
+                }),
+            CapturePipelineConfig.Empty);
 
     private static CameraModuleConfig CreateHostMeteredConfig(
         CameraPixelFormat pixelFormat,
@@ -939,7 +940,8 @@ public sealed class CameraModuleCadenceTests
                         DayAltitudeThresholdDegrees = 0,
                         NightAltitudeThresholdDegrees = -12
                     }
-                }));
+                }),
+            CapturePipelineConfig.Empty);
     }
 
     private static CameraModuleConfig CreateSolarTransitionConfig()
@@ -985,7 +987,8 @@ public sealed class CameraModuleCadenceTests
                         DayAltitudeThresholdDegrees = 20,
                         NightAltitudeThresholdDegrees = -20
                     }
-                }));
+                }),
+            CapturePipelineConfig.Empty);
     }
 
     private static CameraFrame CreatePaddedFrame(

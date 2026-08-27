@@ -40,6 +40,20 @@ public sealed class CaptureScheduleEngineTests
                 DateExceptions = [],
                 Blackouts = []
             }));
+        Assert.IsFalse(CaptureScheduleContract.Validate(first with
+        {
+            SchemaVersion = "capture-schedule-v2"
+        }).IsValid);
+        Assert.IsFalse(CaptureScheduleContract.Validate(first with
+        {
+            WeeklyWindows =
+            [
+                first.WeeklyWindows[0] with
+                {
+                    Start = new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime)
+                }
+            ]
+        }).IsValid);
     }
 
     [TestMethod]
@@ -182,6 +196,20 @@ public sealed class CaptureScheduleEngineTests
             new(atTwenty.AddHours(15), CaptureScheduleSafetyState.Available, false));
         AssertDecision(CaptureScheduleAdmissionReason.DateException, false,
             new(atTwenty.AddHours(-3), CaptureScheduleSafetyState.Available, false));
+        var legacyDefinition = Definition([Profile("legacy")], []) with
+        {
+            LegacyAlwaysOpen = true,
+            LegacySetpointProfileId = "legacy"
+        };
+        var legacyPreview = CaptureScheduleIntervalExpander.Expand(
+            legacyDefinition, date, 2, timeZone, Observer, new FixedSolarEvents());
+        var legacyDecision = CaptureScheduleEvaluator.Evaluate(
+            legacyDefinition,
+            legacyPreview,
+            new CaptureScheduleEvaluationRequest(atTwenty, CaptureScheduleSafetyState.Available, false));
+        Assert.AreEqual(CaptureScheduleAdmissionReason.LegacyCompatibility, legacyDecision.Reason);
+        Assert.AreEqual(CaptureScheduleIntervalSource.LegacyCompatibility, legacyDecision.Interval?.Source);
+        Assert.AreEqual("legacy", legacyDecision.SetpointProfileId);
 
         void AssertDecision(
             CaptureScheduleAdmissionReason reason,
@@ -515,7 +543,8 @@ public sealed class CaptureScheduleEngineTests
                 new OpticsProfile("Perspective", 50, 10, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
-                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)));
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
+            CapturePipelineConfig.Empty);
         var cycle = new CaptureCycleEvidence(
             CaptureCadenceMode.MinimumStartInterval,
             CaptureStartReason.Initial,

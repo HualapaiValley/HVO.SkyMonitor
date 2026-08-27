@@ -46,7 +46,7 @@ internal static class RawCaptureDescriptorFactory
         var requestedSetpoint = submission.Request.RequestedSetpoint;
         var rigElement = CaptureContractJson.SerializeToElement(configuration.Rig);
         var sensorElement = JsonSerializer.SerializeToElement(configuration.Rig.Sensor);
-        var processingSteps = configuration.ResolveProcessingSteps();
+        var processingSteps = configuration.Pipeline.Steps;
         var processingProfile = CreateProcessingProfile(configuration);
         var calibrationSteps = processingSteps
             .Where(static step => step.Type.Contains("Calibration", StringComparison.OrdinalIgnoreCase))
@@ -141,8 +141,7 @@ internal static class RawCaptureDescriptorFactory
         }
         var schedule = configuration.Schedule ?? throw new InvalidDataException(
             "Schedule admission evidence requires an effective local schedule.");
-        var profileSha256 = LocalCaptureProfileContract.ComputeSha256(
-            LocalCaptureProfileDefinition.CreateForConfiguration(configuration, schedule));
+        var profileSha256 = LocalCaptureProfileContract.ComputeEffectiveSha256(configuration);
         var scheduleSha256 = CaptureScheduleContract.ComputeSha256(schedule);
         if (!string.Equals(evidence.LocalProfileSha256, profileSha256, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(evidence.ScheduleRevisionSha256, scheduleSha256, StringComparison.OrdinalIgnoreCase))
@@ -225,13 +224,13 @@ internal static class RawCaptureDescriptorFactory
     internal static ProfileIdentityDescriptor CreateProcessingProfile(CameraModuleConfig configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        var steps = configuration.ResolveProcessingSteps();
-        var explicitPipeline = configuration.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 };
+        var steps = configuration.Pipeline.Steps;
+        var explicitPipeline = configuration.Pipeline.SchemaVersion == CapturePipelineSchemaVersions.ExplicitV2;
         var element = explicitPipeline
             ? CaptureContractJson.SerializeToElement(new
             {
                 schemaVersion = CapturePipelineSchemaVersions.ExplicitV2,
-                dependencyPolicy = configuration.Pipeline!.DependencyPolicy,
+                dependencyPolicy = configuration.Pipeline.DependencyPolicy,
                 steps
             })
             : JsonSerializer.SerializeToElement(steps);
