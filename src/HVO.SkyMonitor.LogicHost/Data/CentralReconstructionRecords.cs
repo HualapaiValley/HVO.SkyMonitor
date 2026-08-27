@@ -122,6 +122,8 @@ internal sealed class CentralStructuredProcessingProduct
     public long TotalIntegrationTicks { get; set; }
 
     public string? SourceIdentitySha256 { get; set; }
+    public int? PresentationWidthPixels { get; set; }
+    public int? PresentationHeightPixels { get; set; }
 }
 
 internal sealed class CentralArtifactSource
@@ -134,6 +136,12 @@ internal sealed class CentralArtifactSource
     public FrameArtifactRole? ExpectedRole { get; set; }
     public string? ExpectedVariant { get; set; }
     public string? ExpectedRecipeIdentitySha256 { get; set; }
+    public string? ExpectedProductIdentitySha256 { get; set; }
+    public string? ExpectedMediaType { get; set; }
+    public int? ExpectedWidthPixels { get; set; }
+    public int? ExpectedHeightPixels { get; set; }
+    public string? ExpectedLayoutIdentitySha256 { get; set; }
+    public string? ExpectedCoordinateIdentitySha256 { get; set; }
     public Guid? ResolvedCentralArtifactId { get; set; }
     public CentralArtifact? ResolvedArtifact { get; set; }
 }

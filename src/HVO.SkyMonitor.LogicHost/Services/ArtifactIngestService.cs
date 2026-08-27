@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
@@ -57,7 +58,9 @@ internal sealed record ArtifactIngestManifest(
     CaptureManifestCompleteness Completeness,
     StructuredProcessingProductDescriptorV1? StructuredProduct = null,
     string? StructuredSourceIdentitySha256 = null,
-    IReadOnlyList<CloudAssessmentSourceV1>? StructuredSourceFacts = null)
+    IReadOnlyList<ArtifactIngestService.StructuredSourceFact>? StructuredSourceFacts = null,
+    int? StructuredPresentationWidthPixels = null,
+    int? StructuredPresentationHeightPixels = null)
 {
     public ReconstructionDescriptor? CaptureDescriptor => Descriptor ?? StructuredProduct?.SourceCapture;
 
@@ -198,7 +201,9 @@ internal sealed partial class ArtifactIngestService(
             manifest = manifest with
             {
                 StructuredSourceIdentitySha256 = structuredPayload.SourceIdentitySha256,
-                StructuredSourceFacts = structuredPayload.SourceFacts
+                StructuredSourceFacts = structuredPayload.SourceFacts,
+                StructuredPresentationWidthPixels = structuredPayload.PresentationWidthPixels,
+                StructuredPresentationHeightPixels = structuredPayload.PresentationHeightPixels
             };
         }
         using var structuredStream = structuredPayload is null
@@ -276,7 +281,9 @@ internal sealed partial class ArtifactIngestService(
         string? schemaVersion;
         string? contentIdentity;
         string? sourceIdentity = null;
-        IReadOnlyList<CloudAssessmentSourceV1>? sourceFacts = null;
+        IReadOnlyList<StructuredSourceFact>? sourceFacts = null;
+        int? presentationWidthPixels = null;
+        int? presentationHeightPixels = null;
         switch (product.Artifact.MediaType.ToLowerInvariant())
         {
             case "application/vnd.hvo.projected-scene+json":
@@ -310,8 +317,9 @@ internal sealed partial class ArtifactIngestService(
                         ? [assessment.Current.ArtifactId]
                         : [assessment.Current.ArtifactId, assessment.ClearReference.ArtifactId]);
                     sourceFacts = assessment.ClearReference is null
-                        ? [assessment.Current]
-                        : [assessment.Current, assessment.ClearReference];
+                        ? [StructuredSourceFact.FromCloud(assessment.Current)]
+                        : [StructuredSourceFact.FromCloud(assessment.Current),
+                            StructuredSourceFact.FromCloud(assessment.ClearReference)];
                 }
                 break;
             case PresentationLayerPayloadJson.MediaType:
@@ -319,6 +327,8 @@ internal sealed partial class ArtifactIngestService(
                 schemaVersion = layerPayload.Payload?.SchemaVersion;
                 contentIdentity = layerPayload.Payload?.ContentIdentitySha256;
                 sourceIdentity = layerPayload.Payload?.SourceIdentitySha256;
+                presentationWidthPixels = layerPayload.Payload?.WidthPixels;
+                presentationHeightPixels = layerPayload.Payload?.HeightPixels;
                 break;
             case PresentationProcessingProducts.ManifestMediaType:
                 var overlay = LayeredPresentationJson.ParseManifest(payload);
@@ -329,6 +339,9 @@ internal sealed partial class ArtifactIngestService(
                     EnsureStructuredLineage(product,
                         [overlayManifest.BaseProduct.ArtifactId, .. overlayManifest.Layers.Select(
                             static layer => layer.SourceProduct.ArtifactId)]);
+                    sourceFacts = [StructuredSourceFact.FromReference(overlayManifest.BaseProduct),
+                        .. overlayManifest.Layers.Select(static layer =>
+                            StructuredSourceFact.FromReference(layer.SourceProduct))];
                 }
                 break;
             case PresentationMetadataFactsProductV1.MediaType:
@@ -361,7 +374,7 @@ internal sealed partial class ArtifactIngestService(
         {
             throw new ArtifactIntegrityException("Structured product schema or content identity does not match its manifest.");
         }
-        return new(sourceIdentity, sourceFacts);
+        return new(sourceIdentity, sourceFacts, presentationWidthPixels, presentationHeightPixels);
     }
 
     private static void EnsureStructuredLineage(
@@ -374,9 +387,24 @@ internal sealed partial class ArtifactIngestService(
         }
     }
 
+    internal sealed record StructuredSourceFact(
+        FrameArtifactRole? Role = null,
+        string? Variant = null,
+        string? RecipeIdentitySha256 = null,
+        PresentationProductReference? Reference = null)
+    {
+        public static StructuredSourceFact FromCloud(CloudAssessmentSourceV1 source) =>
+            new(source.Role, source.Variant, source.RecipeIdentitySha256);
+
+        public static StructuredSourceFact FromReference(PresentationProductReference reference) =>
+            new(Reference: reference);
+    }
+
     private sealed record StructuredPayloadValidation(
         string? SourceIdentitySha256,
-        IReadOnlyList<CloudAssessmentSourceV1>? SourceFacts);
+        IReadOnlyList<StructuredSourceFact>? SourceFacts,
+        int? PresentationWidthPixels,
+        int? PresentationHeightPixels);
 
     private sealed record StructuredPayloadRead(
         byte[] Bytes,
@@ -384,7 +412,11 @@ internal sealed partial class ArtifactIngestService(
     {
         public string? SourceIdentitySha256 => Validation.SourceIdentitySha256;
 
-        public IReadOnlyList<CloudAssessmentSourceV1>? SourceFacts => Validation.SourceFacts;
+        public IReadOnlyList<StructuredSourceFact>? SourceFacts => Validation.SourceFacts;
+
+        public int? PresentationWidthPixels => Validation.PresentationWidthPixels;
+
+        public int? PresentationHeightPixels => Validation.PresentationHeightPixels;
     }
 
     public async Task<ArtifactIngestResult?> CheckStatusAsync(
@@ -1369,6 +1401,10 @@ internal sealed partial class ArtifactIngestService(
                 .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.StructuredProduct)
             .Include(artifact => artifact.Sources)
                 .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.Recipe)
+            .Include(artifact => artifact.Sources)
+                .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.Layout)
+            .Include(artifact => artifact.Sources)
+                .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.Sources)
             .Include(artifact => artifact.StructuredProduct)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Artifacts)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
@@ -1874,7 +1910,9 @@ internal sealed partial class ArtifactIngestService(
                 CompatibilityJson = JsonSerializer.Serialize(structuredProduct.Compatibility),
                 DescriptorJson = CanonicalizeStructuredDescriptor(structuredProduct),
                 TotalIntegrationTicks = structuredProduct.TotalIntegrationTicks,
-                SourceIdentitySha256 = manifest.StructuredSourceIdentitySha256
+                SourceIdentitySha256 = manifest.StructuredSourceIdentitySha256,
+                PresentationWidthPixels = manifest.StructuredPresentationWidthPixels,
+                PresentationHeightPixels = manifest.StructuredPresentationHeightPixels
             };
         }
         await AcquireArtifactIdentityLocksAsync(
@@ -1887,6 +1925,8 @@ internal sealed partial class ArtifactIngestService(
             var resolved = await dbContext.CentralArtifacts
                 .Include(candidate => candidate.StructuredProduct)
                 .Include(candidate => candidate.Recipe)
+                .Include(candidate => candidate.Layout)
+                .Include(candidate => candidate.Sources)
                 .FirstOrDefaultAsync(candidate =>
                         candidate.ArtifactId == sourceArtifactId
                         && candidate.DevicePublicId == devicePublicId
@@ -1901,6 +1941,12 @@ internal sealed partial class ArtifactIngestService(
                 ExpectedRole = expected?.Role,
                 ExpectedVariant = expected?.Variant,
                 ExpectedRecipeIdentitySha256 = expected?.RecipeIdentitySha256,
+                ExpectedProductIdentitySha256 = expected?.Reference?.ProductIdentitySha256,
+                ExpectedMediaType = expected?.Reference?.MediaType,
+                ExpectedWidthPixels = expected?.Reference?.Compatibility.WidthPixels,
+                ExpectedHeightPixels = expected?.Reference?.Compatibility.HeightPixels,
+                ExpectedLayoutIdentitySha256 = expected?.Reference?.Compatibility.LayoutIdentitySha256,
+                ExpectedCoordinateIdentitySha256 = expected?.Reference?.Compatibility.CoordinateIdentitySha256,
                 ResolvedCentralArtifactId = resolved?.Id,
                 ResolvedArtifact = resolved
             });
@@ -1951,6 +1997,10 @@ internal sealed partial class ArtifactIngestService(
                 .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.StructuredProduct)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Sources)
                 .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.Recipe)
+            .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Sources)
+                .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.Layout)
+            .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.Sources)
+                .ThenInclude(source => source.ResolvedArtifact)!.ThenInclude(resolved => resolved!.Sources)
             .Include(source => source.Artifact)!.ThenInclude(sourceArtifact => sourceArtifact!.StructuredProduct)
             .Where(source => source.SourceArtifactId == artifact.ArtifactId
                 && source.ResolvedCentralArtifactId == null
@@ -2271,6 +2321,8 @@ internal sealed partial class ArtifactIngestService(
             var resolved = await dbContext.CentralArtifacts
                 .Include(candidate => candidate.StructuredProduct)
                 .Include(candidate => candidate.Recipe)
+                .Include(candidate => candidate.Layout)
+                .Include(candidate => candidate.Sources)
                 .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId
@@ -2397,24 +2449,44 @@ internal sealed partial class ArtifactIngestService(
 
     internal static bool HasStructuredSourceFactsMismatch(CentralArtifact artifact)
     {
-        var requiresExpectedFacts = string.Equals(
+        var requiresCloudFacts = string.Equals(
             artifact.MediaType,
             StructuredProcessingProductContracts.CloudAssessmentMediaType,
             StringComparison.OrdinalIgnoreCase);
+        var requiresReferenceFacts = string.Equals(
+            artifact.MediaType,
+            PresentationProcessingProducts.ManifestMediaType,
+            StringComparison.OrdinalIgnoreCase);
         foreach (var source in artifact.Sources)
         {
-            var hasExpectedFacts = source.ExpectedRole.HasValue || source.ExpectedVariant is not null ||
+            var hasCloudFacts = source.ExpectedRole.HasValue || source.ExpectedVariant is not null ||
                 source.ExpectedRecipeIdentitySha256 is not null;
-            if (!hasExpectedFacts)
+            if (!hasCloudFacts)
             {
-                if (requiresExpectedFacts)
+                if (requiresCloudFacts)
                 {
                     return true;
                 }
-                continue;
             }
-            if (!source.ExpectedRole.HasValue || source.ExpectedVariant is null ||
+            else if (!source.ExpectedRole.HasValue || source.ExpectedVariant is null ||
                 source.ExpectedRecipeIdentitySha256 is null)
+            {
+                return true;
+            }
+            var hasReferenceFacts = source.ExpectedProductIdentitySha256 is not null ||
+                source.ExpectedMediaType is not null || source.ExpectedWidthPixels.HasValue ||
+                source.ExpectedHeightPixels.HasValue || source.ExpectedLayoutIdentitySha256 is not null ||
+                source.ExpectedCoordinateIdentitySha256 is not null;
+            if (!hasReferenceFacts)
+            {
+                if (requiresReferenceFacts)
+                {
+                    return true;
+                }
+            }
+            else if (source.ExpectedProductIdentitySha256 is null || source.ExpectedMediaType is null ||
+                !source.ExpectedWidthPixels.HasValue || !source.ExpectedHeightPixels.HasValue ||
+                source.ExpectedLayoutIdentitySha256 is null || source.ExpectedCoordinateIdentitySha256 is null)
             {
                 return true;
             }
@@ -2422,39 +2494,78 @@ internal sealed partial class ArtifactIngestService(
             {
                 continue;
             }
-            if (resolved.Role != source.ExpectedRole.Value ||
-                !string.Equals(resolved.Variant, source.ExpectedVariant, StringComparison.Ordinal) ||
-                resolved.Recipe is not { } recipe)
+            if (hasCloudFacts)
             {
-                return true;
-            }
-            try
-            {
-                using var options = JsonDocument.Parse(recipe.OptionsJson);
-                var descriptor = new RecipeIdentityDescriptor(
-                    recipe.Name,
-                    recipe.SemanticVersion,
-                    recipe.ImplementationVersion,
-                    options.RootElement.Clone(),
-                    recipe.OptionsSha256);
-                if (!string.Equals(
-                        ProcessingIdentity.CreateRecipeIdentity(descriptor).IdentitySha256,
-                        source.ExpectedRecipeIdentitySha256,
-                        StringComparison.OrdinalIgnoreCase))
+                if (resolved.Role != source.ExpectedRole!.Value ||
+                    !string.Equals(resolved.Variant, source.ExpectedVariant, StringComparison.Ordinal) ||
+                    resolved.Recipe is not { } recipe)
+                {
+                    return true;
+                }
+                try
+                {
+                    using var options = JsonDocument.Parse(recipe.OptionsJson);
+                    var descriptor = new RecipeIdentityDescriptor(
+                        recipe.Name,
+                        recipe.SemanticVersion,
+                        recipe.ImplementationVersion,
+                        options.RootElement.Clone(),
+                        recipe.OptionsSha256);
+                    if (!string.Equals(
+                            ProcessingIdentity.CreateRecipeIdentity(descriptor).IdentitySha256,
+                            source.ExpectedRecipeIdentitySha256,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+                catch (Exception exception) when (exception is JsonException or ArgumentException)
                 {
                     return true;
                 }
             }
-            catch (JsonException)
-            {
-                return true;
-            }
-            catch (ArgumentException)
+            if (hasReferenceFacts && !MatchesPresentationReference(source, resolved))
             {
                 return true;
             }
         }
         return false;
+    }
+
+    internal static bool MatchesPresentationReference(CentralArtifactSource source, CentralArtifact resolved)
+    {
+        if (!string.Equals(resolved.MediaType, source.ExpectedMediaType, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        var expectedIdentity = source.ExpectedProductIdentitySha256!;
+        if (resolved.StructuredProduct is { } structured)
+        {
+            return source.Ordinal > 0 &&
+                string.Equals(resolved.MediaType, PresentationLayerPayloadJson.MediaType, StringComparison.OrdinalIgnoreCase) &&
+                structured.ProductSchemaVersion == PresentationLayerPayloadV1.CurrentSchemaVersion &&
+                string.Equals(structured.ContentIdentitySha256, expectedIdentity, StringComparison.Ordinal) &&
+                structured.PresentationWidthPixels == source.ExpectedWidthPixels &&
+                structured.PresentationHeightPixels == source.ExpectedHeightPixels &&
+                string.Equals(structured.SourceIdentitySha256,
+                    source.ExpectedCoordinateIdentitySha256, StringComparison.Ordinal);
+        }
+        try
+        {
+            return source.Ordinal == 0 && resolved.Role == FrameArtifactRole.Preview &&
+                resolved.MediaType is CentralPresentationBaseDecoder.PackedMediaType or JpegImageCodec.MediaType &&
+                resolved.Layout is { } layout &&
+                string.Equals(CentralReconstructionDescriptorFactory.ComputeOutputIdentity(resolved),
+                    expectedIdentity, StringComparison.OrdinalIgnoreCase) &&
+                layout.Width == source.ExpectedWidthPixels && layout.Height == source.ExpectedHeightPixels &&
+                string.Equals(PresentationProcessingProducts.ComputeLayoutIdentity(
+                        CentralReconstructionDescriptorFactory.CreateLayout(layout)),
+                    source.ExpectedLayoutIdentitySha256, StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (exception is JsonException or ArgumentException or InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     internal static bool HasStructuredSourceMismatch(CentralArtifact artifact)

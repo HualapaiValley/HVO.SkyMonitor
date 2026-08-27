@@ -1383,6 +1383,10 @@ internal sealed partial class CentralArtifactReconciliationService(
                 .ThenInclude(source => source!.StructuredProduct)
             .Include(item => item.Sources).ThenInclude(source => source.ResolvedArtifact)!
                 .ThenInclude(source => source!.Recipe)
+            .Include(item => item.Sources).ThenInclude(source => source.ResolvedArtifact)!
+                .ThenInclude(source => source!.Layout)
+            .Include(item => item.Sources).ThenInclude(source => source.ResolvedArtifact)!
+                .ThenInclude(source => source!.Sources)
             .AsSplitQuery()
             .SingleOrDefaultAsync(item => item.Id == artifactId, cancellationToken).ConfigureAwait(false);
         if (artifact is null)
@@ -1492,12 +1496,14 @@ internal sealed partial class CentralArtifactReconciliationService(
             }
         }
 
+        var provenanceQuarantined = false;
         if (artifact.ObjectState == CentralArtifactObjectState.Available &&
             artifact.ReconstructionState == CentralReconstructionState.Complete &&
             ArtifactIngestService.HasStructuredSourceMismatch(artifact))
         {
             artifact.ReconstructionState = CentralReconstructionState.Quarantined;
             artifact.StateReasonCode = "lineage.source-identity-mismatch";
+            provenanceQuarantined = true;
         }
         if (artifact.ReconstructionState == CentralReconstructionState.PendingReference)
         {
@@ -1524,7 +1530,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         if (artifact.ObjectState != CentralArtifactObjectState.Available
             || artifact.ReconstructionState != CentralReconstructionState.Complete)
         {
-            if (artifact.ObjectState != CentralArtifactObjectState.Available)
+            if (artifact.ObjectState != CentralArtifactObjectState.Available || provenanceQuarantined)
             {
                 await ArtifactIngestService.InvalidateDependentsAsync(db, artifact, cancellationToken).ConfigureAwait(false);
             }
@@ -2203,6 +2209,8 @@ internal sealed partial class CentralArtifactReconciliationService(
             var resolved = await db.CentralArtifacts
                 .Include(candidate => candidate.StructuredProduct)
                 .Include(candidate => candidate.Recipe)
+                .Include(candidate => candidate.Layout)
+                .Include(candidate => candidate.Sources)
                 .FirstOrDefaultAsync(candidate =>
                 candidate.ArtifactId == source.SourceArtifactId
                 && candidate.DevicePublicId == frame.DevicePublicId

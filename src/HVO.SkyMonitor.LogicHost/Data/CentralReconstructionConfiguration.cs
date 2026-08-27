@@ -83,6 +83,10 @@ internal static class CentralReconstructionConfiguration
         source.HasKey(item => item.Id);
         source.Property(item => item.ExpectedVariant).HasMaxLength(128);
         source.Property(item => item.ExpectedRecipeIdentitySha256).HasMaxLength(64);
+        source.Property(item => item.ExpectedProductIdentitySha256).HasMaxLength(64);
+        source.Property(item => item.ExpectedMediaType).HasMaxLength(128);
+        source.Property(item => item.ExpectedLayoutIdentitySha256).HasMaxLength(64);
+        source.Property(item => item.ExpectedCoordinateIdentitySha256).HasMaxLength(64);
         source.HasIndex(item => new { item.CentralArtifactId, item.Ordinal }).IsUnique();
         source.HasIndex(item => new { item.CentralArtifactId, item.SourceArtifactId }).IsUnique();
         source.HasOne(item => item.Artifact).WithMany(item => item.Sources)

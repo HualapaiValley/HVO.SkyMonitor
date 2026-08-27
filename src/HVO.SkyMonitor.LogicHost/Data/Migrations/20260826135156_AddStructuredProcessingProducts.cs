@@ -33,6 +33,46 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 maxLength: 64,
                 nullable: true);
 
+            migrationBuilder.AddColumn<string>(
+                name: "ExpectedProductIdentitySha256",
+                table: "CentralArtifactSources",
+                type: "nvarchar(64)",
+                maxLength: 64,
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "ExpectedMediaType",
+                table: "CentralArtifactSources",
+                type: "nvarchar(128)",
+                maxLength: 128,
+                nullable: true);
+
+            migrationBuilder.AddColumn<int>(
+                name: "ExpectedWidthPixels",
+                table: "CentralArtifactSources",
+                type: "int",
+                nullable: true);
+
+            migrationBuilder.AddColumn<int>(
+                name: "ExpectedHeightPixels",
+                table: "CentralArtifactSources",
+                type: "int",
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "ExpectedLayoutIdentitySha256",
+                table: "CentralArtifactSources",
+                type: "nvarchar(64)",
+                maxLength: 64,
+                nullable: true);
+
+            migrationBuilder.AddColumn<string>(
+                name: "ExpectedCoordinateIdentitySha256",
+                table: "CentralArtifactSources",
+                type: "nvarchar(64)",
+                maxLength: 64,
+                nullable: true);
+
             migrationBuilder.AlterColumn<string>(
                 name: "ManifestSchemaVersion",
                 table: "CentralArtifacts",
@@ -66,7 +106,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     DescriptorJson = table.Column<string>(type: "nvarchar(max)", maxLength: 65536, nullable: false),
                     AlgorithmsJson = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
                     CompatibilityJson = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
-                    TotalIntegrationTicks = table.Column<long>(type: "bigint", nullable: false)
+                    TotalIntegrationTicks = table.Column<long>(type: "bigint", nullable: false),
+                    PresentationWidthPixels = table.Column<int>(type: "int", nullable: true),
+                    PresentationHeightPixels = table.Column<int>(type: "int", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -107,6 +149,26 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "CentralStructuredProcessingProducts");
 
             migrationBuilder.DropColumn(
+                name: "ExpectedCoordinateIdentitySha256",
+                table: "CentralArtifactSources");
+
+            migrationBuilder.DropColumn(
+                name: "ExpectedHeightPixels",
+                table: "CentralArtifactSources");
+
+            migrationBuilder.DropColumn(
+                name: "ExpectedLayoutIdentitySha256",
+                table: "CentralArtifactSources");
+
+            migrationBuilder.DropColumn(
+                name: "ExpectedMediaType",
+                table: "CentralArtifactSources");
+
+            migrationBuilder.DropColumn(
+                name: "ExpectedProductIdentitySha256",
+                table: "CentralArtifactSources");
+
+            migrationBuilder.DropColumn(
                 name: "ExpectedRecipeIdentitySha256",
                 table: "CentralArtifactSources");
 
@@ -116,6 +178,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             migrationBuilder.DropColumn(
                 name: "ExpectedVariant",
+                table: "CentralArtifactSources");
+
+            migrationBuilder.DropColumn(
+                name: "ExpectedWidthPixels",
                 table: "CentralArtifactSources");
 
             migrationBuilder.AlterColumn<string>(

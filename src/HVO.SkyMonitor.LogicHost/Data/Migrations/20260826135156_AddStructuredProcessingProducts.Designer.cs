@@ -610,6 +610,25 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<Guid>("CentralArtifactId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("ExpectedCoordinateIdentitySha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int?>("ExpectedHeightPixels")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ExpectedLayoutIdentitySha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ExpectedMediaType")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("ExpectedProductIdentitySha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
                     b.Property<string>("ExpectedRecipeIdentitySha256")
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
@@ -620,6 +639,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<string>("ExpectedVariant")
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
+
+                    b.Property<int?>("ExpectedWidthPixels")
+                        .HasColumnType("int");
 
                     b.Property<int>("Ordinal")
                         .HasColumnType("int");
@@ -1646,6 +1668,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
+
+                    b.Property<int?>("PresentationHeightPixels")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PresentationWidthPixels")
+                        .HasColumnType("int");
 
                     b.Property<string>("SourceIdentitySha256")
                         .HasMaxLength(64)

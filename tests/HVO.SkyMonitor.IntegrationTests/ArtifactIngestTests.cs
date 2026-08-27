@@ -812,8 +812,87 @@ public sealed class ArtifactIngestTests
                 overlay.ManifestIdentitySha256),
             "derived/overlay-manifest.json",
             ProducerStepId: "overlay-manifest-step");
+        var staleOverlay = LayeredPresentationJson.CreateManifest(
+            overlay.BaseProduct with { ProductIdentitySha256 = new string('F', 64) },
+            overlay.SceneIdentitySha256,
+            overlay.Layers);
+        var staleOverlayBytes = LayeredPresentationJson.Serialize(staleOverlay);
+        var staleOverlayUpload = overlayUpload with
+        {
+            Descriptor = overlayUpload.Descriptor with
+            {
+                ByteLength = staleOverlayBytes.LongLength,
+                ContentIdentitySha256 = staleOverlay.ManifestIdentitySha256,
+                Artifact = overlayUpload.Descriptor.Artifact with
+                {
+                    ChecksumSha256 = Convert.ToHexString(SHA256.HashData(staleOverlayBytes))
+                }
+            }
+        };
+        using var staleOverlayResponse = await PostAsync(
+            ingestClient, staleOverlayUpload, staleOverlayBytes).ConfigureAwait(false);
+        staleOverlayResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var swappedLayer = LayeredPresentationJson.CreateLayer(
+            layerContract.LayerKind,
+            overlay.BaseProduct,
+            layerContract.SceneIdentitySha256,
+            layerContract.CoordinateSpace,
+            layerContract.RendererVersion,
+            layerContract.StyleVersion,
+            layerContract.ZOrder,
+            layerContract.BlendMode,
+            layerContract.OpacityMillionths,
+            layerContract.EnabledByDefault,
+            layerContract.Options);
+        var swappedOverlay = LayeredPresentationJson.CreateManifest(
+            layerContract.SourceProduct,
+            overlay.SceneIdentitySha256,
+            [swappedLayer]);
+        var swappedOverlayBytes = LayeredPresentationJson.Serialize(swappedOverlay);
+        var swappedSources = new[] { layerUpload.Descriptor.Artifact.ArtifactId, baseArtifactId };
+        var swappedOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
+            FrameArtifactRole.Metadata,
+            "overlay-manifest-swapped",
+            ProcessingIdentity.CreateRecipeIdentity(overlayRecipe).IdentitySha256,
+            swappedSources);
+        var swappedArtifact = overlayArtifact with
+        {
+            ArtifactId = ProcessingIdentity.CreateArtifactId(swappedOutputIdentity),
+            Variant = "overlay-manifest-swapped",
+            SourceArtifactIds = swappedSources,
+            ChecksumSha256 = Convert.ToHexString(SHA256.HashData(swappedOverlayBytes))
+        };
+        var swappedUpload = overlayUpload with
+        {
+            Descriptor = overlayUpload.Descriptor with
+            {
+                Artifact = swappedArtifact,
+                OutputIdentitySha256 = swappedOutputIdentity,
+                ByteLength = swappedOverlayBytes.LongLength,
+                ContentIdentitySha256 = swappedOverlay.ManifestIdentitySha256
+            }
+        };
+        using var swappedResponse = await PostAsync(
+            ingestClient, swappedUpload, swappedOverlayBytes).ConfigureAwait(false);
+        swappedResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         using var overlayResponse = await PostAsync(ingestClient, overlayUpload, overlayBytes).ConfigureAwait(false);
         overlayResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        await using (var referenceScope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var retainedBase = await referenceScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .CentralArtifacts.Include(item => item.Layout).Include(item => item.Recipe).Include(item => item.Sources)
+                .SingleAsync(item => item.ArtifactId == baseArtifactId).ConfigureAwait(false);
+            ArtifactIngestService.MatchesPresentationReference(new CentralArtifactSource
+            {
+                ExpectedProductIdentitySha256 = baseOutputIdentity,
+                ExpectedMediaType = CentralPresentationBaseDecoder.PackedMediaType,
+                ExpectedWidthPixels = compatibility.WidthPixels,
+                ExpectedHeightPixels = compatibility.HeightPixels,
+                ExpectedLayoutIdentitySha256 = compatibility.LayoutIdentitySha256,
+                ExpectedCoordinateIdentitySha256 = new string('E', 64)
+            }, retainedBase).Should().BeTrue(
+                "presentation coordinates are declared by the overlay and layer products, not base lineage");
+        }
         var presentationCacheKey = CentralLayeredPresentationService.CreateCacheKey(
             centralCaptureId, overlayArtifact.ArtifactId, overlayArtifact.ChecksumSha256);
         presentationCacheKey
@@ -1294,6 +1373,11 @@ public sealed class ArtifactIngestTests
         response.StatusCode.Should().Be((HttpStatusCode)425);
         using var clearResponse = await PostAsync(client, clear, clearBytes).ConfigureAwait(false);
         clearResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var dependentBytes = new byte[] { 9, 10, 11, 12 };
+        var dependentManifest = CreateManifestV2(
+            deviceId, rig, dependentBytes, 94, capturedAtUtc: DateTimeOffset.UnixEpoch.AddMinutes(2));
+        using var dependentResponse = await PostAsync(client, dependentManifest, dependentBytes).ConfigureAwait(false);
+        dependentResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var stored = await db.CentralArtifacts.Include(item => item.Sources)
@@ -1312,8 +1396,22 @@ public sealed class ArtifactIngestTests
         var clearFrameId = await db.CentralArtifacts.Where(item => item.Id == clearSourceId)
             .Select(item => item.CentralFrameId).SingleAsync().ConfigureAwait(false);
         clearFrameId.Should().NotBe(stored.CentralFrameId);
-        clearSource.ExpectedVariant = "persisted-corrupt-variant";
+        var dependent = await db.CentralArtifacts.SingleAsync(item =>
+            item.ArtifactId == dependentManifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
+        var dependentId = dependent.Id;
+        db.ChangeTracker.Clear();
+        db.CentralArtifactSources.Add(new CentralArtifactSource
+        {
+            CentralArtifactId = dependentId,
+            Ordinal = 0,
+            SourceArtifactId = stored.ArtifactId,
+            ResolvedCentralArtifactId = stored.Id
+        });
         await db.SaveChangesAsync().ConfigureAwait(false);
+        await db.CentralArtifactSources.Where(item =>
+                item.CentralArtifactId == stored.Id && item.Ordinal == 1)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(
+                item => item.ExpectedVariant, "persisted-corrupt-variant")).ConfigureAwait(false);
         using var telemetry = new CentralIngestTelemetry();
         var reconciler = new CentralArtifactReconciliationService(
             AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),
@@ -1326,6 +1424,10 @@ public sealed class ArtifactIngestTests
             .ConfigureAwait(false);
         reconciled.ReconstructionState.Should().Be(CentralReconstructionState.Quarantined);
         reconciled.StateReasonCode.Should().Be("lineage.source-identity-mismatch");
+        var reconciledDependent = await db.CentralArtifacts.SingleAsync(item => item.Id == dependentId)
+            .ConfigureAwait(false);
+        reconciledDependent.ReconstructionState.Should().Be(CentralReconstructionState.PendingReference);
+        reconciledDependent.StateReasonCode.Should().Be("lineage.source-unavailable");
     }
 
     [TestMethod]
