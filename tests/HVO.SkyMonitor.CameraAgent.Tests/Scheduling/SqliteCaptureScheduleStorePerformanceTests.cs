@@ -139,7 +139,7 @@ public sealed class SqliteCaptureScheduleStorePerformanceTests
 
             for (var revisionIndex = 1; revisionIndex < RevisionCount; revisionIndex++)
             {
-                var profile = LocalCaptureProfileDefinition.Create(configuration, Definition(revisionIndex));
+                var profile = LocalCaptureProfileDefinition.CreateV2(configuration, Definition(revisionIndex));
                 current = await MeasureAsync(
                     () => writer.StageAsync(
                         profile,
@@ -935,7 +935,12 @@ public sealed class SqliteCaptureScheduleStorePerformanceTests
                     TimeSpan.FromSeconds(1),
                     TimeSpan.FromSeconds(5),
                     1,
-                    10)),
+                    10),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }),
             CapturePipelineConfig.Empty)
         {
             Schedule = schedule

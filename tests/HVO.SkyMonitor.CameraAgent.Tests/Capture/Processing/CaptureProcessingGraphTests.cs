@@ -481,8 +481,19 @@ public sealed class CaptureProcessingGraphTests
     [TestMethod]
     public void LocalFileProfileUsesCurrentExplicitPipeline()
     {
-        var configuration = CreateConfig(new CaptureProcessingStepConfig(
+        var legacyConfiguration = CreateConfig(new CaptureProcessingStepConfig(
             "Calibrated", "producer", DependsOn: ["$raw"]));
+        var configuration = legacyConfiguration with
+        {
+            Rig = legacyConfiguration.Rig with
+            {
+                ControlPolicy = new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }
+            }
+        };
         var schedule = new CaptureScheduleDefinition(
             "capture-schedule-v1",
             [new CaptureScheduleSetpointProfile(
@@ -504,16 +515,17 @@ public sealed class CaptureProcessingGraphTests
             LegacySetpointProfileId: "night");
         var legacy = new LocalCaptureProfileDefinition(
             LocalCaptureProfileDefinition.LegacySchemaVersion,
-            configuration.Module,
-            configuration.Rig,
-            configuration.Pipeline.Steps,
+            legacyConfiguration.Module,
+            legacyConfiguration.Rig,
+            legacyConfiguration.Pipeline.Steps,
             legacySchedule);
         var appliedLegacy = legacy.ApplyTo(configuration);
         var serializedLegacy = CaptureContractJson.SerializeToElement(legacy);
 
         Assert.AreEqual(LocalCaptureProfileDefinition.CurrentSchemaVersion, profile.SchemaVersion);
         Assert.IsTrue(LocalCaptureProfileContract.Validate(profile).IsValid);
-        Assert.IsTrue(LocalCaptureProfileContract.Validate(legacy).IsValid);
+        Assert.IsFalse(LocalCaptureProfileContract.Validate(legacy).IsValid);
+        Assert.IsTrue(LocalCaptureProfileContract.ValidatePersistedRevision(legacy).IsValid);
         Assert.IsTrue(serialized.TryGetProperty("dependencyPolicy", out _));
         Assert.IsFalse(serializedLegacy.TryGetProperty("dependencyPolicy", out _));
         Assert.AreEqual(
@@ -527,7 +539,7 @@ public sealed class CaptureProcessingGraphTests
         Assert.AreEqual(CapturePipelineDependencyPolicy.LegacyInference, appliedLegacy.Pipeline.DependencyPolicy);
         Assert.AreEqual(
             "2BAEFC40154CF604FD5F7E6BA355F8CBAB3E084C89960B7F97DD1D7EA4A6AB2F",
-            LocalCaptureProfileContract.ComputeSha256(legacy));
+            LocalCaptureProfileContract.ComputePersistedRevisionSha256(legacy));
         using var telemetry = new CaptureProcessingTelemetry();
         using var services = new ServiceCollection().BuildServiceProvider();
         var executableLegacy = legacy with

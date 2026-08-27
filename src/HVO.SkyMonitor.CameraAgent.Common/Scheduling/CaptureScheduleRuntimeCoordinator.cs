@@ -263,13 +263,29 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         try
         {
             var current = Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
-            var candidateConfiguration = profile.ApplyTo(current.Configuration);
-            ValidateConfiguration(candidateConfiguration);
+            void ValidateNewProfile()
+            {
+                ValidateSubmittedProfile(profile);
+                ValidateConfiguration(profile.ApplyTo(current.Configuration));
+            }
             var result = basisRevisionId is null
                 ? await _store.StageWithCurrentAsync(
-                    profile, idempotencyKey, expectedVersion, actor, reason, cancellationToken).ConfigureAwait(false)
+                    profile,
+                    idempotencyKey,
+                    expectedVersion,
+                    actor,
+                    reason,
+                    cancellationToken,
+                    ValidateNewProfile).ConfigureAwait(false)
                 : await _store.StageWithCurrentFromBasisAsync(
-                    profile, basisRevisionId, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+                    profile,
+                    basisRevisionId,
+                    idempotencyKey,
+                    expectedVersion,
+                    actor,
+                    reason,
+                    cancellationToken,
+                    ValidateNewProfile)
                     .ConfigureAwait(false);
             lock (_stateGate)
             {
@@ -342,6 +358,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             throw new ArgumentOutOfRangeException(nameof(dayCount));
         }
         var current = Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
+        ValidateSubmittedProfile(profile);
         var candidate = profile.ApplyTo(current.Configuration);
         ValidateConfiguration(candidate);
         var now = _timeProvider.GetUtcNow().ToUniversalTime();
@@ -512,6 +529,12 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         DateTimeOffset utc,
         CancellationToken cancellationToken)
     {
+        var effectiveProfileSha256 = LocalCaptureProfileContract.ComputeEffectiveSha256(configuration);
+        if (!string.Equals(revision.ProfileSha256, effectiveProfileSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "The capture schedule revision identity does not match its effective runtime configuration.");
+        }
         var location = configuration.DeploymentLocation?.ToProvenance()
             ?? throw new InvalidOperationException("A validated deployment location is required for capture scheduling.");
         var persisted = await _store.TryReadPreviewAsync(
@@ -549,6 +572,17 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         {
             throw new CaptureProfileCompatibilityException(
                 "The local capture profile is incompatible with this CameraAgent.", exception);
+        }
+    }
+
+    private static void ValidateSubmittedProfile(LocalCaptureProfileDefinition profile)
+    {
+        var validation = LocalCaptureProfileContract.Validate(profile);
+        if (!validation.IsValid)
+        {
+            throw new ArgumentException(
+                $"The local capture profile is invalid ({validation.FieldPath}).",
+                nameof(profile));
         }
     }
 

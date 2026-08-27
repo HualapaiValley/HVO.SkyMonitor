@@ -141,8 +141,7 @@ internal static class RawCaptureDescriptorFactory
         }
         var schedule = configuration.Schedule ?? throw new InvalidDataException(
             "Schedule admission evidence requires an effective local schedule.");
-        var profileSha256 = LocalCaptureProfileContract.ComputeSha256(
-            LocalCaptureProfileDefinition.CreateForConfiguration(configuration, schedule));
+        var profileSha256 = LocalCaptureProfileContract.ComputeEffectiveSha256(configuration);
         var scheduleSha256 = CaptureScheduleContract.ComputeSha256(schedule);
         if (!string.Equals(evidence.LocalProfileSha256, profileSha256, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(evidence.ScheduleRevisionSha256, scheduleSha256, StringComparison.OrdinalIgnoreCase))
