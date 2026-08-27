@@ -358,8 +358,8 @@ jq -n \
       issue: 268,
       revision: $revision,
       issue250: {sourceRevision: "2d8c99f1c745386587482f82628672a304557d90", productionRevision: "89c3e5176417a70fcfc5c67d2b0adb233ee7a9e4", manifestSha256: $baselineManifestSha256, gcDynamicAdaptationMode: 0, reason: ".NET 10 Server GC DATAS can make GC.GetTotalAllocatedBytes decrease when an active heap is retired; baseline and after authenticate the same effective DATAS-disabled runtime mode so allocation deltas remain comparable.", allEntriesVerified: true, immutableCampaignCopy: "aggregate/inputs/issue-250-baseline"},
-      issue257: {sourceRevision: "4cb0cdcef7f1d9df2e0923ee9b993454e0252843", manifestSha256: $lanesManifestSha256, summarySha256: $lanesSummarySha256, artifactCount: 26, allEntriesVerified: true, allEntriesCopied: true, immutableCampaignCopy: "aggregate/inputs/issue-257"},
-      reuseDisposition: "Issue #257 measured paths, fixtures, profile, schema, and measurement logic are unchanged after its authenticated source; documentation and runner-only changes do not invalidate reuse."
+      issue257: {sourceRevision: "4cb0cdcef7f1d9df2e0923ee9b993454e0252843", manifestSha256: $lanesManifestSha256, summarySha256: $lanesSummarySha256, artifactCount: 26, allEntriesVerified: true, allEntriesCopied: true, immutableCampaignCopy: "aggregate/inputs/issue-257", disposition: "historical-only", currentPathReuse: false},
+      reuseDisposition: "The pinned schema-10 issue #257 bundle is retained only as authenticated historical context; schema-11 initialization and canonical insertion require new issue #257 evidence and are not represented by this bundle."
     }' > "$SYNTHETIC_ROOT/consumed-evidence.json"
 
 dotnet restore "$PROJECT" 8>&-

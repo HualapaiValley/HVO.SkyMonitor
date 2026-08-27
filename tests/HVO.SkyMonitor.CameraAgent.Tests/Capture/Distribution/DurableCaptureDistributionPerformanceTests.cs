@@ -51,6 +51,13 @@ public sealed class DurableCaptureDistributionPerformanceTests
         var git = await ReadGitEvidenceAsync(repositoryRoot).ConfigureAwait(false);
         var run = ReadEvidenceRun(git);
         ValidateRunSequence(run);
+        Assert.IsTrue(System.Runtime.GCSettings.IsServerGC, "Issue #257 evidence requires Server GC.");
+        Assert.AreEqual(
+            "0",
+            Environment.GetEnvironmentVariable("DOTNET_GCDynamicAdaptationMode"),
+            "Issue #257 allocation deltas require DATAS-disabled Server GC.");
+        var gcDynamicAdaptationMode = ReadGcDynamicAdaptationMode();
+        Assert.AreEqual(0L, gcDynamicAdaptationMode, "The runtime must authenticate DATAS-disabled Server GC.");
         var revision = run.Revision;
         var outputDirectory = run.OutputDirectory;
         var workRoot = Path.Combine(outputDirectory, "performance-work");
@@ -121,8 +128,9 @@ public sealed class DurableCaptureDistributionPerformanceTests
                     TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                     StorageFormat = new DriveInfo(Path.GetPathRoot(outputDirectory)!).DriveFormat,
                     ServerGc = System.Runtime.GCSettings.IsServerGC,
+                    GcDynamicAdaptationMode = gcDynamicAdaptationMode,
                     SqliteVersion = await ReadSqliteVersionAsync().ConfigureAwait(false),
-                    ExecutionCommand = $"DOTNET_gcServer=1 HVO_ISSUE_257_EVIDENCE=1 HVO_EVIDENCE_REVISION={revision} HVO_EVIDENCE_TRIAL={run.Trial} HVO_ISSUE_257_ORDER={run.Order} HVO_ISSUE_257_OUTPUT_ROOT={run.OutputRoot} dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName~DurableCaptureDistributionPerformanceTests.W2W3MAndBlockedLane_DurableLaneEvidence"
+                    ExecutionCommand = $"DOTNET_gcServer=1 DOTNET_GCDynamicAdaptationMode=0 HVO_ISSUE_257_EVIDENCE=1 HVO_EVIDENCE_REVISION={revision} HVO_EVIDENCE_TRIAL={run.Trial} HVO_ISSUE_257_ORDER={run.Order} HVO_ISSUE_257_OUTPUT_ROOT={run.OutputRoot} dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName~DurableCaptureDistributionPerformanceTests.W2W3MAndBlockedLane_DurableLaneEvidence"
                 },
                 Workload = new
                 {
@@ -1438,6 +1446,16 @@ public sealed class DurableCaptureDistributionPerformanceTests
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT sqlite_version();";
         return Convert.ToString(await command.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture)!;
+    }
+
+    private static long ReadGcDynamicAdaptationMode()
+    {
+        var configuration = GC.GetConfigurationVariables();
+        if (!configuration.TryGetValue("GCDynamicAdaptationMode", out var value))
+        {
+            throw new InvalidOperationException("The runtime did not report GCDynamicAdaptationMode.");
+        }
+        return Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static string ReadProcessorModel()

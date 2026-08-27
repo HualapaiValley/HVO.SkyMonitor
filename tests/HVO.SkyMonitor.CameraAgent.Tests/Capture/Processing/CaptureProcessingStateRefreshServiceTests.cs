@@ -31,6 +31,20 @@ public sealed class CaptureProcessingStateRefreshServiceTests
             Assert.AreEqual(0, state.Snapshot.MissingProductCount);
             Assert.AreEqual(0, state.Snapshot.ProcessingQuarantineCount);
             Assert.AreEqual(CaptureProcessingAvailability.Healthy, state.Snapshot.Availability);
+
+            var failedState = new CaptureProcessingState();
+            var failingIngress = new FailingIngress();
+            using var failedService = new CaptureProcessingStateRefreshService(
+                store, failedState, TimeProvider.System, failingIngress);
+            await failedService.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            await failingIngress.Attempted.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            for (var attempt = 0; attempt < 50 && !failedState.Snapshot.DurableStateUnavailable; attempt++)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10)).ConfigureAwait(false);
+            }
+            Assert.IsTrue(failedState.Snapshot.DurableStateUnavailable);
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            await failedService.StopAsync(stop.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -49,6 +63,25 @@ public sealed class CaptureProcessingStateRefreshServiceTests
         {
             InitializeCount++;
             await journal.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        public ValueTask<RawCaptureReceipt?> AcceptAsync(
+            HVO.SkyMonitor.AgentCore.CameraModuleConfig configuration,
+            HVO.SkyMonitor.AgentCore.CaptureLoopSubmission submission,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class FailingIngress : IRawCaptureIngress
+    {
+        private readonly TaskCompletionSource _attempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Attempted => _attempted.Task;
+
+        public ValueTask InitializeAsync(CancellationToken cancellationToken)
+        {
+            _attempted.TrySetResult();
+            return ValueTask.FromException(new InvalidDataException("invalid raw evidence"));
         }
 
         public ValueTask<RawCaptureReceipt?> AcceptAsync(

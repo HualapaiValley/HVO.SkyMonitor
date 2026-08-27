@@ -408,12 +408,13 @@ def protocol_comparison($name; $baseline; $after; $releases):
       logicalReadsPassed: ($plan.LogicalReads <= 32)
     }
   },
-  issue257: {
+  historicalIssue257: {
     revision: $lane.revision,
     profileSha256: $lane.identities.profileSha256,
     rawIngressSchema: $lane.identities.rawIngressSchema,
     baselineComparison: $lane.baseline.comparison,
     blockedLatencyDisposition: $lane.gates.blockedLatencyCausalDisposition,
+    disposition: "historical-only-not-reusable-for-current-schema-11-path",
     passed: $lane.result.passed
   },
   gates: {
@@ -539,7 +540,7 @@ def protocol_comparison($name; $baseline; $after; $releases):
       ($plan.LogicalReads <= 32)
     ),
     regressions: (($comparisons | length) == 16 and all($comparisons[]; .accepted)),
-    issue257: (
+    historicalIssue257Input: (
       ($lane.revision == "4cb0cdcef7f1d9df2e0923ee9b993454e0252843") and
       ($lane.identities.profileSha256 == "227FB3C0484AB5BBAFC4CA3674EA0D68B473315EBDD63F547CB2851D0A00F499") and
       ($lane.identities.rawIngressSchema == 10) and
@@ -549,5 +550,5 @@ def protocol_comparison($name; $baseline; $after; $releases):
 } |
 .result = {
   passed: all(.gates[]; . == true),
-  scope: "Authenticated issue #250 baseline/after comparison plus retained issue #257 current-profile lane evidence."
+  scope: "Authenticated issue #250 baseline/after comparison plus retained historical issue #257 schema-10 context that is not reused for the current schema-11 path."
 }

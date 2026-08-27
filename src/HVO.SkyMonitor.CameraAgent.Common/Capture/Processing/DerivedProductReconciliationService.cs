@@ -18,14 +18,14 @@ internal sealed class DerivedProductReconciliationService(
 {
     internal async ValueTask RunOnceAsync(CancellationToken cancellationToken)
     {
-        if (rawIngress is not null)
-        {
-            await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
-        }
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity(
             "processing-artifact.reconcile");
         try
         {
+            if (rawIngress is not null)
+            {
+                await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            }
             var reconciler = new DerivedProductReconciler(
                 options.Value.RawIngressRoot, store, options.Value.DerivedProductLifecycle, TimeProvider.System,
                 distribution.NotifyCommittedCapture);

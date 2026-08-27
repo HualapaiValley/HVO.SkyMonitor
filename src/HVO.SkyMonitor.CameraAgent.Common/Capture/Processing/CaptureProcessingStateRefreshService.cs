@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -34,9 +33,8 @@ internal sealed class CaptureProcessingStateRefreshService(
             {
                 await RunOnceAsync(stoppingToken).ConfigureAwait(false);
             }
-            catch (SqliteException)
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                // Raw ingress creates the shared lane tables during host startup.
                 state.SetRefreshFailure();
             }
 

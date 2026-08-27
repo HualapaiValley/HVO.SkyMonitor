@@ -71,6 +71,7 @@ dotnet build "$PROJECT" --no-restore --configuration Release -warnaserror 8>&-
 run_control() {
     local trial="$1"
     DOTNET_gcServer=1 \
+    DOTNET_GCDynamicAdaptationMode=0 \
     HVO_ISSUE_257_EVIDENCE=1 \
     HVO_EVIDENCE_REVISION="$REVISION" \
     HVO_EVIDENCE_TRIAL="$trial" \
@@ -82,6 +83,7 @@ run_lanes() {
     local trial="$1"
     local order="$2"
     DOTNET_gcServer=1 \
+    DOTNET_GCDynamicAdaptationMode=0 \
     HVO_ISSUE_257_EVIDENCE=1 \
     HVO_EVIDENCE_REVISION="$REVISION" \
     HVO_EVIDENCE_TRIAL="$trial" \
@@ -149,6 +151,7 @@ for trial in 1 2 3 4 5; do
         .issue == 257 and .trial == $trial and .revision == $revision and
         .workload.profileSha256 == "227FB3C0484AB5BBAFC4CA3674EA0D68B473315EBDD63F547CB2851D0A00F499" and
         .w3M.userVersion == 11 and .baseline.comparison == "N/A" and
+        .environment.serverGc == true and .environment.gcDynamicAdaptationMode == 0 and
         ([.w3M.initializationMilliseconds,
           .w3M.initializationCpuMilliseconds, .w3M.initializationAllocatedBytes,
           .w3M.rssBeforeInitializationBytes, .w3M.rssAfterInitializationBytes,
@@ -168,6 +171,7 @@ for trial in 1 2 3 4 5; do
     jq --exit-status --arg revision "$REVISION" --argjson trial "$trial" '
         .issue == 257 and .trial == $trial and .revision.evidenceRevision == $revision and
         .revision.dirty == false and
+        .environment.serverGc == true and .environment.gcDynamicAdaptationMode == 0 and
         ([.workloads[] | select(.id == "W2") | .canonicalProfileSha256] ==
           ["227FB3C0484AB5BBAFC4CA3674EA0D68B473315EBDD63F547CB2851D0A00F499"])
     ' "$trial_dir/capture-control-performance.json" >/dev/null

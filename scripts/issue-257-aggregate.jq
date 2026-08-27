@@ -74,6 +74,9 @@ def stats:
         w2SparseMeterAllocatedBytes: ($control | map(.workloads[] | select(.id == "W2") | .candidate.allocatedBytesTotal) | stats)
     },
     gates: {
+        runtimeConfiguration: (
+            ([$lane[] | .environment.serverGc == true and .environment.gcDynamicAdaptationMode == 0] | all) and
+            ([$control[] | .environment.serverGc == true and .environment.gcDynamicAdaptationMode == 0] | all)),
         perTrialCorrectness: (([$lane[] |
             .blockedComparison.unblocked.finalPendingLaneRows == 0 and
             .blockedComparison.blocked.finalPendingLaneRows == 0 and
@@ -108,5 +111,5 @@ def stats:
         candidateOnlyTrialRanges: "Reported as min/median/max and maximumToMinimumRatio; no equivalent historical baseline exists, so range ratios are diagnostic rather than regression gates."
     }
 } |
-.result = {passed: (.gates.perTrialCorrectness and .gates.runtimeSignals and .gates.rssGrowthWithinDeclaredAbsoluteBudget),
+.result = {passed: (.gates.runtimeConfiguration and .gates.perTrialCorrectness and .gates.runtimeSignals and .gates.rssGrowthWithinDeclaredAbsoluteBudget),
     scope: "functional isolation, correctness, durability, runtime signals, and RSS bounds; latency causality is N/A"}
