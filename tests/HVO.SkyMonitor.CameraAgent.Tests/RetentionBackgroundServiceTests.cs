@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -251,6 +252,108 @@ public sealed class RetentionBackgroundServiceTests
 
             Assert.IsFalse(File.Exists(stored.AbsolutePath));
             Assert.IsFalse(File.Exists(Path.ChangeExtension(stored.AbsolutePath, ".json")));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ApplyRetentionAsync_StructuredSidecarIsHeldUntilSqliteOutboxAcknowledgement()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var source = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono8, 2, 2, 2, new byte[4]).Descriptor;
+            var layer = PresentationLayerPayloadJson.Create(new string('A', 64), 2, 2);
+            var payload = PresentationLayerPayloadJson.Serialize(layer);
+            var sourceIds = new[] { source.Artifact.ArtifactId };
+            var recipe = RecipeIdentityDescriptor.Create(
+                "presentation-layer", "1.0.0", "retention-v1", JsonSerializer.SerializeToElement(new { }));
+            var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Metadata,
+                "scene-layer",
+                ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256,
+                sourceIds);
+            var artifact = new ArtifactDescriptor(
+                ProcessingIdentity.CreateArtifactId(outputIdentity),
+                FrameArtifactRole.Metadata,
+                "presentation-layer-step",
+                "scene-layer",
+                source.Timing.ReadoutCompletedUtc,
+                sourceIds,
+                recipe,
+                PresentationLayerPayloadJson.MediaType,
+                ProcessingIdentity.ComputePayloadSha256(payload));
+            var relativePayload = "derived/2020/01/01/Metadata/expired.json";
+            var relativeSidecar = "derived/2020/01/01/Metadata/expired.manifest.json";
+            var manifest = new StructuredProcessingProductManifestV1(
+                StructuredProcessingProductManifestV1.CurrentSchemaVersion,
+                new(
+                    source,
+                    artifact,
+                    outputIdentity,
+                    [new("presentation-layer", "retention-v1")],
+                    new("rig", "orientation", "calibration", "mask", "sensor", "night", "processing"),
+                    TimeSpan.FromSeconds(1).Ticks,
+                    payload.LongLength,
+                    ProcessingProductKind.Metadata,
+                    PresentationLayerPayloadV1.CurrentSchemaVersion,
+                    layer.ContentIdentitySha256),
+                relativePayload,
+                ProducerStepId: "presentation-layer-step");
+            var payloadPath = Path.Combine(root, relativePayload.Replace('/', Path.DirectorySeparatorChar));
+            var sidecarPath = Path.Combine(root, relativeSidecar.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+            await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
+            var durableSidecar = new DurableTypedMetadataProductManifestV3(
+                DurableTypedMetadataProductManifestV3.CurrentSchemaVersion,
+                source.Capture,
+                artifact,
+                outputIdentity,
+                manifest.Descriptor.Algorithms,
+                manifest.Descriptor.Compatibility,
+                manifest.Descriptor.TotalIntegrationTicks,
+                payload.LongLength,
+                relativePayload,
+                JsonSerializer.SerializeToElement<object?>(null),
+                ProcessingProductKind.Metadata,
+                PresentationLayerPayloadV1.CurrentSchemaVersion,
+                layer.ContentIdentitySha256);
+            await File.WriteAllBytesAsync(
+                    sidecarPath, DurableProcessingProductManifestJson.Serialize(durableSidecar))
+                .ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(payloadPath, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+            File.SetLastWriteTimeUtc(sidecarPath, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+            using var outbox = new SqliteArtifactOutbox();
+            await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false);
+
+            await CreateService(outbox).ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(payloadPath));
+            Assert.IsTrue(File.Exists(sidecarPath));
+            var lease = await outbox.ClaimAsync(
+                root, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            await outbox.AcknowledgeAsync(
+                root,
+                lease,
+                new(
+                    ArtifactUploadAcknowledgement.CurrentSchemaVersion,
+                    manifest.IdempotencyKey,
+                    artifact.ArtifactId,
+                    artifact.ChecksumSha256,
+                    payload.LongLength,
+                    DateTimeOffset.UtcNow,
+                    manifest.SchemaVersion),
+                CancellationToken.None).ConfigureAwait(false);
+
+            await CreateService(outbox).ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(File.Exists(payloadPath));
+            Assert.IsFalse(File.Exists(sidecarPath));
         }
         finally
         {

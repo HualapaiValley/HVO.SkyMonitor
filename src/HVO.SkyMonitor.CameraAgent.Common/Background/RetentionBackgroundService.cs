@@ -326,8 +326,7 @@ public sealed class RetentionBackgroundService(
             foreach (var hold in outboxHolds)
             {
                 AddHeldPath(normalizedRoot, rootPrefix, hold.RelativeArtifactPath, paths);
-                paths.Add(Path.ChangeExtension(
-                    Path.GetFullPath(Path.Combine(normalizedRoot, hold.RelativeArtifactPath)), ".json"));
+                AddHeldPath(normalizedRoot, rootPrefix, hold.RelativeSidecarPath, paths);
                 artifactIds.Add(hold.ArtifactId);
             }
         }

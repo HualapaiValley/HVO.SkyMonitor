@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
 
 namespace HVO.SkyMonitor.LogicHost.Data;
@@ -55,9 +56,37 @@ internal static class CentralReconstructionConfiguration
         recipe.HasOne(item => item.Artifact).WithOne(item => item.Recipe)
             .HasForeignKey<CentralArtifactRecipe>(item => item.CentralArtifactId).OnDelete(DeleteBehavior.Cascade);
 
+        var structuredProduct = builder.Entity<CentralStructuredProcessingProduct>();
+        structuredProduct.ToTable("CentralStructuredProcessingProducts");
+        structuredProduct.HasKey(item => item.CentralArtifactId);
+        structuredProduct.Property(item => item.OutputIdentitySha256).HasMaxLength(64).IsRequired();
+        structuredProduct.Property(item => item.ProductKind).HasMaxLength(32).IsRequired();
+        structuredProduct.Property(item => item.ProductSchemaVersion).HasMaxLength(128).IsRequired();
+        structuredProduct.Property(item => item.ContentIdentitySha256).HasMaxLength(64).IsRequired();
+        structuredProduct.Property(item => item.AlgorithmsJson)
+            .HasMaxLength(StructuredProcessingProductDescriptorV1.MaximumAlgorithmsJsonCharacters).IsRequired();
+        structuredProduct.Property(item => item.CompatibilityJson)
+            .HasMaxLength(StructuredProcessingProductDescriptorV1.MaximumCompatibilityJsonCharacters).IsRequired();
+        structuredProduct.Property(item => item.DescriptorJson)
+            .HasMaxLength(StructuredProcessingProductDescriptorV1.MaximumDescriptorJsonCharacters).IsRequired();
+        structuredProduct.ToTable(table => table.HasCheckConstraint(
+            "CK_CentralStructuredProcessingProducts_DescriptorJson_Length",
+            $"LEN([DescriptorJson]) <= {StructuredProcessingProductDescriptorV1.MaximumDescriptorJsonCharacters}"));
+        structuredProduct.Property(item => item.SourceIdentitySha256).HasMaxLength(64);
+        structuredProduct.HasIndex(item => item.OutputIdentitySha256);
+        structuredProduct.HasOne(item => item.Artifact).WithOne(item => item.StructuredProduct)
+            .HasForeignKey<CentralStructuredProcessingProduct>(item => item.CentralArtifactId)
+            .OnDelete(DeleteBehavior.Cascade);
+
         var source = builder.Entity<CentralArtifactSource>();
         source.ToTable("CentralArtifactSources");
         source.HasKey(item => item.Id);
+        source.Property(item => item.ExpectedVariant).HasMaxLength(128);
+        source.Property(item => item.ExpectedRecipeIdentitySha256).HasMaxLength(64);
+        source.Property(item => item.ExpectedProductIdentitySha256).HasMaxLength(64);
+        source.Property(item => item.ExpectedMediaType).HasMaxLength(128);
+        source.Property(item => item.ExpectedLayoutIdentitySha256).HasMaxLength(64);
+        source.Property(item => item.ExpectedCoordinateIdentitySha256).HasMaxLength(64);
         source.HasIndex(item => new { item.CentralArtifactId, item.Ordinal }).IsUnique();
         source.HasIndex(item => new { item.CentralArtifactId, item.SourceArtifactId }).IsUnique();
         source.HasOne(item => item.Artifact).WithMany(item => item.Sources)
@@ -68,7 +97,7 @@ internal static class CentralReconstructionConfiguration
         var identity = builder.Entity<CentralArtifactIngestIdentity>();
         identity.ToTable("CentralArtifactIngestIdentities");
         identity.HasKey(item => item.Id);
-        identity.Property(item => item.ManifestSchemaVersion).HasMaxLength(16).IsRequired();
+        identity.Property(item => item.ManifestSchemaVersion).HasMaxLength(64).IsRequired();
         identity.Property(item => item.IdempotencyKey).HasMaxLength(64).IsRequired();
         identity.HasIndex(item => item.IdempotencyKey).IsUnique();
         identity.HasIndex(item => new { item.CentralArtifactId, item.ManifestSchemaVersion }).IsUnique();

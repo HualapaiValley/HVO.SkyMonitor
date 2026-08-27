@@ -644,13 +644,13 @@ internal sealed class CaptureProcessingPersistence(
             product,
             cancellationToken).ConfigureAwait(false);
 
-    internal static async ValueTask CopyMetadataProductAsync(
+    internal static async ValueTask<DurableProcessingOutput> CopyMetadataProductAsync(
         string storageRoot,
         ReconstructionDescriptor sourceDescriptor,
         string sourceId,
         ProcessingProduct product,
         CancellationToken cancellationToken)
-        => _ = await PersistMetadataProductAsync(
+        => await PersistMetadataProductAsync(
             Path.GetFullPath(storageRoot),
             sourceDescriptor,
             sourceId,

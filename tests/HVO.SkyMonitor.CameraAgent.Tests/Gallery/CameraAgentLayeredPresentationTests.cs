@@ -85,6 +85,32 @@ public sealed class CameraAgentLayeredPresentationTests
         Assert.IsNull(result.Presentation);
     }
 
+    [TestMethod]
+    public void SharedRendererRejectsUnsupportedNormalizedCoordinates()
+    {
+        var payload = PresentationLayerPayloadJson.Create(new string('C', 64), 640, 480);
+        var layer = LayeredPresentationJson.CreateLayer(
+            "normalized",
+            new(Guid.NewGuid(), payload.ContentIdentitySha256,
+                PresentationLayerPayloadJson.MediaType, Compatibility),
+            null,
+            PresentationCoordinateSpace.NormalizedImage,
+            "renderer-v1",
+            "style-v1",
+            1,
+            PresentationBlendMode.Normal,
+            1_000_000,
+            true,
+            JsonSerializer.SerializeToElement(new { }));
+        var manifest = LayeredPresentationJson.CreateManifest(
+            new(Guid.NewGuid(), new string('D', 64), "application/x-hvo-packed-image", Compatibility),
+            null,
+            [layer]);
+
+        Assert.Throws<ArgumentException>(() =>
+            GroupedSvgPresentationRenderer.Render(manifest, [payload], new string('E', 64)));
+    }
+
     private static T AssertSingle<T>(IEnumerable<T> values)
     {
         var materialized = values.ToArray();

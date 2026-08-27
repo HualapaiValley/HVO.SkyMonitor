@@ -183,14 +183,16 @@ internal sealed class EnvironmentPresentationLayerCaptureProcessingStep(
         var previewProduct = dependencyProducts.Single(product => product.Role == FrameArtifactRole.Preview);
         var stackProduct = ResolveStackProduct(context, previewProduct) ?? throw new InvalidDataException(
             "Environment presentation requires combined-preview stack lineage.");
-        var facts = await factsBuilder.BuildAsync(context, scene, stackProduct, Options.EnvironmentalKinds, cancellationToken).ConfigureAwait(false);
+        var sceneArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, sceneProduct);
+        var stackArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, stackProduct);
+        var facts = await factsBuilder.BuildAsync(
+            context, scene, stackProduct, [sceneArtifact.ArtifactId, stackArtifact.ArtifactId],
+            Options.EnvironmentalKinds, cancellationToken).ConfigureAwait(false);
         if (facts is null)
         {
             context.AddProcessingOutcome(ProcessingOutcome.RetryableFailure(ProcessingReasonCodes.EnvironmentAssociationPending));
             return;
         }
-        var sceneArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, sceneProduct);
-        var stackArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, stackProduct);
         var factsProduct = PresentationProcessingProducts.CreateMetadataFactsProduct(
             facts, Options.FactsOutputVariant, [sceneArtifact, stackArtifact]);
         var source = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, factsProduct);

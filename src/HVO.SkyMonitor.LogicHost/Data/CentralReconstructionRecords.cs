@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.AgentCore;
+
 namespace HVO.SkyMonitor.LogicHost.Data;
 
 internal enum CentralArtifactObjectState
@@ -106,6 +108,24 @@ internal sealed class CentralArtifactRecipe
     public string OptionsSha256 { get; set; } = string.Empty;
 }
 
+internal sealed class CentralStructuredProcessingProduct
+{
+    public Guid CentralArtifactId { get; set; }
+    public CentralArtifact? Artifact { get; set; }
+    public string OutputIdentitySha256 { get; set; } = string.Empty;
+    public string ProductKind { get; set; } = string.Empty;
+    public string ProductSchemaVersion { get; set; } = string.Empty;
+    public string ContentIdentitySha256 { get; set; } = string.Empty;
+    public string AlgorithmsJson { get; set; } = string.Empty;
+    public string CompatibilityJson { get; set; } = string.Empty;
+    public string DescriptorJson { get; set; } = string.Empty;
+    public long TotalIntegrationTicks { get; set; }
+
+    public string? SourceIdentitySha256 { get; set; }
+    public int? PresentationWidthPixels { get; set; }
+    public int? PresentationHeightPixels { get; set; }
+}
+
 internal sealed class CentralArtifactSource
 {
     public Guid Id { get; init; } = Guid.NewGuid();
@@ -113,6 +133,15 @@ internal sealed class CentralArtifactSource
     public CentralArtifact? Artifact { get; set; }
     public int Ordinal { get; set; }
     public Guid SourceArtifactId { get; set; }
+    public FrameArtifactRole? ExpectedRole { get; set; }
+    public string? ExpectedVariant { get; set; }
+    public string? ExpectedRecipeIdentitySha256 { get; set; }
+    public string? ExpectedProductIdentitySha256 { get; set; }
+    public string? ExpectedMediaType { get; set; }
+    public int? ExpectedWidthPixels { get; set; }
+    public int? ExpectedHeightPixels { get; set; }
+    public string? ExpectedLayoutIdentitySha256 { get; set; }
+    public string? ExpectedCoordinateIdentitySha256 { get; set; }
     public Guid? ResolvedCentralArtifactId { get; set; }
     public CentralArtifact? ResolvedArtifact { get; set; }
 }

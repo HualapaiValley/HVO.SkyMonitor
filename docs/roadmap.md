@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-08-25
+Status date: 2026-08-26
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -63,6 +63,7 @@ The blocked CameraAgent storage/upload naming cleanup
 | `RM-005` | Local-first processing graphs and distributed runners | Generalize immutable graphs, durable CameraAgent jobs and replay, central graph execution, self-hosted runners, fairness, and optional elastic providers. | [Epic #421](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/421); [#422](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/422)-[#430](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/430) | Consumes `RM-004` product semantics. Live CameraAgent processing remains immediate and in-process; only explicit archived replay or central work may use external runners. |
 | `RM-006` | Certified processing extension platform | Add signed, versioned extension lifecycle and a bounded external-processing bridge without exposing host infrastructure or weakening reproducibility. | [#140](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/140) | Consumes layered producer/compositor/encoder contracts from `RM-004` and complements, but does not duplicate, `RM-005` runners. |
 | `RM-007` | Native camera artifacts and pluggable formats | Preserve camera-native and proprietary source bytes, decode them into canonical processing frames, and produce versioned scientific, display, and export formats. | [#141](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/141) | Builds on certified extensions and layered composition. It does not identify demosaiced, corrected, or lossy data as raw evidence. |
+| `RM-015` | Production multichannel notifications | Add production transactional email and SMS delivery, durable LogicHost in-app notifications, and optional bounded CameraAgent notifications. | [Epic #455](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/455) | Selects providers and CameraAgent delivery topology through an explicit decision checkpoint. Mailpit remains development/test-only and is excluded from official release installation; standalone CameraAgent correctness never depends on notifications, LogicHost, or an external provider. |
 
 ## Research
 
@@ -114,6 +115,7 @@ RM-004 layered capture products
 
 RM-009 environmental source research is independently plannable.
 RM-010, RM-012, and RM-013 remain trigger- or capacity-dependent.
+RM-015 follows the RM-003 deployment foundation but is independently plannable.
 ```
 
 Dependencies in this summary show portfolio direction only. Formal issue

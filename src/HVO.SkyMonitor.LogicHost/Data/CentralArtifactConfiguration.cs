@@ -20,7 +20,7 @@ internal sealed class CentralArtifactConfiguration : IEntityTypeConfiguration<Ce
         builder.HasKey(artifact => artifact.Id);
         builder.Property(artifact => artifact.Role).HasConversion<string>().HasMaxLength(32).IsRequired();
         builder.Property(artifact => artifact.RecipeVersion).HasMaxLength(128).IsRequired();
-        builder.Property(artifact => artifact.ManifestSchemaVersion).HasMaxLength(16).IsRequired();
+        builder.Property(artifact => artifact.ManifestSchemaVersion).HasMaxLength(64).IsRequired();
         builder.Property(artifact => artifact.MediaType).HasMaxLength(128).IsRequired();
         builder.Property(artifact => artifact.ChecksumSha256).HasMaxLength(64).IsRequired();
         builder.Property(artifact => artifact.StorageReference).HasMaxLength(512)

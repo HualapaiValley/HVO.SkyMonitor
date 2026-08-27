@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
+PROJECT="tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj"
+OUTPUT_DIR="$ROOT/tests/HVO.SkyMonitor.IntegrationTests/bin/Release/net10.0"
+EVIDENCE_ROOT=${HVO_ISSUES437432_EVIDENCE_ROOT:-"$ROOT/TestResults/issues-437-432"}
+EXPECTED_BASELINE=${HVO_ISSUES437432_BASELINE:-5febc8efaa4b4b6e5e45eb45e9df0c55525bfdde}
+EXPECTED_PRODUCT=${HVO_ISSUES437432_PRODUCT_COMMIT:-63490cdfef496e2a702686c131f9689477800c95}
+
+command -v jq >/dev/null || { printf '%s\n' "jq is required." >&2; exit 1; }
+[[ $(git status --porcelain --untracked-files=all) == "" ]] || {
+  printf '%s\n' "Issues #437/#432 evidence requires a completely clean worktree." >&2
+  exit 1
+}
+
+EVIDENCE_HEAD=$(git rev-parse HEAD)
+EVIDENCE_TREE=$(git rev-parse 'HEAD^{tree}')
+BASELINE_COMMIT=$(git rev-parse "$EXPECTED_BASELINE^{commit}")
+BASELINE_TREE=$(git rev-parse "$BASELINE_COMMIT^{tree}")
+PRODUCT_COMMIT=$(git rev-parse "$EXPECTED_PRODUCT^{commit}")
+PRODUCT_TREE=$(git rev-parse "$PRODUCT_COMMIT^{tree}")
+git merge-base --is-ancestor "$BASELINE_COMMIT" "$PRODUCT_COMMIT" || {
+  printf '%s\n' "Pinned baseline must be an ancestor of the product commit." >&2
+  exit 1
+}
+EXPECTED_PATHS=(
+  "scripts/evidence:issues-437-432"
+  "tests/HVO.SkyMonitor.IntegrationTests/LogicHostLayeredPerformanceTests.cs"
+)
+mapfile -t EVIDENCE_PATHS < <(git diff --name-only "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" | LC_ALL=C sort)
+[[ "${#EVIDENCE_PATHS[@]}" -eq "${#EXPECTED_PATHS[@]}" ]] || {
+  printf '%s\n' "Product-to-evidence diff must contain exactly the two allowlisted evidence files." >&2
+  exit 1
+}
+for index in "${!EXPECTED_PATHS[@]}"; do
+  [[ "${EVIDENCE_PATHS[$index]}" == "${EXPECTED_PATHS[$index]}" ]] || {
+    printf '%s\n' "Unexpected product-to-evidence path: ${EVIDENCE_PATHS[$index]}" >&2
+    exit 1
+  }
+done
+
+REVISION=${HVO_EVIDENCE_REVISION:-$EVIDENCE_HEAD}
+[[ "$REVISION" == "$EVIDENCE_HEAD" ]] || {
+  printf '%s\n' "HVO_EVIDENCE_REVISION must equal evidence HEAD." >&2
+  exit 1
+}
+TRIAL=${HVO_EVIDENCE_TRIAL:-"$(date -u +%Y%m%dT%H%M%S%3NZ)-$$"}
+[[ "$TRIAL" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { printf '%s\n' "HVO_EVIDENCE_TRIAL is invalid." >&2; exit 1; }
+TRIAL_DIR="$EVIDENCE_ROOT/$EVIDENCE_HEAD/trials/$TRIAL"
+RECEIPT="$TRIAL_DIR/issues-437-432-build-receipt.json"
+RESULT="$TRIAL_DIR/issues-437-432-layered-performance.json"
+mkdir -p "$(dirname "$TRIAL_DIR")"
+mkdir "$TRIAL_DIR" || { printf '%s\n' "Evidence trial is create-only: $TRIAL_DIR" >&2; exit 1; }
+
+inventory_hash() {
+  local base=$1 list=$2 inventory=$3
+  : > "$inventory"
+  while IFS= read -r relative; do
+    [[ "$relative" != *$'\t'* && "$relative" != *$'\n'* ]] || { printf '%s\n' "Unsupported inventory path." >&2; exit 1; }
+    local file="$base/$relative"
+    [[ -f "$file" ]] || { printf '%s\n' "Inventory file is missing: $file" >&2; exit 1; }
+    printf '%s\t%s\t%s\n' "$relative" "$(stat -c '%s' "$file")" "$(sha256sum "$file" | cut -d' ' -f1 | tr 'a-f' 'A-F')" >> "$inventory"
+  done < "$list"
+  sha256sum "$inventory" | cut -d' ' -f1 | tr 'a-f' 'A-F'
+}
+
+SOURCE_LIST="$TRIAL_DIR/.source-files"
+SOURCE_INVENTORY="$TRIAL_DIR/.source-inventory"
+git ls-files -- \
+  src/HVO.SkyMonitor.AgentCore src/HVO.SkyMonitor.Common src/HVO.SkyMonitor.Imaging \
+  src/HVO.SkyMonitor.LogicHost src/HVO.SkyMonitor.Processing src/HVO.SkyMonitor.TestSupport \
+  tests/HVO.SkyMonitor.IntegrationTests scripts/evidence:issues-437-432 scripts/test-categories/Program.cs \
+  Directory.Build.props Directory.Packages.props global.json HVO.SkyMonitor.v9.slnx | LC_ALL=C sort > "$SOURCE_LIST"
+SOURCE_HASH=$(inventory_hash "$ROOT" "$SOURCE_LIST" "$SOURCE_INVENTORY")
+SOURCE_COUNT=$(wc -l < "$SOURCE_LIST" | tr -d ' ')
+PRODUCT_DIFF="$TRIAL_DIR/.product.diff"
+EVIDENCE_DIFF="$TRIAL_DIR/.evidence.diff"
+git diff --binary "$BASELINE_COMMIT...$PRODUCT_COMMIT" > "$PRODUCT_DIFF"
+git diff --binary "$PRODUCT_COMMIT" "$EVIDENCE_HEAD" > "$EVIDENCE_DIFF"
+PRODUCT_DIFF_HASH=$(sha256sum "$PRODUCT_DIFF" | cut -d' ' -f1 | tr 'a-f' 'A-F')
+EVIDENCE_DIFF_HASH=$(sha256sum "$EVIDENCE_DIFF" | cut -d' ' -f1 | tr 'a-f' 'A-F')
+
+BUILD_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+dotnet build "$PROJECT" --configuration Release --no-restore --no-incremental -warnaserror
+BUILD_COMPLETED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+[[ -d "$OUTPUT_DIR" ]] || { printf '%s\n' "Release output is missing: $OUTPUT_DIR" >&2; exit 1; }
+OUTPUT_LIST="$TRIAL_DIR/.output-files"
+OUTPUT_INVENTORY="$TRIAL_DIR/.output-inventory"
+(cd "$OUTPUT_DIR" && find . -type f -printf '%P\n' | LC_ALL=C sort) > "$OUTPUT_LIST"
+OUTPUT_HASH=$(inventory_hash "$OUTPUT_DIR" "$OUTPUT_LIST" "$OUTPUT_INVENTORY")
+OUTPUT_COUNT=$(wc -l < "$OUTPUT_LIST" | tr -d ' ')
+SDK_VERSION=$(dotnet --version)
+TMP_RECEIPT="$TRIAL_DIR/.receipt.$$.tmp"
+jq -n \
+  --arg schemaVersion "issues-437-432-build-receipt-v1" \
+  --arg evidenceHead "$EVIDENCE_HEAD" --arg evidenceTree "$EVIDENCE_TREE" \
+  --arg productCommit "$PRODUCT_COMMIT" --arg productTree "$PRODUCT_TREE" \
+  --arg baselineCommit "$BASELINE_COMMIT" --arg baselineTree "$BASELINE_TREE" \
+  --arg baselineToProductDiffSha256 "$PRODUCT_DIFF_HASH" --arg productToEvidenceDiffSha256 "$EVIDENCE_DIFF_HASH" \
+  --arg sourceInventorySha256 "$SOURCE_HASH" --arg runtimeOutputInventorySha256 "$OUTPUT_HASH" \
+  --arg configuration "Release" --arg project "$PROJECT" --arg sdkVersion "$SDK_VERSION" --arg trial "$TRIAL" \
+  --arg buildStartedUtc "$BUILD_STARTED_UTC" --arg buildCompletedUtc "$BUILD_COMPLETED_UTC" \
+  --argjson sourceInventoryFileCount "$SOURCE_COUNT" --argjson runtimeOutputFileCount "$OUTPUT_COUNT" \
+  '{schemaVersion:$schemaVersion,evidenceHead:$evidenceHead,evidenceTree:$evidenceTree,
+    productCommit:$productCommit,productTree:$productTree,baselineCommit:$baselineCommit,baselineTree:$baselineTree,
+    baselineToProductDiffSha256:$baselineToProductDiffSha256,productToEvidenceDiffSha256:$productToEvidenceDiffSha256,
+    sourceInventorySha256:$sourceInventorySha256,sourceInventoryFileCount:$sourceInventoryFileCount,
+    runtimeOutputInventorySha256:$runtimeOutputInventorySha256,runtimeOutputFileCount:$runtimeOutputFileCount,
+    configuration:$configuration,project:$project,sdkVersion:$sdkVersion,trial:$trial,
+    buildStartedUtc:$buildStartedUtc,buildCompletedUtc:$buildCompletedUtc}' > "$TMP_RECEIPT"
+(set -o noclobber; exec 9>"$RECEIPT"; cat "$TMP_RECEIPT" >&9)
+rm -f -- "$TMP_RECEIPT" "$SOURCE_LIST" "$SOURCE_INVENTORY" "$PRODUCT_DIFF" "$EVIDENCE_DIFF" "$OUTPUT_LIST" "$OUTPUT_INVENTORY"
+
+[[ $(git status --porcelain --untracked-files=all) == "" ]] || {
+  printf '%s\n' "Worktree changed during the evidence build." >&2
+  exit 1
+}
+export HVO_ISSUES437432_EVIDENCE=1
+export HVO_ISSUES437432_EVIDENCE_ROOT="$EVIDENCE_ROOT"
+export HVO_ISSUES437432_BUILD_RECEIPT="$RECEIPT"
+export HVO_EVIDENCE_REVISION="$EVIDENCE_HEAD"
+export HVO_EVIDENCE_TRIAL="$TRIAL"
+export DOTNET_gcServer=1
+dotnet test "$PROJECT" --configuration Release --no-build \
+  --filter "FullyQualifiedName=HVO.SkyMonitor.IntegrationTests.LogicHostIngestPerformanceTests.LayeredIngestPresentationAndMaterialization_RecordsProvenanceLockedEvidence"
+
+[[ -s "$RESULT" ]] || { printf '%s\n' "Issues #437/#432 result is missing." >&2; exit 1; }
+jq -e --arg head "$EVIDENCE_HEAD" --arg tree "$EVIDENCE_TREE" --arg product "$PRODUCT_COMMIT" --arg baseline "$BASELINE_COMMIT" \
+  '.schemaVersion == "issues-437-432-layered-performance-v2" and
+   .provenance.evidenceHead == $head and .provenance.evidenceTree == $tree and
+   .provenance.productCommit == $product and .provenance.baselineCommit == $baseline and .provenance.claimable == true and
+   .workload.warmups == 5 and .workload.measuredOperations == 30 and
+    .workload.selectableLayers == 5 and .workload.flattenedStorageCounterfactualCombinations == 32 and
+    .workload.actualFlattenedArtifacts == 35 and .storageCounterfactual.counterfactualCombinationCount == 32 and
+   .correctness.exactIngestAndRetrievalChecksums == true and .correctness.deterministicSvg == true and
+   .correctness.etag304 == true and .correctness.singleFlight == true and
+   .correctness.completeResolvedLineage == true and (.correctness.materializationLineage | length) == 7 and
+   .correctness.replayConverged == true and
+   .correctness.zeroFinalPendingOrQuarantine == true and .result.correctnessGatePassed == true' "$RESULT" >/dev/null
+printf '%s\n' "$TRIAL_DIR"

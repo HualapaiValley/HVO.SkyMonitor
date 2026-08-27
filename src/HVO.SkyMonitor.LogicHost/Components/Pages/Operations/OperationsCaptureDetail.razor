@@ -23,6 +23,52 @@ else
     {
         <div class="alert alert-info" role="status">@StatusMessage</div>
     }
+    @if (Presentation is not null)
+    {
+        <section class="card mb-4 layered-presentation" @ref="presentationRoot" data-presentation-identity="@Presentation.PresentationIdentitySha256">
+            <div class="card-body">
+                <div class="d-flex flex-wrap justify-content-between gap-3 mb-3">
+                    <div><p class="text-uppercase text-info small fw-bold mb-1">Central layered presentation</p><h2 class="h4 mb-0">Archived scene layers</h2></div>
+                    <span class="text-muted small">One base + one grouped SVG</span>
+                </div>
+                <div class="layered-canvas mb-3" style="--presentation-aspect: @Presentation.WidthPixels / @Presentation.HeightPixels" aria-describedby="layered-presentation-summary">
+                    <img src="@Presentation.BaseContentPath" alt="Base image for capture @Detail.Capture.CapturedAtUtc.ToString("u") with selectable archived layers" />
+                    <div class="layered-overlay" aria-hidden="true">@PresentationSvg</div>
+                </div>
+                <fieldset class="layer-controls">
+                    <legend class="h6">Visible layers</legend>
+                    <div class="d-flex flex-wrap gap-3">
+                        @foreach (var layer in Presentation.Layers)
+                        {
+                            <label class="form-check">
+                                <input class="form-check-input" type="checkbox" checked="@layer.EnabledByDefault" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" />
+                                <span class="form-check-label">@layer.Kind <small class="text-muted">z @layer.ZOrder</small></span>
+                            </label>
+                        }
+                    </div>
+                    @if (Detail.EffectiveRole is HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Manager
+                        or HVO.SkyMonitor.LogicHost.Data.ObservatoryMembershipRole.Owner)
+                    {
+                        <div class="mt-3 d-flex flex-wrap align-items-center gap-3">
+                            <button type="button" class="btn btn-info" disabled="@IsSavingPresentation" @onclick="SaveSelectedStackAsync">
+                                @(IsSavingPresentation ? "Saving stack..." : "Save selected stack")
+                            </button>
+                            <span class="text-muted small">Creates one immutable packed derivative without rerunning analysis.</span>
+                        </div>
+                    }
+                    @if (MaterializationMessage is not null)
+                    {
+                        <p class="small mt-2 mb-0" role="status">@MaterializationMessage</p>
+                    }
+                </fieldset>
+                <p id="layered-presentation-summary" class="visually-hidden">The base image has @Presentation.Layers.Count selectable layers. Visibility controls are listed immediately below the image.</p>
+                <dl class="row small mt-3 mb-0">
+                    <dt class="col-md-3">Manifest</dt><dd class="col-md-9 text-break font-monospace">@Presentation.ManifestIdentitySha256</dd>
+                    <dt class="col-md-3">Presentation</dt><dd class="col-md-9 text-break font-monospace">@Presentation.PresentationIdentitySha256</dd>
+                </dl>
+            </div>
+        </section>
+    }
     <section class="card mb-4">
         <div class="card-body">
             <h2 class="h5">Capture provenance</h2>

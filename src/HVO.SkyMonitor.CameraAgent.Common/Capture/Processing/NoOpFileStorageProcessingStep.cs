@@ -184,21 +184,35 @@ internal sealed class NoOpFileStorageProcessingStep(
                 var artifactId = CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256);
                 var producerStepId = context.GetDependencyProducerStepId(artifactId);
                 var publication = context.GetDependencyPublicationPolicy(artifactId);
+                var policy = ResolvePolicy(producerStepId, product);
+                var queueForUpload = _centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload);
                 if (publication is not null)
                 {
-                    var policy = ResolvePolicy(producerStepId, product);
-                    if (_centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload))
+                    if (!queueForUpload)
                     {
-                        throw new InvalidDataException(
-                            "Per-step upload publication requires a reconstructable frame product.");
+                        continue;
                     }
-                    continue;
                 }
                 if (product.Role != FrameArtifactRole.Metadata)
                 {
+                    if (queueForUpload)
+                    {
+                        throw new InvalidDataException("Layoutless encoded products are not supported by structured upload v1.");
+                    }
                     continue;
                 }
-                if (metadataAlreadyStoredUnderRoot)
+                var isStructuredProduct = product.Kind == ProcessingProductKind.Metadata &&
+                    product.SchemaVersion is not null && product.ContentIdentitySha256 is not null &&
+                    StructuredProcessingProductContracts.IsSupported(product.MediaType, product.SchemaVersion);
+                if (queueForUpload && !isStructuredProduct)
+                {
+                    if (policy?.QueueForUpload == true)
+                    {
+                        throw new InvalidDataException("Structured upload requires a supported typed metadata contract.");
+                    }
+                    queueForUpload = false;
+                }
+                if (metadataAlreadyStoredUnderRoot && !queueForUpload)
                 {
                     continue;
                 }
@@ -206,12 +220,33 @@ internal sealed class NoOpFileStorageProcessingStep(
                 {
                     throw new InvalidOperationException("Layoutless metadata storage requires durable reconstruction context.");
                 }
-                await CaptureProcessingPersistence.CopyMetadataProductAsync(
+                var output = await CaptureProcessingPersistence.CopyMetadataProductAsync(
                     Options.StorageRoot,
                     descriptor,
-                    Name,
+                    producerStepId ?? Name,
                     product,
                     cancellationToken).ConfigureAwait(false);
+                if (queueForUpload)
+                {
+                    await _artifactOutbox.EnqueueAsync(
+                        Options.StorageRoot,
+                        new StructuredProcessingProductManifestV1(
+                            StructuredProcessingProductManifestV1.CurrentSchemaVersion,
+                            new StructuredProcessingProductDescriptorV1(
+                                descriptor,
+                                output.Artifact,
+                                product.OutputIdentitySha256,
+                                product.Algorithms,
+                                product.Compatibility,
+                                product.TotalIntegration.Ticks,
+                                product.Payload.Length,
+                                product.Kind,
+                            product.SchemaVersion!,
+                            product.ContentIdentitySha256!),
+                        output.PayloadRelativePath,
+                        producerStepId),
+                        cancellationToken).ConfigureAwait(false);
+                }
             }
         }
         finally

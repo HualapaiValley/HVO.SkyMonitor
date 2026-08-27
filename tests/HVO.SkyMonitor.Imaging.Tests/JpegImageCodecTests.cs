@@ -14,6 +14,7 @@ public sealed class JpegImageCodecTests
 
         var first = JpegImageCodec.EncodeMono8ToJpeg(8, 8, pixels);
         var second = JpegImageCodec.EncodeMono8ToJpeg(8, 8, pixels);
+        var info = JpegImageCodec.InspectJpeg(first);
         var decoded = JpegImageCodec.DecodeJpeg(first);
 
         CollectionAssert.AreEqual(first, second);
@@ -21,6 +22,9 @@ public sealed class JpegImageCodecTests
         Assert.AreEqual(0xd8, first[1]);
         Assert.AreEqual(JpegImageCodec.MediaType, decoded.MediaType);
         Assert.AreEqual(JpegImageCodec.AlgorithmVersion, decoded.AlgorithmVersion);
+        Assert.AreEqual(8, info.Width);
+        Assert.AreEqual(8, info.Height);
+        Assert.AreEqual(JpegImageCodec.MediaType, info.MediaType);
         Assert.AreEqual(CameraPixelFormat.Mono8, decoded.PixelFormat);
         Assert.AreEqual(8, decoded.Width);
         Assert.AreEqual(8, decoded.Height);
@@ -83,7 +87,9 @@ public sealed class JpegImageCodecTests
         Assert.Throws<ArgumentException>(() => JpegImageCodec.EncodeToJpeg(
             new ImageLayout(1, 1, CameraPixelFormat.Mono16, 2), new byte[2]));
         Assert.Throws<ArgumentException>(() => JpegImageCodec.DecodeJpeg(ReadOnlyMemory<byte>.Empty));
+        Assert.Throws<ArgumentException>(() => JpegImageCodec.InspectJpeg(ReadOnlyMemory<byte>.Empty));
         Assert.Throws<ArgumentException>(() => JpegImageCodec.DecodeJpeg(new byte[] { 1, 2, 3 }));
+        Assert.Throws<ArgumentException>(() => JpegImageCodec.InspectJpeg(new byte[] { 1, 2, 3 }));
         Assert.Throws<ArgumentException>(() => JpegImageCodec.DecodeJpeg(Convert.FromBase64String(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z1XkAAAAASUVORK5CYII=")));
 

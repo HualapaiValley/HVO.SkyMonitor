@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -21,7 +22,8 @@ internal sealed class ArtifactIngestController(
     public async Task<ActionResult<ArtifactUploadAcknowledgement>> IngestAsync(IFormFile payload, [FromForm] string manifest, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        var parseResult = CaptureContractJson.ParseManifest(Encoding.UTF8.GetBytes(manifest));
+        var manifestBytes = Encoding.UTF8.GetBytes(manifest);
+        var parseResult = CaptureContractJson.ParseManifest(manifestBytes);
         if (!parseResult.IsValid)
         {
             try
@@ -39,7 +41,11 @@ internal sealed class ArtifactIngestController(
             {
             }
         }
-        if (!parseResult.IsValid || parseResult.Document is null)
+        var productParseResult = !parseResult.IsValid
+            ? StructuredProcessingProductManifestJson.Parse(manifestBytes)
+            : null;
+        if ((!parseResult.IsValid || parseResult.Document is null) &&
+            (productParseResult is null || !productParseResult.IsValid || productParseResult.Manifest is null))
         {
             telemetry.RecordValidation("unknown", "rejected");
             return BadRequest(new ProblemDetails
@@ -48,7 +54,9 @@ internal sealed class ArtifactIngestController(
                 Detail = $"{parseResult.Validation.ReasonCode} at {parseResult.Validation.FieldPath}"
             });
         }
-        var delivery = ArtifactIngestManifest.Create(parseResult.Document);
+        var delivery = productParseResult?.Manifest is { } productManifest
+            ? ArtifactIngestManifest.Create(productManifest)
+            : ArtifactIngestManifest.Create(parseResult.Document!);
         if (!Request.Headers.TryGetValue("Idempotency-Key", out var idempotencyKey)
             || idempotencyKey.Count != 1
             || !string.Equals(idempotencyKey[0], delivery.IdempotencyKey, StringComparison.OrdinalIgnoreCase))
@@ -63,7 +71,9 @@ internal sealed class ArtifactIngestController(
         await using var stream = payload.OpenReadStream();
         try
         {
-            var result = await ingestService.IngestAsync(parseResult.Document, stream, cancellationToken).ConfigureAwait(false);
+            var result = productParseResult?.Manifest is { } structuredProduct
+                ? await ingestService.IngestAsync(structuredProduct, stream, cancellationToken).ConfigureAwait(false)
+                : await ingestService.IngestAsync(parseResult.Document!, stream, cancellationToken).ConfigureAwait(false);
             if (!result.ReadyForAcknowledgement)
             {
                 Response.Headers.RetryAfter = "5";
@@ -106,13 +116,20 @@ internal sealed class ArtifactIngestController(
         [FromBody] JsonElement manifest,
         CancellationToken cancellationToken)
     {
-        var parseResult = ParseManifest(Encoding.UTF8.GetBytes(manifest.GetRawText()));
-        if (!parseResult.IsValid || parseResult.Document is null)
+        var manifestBytes = Encoding.UTF8.GetBytes(manifest.GetRawText());
+        var parseResult = ParseManifest(manifestBytes);
+        var productParseResult = !parseResult.IsValid
+            ? StructuredProcessingProductManifestJson.Parse(manifestBytes)
+            : null;
+        if ((!parseResult.IsValid || parseResult.Document is null) &&
+            (productParseResult is null || !productParseResult.IsValid || productParseResult.Manifest is null))
         {
             telemetry.RecordValidation("unknown", "rejected");
             return BadRequest(new ProblemDetails { Title = "Invalid artifact manifest" });
         }
-        var delivery = ArtifactIngestManifest.Create(parseResult.Document);
+        var delivery = productParseResult?.Manifest is { } productManifest
+            ? ArtifactIngestManifest.Create(productManifest)
+            : ArtifactIngestManifest.Create(parseResult.Document!);
         if (!Request.Headers.TryGetValue("Idempotency-Key", out var idempotencyKey)
             || idempotencyKey.Count != 1
             || !string.Equals(idempotencyKey[0], delivery.IdempotencyKey, StringComparison.OrdinalIgnoreCase))
@@ -122,7 +139,9 @@ internal sealed class ArtifactIngestController(
 
         try
         {
-            var result = await ingestService.CheckStatusAsync(parseResult.Document, cancellationToken).ConfigureAwait(false);
+            var result = productParseResult?.Manifest is { } structuredProduct
+                ? await ingestService.CheckStatusAsync(structuredProduct, cancellationToken).ConfigureAwait(false)
+                : await ingestService.CheckStatusAsync(parseResult.Document!, cancellationToken).ConfigureAwait(false);
             if (result is null)
             {
                 return NotFound(new ProblemDetails { Title = "Artifact payload must be uploaded" });

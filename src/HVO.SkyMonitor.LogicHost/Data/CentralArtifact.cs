@@ -75,6 +75,8 @@ internal sealed class CentralArtifact
 
     public CentralArtifactRecipe? Recipe { get; set; }
 
+    public CentralStructuredProcessingProduct? StructuredProduct { get; set; }
+
     public ICollection<CentralArtifactSource> Sources { get; } = [];
 
     public ICollection<CentralArtifactIngestIdentity> IngestIdentities { get; } = [];

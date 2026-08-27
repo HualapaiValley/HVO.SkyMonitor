@@ -19,6 +19,7 @@ internal sealed class PresentationMetadataFactsBuilder(
         CaptureProcessingContext context,
         ProjectedSceneV1 scene,
         ProcessingProduct? stackProduct,
+        IReadOnlyList<Guid> sourceArtifactIds,
         IReadOnlyList<EnvironmentalObservationKind> kinds,
         CancellationToken cancellationToken)
     {
@@ -143,7 +144,8 @@ internal sealed class PresentationMetadataFactsBuilder(
               $"PROFILE {descriptor.Profiles.Processing.Name} {descriptor.Profiles.Processing.Version} {descriptor.Profiles.Processing.Sha256[..12]}"]));
         var facts = new PresentationMetadataFactsProductV1(
             PresentationMetadataFactsProductV1.CurrentSchemaVersion, string.Empty, descriptor.Capture.CaptureId,
-            descriptor.Capture.CaptureSequence, capture, environment, catalog, calibration, stack, processing, corners);
+            descriptor.Capture.CaptureSequence, capture, environment, catalog, calibration, stack,
+            processing, corners, sourceArtifactIds);
         var identity = CaptureContractJson.ComputeCanonicalJsonSha256(
             CaptureContractJson.SerializeToElement(facts with
             {

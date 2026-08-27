@@ -179,7 +179,11 @@ public sealed record ArtifactDescriptor(
     [property: JsonRequired] IReadOnlyList<Guid> SourceArtifactIds,
     [property: JsonRequired] RecipeIdentityDescriptor Recipe,
     [property: JsonRequired] string MediaType,
-    [property: JsonRequired] string ChecksumSha256);
+    [property: JsonRequired] string ChecksumSha256)
+{
+    public CaptureContractValidationResult Validate()
+        => ReconstructionDescriptorValidator.ValidateArtifact(this);
+}
 
 /// <summary>Transport-neutral descriptor sufficient to reconstruct one captured artifact.</summary>
 public sealed record ReconstructionDescriptor(
@@ -669,7 +673,7 @@ internal static class ReconstructionDescriptorValidator
         return CaptureContractValidationResult.Success;
     }
 
-    private static CaptureContractValidationResult ValidateArtifact(ArtifactDescriptor? artifact)
+    internal static CaptureContractValidationResult ValidateArtifact(ArtifactDescriptor? artifact)
     {
         if (artifact is null || artifact.ArtifactId == Guid.Empty)
         {
