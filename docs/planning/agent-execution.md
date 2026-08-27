@@ -68,15 +68,22 @@ stacked PR series.
   infrastructure; it does not own capture, processing, or persistence workflows.
 - Treat SQL, SQLite, Redis, MinIO, filesystem journals, HTTP, and hosted services
   as host infrastructure.
-- Preserve manifest v1, old sidecars, and existing central history when the
-  issue changes durable formats.
-- Use additive migrations before destructive cleanup.
+- Before first release, update all current producers, consumers, fixtures,
+  documentation, and tests together when changing a durable contract.
+- Replace each EF context's canonical initial migration when its model changes;
+  do not add upgrade, downgrade, backfill, or convergence behavior for an
+  unreleased EF schema.
+- Retain compatibility only for a shipped state, external consumer or protocol,
+  concurrently supported current producer and consumer, immutable evidence or
+  provenance need, or current lifecycle safety. Repository history alone is
+  insufficient.
+- Retain version identities needed for current validation, hashing, provenance,
+  reconstruction, or reproducibility; they do not imply support for earlier
+  unreleased versions.
 - Assign identity before optional work.
 - Preserve immutable raw evidence and complete source lineage.
 - Keep queues bounded and durable work discoverable after missed wake-ups.
 - Make skip, retry, quarantine, and terminal behavior explicit.
-- Avoid compatibility code unless a shipped durable format or external consumer
-  requires it.
 - Add comments only where the code would otherwise hide a non-obvious invariant.
 
 ## 4. Throughput and Validation Economy
@@ -228,7 +235,12 @@ Select tests according to the changed boundary:
   retrieval, and fault recovery.
 - bUnit and browser tests for durable read models, authorization, and audited
   operations.
-- Migration tests from clean, current, and legacy schemas.
+- EF migration tests from an empty database through the canonical initial
+  migration, plus repeated current-layout initialization, idempotent SQL,
+  current constraints and indexes, locking, principal separation, and runtime
+  behavior. Test prior schemas only for a released or explicitly documented
+  current compatibility need; hand-written operational SQLite stores retain
+  their owning contract's separate migration and recovery policy.
 
 Data-producing behavior must validate outputs, not only status codes:
 

@@ -36,12 +36,18 @@ public sealed class DatabaseInitializationAcceptanceTests
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var initial = await db.DatabaseInitializationState.AsNoTracking().SingleAsync().ConfigureAwait(false);
 
+        db.Database.GetMigrations().Should().ContainSingle().Which.Should().EndWith("_InitialBaseline");
         (await db.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
         initial.Status.Should().Be(DatabaseInitializationStatus.Completed);
         initial.InitializationVersion.Should().Be(DatabaseInitializer.CurrentInitializationVersion);
         initial.TargetMigrationId.Should().Be(db.Database.GetMigrations().Last());
         initial.CompletedAtUtc.Should().NotBeNull();
         initial.FailureStage.Should().BeNull();
+        (await db.Database.SqlQuery<int>($"""
+            SELECT COUNT(*) AS [Value]
+            FROM [sys].[triggers]
+            WHERE [parent_class] = 1
+            """).SingleAsync().ConfigureAwait(false)).Should().Be(49);
 
         initial.Status = DatabaseInitializationStatus.Running;
         initial.AttemptId = Guid.NewGuid();
@@ -127,28 +133,6 @@ public sealed class DatabaseInitializationAcceptanceTests
         var retry = await retryScope.ServiceProvider.GetRequiredService<DatabaseInitializer>()
             .RunAsync(CancellationToken.None).ConfigureAwait(false);
         retry.AttemptId.Should().NotBe(before.AttemptId);
-    }
-
-    [TestMethod]
-    public async Task LegacyDatabase_ControlledInitializationConverges()
-    {
-        await using var database = await InitializedDatabase.CreateAsync(
-            "Legacy",
-            async connectionString =>
-            {
-                var options = new DbContextOptionsBuilder<ApplicationDbContext>()
-                    .UseSqlServer(connectionString).Options;
-                await using var db = new ApplicationDbContext(options);
-                var migrations = db.Database.GetMigrations().ToArray();
-                await db.GetService<IMigrator>().MigrateAsync(migrations[^2]).ConfigureAwait(false);
-            }).ConfigureAwait(false);
-        await using var scope = database.Factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-
-        (await db.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
-        var state = await db.DatabaseInitializationState.AsNoTracking().SingleAsync().ConfigureAwait(false);
-        state.Status.Should().Be(DatabaseInitializationStatus.Completed);
-        state.TargetMigrationId.Should().Be(db.Database.GetMigrations().Last());
     }
 
     [TestMethod]

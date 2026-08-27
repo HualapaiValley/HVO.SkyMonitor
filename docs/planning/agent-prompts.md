@@ -81,12 +81,14 @@ Recommended reviewers: Terra and Luna
 Use for #91 and #92.
 
 ```text
-Map every existing serialized and persisted consumer before changing public
-contracts. Prefer additive versioned records. Preserve manifest v1 and legacy
-sidecars without inventing missing facts. Add golden fixtures and architecture
-tests. Treat canonical serialization, identity, hash, timing, layout, profile,
-and lineage semantics as security and reproducibility boundaries. Measure
-serialization, validation, checksum, encoded size, allocation, and throughput.
+Map every current serialized and persisted producer and consumer before changing
+public contracts. Prefer one canonical current record and retain compatibility
+only for a concrete current need; repository history alone is insufficient.
+Preserve schema, recipe, algorithm, identity, hash, timing, layout, profile, and
+lineage versions where they provide current validation, provenance,
+reconstruction, or reproducibility. Add golden fixtures and architecture tests.
+Measure serialization, validation, checksum, encoded size, allocation, and
+throughput.
 ```
 
 ## 4. Shared Processing Prompt
@@ -146,13 +148,15 @@ Recommended reviewer: Terra for SQL/MinIO concurrency and Luna for API/output te
 Use for #98, #99, #100, #101, the central parts of #60, and the SQL Server parts of #243.
 
 ```text
-Use additive SQL migrations and preserve legacy history. Bind capture-time
-profiles, never current registration state. Stream MinIO payloads and verify
-length/checksum. Keep SQL authoritative for jobs and lineage. Make claim,
-renewal, output persistence, completion, retry, quarantine, and reprocessing
-idempotent under concurrent workers and crashes. Resolve windows by capture
-sequence, not ingest order. Measure SQL statements, object requests, bytes,
-worker CPU/memory, queue age, claim latency, and processing throughput.
+Before first release, generate one canonical initial SQL migration from the
+current model and initialize an empty database; do not preserve unreleased EF
+history or add upgrade, downgrade, backfill, or convergence tests for it. Bind
+capture-time profiles, never current registration state. Stream MinIO payloads
+and verify length/checksum. Keep SQL authoritative for jobs and lineage. Make
+claim, renewal, output persistence, completion, retry, quarantine, and
+reprocessing idempotent under concurrent workers and crashes. Resolve windows
+by capture sequence, not ingest order. Measure SQL statements, object requests,
+bytes, worker CPU/memory, queue age, claim latency, and processing throughput.
 ```
 
 ## 8. Weather and Cloud Prompt

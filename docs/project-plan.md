@@ -299,6 +299,17 @@ named parameterized SQL Server-specific operations, CameraAgent workflow state
 uses direct SQLite, local CameraAgent Identity uses isolated EF Core SQLite, and
 catalog snapshots remain immutable read-only SQLite.
 
+Before the first product release, supported installation starts from empty
+databases and newly generated files and artifacts. Repository history and prior
+development environments do not create compatibility requirements. Each EF
+context therefore has one canonical initial migration matching its current
+model; changes replace that baseline rather than adding upgrade, downgrade,
+backfill, or convergence behavior for an unreleased schema. Version identities
+remain where current validation, hashing, provenance, reconstruction, external
+protocols, or reproducibility require them; an identity does not promise support
+for an earlier unreleased state. Issue #458 coordinates non-EF compatibility and
+hand-written operational SQLite cleanup.
+
 Before production rollout, current-head evidence must disposition SQL
 transactions that span external object I/O, SQLite immediate transactions that
 span full-file validation, and unbounded reconciliation inside long database
@@ -703,7 +714,7 @@ Requirements:
 | ID | Requirement |
 | --- | --- |
 | `CENTRAL-001` | Accept manifest v1 and v2 concurrently. |
-| `CENTRAL-002` | Add capture sequence, timing, layout, metadata, profile identity, and reconstruction status through additive migrations. |
+| `CENTRAL-002` | Persist capture sequence, timing, layout, metadata, profile identity, and reconstruction status in the canonical current schema. |
 | `CENTRAL-003` | Add variant, canonical recipe, and normalized source lineage. |
 | `CENTRAL-004` | Bind delayed upload to capture-time rig/profile identity. |
 | `CENTRAL-005` | Add internal streamed MinIO reader and writer abstractions. |

@@ -12,8 +12,6 @@ using HVO.SkyMonitor.TestSupport;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Minio;
 using Minio.DataModel.Args;
@@ -218,10 +216,6 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             invalidated.EffectiveClassification.Should().Be(fixture.Assessment.Assessment.Classification);
             (await database.Context.CentralTransientReviews.CountAsync().ConfigureAwait(false)).Should().Be(1);
             (await database.Context.CentralTransientEventVersions.CountAsync().ConfigureAwait(false)).Should().Be(3);
-
-            var downgrade = async () => await database.Context.GetService<IMigrator>()
-                .MigrateAsync("20260721042731_AddHybridTransientSubmissions").ConfigureAwait(false);
-            await downgrade.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
 
             var mutateReview = async () => await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
                 UPDATE [CentralTransientReviews]

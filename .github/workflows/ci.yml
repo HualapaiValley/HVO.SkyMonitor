@@ -397,6 +397,22 @@ jobs:
           dotnet tool restore
           dotnet restore HVO.SkyMonitor.v9.slnx
           dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
+      - name: Enforce one canonical migration per EF context
+        run: |
+          shopt -s nullglob
+          cameraagent_migrations=()
+          for path in src/HVO.SkyMonitor.CameraAgent/Data/Migrations/20*_*.cs; do
+            [[ "$path" == *.Designer.cs ]] || cameraagent_migrations+=("$path")
+          done
+          logichost_migrations=()
+          for path in src/HVO.SkyMonitor.LogicHost/Data/Migrations/20*_*.cs; do
+            [[ "$path" == *.Designer.cs ]] || logichost_migrations+=("$path")
+          done
+          if (( ${#cameraagent_migrations[@]} != 1 || ${#logichost_migrations[@]} != 1 )); then
+            printf 'Expected one canonical migration per EF context; CameraAgent=%s LogicHost=%s\n' \
+              "${#cameraagent_migrations[@]}" "${#logichost_migrations[@]}" >&2
+            exit 1
+          fi
       - name: Reject pending CameraAgent model changes
         run: dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --startup-project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build
       - name: Reject pending LogicHost model changes

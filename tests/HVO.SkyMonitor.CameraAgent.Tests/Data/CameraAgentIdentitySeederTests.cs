@@ -4,8 +4,6 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -17,6 +15,20 @@ public sealed class CameraAgentIdentitySeederTests
 {
     private const string ConfiguredEmail = "configured-owner@cameraagent.test";
     private const string ConfiguredPassword = "ConfiguredOwner!123";
+
+    [TestMethod]
+    public void ModelHasSingleInitialMigration()
+    {
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        using var dbContext = new ApplicationDbContext(options);
+
+        var migrations = dbContext.Database.GetMigrations().ToArray();
+
+        Assert.HasCount(1, migrations);
+        Assert.EndsWith("_InitialIdentity", migrations[0], StringComparison.Ordinal);
+    }
 
     [TestMethod]
     public async Task InitializeAsync_SeedsTemporaryOwnerOnceAndDoesNotRevertReplacement()
@@ -105,32 +117,6 @@ public sealed class CameraAgentIdentitySeederTests
             fixture.InitializeSeederAsync).ConfigureAwait(false);
 
         Assert.AreEqual("The initial site owner password is required until local identity has been seeded.", exception.Message);
-    }
-
-    [TestMethod]
-    public async Task Migration_PreservesExistingOwnerAsReady()
-    {
-        using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync().ConfigureAwait(false);
-        var options = new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(connection).Options;
-        using var dbContext = new ApplicationDbContext(options);
-        var migrator = dbContext.GetService<IMigrator>();
-        await migrator.MigrateAsync("20251125021552_CreateLocalIdentity").ConfigureAwait(false);
-        await dbContext.Database.ExecuteSqlRawAsync("""
-            INSERT INTO AspNetUsers (
-                Id, IsSiteOwner, UserName, NormalizedUserName, Email, NormalizedEmail,
-                EmailConfirmed, PasswordHash, SecurityStamp, ConcurrencyStamp,
-                PhoneNumberConfirmed, TwoFactorEnabled, LockoutEnabled, AccessFailedCount)
-            VALUES (
-                'legacy-owner', 1, 'legacy@cameraagent.test', 'LEGACY@CAMERAAGENT.TEST',
-                'legacy@cameraagent.test', 'LEGACY@CAMERAAGENT.TEST', 1, 'hash', 'stamp',
-                'concurrency', 0, 0, 0, 0)
-            """).ConfigureAwait(false);
-
-        await migrator.MigrateAsync().ConfigureAwait(false);
-
-        var owner = await dbContext.Users.AsNoTracking().SingleAsync().ConfigureAwait(false);
-        Assert.IsFalse(owner.PasswordChangeRequired);
     }
 
     [TestMethod]

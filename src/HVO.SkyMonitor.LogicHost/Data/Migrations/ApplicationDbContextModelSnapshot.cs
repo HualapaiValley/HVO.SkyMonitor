@@ -1656,6 +1656,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
+                    b.Property<int?>("PresentationHeightPixels")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PresentationWidthPixels")
+                        .HasColumnType("int");
+
                     b.Property<string>("ProductKind")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -1665,12 +1671,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
-
-                    b.Property<int?>("PresentationHeightPixels")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("PresentationWidthPixels")
-                        .HasColumnType("int");
 
                     b.Property<string>("SourceIdentitySha256")
                         .HasMaxLength(64)
@@ -1934,6 +1934,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralTransientDerivativeBackgrounds", null, t =>
                         {
+                            t.HasTrigger("TR_CentralTransientDerivativeBackgrounds_Closed");
+
                             t.HasTrigger("TR_CentralTransientDerivativeBackgrounds_Immutable");
 
                             t.HasCheckConstraint("CK_CentralTransientDerivativeBackgrounds_Ordinals", "[ObservationOrdinal] >= 0 AND [BackgroundOrdinal] >= 0");
@@ -2147,6 +2149,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralTransientDerivativeOutputIntents", null, t =>
                         {
+                            t.HasTrigger("TR_CentralTransientDerivativeOutputIntents_Closed");
+
                             t.HasTrigger("TR_CentralTransientDerivativeOutputIntents_TerminalImmutable");
 
                             t.HasCheckConstraint("CK_CentralTransientDerivativeOutputIntents_ByteLength", "[ByteLength] > 0");
@@ -2265,6 +2269,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralTransientDerivatives", null, t =>
                         {
+                            t.HasTrigger("TR_CentralTransientDerivatives_Closed");
+
                             t.HasTrigger("TR_CentralTransientDerivatives_Immutable");
 
                             t.HasCheckConstraint("CK_CentralTransientDerivatives_ByteLength", "[ByteLength] > 0");
@@ -2326,6 +2332,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralTransientDerivativeSources", null, t =>
                         {
+                            t.HasTrigger("TR_CentralTransientDerivativeSources_Closed");
+
                             t.HasTrigger("TR_CentralTransientDerivativeSources_Immutable");
 
                             t.HasCheckConstraint("CK_CentralTransientDerivativeSources_ObservedInterval", "[ObservationStartedUtc] <= [ObservationEndedUtc]");

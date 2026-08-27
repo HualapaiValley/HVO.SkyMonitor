@@ -1,6 +1,5 @@
 using FluentAssertions;
 using HVO.SkyMonitor.LogicHost.Data;
-using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -16,8 +15,6 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class DeploymentLocationAuthorityMigrationTests
 {
-    private const string PreviousMigration = "20260721201807_AddCentralTransientReviewAndDerivatives";
-
     [TestMethod]
     public async Task CleanAndRepeatedMigrationProduceCurrentPhysicalSchema()
     {
@@ -160,142 +157,6 @@ public sealed class DeploymentLocationAuthorityMigrationTests
             await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
         }
     }
-
-    [TestMethod]
-    public async Task PredecessorUpgradePreservesLegacyEvidenceAndBackfillsOnlyCurrentObservatory()
-    {
-        await using var database = CreateDatabase("Upgrade");
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            var observatoryId = Guid.NewGuid();
-            var registrationId = Guid.NewGuid();
-            var devicePublicId = Guid.NewGuid();
-            var frameId = Guid.NewGuid();
-            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO [Observatories]
-                    ([Id], [OwnerUserId], [Name], [LatitudeDegrees], [LongitudeDegrees], [ElevationMeters],
-                     [TimeZoneId], [CreatedAtUtc], [UpdatedAtUtc], [IsActive])
-                VALUES
-                    ({observatoryId}, {"migration-owner"}, {"Legacy Observatory"}, {35.347d}, {-113.878d},
-                     {520d}, {"America/Phoenix"}, {DateTimeOffset.UnixEpoch}, NULL, {true});
-
-                INSERT INTO [DeviceRegistrations]
-                    ([Id], [DeviceId], [ObservatoryId], [FriendlyName], [ObservatoryName],
-                     [ObservatoryLatitudeDegrees], [ObservatoryLongitudeDegrees], [ObservatoryElevationMeters],
-                     [ObservatoryTimeZoneId], [OwnerUserId], [OwnerDisplayName], [OwnerConfirmationMethod],
-                     [Status], [VerificationCodeHash], [DevicePublicId], [IssuedAtUtc])
-                VALUES
-                    ({registrationId}, {"legacy-camera"}, {observatoryId}, {"Legacy Camera"}, {"Legacy Observatory"},
-                     {35.347d}, {-113.878d}, {520d}, {"America/Phoenix"}, {"migration-owner"},
-                     {"Migration Owner"}, {"SelfAttested"}, {"Active"}, {new string('A', 64)},
-                     {devicePublicId}, {DateTimeOffset.UnixEpoch});
-
-                INSERT INTO [CentralFrames]
-                    ([Id], [RegistrationId], [DevicePublicId], [ObservatoryId], [AgentId], [FrameId],
-                     [CapturedAtUtc], [FirstReceivedAtUtc], [RigProfileVersion], [SceneProvenanceJson])
-                VALUES
-                    ({Guid.NewGuid()}, {registrationId}, {devicePublicId}, {observatoryId}, {"legacy-camera"},
-                     {frameId}, {DateTimeOffset.UnixEpoch}, {DateTimeOffset.UnixEpoch}, NULL, NULL);
-                """).ConfigureAwait(false);
-
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            database.Context.ChangeTracker.Clear();
-
-            var registration = await database.Context.DeviceRegistrations.SingleAsync(item => item.Id == registrationId)
-                .ConfigureAwait(false);
-            var frame = await database.Context.CentralFrames.SingleAsync(item => item.FrameId == frameId)
-                .ConfigureAwait(false);
-            var observatory = await database.Context.Observatories.SingleAsync(item => item.Id == observatoryId)
-                .ConfigureAwait(false);
-            registration.LocationEvidenceState.Should().Be(RegistrationLocationEvidenceState.LegacyIncomplete);
-            registration.ObservatoryLocationVersion.Should().BeNull();
-            frame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.LegacyIncomplete);
-            (await database.Context.CentralCaptureLocations.CountAsync().ConfigureAwait(false)).Should().Be(0);
-            (await database.Context.DeviceDeploymentLocationVersions.CountAsync().ConfigureAwait(false)).Should().Be(0);
-            (await database.Context.DeploymentLocationReconciliationWork.CountAsync().ConfigureAwait(false)).Should().Be(0);
-            observatory.CurrentLocationVersion.Should().BeNull();
-
-            var backfilled = await ObservatoryLocationBackfill.RunAsync(
-                database.Context,
-                new FixedTimeProvider(BackfillUtc)).ConfigureAwait(false);
-
-            backfilled.Should().Be(1);
-            database.Context.ChangeTracker.Clear();
-            observatory = await database.Context.Observatories.SingleAsync(item => item.Id == observatoryId)
-                .ConfigureAwait(false);
-            observatory.CurrentLocationVersion.Should().Be(1);
-            observatory.CurrentLocationCanonicalSha256.Should().HaveLength(64);
-            var version = await database.Context.ObservatoryLocationVersions.SingleAsync().ConfigureAwait(false);
-            version.EffectiveFromUtc.Should().Be(BackfillUtc);
-            version.LatitudeDegrees.Should().Be(35.347d);
-            (await database.Context.DeviceDeploymentLocationVersions.CountAsync().ConfigureAwait(false)).Should().Be(0);
-            (await database.Context.CentralCaptureLocations.CountAsync().ConfigureAwait(false)).Should().Be(0);
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    [TestMethod]
-    public async Task PredecessorUpgrade_AllowsInvalidLegacyLocationToRemainIncompleteUntilOwnerRepair()
-    {
-        await using var database = CreateDatabase("LegacyRepair");
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            var observatoryId = Guid.NewGuid();
-            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO [AspNetUsers]
-                    ([Id], [AccountType], [UserName], [EmailConfirmed], [PhoneNumberConfirmed],
-                     [TwoFactorEnabled], [LockoutEnabled], [AccessFailedCount])
-                VALUES ({"legacy-repair-owner"}, {(int)AccountType.User}, {"legacy-repair-owner"},
-                        {false}, {false}, {false}, {false}, {0});
-                """).ConfigureAwait(false);
-            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO [Observatories]
-                    ([Id], [OwnerUserId], [Name], [LatitudeDegrees], [LongitudeDegrees], [ElevationMeters],
-                     [TimeZoneId], [CreatedAtUtc], [UpdatedAtUtc], [IsActive])
-                VALUES
-                    ({observatoryId}, {"legacy-repair-owner"}, {"Invalid Legacy Observatory"}, {95d}, {200d},
-                     {520d}, {"Not/A-Time-Zone"}, {DateTimeOffset.UnixEpoch}, NULL, {true});
-                """).ConfigureAwait(false);
-
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            var backfilled = await ObservatoryLocationBackfill.RunAsync(
-                database.Context,
-                new FixedTimeProvider(BackfillUtc)).ConfigureAwait(false);
-
-            backfilled.Should().Be(0);
-            var legacy = await database.Context.Observatories.SingleAsync(item => item.Id == observatoryId)
-                .ConfigureAwait(false);
-            legacy.CurrentLocationVersion.Should().BeNull();
-
-            var clock = new FixedTimeProvider(BackfillUtc.AddMinutes(1));
-            var authority = new DeploymentLocationAuthorityService(database.Context, clock);
-            var service = new ObservatoryService(database.Context, clock, authority);
-            var repaired = await service.CreateOrUpdateAsync(new ObservatoryUpsertRequest(
-                observatoryId,
-                "legacy-repair-owner",
-                legacy.Name,
-                35,
-                -113,
-                500,
-                "UTC",
-                true)).ConfigureAwait(false);
-            repaired.CurrentLocationVersion.Should().Be(1);
-            repaired.CurrentLocationCanonicalSha256.Should().HaveLength(64);
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    private static readonly DateTimeOffset BackfillUtc = new(2026, 7, 24, 12, 0, 0, TimeSpan.Zero);
 
     private static MigrationDatabase CreateDatabase(string scenario)
     {

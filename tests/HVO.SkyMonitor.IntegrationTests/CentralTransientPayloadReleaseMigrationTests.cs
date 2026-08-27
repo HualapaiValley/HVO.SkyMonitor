@@ -3,8 +3,6 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -13,16 +11,13 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class CentralTransientPayloadReleaseMigrationTests
 {
-    private const string PreviousMigration = "20260802053338_AddDurableArtifactVerificationReservation";
-
     [TestMethod]
-    public async Task LegacyTerminalAndPendingRowsUpgradeWithoutHistoryMutation()
+    public async Task CurrentSchemaEnforcesPayloadReleaseInvariants()
     {
         await using var database = CreateDatabase();
         try
         {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
+            await database.Context.Database.MigrateAsync().ConfigureAwait(false);
             var terminalEventId = Guid.NewGuid();
             var pendingEventId = Guid.NewGuid();
             var terminalReleaseId = Guid.NewGuid();
@@ -60,7 +55,6 @@ public sealed class CentralTransientPayloadReleaseMigrationTests
                 WHERE [ReleaseId] = {terminalReleaseId};
                 """).ConfigureAwait(false);
 
-            await migrator.MigrateAsync().ConfigureAwait(false);
             (await database.Context.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
             database.Context.ChangeTracker.Clear();
 
@@ -130,116 +124,6 @@ public sealed class CentralTransientPayloadReleaseMigrationTests
                 WHERE [ReleaseId] = {pendingReleaseId} AND [Ordinal] = 0;
                 """);
             await negativeRetry.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    [TestMethod]
-    public async Task Migration_UpDownUpSucceedsWhenLegacyUniquenessPreconditionHolds()
-    {
-        await using var database = CreateDatabase();
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            (await database.Context.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    [TestMethod]
-    public async Task Migration_DownRejectsCrossReleaseDuplicateHistoryBeforeMutation()
-    {
-        await using var database = CreateDatabase();
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            var eventIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
-            var releaseIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
-            var recordId = Guid.NewGuid();
-            var now = new DateTimeOffset(2026, 8, 2, 19, 0, 0, TimeSpan.Zero);
-            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO [CentralTransientEvents] ([Id], [AgentId], [EventId], [EventCreatedUtc])
-                VALUES
-                    ({eventIds[0]}, {"issue-250-down-a"}, {Guid.NewGuid()}, {now}),
-                    ({eventIds[1]}, {"issue-250-down-b"}, {Guid.NewGuid()}, {now});
-                INSERT INTO [CentralTransientPayloadReleases]
-                    ([ReleaseId], [CentralTransientEventId], [ActorIdentity], [IdempotencyKey],
-                     [CanonicalRequestSha256], [State], [CreatedUtc])
-                VALUES
-                    ({releaseIds[0]}, {eventIds[0]}, {"migration"}, {"a"}, {new string('A', 64)}, N'Pending', {now}),
-                    ({releaseIds[1]}, {eventIds[1]}, {"migration"}, {"b"}, {new string('B', 64)}, N'Pending', {now});
-                INSERT INTO [CentralTransientPayloadReleaseItems]
-                    ([ReleaseId], [Ordinal], [Kind], [RecordId], [Outcome], [RetryCount])
-                VALUES
-                    ({releaseIds[0]}, 0, N'SourceArtifact', {recordId}, N'Pending', 0),
-                    ({releaseIds[1]}, 0, N'SourceArtifact', {recordId}, N'Pending', 0);
-                """).ConfigureAwait(false);
-
-            Func<Task> downgrade = () => migrator.MigrateAsync(PreviousMigration);
-            await downgrade.Should().ThrowAsync<SqlException>()
-                .WithMessage("*cross-release target history contains duplicates*").ConfigureAwait(false);
-            var failureColumnStillPresent = await database.Context.Database.SqlQuery<int>($"""
-                    SELECT CASE WHEN COL_LENGTH(N'CentralTransientPayloadReleaseItems', N'FailureReasonCode') IS NULL
-                        THEN 0 ELSE 1 END AS [Value]
-                    """).SingleAsync().ConfigureAwait(false);
-            failureColumnStillPresent.Should().Be(1);
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    [TestMethod]
-    public async Task Migration_DownRejectsTerminalFailureHistoryBeforeMutation()
-    {
-        await using var database = CreateDatabase();
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            var eventId = Guid.NewGuid();
-            var releaseId = Guid.NewGuid();
-            var now = new DateTimeOffset(2026, 8, 2, 19, 30, 0, TimeSpan.Zero);
-            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO [CentralTransientEvents] ([Id], [AgentId], [EventId], [EventCreatedUtc])
-                VALUES ({eventId}, {"issue-250-down-failed"}, {Guid.NewGuid()}, {now});
-                INSERT INTO [CentralTransientPayloadReleases]
-                    ([ReleaseId], [CentralTransientEventId], [ActorIdentity], [IdempotencyKey],
-                     [CanonicalRequestSha256], [State], [CreatedUtc])
-                VALUES ({releaseId}, {eventId}, {"migration"}, {"failed"}, {new string('C', 64)}, N'Pending', {now});
-                INSERT INTO [CentralTransientPayloadReleaseItems]
-                    ([ReleaseId], [Ordinal], [Kind], [RecordId], [Outcome], [RetryCount])
-                VALUES ({releaseId}, 0, N'SourceArtifact', {Guid.NewGuid()}, N'Pending', 0);
-                UPDATE [CentralTransientPayloadReleaseItems]
-                SET [Outcome] = N'Failed', [RequestedAtUtc] = {now}, [ReleasedUtc] = {now},
-                    [StorageReference] = N'minio://skymonitor-artifacts/issue-250/down-failed.bin',
-                    [TargetRowVersion] = 0x0102030405060708, [TargetGeneration] = 0,
-                    [FailureReasonCode] = N'transient-retention.delete-retry-exhausted'
-                WHERE [ReleaseId] = {releaseId};
-                UPDATE [CentralTransientPayloadReleases]
-                SET [State] = N'Failed', [CompletedUtc] = {now}, [ReasonCode] = N'transient-retention.item-failed'
-                WHERE [ReleaseId] = {releaseId};
-                """).ConfigureAwait(false);
-
-            Func<Task> downgrade = () => migrator.MigrateAsync(PreviousMigration);
-            await downgrade.Should().ThrowAsync<SqlException>()
-                .WithMessage("*terminal failure history exists*").ConfigureAwait(false);
-            var failureColumnStillPresent = await database.Context.Database.SqlQuery<int>($"""
-                    SELECT CASE WHEN COL_LENGTH(N'CentralTransientPayloadReleaseItems', N'FailureReasonCode') IS NULL
-                        THEN 0 ELSE 1 END AS [Value]
-                    """).SingleAsync().ConfigureAwait(false);
-            failureColumnStillPresent.Should().Be(1);
         }
         finally
         {

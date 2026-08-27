@@ -1,6 +1,12 @@
 # Issue 170 Performance Evidence
 
-This runbook collects the attributable five-trial Observatory and deployment-location authority evidence. Run every command sequentially on one otherwise idle machine. The harness holds `/tmp/hvo-issue-170-performance.lock` for each test process and rejects concurrent evidence processes, but operators must also avoid concurrent builds, Testcontainers tests, and application workloads.
+This runbook records the historical issue #170 campaign. Issue #457 retired its
+unreleased EF migration and backfill workload. Reproduce the reviewed historical
+summary only from the cited revisions; current authority measurements start from
+the canonical empty-database baseline and do not claim predecessor-schema
+compatibility.
+
+Run every command sequentially on one otherwise idle machine. The harness holds `/tmp/hvo-issue-170-performance.lock` for each test process and rejects concurrent evidence processes, but operators must also avoid concurrent builds, Testcontainers tests, and application workloads.
 
 ## Revisions
 
@@ -39,6 +45,9 @@ DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=<harness-commit> HVO_EVIDENCE_PRODUCTION
 
 DOTNET_gcServer=1 HVO_EVIDENCE_REVISION=$CANDIDATE_HARNESS HVO_EVIDENCE_PRODUCTION_REVISION=$CANDIDATE_PRODUCTION HVO_EVIDENCE_TRIAL=<trial> dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~DeploymentLocationAuthorityPerformanceTests.MigrationFleetReconciliationAndPaging_RecordPerformanceEvidence"
 ```
+
+The authority filter above is the historical method name at the cited candidate
+revision; it is intentionally not a current-tree test filter.
 
 Each raw file records branch, clean state, harness and production commits, assembly hashes, process start/completion bounds, environment, workload, method, I/O, CPU, 100 ms sampled allocation-rate increments with boundary uncertainty, RSS, latency samples, throughput, backlog, and correctness. Copy the baseline `TestResults/issue-170/$BASELINE_HARNESS/` directory into the candidate worktree without changing its commit-scoped path.
 

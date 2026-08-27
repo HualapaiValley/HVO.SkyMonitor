@@ -172,7 +172,7 @@ After both performance components are generated from a clean candidate, run the
 standard Debug/Release warning-as-error builds, format verification, package
 audit, Docker-free Unit selection, Docker-backed Integration selection, and the
 pending-model/migration gates from [`ci-pipeline.md`](../runbooks/ci-pipeline.md).
-The migration evidence must retain upgrade and rollback coverage for
-`20260720222315_AddCentralTransientRuntime`, its additive upgrade into
-`20260721042731_AddHybridTransientSubmissions`, and the canonical legacy outcome
-identity asserted by `CentralTransientValidationMigrationTests`.
+Issue #457 retires upgrade and rollback coverage for the unreleased transient EF
+migration chain. Current validation retains the canonical transient schema,
+constraints, indexes, triggers, and outcome/recipe identities from a clean
+database; it does not construct or roll back through obsolete EF layouts.

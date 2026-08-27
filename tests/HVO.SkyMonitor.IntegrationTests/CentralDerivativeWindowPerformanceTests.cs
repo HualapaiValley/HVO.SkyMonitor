@@ -833,16 +833,17 @@ public sealed class CentralDerivativeWindowPerformanceTests
                 ([Id], [CentralFrameId], [ArtifactId], [DevicePublicId], [Role], [RecipeVersion],
                  [ManifestSchemaVersion], [MediaType], [ByteLength], [ChecksumSha256], [StorageReference],
                  [ReceivedAtUtc], [IdempotencyKey], [SourceId], [Variant], [CreatedUtc], [ObjectState],
-                 [ReconstructionState], [ReconciledAtUtc])
+                 [ReconstructionState], [ReconciledAtUtc], [ObjectVerificationRetryCount],
+                 [RecoveryGeneration], [ReferenceRetryCount])
             SELECT [ArtifactRowId], [FrameId], [ArtifactId], {{devicePublicId}}, N'Raw', N'phase10-raw-v1',
                    N'v2', N'application/x-hvo-linear-frame', 8,
                    REPLICATE('0', 64), N'minio://skymonitor-artifacts/performance/not-read',
                    CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset),
                    REPLACE(CONVERT(varchar(36), [ArtifactRowId]), '-', '')
                      + REPLACE(CONVERT(varchar(36), [ArtifactRowId]), '-', ''),
-                   N'phase10-performance', N'native',
-                   DATEADD(millisecond, [Sequence], CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset)),
-                   N'Available', N'Complete', CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset)
+                    N'phase10-performance', N'native',
+                    DATEADD(millisecond, [Sequence], CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset)),
+                    N'Available', N'Complete', CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset), 0, 0, 0
             FROM #History;
             """);
 

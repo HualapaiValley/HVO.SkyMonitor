@@ -6,10 +6,6 @@ using HVO.SkyMonitor.Processing;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
-using System.Security.Cryptography;
-using System.Text;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -18,9 +14,6 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class CentralTransientValidationMigrationTests
 {
-    private const string PreviousMigration = "20260720165520_AddCentralTransientValidation";
-    private const string HybridPredecessorMigration = "20260720222315_AddCentralTransientRuntime";
-    private const string ReviewPredecessorMigration = "20260721042731_AddHybridTransientSubmissions";
     private const string ShaA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     private const string ShaB = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
     private const string ShaC = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
@@ -36,237 +29,34 @@ public sealed class CentralTransientValidationMigrationTests
 
             (await database.Context.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
             await AssertSchemaAsync(database.Context).ConfigureAwait(false);
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
 
-    [TestMethod]
-    public async Task HybridPredecessorUpgradePreservesAcceptedValidationStateAndAddsAuditTable()
-    {
-        await using var database = CreateDatabase("HybridUpgrade");
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync(HybridPredecessorMigration).ConfigureAwait(false);
-            var now = DateTimeOffset.UnixEpoch.AddDays(1);
-            var source = AddSourceArtifact(database.Context, "hybrid-upgrade-agent", now);
+            var now = DateTimeOffset.UnixEpoch.AddMinutes(1);
+            var source = AddSourceArtifact(database.Context, "audit-agent", now);
             var job = AddDerivativeJob(database.Context, source, now);
             await database.Context.SaveChangesAsync().ConfigureAwait(false);
-            var slotId = Guid.NewGuid();
-            var submittedEventId = Guid.NewGuid();
-            var candidateId = Guid.NewGuid();
-            var observationId = Guid.NewGuid();
-            var assessmentId = Guid.NewGuid();
-            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO [CentralTransientValidationJobs]
-                    ([CentralDerivativeJobId], [AgentId], [SubmissionSchemaVersion], [SubmissionIdentitySha256],
-                     [ExecutionOptionsJson], [ExecutionOptionsIdentitySha256], [CreatedAtUtc])
-                VALUES ({job.Id}, {"hybrid-upgrade-agent"},
-                        {TransientCandidateSubmissionEnvelopeV1.CurrentSchemaVersion}, {ShaC}, {"{}"}, {ShaA}, {now});
-                INSERT INTO [CentralTransientValidationIdentitySlots]
-                    ([Id], [CentralDerivativeJobId], [Ordinal], [State], [SubmittedEventId], [CandidateId],
-                     [ObservationId], [AssessmentId])
-                VALUES ({slotId}, {job.Id}, {0}, {CentralTransientValidationIdentitySlotState.Reserved.ToString()},
-                        {submittedEventId}, {candidateId}, {observationId}, {assessmentId});
-                """).ConfigureAwait(false);
-
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            database.Context.ChangeTracker.Clear();
-
-            (await database.Context.CentralTransientValidationJobs.AsNoTracking()
-                .CountAsync(item => item.CentralDerivativeJobId == job.Id
-                    && item.SubmissionIdentitySha256 == ShaC).ConfigureAwait(false)).Should().Be(1);
-            await Assert.ThrowsExactlyAsync<SqlException>(async () =>
-                await database.Context.CentralTransientValidationJobs.Where(item => item.CentralDerivativeJobId == job.Id)
-                    .ExecuteUpdateAsync(setters => setters.SetProperty(
-                        item => item.SubmittedCandidateJson, string.Empty))
-                    .ConfigureAwait(false)).ConfigureAwait(false);
-            (await database.Context.CentralTransientValidationIdentitySlots.AsNoTracking()
-                .SingleAsync(item => item.Id == slotId).ConfigureAwait(false)).AgentId.Should().Be("hybrid-upgrade-agent");
-            database.Context.CentralTransientSubmissionAudits.Add(new CentralTransientSubmissionAudit
+            var audit = new CentralTransientSubmissionAudit
             {
                 DevicePublicId = Guid.NewGuid(),
-                AgentId = "hybrid-upgrade-agent",
-                CandidateId = candidateId,
-                EventId = submittedEventId,
-                ClaimedSubmissionIdentitySha256 = ShaC,
+                AgentId = "audit-agent",
+                CandidateId = Guid.NewGuid(),
+                EventId = Guid.NewGuid(),
+                ClaimedSubmissionIdentitySha256 = ShaA,
                 PayloadSha256 = ShaB,
                 ReasonCode = CentralTransientSubmissionReasonCodes.IdentityConflict,
                 ExistingCentralDerivativeJobId = job.Id,
-                RecordedAtUtc = now.AddSeconds(1)
-            });
-            await database.Context.SaveChangesAsync().ConfigureAwait(false);
-            (await database.Context.CentralTransientSubmissionAudits.CountAsync().ConfigureAwait(false)).Should().Be(1);
-            await Assert.ThrowsExactlyAsync<SqlException>(async () =>
-                await database.Context.CentralTransientSubmissionAudits.ExecuteDeleteAsync().ConfigureAwait(false))
-                .ConfigureAwait(false);
-            (await database.Context.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    [TestMethod]
-    public async Task ReviewUpgradeBackfillsNeedsReviewCurrentProjectionAndSurvivesDownUp()
-    {
-        await using var database = CreateDatabase("ReviewUpgrade");
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync(ReviewPredecessorMigration).ConfigureAwait(false);
-            var now = DateTimeOffset.UnixEpoch.AddDays(2);
-            var source = AddSourceArtifact(database.Context, "review-upgrade-agent", now);
-            var background = AddSourceArtifact(database.Context, "review-upgrade-agent", now.AddSeconds(-1));
-            var eventRecord = CreateEvent("review-upgrade-agent", now, source, background);
-            var version = CreateVersion(eventRecord, 1, now.AddSeconds(1));
-            var assessment = CreateAssessment(eventRecord, now, Guid.NewGuid(), ShaA, null);
-            eventRecord.Versions.Add(version);
-            eventRecord.Assessments.Add(assessment);
-            database.Context.CentralTransientEvents.Add(eventRecord);
-            await database.Context.SaveChangesAsync().ConfigureAwait(false);
-            database.Context.AddRange(
-                new CentralTransientEventVersionObservation
-                {
-                    CentralTransientEventId = eventRecord.Id,
-                    EventVersionId = version.EventVersionId,
-                    ObservationId = eventRecord.Observations.Single().ObservationId,
-                    Ordinal = 0
-                },
-                new CentralTransientEventVersionAssessment
-                {
-                    CentralTransientEventId = eventRecord.Id,
-                    EventVersionId = version.EventVersionId,
-                    AssessmentId = assessment.AssessmentId,
-                    Ordinal = 0
-                });
-            await database.Context.SaveChangesAsync().ConfigureAwait(false);
-            database.Context.ChangeTracker.Clear();
-
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
-                .ConfigureAwait(false);
-            current.LatestEventVersionId.Should().Be(version.EventVersionId);
-            current.ActiveAssessmentId.Should().Be(assessment.AssessmentId);
-            current.ReviewState.Should().Be(CentralTransientReviewState.NeedsReview);
-            current.EffectiveClassification.Should().Be(assessment.Classification);
-            current.RowVersion.Should().HaveCount(8);
-
-            await migrator.MigrateAsync(ReviewPredecessorMigration).ConfigureAwait(false);
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            database.Context.ChangeTracker.Clear();
-            (await database.Context.CentralTransientEventCurrent.AsNoTracking().CountAsync(item =>
-                item.CentralTransientEventId == eventRecord.Id).ConfigureAwait(false)).Should().Be(1);
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    [TestMethod]
-    public async Task PreviousLatestUpgradePreservesPopulatedWorkerWindowState()
-    {
-        await using var database = CreateDatabase("Upgrade");
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            var source = AddSourceArtifact(database.Context, "upgrade-agent", DateTimeOffset.UnixEpoch);
-            var job = AddDerivativeJob(database.Context, source, DateTimeOffset.UnixEpoch);
-            job.InputRequirements.Add(new CentralDerivativeJobInputRequirement
-            {
-                Ordinal = 0,
-                BindingName = "center",
-                SourceKind = CentralDerivativeInputSourceKind.Artifact,
-                SequenceOffset = 0,
-                IsRequired = true,
-                SelectorJson = "{}",
-                CompatibilityMode = CentralDerivativeCompatibilityMode.Exact,
-                ExpectedAgentId = "upgrade-agent",
-                ExpectedCentralArtifactId = source.Id,
-                ResolutionState = CentralDerivativeInputResolutionState.Resolved,
-                ResolvedAtUtc = DateTimeOffset.UnixEpoch
-            });
-            await database.Context.SaveChangesAsync().ConfigureAwait(false);
-            var slotId = Guid.NewGuid();
-            var submittedEventId = Guid.NewGuid();
-            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO [CentralTransientValidationJobs]
-                    ([CentralDerivativeJobId], [AgentId], [SubmissionSchemaVersion], [SubmissionIdentitySha256],
-                     [CreatedAtUtc], [CommittedAtUtc])
-                VALUES
-                    ({job.Id}, N'upgrade-agent', N'central-transient-submission-v1', {ShaC},
-                     {DateTimeOffset.UnixEpoch}, {DateTimeOffset.UnixEpoch.AddSeconds(1)});
-
-                INSERT INTO [CentralTransientValidationIdentitySlots]
-                    ([Id], [CentralDerivativeJobId], [Ordinal], [State], [EventId], [CandidateId],
-                     [ObservationId], [AssessmentId], [CentralTransientEventId], [PersistedEventVersionId],
-                     [PersistedObservationId], [PersistedAssessmentId])
-                VALUES
-                    ({slotId}, {job.Id}, 0, N'Reserved', {submittedEventId}, {Guid.NewGuid()},
-                     {Guid.NewGuid()}, {Guid.NewGuid()}, NULL, NULL, NULL, NULL);
-                """).ConfigureAwait(false);
-
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            database.Context.ChangeTracker.Clear();
-
-            (await database.Context.CentralDerivativeJobs.CountAsync(item => item.Id == job.Id).ConfigureAwait(false))
-                .Should().Be(1);
-            (await database.Context.CentralDerivativeJobInputRequirements
-                .CountAsync(item => item.CentralDerivativeJobId == job.Id).ConfigureAwait(false)).Should().Be(1);
-            (await database.Context.CentralTransientEvents.CountAsync().ConfigureAwait(false)).Should().Be(0);
-            var upgradedValidation = await database.Context.CentralTransientValidationJobs.AsNoTracking()
-                .Include(item => item.IdentitySlots).SingleAsync().ConfigureAwait(false);
-            upgradedValidation.ExecutionOptionsJson.Should().BeNull();
-            upgradedValidation.ExecutionOptionsIdentitySha256.Should().BeNull();
-            upgradedValidation.IdentitySlots.Single().SubmittedEventId.Should().Be(submittedEventId);
-            upgradedValidation.OutcomeState.Should().Be(TransientEventState.NeedsReview);
-            upgradedValidation.OutcomeReasonCode.Should().Be("transient-validation.legacy-committed-output");
-            upgradedValidation.OutcomeEvidenceIdentitySha256.Should().Be(Convert.ToHexString(SHA256.HashData(
-                Encoding.UTF8.GetBytes(upgradedValidation.OutcomeEvidenceJson!))));
-            var upgradedOutcome = await database.Context.CentralTransientValidationOutcomeVersions.AsNoTracking()
-                .SingleAsync(item => item.CentralDerivativeJobId == job.Id).ConfigureAwait(false);
-            upgradedOutcome.EvidenceJson.Should().Be(upgradedValidation.OutcomeEvidenceJson);
-            upgradedOutcome.EvidenceIdentitySha256.Should().Be(upgradedValidation.OutcomeEvidenceIdentitySha256);
-            await AssertSchemaAsync(database.Context).ConfigureAwait(false);
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    [TestMethod]
-    public async Task DownAndUpRollbackPreservesExistingWorkerRows()
-    {
-        await using var database = CreateDatabase("Rollback");
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            var source = AddSourceArtifact(database.Context, "rollback-agent", DateTimeOffset.UnixEpoch);
-            var job = AddDerivativeJob(database.Context, source, DateTimeOffset.UnixEpoch);
+                RecordedAtUtc = now
+            };
+            database.Context.CentralTransientSubmissionAudits.Add(audit);
             await database.Context.SaveChangesAsync().ConfigureAwait(false);
 
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            var transientTableCount = await database.Context.Database.SqlQuery<int>($"""
-                SELECT COUNT(*) AS [Value]
-                FROM [sys].[tables]
-                WHERE [name] LIKE N'CentralTransient%'
-                """).SingleAsync().ConfigureAwait(false);
-            transientTableCount.Should().Be(13);
-            var workerCount = await database.Context.Database.SqlQuery<int>($"""
-                SELECT COUNT(*) AS [Value] FROM [CentralDerivativeJobs] WHERE [Id] = {job.Id}
-                """).SingleAsync().ConfigureAwait(false);
-            workerCount.Should().Be(1);
-
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            await AssertSchemaAsync(database.Context).ConfigureAwait(false);
+            Func<Task> updateAudit = () => database.Context.CentralTransientSubmissionAudits
+                .Where(item => item.Id == audit.Id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ReasonCode, "changed"));
+            Func<Task> deleteAudit = () => database.Context.CentralTransientSubmissionAudits
+                .Where(item => item.Id == audit.Id)
+                .ExecuteDeleteAsync();
+            await updateAudit.Should().ThrowAsync<SqlException>().WithMessage("*immutable*").ConfigureAwait(false);
+            await deleteAudit.Should().ThrowAsync<SqlException>().WithMessage("*immutable*").ConfigureAwait(false);
         }
         finally
         {
@@ -784,13 +574,14 @@ public sealed class CentralTransientValidationMigrationTests
             INSERT INTO [CentralArtifacts]
                 ([Id], [CentralFrameId], [DevicePublicId], [ArtifactId], [Role], [RecipeVersion],
                  [ManifestSchemaVersion], [MediaType], [ByteLength], [ChecksumSha256], [StorageReference],
-                 [ReceivedAtUtc], [IdempotencyKey], [Variant], [CreatedUtc], [ObjectState], [ReconstructionState])
+                  [ReceivedAtUtc], [IdempotencyKey], [Variant], [CreatedUtc], [ObjectState], [ReconstructionState],
+                  [ObjectVerificationRetryCount], [RecoveryGeneration], [ReferenceRetryCount])
             VALUES
                 ({artifact.Id}, {artifact.CentralFrameId}, {artifact.DevicePublicId}, {artifact.ArtifactId},
                  {artifact.Role.ToString()}, {artifact.RecipeVersion}, {artifact.ManifestSchemaVersion},
-                 {artifact.MediaType}, {artifact.ByteLength}, {artifact.ChecksumSha256}, {artifact.StorageReference},
-                 {artifact.ReceivedAtUtc}, {artifact.IdempotencyKey}, {artifact.Variant}, {artifact.CreatedUtc},
-                 {artifact.ObjectState.ToString()}, {artifact.ReconstructionState.ToString()});
+                  {artifact.MediaType}, {artifact.ByteLength}, {artifact.ChecksumSha256}, {artifact.StorageReference},
+                  {artifact.ReceivedAtUtc}, {artifact.IdempotencyKey}, {artifact.Variant}, {artifact.CreatedUtc},
+                  {artifact.ObjectState.ToString()}, {artifact.ReconstructionState.ToString()}, {0}, {0L}, {0});
             """);
         return artifact;
     }

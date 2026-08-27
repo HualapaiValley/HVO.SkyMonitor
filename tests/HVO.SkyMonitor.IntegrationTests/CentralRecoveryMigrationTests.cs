@@ -3,8 +3,6 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -13,8 +11,6 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [DoNotParallelize]
 public sealed class CentralRecoveryMigrationTests
 {
-    private const string PreviousMigration = "20260716084430_AddDurableFleetStatus";
-
     [TestMethod]
     public async Task CleanDatabase_MigratesToCurrentModelWithIndexesAndCheckpointSeed()
     {
@@ -59,58 +55,6 @@ public sealed class CentralRecoveryMigrationTests
             await database.Context.Database.MigrateAsync().ConfigureAwait(false);
 
             (await database.Context.CentralRecoveryCheckpoints.CountAsync().ConfigureAwait(false)).Should().Be(1);
-            await AssertRecoverySchemaAsync(database.Context).ConfigureAwait(false);
-        }
-        finally
-        {
-            await database.Context.Database.EnsureDeletedAsync().ConfigureAwait(false);
-        }
-    }
-
-    [TestMethod]
-    public async Task LegacyDatabase_UpgradePreservesArtifactAndInitializesInventoryColumns()
-    {
-        await using var database = CreateDatabase("Legacy");
-        try
-        {
-            var migrator = database.Context.GetService<IMigrator>();
-            await migrator.MigrateAsync(PreviousMigration).ConfigureAwait(false);
-            var frameId = Guid.NewGuid();
-            var artifactId = Guid.NewGuid();
-            var devicePublicId = Guid.NewGuid();
-            await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO [CentralFrames]
-                    ([Id], [RegistrationId], [DevicePublicId], [ObservatoryId], [AgentId], [FrameId],
-                     [CapturedAtUtc], [FirstReceivedAtUtc], [RigProfileVersion], [SceneProvenanceJson])
-                VALUES
-                    ({frameId}, {Guid.NewGuid()}, {devicePublicId}, {Guid.NewGuid()}, {"legacy-recovery-agent"},
-                     {Guid.NewGuid()}, {DateTimeOffset.UnixEpoch}, {DateTimeOffset.UnixEpoch}, NULL, NULL);
-                INSERT INTO [CentralArtifacts]
-                    ([Id], [CentralFrameId], [ArtifactId], [DevicePublicId], [Role], [RecipeVersion],
-                     [ManifestSchemaVersion], [MediaType], [ByteLength], [ChecksumSha256], [StorageReference],
-                     [ReceivedAtUtc], [IdempotencyKey], [ObjectState], [ReconstructionState])
-                VALUES
-                    ({artifactId}, {frameId}, {Guid.NewGuid()}, {devicePublicId}, {"Preview"}, {"legacy-v1"},
-                     {"v1"}, {"application/octet-stream"}, {4L}, {new string('A', 64)},
-                     {"minio://legacy/noncanonical.bin"}, {DateTimeOffset.UnixEpoch},
-                     {Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Guid.NewGuid().ToByteArray()))},
-                     {"Available"}, {"LegacyIncomplete"});
-                """).ConfigureAwait(false);
-
-            await migrator.MigrateAsync().ConfigureAwait(false);
-            database.Context.ChangeTracker.Clear();
-
-            var artifact = await database.Context.CentralArtifacts.SingleAsync(item => item.Id == artifactId)
-                .ConfigureAwait(false);
-            artifact.StorageReference.Should().Be("minio://legacy/noncanonical.bin");
-            artifact.RecoveryGeneration.Should().Be(0);
-            artifact.ObjectVerifiedAtUtc.Should().BeNull();
-            artifact.ObjectVerificationToken.Should().BeNull();
-            artifact.ObjectVerificationRequestedAtUtc.Should().BeNull();
-            artifact.ObjectVerificationRetryCount.Should().Be(0);
-            artifact.ObjectVerificationRetryAtUtc.Should().BeNull();
-            artifact.ReferenceRetryCount.Should().Be(0);
-            artifact.ReferenceRetryAtUtc.Should().BeNull();
             await AssertRecoverySchemaAsync(database.Context).ConfigureAwait(false);
         }
         finally
