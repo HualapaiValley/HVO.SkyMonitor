@@ -91,13 +91,13 @@ public sealed partial class LogicHostIngestPerformanceTests
             protocol,
             warmups,
             measurements,
-            _ => CreateIssues437432StructuredMeasurement(rawUpload.Manifest, 0)).ConfigureAwait(false);
+            index => CreateIssues437432StructuredMeasurement(rawUpload.Manifest, index)).ConfigureAwait(false);
         var flattenedIngest = await MeasureIssues437432UploadsAsync(
             ingestClient,
             protocol,
             warmups,
             measurements,
-            _ => CreateIssues437432FlattenedMeasurement(rawUpload.Manifest, 0)).ConfigureAwait(false);
+            index => CreateIssues437432FlattenedMeasurement(rawUpload.Manifest, index)).ConfigureAwait(false);
 
         var structuredRetrieval = await MeasureIssues437432RetrievalAsync(
             ownerClient, protocol, workload.DevicePublicId, structuredIngest.Artifacts, warmups).ConfigureAwait(false);
@@ -748,6 +748,10 @@ public sealed partial class LogicHostIngestPerformanceTests
         var observed = protocol.Stop();
         await SettleIssues437432DevelopmentSamplerAsync().ConfigureAwait(false);
         var resource = await resources.StopAsync().ConfigureAwait(false);
+        Assert.AreEqual(
+            artifacts.Count,
+            artifacts.Select(static artifact => artifact.ArtifactId).Distinct().Count(),
+            "Every ingest sample must create a distinct artifact.");
         return new(
             CreateIssues437432Distribution(samples, elapsed),
             artifacts.ToArray(),
