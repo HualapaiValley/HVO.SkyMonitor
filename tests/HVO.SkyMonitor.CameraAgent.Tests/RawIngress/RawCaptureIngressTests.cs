@@ -157,7 +157,8 @@ public sealed class RawCaptureIngressTests
             var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
                 journal.InitializeAsync(CancellationToken.None)).ConfigureAwait(false);
 
-            StringAssert.Contains(exception.Message, "archive or remove", StringComparison.Ordinal);
+            StringAssert.Contains(exception.Message, "archive the database", StringComparison.Ordinal);
+            StringAssert.Contains(exception.Message, "state-disposition", StringComparison.Ordinal);
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
             Assert.AreEqual(version, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual("unchanged", await ScalarStringAsync(

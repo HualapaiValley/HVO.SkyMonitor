@@ -149,6 +149,12 @@ for trial in 1 2 3 4 5; do
         .issue == 257 and .trial == $trial and .revision == $revision and
         .workload.profileSha256 == "227FB3C0484AB5BBAFC4CA3674EA0D68B473315EBDD63F547CB2851D0A00F499" and
         .w3M.userVersion == 11 and .baseline.comparison == "N/A" and
+        ([.w3M.initializationMilliseconds,
+          .w3M.initializationCpuMilliseconds, .w3M.initializationAllocatedBytes,
+          .w3M.rssBeforeInitializationBytes, .w3M.rssAfterInitializationBytes,
+          .w3M.canonicalInsertionCpuMilliseconds, .w3M.canonicalInsertionAllocatedBytes,
+          .w3M.rssBeforeCanonicalInsertionBytes, .w3M.rssAfterCanonicalInsertionBytes] |
+          all(type == "number" and . >= 0)) and
         .blockedComparison.executionOrder == (if $order == "UB" then ["unblocked", "blocked"] else ["blocked", "unblocked"] end) and
         .blockedComparison.unblocked.productionClaimWarmupSamples == 5 and
         .blockedComparison.unblocked.productionClaimMeasuredSamples == 30 and
@@ -191,7 +197,19 @@ jq -s '.' "$OUTPUT_ROOT"/trial-*/runtime-signals.json > "$RUNTIME_TEMP"
 jq -n --slurpfile lanes "$LANES_TEMP" --slurpfile controls "$CONTROLS_TEMP" --slurpfile runtime "$RUNTIME_TEMP" \
     --arg revision "$REVISION" -f "$AGGREGATOR" > "$OUTPUT_ROOT/five-trial-summary.json"
 rm "$LANES_TEMP" "$CONTROLS_TEMP" "$RUNTIME_TEMP"
-jq --exit-status '.result.passed == true' "$OUTPUT_ROOT/five-trial-summary.json" >/dev/null
+jq --exit-status '
+    .result.passed == true and
+    ([.metrics.w3MInitializationMilliseconds,
+      .metrics.w3MInitializationCpuMilliseconds,
+      .metrics.w3MInitializationAllocatedBytes,
+      .metrics.w3MInitializationRssDeltaBytes,
+      .metrics.w3MCanonicalInsertionCpuMilliseconds,
+      .metrics.w3MCanonicalInsertionAllocatedBytes,
+      .metrics.w3MCanonicalInsertionRssDeltaBytes] |
+      all((.minimum | type) == "number" and
+          (.median | type) == "number" and
+          (.maximum | type) == "number"))
+' "$OUTPUT_ROOT/five-trial-summary.json" >/dev/null
 assert_source_unchanged
 
 {

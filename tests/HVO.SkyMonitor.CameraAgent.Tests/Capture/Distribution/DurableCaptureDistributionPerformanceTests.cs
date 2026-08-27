@@ -515,14 +515,22 @@ public sealed class DurableCaptureDistributionPerformanceTests
         var initializationStarted = Stopwatch.GetTimestamp();
         await journal.InitializeAsync(policy.Definitions, CancellationToken.None).ConfigureAwait(false);
         var initializationDuration = Stopwatch.GetElapsedTime(initializationStarted);
+        var initializationCpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
+        var initializationAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
+        var rssAfterInitialization = Environment.WorkingSet;
+        Assert.IsGreaterThanOrEqualTo(0L, initializationAllocatedBytes);
         var databaseBytesBefore = FileBytes(databasePath);
         var walBytesBefore = FileBytes(string.Concat(databasePath, "-wal"));
+        var insertionAllocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+        var insertionCpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
+        var insertionRssBefore = Environment.WorkingSet;
         var insertion = await PopulateCanonicalDatabaseAsync(
             databasePath, input, configuration, policy.Definitions).ConfigureAwait(false);
         SqliteConnection.ClearAllPools();
-        var cpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
-        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
-        Assert.IsGreaterThanOrEqualTo(0L, allocatedBytes);
+        var insertionCpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - insertionCpuBefore).TotalMilliseconds;
+        var insertionAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - insertionAllocatedBefore;
+        var insertionRssAfter = Environment.WorkingSet;
+        Assert.IsGreaterThanOrEqualTo(0L, insertionAllocatedBytes);
 
         using var connection = await OpenDatabaseAsync(root).ConfigureAwait(false);
         var rawRows = await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false);
@@ -598,10 +606,14 @@ public sealed class DurableCaptureDistributionPerformanceTests
             CanonicalLaneStatements: W3MetadataCount * policy.Definitions.Count(static lane => lane.Enabled),
             CanonicalLaneRows: laneRows,
             ObservedProductionTransactions: transactionCounts.Values.Sum(),
-            CpuMilliseconds: cpuMilliseconds,
-            AllocatedBytes: allocatedBytes,
-            RssBeforeBytes: rssBefore,
-            RssAfterBytes: Environment.WorkingSet,
+            InitializationCpuMilliseconds: initializationCpuMilliseconds,
+            InitializationAllocatedBytes: initializationAllocatedBytes,
+            RssBeforeInitializationBytes: rssBefore,
+            RssAfterInitializationBytes: rssAfterInitialization,
+            CanonicalInsertionCpuMilliseconds: insertionCpuMilliseconds,
+            CanonicalInsertionAllocatedBytes: insertionAllocatedBytes,
+            RssBeforeCanonicalInsertionBytes: insertionRssBefore,
+            RssAfterCanonicalInsertionBytes: insertionRssAfter,
             DatabaseBytesAfterInitialization: databaseBytesBefore,
             WalBytesAfterInitialization: walBytesBefore,
             DatabaseBytesAfterCanonicalInsertion: databaseBytesAfter,
@@ -1989,10 +2001,14 @@ public sealed class DurableCaptureDistributionPerformanceTests
         int CanonicalLaneStatements,
         long CanonicalLaneRows,
         int ObservedProductionTransactions,
-        double CpuMilliseconds,
-        long AllocatedBytes,
-        long RssBeforeBytes,
-        long RssAfterBytes,
+        double InitializationCpuMilliseconds,
+        long InitializationAllocatedBytes,
+        long RssBeforeInitializationBytes,
+        long RssAfterInitializationBytes,
+        double CanonicalInsertionCpuMilliseconds,
+        long CanonicalInsertionAllocatedBytes,
+        long RssBeforeCanonicalInsertionBytes,
+        long RssAfterCanonicalInsertionBytes,
         long DatabaseBytesAfterInitialization,
         long WalBytesAfterInitialization,
         long DatabaseBytesAfterCanonicalInsertion,

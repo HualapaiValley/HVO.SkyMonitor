@@ -87,7 +87,7 @@ internal sealed class SqliteRawCaptureJournal(
             if (version != CurrentSchemaVersion && !initializeSchema)
             {
                 throw new InvalidOperationException(
-                    $"Raw ingress schema {version} is unsupported; archive or remove the existing database before starting this CameraAgent.");
+                    $"Raw ingress schema {version} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
             }
         }
 
@@ -102,7 +102,7 @@ internal sealed class SqliteRawCaptureJournal(
             (!initializeSchema && writableVersion != CurrentSchemaVersion))
         {
             throw new InvalidOperationException(
-                $"Raw ingress schema {writableVersion} is unsupported; archive or remove the existing database before starting this CameraAgent.");
+                $"Raw ingress schema {writableVersion} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
         }
         if (initializeSchema)
         {
