@@ -1,15 +1,21 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal sealed class CaptureProcessingStateRefreshService(
     SqliteCaptureProcessingStore store,
     CaptureProcessingState state,
-    TimeProvider timeProvider) : BackgroundService
+    TimeProvider timeProvider,
+    IRawCaptureIngress? rawIngress = null) : BackgroundService
 {
     internal async ValueTask RunOnceAsync(CancellationToken cancellationToken)
     {
+        if (rawIngress is not null)
+        {
+            await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
         var durable = await store.ReadOperationalStateAsync(cancellationToken).ConfigureAwait(false);
         var inventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
         state.SetDurable(

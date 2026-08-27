@@ -121,9 +121,9 @@ internal sealed class RawCaptureIngress :
             {
                 _files.EnsureRootIsPhysical();
                 _processLock ??= AcquireProcessLock();
-                using var migrationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.migrate");
+                using var initializationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.initialize");
                 await _journal.InitializeAsync(_lanePolicy.Definitions, cancellationToken).ConfigureAwait(false);
-                migrationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+                initializationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 using var reconciliationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.reconcile");
                 var reconciliation = await new RawIngressReconciler(
                     _options.RawIngressRoot,

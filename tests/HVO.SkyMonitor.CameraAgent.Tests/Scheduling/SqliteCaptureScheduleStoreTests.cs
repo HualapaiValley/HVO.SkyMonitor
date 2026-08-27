@@ -80,26 +80,16 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_PersistedLegacyControlPoliciesNormalizeDuringHostRestart()
+    public async Task InitializeAsync_PersistedCurrentV2LegacyControlPoliciesNormalizeDuringHostRestart()
     {
         var cases = new[]
         {
             new LegacyControlCase(
-                LocalCaptureProfileDefinition.LegacySchemaVersion,
-                new CameraControlPolicy
-                {
-                    AutoExposure = CameraFeatureDirective.Enabled,
-                    AutoGain = CameraFeatureDirective.Disabled
-                },
-                AutomaticControlOwnership.HostMetered,
-                AutomaticControlOwnership.Disabled,
-                CapturePipelineSchemaVersions.LegacyV1),
-            new LegacyControlCase(
-                LocalCaptureProfileDefinition.LegacySchemaVersion,
+                LocalCaptureProfileDefinition.CurrentSchemaVersion,
                 null,
                 AutomaticControlOwnership.Disabled,
                 AutomaticControlOwnership.Disabled,
-                CapturePipelineSchemaVersions.LegacyV1),
+                CapturePipelineSchemaVersions.ExplicitV2),
             new LegacyControlCase(
                 LocalCaptureProfileDefinition.CurrentSchemaVersion,
                 new CameraControlPolicy
@@ -214,6 +204,53 @@ public sealed class SqliteCaptureScheduleStoreTests
             {
                 Directory.Delete(root, recursive: true);
             }
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_ChecksumValidPersistedV1ProfileFailsClosed()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            var configuration = HostConfiguration();
+            string revisionId;
+            using (var store = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System))
+            {
+                var initial = await store.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                revisionId = initial.ActiveRevision.RevisionId;
+                var legacy = LocalCaptureProfileDefinition.Create(configuration, configuration.Schedule!);
+                var profileJson = System.Text.Encoding.UTF8.GetBytes(
+                    CaptureContractJson.SerializeToElement(legacy).GetRawText());
+                using var document = System.Text.Json.JsonDocument.Parse(profileJson);
+                var rawProfileSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(document.RootElement);
+                using var connection = new SqliteConnection(
+                    $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE capture_schedule_revisions
+                    SET profile_json = $json, profile_sha256 = $profile_sha
+                    WHERE revision_id = $revision;
+                    """;
+                command.Parameters.AddWithValue("$json", profileJson);
+                command.Parameters.AddWithValue("$profile_sha", rawProfileSha256);
+                command.Parameters.AddWithValue("$revision", revisionId);
+                Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+                var validation = LocalCaptureProfileContract.ValidatePersistedRevision(legacy);
+                Assert.IsFalse(validation.IsValid);
+                Assert.AreEqual("localProfile.schemaVersion", validation.FieldPath);
+            }
+            using var restarted = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System);
+
+            _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                restarted.GetRevisionAsync(revisionId, CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
         }
     }
 
@@ -441,8 +478,6 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     [TestMethod]
-    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion, true)]
-    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion, false)]
     [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion, true)]
     [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion, false)]
     public async Task InitializeAsync_ChecksumValidUndefinedLegacyDirectiveFailsBeforeNormalization(
@@ -599,7 +634,6 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     [TestMethod]
-    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion)]
     [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion)]
     public async Task StageAsync_PreUpgradeLegacyCommandReplaysButNewKeyIsRejected(string schemaVersion)
     {

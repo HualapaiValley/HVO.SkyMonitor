@@ -105,7 +105,6 @@ public sealed class SchedulePageTests
 
         Assert.IsTrue(CanToggle(canonical));
         Assert.IsFalse(CanToggle(legacyScheduleV2));
-        Assert.IsFalse(CanToggle(legacyV1));
 
         bool CanToggle(LocalCaptureProfileDefinition profile)
         {

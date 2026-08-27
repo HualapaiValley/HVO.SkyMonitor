@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -12,10 +13,15 @@ internal sealed class DerivedProductReconciliationService(
     CaptureProcessingTelemetry telemetry,
     CaptureProcessingState state,
     Capture.Distribution.CaptureDistributionService distribution,
-    ILogger<DerivedProductReconciliationService> logger) : BackgroundService
+    ILogger<DerivedProductReconciliationService> logger,
+    IRawCaptureIngress? rawIngress = null) : BackgroundService
 {
     internal async ValueTask RunOnceAsync(CancellationToken cancellationToken)
     {
+        if (rawIngress is not null)
+        {
+            await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity(
             "processing-artifact.reconcile");
         try

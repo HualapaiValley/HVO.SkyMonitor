@@ -39,7 +39,7 @@ public sealed class CaptureAdmissionCoordinatorTests
     }
 
     [TestMethod]
-    public async Task SchemaV6MigrationAddsFreshRunningControlStateAndAuditAsync()
+    public async Task PopulatedV5SchemaDoesNotRecreateMissingControlState()
     {
         var root = CreateRoot();
         try
@@ -57,15 +57,12 @@ public sealed class CaptureAdmissionCoordinatorTests
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
 
-            await CreateJournal(root).InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                CreateJournal(root).InitializeAsync(CancellationToken.None)).ConfigureAwait(false);
 
             using var verify = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(11L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
-            Assert.AreEqual("running", await ScalarStringAsync(
-                verify, "SELECT state FROM capture_control_state WHERE state_key = 1;").ConfigureAwait(false));
+            Assert.AreEqual(5L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(0L, await ScalarLongAsync(
-                verify, "SELECT version FROM capture_control_state WHERE state_key = 1;").ConfigureAwait(false));
-            Assert.AreEqual(2L, await ScalarLongAsync(
                 verify,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('capture_control_state','capture_control_commands');")
                 .ConfigureAwait(false));

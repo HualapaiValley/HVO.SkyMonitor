@@ -906,7 +906,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_RepairsAdditiveUnshippedSchemaV9Index()
+    public async Task InitializeAsync_WhenCalibrationIndexDrifts_FailsClosedWithoutRepair()
     {
         var root = CreateRoot();
         try
@@ -919,11 +919,12 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
 
-            await new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1)
-                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1)
+                    .InitializeAsync(CancellationToken.None)).ConfigureAwait(false);
 
             using var verify = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(1L, await ScalarLongAsync(
+            Assert.AreEqual(0L, await ScalarLongAsync(
                 verify,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ux_calibration_acquisition_jobs_camera_nonterminal';")
                 .ConfigureAwait(false));

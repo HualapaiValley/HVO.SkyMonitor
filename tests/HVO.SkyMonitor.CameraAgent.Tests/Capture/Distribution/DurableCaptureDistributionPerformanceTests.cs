@@ -186,7 +186,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
                     W3MReferenceLaneRows = 30_000,
                     W3PRawBytes = W3PayloadBytes,
                     LaneWorkContainsPayloadOrBlob = false,
-                    Result = "Checksums, manifest lineage, unique identities, indexed migration, reference-only fan-out, durable completion, optional isolation, restart discovery, and graceful drain were asserted."
+                    Result = "Checksums, manifest lineage, unique identities, canonical initialization, reference-only fan-out, durable completion, optional isolation, restart discovery, and graceful drain were asserted."
                 }
             };
             await WriteNewJsonAsync(
@@ -488,9 +488,6 @@ public sealed class DurableCaptureDistributionPerformanceTests
     {
         Directory.CreateDirectory(Path.Combine(root, "journal"));
         var databasePath = DatabasePath(root);
-        var insertion = await CreateV1DatabaseAsync(databasePath, input, configuration).ConfigureAwait(false);
-        SqliteConnection.ClearAllPools();
-
         var distribution = CreateDistributionOptions();
         var hostOptions = Options.Create(new CameraAgentHostOptions
         {
@@ -512,14 +509,17 @@ public sealed class DurableCaptureDistributionPerformanceTests
             },
             distributionOptions: distribution,
             laneFaultInjector: new NullCaptureLaneFaultInjector());
-        var databaseBytesBefore = FileBytes(databasePath);
-        var walBytesBefore = FileBytes(string.Concat(databasePath, "-wal"));
         var allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
         var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
         var rssBefore = Environment.WorkingSet;
-        var migrationStarted = Stopwatch.GetTimestamp();
+        var initializationStarted = Stopwatch.GetTimestamp();
         await journal.InitializeAsync(policy.Definitions, CancellationToken.None).ConfigureAwait(false);
-        var migrationDuration = Stopwatch.GetElapsedTime(migrationStarted);
+        var initializationDuration = Stopwatch.GetElapsedTime(initializationStarted);
+        var databaseBytesBefore = FileBytes(databasePath);
+        var walBytesBefore = FileBytes(string.Concat(databasePath, "-wal"));
+        var insertion = await PopulateCanonicalDatabaseAsync(
+            databasePath, input, configuration, policy.Definitions).ConfigureAwait(false);
+        SqliteConnection.ClearAllPools();
         var cpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
         var allocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore;
         Assert.IsGreaterThanOrEqualTo(0L, allocatedBytes);
@@ -588,24 +588,24 @@ public sealed class DurableCaptureDistributionPerformanceTests
             LaneWorkRows: laneRows,
             ReferenceRowsPerCapture: laneRows / rawRows,
             ContextRows: contextRows,
-            V1InsertionMilliseconds: insertion.DurationMilliseconds,
-            V1InsertionRecordsPerSecond: W3MetadataCount / (insertion.DurationMilliseconds / 1000d),
-            V1InsertionTransactions: 1,
-            V1InsertionStatements: insertion.StatementCount,
-            MigrationMilliseconds: migrationDuration.TotalMilliseconds,
-            MigrationRawRecordsPerSecond: W3MetadataCount / migrationDuration.TotalSeconds,
-            MigrationReferenceRowsPerSecond: laneRows / migrationDuration.TotalSeconds,
-            MigrationBackfillStatements: policy.Definitions.Count(static lane => lane.Enabled),
-            MigrationBackfilledRows: laneRows,
+            CanonicalInsertionMilliseconds: insertion.DurationMilliseconds,
+            CanonicalInsertionRecordsPerSecond: W3MetadataCount / (insertion.DurationMilliseconds / 1000d),
+            CanonicalInsertionTransactions: 1,
+            CanonicalInsertionStatements: insertion.StatementCount,
+            InitializationMilliseconds: initializationDuration.TotalMilliseconds,
+            CanonicalInsertionRawRecordsPerSecond: W3MetadataCount / (insertion.DurationMilliseconds / 1000d),
+            CanonicalInsertionReferenceRowsPerSecond: laneRows / (insertion.DurationMilliseconds / 1000d),
+            CanonicalLaneStatements: W3MetadataCount * policy.Definitions.Count(static lane => lane.Enabled),
+            CanonicalLaneRows: laneRows,
             ObservedProductionTransactions: transactionCounts.Values.Sum(),
             CpuMilliseconds: cpuMilliseconds,
             AllocatedBytes: allocatedBytes,
             RssBeforeBytes: rssBefore,
             RssAfterBytes: Environment.WorkingSet,
-            DatabaseBytesBeforeMigration: databaseBytesBefore,
-            WalBytesBeforeMigration: walBytesBefore,
-            DatabaseBytesAfterMigration: databaseBytesAfter,
-            WalBytesAfterMigration: walBytesAfter,
+            DatabaseBytesAfterInitialization: databaseBytesBefore,
+            WalBytesAfterInitialization: walBytesBefore,
+            DatabaseBytesAfterCanonicalInsertion: databaseBytesAfter,
+            WalBytesAfterCanonicalInsertion: walBytesAfter,
             QueryPlan: queryPlan,
             QueryPlanUsesIndex: true,
             SyntheticIndexedTraversalRows: W3MetadataCount,
@@ -628,19 +628,14 @@ public sealed class DurableCaptureDistributionPerformanceTests
             PersistedPayloadCopyCount: 0);
     }
 
-    private static async Task<V1InsertionMeasurement> CreateV1DatabaseAsync(
+    private static async Task<CanonicalInsertionMeasurement> PopulateCanonicalDatabaseAsync(
         string databasePath,
         W2Input input,
-        CameraModuleConfig configuration)
+        CameraModuleConfig configuration,
+        IReadOnlyList<CaptureLaneDefinition> laneDefinitions)
     {
         using var connection = new SqliteConnection($"Data Source={databasePath}");
         await connection.OpenAsync().ConfigureAwait(false);
-        using (var schema = connection.CreateCommand())
-        {
-            schema.CommandText = V1SchemaSql;
-            await schema.ExecuteNonQueryAsync().ConfigureAwait(false);
-        }
-
         var migrationManifestTemplate = ReconstructableCaptureContractTests.CreateManifest(
             CameraPixelFormat.Mono8,
             2,
@@ -701,6 +696,21 @@ public sealed class DurableCaptureDistributionPerformanceTests
         var contextRaw = context.Parameters.Add("$raw", SqliteType.Integer);
         var contextJson = context.Parameters.Add("$json", SqliteType.Blob);
         var contextSha = context.Parameters.Add("$sha", SqliteType.Text);
+        using var laneWork = connection.CreateCommand();
+        laneWork.Transaction = transaction;
+        laneWork.CommandText = """
+            INSERT INTO capture_lane_work(
+                raw_capture_row_id, lane_name, agent_id, capture_sequence, required, ordered, state,
+                attempt_count, available_unix_ms, created_unix_ms, updated_unix_ms)
+            VALUES ($raw, $lane, 'agent-95-w3m', $sequence, $required, $ordered, 'pending',
+                0, $time, $time, $time);
+            """;
+        var laneRaw = laneWork.Parameters.Add("$raw", SqliteType.Integer);
+        var laneName = laneWork.Parameters.Add("$lane", SqliteType.Text);
+        var laneSequence = laneWork.Parameters.Add("$sequence", SqliteType.Integer);
+        var laneRequired = laneWork.Parameters.Add("$required", SqliteType.Integer);
+        var laneOrdered = laneWork.Parameters.Add("$ordered", SqliteType.Integer);
+        var laneTime = laneWork.Parameters.Add("$time", SqliteType.Integer);
         var payloadSha256 = PayloadChecksum.ComputeSha256([1, 2, 3, 4]);
         for (var index = 0; index < W3MetadataCount; index++)
         {
@@ -748,6 +758,16 @@ public sealed class DurableCaptureDistributionPerformanceTests
             parameters.ManifestJson.Value = CaptureContractJson.Serialize(migrationManifest);
             parameters.Time.Value = timestamp.ToUnixTimeMilliseconds();
             await capture.ExecuteNonQueryAsync().ConfigureAwait(false);
+            foreach (var lane in laneDefinitions.Where(static lane => lane.Enabled))
+            {
+                laneRaw.Value = index + 1;
+                laneName.Value = lane.Name;
+                laneSequence.Value = index + 1;
+                laneRequired.Value = lane.Required ? 1 : 0;
+                laneOrdered.Value = lane.Ordered ? 1 : 0;
+                laneTime.Value = timestamp.ToUnixTimeMilliseconds();
+                await laneWork.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
             if (index < W3LegacyContextCount)
             {
                 var submission = CreateSubmission(index, input);
@@ -758,16 +778,18 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 var json = JsonSerializer.SerializeToUtf8Bytes(
                     new CaptureLaneEnvelope(configuration, lightweight),
                     LaneContextOptions);
+                var sha256 = Convert.ToHexString(SHA256.HashData(json));
+                var redacted = CaptureLaneEnvelopeSerializer.Redact(json, sha256);
                 contextRaw.Value = index + 1;
-                contextJson.Value = json;
-                contextSha.Value = Convert.ToHexString(SHA256.HashData(json));
+                contextJson.Value = redacted.Json;
+                contextSha.Value = redacted.Sha256;
                 await context.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
         }
         await transaction.CommitAsync().ConfigureAwait(false);
-        return new V1InsertionMeasurement(
+        return new CanonicalInsertionMeasurement(
             Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-            1 + W3MetadataCount * 2 + W3LegacyContextCount);
+            1 + W3MetadataCount * (2 + laneDefinitions.Count(static lane => lane.Enabled)) + W3LegacyContextCount);
     }
 
     private static async Task<LiveScenarioMeasurement> MeasureLiveScenarioAsync(
@@ -1950,31 +1972,31 @@ public sealed class DurableCaptureDistributionPerformanceTests
 
     private sealed record WalCheckpoint(long Busy, long LogFrames, long CheckpointedFrames);
 
-    private sealed record V1InsertionMeasurement(double DurationMilliseconds, int StatementCount);
+    private sealed record CanonicalInsertionMeasurement(double DurationMilliseconds, int StatementCount);
 
     private sealed record W3MetadataMeasurement(
         long RawRows,
         long LaneWorkRows,
         long ReferenceRowsPerCapture,
         long ContextRows,
-        double V1InsertionMilliseconds,
-        double V1InsertionRecordsPerSecond,
-        int V1InsertionTransactions,
-        int V1InsertionStatements,
-        double MigrationMilliseconds,
-        double MigrationRawRecordsPerSecond,
-        double MigrationReferenceRowsPerSecond,
-        int MigrationBackfillStatements,
-        long MigrationBackfilledRows,
+        double CanonicalInsertionMilliseconds,
+        double CanonicalInsertionRecordsPerSecond,
+        int CanonicalInsertionTransactions,
+        int CanonicalInsertionStatements,
+        double InitializationMilliseconds,
+        double CanonicalInsertionRawRecordsPerSecond,
+        double CanonicalInsertionReferenceRowsPerSecond,
+        int CanonicalLaneStatements,
+        long CanonicalLaneRows,
         int ObservedProductionTransactions,
         double CpuMilliseconds,
         long AllocatedBytes,
         long RssBeforeBytes,
         long RssAfterBytes,
-        long DatabaseBytesBeforeMigration,
-        long WalBytesBeforeMigration,
-        long DatabaseBytesAfterMigration,
-        long WalBytesAfterMigration,
+        long DatabaseBytesAfterInitialization,
+        long WalBytesAfterInitialization,
+        long DatabaseBytesAfterCanonicalInsertion,
+        long WalBytesAfterCanonicalInsertion,
         IReadOnlyList<string> QueryPlan,
         bool QueryPlanUsesIndex,
         int SyntheticIndexedTraversalRows,
@@ -2052,66 +2074,6 @@ public sealed class DurableCaptureDistributionPerformanceTests
         CaptureLaneSnapshot BeforeReleaseSnapshot,
         CaptureLaneSnapshot FinalSnapshot,
         bool GracefulStop);
-
-    private const string V1SchemaSql = """
-        PRAGMA user_version = 1;
-        CREATE TABLE raw_capture_sequences (
-            agent_id TEXT PRIMARY KEY,
-            last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0)
-        ) STRICT;
-        CREATE TABLE raw_capture_assignments (
-            capture_id TEXT PRIMARY KEY,
-            raw_artifact_id TEXT NOT NULL UNIQUE,
-            agent_id TEXT NOT NULL,
-            capture_sequence INTEGER NOT NULL CHECK (capture_sequence > 0),
-            UNIQUE (agent_id, capture_sequence)
-        ) STRICT;
-        CREATE TABLE raw_captures (
-            raw_capture_row_id INTEGER PRIMARY KEY,
-            capture_id TEXT NOT NULL UNIQUE,
-            raw_artifact_id TEXT NOT NULL UNIQUE,
-            agent_id TEXT NOT NULL,
-            capture_sequence INTEGER NOT NULL CHECK (capture_sequence > 0),
-            descriptor_sha256 TEXT NOT NULL UNIQUE CHECK (length(descriptor_sha256) = 64),
-            manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
-            payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
-            payload_length INTEGER NOT NULL CHECK (payload_length >= 0),
-            payload_relative_path TEXT NOT NULL UNIQUE,
-            sidecar_relative_path TEXT NOT NULL UNIQUE,
-            manifest_json BLOB NOT NULL,
-            exposure_started_unix_ms INTEGER NOT NULL,
-            durable_ingress_unix_ms INTEGER NOT NULL,
-            committed_unix_ms INTEGER NOT NULL,
-            state TEXT NOT NULL CHECK (state IN ('committed', 'missing_evidence', 'quarantined')),
-            retention_hold INTEGER NOT NULL DEFAULT 1 CHECK (retention_hold IN (0, 1)),
-            failure_reason TEXT,
-            UNIQUE (agent_id, capture_sequence),
-            FOREIGN KEY (capture_id) REFERENCES raw_capture_assignments(capture_id)
-        ) STRICT;
-        CREATE INDEX ix_raw_captures_discovery ON raw_captures(state, agent_id, capture_sequence);
-        CREATE INDEX ix_raw_captures_backlog ON raw_captures(state, durable_ingress_unix_ms);
-        CREATE INDEX ix_raw_captures_retention ON raw_captures(retention_hold, exposure_started_unix_ms);
-        CREATE TABLE capture_lane_contexts (
-            raw_capture_row_id INTEGER PRIMARY KEY,
-            context_json BLOB NOT NULL,
-            context_sha256 TEXT NOT NULL CHECK (length(context_sha256) = 64),
-            context_source TEXT NOT NULL CHECK (context_source IN ('capture', 'manifest-fallback')),
-            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id) ON DELETE CASCADE
-        ) STRICT;
-        CREATE TABLE raw_ingress_reconciliation (
-            reconciliation_id INTEGER PRIMARY KEY,
-            evidence_key TEXT NOT NULL UNIQUE,
-            source_relative_path TEXT NOT NULL,
-            companion_relative_path TEXT,
-            quarantine_relative_path TEXT,
-            outcome TEXT NOT NULL CHECK (outcome IN ('cleaned', 'quarantined')),
-            reason TEXT NOT NULL,
-            operation_state TEXT NOT NULL CHECK (operation_state IN ('planned', 'completed')),
-            observed_bytes INTEGER NOT NULL DEFAULT 0,
-            observed_unix_ms INTEGER NOT NULL,
-            completed_unix_ms INTEGER
-        ) STRICT;
-        """;
 
 #if DEBUG
     private const string BuildConfiguration = "Debug";

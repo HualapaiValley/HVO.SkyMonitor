@@ -20,8 +20,6 @@ internal sealed class SqliteRawCaptureJournal(
     TransientDetectionOptions? transientOptions = null)
 {
     internal const int CurrentSchemaVersion = 11;
-    private const int CoordinateScrubbedSchemaVersion = 7;
-    private const int PendingCoordinateScrubSchemaVersion = -7;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
     private readonly Action<TimeSpan>? _lockWaitRecorder = lockWaitRecorder;
@@ -47,111 +45,35 @@ internal sealed class SqliteRawCaptureJournal(
         ArgumentNullException.ThrowIfNull(laneDefinitions);
         Directory.CreateDirectory(Path.GetDirectoryName(_databasePath)!);
         EnsureDatabaseFilesArePhysical();
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
         EnsureDatabaseFilesArePhysical();
 
         var version = await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
-        if (version == PendingCoordinateScrubSchemaVersion)
-        {
-            await CompleteCoordinateScrubAsync(
-                connection, CoordinateScrubbedSchemaVersion, cancellationToken).ConfigureAwait(false);
-            version = CoordinateScrubbedSchemaVersion;
-            _transactionRecorder?.Invoke("migration", true);
-        }
         if (version > CurrentSchemaVersion)
         {
             throw new InvalidOperationException($"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
         }
-        if (version < CurrentSchemaVersion)
+        var initializeSchema = version == 0 && await ExecuteScalarLongAsync(
+            connection,
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
+            cancellationToken).ConfigureAwait(false) == 0;
+        if (version != CurrentSchemaVersion && !initializeSchema)
+        {
+            throw new InvalidOperationException(
+                $"Raw ingress schema {version} is unsupported; archive or remove the existing database before starting this CameraAgent.");
+        }
+
+        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+        if (initializeSchema)
         {
             try
             {
-                await ExecuteNonQueryAsync(connection, transaction: null, "PRAGMA secure_delete = ON;", cancellationToken)
-                    .ConfigureAwait(false);
                 using var transaction = BeginImmediate(connection);
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
-                if (version == 0)
-                {
-                    var hasLegacyRawCaptures = await HasTableAsync(
-                        connection, transaction, "raw_captures", cancellationToken).ConfigureAwait(false);
-                    if (hasLegacyRawCaptures && !await HasColumnAsync(
-                            connection, transaction, "raw_captures", "evidence_origin", cancellationToken).ConfigureAwait(false))
-                    {
-                        await ExecuteNonQueryAsync(
-                            connection, transaction, GalleryV6ColumnMigrationSql, cancellationToken).ConfigureAwait(false);
-                    }
-                    await ExecuteNonQueryAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
-                    await ExecuteNonQueryAsync(connection, transaction, TransientSchemaSql, cancellationToken).ConfigureAwait(false);
-                    if (hasLegacyRawCaptures)
-                    {
-                        await BackfillEvidenceOriginsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-                    }
-                }
-                else if (version == 1)
-                {
-                    await ExecuteNonQueryAsync(connection, transaction, LaneSchemaSql, cancellationToken).ConfigureAwait(false);
-                    await UpsertLaneDefinitionsAsync(connection, transaction, laneDefinitions, cancellationToken).ConfigureAwait(false);
-                    await BackfillLaneWorkAsync(
-                        connection, transaction, laneDefinitions, _distributionOptions, cancellationToken).ConfigureAwait(false);
-                }
-                if (version is 2 or 3 &&
-                    await HasActiveLegacyTransientLaneAsync(
-                        connection, transaction, cancellationToken).ConfigureAwait(false))
-                {
-                    throw new InvalidOperationException(
-                        "Legacy custom 'transient' lane has unfinished work and cannot be adopted automatically.");
-                }
-                if (version is > 0 and < 4)
-                {
-                    await ExecuteNonQueryAsync(connection, transaction, TransientSchemaSql, cancellationToken).ConfigureAwait(false);
-                }
-                if (version == 4)
-                {
-                    await ExecuteNonQueryAsync(
-                        connection, transaction, TransientCaptureWorkV5MigrationSql, cancellationToken).ConfigureAwait(false);
-                }
-                if (version is > 0 and < 6)
-                {
-                    if (!await HasColumnAsync(
-                            connection, transaction, "raw_captures", "evidence_origin", cancellationToken).ConfigureAwait(false))
-                    {
-                        await ExecuteNonQueryAsync(
-                            connection, transaction, GalleryV6ColumnMigrationSql, cancellationToken).ConfigureAwait(false);
-                    }
-                    await ExecuteNonQueryAsync(
-                        connection, transaction, GalleryV6MigrationSql, cancellationToken).ConfigureAwait(false);
-                }
-                if (version == 1)
-                {
-                    await UpsertTransientPolicyMarkerAsync(
-                        connection, transaction, cancellationToken).ConfigureAwait(false);
-                }
-                if (version is 1 or 2)
-                {
-                    await RehashCommittedManifestBytesAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-                }
-                if (version is > 0 and < 6)
-                {
-                    await BackfillEvidenceOriginsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-                }
-                if (version < 7)
-                {
-                    await RedactLaneContextsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-                }
-                if (version < 10 && !await HasColumnAsync(
-                        connection, transaction, "transient_candidates", "candidate_state", cancellationToken)
-                    .ConfigureAwait(false))
-                {
-                    await ExecuteNonQueryAsync(
-                        connection, transaction, TransientCandidateStateV10MigrationSql, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                if (version < 11)
-                {
-                    await ExecuteNonQueryAsync(
-                        connection, transaction, TransientRuntimeOperationsV11MigrationSql, cancellationToken)
-                        .ConfigureAwait(false);
-                }
+                await ExecuteNonQueryAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, transaction, TransientSchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(
+                    connection, transaction, TransientRuntimeOperationsSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
                     connection, transaction, CaptureScheduleSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
@@ -159,33 +81,26 @@ internal sealed class SqliteRawCaptureJournal(
                 await ExecuteNonQueryAsync(
                     connection,
                     transaction,
-                    version < CoordinateScrubbedSchemaVersion
-                        ? $"PRAGMA user_version = {PendingCoordinateScrubSchemaVersion};"
-                        : $"PRAGMA user_version = {CurrentSchemaVersion};",
+                    $"PRAGMA user_version = {CurrentSchemaVersion};",
                     cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                if (version < CoordinateScrubbedSchemaVersion)
-                {
-                    await CompleteCoordinateScrubAsync(
-                        connection, CurrentSchemaVersion, cancellationToken).ConfigureAwait(false);
-                }
-                _transactionRecorder?.Invoke("migration", true);
+                _transactionRecorder?.Invoke("schema-initialization", true);
             }
             catch
             {
-                _transactionRecorder?.Invoke("migration", false);
+                _transactionRecorder?.Invoke("schema-initialization", false);
                 throw;
             }
         }
-        // Keep existing and newly migrated v9 databases aligned with additive v9 corrections.
-        await ExecuteNonQueryAsync(
-            connection, transaction: null, AdditiveV9CorrectionSql, cancellationToken)
-            .ConfigureAwait(false);
 
+        await ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
+    }
 
+    private async Task ValidateSchemaAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
         var integrity = await ExecuteScalarStringAsync(connection, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false);
         if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
         {
@@ -296,226 +211,6 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyIndexAsync(connection, "ix_transient_candidate_conflicts_observed", "observed_unix_ms,conflict_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_transient_candidate_conflicts_candidate", "candidate_id,conflict_id", cancellationToken).ConfigureAwait(false);
         await VerifyConnectionSettingsAsync(connection, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async Task RedactLaneContextsAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CancellationToken cancellationToken)
-    {
-        const int batchSize = 256;
-        var lastRawCaptureRowId = 0L;
-        while (true)
-        {
-            var contexts = new List<(long RawCaptureRowId, byte[] Json, string Sha256)>(batchSize);
-            using (var select = connection.CreateCommand())
-            {
-                select.Transaction = transaction;
-                select.CommandText = """
-                    SELECT raw_capture_row_id, context_json, context_sha256
-                    FROM capture_lane_contexts
-                    WHERE raw_capture_row_id > $last
-                    ORDER BY raw_capture_row_id
-                    LIMIT $batch;
-                    """;
-                select.Parameters.AddWithValue("$last", lastRawCaptureRowId);
-                select.Parameters.AddWithValue("$batch", batchSize);
-                using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    contexts.Add((reader.GetInt64(0), (byte[])reader.GetValue(1), reader.GetString(2)));
-                }
-            }
-
-            if (contexts.Count == 0)
-            {
-                return;
-            }
-
-            foreach (var context in contexts)
-            {
-                var redacted = CaptureLaneEnvelopeSerializer.Redact(context.Json, context.Sha256);
-                if (context.Json.AsSpan().SequenceEqual(redacted.Json))
-                {
-                    continue;
-                }
-                using var update = connection.CreateCommand();
-                update.Transaction = transaction;
-                update.CommandText = """
-                    UPDATE capture_lane_contexts
-                    SET context_json = $json, context_sha256 = $sha
-                    WHERE raw_capture_row_id = $raw;
-                    """;
-                update.Parameters.AddWithValue("$json", redacted.Json);
-                update.Parameters.AddWithValue("$sha", redacted.Sha256);
-                update.Parameters.AddWithValue("$raw", context.RawCaptureRowId);
-                if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-                {
-                    throw new InvalidDataException("Raw ingress lane-context redaction did not update exactly one row.");
-                }
-            }
-            lastRawCaptureRowId = contexts[^1].RawCaptureRowId;
-        }
-    }
-
-    private static async Task ScrubMigratedCoordinateBytesAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
-        await ExecuteNonQueryAsync(
-            connection, transaction: null, "PRAGMA wal_checkpoint(TRUNCATE);", cancellationToken).ConfigureAwait(false);
-        await ExecuteNonQueryAsync(connection, transaction: null, "VACUUM;", cancellationToken).ConfigureAwait(false);
-        await ExecuteNonQueryAsync(
-            connection, transaction: null, "PRAGMA wal_checkpoint(TRUNCATE);", cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task CompleteCoordinateScrubAsync(
-        SqliteConnection connection,
-        int completedSchemaVersion,
-        CancellationToken cancellationToken)
-    {
-        await ExecuteNonQueryAsync(connection, transaction: null, "PRAGMA secure_delete = ON;", cancellationToken)
-            .ConfigureAwait(false);
-        await ScrubMigratedCoordinateBytesAsync(connection, cancellationToken).ConfigureAwait(false);
-        using var versionTransaction = BeginImmediate(connection);
-        await ExecuteNonQueryAsync(
-            connection,
-            versionTransaction,
-            $"PRAGMA user_version = {completedSchemaVersion};",
-            cancellationToken).ConfigureAwait(false);
-        await versionTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async Task RehashCommittedManifestBytesAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CancellationToken cancellationToken)
-    {
-        var manifests = new List<(long RawRowId, byte[] Json, string ManifestSha256, string DescriptorSha256)>();
-        using (var command = connection.CreateCommand())
-        {
-            command.Transaction = transaction;
-            command.CommandText = """
-                SELECT raw_capture_row_id, manifest_json, manifest_sha256, descriptor_sha256
-                FROM raw_captures;
-                """;
-            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                manifests.Add((
-                    reader.GetInt64(0),
-                    await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false),
-                    reader.GetString(2),
-                    reader.GetString(3)));
-            }
-        }
-        foreach (var manifest in manifests)
-        {
-            var parsed = CaptureContractJson.ParseManifest(manifest.Json);
-            if (!parsed.IsValid || parsed.Document?.Manifest is not { } document ||
-                !string.Equals(
-                    CaptureContractJson.ComputeManifestSha256(document),
-                    manifest.ManifestSha256,
-                    StringComparison.Ordinal) ||
-                !string.Equals(
-                    CaptureContractJson.ComputeDescriptorSha256(document.Descriptor),
-                    manifest.DescriptorSha256,
-                    StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("Raw ingress v2 manifest evidence failed migration validation.");
-            }
-            using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = "UPDATE raw_captures SET manifest_sha256 = $sha WHERE raw_capture_row_id = $raw;";
-            command.Parameters.AddWithValue("$sha", CaptureContractJson.ComputeManifestSha256(manifest.Json));
-            command.Parameters.AddWithValue("$raw", manifest.RawRowId);
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private static async Task BackfillEvidenceOriginsAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CancellationToken cancellationToken)
-    {
-        var origins = new List<(long RawRowId, GalleryEvidenceOrigin Origin)>();
-        using (var command = connection.CreateCommand())
-        {
-            command.Transaction = transaction;
-            command.CommandText = "SELECT raw_capture_row_id, manifest_json, manifest_sha256, descriptor_sha256 FROM raw_captures;";
-            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                var json = await reader.GetFieldValueAsync<byte[]>(1, cancellationToken).ConfigureAwait(false);
-                var parsed = CaptureContractJson.ParseManifest(json);
-                var manifest = parsed.Document?.Manifest;
-                var origin = parsed.IsValid && manifest is not null &&
-                    string.Equals(CaptureContractJson.ComputeManifestSha256(json), reader.GetString(2), StringComparison.Ordinal) &&
-                    string.Equals(CaptureContractJson.ComputeDescriptorSha256(manifest.Descriptor), reader.GetString(3), StringComparison.Ordinal)
-                        ? GalleryEvidenceClassifier.Classify(manifest)
-                        : GalleryEvidenceOrigin.Unknown;
-                origins.Add((reader.GetInt64(0), origin));
-            }
-        }
-        foreach (var origin in origins)
-        {
-            using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = "UPDATE raw_captures SET evidence_origin = $origin WHERE raw_capture_row_id = $raw;";
-            command.Parameters.AddWithValue("$origin", origin.Origin.ToString());
-            command.Parameters.AddWithValue("$raw", origin.RawRowId);
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private static async Task<bool> HasActiveLegacyTransientLaneAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CancellationToken cancellationToken)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            SELECT EXISTS(
-                SELECT 1
-                FROM capture_lane_work
-                WHERE lane_name = 'transient' AND state NOT IN ('completed', 'abandoned'));
-            """;
-        return Convert.ToInt64(
-            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture) == 1;
-    }
-
-    private static async Task<bool> HasColumnAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string table,
-        string column,
-        CancellationToken cancellationToken)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = "SELECT EXISTS(SELECT 1 FROM pragma_table_info($table) WHERE name = $column);";
-        command.Parameters.AddWithValue("$table", table);
-        command.Parameters.AddWithValue("$column", column);
-        return Convert.ToInt64(
-            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture) == 1;
-    }
-
-    private static async Task<bool> HasTableAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string table,
-        CancellationToken cancellationToken)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $table);";
-        command.Parameters.AddWithValue("$table", table);
-        return Convert.ToInt64(
-            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
     internal Task<RawCaptureIdentity> ReserveIdentityAsync(
@@ -906,34 +601,6 @@ internal sealed class SqliteRawCaptureJournal(
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task UpsertTransientPolicyMarkerAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CancellationToken cancellationToken)
-    {
-        var mode = _transientOptions.Mode switch
-        {
-            TransientOperatingMode.Off => "off",
-            TransientOperatingMode.Edge => "edge",
-            TransientOperatingMode.Central => "central",
-            TransientOperatingMode.Hybrid => "hybrid",
-            _ => throw new InvalidOperationException("Transient operating mode is invalid.")
-        };
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            INSERT INTO transient_runtime_policy(
-                policy_key, mode, required, candidate_timeout_minutes, updated_unix_ms)
-            VALUES (1, $mode, $required, $timeout, $now)
-            ON CONFLICT(policy_key) DO NOTHING;
-            """;
-        command.Parameters.AddWithValue("$mode", mode);
-        command.Parameters.AddWithValue("$required", _transientOptions.Required ? 1 : 0);
-        command.Parameters.AddWithValue("$timeout", _transientOptions.CandidateTimeoutMinutes);
-        command.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     private async Task UpsertLaneDefinitionsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -963,113 +630,6 @@ internal sealed class SqliteRawCaptureJournal(
             command.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-    }
-
-    private async Task BackfillLaneWorkAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
-        CaptureDistributionOptions options,
-        CancellationToken cancellationToken)
-    {
-        foreach (var lane in laneDefinitions)
-        {
-            if (!lane.Enabled)
-            {
-                continue;
-            }
-
-            using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = """
-                INSERT INTO capture_lane_work(
-                    raw_capture_row_id, lane_name, agent_id, capture_sequence, required, ordered, state,
-                    attempt_count, available_unix_ms, created_unix_ms, updated_unix_ms)
-                SELECT raw_capture_row_id, $lane, agent_id, capture_sequence, $required, $ordered, 'pending',
-                       0, committed_unix_ms, $now, $now
-                FROM raw_captures
-                WHERE state = 'committed' AND retention_hold = 1
-                ON CONFLICT(raw_capture_row_id, lane_name) DO NOTHING;
-                """;
-            command.Parameters.AddWithValue("$lane", lane.Name);
-            command.Parameters.AddWithValue("$required", lane.Required ? 1 : 0);
-            command.Parameters.AddWithValue("$ordered", lane.Ordered ? 1 : 0);
-            command.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            if (!lane.Required)
-            {
-                await ApplyOptionalBackfillPressureAsync(
-                    connection, transaction, lane, options, cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
-
-    private async Task ApplyOptionalBackfillPressureAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CaptureLaneDefinition lane,
-        CaptureDistributionOptions options,
-        CancellationToken cancellationToken)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            WITH ranked AS (
-                SELECT w.work_id,
-                       ROW_NUMBER() OVER (ORDER BY w.agent_id, w.capture_sequence) AS pending_position,
-                       SUM(r.payload_length) OVER (
-                           ORDER BY w.agent_id, w.capture_sequence ROWS UNBOUNDED PRECEDING) AS cumulative_bytes,
-                       r.durable_ingress_unix_ms
-                FROM capture_lane_work w
-                JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
-                WHERE w.lane_name = $lane AND w.state = 'pending'
-                  AND r.durable_ingress_unix_ms > $oldest_allowed
-            )
-            UPDATE capture_lane_work
-            SET state = 'abandoned', failure_reason = 'optional-pressure', updated_unix_ms = $now
-            WHERE (lane_name = $lane AND state = 'pending' AND EXISTS (
-                       SELECT 1 FROM raw_captures r
-                       WHERE r.raw_capture_row_id = capture_lane_work.raw_capture_row_id
-                         AND r.durable_ingress_unix_ms <= $oldest_allowed
-                   ))
-               OR work_id IN (
-                   SELECT work_id FROM ranked
-                   WHERE pending_position > $maximum_count
-                      OR cumulative_bytes > $maximum_bytes
-               );
-            """;
-        command.Parameters.AddWithValue("$lane", lane.Name);
-        command.Parameters.AddWithValue("$maximum_count", options.OptionalMaximumPendingCount);
-        command.Parameters.AddWithValue("$maximum_bytes", options.OptionalMaximumPendingBytes);
-        var now = _utcNow();
-        command.Parameters.AddWithValue(
-            "$oldest_allowed",
-            now.AddMinutes(-options.OptionalMaximumOldestAgeMinutes).ToUnixTimeMilliseconds());
-        command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        using var pressure = connection.CreateCommand();
-        pressure.Transaction = transaction;
-        pressure.CommandText = """
-            UPDATE capture_lane_definitions
-            SET pressure_state = (
-                SELECT CASE
-                    WHEN COUNT(*) >= $maximum_count
-                      OR COALESCE(SUM(r.payload_length), 0) >= $maximum_bytes THEN 2
-                    WHEN COUNT(*) * 100.0 >= $maximum_count * $recovery_percent
-                      OR COALESCE(SUM(r.payload_length), 0) * 100.0 >= $maximum_bytes * $recovery_percent THEN 1
-                    ELSE 0
-                END
-                FROM capture_lane_work w
-                JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id
-                WHERE w.lane_name = $lane AND w.state IN ('pending', 'leased', 'retry_wait', 'quarantined')
-            )
-            WHERE lane_name = $lane;
-            """;
-        pressure.Parameters.AddWithValue("$lane", lane.Name);
-        pressure.Parameters.AddWithValue("$maximum_count", options.OptionalMaximumPendingCount);
-        pressure.Parameters.AddWithValue("$maximum_bytes", options.OptionalMaximumPendingBytes);
-        pressure.Parameters.AddWithValue("$recovery_percent", options.PressureRecoveryPercent);
-        await pressure.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<long> ReadRawRowIdAsync(
@@ -1623,6 +1183,21 @@ internal sealed class SqliteRawCaptureJournal(
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
+        var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task<SqliteConnection> OpenUnconfiguredAsync(CancellationToken cancellationToken)
+    {
         EnsureDatabaseFilesArePhysical();
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
@@ -1633,6 +1208,13 @@ internal sealed class SqliteRawCaptureJournal(
         }.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         EnsureDatabaseFilesArePhysical();
+        return connection;
+    }
+
+    private async Task ConfigureConnectionAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
         await ExecuteNonQueryAsync(connection, null, $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000};", cancellationToken).ConfigureAwait(false);
         await ExecuteNonQueryAsync(connection, null, "PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
         var journalMode = await ExecuteScalarStringAsync(connection, "PRAGMA journal_mode = WAL;", cancellationToken).ConfigureAwait(false);
@@ -1643,7 +1225,6 @@ internal sealed class SqliteRawCaptureJournal(
         }
         await ExecuteNonQueryAsync(connection, null, "PRAGMA synchronous = FULL;", cancellationToken).ConfigureAwait(false);
         await ExecuteNonQueryAsync(connection, null, "PRAGMA wal_autocheckpoint = 1000;", cancellationToken).ConfigureAwait(false);
-        return connection;
     }
 
     private void EnsureDatabaseFilesArePhysical()
@@ -2413,15 +1994,7 @@ internal sealed class SqliteRawCaptureJournal(
             ON calibration_library_reconciliation(operation_state, observed_unix_ms, reconciliation_id);
         """;
 
-    private const string AdditiveV9CorrectionSql = """
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_calibration_acquisition_jobs_camera_nonterminal
-            ON calibration_acquisition_jobs(camera_key)
-            WHERE state NOT IN ('published', 'failed', 'cancelled');
-        CREATE INDEX IF NOT EXISTS ix_transient_candidates_operator
-            ON transient_candidates(created_unix_ms DESC, candidate_id DESC);
-        """;
-
-    private const string TransientRuntimeOperationsV11MigrationSql = """
+    private const string TransientRuntimeOperationsSchemaSql = """
         CREATE TABLE IF NOT EXISTS transient_runtime_operations (
             operation_id INTEGER PRIMARY KEY,
             idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 128),
@@ -2462,60 +2035,6 @@ internal sealed class SqliteRawCaptureJournal(
         ) STRICT;
         CREATE INDEX IF NOT EXISTS ix_transient_runtime_operations_target
             ON transient_runtime_operations(raw_capture_row_id, operation_id DESC);
-        """;
-
-    private const string LaneSchemaSql = """
-        CREATE TABLE IF NOT EXISTS capture_lane_definitions (
-            lane_name TEXT PRIMARY KEY,
-            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-            required INTEGER NOT NULL CHECK (required IN (0, 1)),
-            ordered INTEGER NOT NULL CHECK (ordered IN (0, 1)),
-            policy_sha256 TEXT NOT NULL CHECK (length(policy_sha256) = 64),
-            pressure_state INTEGER NOT NULL DEFAULT 0 CHECK (pressure_state IN (0, 1, 2)),
-            created_unix_ms INTEGER NOT NULL,
-            updated_unix_ms INTEGER NOT NULL
-        ) STRICT;
-        CREATE TABLE IF NOT EXISTS capture_lane_contexts (
-            raw_capture_row_id INTEGER PRIMARY KEY,
-            context_json BLOB NOT NULL,
-            context_sha256 TEXT NOT NULL CHECK (length(context_sha256) = 64),
-            context_source TEXT NOT NULL CHECK (context_source IN ('capture', 'manifest-fallback')),
-            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id) ON DELETE CASCADE
-        ) STRICT;
-        CREATE TABLE IF NOT EXISTS capture_lane_work (
-            work_id INTEGER PRIMARY KEY,
-             raw_capture_row_id INTEGER NOT NULL,
-             lane_name TEXT NOT NULL,
-             agent_id TEXT NOT NULL,
-             capture_sequence INTEGER NOT NULL CHECK (capture_sequence > 0),
-            required INTEGER NOT NULL CHECK (required IN (0, 1)),
-            ordered INTEGER NOT NULL CHECK (ordered IN (0, 1)),
-            state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'retry_wait', 'completed', 'quarantined', 'abandoned')),
-            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-            available_unix_ms INTEGER NOT NULL,
-            lease_token TEXT,
-            lease_owner TEXT,
-            lease_expires_unix_ms INTEGER,
-            completion_token TEXT,
-            completed_unix_ms INTEGER,
-            failure_reason TEXT,
-            created_unix_ms INTEGER NOT NULL,
-            updated_unix_ms INTEGER NOT NULL,
-            UNIQUE (raw_capture_row_id, lane_name),
-            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id) ON DELETE CASCADE,
-            FOREIGN KEY (lane_name) REFERENCES capture_lane_definitions(lane_name)
-        ) STRICT;
-        CREATE INDEX IF NOT EXISTS ix_capture_lane_work_claim
-            ON capture_lane_work(lane_name, state, available_unix_ms, work_id);
-        CREATE INDEX IF NOT EXISTS ix_capture_lane_work_lease
-            ON capture_lane_work(state, lease_expires_unix_ms);
-        CREATE INDEX IF NOT EXISTS ix_capture_lane_work_backlog
-            ON capture_lane_work(lane_name, state, created_unix_ms);
-        CREATE INDEX IF NOT EXISTS ix_capture_lane_work_raw
-            ON capture_lane_work(raw_capture_row_id, required, state);
-        CREATE INDEX IF NOT EXISTS ix_capture_lane_work_ordered
-            ON capture_lane_work(lane_name, agent_id, capture_sequence)
-            WHERE state NOT IN ('completed', 'abandoned');
         """;
 
     private const string TransientSchemaSql = """
@@ -2611,81 +2130,6 @@ internal sealed class SqliteRawCaptureJournal(
             ON transient_candidate_conflicts(observed_unix_ms, conflict_id);
         CREATE INDEX IF NOT EXISTS ix_transient_candidate_conflicts_candidate
             ON transient_candidate_conflicts(candidate_id, conflict_id);
-        """;
-
-    private const string TransientCandidateStateV10MigrationSql = """
-        ALTER TABLE transient_candidates ADD COLUMN candidate_state TEXT
-            CHECK (candidate_state IS NULL OR candidate_state IN ('PendingContext', 'Provisional', 'Complete', 'Rejected'));
-        UPDATE transient_candidates
-        SET candidate_state = json_extract(CAST(candidate_payload AS TEXT), '$.state')
-        WHERE candidate_payload IS NOT NULL;
-        """;
-
-    private const string TransientCaptureWorkV5MigrationSql = """
-        DROP INDEX ix_transient_capture_work_backlog;
-        ALTER TABLE transient_capture_work RENAME TO transient_capture_work_v4;
-        CREATE TABLE transient_capture_work (
-            raw_capture_row_id INTEGER PRIMARY KEY,
-            lane_work_id INTEGER NOT NULL UNIQUE,
-            mode TEXT NOT NULL CHECK (mode IN ('edge', 'hybrid')),
-            required INTEGER NOT NULL CHECK (required IN (0, 1)),
-            state TEXT NOT NULL CHECK (state IN ('pending', 'candidate_persisted', 'completed', 'quarantined', 'abandoned')),
-            artifact_id TEXT NOT NULL UNIQUE,
-            manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
-            created_unix_ms INTEGER NOT NULL,
-            updated_unix_ms INTEGER NOT NULL,
-            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id),
-            FOREIGN KEY (lane_work_id) REFERENCES capture_lane_work(work_id)
-        ) STRICT;
-        INSERT INTO transient_capture_work(
-            raw_capture_row_id, lane_work_id, mode, required, state,
-            artifact_id, manifest_sha256, created_unix_ms, updated_unix_ms)
-        SELECT raw_capture_row_id, lane_work_id, mode, required, state,
-               artifact_id, manifest_sha256, created_unix_ms, updated_unix_ms
-        FROM transient_capture_work_v4;
-        DROP TABLE transient_capture_work_v4;
-        CREATE INDEX ix_transient_capture_work_backlog
-            ON transient_capture_work(state, created_unix_ms, raw_capture_row_id);
-        """;
-
-    private const string GalleryV6ColumnMigrationSql = """
-        ALTER TABLE raw_captures
-            ADD COLUMN evidence_origin TEXT NOT NULL DEFAULT 'Unknown'
-                CHECK (evidence_origin IN ('Unknown', 'Simulated', 'DeveloperFixture'));
-        """;
-
-    private const string GalleryV6MigrationSql = """
-        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_time
-            ON raw_captures(exposure_started_unix_ms DESC, capture_sequence DESC, raw_capture_row_id DESC);
-        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_sequence
-            ON raw_captures(capture_sequence DESC, raw_capture_row_id DESC);
-        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_state
-            ON raw_captures(state, capture_sequence DESC, raw_capture_row_id DESC);
-        CREATE INDEX IF NOT EXISTS ix_raw_captures_gallery_origin
-            ON raw_captures(evidence_origin, capture_sequence DESC, raw_capture_row_id DESC);
-        CREATE TABLE IF NOT EXISTS capture_control_state (
-            state_key INTEGER PRIMARY KEY CHECK (state_key = 1),
-            state TEXT NOT NULL CHECK (state IN ('running', 'pause_requested', 'paused')),
-            version INTEGER NOT NULL CHECK (version >= 0),
-            updated_unix_ms INTEGER NOT NULL
-        ) STRICT;
-        INSERT INTO capture_control_state(state_key, state, version, updated_unix_ms)
-        VALUES (1, 'running', 0, unixepoch('subsec') * 1000)
-        ON CONFLICT(state_key) DO NOTHING;
-        CREATE TABLE IF NOT EXISTS capture_control_commands (
-            idempotency_key TEXT PRIMARY KEY CHECK (length(idempotency_key) BETWEEN 1 AND 128),
-            target_state TEXT NOT NULL CHECK (target_state IN ('running', 'paused')),
-            expected_version INTEGER CHECK (expected_version IS NULL OR expected_version >= 0),
-            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 128),
-            reason TEXT CHECK (reason IS NULL OR length(reason) <= 512),
-            payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
-            status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
-            result_state TEXT CHECK (result_state IS NULL OR result_state IN ('running', 'paused')),
-            result_version INTEGER CHECK (result_version IS NULL OR result_version >= 0),
-            changed INTEGER NOT NULL CHECK (changed IN (0, 1)),
-            requested_unix_ms INTEGER NOT NULL,
-            completed_unix_ms INTEGER
-        ) STRICT;
         """;
 
     private const string InsertCaptureSql = """

@@ -202,25 +202,23 @@ public static class LocalCaptureProfileContract
     public static CaptureContractValidationResult ValidatePersistedRevision(
         LocalCaptureProfileDefinition? profile)
     {
-        if (profile is null ||
-            profile.SchemaVersion is not (LocalCaptureProfileDefinition.LegacySchemaVersion or
-                LocalCaptureProfileDefinition.CurrentSchemaVersion) ||
-            profile.Module is null || string.IsNullOrWhiteSpace(profile.Module.Type) ||
+        if (profile is null || profile.Module is null || string.IsNullOrWhiteSpace(profile.Module.Type) ||
             profile.Rig is null || profile.ProcessingSteps is null)
         {
             return CaptureContractValidationResult.Failure(
                 CaptureContractReasonCodes.InvalidSchedule,
                 "localProfile");
         }
-        if (string.Equals(profile.SchemaVersion, LocalCaptureProfileDefinition.CurrentSchemaVersion, StringComparison.Ordinal) &&
-            profile.DependencyPolicy != CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        if (!string.Equals(
+                profile.SchemaVersion,
+                LocalCaptureProfileDefinition.CurrentSchemaVersion,
+                StringComparison.Ordinal))
         {
             return CaptureContractValidationResult.Failure(
                 CaptureContractReasonCodes.InvalidSchedule,
-                "localProfile.dependencyPolicy");
+                "localProfile.schemaVersion");
         }
-        if (string.Equals(profile.SchemaVersion, LocalCaptureProfileDefinition.LegacySchemaVersion, StringComparison.Ordinal) &&
-            profile.DependencyPolicy != CapturePipelineDependencyPolicy.LegacyInference)
+        if (profile.DependencyPolicy != CapturePipelineDependencyPolicy.RejectEnabledDependent)
         {
             return CaptureContractValidationResult.Failure(
                 CaptureContractReasonCodes.InvalidSchedule,

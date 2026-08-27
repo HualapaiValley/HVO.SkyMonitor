@@ -222,6 +222,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CameraAgentClearReferenceLoader>();
         services.AddSingleton<SyntheticCalibrationReferenceStore>();
         services.AddSingleton<CalibrationLibraryProcessingInputLoader>();
+        services.AddHostedService<CameraAgentConfigurationInitializer>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
         services.AddHostedService<DerivedProductReconciliationService>();
         services.AddHostedService<ProjectedSceneStageReconciliationService>();
@@ -303,7 +304,6 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "PresentationMaterializer", typeof(PresentationMaterializerCaptureProcessingStep),
             typeof(PresentationMaterializerProcessingStepOptions), 81, AutoInclude: false));
-        services.AddHostedService<CameraAgentConfigurationInitializer>();
         services.AddHostedService(provider => provider.GetRequiredService<EnvironmentalAcquisitionService>());
         services.AddHostedService<CalibrationLibraryValidationService>();
         services.AddHostedService<VirtualCalibrationAcquisitionRecoveryService>();
