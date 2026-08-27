@@ -42,10 +42,6 @@ internal static class CaptureLaneEnvelopeSerializer
         {
             return envelope;
         }
-        if (configuration.Pipeline is null && configuration.ProcessingSteps is null)
-        {
-            throw new InvalidDataException("Capture lane context does not contain a processing pipeline.");
-        }
 
         var policy = configuration.Rig.ControlPolicy;
         var normalizedPolicy = policy is null
@@ -62,7 +58,7 @@ internal static class CaptureLaneEnvelopeSerializer
                 Rig = configuration.Rig with { ControlPolicy = normalizedPolicy },
                 ProcessingSteps = null,
                 Pipeline = configuration.Pipeline ?? new CapturePipelineConfig(
-                    configuration.ProcessingSteps!,
+                    configuration.ProcessingSteps ?? [],
                     CapturePipelineSchemaVersions.LegacyV1,
                     CapturePipelineDependencyPolicy.LegacyInference)
             }

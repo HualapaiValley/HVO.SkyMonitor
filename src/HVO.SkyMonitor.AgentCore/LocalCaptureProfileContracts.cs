@@ -64,7 +64,7 @@ public sealed record LocalCaptureProfileDefinition(
         return configuration with
         {
             Module = Module,
-            Rig = explicitV2 ? Rig : Rig with { ControlPolicy = NormalizeLegacyControlPolicy(Rig.ControlPolicy) },
+            Rig = Rig with { ControlPolicy = NormalizeLegacyControlPolicy(Rig.ControlPolicy) },
             Pipeline = new CapturePipelineConfig(
                 ProcessingSteps,
                 explicitV2 ? CapturePipelineSchemaVersions.ExplicitV2 : CapturePipelineSchemaVersions.LegacyV1,

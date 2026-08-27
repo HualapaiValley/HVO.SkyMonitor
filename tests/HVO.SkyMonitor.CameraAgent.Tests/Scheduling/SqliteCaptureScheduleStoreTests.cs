@@ -80,22 +80,36 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_PersistedV1ControlPoliciesNormalizeDuringHostRestart()
+    public async Task InitializeAsync_PersistedLegacyControlPoliciesNormalizeDuringHostRestart()
     {
         var cases = new[]
         {
             new LegacyControlCase(
+                LocalCaptureProfileDefinition.LegacySchemaVersion,
                 new CameraControlPolicy
                 {
                     AutoExposure = CameraFeatureDirective.Enabled,
                     AutoGain = CameraFeatureDirective.Disabled
                 },
                 AutomaticControlOwnership.HostMetered,
-                AutomaticControlOwnership.Disabled),
+                AutomaticControlOwnership.Disabled,
+                CapturePipelineSchemaVersions.LegacyV1),
             new LegacyControlCase(
+                LocalCaptureProfileDefinition.LegacySchemaVersion,
                 null,
                 AutomaticControlOwnership.Disabled,
-                AutomaticControlOwnership.Disabled)
+                AutomaticControlOwnership.Disabled,
+                CapturePipelineSchemaVersions.LegacyV1),
+            new LegacyControlCase(
+                LocalCaptureProfileDefinition.CurrentSchemaVersion,
+                new CameraControlPolicy
+                {
+                    AutoExposure = CameraFeatureDirective.Enabled,
+                    AutoGain = CameraFeatureDirective.Disabled
+                },
+                AutomaticControlOwnership.HostMetered,
+                AutomaticControlOwnership.Disabled,
+                CapturePipelineSchemaVersions.ExplicitV2)
         };
         foreach (var testCase in cases)
         {
@@ -114,8 +128,11 @@ public sealed class SqliteCaptureScheduleStoreTests
                     {
                         Rig = configuration.Rig with { ControlPolicy = testCase.Policy }
                     };
+                    var profile = testCase.ProfileSchemaVersion == LocalCaptureProfileDefinition.CurrentSchemaVersion
+                        ? LocalCaptureProfileDefinition.CreateV2(legacyConfiguration, Definition("legacy", 2))
+                        : LocalCaptureProfileDefinition.Create(legacyConfiguration, Definition("legacy", 2));
                     var staged = await store.StageAsync(
-                        LocalCaptureProfileDefinition.Create(legacyConfiguration, Definition("legacy", 2)),
+                        profile,
                         "stage-legacy-policy",
                         initial.Version,
                         "test",
@@ -130,10 +147,9 @@ public sealed class SqliteCaptureScheduleStoreTests
                         CancellationToken.None).ConfigureAwait(false);
                     revisionId = activated.ActiveRevision.RevisionId;
                 }
-                if (testCase.Policy is null)
+                using (var connection = new SqliteConnection(
+                    $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
                 {
-                    using var connection = new SqliteConnection(
-                        $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
                     await connection.OpenAsync().ConfigureAwait(false);
                     using var command = connection.CreateCommand();
                     command.CommandText =
@@ -141,9 +157,18 @@ public sealed class SqliteCaptureScheduleStoreTests
                     command.Parameters.AddWithValue("$id", revisionId);
                     var profileJson = (byte[])(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
                     using var document = System.Text.Json.JsonDocument.Parse(profileJson);
-                    Assert.AreEqual(
-                        System.Text.Json.JsonValueKind.Null,
-                        document.RootElement.GetProperty("rig").GetProperty("controlPolicy").ValueKind);
+                    var serializedPolicy = document.RootElement.GetProperty("rig").GetProperty("controlPolicy");
+                    if (testCase.Policy is null)
+                    {
+                        Assert.AreEqual(System.Text.Json.JsonValueKind.Null, serializedPolicy.ValueKind);
+                    }
+                    else if (testCase.ProfileSchemaVersion == LocalCaptureProfileDefinition.CurrentSchemaVersion)
+                    {
+                        Assert.IsFalse(serializedPolicy.TryGetProperty("exposureControl", out _));
+                        Assert.IsFalse(serializedPolicy.TryGetProperty("gainControl", out _));
+                        Assert.AreEqual("Enabled", serializedPolicy.GetProperty("autoExposure").GetString());
+                        Assert.AreEqual("Disabled", serializedPolicy.GetProperty("autoGain").GetString());
+                    }
                 }
 
                 using var restarted = new SqliteCaptureScheduleStore(
@@ -159,7 +184,7 @@ public sealed class SqliteCaptureScheduleStoreTests
                 await hostInitializer.StartAsync(CancellationToken.None).ConfigureAwait(false);
                 var effective = await accessor.WaitForConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
 
-                Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, effective.Pipeline.SchemaVersion);
+                Assert.AreEqual(testCase.ExpectedPipelineSchemaVersion, effective.Pipeline.SchemaVersion);
                 Assert.AreEqual(
                     testCase.ExpectedExposure,
                     effective.Rig.ControlPolicy!.ExposureControl);
@@ -175,9 +200,11 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     private sealed record LegacyControlCase(
+        string ProfileSchemaVersion,
         CameraControlPolicy? Policy,
         AutomaticControlOwnership ExpectedExposure,
-        AutomaticControlOwnership ExpectedGain);
+        AutomaticControlOwnership ExpectedGain,
+        string ExpectedPipelineSchemaVersion);
 
     private static CameraModuleConfig HostConfiguration()
     {
