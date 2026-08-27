@@ -132,24 +132,14 @@ public sealed class SqliteCaptureScheduleStore(
             }
             else
             {
-                if (snapshot.PendingRevision is { } pendingRevision &&
+                var hasRedundantPending = snapshot.PendingRevision is { } pendingRevision &&
                     string.Equals(
                         snapshot.ActiveRevision.ProfileSha256,
                         pendingRevision.ProfileSha256,
-                        StringComparison.OrdinalIgnoreCase))
+                        StringComparison.OrdinalIgnoreCase);
+                if (hasRedundantPending)
                 {
-                    var now = Now();
-                    await ExecuteAsync(connection, transaction, """
-                        UPDATE capture_schedule_state
-                        SET pending_revision_id = NULL, version = version + 1, updated_unix_ms = $now
-                        WHERE state_key = 1;
-                        """, cancellationToken, ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
-                    snapshot = snapshot with
-                    {
-                        PendingRevision = null,
-                        Version = snapshot.Version + 1,
-                        UpdatedUtc = now
-                    };
+                    snapshot = snapshot with { PendingRevision = null };
                 }
                 if (!string.Equals(fileSha256, snapshot.ActiveRevision.ProfileSha256, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(fileSha256, snapshot.PendingRevision?.ProfileSha256, StringComparison.OrdinalIgnoreCase))
@@ -170,6 +160,20 @@ public sealed class SqliteCaptureScheduleStore(
                     snapshot = snapshot with
                     {
                         PendingRevision = pending,
+                        Version = snapshot.Version + 1,
+                        UpdatedUtc = now
+                    };
+                }
+                else if (hasRedundantPending)
+                {
+                    var now = Now();
+                    await ExecuteAsync(connection, transaction, """
+                        UPDATE capture_schedule_state
+                        SET pending_revision_id = NULL, version = version + 1, updated_unix_ms = $now
+                        WHERE state_key = 1;
+                        """, cancellationToken, ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
+                    snapshot = snapshot with
+                    {
                         Version = snapshot.Version + 1,
                         UpdatedUtc = now
                     };

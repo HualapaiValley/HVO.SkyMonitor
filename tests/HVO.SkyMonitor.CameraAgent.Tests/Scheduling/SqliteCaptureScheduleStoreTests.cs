@@ -234,94 +234,22 @@ public sealed class SqliteCaptureScheduleStoreTests
             var initializer = new JournalInitializer(root);
             var configuration = HostConfiguration();
             var timeProvider = new SettableTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
-            CaptureScheduleStoreSnapshot staged;
-            string activePersistedSha256;
-            string pendingPersistedSha256;
-            using (var seedStore = new SqliteCaptureScheduleStore(initializer, options, timeProvider))
-            {
-                var initial = await seedStore.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
-                staged = await seedStore.StageAsync(
-                    LocalCaptureProfileDefinition.CreateV2(configuration, Definition("temporary-draft", 2)),
-                    "seed-pending",
-                    initial.Version,
-                    "test",
-                    null,
-                    CancellationToken.None).ConfigureAwait(false);
-                var activePersistedProfile = LocalCaptureProfileDefinition.CreateV2(
-                    configuration with
-                    {
-                        Rig = configuration.Rig with
-                        {
-                            ControlPolicy = new CameraControlPolicy
-                            {
-                                AutoExposure = CameraFeatureDirective.Disabled,
-                                AutoGain = CameraFeatureDirective.Disabled
-                            }
-                        }
-                    },
-                    configuration.Schedule!);
-                var pendingPersistedProfile = LocalCaptureProfileDefinition.CreateV2(
-                    configuration with
-                    {
-                        Rig = configuration.Rig with
-                        {
-                            ControlPolicy = new CameraControlPolicy
-                            {
-                                ExposureControl = AutomaticControlOwnership.Disabled,
-                                GainControl = AutomaticControlOwnership.Disabled,
-                                AutoExposure = CameraFeatureDirective.Enabled,
-                                AutoGain = CameraFeatureDirective.Enabled
-                            }
-                        }
-                    },
-                    configuration.Schedule!);
-                activePersistedSha256 = LocalCaptureProfileContract.ComputePersistedRevisionSha256(
-                    activePersistedProfile);
-                pendingPersistedSha256 = LocalCaptureProfileContract.ComputePersistedRevisionSha256(
-                    pendingPersistedProfile);
-                Assert.AreNotEqual(activePersistedSha256, pendingPersistedSha256);
-                Assert.AreEqual(
-                    LocalCaptureProfileContract.ComputeEffectiveSha256(
-                        activePersistedProfile.NormalizePersistedRevisionForRead()),
-                    LocalCaptureProfileContract.ComputeEffectiveSha256(
-                        pendingPersistedProfile.NormalizePersistedRevisionForRead()));
-                Assert.AreEqual(
-                    CaptureScheduleContract.ComputeSha256(activePersistedProfile.Schedule),
-                    CaptureScheduleContract.ComputeSha256(pendingPersistedProfile.Schedule));
-                using var connection = new SqliteConnection(
-                    $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
-                await connection.OpenAsync().ConfigureAwait(false);
-                using var command = connection.CreateCommand();
-                command.CommandText = """
-                    UPDATE capture_schedule_revisions
-                    SET profile_json = $active_json,
-                        profile_sha256 = $active_profile_sha,
-                        schedule_sha256 = $schedule_sha
-                    WHERE revision_id = $active;
-                    UPDATE capture_schedule_revisions
-                    SET profile_json = $pending_json,
-                        profile_sha256 = $pending_profile_sha,
-                        schedule_sha256 = $schedule_sha
-                    WHERE revision_id = $pending;
-                    """;
-                command.Parameters.AddWithValue(
-                    "$active_json",
-                    System.Text.Encoding.UTF8.GetBytes(
-                        CaptureContractJson.SerializeToElement(activePersistedProfile).GetRawText()));
-                command.Parameters.AddWithValue("$active_profile_sha", activePersistedSha256);
-                command.Parameters.AddWithValue(
-                    "$pending_json",
-                    System.Text.Encoding.UTF8.GetBytes(
-                        CaptureContractJson.SerializeToElement(pendingPersistedProfile).GetRawText()));
-                command.Parameters.AddWithValue("$pending_profile_sha", pendingPersistedSha256);
-                command.Parameters.AddWithValue(
-                    "$schedule_sha",
-                    CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
-                command.Parameters.AddWithValue("$active", staged.ActiveRevision.RevisionId);
-                command.Parameters.AddWithValue("$pending", staged.PendingRevision!.RevisionId);
-                Assert.AreEqual(2, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
-                Assert.AreEqual(2, await CountRevisionsAsync(connection).ConfigureAwait(false));
-            }
+            var seed = await SeedNormalizedDuplicateRevisionsAsync(
+                root, options, initializer, configuration, timeProvider).ConfigureAwait(false);
+            var staged = seed.Snapshot;
+            var activePersistedSha256 = LocalCaptureProfileContract.ComputePersistedRevisionSha256(
+                seed.ActivePersistedProfile);
+            var pendingPersistedSha256 = LocalCaptureProfileContract.ComputePersistedRevisionSha256(
+                seed.PendingPersistedProfile);
+            Assert.AreNotEqual(activePersistedSha256, pendingPersistedSha256);
+            Assert.AreEqual(
+                LocalCaptureProfileContract.ComputeEffectiveSha256(
+                    seed.ActivePersistedProfile.NormalizePersistedRevisionForRead()),
+                LocalCaptureProfileContract.ComputeEffectiveSha256(
+                    seed.PendingPersistedProfile.NormalizePersistedRevisionForRead()));
+            Assert.AreEqual(
+                CaptureScheduleContract.ComputeSha256(seed.ActivePersistedProfile.Schedule),
+                CaptureScheduleContract.ComputeSha256(seed.PendingPersistedProfile.Schedule));
             var recoveryUtc = new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
             timeProvider.UtcNow = recoveryUtc;
             using var restarted = new SqliteCaptureScheduleStore(initializer, options, timeProvider);
@@ -368,6 +296,92 @@ public sealed class SqliteCaptureScheduleStoreTests
             await repeatedVerification.OpenAsync().ConfigureAwait(false);
             Assert.AreEqual(2, await CountRevisionsAsync(repeatedVerification).ConfigureAwait(false));
             Assert.AreEqual(1, await CountActivationsAsync(repeatedVerification).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_ReplacesNormalizedDuplicatePendingWithDistinctFileDraftOnce()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            var persistedConfiguration = HostConfiguration();
+            var fileConfiguration = persistedConfiguration with { Schedule = Definition("file-current", 3) };
+            var timeProvider = new SettableTimeProvider(new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero));
+            var seed = await SeedNormalizedDuplicateRevisionsAsync(
+                root, options, initializer, persistedConfiguration, timeProvider).ConfigureAwait(false);
+            using (var setup = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await setup.OpenAsync().ConfigureAwait(false);
+                using var command = setup.CreateCommand();
+                command.CommandText = """
+                    CREATE TABLE recovery_state_updates(marker INTEGER NOT NULL);
+                    CREATE TRIGGER count_recovery_state_updates
+                    AFTER UPDATE ON capture_schedule_state
+                    BEGIN
+                        INSERT INTO recovery_state_updates(marker) VALUES (1);
+                    END;
+                    """;
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            var recoveryUtc = new DateTimeOffset(2026, 2, 2, 0, 0, 0, TimeSpan.Zero);
+            timeProvider.UtcNow = recoveryUtc;
+            var expectedFileProfile = SqliteCaptureScheduleStore.CreateFileProfile(fileConfiguration);
+            var expectedFileSha256 = LocalCaptureProfileContract.ComputeSha256(expectedFileProfile);
+            using var restarted = new SqliteCaptureScheduleStore(initializer, options, timeProvider);
+
+            var recovered = await restarted.InitializeAsync(
+                fileConfiguration, CancellationToken.None).ConfigureAwait(false);
+            var operatorState = await restarted.GetOperatorStateAsync(10, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(seed.Snapshot.ActiveRevision.RevisionId, recovered.ActiveRevision.RevisionId);
+            Assert.IsNotNull(recovered.PendingRevision);
+            Assert.AreEqual(expectedFileSha256, recovered.PendingRevision.ProfileSha256);
+            Assert.AreEqual("file-draft", recovered.PendingRevision.Source);
+            Assert.AreEqual(3, recovered.PendingRevision.RevisionNumber);
+            Assert.AreEqual($"profile-00000003-{expectedFileSha256[..12]}", recovered.PendingRevision.RevisionId);
+            Assert.AreEqual(seed.Snapshot.Version + 1, recovered.Version);
+            Assert.AreEqual(recoveryUtc, recovered.UpdatedUtc);
+            Assert.AreEqual(expectedFileSha256, operatorState.FileConfigurationProfileSha256);
+            Assert.AreEqual(3, operatorState.History.Count);
+            CollectionAssert.AreEquivalent(
+                new[]
+                {
+                    seed.Snapshot.ActiveRevision.RevisionId,
+                    seed.Snapshot.PendingRevision!.RevisionId,
+                    recovered.PendingRevision.RevisionId
+                },
+                operatorState.History.Select(revision => revision.RevisionId).ToArray());
+            using (var verification = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await verification.OpenAsync().ConfigureAwait(false);
+                Assert.AreEqual(3, await CountRevisionsAsync(verification).ConfigureAwait(false));
+                Assert.AreEqual(1, await CountActivationsAsync(verification).ConfigureAwait(false));
+                Assert.AreEqual(1, await CountRecoveryStateUpdatesAsync(verification).ConfigureAwait(false));
+            }
+            timeProvider.UtcNow = recoveryUtc.AddDays(1);
+
+            var repeated = await restarted.InitializeAsync(
+                fileConfiguration, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(recovered.ActiveRevision.RevisionId, repeated.ActiveRevision.RevisionId);
+            Assert.AreEqual(recovered.PendingRevision.RevisionId, repeated.PendingRevision!.RevisionId);
+            Assert.AreEqual(recovered.Version, repeated.Version);
+            Assert.AreEqual(recovered.UpdatedUtc, repeated.UpdatedUtc);
+            using var repeatedVerification = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await repeatedVerification.OpenAsync().ConfigureAwait(false);
+            Assert.AreEqual(3, await CountRevisionsAsync(repeatedVerification).ConfigureAwait(false));
+            Assert.AreEqual(1, await CountActivationsAsync(repeatedVerification).ConfigureAwait(false));
+            Assert.AreEqual(1, await CountRecoveryStateUpdatesAsync(repeatedVerification).ConfigureAwait(false));
         }
         finally
         {
@@ -1186,6 +1200,107 @@ public sealed class SqliteCaptureScheduleStoreTests
         command.CommandText = "SELECT COUNT(*) FROM capture_schedule_activations;";
         return (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
     }
+
+    private static async Task<long> CountRecoveryStateUpdatesAsync(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM recovery_state_updates;";
+        return (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+    }
+
+    private static async Task<NormalizedDuplicateSeed> SeedNormalizedDuplicateRevisionsAsync(
+        string root,
+        IOptions<CameraAgentHostOptions> options,
+        JournalInitializer initializer,
+        CameraModuleConfig configuration,
+        TimeProvider timeProvider)
+    {
+        CaptureScheduleStoreSnapshot staged;
+        using (var seedStore = new SqliteCaptureScheduleStore(initializer, options, timeProvider))
+        {
+            var initial = await seedStore.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+            staged = await seedStore.StageAsync(
+                LocalCaptureProfileDefinition.CreateV2(configuration, Definition("temporary-draft", 2)),
+                "seed-pending",
+                initial.Version,
+                "test",
+                null,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        var activePersistedProfile = LocalCaptureProfileDefinition.CreateV2(
+            configuration with
+            {
+                Rig = configuration.Rig with
+                {
+                    ControlPolicy = new CameraControlPolicy
+                    {
+                        AutoExposure = CameraFeatureDirective.Disabled,
+                        AutoGain = CameraFeatureDirective.Disabled
+                    }
+                }
+            },
+            configuration.Schedule!);
+        var pendingPersistedProfile = LocalCaptureProfileDefinition.CreateV2(
+            configuration with
+            {
+                Rig = configuration.Rig with
+                {
+                    ControlPolicy = new CameraControlPolicy
+                    {
+                        ExposureControl = AutomaticControlOwnership.Disabled,
+                        GainControl = AutomaticControlOwnership.Disabled,
+                        AutoExposure = CameraFeatureDirective.Enabled,
+                        AutoGain = CameraFeatureDirective.Enabled
+                    }
+                }
+            },
+            configuration.Schedule!);
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE capture_schedule_revisions
+            SET profile_json = $active_json,
+                profile_sha256 = $active_profile_sha,
+                schedule_sha256 = $schedule_sha
+            WHERE revision_id = $active;
+            UPDATE capture_schedule_revisions
+            SET profile_json = $pending_json,
+                profile_sha256 = $pending_profile_sha,
+                schedule_sha256 = $schedule_sha
+            WHERE revision_id = $pending;
+            """;
+        command.Parameters.AddWithValue(
+            "$active_json",
+            System.Text.Encoding.UTF8.GetBytes(
+                CaptureContractJson.SerializeToElement(activePersistedProfile).GetRawText()));
+        command.Parameters.AddWithValue(
+            "$active_profile_sha",
+            LocalCaptureProfileContract.ComputePersistedRevisionSha256(activePersistedProfile));
+        command.Parameters.AddWithValue(
+            "$pending_json",
+            System.Text.Encoding.UTF8.GetBytes(
+                CaptureContractJson.SerializeToElement(pendingPersistedProfile).GetRawText()));
+        command.Parameters.AddWithValue(
+            "$pending_profile_sha",
+            LocalCaptureProfileContract.ComputePersistedRevisionSha256(pendingPersistedProfile));
+        command.Parameters.AddWithValue(
+            "$schedule_sha",
+            CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
+        command.Parameters.AddWithValue("$active", staged.ActiveRevision.RevisionId);
+        command.Parameters.AddWithValue("$pending", staged.PendingRevision!.RevisionId);
+        if (await command.ExecuteNonQueryAsync().ConfigureAwait(false) != 2)
+        {
+            throw new InvalidOperationException("The duplicate recovery seed revisions were not updated.");
+        }
+        return new NormalizedDuplicateSeed(staged, activePersistedProfile, pendingPersistedProfile);
+    }
+
+    private sealed record NormalizedDuplicateSeed(
+        CaptureScheduleStoreSnapshot Snapshot,
+        LocalCaptureProfileDefinition ActivePersistedProfile,
+        LocalCaptureProfileDefinition PendingPersistedProfile);
 
     private sealed class SettableTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
