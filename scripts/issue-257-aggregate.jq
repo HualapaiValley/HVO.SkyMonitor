@@ -44,7 +44,7 @@ def stats:
         w2CpuMilliseconds: ($lane | map(.w2.cpuMilliseconds) | stats),
         w2AllocatedBytes: ($lane | map(.w2.allocatedBytes) | stats),
         w2RssDeltaBytes: ($lane | map(.w2.rssAfterBytes - .w2.rssBeforeBytes) | stats),
-        w3MMigrationMilliseconds: ($lane | map(.w3M.migrationMilliseconds) | stats),
+        w3MInitializationMilliseconds: ($lane | map(.w3M.initializationMilliseconds) | stats),
         w3MCpuMilliseconds: ($lane | map(.w3M.cpuMilliseconds) | stats),
         w3MAllocatedBytes: ($lane | map(.w3M.allocatedBytes) | stats),
         w3MRestartAllocatedBytes: ($lane | map(.w3M.restartAllocatedBytes) | stats),

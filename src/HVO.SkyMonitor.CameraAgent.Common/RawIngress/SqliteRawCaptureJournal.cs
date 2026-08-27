@@ -20,6 +20,34 @@ internal sealed class SqliteRawCaptureJournal(
     TransientDetectionOptions? transientOptions = null)
 {
     internal const int CurrentSchemaVersion = 11;
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
+        new(CreateCanonicalSchemaDefinitions);
+    private static readonly HashSet<string> SharedSchemaObjectNames = new(StringComparer.Ordinal)
+    {
+        "capture_processing_schema",
+        "processing_nodes",
+        "processing_node_inputs",
+        "processing_outputs",
+        "processing_output_sources",
+        "processing_lifecycle_operations",
+        "processing_reconciliation_state",
+        "processing_output_diagnostics",
+        "ix_processing_outputs_capture_node",
+        "ix_processing_outputs_window",
+        "ix_processing_nodes_status",
+        "ix_processing_nodes_recipe",
+        "ix_processing_outputs_role",
+        "ix_processing_outputs_recipe",
+        "ix_processing_outputs_product",
+        "ix_processing_outputs_retention_available",
+        "ix_processing_outputs_retention_unavailable",
+        "ix_processing_output_sources_artifact",
+        "ix_processing_node_inputs_artifact",
+        "transient_worker_frames",
+        "ix_transient_worker_frames_ready",
+        "transient_worker_candidates",
+        "ix_transient_worker_candidates_pending"
+    };
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly int _busyTimeoutSeconds = busyTimeoutSeconds;
     private readonly Action<TimeSpan>? _lockWaitRecorder = lockWaitRecorder;
@@ -45,25 +73,37 @@ internal sealed class SqliteRawCaptureJournal(
         ArgumentNullException.ThrowIfNull(laneDefinitions);
         Directory.CreateDirectory(Path.GetDirectoryName(_databasePath)!);
         EnsureDatabaseFilesArePhysical();
-        using var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
-        EnsureDatabaseFilesArePhysical();
-
-        var version = await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
-        if (version > CurrentSchemaVersion)
+        var initializeSchema = !File.Exists(_databasePath);
+        if (!initializeSchema)
         {
-            throw new InvalidOperationException($"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
+            var inspection = await InspectExistingDatabaseAsync(cancellationToken).ConfigureAwait(false);
+            var version = inspection.Version;
+            if (version > CurrentSchemaVersion)
+            {
+                throw new InvalidOperationException(
+                    $"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
+            }
+            initializeSchema = version == 0 && inspection.SchemaObjectCount == 0;
+            if (version != CurrentSchemaVersion && !initializeSchema)
+            {
+                throw new InvalidOperationException(
+                    $"Raw ingress schema {version} is unsupported; archive or remove the existing database before starting this CameraAgent.");
+            }
         }
-        var initializeSchema = version == 0 && await ExecuteScalarLongAsync(
+
+        using var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
+        var writableVersion = await ExecuteScalarLongAsync(
+            connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
+        var writableSchemaObjectCount = await ExecuteScalarLongAsync(
             connection,
             "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
-            cancellationToken).ConfigureAwait(false) == 0;
-        if (version != CurrentSchemaVersion && !initializeSchema)
+            cancellationToken).ConfigureAwait(false);
+        if ((initializeSchema && (writableVersion != 0 || writableSchemaObjectCount != 0)) ||
+            (!initializeSchema && writableVersion != CurrentSchemaVersion))
         {
             throw new InvalidOperationException(
-                $"Raw ingress schema {version} is unsupported; archive or remove the existing database before starting this CameraAgent.");
+                $"Raw ingress schema {writableVersion} is unsupported; archive or remove the existing database before starting this CameraAgent.");
         }
-
-        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
         if (initializeSchema)
         {
             try
@@ -94,6 +134,7 @@ internal sealed class SqliteRawCaptureJournal(
             }
         }
 
+        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
         await ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
@@ -110,6 +151,15 @@ internal sealed class SqliteRawCaptureJournal(
                 connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken).ConfigureAwait(false) != 0)
         {
             throw new InvalidDataException("Raw ingress SQLite foreign-key validation failed.");
+        }
+        var actualSchemaDefinitions = await ReadSchemaDefinitionsAsync(connection, cancellationToken).ConfigureAwait(false);
+        if (CanonicalSchemaDefinitions.Value.Any(expected =>
+                !actualSchemaDefinitions.TryGetValue(expected.Key, out var actual) ||
+                !string.Equals(actual, expected.Value, StringComparison.Ordinal)) ||
+            actualSchemaDefinitions.Keys.Any(name =>
+                !CanonicalSchemaDefinitions.Value.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)))
+        {
+            throw new InvalidDataException("Raw ingress SQLite schema is not the canonical schema 11 definition.");
         }
         var schemaObjectCount = await ExecuteScalarLongAsync(connection, """
             SELECT COUNT(*) FROM sqlite_master
@@ -1211,6 +1261,58 @@ internal sealed class SqliteRawCaptureJournal(
         return connection;
     }
 
+    private async Task<(long Version, long SchemaObjectCount)> InspectExistingDatabaseAsync(
+        CancellationToken cancellationToken)
+    {
+        EnsureDatabaseFilesArePhysical();
+        var recoveryFiles = new[]
+        {
+            string.Concat(_databasePath, "-wal"),
+            string.Concat(_databasePath, "-journal")
+        }.Where(File.Exists).ToArray();
+        var hasRecoveryState = recoveryFiles.Length > 0 ||
+            File.Exists(string.Concat(_databasePath, "-shm"));
+        DirectoryInfo? snapshotRoot = null;
+        try
+        {
+            var inspectionPath = _databasePath;
+            var immutable = !hasRecoveryState;
+            if (!immutable)
+            {
+                snapshotRoot = Directory.CreateTempSubdirectory("hvo-raw-ingress-inspection-");
+                inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(_databasePath));
+                File.Copy(_databasePath, inspectionPath);
+                foreach (var recoveryFile in recoveryFiles)
+                {
+                    File.Copy(
+                        recoveryFile,
+                        string.Concat(inspectionPath, recoveryFile.AsSpan(_databasePath.Length)));
+                }
+            }
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = immutable
+                    ? string.Concat(new Uri(inspectionPath).AbsoluteUri, "?immutable=1")
+                    : inspectionPath,
+                Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
+                Pooling = false,
+                DefaultTimeout = _busyTimeoutSeconds
+            }.ToString());
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            var version = await ExecuteScalarLongAsync(
+                connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
+            var schemaObjectCount = await ExecuteScalarLongAsync(
+                connection,
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
+                cancellationToken).ConfigureAwait(false);
+            return (version, schemaObjectCount);
+        }
+        finally
+        {
+            snapshotRoot?.Delete(recursive: true);
+        }
+    }
+
     private async Task ConfigureConnectionAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
@@ -1233,6 +1335,7 @@ internal sealed class SqliteRawCaptureJournal(
         RawIngressFileStore.EnsureNoSymbolicLinks(root, _databasePath);
         RawIngressFileStore.EnsureNoSymbolicLinks(root, string.Concat(_databasePath, "-wal"));
         RawIngressFileStore.EnsureNoSymbolicLinks(root, string.Concat(_databasePath, "-shm"));
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, string.Concat(_databasePath, "-journal"));
     }
 
     private SqliteTransaction BeginImmediate(SqliteConnection connection)
@@ -1336,6 +1439,76 @@ internal sealed class SqliteRawCaptureJournal(
 
     private static async Task<string> ExecuteScalarStringAsync(SqliteConnection connection, string sql, CancellationToken cancellationToken)
         => Convert.ToString(await ExecuteScalarAsync(connection, sql, cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the internal constant schema statements are executed.")]
+    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        foreach (var sql in new[]
+                 {
+                     SchemaSql,
+                     TransientSchemaSql,
+                     TransientRuntimeOperationsSchemaSql,
+                     CaptureScheduleSchemaSql,
+                     CalibrationLibrarySchemaSql
+                 })
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
+        return ReadSchemaDefinitions(connection);
+    }
+
+    private static async Task<Dictionary<string, string>> ReadSchemaDefinitionsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        using var command = CreateSchemaDefinitionCommand(connection);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            definitions.Add(reader.GetString(1), ReadSchemaDefinitionRow(reader));
+        }
+        return definitions;
+    }
+
+    private static Dictionary<string, string> ReadSchemaDefinitions(SqliteConnection connection)
+    {
+        using var command = CreateSchemaDefinitionCommand(connection);
+        using var reader = command.ExecuteReader();
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            definitions.Add(reader.GetString(1), ReadSchemaDefinitionRow(reader));
+        }
+        return definitions;
+    }
+
+    private static SqliteCommand CreateSchemaDefinitionCommand(SqliteConnection connection)
+    {
+        var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_schema
+            WHERE name NOT LIKE 'sqlite_%'
+            ORDER BY type, name;
+            """;
+        return command;
+    }
+
+    private static string ReadSchemaDefinitionRow(SqliteDataReader reader)
+    {
+        var definition = new System.Text.StringBuilder();
+        foreach (var ordinal in new[] { 0, 2, 3 })
+        {
+            var value = reader.GetString(ordinal);
+            definition.Append(value.Length).Append(':').Append(value);
+        }
+        return definition.ToString();
+    }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only internal constant schema and PRAGMA statements are passed to this helper.")]
     private static async Task<object?> ExecuteScalarAsync(SqliteConnection connection, string sql, CancellationToken cancellationToken)

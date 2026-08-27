@@ -148,7 +148,7 @@ for trial in 1 2 3 4 5; do
     jq --exit-status --arg revision "$REVISION" --argjson trial "$trial" --arg order "$expected_order" '
         .issue == 257 and .trial == $trial and .revision == $revision and
         .workload.profileSha256 == "227FB3C0484AB5BBAFC4CA3674EA0D68B473315EBDD63F547CB2851D0A00F499" and
-        .w3M.userVersion == 10 and .baseline.comparison == "N/A" and
+        .w3M.userVersion == 11 and .baseline.comparison == "N/A" and
         .blockedComparison.executionOrder == (if $order == "UB" then ["unblocked", "blocked"] else ["blocked", "unblocked"] end) and
         .blockedComparison.unblocked.productionClaimWarmupSamples == 5 and
         .blockedComparison.unblocked.productionClaimMeasuredSamples == 30 and
