@@ -29,7 +29,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed partial class LogicHostIngestPerformanceTests
 {
     private const string Issues437432Baseline = "5febc8efaa4b4b6e5e45eb45e9df0c55525bfdde";
-    private const string Issues437432Product = "bfd9e8d1dfd67dad52892fe33d922ba004f93fd7";
+    private const string Issues437432Product = "d9f64e1f4a32c987543448c7731ace21b90ca9b8";
     private const string Issues437432ResultSchema = "issues-437-432-layered-performance-v2";
     private const int Issues437432Width = 3096;
     private const int Issues437432Height = 2080;
@@ -162,12 +162,16 @@ public sealed partial class LogicHostIngestPerformanceTests
             firstMaterialization.Receipt,
             fixturePresentation).ConfigureAwait(false);
         var retained = await ReadIssues437432RetainedBytesAsync(
-            fixture, fixturePresentation, flattenedIngest.Artifacts[0].ByteLength).ConfigureAwait(false);
+            fixture, fixturePresentation, flattenedIngest.Artifacts[0].ByteLength,
+            flattenedIngest.Artifacts.Count).ConfigureAwait(false);
 
         var outputDirectory = Issues437432OutputDirectory(root, provenance.EvidenceHead, evidenceMode);
         Directory.CreateDirectory(outputDirectory);
         var outputPath = Path.Combine(outputDirectory, "issues-437-432-layered-performance.json");
         Assert.IsFalse(File.Exists(outputPath), "Evidence output is create-only.");
+        var flattenedMaskCoverage = evidenceMode
+            ? "all 32 synthetic combination masks"
+            : $"{flattenedIngest.Artifacts.Count} synthetic combination masks";
         var result = new
         {
             schemaVersion = Issues437432ResultSchema,
@@ -212,7 +216,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             {
                 id = "W2-shaped-layered-central-supplemental",
                 canonicalW2PayloadThroughput = false,
-                qualification = "W2 BayerRggb16 raw ingress is canonical geometry and byte length. Presentation uses a compact deterministic W2 Mono8 JPEG base, sparse structured layers, and one packed Mono8 flattened comparator; it is representative/supplemental rather than canonical 19,319,040-byte RGB24 preview throughput.",
+                qualification = "W2 BayerRggb16 raw ingress is canonical geometry and byte length. Presentation uses a compact deterministic W2 Mono8 JPEG base, sparse structured layers, and distinct packed Mono8 flattened comparator artifacts; it is representative/supplemental rather than canonical 19,319,040-byte RGB24 preview throughput.",
                 width = Issues437432Width,
                 height = Issues437432Height,
                 rawPixelFormat = CameraPixelFormat.BayerRggb16.ToString(),
@@ -223,7 +227,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 presentationBaseSha256 = fixturePresentation.BaseChecksumSha256,
                 selectableLayers = Issues437432LayerCount,
                 flattenedStorageCounterfactualCombinations = Issues437432FlattenedCombinationCount,
-                actualFlattenedArtifacts = 1,
+                actualFlattenedArtifacts = flattenedIngest.Artifacts.Count,
                 warmups,
                 measuredOperations = measurements,
                 concurrency = new[] { 1, 8 },
@@ -245,7 +249,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 resources = "Process TotalProcessorTime, 100 ms System.Runtime allocation-rate samples, and 10 ms process RSS sampling inherited from LogicHostIngestPerformanceTests.",
                 protocol = "One aggregate EF Core SQL command/transaction and MinIO method/Content-Length snapshot is retained per measured phase as an N+1/regression diagnostic. Counts are not per-call data or performance acceptance budgets.",
                 boundaries = "Ingest spans authenticated idempotent multipart request through durable acknowledgement; retrieval spans authenticated GET through checksum validation; presentation spans authenticated GET through complete SVG body; materialization spans production service admission through durable ingest acknowledgement.",
-                flattenedComparator = "The same product binary repeatedly ingests and retrieves one complete-lineage W2 Mono8 packed output. The retained cost of all 32 selectable-layer combinations is an arithmetic counterfactual from that one exact output byte length; 32 artifacts are not created.",
+                flattenedComparator = $"Each warmup and measured operation creates a distinct complete-lineage W2 Mono8 packed output, retaining {flattenedIngest.Artifacts.Count} benchmark artifacts across {flattenedMaskCoverage}. The deployment storage counterfactual separately multiplies one representative exact output byte length by the 32 selectable-layer combinations.",
                 presentation = "Only cold and cached 5+30 distributions are measured. One conditional request and one eight-way cold request are functional correctness checks; the latter reports elapsed total only.",
                 materialization = "Only first save and one replay are measured. Production semaphore bounds and focused integration coverage replace synthetic concurrent-admission benchmarking.",
                 redis = "Redis is disposable cache infrastructure. This harness neither listens to cache metrics nor measures Redis wire behavior; existing cache/fallback integration tests provide functional validation."
@@ -1088,7 +1092,8 @@ public sealed partial class LogicHostIngestPerformanceTests
     private static async Task<Issues437432RetainedBytes> ReadIssues437432RetainedBytesAsync(
         IntegrationTestFixture fixture,
         Issues437432PresentationFixture presentation,
-        long measuredFlattenedOutputBytes)
+        long measuredFlattenedOutputBytes,
+        int retainedBenchmarkArtifacts)
     {
         var layeredIds = presentation.LayerArtifactIds
             .Append(presentation.BaseArtifactId)
@@ -1107,7 +1112,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             Issues437432FlattenedCombinationCount,
             counterfactualFlattenedBytes,
             counterfactualFlattenedBytes - layeredBytes,
-            "Counterfactual retained object payload bytes: one measured packed W2 flattened output byte length multiplied by 32 selectable-layer combinations. Only one flattened artifact is retained; SQL row/index and object-store metadata overhead are excluded.");
+            $"Deployment counterfactual retained object payload bytes: one measured packed W2 flattened output byte length multiplied by 32 selectable-layer combinations. The benchmark retains {retainedBenchmarkArtifacts} distinct measurement artifacts separately; SQL row/index and object-store metadata overhead are excluded.");
     }
 
     private static Issues437432Distribution CreateIssues437432Distribution(
