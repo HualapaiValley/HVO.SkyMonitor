@@ -132,7 +132,10 @@ internal sealed class CameraModuleRunner
                     : scheduleGrant.Profile.CaptureInterval;
                 if (!string.Equals(activeProfileKey, scheduleGrant.ProfileKey, StringComparison.Ordinal))
                 {
-                    nextSetpoint = ExposureController.Initial(scheduleGrant.Profile);
+                    if (scheduleGrant.Decision.Reason != CaptureScheduleAdmissionReason.LegacyCompatibility)
+                    {
+                        nextSetpoint = ExposureController.Initial(scheduleGrant.Profile);
+                    }
                     activeProfileKey = scheduleGrant.ProfileKey;
                 }
             }
@@ -297,8 +300,9 @@ internal sealed class CameraModuleRunner
             var readoutCompletedUtc = result.AcquisitionTiming?.ReadoutCompletedUtc.ToUniversalTime() ?? UtcNow();
             var active = ResolveActiveSetpoint(request.RequestedSetpoint!, result);
             var regime = hostMetered ? ResolveSolarRegime(config, readoutCompletedUtc) : (CaptureSolarRegime?)null;
-            var regimeChanged = scheduleGrant is null && regime.HasValue && previousRegime.HasValue &&
-                regime != previousRegime;
+            var regimeChanged = (scheduleGrant is null ||
+                    scheduleGrant.Decision.Reason == CaptureScheduleAdmissionReason.LegacyCompatibility) &&
+                regime.HasValue && previousRegime.HasValue && regime != previousRegime;
             var meteringStartedTimestamp = _timeProvider.GetTimestamp();
             var metering = hostMetered ? Measure(config, result.Frame, readoutCompletedUtc, excludedRegions) : null;
             var meteringDuration = hostMetered

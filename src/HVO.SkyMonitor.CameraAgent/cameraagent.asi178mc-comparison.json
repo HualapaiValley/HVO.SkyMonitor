@@ -130,7 +130,7 @@
       "id": "Telemetry",
       "type": "Telemetry",
       "order": 1000,
-      "dependsOn": ["LocalStorage"]
+      "dependsOn": ["RollingCombination", "Preview", "Annotation", "LocalStorage"]
     }]
   },
   "schedule": {

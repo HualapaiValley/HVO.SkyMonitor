@@ -28,7 +28,12 @@ public sealed class AcceleratedCameraAgentSoakTests
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ICelestialCatalog>(catalog);
-            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+            services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["CameraAgent:RawIngressRoot"] = root
+                })
+                .Build());
             using var provider = services.BuildServiceProvider();
             var sceneStore = (ProjectedSceneStore)provider.GetRequiredService<IProjectedSceneStore>();
             var start = new DateTimeOffset(2026, 1, 15, 0, 0, 0, TimeSpan.Zero);
@@ -111,7 +116,12 @@ public sealed class AcceleratedCameraAgentSoakTests
                     PrincipalPointX: 32, PrincipalPointY: 24, ImageCircleRadiusPixels: 23),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
-                    TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 10, 10)),
+                    TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 10, 10),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }),
             new CapturePipelineConfig([
                 Step("RollingCombination", 25, new RollingCombinationProcessingStepOptions { WindowSize = 4 }),
                 Step("Preview", 50, new PreviewProcessingStepOptions()),
@@ -126,7 +136,8 @@ public sealed class AcceleratedCameraAgentSoakTests
                     }),
                 Step("Telemetry", 200,
                     new TelemetryProcessingStepOptions())
-            ]), AgentId: "accelerated-soak");
+            ], CapturePipelineSchemaVersions.LegacyV1, CapturePipelineDependencyPolicy.LegacyInference),
+            AgentId: "accelerated-soak");
 
     private static CaptureProcessingStepConfig Step<T>(string type, int order, T options)
         => new(type, type, order, JsonSerializer.SerializeToElement(options));

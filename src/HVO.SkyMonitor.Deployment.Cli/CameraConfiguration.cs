@@ -24,8 +24,8 @@ internal static class CameraConfiguration
     private static readonly string[] CalibrationDependency = ["Calibration"];
     private static readonly string[] PreviewDependency = ["Preview"];
     private static readonly string[] AnnotationDependency = ["Annotation"];
-    private static readonly string[] LocalStorageDependency = ["LocalStorage"];
-    private static readonly string[] ArchiveStorageDependency = ["ArchiveStorage"];
+    private static readonly string[] TelemetryDependencies =
+        ["Calibration", "Preview", "Annotation", "LocalStorage", "ArchiveStorage"];
 
     public static GeneratedConfiguration Generate(InstallRequest request, Guid applicationIdentity)
     {
@@ -168,13 +168,13 @@ internal static class CameraConfiguration
             "Storage",
             110,
             new { storageRoot = "/app/data/archive", retentionDays = 30, updateLatestFrame = false, queueForUpload = false },
-            LocalStorageDependency),
+            AnnotationDependency),
         Step(
             "Telemetry",
             "Telemetry",
             1000,
             new { },
-            ArchiveStorageDependency)
+            TelemetryDependencies)
     ];
 
     private static CaptureProcessingStepConfig Step(

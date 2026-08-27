@@ -35,8 +35,38 @@ internal static class CaptureLaneEnvelopeSerializer
             throw new InvalidDataException("Capture lane context checksum does not match its journal record.");
         }
 
-        return JsonSerializer.Deserialize<CaptureLaneEnvelope>(json, SerializerOptions)
+        var envelope = JsonSerializer.Deserialize<CaptureLaneEnvelope>(json, SerializerOptions)
             ?? throw new InvalidDataException("Capture lane context is invalid.");
+        var configuration = envelope.Configuration;
+        if (configuration.ProcessingSteps is null && configuration.Pipeline is not null)
+        {
+            return envelope;
+        }
+        if (configuration.Pipeline is null && configuration.ProcessingSteps is null)
+        {
+            throw new InvalidDataException("Capture lane context does not contain a processing pipeline.");
+        }
+
+        var policy = configuration.Rig.ControlPolicy;
+        var normalizedPolicy = policy is null
+            ? null
+            : policy with
+            {
+                ExposureControl = ResolveLegacyOwnership(policy.ExposureControl, policy.AutoExposure),
+                GainControl = ResolveLegacyOwnership(policy.GainControl, policy.AutoGain)
+            };
+        return envelope with
+        {
+            Configuration = configuration with
+            {
+                Rig = configuration.Rig with { ControlPolicy = normalizedPolicy },
+                ProcessingSteps = null,
+                Pipeline = configuration.Pipeline ?? new CapturePipelineConfig(
+                    configuration.ProcessingSteps!,
+                    CapturePipelineSchemaVersions.LegacyV1,
+                    CapturePipelineDependencyPolicy.LegacyInference)
+            }
+        };
     }
 
     internal static (byte[] Json, string Sha256) Redact(ReadOnlySpan<byte> json, string expectedSha256)
@@ -44,4 +74,13 @@ internal static class CaptureLaneEnvelopeSerializer
         var envelope = Deserialize(json, expectedSha256);
         return Serialize(envelope.Configuration, envelope.Submission);
     }
+
+    private static AutomaticControlOwnership ResolveLegacyOwnership(
+        AutomaticControlOwnership ownership,
+        CameraFeatureDirective? legacy)
+        => ownership != AutomaticControlOwnership.Unspecified
+            ? ownership
+            : legacy == CameraFeatureDirective.Enabled
+                ? AutomaticControlOwnership.HostMetered
+                : AutomaticControlOwnership.Disabled;
 }

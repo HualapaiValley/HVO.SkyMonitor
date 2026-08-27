@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -189,6 +190,49 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
     }
 
     [TestMethod]
+    public async Task Runner_PersistedV1GrantRetainsSolarDefaultsAndTransitions()
+    {
+        using var fixture = await RuntimeFixture.CreateAsync(legacyHostMetered: true).ConfigureAwait(false);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var module = new TransitionCaptureModule(fixture.TimeProvider);
+        var host = new MultiCaptureHostContext(
+            fixture.Runtime.Snapshot!.Configuration,
+            cancellation,
+            captureCount: 2);
+        var ephemeris = new DeclinationSequenceEphemeris(30, 0, -30);
+        var runner = new CameraModuleRunner(
+            module,
+            host,
+            fixture.TimeProvider,
+            NullLogger.Instance,
+            fixture.Admission,
+            ephemeris,
+            scheduleRuntimeCoordinator: fixture.Runtime);
+
+        await runner.RunAsync(cancellation.Token).ConfigureAwait(false);
+
+        Assert.HasCount(2, module.Requests);
+        var firstSetpoint = module.Requests[0].RequestedSetpoint;
+        var secondSetpoint = module.Requests[1].RequestedSetpoint;
+        Assert.IsNotNull(firstSetpoint);
+        Assert.IsNotNull(secondSetpoint);
+        Assert.AreEqual(TimeSpan.FromSeconds(2), firstSetpoint.Exposure);
+        Assert.AreEqual(20d, firstSetpoint.Gain);
+        Assert.AreEqual(TimeSpan.FromSeconds(6), secondSetpoint.Exposure);
+        Assert.AreEqual(50d, secondSetpoint.Gain);
+        Assert.AreEqual(3, ephemeris.RequestCount);
+        Assert.IsTrue(host.Submissions.All(static submission =>
+            submission.CycleEvidence!.ScheduleAdmission!.Reason ==
+            CaptureScheduleAdmissionReason.LegacyCompatibility));
+        Assert.AreEqual(
+            CaptureControlDecisionReason.SolarRegimeChanged,
+            host.Submissions[0].CycleEvidence!.Decision.Reason);
+        Assert.AreEqual(
+            CaptureControlDecisionReason.SolarRegimeChanged,
+            host.Submissions[1].CycleEvidence!.Decision.Reason);
+    }
+
+    [TestMethod]
     public async Task LateActivationReplay_DoesNotReplaceNewerRuntimeRevision()
     {
         using var fixture = await RuntimeFixture.CreateAsync().ConfigureAwait(false);
@@ -317,7 +361,8 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
 
         internal static async Task<RuntimeFixture> CreateAsync(
             ICameraModuleConfigurationValidator? moduleConfigurationValidator = null,
-            bool initializeRuntime = true)
+            bool initializeRuntime = true,
+            bool legacyHostMetered = false)
         {
             var root = Path.Combine(Path.GetTempPath(), "hvo-schedule-runtime", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
@@ -335,26 +380,82 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
             laneState.Update([]);
             var location = DeploymentLocationSnapshot.Create(
                 "test-location", 2, "test", null, DateTimeOffset.UnixEpoch, null,
-                35, -114, 1000, "UTC");
+                legacyHostMetered ? 90 : 35,
+                legacyHostMetered ? 0 : -114,
+                1000,
+                "UTC");
+            var pipeline = legacyHostMetered
+                ? new PipelineExposureProfile(
+                    TimeSpan.FromSeconds(1),
+                    TimeSpan.FromSeconds(2),
+                    TimeSpan.FromSeconds(10),
+                    20,
+                    80,
+                    new ExposureEnvelope(
+                        TimeSpan.FromSeconds(1),
+                        TimeSpan.FromSeconds(16),
+                        1,
+                        100,
+                        new ExposureDefaults(TimeSpan.FromSeconds(2), 20),
+                        new ExposureDefaults(TimeSpan.FromSeconds(10), 80),
+                        0.5,
+                        TwilightDefaults: new ExposureDefaults(TimeSpan.FromSeconds(6), 50)),
+                    CadenceMode: CaptureCadenceMode.Continuous)
+                : new PipelineExposureProfile(
+                    TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1);
+            var controlPolicy = legacyHostMetered
+                ? new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.HostMetered,
+                    GainControl = AutomaticControlOwnership.HostMetered,
+                    Metering = new CaptureMeteringPolicy
+                    {
+                        XStride = 1,
+                        YStride = 1,
+                        UseImageCircle = false
+                    },
+                    SolarRegimes = new CaptureSolarRegimePolicy
+                    {
+                        DayAltitudeThresholdDegrees = 20,
+                        NightAltitudeThresholdDegrees = -20
+                    }
+                }
+                : new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                };
+            var schedule = legacyHostMetered
+                ? new CaptureScheduleDefinition(
+                    "capture-schedule-v1",
+                    [new CaptureScheduleSetpointProfile(
+                        "legacy-night",
+                        TimeSpan.FromSeconds(10),
+                        80,
+                        TimeSpan.FromSeconds(1),
+                        CaptureCadenceMode.Continuous)],
+                    [],
+                    LegacyAlwaysOpen: true,
+                    LegacySetpointProfileId: "legacy-night")
+                : AlwaysOpenDefinition("initial");
             var configuration = new CameraModuleConfig(
-                new ObservatoryLocation(35, -114, 1000, "UTC"),
+                new ObservatoryLocation(
+                    legacyHostMetered ? 90 : 35,
+                    legacyHostMetered ? 0 : -114,
+                    1000,
+                    "UTC"),
                 new CameraModuleDescriptor("test"),
                 new CameraRigConfig(
                     new SensorProfile("test", 2, 2, 5, SensorColorMode.Mono, CameraPixelFormat.Mono16),
                     new OpticsProfile("Perspective", 50, 10, 0),
                     new RigOrientation(90, 0, 0),
-                    new PipelineExposureProfile(
-                        TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1),
-                    new CameraControlPolicy
-                    {
-                        ExposureControl = AutomaticControlOwnership.Disabled,
-                        GainControl = AutomaticControlOwnership.Disabled
-                    }),
+                    pipeline,
+                    controlPolicy),
                 CapturePipelineConfig.Empty,
                 AgentId: "test-agent")
             {
                 DeploymentLocation = location,
-                Schedule = AlwaysOpenDefinition("initial")
+                Schedule = schedule
             };
             var runtime = new CaptureScheduleRuntimeCoordinator(
                 store,
@@ -365,6 +466,24 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
                 timeProvider,
                 moduleConfigurationValidator: moduleConfigurationValidator);
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            if (legacyHostMetered)
+            {
+                var initial = await store.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                var staged = await store.StageAsync(
+                    LocalCaptureProfileDefinition.Create(configuration, schedule),
+                    "stage-persisted-v1",
+                    initial.Version,
+                    "test",
+                    null,
+                    CancellationToken.None).ConfigureAwait(false);
+                _ = await store.ActivateAsync(
+                    staged.PendingRevision!.RevisionId,
+                    "activate-persisted-v1",
+                    staged.Version,
+                    "test",
+                    null,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
             if (initializeRuntime)
             {
                 await runtime.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
@@ -445,6 +564,66 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
+    private sealed class TransitionCaptureModule(TimeProvider timeProvider) : ICameraModule, ICameraSetpointController
+    {
+        internal List<CaptureRequest> Requests { get; } = [];
+
+        public string Id => "transition";
+
+        public string DisplayName => "Transition";
+
+        public string ModuleType => "test";
+
+        public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
+
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            var now = timeProvider.GetUtcNow();
+            var setpoint = request.RequestedSetpoint!;
+            var frame = new CameraFrame(
+                now,
+                2,
+                2,
+                CameraPixelFormat.Mono16,
+                new byte[8],
+                new FrameMetadata(setpoint.Exposure, setpoint.Gain, 0));
+            return Task.FromResult(new CaptureResult(
+                frame,
+                setpoint,
+                TimeSpan.Zero,
+                CaptureMode.Still,
+                false)
+            {
+                AcquisitionTiming = new CaptureAcquisitionTiming(now, now, now)
+            });
+        }
+
+        public ValueTask<DateTimeOffset> ApplySetpointAsync(
+            CaptureSetpoint setpoint,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(timeProvider.GetUtcNow());
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class DeclinationSequenceEphemeris(params double[] declinations) : IPlanetEphemeris
+    {
+        public string ModelVersion => "declination-sequence-test-v1";
+
+        internal int RequestCount { get; private set; }
+
+        public SolarSystemPosition GetPosition(SolarSystemBody body, DateTimeOffset utc)
+        {
+            Assert.AreEqual(SolarSystemBody.Sun, body);
+            Assert.IsTrue(RequestCount < declinations.Length);
+            return new SolarSystemPosition(new EquatorialPoint(0, declinations[RequestCount++]), -26.74);
+        }
+    }
+
     private sealed class RecordingHostContext(
         CameraModuleConfig configuration,
         CancellationTokenSource cancellation) : ICaptureHostContext
@@ -457,6 +636,27 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
         {
             Submission = submission;
             await cancellation.CancelAsync().ConfigureAwait(false);
+        }
+    }
+
+    private sealed class MultiCaptureHostContext(
+        CameraModuleConfig configuration,
+        CancellationTokenSource cancellation,
+        int captureCount) : ICaptureHostContext
+    {
+        public CameraModuleConfig Configuration { get; } = configuration;
+
+        internal List<CaptureLoopSubmission> Submissions { get; } = [];
+
+        public async ValueTask PublishAsync(
+            CaptureLoopSubmission submission,
+            CancellationToken cancellationToken)
+        {
+            Submissions.Add(submission);
+            if (Submissions.Count == captureCount)
+            {
+                await cancellation.CancelAsync().ConfigureAwait(false);
+            }
         }
     }
 

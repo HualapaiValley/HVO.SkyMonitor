@@ -3,7 +3,10 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
@@ -74,6 +77,161 @@ public sealed class SqliteCaptureScheduleStoreTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_PersistedV1ControlPoliciesNormalizeDuringHostRestart()
+    {
+        var cases = new[]
+        {
+            new LegacyControlCase(
+                new CameraControlPolicy
+                {
+                    AutoExposure = CameraFeatureDirective.Enabled,
+                    AutoGain = CameraFeatureDirective.Disabled
+                },
+                AutomaticControlOwnership.HostMetered,
+                AutomaticControlOwnership.Disabled),
+            new LegacyControlCase(
+                null,
+                AutomaticControlOwnership.Disabled,
+                AutomaticControlOwnership.Disabled)
+        };
+        foreach (var testCase in cases)
+        {
+            var root = CreateRoot();
+            try
+            {
+                var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+                var journalInitializer = new JournalInitializer(root);
+                var configuration = HostConfiguration();
+                string revisionId;
+                using (var store = new SqliteCaptureScheduleStore(
+                    journalInitializer, options, TimeProvider.System))
+                {
+                    var initial = await store.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                    var legacyConfiguration = configuration with
+                    {
+                        Rig = configuration.Rig with { ControlPolicy = testCase.Policy }
+                    };
+                    var staged = await store.StageAsync(
+                        LocalCaptureProfileDefinition.Create(legacyConfiguration, Definition("legacy", 2)),
+                        "stage-legacy-policy",
+                        initial.Version,
+                        "test",
+                        null,
+                        CancellationToken.None).ConfigureAwait(false);
+                    var activated = await store.ActivateAsync(
+                        staged.PendingRevision!.RevisionId,
+                        "activate-legacy-policy",
+                        staged.Version,
+                        "test",
+                        null,
+                        CancellationToken.None).ConfigureAwait(false);
+                    revisionId = activated.ActiveRevision.RevisionId;
+                }
+                if (testCase.Policy is null)
+                {
+                    using var connection = new SqliteConnection(
+                        $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+                    await connection.OpenAsync().ConfigureAwait(false);
+                    using var command = connection.CreateCommand();
+                    command.CommandText =
+                        "SELECT profile_json FROM capture_schedule_revisions WHERE revision_id = $id;";
+                    command.Parameters.AddWithValue("$id", revisionId);
+                    var profileJson = (byte[])(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+                    using var document = System.Text.Json.JsonDocument.Parse(profileJson);
+                    Assert.AreEqual(
+                        System.Text.Json.JsonValueKind.Null,
+                        document.RootElement.GetProperty("rig").GetProperty("controlPolicy").ValueKind);
+                }
+
+                using var restarted = new SqliteCaptureScheduleStore(
+                    journalInitializer, options, TimeProvider.System);
+                var accessor = new CameraAgentConfigurationAccessor();
+                var hostInitializer = new CameraAgentConfigurationInitializer(
+                    new StaticConfigurationLoader(configuration),
+                    accessor,
+                    new EmptyPipelineFactory(),
+                    NullLogger<CameraAgentConfigurationInitializer>.Instance,
+                    restarted);
+
+                await hostInitializer.StartAsync(CancellationToken.None).ConfigureAwait(false);
+                var effective = await accessor.WaitForConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, effective.Pipeline.SchemaVersion);
+                Assert.AreEqual(
+                    testCase.ExpectedExposure,
+                    effective.Rig.ControlPolicy!.ExposureControl);
+                Assert.AreEqual(
+                    testCase.ExpectedGain,
+                    effective.Rig.ControlPolicy.GainControl);
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private sealed record LegacyControlCase(
+        CameraControlPolicy? Policy,
+        AutomaticControlOwnership ExpectedExposure,
+        AutomaticControlOwnership ExpectedGain);
+
+    private static CameraModuleConfig HostConfiguration()
+    {
+        var configuration = Configuration();
+        return configuration with
+        {
+            AgentId = "test-agent",
+            Rig = configuration.Rig with
+            {
+                Optics = configuration.Rig.Optics with { ImageCircleRadiusPixels = 1 },
+                Pipeline = configuration.Rig.Pipeline with
+                {
+                    Envelope = new ExposureEnvelope(
+                        TimeSpan.FromSeconds(1),
+                        TimeSpan.FromSeconds(5),
+                        1,
+                        10,
+                        new ExposureDefaults(TimeSpan.FromSeconds(1), 1),
+                        new ExposureDefaults(TimeSpan.FromSeconds(5), 10),
+                        0.5)
+                },
+                ControlPolicy = new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }
+            },
+            DeploymentLocation = DeploymentLocationSnapshot.Create(
+                "test-location",
+                1,
+                "test",
+                null,
+                DateTimeOffset.UnixEpoch,
+                null,
+                configuration.Observatory.LatitudeDegrees,
+                configuration.Observatory.LongitudeDegrees,
+                configuration.Observatory.ElevationMeters,
+                configuration.Observatory.TimeZoneId)
+        };
+    }
+
+    private sealed class StaticConfigurationLoader(CameraModuleConfig configuration)
+        : ICameraAgentConfigurationLoader
+    {
+        public Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
+            => Task.FromResult(configuration);
+    }
+
+    private sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
+    {
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => new([]);
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+            => throw new NotSupportedException();
     }
 
     [TestMethod]

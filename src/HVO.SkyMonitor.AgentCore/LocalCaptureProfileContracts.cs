@@ -64,7 +64,7 @@ public sealed record LocalCaptureProfileDefinition(
         return configuration with
         {
             Module = Module,
-            Rig = Rig,
+            Rig = explicitV2 ? Rig : Rig with { ControlPolicy = NormalizeLegacyControlPolicy(Rig.ControlPolicy) },
             Pipeline = new CapturePipelineConfig(
                 ProcessingSteps,
                 explicitV2 ? CapturePipelineSchemaVersions.ExplicitV2 : CapturePipelineSchemaVersions.LegacyV1,
@@ -72,6 +72,28 @@ public sealed record LocalCaptureProfileDefinition(
             Schedule = Schedule
         };
     }
+
+    private static CameraControlPolicy NormalizeLegacyControlPolicy(CameraControlPolicy? policy)
+        => policy is null
+            ? new CameraControlPolicy
+            {
+                ExposureControl = AutomaticControlOwnership.Disabled,
+                GainControl = AutomaticControlOwnership.Disabled
+            }
+            : policy with
+            {
+                ExposureControl = ResolveLegacyOwnership(policy.ExposureControl, policy.AutoExposure),
+                GainControl = ResolveLegacyOwnership(policy.GainControl, policy.AutoGain)
+            };
+
+    private static AutomaticControlOwnership ResolveLegacyOwnership(
+        AutomaticControlOwnership ownership,
+        CameraFeatureDirective? legacy)
+        => ownership != AutomaticControlOwnership.Unspecified
+            ? ownership
+            : legacy == CameraFeatureDirective.Enabled
+                ? AutomaticControlOwnership.HostMetered
+                : AutomaticControlOwnership.Disabled;
 }
 
 public static class LocalCaptureProfileContract

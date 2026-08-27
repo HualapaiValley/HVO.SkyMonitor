@@ -211,6 +211,11 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new InvalidOperationException(
                 $"Unsupported current capture pipeline dependency policy '{config.Pipeline.DependencyPolicy}'.");
         }
+        if (config.Rig.ControlPolicy is { AutoExposure: not null } or { AutoGain: not null })
+        {
+            throw new InvalidOperationException(
+                "Current CameraAgent file configuration cannot use legacy automatic-control directives.");
+        }
         if (config.Schedule is not { } schedule || schedule.WeeklyWindows.Count == 0)
         {
             throw new InvalidOperationException(

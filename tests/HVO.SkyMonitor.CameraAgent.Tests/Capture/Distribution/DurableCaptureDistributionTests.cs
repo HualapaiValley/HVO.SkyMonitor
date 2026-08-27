@@ -13,6 +13,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Processing;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Nodes;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 
@@ -285,17 +288,40 @@ public sealed class DurableCaptureDistributionTests
     }
 
     [TestMethod]
-    public async Task InFlightOldPipelineEnvelopeSurvivesConfigurationMigrationUntilDrain()
+    public async Task InFlightPrePipelineEnvelopeNormalizesAndSurvivesConfigurationMigrationUntilDrain()
     {
         using var fixture = CreateFixture(new CaptureDistributionOptions());
         var oldStep = new CaptureProcessingStepConfig("Annotation", "sky-annotation", DependsOn: ["preview"]);
         var oldConfiguration = fixture.Configuration with
         {
+            Rig = fixture.Configuration.Rig with
+            {
+                ControlPolicy = new CameraControlPolicy
+                {
+                    AutoExposure = CameraFeatureDirective.Enabled,
+                    AutoGain = CameraFeatureDirective.Disabled
+                }
+            },
             Pipeline = new CapturePipelineConfig([oldStep], CapturePipelineSchemaVersions.ExplicitV2,
                 CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };
         var submission = fixture.CreateSubmission(0);
         _ = await fixture.Ingress.AcceptAsync(oldConfiguration, submission, CancellationToken.None).ConfigureAwait(false);
+        using (var connection = await OpenAsync(fixture.Root).ConfigureAwait(false))
+        {
+            var currentJson = await ScalarBytesAsync(
+                connection, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
+            var root = JsonNode.Parse(currentJson)!.AsObject();
+            var configuration = root["configuration"]!.AsObject();
+            configuration["processingSteps"] = configuration["pipeline"]!["steps"]!.DeepClone();
+            configuration["pipeline"] = null;
+            var legacyJson = Encoding.UTF8.GetBytes(root.ToJsonString());
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE capture_lane_contexts SET context_json = $json, context_sha256 = $sha;";
+            command.Parameters.AddWithValue("$json", legacyJson);
+            command.Parameters.AddWithValue("$sha", Convert.ToHexString(SHA256.HashData(legacyJson)));
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
         var newConfiguration = fixture.Configuration with
         {
             Pipeline = new CapturePipelineConfig([
@@ -311,6 +337,14 @@ public sealed class DurableCaptureDistributionTests
 
         Assert.IsNotNull(oldLease);
         Assert.AreEqual("sky-annotation", oldLease.Context.Configuration.Pipeline!.Steps.Single().Id);
+        Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, oldLease.Context.Configuration.Pipeline.SchemaVersion);
+        Assert.IsNull(oldLease.Context.Configuration.ProcessingSteps);
+        Assert.AreEqual(
+            AutomaticControlOwnership.HostMetered,
+            oldLease.Context.Configuration.Rig.ControlPolicy!.ExposureControl);
+        Assert.AreEqual(
+            AutomaticControlOwnership.Disabled,
+            oldLease.Context.Configuration.Rig.ControlPolicy.GainControl);
         await restarted.CompleteAsync(oldLease, CancellationToken.None).ConfigureAwait(false);
         var newEnvelope = CaptureLaneEnvelopeSerializer.Serialize(newConfiguration, fixture.CreateSubmission(1));
         var decoded = CaptureLaneEnvelopeSerializer.Deserialize(newEnvelope.Json, newEnvelope.Sha256);
@@ -1463,7 +1497,12 @@ public sealed class DurableCaptureDistributionTests
                     TimeSpan.FromMilliseconds(100),
                     1,
                     1,
-                    CadenceMode: cadenceMode)),
+                    CadenceMode: cadenceMode),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }),
             CapturePipelineConfig.Empty,
             AgentId: "agent-durable-cadence");
 

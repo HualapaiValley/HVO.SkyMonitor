@@ -54,7 +54,7 @@ public sealed class CaptureControlConfigurationTests
     [TestMethod]
     public async Task LoadAsync_OmittedOwnership_IsRejected()
     {
-        await Assert.ThrowsExactlyAsync<JsonException>(() => LoadAsync(root =>
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => LoadAsync(root =>
         {
             Remove(root, "rig.controlPolicy.exposureControl");
             Remove(root, "rig.controlPolicy.gainControl");
@@ -177,6 +177,8 @@ public sealed class CaptureControlConfigurationTests
     [DataRow("rig.controlPolicy.solarRegimes.nightAltitudeThresholdDegrees", "90.01")]
     [DataRow("rig.controlPolicy.solarRegimes.nightAltitudeThresholdDegrees", "-90.01")]
     [DataRow("rig.controlPolicy.solarRegimes.nightAltitudeThresholdDegrees", "\"Infinity\"")]
+    [DataRow("rig.controlPolicy.autoExposure", "\"Enabled\"")]
+    [DataRow("rig.controlPolicy.autoGain", "\"Disabled\"")]
     [DataRow("rig.pipeline.envelope.minExposure", "\"00:00:00\"")]
     [DataRow("rig.pipeline.envelope.minExposure", "\"00:00:20\"")]
     [DataRow("rig.pipeline.envelope.minGain", "\"NaN\"")]

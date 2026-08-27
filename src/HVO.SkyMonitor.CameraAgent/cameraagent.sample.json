@@ -173,7 +173,7 @@
             "id": "ArchiveStorage",
             "type": "Storage",
             "order": 110,
-            "dependsOn": ["LocalStorage"],
+            "dependsOn": ["Annotation", "CalibratedPreview"],
             "options": {
                 "storageRoot": "/workspaces/HVO.SkyMonitor/data/archive",
                 "retentionDays": 30,
@@ -197,7 +197,7 @@
             "id": "Telemetry",
             "type": "Telemetry",
             "order": 1000,
-            "dependsOn": ["ArchiveStorage", "Upload"]
+            "dependsOn": ["Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage", "ArchiveStorage", "Upload"]
         }]
     },
     "schedule": {

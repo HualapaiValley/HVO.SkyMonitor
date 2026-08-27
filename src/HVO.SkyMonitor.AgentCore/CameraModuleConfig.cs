@@ -9,9 +9,13 @@ public sealed record CameraModuleConfig(
     ObservatoryLocation Observatory,
     CameraModuleDescriptor Module,
     CameraRigConfig Rig,
-    [property: JsonRequired] CapturePipelineConfig Pipeline,
+    CapturePipelineConfig Pipeline,
     string? AgentId = null)
 {
+    /// <summary>Gets processing steps retained only for replaying pre-pipeline durable envelopes.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<CaptureProcessingStepConfig>? ProcessingSteps { get; init; }
+
     /// <summary>Gets the validated immutable deployment location selected for this process lifetime.</summary>
     [JsonIgnore]
     public DeploymentLocationSnapshot? DeploymentLocation { get; init; }
