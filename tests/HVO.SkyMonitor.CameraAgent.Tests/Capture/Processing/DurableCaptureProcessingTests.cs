@@ -882,7 +882,6 @@ public sealed partial class DurableCaptureProcessingTests
             };
             var config = fixture.Item.Config with
             {
-                ProcessingSteps = null,
                 Pipeline = new CapturePipelineConfig(
                     configuredSteps,
                     CapturePipelineSchemaVersions.ExplicitV2,
@@ -2528,14 +2527,14 @@ public sealed partial class DurableCaptureProcessingTests
         };
         return CreateConfig() with
         {
-            ProcessingSteps =
+            Pipeline = new CapturePipelineConfig(
             [
                 new CaptureProcessingStepConfig(
                     "Storage", "storage", Options: JsonSerializer.SerializeToElement(storageOptions)),
                 new CaptureProcessingStepConfig(
                     "ProjectedScene", "projected", Publication: new CaptureProcessingPublicationPolicy(
                         CaptureProcessingPersistenceMode.DurableLocal))
-            ]
+            ])
         };
     }
 
@@ -3301,6 +3300,7 @@ public sealed partial class DurableCaptureProcessingTests
                 new OpticsProfile("Test", 1, 1, 0),
                 new RigOrientation(0, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty,
             AgentId: "agent-test");
 
     private static CaptureLoopSubmission CreateSubmission(CameraFrame frame)

@@ -46,7 +46,7 @@ public sealed class StandaloneW6ProfileTests
 
         var rigSha256 = CameraRigProfileIdentity.ComputeSha256(configuration.Rig);
         Assert.AreEqual(
-            "7B395B8DD577024944C263E1EA642BB472E3144110FF3FE75DBBCE67B187F172",
+            "7191D84F4BA368482546AB6A09FBFEDD2F273BD626FABE6F3156C55C54DFCA9B",
             rigSha256,
             rigSha256);
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
@@ -55,12 +55,12 @@ public sealed class StandaloneW6ProfileTests
             processingSha256,
             processingSha256);
         Assert.AreEqual(
-            "DDD63791961E018687C7E6FA095CA17EFB88F1CC5AE5861D58690129FB9A27B2",
+            "6A5E298C74CA520E3EB3EEE6CE67D30A8BDFC1340ACC2FE1AA5DDDF0F6F9CFDD",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "0B34090E5589D72D085597DAB3703C73566EA88AA48E8ACDFEF599C6A1D983A5",
+            "594C84F10D861B746672D89D11EFF1BD1D85EF9F3C1B913FFD40ED988A47186D",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(
@@ -102,7 +102,7 @@ public sealed class StandaloneW6ProfileTests
         var preview = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().PreviewPlan(configuration);
 
         Assert.AreEqual(
-            "3233765432377F454526BAF795268FC9A73B3DEB8F0800A0D21BD652006E500C",
+            "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479",
             CameraRigProfileIdentity.ComputeSha256(configuration.Rig));
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
@@ -110,10 +110,10 @@ public sealed class StandaloneW6ProfileTests
             processingSha256,
             processingSha256);
         Assert.AreEqual(
-            "355D9C9A53CB600E6F1798109A4BFAC8D539F6A9B0A1DF9A9D44A9EF6283ED01",
+            "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
         Assert.AreEqual(
-            "5185EEA24AE697CD841FFF787F96D886AF8EF5DF08A162098671F6B6EBFCBDB4",
+            "3CF3E28D7253CB414EF7153F053E6D9E98A4C239ABD5F1840FF62F4CEE521711",
             LocalCaptureProfileContract.ComputeSha256(
                 LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!)));
         Assert.AreEqual(

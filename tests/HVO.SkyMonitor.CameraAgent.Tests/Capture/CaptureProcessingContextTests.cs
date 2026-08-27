@@ -475,7 +475,8 @@ public sealed class CaptureProcessingContextTests
                     PrincipalPointX: 8, PrincipalPointY: 8, ImageCircleRadiusPixels: 7),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
-                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)));
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty);
         var provenance = new SceneProvenance(
             "persisted-scene", "rig-v1", "test", "1", new string('0', 64),
             "equidistant", "v1", "v1", "v1",
@@ -564,7 +565,8 @@ public sealed class CaptureProcessingContextTests
                 new SensorProfile("Test", 2, 2, 1, SensorColorMode.Mono, CameraPixelFormat.Mono8),
                 new OpticsProfile("Test", 1, 1, 0),
                 new RigOrientation(0, 0, 0),
-                new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)));
+                new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty);
 
     private static CaptureLoopSubmission CreateSubmission(CameraFrame? frame)
         => new(

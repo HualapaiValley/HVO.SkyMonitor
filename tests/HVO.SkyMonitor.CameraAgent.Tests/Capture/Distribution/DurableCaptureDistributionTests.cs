@@ -291,7 +291,6 @@ public sealed class DurableCaptureDistributionTests
         var oldStep = new CaptureProcessingStepConfig("Annotation", "sky-annotation", DependsOn: ["preview"]);
         var oldConfiguration = fixture.Configuration with
         {
-            ProcessingSteps = null,
             Pipeline = new CapturePipelineConfig([oldStep], CapturePipelineSchemaVersions.ExplicitV2,
                 CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };
@@ -299,7 +298,6 @@ public sealed class DurableCaptureDistributionTests
         _ = await fixture.Ingress.AcceptAsync(oldConfiguration, submission, CancellationToken.None).ConfigureAwait(false);
         var newConfiguration = fixture.Configuration with
         {
-            ProcessingSteps = null,
             Pipeline = new CapturePipelineConfig([
                 new CaptureProcessingStepConfig("OverlayManifest", "overlay-manifest", DependsOn: ["combined-preview"])
             ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
@@ -1446,6 +1444,7 @@ public sealed class DurableCaptureDistributionTests
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty,
             AgentId: "agent-lanes");
 
     private static CameraModuleConfig CreateCadenceConfiguration(
@@ -1465,6 +1464,7 @@ public sealed class DurableCaptureDistributionTests
                     1,
                     1,
                     CadenceMode: cadenceMode)),
+            CapturePipelineConfig.Empty,
             AgentId: "agent-durable-cadence");
 
     private sealed record CadenceScenario(
@@ -1489,7 +1489,10 @@ public sealed class DurableCaptureDistributionTests
 
     private sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
     {
-        public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config) => [];
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => new([]);
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+            => throw new NotSupportedException();
     }
 
     private sealed class ConfigurationAccessor(CameraModuleConfig configuration) : ICameraAgentConfigurationAccessor

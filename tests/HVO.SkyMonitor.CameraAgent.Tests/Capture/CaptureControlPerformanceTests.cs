@@ -772,7 +772,8 @@ public sealed class CaptureControlPerformanceTests
                         NightAltitudeThresholdDegrees = -12
                     }
                 },
-                ProfileVersion: "capture-control-performance-v1"));
+                ProfileVersion: "capture-control-performance-v1"),
+            CapturePipelineConfig.Empty);
 
     private static void AssertEquivalentCriticalTimeline(
         RunnerScenarioEvidence expected,

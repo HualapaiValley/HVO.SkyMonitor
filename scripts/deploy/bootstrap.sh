@@ -368,7 +368,7 @@ deploy_stage_workload_profile() {
       .rig.sensor.byteOrder == "LittleEndian" and
       (if $width == 64 then .module.options.maximumResults == 10 and .module.options.shotNoiseEnabled == false and
         .rig.profileVersion == "w0-deterministic-mono16-v1" and
-        any(.processingSteps[]; .type == "Preview" and .options.recipeVersion == "mono16-asinh-v2") else true end)' "$source" >/dev/null ||
+        any(.pipeline.steps[]; .type == "Preview" and .options.recipeVersion == "mono16-asinh-v2") else true end)' "$source" >/dev/null ||
       { deploy_fail workload "$workload" noncanonical-or-physical-profile; return 1; }
     rendered="$render_root/$(jq -r '.name' <<< "$target")-$workload-camera-module.json"
     (umask 077; jq -S --arg device "$device_id" '.agentId=$device' "$source" > "$rendered") || return 1

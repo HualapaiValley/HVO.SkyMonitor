@@ -406,9 +406,15 @@
         "cadenceMode": "MinimumStartInterval"
       }
     ],
-    "weeklyWindows": [],
-    "blackouts": [],
-    "legacyAlwaysOpen": true,
-    "legacySetpointProfileId": "w6-night"
+    "weeklyWindows": [
+      { "id": "continuous-sunday", "day": "Sunday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "w6-night" },
+      { "id": "continuous-monday", "day": "Monday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "w6-night" },
+      { "id": "continuous-tuesday", "day": "Tuesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "w6-night" },
+      { "id": "continuous-wednesday", "day": "Wednesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "w6-night" },
+      { "id": "continuous-thursday", "day": "Thursday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "w6-night" },
+      { "id": "continuous-friday", "day": "Friday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "w6-night" },
+      { "id": "continuous-saturday", "day": "Saturday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "w6-night" }
+    ],
+    "blackouts": []
   }
 }

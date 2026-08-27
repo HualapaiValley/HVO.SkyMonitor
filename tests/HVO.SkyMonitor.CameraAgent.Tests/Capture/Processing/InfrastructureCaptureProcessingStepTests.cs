@@ -68,7 +68,6 @@ public sealed class InfrastructureCaptureProcessingStepTests
         var config = baseline with
         {
             AgentId = "agent-test",
-            ProcessingSteps = null,
             Pipeline = new CapturePipelineConfig(
                 [
                     new CaptureProcessingStepConfig(
@@ -457,7 +456,6 @@ public sealed class InfrastructureCaptureProcessingStepTests
         var config = baseline with
         {
             AgentId = "agent-test",
-            ProcessingSteps = null,
             Pipeline = new CapturePipelineConfig(
                 [],
                 CapturePipelineSchemaVersions.ExplicitV2,

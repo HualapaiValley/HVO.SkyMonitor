@@ -1169,6 +1169,7 @@ public sealed class Issue208W1W2RetainedEvidence_20260726
                     LightExposure, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10), Gain, Gain),
                 ProfileVersion: $"{workload.Id}-rig-v1",
                 Readout: readout),
+            CapturePipelineConfig.Empty,
             AgentId: $"issue-208-{workload.Id.ToUpperInvariant()}");
     }
 

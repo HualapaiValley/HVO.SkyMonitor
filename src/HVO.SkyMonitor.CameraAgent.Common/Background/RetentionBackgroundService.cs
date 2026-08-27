@@ -192,9 +192,9 @@ public sealed class RetentionBackgroundService(
     private List<StorageRetentionPlan> BuildRetentionPlans(CameraModuleConfig config)
     {
         var configuredStorage = new List<StorageRetentionPlan>();
-        var hasDurableOutputs = config.ResolveProcessingSteps().Any(static step =>
+        var hasDurableOutputs = config.Pipeline.Steps.Any(static step =>
             step.Enabled != false && step.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal);
-        foreach (var step in config.ResolveProcessingSteps())
+        foreach (var step in config.Pipeline.Steps)
         {
             if (!IsFileStorageStep(step.Type) || step.Enabled == false)
             {

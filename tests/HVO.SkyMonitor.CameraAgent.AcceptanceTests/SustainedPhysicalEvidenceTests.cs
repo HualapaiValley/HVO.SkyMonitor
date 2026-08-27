@@ -332,7 +332,6 @@ public sealed class SustainedPhysicalEvidenceTests
             new ObservatoryLocation(0, 0, 0, "UTC"),
             document.Module,
             document.Rig,
-            document.ProcessingSteps,
             document.Pipeline,
             document.AgentId);
         return new ExpectedProfileIdentities(

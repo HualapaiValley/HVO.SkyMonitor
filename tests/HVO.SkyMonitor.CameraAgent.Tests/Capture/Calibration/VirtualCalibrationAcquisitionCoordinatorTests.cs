@@ -1037,6 +1037,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
                     TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(32), TimeSpan.FromMilliseconds(32), 82, 82),
                 ProfileVersion: "rig-test-v1",
                 Readout: readout),
+            CapturePipelineConfig.Empty,
             AgentId: agentId);
     }
 

@@ -1909,6 +1909,7 @@ public sealed class SqliteTransientCandidateJournalTests
                     new PipelineExposureProfile(
                         TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1),
                     ProfileVersion: "rig-v1"),
+                CapturePipelineConfig.Empty,
                 AgentId: "agent");
 
         private static CaptureLoopSubmission CreateSubmission(DateTimeOffset timestamp, byte[] payload)

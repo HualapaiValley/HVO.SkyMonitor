@@ -1622,7 +1622,10 @@ public sealed class DurableCaptureDistributionPerformanceTests
 
     private sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
     {
-        public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config) => [];
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => new([]);
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+            => throw new NotSupportedException();
     }
 
     private sealed class ConfigurationAccessor(CameraModuleConfig configuration) : ICameraAgentConfigurationAccessor

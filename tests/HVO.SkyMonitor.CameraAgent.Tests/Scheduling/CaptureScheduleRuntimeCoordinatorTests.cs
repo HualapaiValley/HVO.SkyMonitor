@@ -266,9 +266,17 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
                 TimeSpan.FromSeconds(1),
                 gain,
                 TimeSpan.FromSeconds(2))],
-            [],
-            LegacyAlwaysOpen: true,
-            LegacySetpointProfileId: profileId);
+            Enum.GetValues<DayOfWeek>()
+                .Select(day => new CaptureWeeklyScheduleWindow(
+                    $"always-open-{day.ToString().ToUpperInvariant()}",
+                    day,
+                    new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue),
+                    new CaptureScheduleBoundary(
+                        CaptureScheduleBoundaryKind.FixedLocalTime,
+                        TimeOnly.MinValue,
+                        DayOffset: 1),
+                    profileId))
+                .ToArray());
 
     private sealed class RuntimeFixture : IDisposable
     {
@@ -336,7 +344,13 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
                     new OpticsProfile("Perspective", 50, 10, 0),
                     new RigOrientation(90, 0, 0),
                     new PipelineExposureProfile(
-                        TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+                        TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1),
+                    new CameraControlPolicy
+                    {
+                        ExposureControl = AutomaticControlOwnership.Disabled,
+                        GainControl = AutomaticControlOwnership.Disabled
+                    }),
+                CapturePipelineConfig.Empty,
                 AgentId: "test-agent")
             {
                 DeploymentLocation = location,
@@ -382,7 +396,10 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
 
     private sealed class EmptyPipelineFactory : ICaptureProcessingPipelineFactory
     {
-        public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config) => [];
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config) => new([]);
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
+            => throw new NotSupportedException();
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utc) : TimeProvider

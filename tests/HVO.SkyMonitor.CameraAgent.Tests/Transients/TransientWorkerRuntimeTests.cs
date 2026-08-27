@@ -1854,6 +1854,7 @@ public sealed class TransientWorkerRuntimeTests
                     TimeSpan.FromSeconds(1),
                     1,
                     1)),
+            CapturePipelineConfig.Empty,
             AgentId: "transient-runtime-agent");
     }
 

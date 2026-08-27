@@ -451,7 +451,13 @@ public sealed class CaptureAdmissionCoordinatorTests
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
-                    TimeSpan.Zero, TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1), 0, 0)));
+                    TimeSpan.Zero, TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1), 0, 0),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }),
+            CapturePipelineConfig.Empty);
 
     private static SqliteRawCaptureJournal CreateJournal(string root)
         => new(Path.Combine(root, "journal", "raw-ingress.db"), 1);

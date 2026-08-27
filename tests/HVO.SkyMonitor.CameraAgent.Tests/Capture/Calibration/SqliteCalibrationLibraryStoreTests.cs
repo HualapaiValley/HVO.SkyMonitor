@@ -721,6 +721,7 @@ public sealed class SqliteCalibrationLibraryStoreTests
                     TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(32), TimeSpan.FromMilliseconds(32), 82, 82),
                 ProfileVersion: "virtual-rig-v1",
                 Readout: readout),
+            CapturePipelineConfig.Empty,
             AgentId: "virtual-calibration-agent");
     }
 

@@ -503,7 +503,7 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
             root.GetProperty("module").GetProperty("options").GetProperty("seed").GetInt32());
         Assert.AreEqual(agent.SceneUtc, root.GetProperty("module").GetProperty("options")
             .GetProperty("fixedSceneUtc").GetDateTimeOffset());
-        var steps = root.GetProperty("processingSteps").EnumerateArray().ToArray();
+        var steps = root.GetProperty("pipeline").GetProperty("steps").EnumerateArray().ToArray();
         CollectionAssert.AreEqual(ExpectedProcessingNodes, steps.Select(static step => step.GetProperty("id").GetString()).ToArray());
         var storage = steps.Single(static step => step.GetProperty("id").GetString() == "LocalStorage").GetProperty("options");
         Assert.AreEqual($"/var/lib/hvo/{agent.Name}-197", storage.GetProperty("storageRoot").GetString());

@@ -114,11 +114,7 @@ internal sealed class StandardCaptureLaneHandler(
     {
         ArgumentNullException.ThrowIfNull(configuration);
         return Convert.ToHexString(SHA256.HashData(
-            JsonSerializer.SerializeToUtf8Bytes(new
-            {
-                configuration.ProcessingSteps,
-                configuration.Pipeline
-            })));
+            JsonSerializer.SerializeToUtf8Bytes(configuration.Pipeline)));
     }
 
     public void Dispose()

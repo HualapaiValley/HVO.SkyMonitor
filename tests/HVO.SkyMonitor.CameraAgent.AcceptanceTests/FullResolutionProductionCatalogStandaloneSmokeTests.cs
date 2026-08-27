@@ -488,8 +488,8 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         Assert.AreEqual(TimeSpan.FromSeconds(5), config.Rig.Pipeline.Envelope.NightDefaults.Exposure);
         CollectionAssert.AreEqual(
             ExpectedGraph,
-            config.ResolveProcessingSteps().OrderBy(static step => step.Order).Select(static step => step.Id).ToArray());
-        Assert.IsFalse(config.ResolveProcessingSteps().Any(static step => step.Type.Contains("Upload", StringComparison.Ordinal)));
+            config.Pipeline.Steps.OrderBy(static step => step.Order).Select(static step => step.Id).ToArray());
+        Assert.IsFalse(config.Pipeline.Steps.Any(static step => step.Type.Contains("Upload", StringComparison.Ordinal)));
     }
 
     private static CadenceEvidence AssertCadence(ArtifactManifestV2[] rawManifests)

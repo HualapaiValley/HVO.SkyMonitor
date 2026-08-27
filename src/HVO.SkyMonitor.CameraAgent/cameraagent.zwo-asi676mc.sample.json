@@ -82,9 +82,9 @@
       }
     },
     "controlPolicy": {
-      "temperature": { "mode": "Disabled" },
-      "autoGain": "Disabled",
-      "autoExposure": "Disabled"
+      "exposureControl": "Disabled",
+      "gainControl": "Disabled",
+      "temperature": { "mode": "Disabled" }
     },
     "profileVersion": "physical-asi676mc-fullframe-raw16-sample-provisional-v1"
   },
@@ -92,5 +92,18 @@
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": []
+  },
+  "schedule": {
+    "schemaVersion": "capture-schedule-v1",
+    "setpointProfiles": [{ "id": "continuous", "exposure": "00:00:20", "gain": 82.0, "captureInterval": "00:00:25", "cadenceMode": "MinimumStartInterval" }],
+    "weeklyWindows": [
+      { "id": "continuous-sunday", "day": "Sunday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-monday", "day": "Monday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-tuesday", "day": "Tuesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-wednesday", "day": "Wednesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-thursday", "day": "Thursday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-friday", "day": "Friday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-saturday", "day": "Saturday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" }
+    ]
   }
 }

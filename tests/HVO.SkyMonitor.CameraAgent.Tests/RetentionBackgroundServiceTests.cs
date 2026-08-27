@@ -557,7 +557,6 @@ public sealed class RetentionBackgroundServiceTests
             File.SetLastWriteTimeUtc(expired, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
             var config = CreateConfig() with
             {
-                ProcessingSteps = null,
                 Pipeline = new CapturePipelineConfig(
                     [
                         new CaptureProcessingStepConfig(
@@ -619,7 +618,6 @@ public sealed class RetentionBackgroundServiceTests
             var archiveStorage = Storage("archive-storage", archiveRoot, 1);
             var config = CreateConfig() with
             {
-                ProcessingSteps = null,
                 Pipeline = new CapturePipelineConfig(
                     [
                         new CaptureProcessingStepConfig(
@@ -654,7 +652,6 @@ public sealed class RetentionBackgroundServiceTests
         {
             var config = CreateConfig() with
             {
-                ProcessingSteps = null,
                 Pipeline = new CapturePipelineConfig(
                     [new CaptureProcessingStepConfig(
                         "JpegEncoding", "final-jpeg", DependsOn: ["$raw"],
@@ -704,7 +701,7 @@ public sealed class RetentionBackgroundServiceTests
             var evaluatedUtc = manifest.Descriptor.Artifact.CreatedUtc.AddDays(10);
             var config = CreateConfig() with
             {
-                ProcessingSteps =
+                Pipeline = new CapturePipelineConfig(
                 [
                     new CaptureProcessingStepConfig(
                         NoOpFileStorageProcessingStep.StableAlias,
@@ -736,7 +733,7 @@ public sealed class RetentionBackgroundServiceTests
                                 }
                             ]
                         }))
-                ]
+                ])
             };
             var service = new RetentionBackgroundService(
                 new StubConfigurationAccessor(),
@@ -764,9 +761,9 @@ public sealed class RetentionBackgroundServiceTests
             new CameraRigConfig(new SensorProfile("Virtual", 1, 1, 1, SensorColorMode.Mono, CameraPixelFormat.Mono16),
                 new OpticsProfile("EquidistantFisheye", 1, 180, 0), new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
-            roots.Select(root => new CaptureProcessingStepConfig(
+            new CapturePipelineConfig(roots.Select(root => new CaptureProcessingStepConfig(
                 NoOpFileStorageProcessingStep.StableAlias,
-                Options: System.Text.Json.JsonSerializer.SerializeToElement(new { storageRoot = root, retentionDays = 7 }))).ToArray());
+                Options: System.Text.Json.JsonSerializer.SerializeToElement(new { storageRoot = root, retentionDays = 7 }))).ToArray()));
     }
 
     private static CameraModuleConfig CreateConfigWithMetadataPolicy(string root)
@@ -779,8 +776,8 @@ public sealed class RetentionBackgroundServiceTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
                     TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
-            [new CaptureProcessingStepConfig(
-                "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+            new CapturePipelineConfig([new CaptureProcessingStepConfig(
+                NoOpFileStorageProcessingStep.StableAlias,
                 Options: JsonSerializer.SerializeToElement(new
                 {
                     storageRoot = root,
@@ -794,7 +791,7 @@ public sealed class RetentionBackgroundServiceTests
                             retentionDays = 30
                         }
                     }
-                }))]);
+                }))]));
 
     private static RetentionBackgroundService CreateService(
         IArtifactOutbox outbox,

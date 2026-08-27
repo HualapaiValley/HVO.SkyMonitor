@@ -122,8 +122,8 @@ public sealed class ZwoAsiCameraModuleTests
                 Assert.AreEqual(TimeSpan.FromSeconds(1000), sample.Rig.Pipeline.Envelope.MaxExposure);
                 Assert.AreEqual(0d, sample.Rig.Pipeline.Envelope.MinGain);
                 Assert.AreEqual(510d, sample.Rig.Pipeline.Envelope.MaxGain);
-                Assert.AreEqual(CameraFeatureDirective.Disabled, sample.Rig.ControlPolicy!.AutoGain);
-                Assert.AreEqual(CameraFeatureDirective.Disabled, sample.Rig.ControlPolicy.AutoExposure);
+                Assert.AreEqual(AutomaticControlOwnership.Disabled, sample.Rig.ControlPolicy!.GainControl);
+                Assert.AreEqual(AutomaticControlOwnership.Disabled, sample.Rig.ControlPolicy.ExposureControl);
             }
         }
         Assert.AreEqual(0, factoryCalls);
@@ -894,7 +894,6 @@ public sealed class ZwoAsiCameraModuleTests
             new ObservatoryLocation(0, 0, 0, "UTC"),
             document.Module,
             document.Rig,
-            document.ProcessingSteps,
             document.Pipeline,
             document.AgentId);
 
@@ -947,7 +946,8 @@ public sealed class ZwoAsiCameraModuleTests
                     0,
                     82),
                 ProfileVersion: $"physical-{profile.Id}-sample-v1",
-                Readout: readout));
+                Readout: readout),
+            CapturePipelineConfig.Empty);
     }
 
     private static JsonElement OptionsJson(

@@ -128,23 +128,26 @@
       "nightGain": 1.0
     },
     "controlPolicy": {
-      "autoGain": "Disabled",
-      "autoExposure": "Disabled"
+      "exposureControl": "Disabled",
+      "gainControl": "Disabled"
     }
   },
-  "processingSteps": [
-    {
+  "pipeline": {
+    "schemaVersion": "cameraagent-capture-pipeline-v2",
+    "dependencyPolicy": "reject-enabled-dependent-v1",
+    "steps": [{
       "id": "CloudObservation",
       "type": "VirtualSkyCloudObservation",
       "order": 5,
+      "dependsOn": ["$raw"],
       "required": true
     },
     {
       "id": "Calibration",
       "type": "Calibration",
       "order": 10,
+      "dependsOn": ["$raw"],
       "options": {
-        "enabled": true,
         "strategy": "None",
         "outputVariant": "none"
       }
@@ -155,7 +158,6 @@
       "order": 25,
       "dependsOn": ["Calibration"],
       "options": {
-        "enabled": true,
         "windowSize": 2
       }
     },
@@ -165,7 +167,6 @@
       "order": 45,
       "dependsOn": ["Calibration"],
       "options": {
-        "enabled": true,
         "recipeVersion": "integration-calibrated-preview-v1",
         "outputVariant": "calibrated-display",
         "blackPercentile": 0.5,
@@ -179,7 +180,6 @@
       "order": 50,
       "dependsOn": ["RollingCombination"],
       "options": {
-        "enabled": true,
         "recipeVersion": "integration-mono16-preview-v1",
         "blackPercentile": 0.5,
         "whitePercentile": 0.999,
@@ -192,7 +192,6 @@
       "order": 75,
       "dependsOn": ["Preview"],
       "options": {
-        "enabled": true,
         "drawLabels": true,
         "drawConstellationLines": false,
         "drawImageCircle": true,
@@ -202,7 +201,7 @@
     },
     {
       "id": "LocalStorage",
-      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "type": "Storage",
       "order": 100,
       "dependsOn": ["Annotation", "CalibratedPreview"],
       "options": {
@@ -223,9 +222,22 @@
     },
     {
       "id": "Telemetry",
-      "type": "HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common",
+      "type": "Telemetry",
       "order": 1000,
       "dependsOn": ["LocalStorage"]
-    }
-  ]
+    }]
+  },
+  "schedule": {
+    "schemaVersion": "capture-schedule-v1",
+    "setpointProfiles": [{ "id": "continuous", "exposure": "00:00:00.0100000", "gain": 1.0, "captureInterval": "00:00:00.5000000", "cadenceMode": "MinimumStartInterval" }],
+    "weeklyWindows": [
+      { "id": "continuous-sunday", "day": "Sunday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-monday", "day": "Monday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-tuesday", "day": "Tuesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-wednesday", "day": "Wednesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-thursday", "day": "Thursday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-friday", "day": "Friday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" },
+      { "id": "continuous-saturday", "day": "Saturday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "continuous" }
+    ]
+  }
 }

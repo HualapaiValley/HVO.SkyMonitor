@@ -33,6 +33,7 @@ public sealed class ArtifactOutboxDrainServiceTests
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
+            CapturePipelineConfig.Empty,
             AgentId: "agent");
 
         Assert.IsNull(ArtifactOutboxDrainService.ResolveStorageRoot(config));
@@ -49,6 +50,7 @@ public sealed class ArtifactOutboxDrainServiceTests
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
+            CapturePipelineConfig.Empty,
             AgentId: "agent");
         var root = Path.Combine(Path.GetTempPath(), "raw-ingress");
         var options = new CameraAgentHostOptions
@@ -75,14 +77,14 @@ public sealed class ArtifactOutboxDrainServiceTests
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
-            [new CaptureProcessingStepConfig(
+            new CapturePipelineConfig([new CaptureProcessingStepConfig(
                 NoOpFileStorageProcessingStep.StableAlias,
                 Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
                 {
                     StorageRoot = root,
                     QueueForUpload = false,
                     Policies = [new ArtifactStoragePolicyOptions { Role = FrameArtifactRole.Preview, QueueForUpload = true }]
-                }))],
+                }))]),
             AgentId: "agent");
 
         var roots = ArtifactOutboxDrainService.ResolveStorageRoots(config, new CameraAgentHostOptions());
@@ -104,13 +106,13 @@ public sealed class ArtifactOutboxDrainServiceTests
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
-            [new CaptureProcessingStepConfig(
+            new CapturePipelineConfig([new CaptureProcessingStepConfig(
                 NoOpFileStorageProcessingStep.StableAlias,
                 Options: JsonSerializer.SerializeToElement(new NoOpFileStorageProcessingStepOptions
                 {
                     StorageRoot = archiveRoot,
                     QueueForUpload = false
-                }))],
+                }))]),
             AgentId: "agent");
         var options = new CameraAgentHostOptions
         {
@@ -130,16 +132,17 @@ public sealed class ArtifactOutboxDrainServiceTests
 
         var defaulted = config with
         {
-            ProcessingSteps = [new CaptureProcessingStepConfig(NoOpFileStorageProcessingStep.StableAlias)]
+            Pipeline = new CapturePipelineConfig(
+                [new CaptureProcessingStepConfig(NoOpFileStorageProcessingStep.StableAlias)])
         };
         var defaultRoots = ArtifactOutboxDrainService.ResolveLocalStorageRoots(defaulted, options);
         Assert.HasCount(2, defaultRoots);
         Assert.AreEqual(Path.GetFullPath("/tmp/camera"), defaultRoots[1]);
         var disabled = defaulted with
         {
-            ProcessingSteps = [new CaptureProcessingStepConfig(
+            Pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig(
                 NoOpFileStorageProcessingStep.StableAlias,
-                Enabled: false)]
+                Enabled: false)])
         };
         Assert.HasCount(1, ArtifactOutboxDrainService.ResolveLocalStorageRoots(disabled, options));
     }

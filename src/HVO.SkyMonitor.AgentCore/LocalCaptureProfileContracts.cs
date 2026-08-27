@@ -25,7 +25,7 @@ public sealed record LocalCaptureProfileDefinition(
             LegacySchemaVersion,
             configuration.Module,
             configuration.Rig,
-            configuration.ResolveProcessingSteps(),
+            configuration.Pipeline.Steps,
             schedule);
     }
 
@@ -39,7 +39,7 @@ public sealed record LocalCaptureProfileDefinition(
             CurrentSchemaVersion,
             configuration.Module,
             configuration.Rig,
-            configuration.ResolveProcessingSteps(),
+            configuration.Pipeline.Steps,
             schedule,
             CapturePipelineDependencyPolicy.RejectEnabledDependent);
     }
@@ -50,26 +50,25 @@ public sealed record LocalCaptureProfileDefinition(
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(schedule);
-        return configuration.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 }
-            ? CreateV2(configuration, schedule)
-            : Create(configuration, schedule);
+        return CreateV2(configuration, schedule);
     }
 
     public CameraModuleConfig ApplyTo(CameraModuleConfig configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        if (SchemaVersion is not (LegacySchemaVersion or CurrentSchemaVersion))
+        {
+            throw new InvalidOperationException($"Unsupported local capture profile schema '{SchemaVersion}'.");
+        }
         var explicitV2 = string.Equals(SchemaVersion, CurrentSchemaVersion, StringComparison.Ordinal);
         return configuration with
         {
             Module = Module,
             Rig = Rig,
-            ProcessingSteps = explicitV2 ? null : ProcessingSteps,
-            Pipeline = explicitV2
-                ? new CapturePipelineConfig(
-                    ProcessingSteps,
-                    CapturePipelineSchemaVersions.ExplicitV2,
-                    DependencyPolicy)
-                : null,
+            Pipeline = new CapturePipelineConfig(
+                ProcessingSteps,
+                explicitV2 ? CapturePipelineSchemaVersions.ExplicitV2 : CapturePipelineSchemaVersions.LegacyV1,
+                DependencyPolicy),
             Schedule = Schedule
         };
     }

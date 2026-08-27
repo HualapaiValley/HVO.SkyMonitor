@@ -101,7 +101,13 @@ public sealed class CameraModuleRunnerTests
                     TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1),
                     TimeSpan.FromMilliseconds(1), 0, 0,
                     CaptureFailureInitialDelay: initialBackoff,
-                    CaptureFailureMaximumDelay: TimeSpan.FromSeconds(5))));
+                    CaptureFailureMaximumDelay: TimeSpan.FromSeconds(5)),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.Disabled,
+                    GainControl = AutomaticControlOwnership.Disabled
+                }),
+            CapturePipelineConfig.Empty);
 
     private static CameraModuleConfig CreateFeedbackConfig()
         => new(
@@ -125,7 +131,8 @@ public sealed class CameraModuleRunnerTests
                         YStride = 1,
                         UseImageCircle = false
                     }
-                }));
+                }),
+            CapturePipelineConfig.Empty);
 
     private sealed class RecordingHostContext(
         CameraModuleConfig configuration,

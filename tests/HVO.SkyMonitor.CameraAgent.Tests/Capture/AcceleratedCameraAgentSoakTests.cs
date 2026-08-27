@@ -37,7 +37,8 @@ public sealed class AcceleratedCameraAgentSoakTests
                 provider.GetRequiredService<IConstellationTopology>());
             var config = CreateConfig(root);
             await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
-            var steps = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreatePipeline(config);
+            var steps = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+                .Select(static node => node.Step).ToArray();
             const int captures = 289;
             var channel = new FrameProcessingChannel(4);
             using var cancellation = new CancellationTokenSource();
@@ -111,21 +112,21 @@ public sealed class AcceleratedCameraAgentSoakTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
                     TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 10, 10)),
-            [
+            new CapturePipelineConfig([
                 Step("RollingCombination", 25, new RollingCombinationProcessingStepOptions { WindowSize = 4 }),
                 Step("Preview", 50, new PreviewProcessingStepOptions()),
                 Step("Annotation", 75, new AnnotationProcessingStepOptions
                 {
                     DrawLabels = false, DrawConstellationLines = false, DrawImageCircle = true
                 }),
-                Step("HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.NoOpFileStorageProcessingStep, HVO.SkyMonitor.CameraAgent.Common", 100,
+                Step("Storage", 100,
                     new NoOpFileStorageProcessingStepOptions
                     {
                         StorageRoot = root, RetentionDays = 1, QueueForUpload = false, UpdateLatestFrame = false
                     }),
-                Step("HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.TelemetryCaptureProcessingStep, HVO.SkyMonitor.CameraAgent.Common", 200,
+                Step("Telemetry", 200,
                     new TelemetryProcessingStepOptions())
-            ], AgentId: "accelerated-soak");
+            ]), AgentId: "accelerated-soak");
 
     private static CaptureProcessingStepConfig Step<T>(string type, int order, T options)
         => new(type, type, order, JsonSerializer.SerializeToElement(options));

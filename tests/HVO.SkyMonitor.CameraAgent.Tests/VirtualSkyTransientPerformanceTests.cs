@@ -501,7 +501,8 @@ public sealed class VirtualSkyTransientPerformanceTests
                     workload.ImageCircleRadius, workload.FocalLengthPixels, workload.FocalLengthPixels,
                     HorizontalFlip: true, CalibrationVersion: $"{workload.Id}-transient-performance-optics-v1"),
                 new RigOrientation(90, 0, 0),
-                new PipelineExposureProfile(TimeSpan.FromSeconds(25), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)));
+                new PipelineExposureProfile(TimeSpan.FromSeconds(25), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 0, 0)),
+            CapturePipelineConfig.Empty);
     }
 
     private static ImageLayout Layout(Workload workload)

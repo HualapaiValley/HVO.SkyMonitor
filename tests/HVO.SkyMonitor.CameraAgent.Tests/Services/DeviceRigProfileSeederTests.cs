@@ -81,7 +81,8 @@ public sealed class DeviceRigProfileSeederTests
         var config = new CameraModuleConfig(
             Observatory: new ObservatoryLocation(0, 0, 0, "UTC"),
             Module: new CameraModuleDescriptor("RandomImage"),
-            Rig: rig);
+            Rig: rig,
+            Pipeline: CapturePipelineConfig.Empty);
 
         var mockLoader = new Mock<ICameraAgentConfigurationLoader>();
         mockLoader

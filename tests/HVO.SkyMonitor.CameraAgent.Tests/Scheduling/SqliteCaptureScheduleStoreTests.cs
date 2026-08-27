@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 public sealed class SqliteCaptureScheduleStoreTests
 {
     [TestMethod]
-    public async Task InitializeAsync_LegacyBootstrapAndFileChangePreserveActiveRevision()
+    public async Task InitializeAsync_ExplicitBootstrapAndFileChangePreserveActiveRevision()
     {
         var root = CreateRoot();
         try
@@ -21,17 +21,17 @@ public sealed class SqliteCaptureScheduleStoreTests
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
             using var store = new SqliteCaptureScheduleStore(
                 new JournalInitializer(root), options, TimeProvider.System);
-            var legacy = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var initial = await store.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
 
-            Assert.AreEqual(1, legacy.ActiveRevision.RevisionNumber);
-            Assert.IsTrue(legacy.ActiveRevision.Definition.LegacyAlwaysOpen);
-            Assert.IsNull(legacy.PendingRevision);
+            Assert.AreEqual(1, initial.ActiveRevision.RevisionNumber);
+            Assert.AreEqual("initial", initial.ActiveRevision.Definition.SetpointProfiles.Single().Id);
+            Assert.IsNull(initial.PendingRevision);
 
             var changed = await store.InitializeAsync(
                 Configuration() with { Schedule = Definition("night", 2) },
                 CancellationToken.None).ConfigureAwait(false);
 
-            Assert.AreEqual(legacy.ActiveRevision.RevisionId, changed.ActiveRevision.RevisionId);
+            Assert.AreEqual(initial.ActiveRevision.RevisionId, changed.ActiveRevision.RevisionId);
             Assert.IsNotNull(changed.PendingRevision);
             Assert.AreEqual("night", changed.PendingRevision.Definition.SetpointProfiles.Single().Id);
         }
@@ -53,7 +53,6 @@ public sealed class SqliteCaptureScheduleStoreTests
             var baseline = Configuration();
             var configuration = baseline with
             {
-                ProcessingSteps = null,
                 Pipeline = new CapturePipelineConfig(
                     [new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"])],
                     CapturePipelineSchemaVersions.ExplicitV2,
@@ -69,8 +68,7 @@ public sealed class SqliteCaptureScheduleStoreTests
                 LocalCaptureProfileContract.ComputeSha256(
                     LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule)),
                 snapshot.ActiveRevision.ProfileSha256);
-            Assert.IsNull(effective.ProcessingSteps);
-            Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, effective.Pipeline!.SchemaVersion);
+            Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, effective.Pipeline.SchemaVersion);
         }
         finally
         {
@@ -392,7 +390,11 @@ public sealed class SqliteCaptureScheduleStoreTests
                     TimeSpan.FromSeconds(1),
                     TimeSpan.FromSeconds(5),
                     1,
-                    10)));
+                    10)),
+            CapturePipelineConfig.Empty)
+        {
+            Schedule = Definition("initial", 1)
+        };
 
     private static CaptureScheduleDefinition Definition(string profileId, double gain)
         => new(

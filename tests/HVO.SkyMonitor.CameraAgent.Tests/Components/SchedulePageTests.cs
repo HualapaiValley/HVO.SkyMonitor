@@ -245,8 +245,8 @@ public sealed class SchedulePageTests
             DateTimeOffset.UnixEpoch);
         var prior = revision with { RevisionId = "profile-00000001-123456ABCDEF", RevisionNumber = 1 };
         var interval = new ExpandedScheduleInterval(
-            "legacy-always-open",
-            CaptureScheduleIntervalSource.LegacyCompatibility,
+            "weekly-night",
+            CaptureScheduleIntervalSource.WeeklyWindow,
             ExpandedScheduleDisposition.Open,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch.AddDays(1),
@@ -264,7 +264,7 @@ public sealed class SchedulePageTests
             []);
         var decision = new CaptureScheduleDecision(
             true,
-            CaptureScheduleAdmissionReason.LegacyCompatibility,
+            CaptureScheduleAdmissionReason.WeeklyWindow,
             CaptureScheduleSafetyState.Available,
             DateTimeOffset.UnixEpoch,
             "night",
@@ -290,9 +290,15 @@ public sealed class SchedulePageTests
                 "capture-schedule-v1",
                 [new CaptureScheduleSetpointProfile(
                     "night", TimeSpan.FromSeconds(1), 1, TimeSpan.FromSeconds(2))],
-                [],
-                LegacyAlwaysOpen: true,
-                LegacySetpointProfileId: "night"));
+                [new CaptureWeeklyScheduleWindow(
+                    "weekly-night",
+                    DayOfWeek.Thursday,
+                    new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue),
+                    new CaptureScheduleBoundary(
+                        CaptureScheduleBoundaryKind.FixedLocalTime,
+                        TimeOnly.MinValue,
+                        DayOffset: 1),
+                    "night")]));
 
     private sealed class ScheduleUiService(CaptureScheduleOperatorState? state) : ICameraAgentScheduleUiService
     {
@@ -317,8 +323,8 @@ public sealed class SchedulePageTests
                 "Preview", "Preview", true, true, 10, null, RawDependency,
                 "encoded-preview", FrameArtifactRole.Preview, "display");
             var plan = new CaptureProcessingPlanPreview(
-                CapturePipelineSchemaVersions.LegacyV1,
-                CapturePipelineDependencyPolicy.LegacyInference,
+                CapturePipelineSchemaVersions.ExplicitV2,
+                CapturePipelineDependencyPolicy.RejectEnabledDependent,
                 new string('D', 64),
                 new string('E', 64),
                 [node],

@@ -1382,22 +1382,10 @@ public sealed class SqliteCaptureScheduleStore(
     internal static LocalCaptureProfileDefinition CreateFileProfile(CameraModuleConfig fileConfiguration)
     {
         ArgumentNullException.ThrowIfNull(fileConfiguration);
-        var schedule = fileConfiguration.Schedule ?? CreateLegacySchedule(fileConfiguration.Rig);
+        var schedule = fileConfiguration.Schedule ?? throw new InvalidOperationException(
+            "CameraAgent file configuration requires an explicit capture schedule.");
         return LocalCaptureProfileDefinition.CreateForConfiguration(fileConfiguration, schedule);
     }
-
-    private static CaptureScheduleDefinition CreateLegacySchedule(CameraRigConfig rig)
-        => new(
-            "capture-schedule-v1",
-            [new CaptureScheduleSetpointProfile(
-                "legacy-pipeline",
-                rig.Pipeline.NightExposure,
-                rig.Pipeline.NightGain,
-                rig.Pipeline.CaptureInterval,
-                rig.Pipeline.CadenceMode)],
-            [],
-            LegacyAlwaysOpen: true,
-            LegacySetpointProfileId: "legacy-pipeline");
 
     private static bool ValidOverride(
         CaptureScheduleOverride scheduleOverride,

@@ -34,25 +34,26 @@ public sealed class VirtualSkyCloudScenarioTests
         var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
         var config = Config(CameraPixelFormat.Mono16, Definition());
 
-        var legacy = factory.CreateGraph(config);
-        Assert.IsFalse(legacy.Nodes.Any(static node => node.Id == "CloudObservation"));
+        var baseline = factory.CreateGraph(config);
+        Assert.IsFalse(baseline.Nodes.Any(static node => node.Id == "CloudObservation"));
 
         var configured = factory.CreateGraph(config with
         {
-            ProcessingSteps =
+            Pipeline = new CapturePipelineConfig(
             [
                 new CaptureProcessingStepConfig(
                     "VirtualSkyCloudObservation",
                     "CloudObservation",
                     10,
+                    DependsOn: ["$raw"],
                     Required: true)
-            ]
+            ])
         });
         var node = configured.Nodes.Single();
         Assert.AreEqual("CloudObservation", node.Id);
         Assert.IsInstanceOfType<VirtualSkyCloudObservationProcessingStep>(node.Step);
         Assert.IsTrue(node.Required);
-        legacy.DisposeSteps();
+        baseline.DisposeSteps();
         configured.DisposeSteps();
     }
 
@@ -428,7 +429,8 @@ public sealed class VirtualSkyCloudScenarioTests
                     "EquidistantFisheye", 0, 180, 0, LensKind.Fisheye,
                     32, 24, 23, CalibrationVersion: "cloud-fixture-optics-v1"),
                 new RigOrientation(90, 0, 0),
-                new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)));
+                new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty);
     }
 
     private static CaptureProcessingContext Context(

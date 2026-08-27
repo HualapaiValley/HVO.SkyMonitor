@@ -334,7 +334,8 @@ public sealed class CaptureControlTelemetryTests
                         DayAltitudeThresholdDegrees = 0,
                         NightAltitudeThresholdDegrees = -12
                     }
-                }));
+                }),
+            CapturePipelineConfig.Empty);
 
     private sealed record MetricSample(string Name, double Value, Dictionary<string, string> Tags);
 

@@ -19,19 +19,17 @@ public sealed class CaptureProcessingGraphTests
     private const string HistoricalAnnotationPlanSha256 = "58C88E48E07E3297224DEC1894808E8E85E063D65F9B30EE4550C43EF16B6ADA";
     private const string HistoricalWeatherPlanSha256 = "7BDBFFBDAA1D2A219494E5CF9C13A10C433E605E28C375990DA2FFD39271C57F";
     private static readonly string[] ExpectedTopologicalOrder = ["first", "middle", "last"];
-    private static readonly string[] ExpectedLegacyOrder = ["producer", "consumer"];
-    private static readonly string[] ExpectedLegacyDependencies = ["producer"];
+    private static readonly string[] ExpectedProducerConsumerOrder = ["producer", "consumer"];
+    private static readonly string[] ExpectedProducerDependency = ["producer"];
 
     [TestMethod]
-    public void CreateGraph_PublicationPolicyIsFailClosedAndExplicitV2Only()
+    public void CreateGraph_PublicationPolicyIsFailClosed()
     {
         using var telemetry = new CaptureProcessingTelemetry();
         using var services = new ServiceCollection().BuildServiceProvider();
         var factory = CreateFactory(services, telemetry);
         var memoryOnly = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.MemoryOnly);
 
-        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(CreateConfig(
-            new CaptureProcessingStepConfig("Product", Publication: memoryOnly))));
         Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(CreateExplicitConfig(
             new CaptureProcessingStepConfig(
                 "Product",
@@ -175,20 +173,26 @@ public sealed class CaptureProcessingGraphTests
     }
 
     [TestMethod]
-    public void CreateGraph_LegacyDependencyInferenceUsesOrderNotSerializedPosition()
+    public void CreateGraph_RequiresEveryEnabledNodeToDeclareDependencies()
     {
         using var telemetry = new CaptureProcessingTelemetry();
         using var services = new ServiceCollection().BuildServiceProvider();
         var factory = CreateFactory(services, telemetry);
-        var config = CreateConfig(
+        var config = CreateExplicitConfig(
             new CaptureProcessingStepConfig("Consumer", "consumer", 100),
             new CaptureProcessingStepConfig("Calibrated", "producer", 0));
 
-        var graph = factory.CreateGraph(config);
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(config));
+        var legacyGraph = factory.CreateGraph(CreateLegacyConfig(
+            new CaptureProcessingStepConfig("Consumer", "consumer", 100),
+            new CaptureProcessingStepConfig("Calibrated", "producer", 0)));
 
-        CollectionAssert.AreEqual(ExpectedLegacyOrder, graph.Nodes.Select(static node => node.Id).ToArray());
-        CollectionAssert.AreEqual(ExpectedLegacyDependencies, graph.Nodes[1].Dependencies.ToArray());
-        graph.DisposeSteps();
+        StringAssert.Contains(exception.Message, "must declare an explicit dependency", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(
+            ExpectedProducerConsumerOrder,
+            legacyGraph.Nodes.Select(static node => node.Id).ToArray());
+        CollectionAssert.AreEqual(ExpectedProducerDependency, legacyGraph.Nodes[1].Dependencies.ToArray());
+        legacyGraph.DisposeSteps();
     }
 
     [TestMethod]
@@ -244,9 +248,9 @@ public sealed class CaptureProcessingGraphTests
         var steps = new[]
         {
             new CaptureProcessingStepConfig(
-                "Product", "display", Options: JsonSerializer.SerializeToElement(new GraphTestOptions { Variant = "display" })),
+                "Product", "display", Options: JsonSerializer.SerializeToElement(new { variant = "display" })),
             new CaptureProcessingStepConfig(
-                "Product", "calibrated", Options: JsonSerializer.SerializeToElement(new GraphTestOptions { Variant = "calibrated" }))
+                "Product", "calibrated", Options: JsonSerializer.SerializeToElement(new { variant = "calibrated" }))
         };
 
         var graph = factory.CreateGraph(CreateConfig(steps));
@@ -298,9 +302,9 @@ public sealed class CaptureProcessingGraphTests
         var steps = new[]
         {
             new CaptureProcessingStepConfig(
-                "Calibrated", "one", Options: JsonSerializer.SerializeToElement(new GraphTestOptions { Variant = "one" })),
+                "Calibrated", "one", Options: JsonSerializer.SerializeToElement(new { variant = "one" })),
             new CaptureProcessingStepConfig(
-                "Calibrated", "two", Options: JsonSerializer.SerializeToElement(new GraphTestOptions { Variant = "two" })),
+                "Calibrated", "two", Options: JsonSerializer.SerializeToElement(new { variant = "two" })),
             new CaptureProcessingStepConfig("Consumer", "consumer", DependsOn: ["one", "two"])
         };
 
@@ -310,15 +314,15 @@ public sealed class CaptureProcessingGraphTests
     }
 
     [TestMethod]
-    public void CreateGraph_ExcludesDisabledLegacyRecipeNode()
+    public void CreateGraph_ExcludesTopLevelDisabledNode()
     {
         using var telemetry = new CaptureProcessingTelemetry();
         using var services = new ServiceCollection().BuildServiceProvider();
         var factory = CreateFactory(services, telemetry);
-        var config = CreateConfig(
+        var config = CreateExplicitConfig(
             new CaptureProcessingStepConfig(
-                "Product", "disabled", Options: JsonSerializer.SerializeToElement(new GraphTestOptions { Enabled = false })),
-            new CaptureProcessingStepConfig("Test", "storage"));
+                "Product", "disabled", DependsOn: ["$raw"], Enabled: false),
+            new CaptureProcessingStepConfig("Test", "storage", DependsOn: ["$raw"]));
 
         var graph = factory.CreateGraph(config);
 
@@ -339,9 +343,9 @@ public sealed class CaptureProcessingGraphTests
 
         var graph = factory.CreateGraph(config);
 
-        CollectionAssert.AreEqual(ExpectedLegacyOrder, graph.Nodes.Select(static node => node.Id).ToArray());
+        CollectionAssert.AreEqual(ExpectedProducerConsumerOrder, graph.Nodes.Select(static node => node.Id).ToArray());
         Assert.IsEmpty(graph.Nodes[0].Dependencies);
-        CollectionAssert.AreEqual(ExpectedLegacyDependencies, graph.Nodes[1].Dependencies.ToArray());
+        CollectionAssert.AreEqual(ExpectedProducerDependency, graph.Nodes[1].Dependencies.ToArray());
         graph.DisposeSteps();
     }
 
@@ -378,34 +382,27 @@ public sealed class CaptureProcessingGraphTests
     }
 
     [TestMethod]
-    public void CreateGraph_ExplicitV2CannotBeShadowedOrUseLegacyRawAndDynamicAliases()
+    public void CreateGraph_RejectsDynamicAliasesAndReservedRawIdentifier()
     {
         using var telemetry = new CaptureProcessingTelemetry();
         using var services = new ServiceCollection().BuildServiceProvider();
         var factory = CreateFactory(services, telemetry);
         var implementationName = typeof(GraphDynamicStep).FullName!;
-        var legacyDynamic = factory.CreateGraph(CreateConfig(new CaptureProcessingStepConfig(
-            implementationName, "legacy", DependsOn: [])));
-        legacyDynamic.DisposeSteps();
-
-        var shadowed = CreateExplicitConfig(new CaptureProcessingStepConfig(
-            "Calibrated", "producer", DependsOn: ["$raw"])) with
-        {
-            ProcessingSteps = [new CaptureProcessingStepConfig("Test", "legacy")]
-        };
-        var shadowException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(shadowed));
         var aliasException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(
             CreateExplicitConfig(new CaptureProcessingStepConfig(
                 implementationName, "producer", DependsOn: ["$raw"]))));
-        var legacyRawException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(
-            CreateConfig(new CaptureProcessingStepConfig("Calibrated", "producer", DependsOn: ["$raw"]))));
+        var registeredImplementationException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(
+            CreateExplicitConfig(new CaptureProcessingStepConfig(
+                typeof(GraphCalibratedStep).FullName!, "registered", DependsOn: ["$raw"]))));
         var reservedIdException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(
             CreateExplicitConfig(new CaptureProcessingStepConfig("Calibrated", "$raw", DependsOn: ["$raw"]))));
+        var legacyDynamic = factory.CreateGraph(CreateLegacyConfig(new CaptureProcessingStepConfig(
+            implementationName, "legacy", DependsOn: [])));
 
-        StringAssert.Contains(shadowException.Message, "cannot be combined", StringComparison.Ordinal);
         StringAssert.Contains(aliasException.Message, "not a registered stable alias", StringComparison.Ordinal);
-        StringAssert.Contains(legacyRawException.Message, "missing step '$raw'", StringComparison.Ordinal);
+        StringAssert.Contains(registeredImplementationException.Message, "not a registered stable alias", StringComparison.Ordinal);
         StringAssert.Contains(reservedIdException.Message, "is reserved", StringComparison.Ordinal);
+        legacyDynamic.DisposeSteps();
     }
 
     [TestMethod]
@@ -451,7 +448,7 @@ public sealed class CaptureProcessingGraphTests
     }
 
     [TestMethod]
-    public void PreviewPlan_HashesOptionsAndOrderAndProjectsLegacyInference()
+    public void PreviewPlan_HashesOptionsAndOrder()
     {
         using var telemetry = new CaptureProcessingTelemetry();
         using var services = new ServiceCollection().BuildServiceProvider();
@@ -472,17 +469,6 @@ public sealed class CaptureProcessingGraphTests
         var secondPreview = factory.PreviewPlan(second);
         var defaultedPreview = factory.PreviewPlan(defaulted);
         var materializedPreview = factory.PreviewPlan(materializedDefaults);
-        var legacyPreview = factory.PreviewPlan(CreateConfig(
-            new CaptureProcessingStepConfig("Consumer", "consumer", 100),
-            new CaptureProcessingStepConfig("Calibrated", "producer", 0)));
-        var legacyDualSource = CreateConfig(
-            new CaptureProcessingStepConfig("Consumer", "consumer", 100),
-            new CaptureProcessingStepConfig("Calibrated", "producer", 0)) with
-        {
-            Pipeline = new CapturePipelineConfig([new CaptureProcessingStepConfig("Test", "ignored")])
-        };
-        var legacyDualPreview = factory.PreviewPlan(legacyDualSource);
-
         Assert.AreNotEqual(firstPreview.DesiredSha256, secondPreview.DesiredSha256);
         Assert.AreNotEqual(firstPreview.EffectiveSha256, secondPreview.EffectiveSha256);
         Assert.AreNotEqual(defaultedPreview.DesiredSha256, materializedPreview.DesiredSha256);
@@ -490,17 +476,10 @@ public sealed class CaptureProcessingGraphTests
         Assert.AreEqual(
             CaptureContractJson.ComputeCanonicalJsonSha256(defaultedPreview.EffectiveNodes),
             CaptureContractJson.ComputeCanonicalJsonSha256(materializedPreview.EffectiveNodes));
-        Assert.IsNull(legacyPreview.DesiredNodes.Single(static node => node.Id == "consumer").Dependencies);
-        CollectionAssert.AreEqual(
-            ExpectedLegacyDependencies,
-            legacyPreview.EffectiveNodes.Single(static node => node.Id == "consumer").Dependencies!.ToArray());
-        Assert.HasCount(2, legacyDualPreview.DesiredNodes);
-        Assert.HasCount(2, legacyDualPreview.EffectiveNodes);
-        Assert.IsFalse(legacyDualPreview.DesiredNodes.Any(static node => node.Id == "ignored"));
     }
 
     [TestMethod]
-    public void LocalProfileV2AppliesExplicitPipelineWithoutChangingLegacyProfiles()
+    public void LocalFileProfileUsesCurrentExplicitPipeline()
     {
         var configuration = CreateConfig(new CaptureProcessingStepConfig(
             "Calibrated", "producer", DependsOn: ["$raw"]));
@@ -508,49 +487,66 @@ public sealed class CaptureProcessingGraphTests
             "capture-schedule-v1",
             [new CaptureScheduleSetpointProfile(
                 "night", TimeSpan.FromSeconds(1), 1, TimeSpan.FromSeconds(2))],
+            [new CaptureWeeklyScheduleWindow(
+                "monday", DayOfWeek.Monday,
+                new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(0, 0)),
+                new CaptureScheduleBoundary(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(0, 0), DayOffset: 1),
+                "night")]);
+
+        var profile = LocalCaptureProfileDefinition.CreateForConfiguration(configuration, schedule);
+        var applied = profile.ApplyTo(configuration);
+        var serialized = CaptureContractJson.SerializeToElement(profile);
+        var legacySchedule = new CaptureScheduleDefinition(
+            "capture-schedule-v1",
+            schedule.SetpointProfiles,
             [],
             LegacyAlwaysOpen: true,
             LegacySetpointProfileId: "night");
-
-        var legacy = LocalCaptureProfileDefinition.Create(configuration, schedule);
-        var v2 = LocalCaptureProfileDefinition.CreateV2(configuration, schedule);
+        var legacy = new LocalCaptureProfileDefinition(
+            LocalCaptureProfileDefinition.LegacySchemaVersion,
+            configuration.Module,
+            configuration.Rig,
+            configuration.Pipeline.Steps,
+            legacySchedule);
         var appliedLegacy = legacy.ApplyTo(configuration);
-        var appliedV2 = v2.ApplyTo(configuration);
         var serializedLegacy = CaptureContractJson.SerializeToElement(legacy);
-        var serializedV2 = CaptureContractJson.SerializeToElement(v2);
-        var serializedLegacyPipeline = CaptureContractJson.SerializeToElement(
-            new CapturePipelineConfig(configuration.ResolveProcessingSteps()));
 
-        Assert.AreEqual(LocalCaptureProfileDefinition.LegacySchemaVersion, legacy.SchemaVersion);
-        Assert.AreEqual(LocalCaptureProfileDefinition.CurrentSchemaVersion, v2.SchemaVersion);
+        Assert.AreEqual(LocalCaptureProfileDefinition.CurrentSchemaVersion, profile.SchemaVersion);
+        Assert.IsTrue(LocalCaptureProfileContract.Validate(profile).IsValid);
         Assert.IsTrue(LocalCaptureProfileContract.Validate(legacy).IsValid);
-        Assert.IsTrue(LocalCaptureProfileContract.Validate(v2).IsValid);
-        Assert.IsFalse(LocalCaptureProfileContract.Validate(legacy with
-        {
-            DependencyPolicy = CapturePipelineDependencyPolicy.RejectEnabledDependent
-        }).IsValid);
+        Assert.IsTrue(serialized.TryGetProperty("dependencyPolicy", out _));
         Assert.IsFalse(serializedLegacy.TryGetProperty("dependencyPolicy", out _));
-        Assert.IsTrue(serializedV2.TryGetProperty("dependencyPolicy", out _));
         Assert.AreEqual(
             "reject-enabled-dependent-v1",
-            serializedV2.GetProperty("dependencyPolicy").GetString());
-        Assert.IsFalse(serializedLegacy.GetProperty("processingSteps")[0].TryGetProperty("enabled", out _));
-        Assert.IsFalse(serializedLegacyPipeline.TryGetProperty("schemaVersion", out _));
-        Assert.IsFalse(serializedLegacyPipeline.TryGetProperty("dependencyPolicy", out _));
+            serialized.GetProperty("dependencyPolicy").GetString());
+        Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, applied.Pipeline.SchemaVersion);
+        Assert.AreEqual(
+            CapturePipelineDependencyPolicy.RejectEnabledDependent,
+            applied.Pipeline.DependencyPolicy);
+        Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, appliedLegacy.Pipeline.SchemaVersion);
+        Assert.AreEqual(CapturePipelineDependencyPolicy.LegacyInference, appliedLegacy.Pipeline.DependencyPolicy);
         Assert.AreEqual(
             "2BAEFC40154CF604FD5F7E6BA355F8CBAB3E084C89960B7F97DD1D7EA4A6AB2F",
             LocalCaptureProfileContract.ComputeSha256(legacy));
-        Assert.IsNotNull(appliedLegacy.ProcessingSteps);
-        Assert.IsNull(appliedLegacy.Pipeline);
-        Assert.IsNull(appliedV2.ProcessingSteps);
-        Assert.AreEqual(CapturePipelineSchemaVersions.ExplicitV2, appliedV2.Pipeline!.SchemaVersion);
-        Assert.AreEqual(
-            CapturePipelineDependencyPolicy.RejectEnabledDependent,
-            appliedV2.Pipeline.DependencyPolicy);
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var executableLegacy = legacy with
+        {
+            ProcessingSteps =
+            [
+                new CaptureProcessingStepConfig("Consumer", "consumer", 100),
+                new CaptureProcessingStepConfig("Calibrated", "producer", 0)
+            ]
+        };
+        var legacyGraph = CreateFactory(services, telemetry).CreateGraph(executableLegacy.ApplyTo(configuration));
+        CollectionAssert.AreEqual(
+            ExpectedProducerConsumerOrder,
+            legacyGraph.Nodes.Select(static node => node.Id).ToArray());
+        legacyGraph.DisposeSteps();
     }
 
     [TestMethod]
-    public void StandardLaneCacheIdentityChangesForSchemaAndDualSourceTransitions()
+    public void StandardLaneCacheIdentityChangesForSchemaTransitions()
     {
         var steps = new[] { new CaptureProcessingStepConfig("Calibrated", "producer", DependsOn: ["$raw"]) };
         var valid = CreateExplicitConfig(steps);
@@ -558,14 +554,9 @@ public sealed class CaptureProcessingGraphTests
         {
             Pipeline = valid.Pipeline! with { SchemaVersion = "cameraagent-capture-pipeline-v3" }
         };
-        var dualSource = valid with { ProcessingSteps = steps };
-
         Assert.AreNotEqual(
             StandardCaptureLaneHandler.ComputePipelineKey(valid),
             StandardCaptureLaneHandler.ComputePipelineKey(unknownSchema));
-        Assert.AreNotEqual(
-            StandardCaptureLaneHandler.ComputePipelineKey(valid),
-            StandardCaptureLaneHandler.ComputePipelineKey(dualSource));
     }
 
     [TestMethod]
@@ -636,11 +627,7 @@ public sealed class CaptureProcessingGraphTests
             preview.EffectiveNodes.Single(static node => node.Alias == "WeatherCloudOverlay").OutputRole);
         Assert.HasCount(10, preview.EffectiveNodes);
         Assert.IsFalse(quality.Options!.Value.TryGetProperty("enabled", out _));
-        Assert.IsFalse(registrations.Single(static item => item.Alias == "CalibratedPreview").AutoInclude);
-        Assert.IsFalse(registrations.Single(static item => item.Alias == "CombinedPreview").AutoInclude);
-        Assert.IsFalse(registrations.Single(static item => item.Alias == "ImageQuality").AutoInclude);
-        Assert.IsFalse(registrations.Single(static item => item.Alias == "Storage").AutoInclude);
-        Assert.IsFalse(registrations.Single(static item => item.Alias == "Telemetry").AutoInclude);
+        Assert.HasCount(20, registrations);
         Assert.IsNull(preview.EffectiveNodes.Single(static node => node.Alias == "Storage").OutputRole);
         Assert.IsNull(preview.EffectiveNodes.Single(static node => node.Alias == "Telemetry").OutputRole);
         Assert.AreEqual(
@@ -685,14 +672,23 @@ public sealed class CaptureProcessingGraphTests
 
         var legacyPolicy = CreateConfig() with
         {
-            ProcessingSteps = null,
             Pipeline = new CapturePipelineConfig(
                 [],
-                CapturePipelineSchemaVersions.LegacyV1,
+                CapturePipelineSchemaVersions.ExplicitV2,
                 CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };
-        var legacyPolicyException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(legacyPolicy));
-        StringAssert.Contains(legacyPolicyException.Message, "cannot use dependency policy", StringComparison.Ordinal);
+        legacyPolicy = legacyPolicy with
+        {
+            Pipeline = legacyPolicy.Pipeline with { DependencyPolicy = CapturePipelineDependencyPolicy.LegacyInference }
+        };
+        var policyException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(legacyPolicy));
+        StringAssert.Contains(policyException.Message, "dependency policy", StringComparison.Ordinal);
+        var unknownSchema = config with
+        {
+            Pipeline = config.Pipeline with { SchemaVersion = "cameraagent-capture-pipeline-v3" }
+        };
+        var unknownSchemaException = Assert.ThrowsExactly<InvalidOperationException>(() => factory.PreviewPlan(unknownSchema));
+        StringAssert.Contains(unknownSchemaException.Message, "Unsupported capture pipeline schema", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -895,19 +891,26 @@ public sealed class CaptureProcessingGraphTests
                 new OpticsProfile("Test", 1, 1, 0),
                 new RigOrientation(0, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
-            steps,
+            new CapturePipelineConfig(steps.Select(static step => step.DependsOn is null
+                ? step with { DependsOn = ["$raw"] }
+                : step).ToArray()),
             AgentId: "agent-test");
 
     private static CameraModuleConfig CreateExplicitConfig(params CaptureProcessingStepConfig[] steps)
     {
         var config = CreateConfig();
+        return config with { Pipeline = new CapturePipelineConfig(steps) };
+    }
+
+    private static CameraModuleConfig CreateLegacyConfig(params CaptureProcessingStepConfig[] steps)
+    {
+        var config = CreateConfig();
         return config with
         {
-            ProcessingSteps = null,
             Pipeline = new CapturePipelineConfig(
                 steps,
-                CapturePipelineSchemaVersions.ExplicitV2,
-                CapturePipelineDependencyPolicy.RejectEnabledDependent)
+                CapturePipelineSchemaVersions.LegacyV1,
+                CapturePipelineDependencyPolicy.LegacyInference)
         };
     }
 
@@ -920,9 +923,10 @@ internal sealed class StaticConfigurationLoader(CameraModuleConfig config) : ICa
 
 internal sealed class RejectingPipelineFactory : ICaptureProcessingPipelineFactory
 {
-    public IReadOnlyList<ICaptureProcessingStep> CreatePipeline(CameraModuleConfig config) => [];
-
     public CaptureProcessingGraph CreateGraph(CameraModuleConfig config)
+        => throw new InvalidOperationException("invalid graph");
+
+    public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
         => throw new InvalidOperationException("invalid graph");
 }
 

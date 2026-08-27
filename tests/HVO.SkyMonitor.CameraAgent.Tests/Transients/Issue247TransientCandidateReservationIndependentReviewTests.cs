@@ -514,7 +514,8 @@ public sealed class Issue247TransientCandidateReservationIndependentReviewTests
                 new OpticsProfile("EquidistantFisheye", 0, 180, 0),
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
-                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)));
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty);
 
     private static string ComputeReservationIdentity(TransientCandidateReservation reservation)
         => CaptureContractJson.ComputeCanonicalJsonSha256(new

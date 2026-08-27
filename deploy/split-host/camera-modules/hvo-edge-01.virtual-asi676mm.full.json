@@ -169,9 +169,15 @@
   "schedule": {
     "schemaVersion": "capture-schedule-v1",
     "setpointProfiles": [{ "id": "hvo-edge-01-asi676mm-continuous", "exposure": "00:00:20", "gain": 82.0, "captureInterval": "00:00:20", "cadenceMode": "MinimumStartInterval" }],
-    "weeklyWindows": [],
-    "blackouts": [],
-    "legacyAlwaysOpen": true,
-    "legacySetpointProfileId": "hvo-edge-01-asi676mm-continuous"
+    "weeklyWindows": [
+      { "id": "continuous-sunday", "day": "Sunday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-monday", "day": "Monday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-tuesday", "day": "Tuesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-wednesday", "day": "Wednesday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-thursday", "day": "Thursday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-friday", "day": "Friday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" },
+      { "id": "continuous-saturday", "day": "Saturday", "start": { "kind": "FixedLocalTime", "localTime": "00:00:00" }, "end": { "kind": "FixedLocalTime", "localTime": "00:00:00", "dayOffset": 1 }, "setpointProfileId": "hvo-edge-01-asi676mm-continuous" }
+    ],
+    "blackouts": []
   }
 }

@@ -95,7 +95,7 @@ public sealed class CalibrationLibraryHealthCheck(
     }
 
     private static bool IsLibraryRequired(HVO.SkyMonitor.AgentCore.CameraModuleConfig configuration)
-        => configuration.ResolveProcessingSteps().Any(step =>
+        => configuration.Pipeline.Steps.Any(step =>
         {
             if (!step.Required || !string.Equals(step.Type, "Calibration", StringComparison.Ordinal))
             {

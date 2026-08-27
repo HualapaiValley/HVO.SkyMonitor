@@ -67,6 +67,13 @@ the prompt before the first direct run:
   --project src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 ```
 
+Current CameraAgent module files use one explicit contract: a top-level
+`cameraagent-capture-pipeline-v2` graph with stable step aliases, a recurring
+weekly `schedule`, and explicit `rig.controlPolicy.exposureControl` and
+`rig.controlPolicy.gainControl` ownership. Missing sections are configuration
+errors; the host does not infer processing dependencies, control ownership, or
+an always-open schedule.
+
 On first login, replace that temporary password. Then remove the user-secret
 value and configure `LocalIdentity:AllowMissingAdminPassword=true` for later
 starts. Existing passwords are never reconciled from configuration.

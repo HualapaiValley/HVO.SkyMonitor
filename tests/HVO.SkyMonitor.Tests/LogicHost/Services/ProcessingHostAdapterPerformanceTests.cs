@@ -243,7 +243,7 @@ public sealed class ProcessingHostAdapterPerformanceTests
             recipeVersion: ProcessingIdentity.CreateRecipeIdentity(sourceRecipe).IdentitySha256);
         var config = CreateConfig(width, height, format);
         var processingSha = CaptureContractJson.ComputeCanonicalJsonSha256(
-            JsonSerializer.SerializeToElement(config.ResolveProcessingSteps()));
+            JsonSerializer.SerializeToElement(config.Pipeline.Steps));
         var rigSha = RigProjectionContextFactory.CreateProfileHashSha256(config.Rig);
         var calibrationSha = HashText($"calibration:{config.Rig.Optics.CalibrationVersion}");
         var maskSha = HashText("mask:none");
@@ -280,7 +280,8 @@ public sealed class ProcessingHostAdapterPerformanceTests
             new RigOrientation(90, 0, 0),
             new PipelineExposureProfile(
                 TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(20), 150, 150),
-            ProfileVersion: "rig-v1"));
+            ProfileVersion: "rig-v1"),
+        CapturePipelineConfig.Empty);
 
     private static string HashText(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));

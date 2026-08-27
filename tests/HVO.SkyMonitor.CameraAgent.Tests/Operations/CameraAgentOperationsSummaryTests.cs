@@ -166,6 +166,7 @@ public sealed class CameraAgentOperationsSummaryTests
                 new RigOrientation(90, 0, 0),
                 new PipelineExposureProfile(
                     TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty,
             AgentId: "agent-operations");
 
     private sealed class NullIngress : IRawCaptureIngress

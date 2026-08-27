@@ -55,7 +55,8 @@ public sealed class DeploymentLocationContractTests
                 new OpticsProfile("test", 1, 1, 0),
                 new RigOrientation(0, 0, 0),
                 new PipelineExposureProfile(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1),
-                    TimeSpan.FromSeconds(1), 1, 1)))
+                    TimeSpan.FromSeconds(1), 1, 1)),
+            CapturePipelineConfig.Empty)
         {
             DeploymentLocation = location
         };

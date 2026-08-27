@@ -935,7 +935,8 @@ public sealed class SqliteCaptureScheduleStorePerformanceTests
                     TimeSpan.FromSeconds(1),
                     TimeSpan.FromSeconds(5),
                     1,
-                    10)))
+                    10)),
+            CapturePipelineConfig.Empty)
         {
             Schedule = schedule
         };

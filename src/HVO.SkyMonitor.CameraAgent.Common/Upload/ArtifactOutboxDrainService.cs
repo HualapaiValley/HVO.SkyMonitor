@@ -289,7 +289,7 @@ public sealed class ArtifactOutboxDrainService(
 
     internal static string? ResolveStorageRoot(HVO.SkyMonitor.AgentCore.CameraModuleConfig config)
     {
-        foreach (var step in config.ResolveProcessingSteps())
+        foreach (var step in config.Pipeline.Steps)
         {
             if (IsStorageStep(step.Type) && step.Enabled != false)
             {
@@ -319,7 +319,7 @@ public sealed class ArtifactOutboxDrainService(
         {
             roots.Add(Path.GetFullPath(options.RawIngressRoot));
         }
-        foreach (var step in config.ResolveProcessingSteps())
+        foreach (var step in config.Pipeline.Steps)
         {
             if (!IsStorageStep(step.Type) || step.Enabled == false)
             {
@@ -345,7 +345,7 @@ public sealed class ArtifactOutboxDrainService(
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(options);
         var roots = new List<string> { Path.GetFullPath(options.RawIngressRoot) };
-        foreach (var step in config.ResolveProcessingSteps())
+        foreach (var step in config.Pipeline.Steps)
         {
             if (!IsStorageStep(step.Type) || step.Enabled == false)
             {

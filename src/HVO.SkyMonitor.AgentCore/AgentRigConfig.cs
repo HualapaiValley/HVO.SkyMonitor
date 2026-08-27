@@ -297,12 +297,12 @@ public sealed record ExposureDefaults(
 public sealed record CameraControlPolicy
 {
     /// <summary>Gets the ownership policy for automatic exposure control.</summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    [JsonRequired]
     public AutomaticControlOwnership ExposureControl { get; init; }
         = AutomaticControlOwnership.Unspecified;
 
     /// <summary>Gets the ownership policy for automatic gain control.</summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    [JsonRequired]
     public AutomaticControlOwnership GainControl { get; init; }
         = AutomaticControlOwnership.Unspecified;
 
@@ -315,12 +315,6 @@ public sealed record CameraControlPolicy
     public CaptureSolarRegimePolicy? SolarRegimes { get; init; }
 
     public TemperatureControlDirective Temperature { get; init; } = new();
-
-    public CameraFeatureDirective AutoGain { get; init; }
-        = CameraFeatureDirective.Unspecified;
-
-    public CameraFeatureDirective AutoExposure { get; init; }
-        = CameraFeatureDirective.Unspecified;
 }
 
 /// <summary>Identifies the component that owns an automatic camera control.</summary>
@@ -414,11 +408,4 @@ public enum TemperatureControlMode
     Unspecified,
     Disabled,
     Target
-}
-
-public enum CameraFeatureDirective
-{
-    Unspecified,
-    Disabled,
-    Enabled
 }

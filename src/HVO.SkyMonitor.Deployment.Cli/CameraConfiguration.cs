@@ -20,6 +20,7 @@ internal static class CameraConfiguration
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
     private static readonly string[] ConstellationIds = ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"];
     private static readonly string[] SolarSystemBodies = ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn"];
+    private static readonly string[] RawDependency = ["$raw"];
     private static readonly string[] CalibrationDependency = ["Calibration"];
     private static readonly string[] PreviewDependency = ["Preview"];
     private static readonly string[] AnnotationDependency = ["Annotation"];
@@ -55,7 +56,7 @@ internal static class CameraConfiguration
                 solarSystemBodies = SolarSystemBodies
             })),
             rig,
-            CreateProcessingSteps(),
+            new CapturePipelineConfig(CreateProcessingSteps()),
             AgentId: applicationIdentity.ToString("D"))
         {
             Schedule = schedule
@@ -66,7 +67,6 @@ internal static class CameraConfiguration
             config.AgentId,
             config.Module,
             config.Rig,
-            config.ProcessingSteps,
             config.Pipeline,
             config.Schedule
         });
@@ -127,14 +127,18 @@ internal static class CameraConfiguration
                 0.65),
             TimeSpan.FromMilliseconds(250),
             TimeSpan.FromSeconds(30)),
+        new CameraControlPolicy
+        {
+            ExposureControl = AutomaticControlOwnership.Disabled,
+            GainControl = AutomaticControlOwnership.Disabled
+        },
         ProfileVersion: "installer-virtualsky-v1");
 
     private static IReadOnlyList<CaptureProcessingStepConfig> CreateProcessingSteps() =>
     [
-        Step("Calibration", "Calibration", -1000, new { enabled = true, strategy = "None", outputVariant = "none" }),
+        Step("Calibration", "Calibration", -1000, new { strategy = "None", outputVariant = "none" }, RawDependency),
         Step("Preview", "Preview", 50, new
         {
-            enabled = true,
             recipeVersion = "mono16-asinh-v2",
             blackPercentile = 0.5,
             whitePercentile = 0.9999,
@@ -142,7 +146,6 @@ internal static class CameraConfiguration
         }, CalibrationDependency),
         Step("Annotation", "Annotation", 75, new
         {
-            enabled = true,
             markRadius = 6,
             markerValue = 144,
             drawLabels = true,

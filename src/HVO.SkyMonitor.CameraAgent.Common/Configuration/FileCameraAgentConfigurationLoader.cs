@@ -112,7 +112,6 @@ public sealed class FileCameraAgentConfigurationLoader(
             Observatory: _options.Observatory,
             Module: document.Module,
             Rig: document.Rig,
-            ProcessingSteps: document.ProcessingSteps,
             Pipeline: document.Pipeline,
             AgentId: agentId)
         {
@@ -120,6 +119,7 @@ public sealed class FileCameraAgentConfigurationLoader(
             Schedule = document.Schedule
         };
 
+        ValidateCurrentFileContract(config);
         ValidateConfig(config);
         if (_deploymentLocationStore is not null)
         {
@@ -154,18 +154,13 @@ public sealed class FileCameraAgentConfigurationLoader(
                 $"Deployment location is invalid ({locationValidation.ReasonCode}, {locationValidation.FieldPath}).");
         }
 
-        var scheduleValidation = config.Schedule is null
-            ? CaptureContractValidationResult.Success
-            : CaptureScheduleContract.Validate(config.Schedule);
+        var scheduleValidation = CaptureScheduleContract.Validate(config.Schedule);
         if (!scheduleValidation.IsValid)
         {
             throw new InvalidOperationException(
                 $"Capture schedule is invalid ({scheduleValidation.ReasonCode}, {scheduleValidation.FieldPath}).");
         }
-        if (config.Schedule is not null)
-        {
-            ValidateScheduleCompatibility(config);
-        }
+        ValidateScheduleCompatibility(config);
 
         if (config.Rig.Sensor.WidthPixels <= 0 || config.Rig.Sensor.HeightPixels <= 0)
         {
@@ -202,6 +197,30 @@ public sealed class FileCameraAgentConfigurationLoader(
         }
 
         ValidateControlPolicy(config.Rig);
+    }
+
+    private static void ValidateCurrentFileContract(CameraModuleConfig config)
+    {
+        if (config.Pipeline.SchemaVersion != CapturePipelineSchemaVersions.ExplicitV2)
+        {
+            throw new InvalidOperationException(
+                $"Unsupported current capture pipeline schema '{config.Pipeline.SchemaVersion}'.");
+        }
+        if (config.Pipeline.DependencyPolicy != CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        {
+            throw new InvalidOperationException(
+                $"Unsupported current capture pipeline dependency policy '{config.Pipeline.DependencyPolicy}'.");
+        }
+        if (config.Schedule is not { } schedule || schedule.WeeklyWindows.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Current CameraAgent file configuration requires at least one recurring weekly schedule window.");
+        }
+        if (schedule.LegacyAlwaysOpen || schedule.LegacySetpointProfileId is not null)
+        {
+            throw new InvalidOperationException(
+                "Current CameraAgent file configuration cannot use legacy schedule compatibility fields or admission/source values.");
+        }
     }
 
     private static void ValidateScheduleCompatibility(CameraModuleConfig config)
@@ -254,23 +273,24 @@ public sealed class FileCameraAgentConfigurationLoader(
     private static void ValidateControlPolicy(CameraRigConfig rig)
     {
         var policy = rig.ControlPolicy;
-        if (policy is null)
+        if (policy is null || policy.ExposureControl == AutomaticControlOwnership.Unspecified ||
+            policy.GainControl == AutomaticControlOwnership.Unspecified)
         {
-            return;
+            throw new InvalidOperationException("Camera control ownership must be configured explicitly.");
         }
 
-        var exposure = CameraModuleRunner.ResolveOwnership(policy.ExposureControl, policy.AutoExposure);
-        var gain = CameraModuleRunner.ResolveOwnership(policy.GainControl, policy.AutoGain);
         if (!Enum.IsDefined(policy.ExposureControl) || !Enum.IsDefined(policy.GainControl) ||
-            exposure == AutomaticControlOwnership.CameraNative && gain == AutomaticControlOwnership.HostMetered ||
-            exposure == AutomaticControlOwnership.HostMetered && gain == AutomaticControlOwnership.CameraNative)
+            policy.ExposureControl == AutomaticControlOwnership.CameraNative &&
+            policy.GainControl == AutomaticControlOwnership.HostMetered ||
+            policy.ExposureControl == AutomaticControlOwnership.HostMetered &&
+            policy.GainControl == AutomaticControlOwnership.CameraNative)
         {
             throw new InvalidOperationException(
                 "Camera-native and host-metered ownership cannot be mixed in one control policy.");
         }
 
-        var hostMetered = exposure == AutomaticControlOwnership.HostMetered ||
-            gain == AutomaticControlOwnership.HostMetered;
+        var hostMetered = policy.ExposureControl == AutomaticControlOwnership.HostMetered ||
+            policy.GainControl == AutomaticControlOwnership.HostMetered;
         if (!hostMetered)
         {
             return;
@@ -344,6 +364,5 @@ internal sealed record CameraModuleDocument(
     string AgentId,
     CameraModuleDescriptor Module,
     CameraRigConfig Rig,
-    IReadOnlyList<CaptureProcessingStepConfig>? ProcessingSteps = null,
-    CapturePipelineConfig? Pipeline = null,
-    CaptureScheduleDefinition? Schedule = null);
+    [property: JsonRequired] CapturePipelineConfig Pipeline,
+    [property: JsonRequired] CaptureScheduleDefinition Schedule);
