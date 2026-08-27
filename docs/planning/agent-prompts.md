@@ -59,9 +59,12 @@ Validate produced bytes, checksums, numerical results, provenance, lineage, and
 durable state. Inspect logs, metrics, traces, and health behavior.
 
 Use the execution protocol's validation ladder: focused inner-loop tests, one
-stable-candidate local gate, affected correction gates, and complete current-head
-replacement CI. Do not repeat long suites when the validated boundary did not
-change. Follow the complete push/review/correct/resolve/merge workflow. After a
+stable-candidate local gate, affected correction gates, and classifier-selected
+protected CI on the final reviewed head. Open a draft PR, review the full initial
+diff, and limit rereviews to each correction delta plus verification of prior
+findings. Use `@codex review` or independent local review when normal GitHub
+review is unavailable. Do not repeat long suites when the validated boundary did
+not change. Follow the complete review-converge/CI/resolve/merge workflow. After a
 merge, the roadmap coordinator automatically selects, claims, and begins the
 next candidate-ready issue after posting its synopsis and `READY` signal, unless
 the operator asked to pause or a real decision/blocker prevents continuation.
@@ -228,15 +231,20 @@ handoff to the coordinator.
 
 Use independent research/review subagents proactively for cross-host,
 persistence-heavy, performance-sensitive, or migration-heavy issues. The
-implementing model remains responsible for verifying findings and correcting
-every actionable result.
+implementing model remains responsible for verifying and explicitly dispositioning
+every finding under the bounded review protocol.
 
 ```text
-Research only; do not edit. Audit issue <NUMBER> against current code, tests,
-durable formats, architecture boundaries, performance paths, logs/telemetry,
-and dependent issues. Return findings ordered by severity with exact paths and
-minimal fixes. Identify missing acceptance tests, migration/compatibility risks,
-I/O/CPU/memory hot paths, and any plan/issue contradiction.
+Research only; do not edit. Review mode: <initial|correction>. Base reviewed SHA:
+<SHA or merge base>. Head SHA: <SHA>. In initial mode, audit the complete PR diff
+against current code, tests, durable formats, architecture boundaries,
+performance paths, logs/telemetry, and dependent issues. In correction mode,
+review only Base reviewed SHA..Head SHA and verify disposition of the preceding
+findings. Do not reopen unchanged portions of the earlier diff without concrete
+evidence that the correction created a new interaction. Return findings ordered
+by severity with exact paths and minimal fixes. Identify missing acceptance
+tests, migration/compatibility risks, I/O/CPU/memory hot paths, and any
+plan/issue contradiction.
 ```
 
 ## 13. Handoff Prompt

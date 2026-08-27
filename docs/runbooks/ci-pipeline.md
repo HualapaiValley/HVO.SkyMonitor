@@ -151,14 +151,36 @@ ConnectionStrings__skymonitordb="Server=127.0.0.1,1433;Database=ModelCheck;User 
 
 ## Protection And Review
 
-Protect `main` with the stable `Required CI` check and require branches to be current before merge. The project uses an independent PR review plus corrected-head reruns and resolved review threads; it does not impose a self-approval rule that a single-author workflow cannot satisfy. Stale, canceled, timed-out, failed, or absent checks do not satisfy `Required CI`.
+Protect `main` with the stable `Required CI` check and require branches to be
+current before merge. GitHub enforces current-head CI and conversation
+resolution; independent review is an additional repository-process requirement,
+not an approving-review branch-protection rule. The initial review covers the
+full PR diff. Later reviews cover only the correction delta from the previous
+reviewed head and verify prior findings. Use normal GitHub review, `@codex review`,
+or independent local review; do not wait indefinitely when a service or billing
+condition makes one path unavailable.
+
+Open implementation PRs as drafts and keep them draft while review corrections
+converge. Draft PR events skip the expensive CI plan and publish an intentionally
+failing `Required CI`, so branch protection remains fail-closed; returning a PR
+to draft also cancels its superseded in-progress run. Marking the final reviewed
+head ready triggers the classifier-selected CI plan, and a successful
+`Required CI` on that exact head satisfies the gate. Before every planned
+post-ready head change, including CI corrections, base synchronization, and
+conflict resolution, return the PR to draft. Review that delta before marking it
+ready again. A diagnosed infrastructure failure may rerun the same unchanged
+SHA. Stale, canceled, timed-out, failed, skipped, or absent checks do not satisfy
+`Required CI`.
 
 The aggregate is fail-closed for classification inputs and job results, but a workflow running from a pull request cannot be an independent trust boundary against an author who maliciously rewrites that workflow or its CI helper scripts. Independent review of `.github/workflows/**` and `scripts/ci:*` remains part of this repository's solo-maintainer protection model. Repositories accepting untrusted workflow changes require a separately trusted required workflow or mandatory reviewer policy.
 
 ## Pull Request Selection
 
-The workflow triggers only for pull requests targeting `main` or `release/**`,
-including the `release/deploy-331` strategy. A lightweight classifier uses the
+The workflow runs the classifier-selected CI plan only for non-draft pull
+requests targeting `main` or `release/**`, including the `release/deploy-331`
+strategy. Draft events run only the fail-closed `Required CI` result. The
+workflow responds to the `ready_for_review` transition so a reviewed draft
+receives current-head CI. A lightweight classifier uses the
 pull request's base and head commits and selects reduced mode only when every
 changed path is an added or modified member of this allowlist:
 

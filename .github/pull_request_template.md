@@ -54,12 +54,33 @@
 
 ## Review And Merge Gate
 
-- [ ] Every actionable review finding is corrected.
+- Initial merge-base SHA:
+- Initial reviewed head SHA:
+- Latest reviewed head SHA:
+- Review path (`GitHub`, `@codex review`, or independent local):
+
+| Round | Reviewed range | Review path | Finding disposition and evidence |
+| --- | --- | --- | --- |
+| Initial | `<merge-base>..<head>` |  |  |
+
+- [ ] Initial review covered the complete PR diff through the initial reviewed head.
+- [ ] Every finding is corrected, evidenced non-actionable, agreed deferred to a
+      linked issue, or identified as an unresolved merge blocker.
+- [ ] Every correction delta since the previous reviewed head was rereviewed and
+      the preceding findings were verified; unchanged code was not repeatedly
+      reopened without concrete interaction evidence.
+- [ ] Every review round was appended to the ledger without replacing earlier
+      reviewed ranges.
 - [ ] Correction commits are pushed without force-push or unrequested amend.
-- [ ] Replacement CI ran on the corrected current head.
+- [ ] The PR remained draft during review correction and was marked ready only
+      after review convergence.
+- [ ] Every planned post-ready head change returned the PR to draft before the
+      change and received bounded delta review.
+- [ ] Classifier-selected protected CI ran on the final reviewed current head.
 - [ ] Every required current-head check is green; canceled, timed-out, flaky,
       missing, or stale pre-correction checks are not accepted.
-- [ ] Review conversations are resolved only after correction evidence exists.
+- [ ] Review conversations are resolved only after correction evidence and
+      correction-delta review exist.
 - [ ] For roadmap work, the owning epic will be updated after merge with
       validation, performance, and the exact next action.
 - [ ] For roadmap work, the next ready issue will start automatically unless

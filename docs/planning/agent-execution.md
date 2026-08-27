@@ -145,7 +145,8 @@ downgrade a durable or measured-path change to avoid its affected gate.
    invalidated portion; preserve unaffected evidence only when its recorded
    boundary did not change.
 4. **Review correction:** run the reproducer, focused regression, and full
-   affected gate. Let replacement CI provide the complete matrix unless the
+   affected gate. Review the correction delta before final CI. Let protected CI
+   provide the complete classifier-selected plan unless the
    correction changes shared contracts, migrations, test infrastructure,
    category/coverage logic, or another cross-cutting boundary with uncertain
    blast radius. For those exceptions, rerun the complete local candidate gate
@@ -154,8 +155,11 @@ downgrade a durable or measured-path change to avoid its affected gate.
    configuration, fixtures, workload parameters, or measurement logic on the
    measured path changed. Documentation-only and unrelated test changes do not
    invalidate it.
-6. **Current-head CI:** every tier requires the complete protected CI matrix after the
-   final pushed correction. A stale green run never satisfies the merge gate.
+6. **Current-head CI:** every tier requires one successful classifier-selected
+   protected CI run for the latest PR head after review convergence and the final
+   head-changing update. A stale green run never satisfies the merge gate; an
+   unchanged successful latest-head run must not be repeated merely because a
+   review or administrative step completed later.
 
 If a supposedly focused correction exposes a cross-boundary failure, expand to
 the affected integration gate immediately. Optimization means avoiding duplicate
@@ -310,24 +314,56 @@ Every PR follows this sequence:
    push. Tier C/M runs the complete local candidate gate.
 3. Commit only intended files.
 4. Push the issue branch.
-5. Open a PR linked to the issue and its owning roadmap epic.
+5. Open a draft PR linked to the issue and its owning roadmap epic. Keep it draft
+   while review findings are being corrected.
 6. Include implementation, migrations/compatibility, tests, output evidence,
    performance evidence, logs/telemetry review, and residual risks.
-7. Wait for automatic CI and automatic review.
-8. Investigate every non-green check.
-9. Correct every actionable review finding.
-10. Push correction commits; do not hide corrections through an unrequested
-    amend or force push.
-11. Run focused and affected local correction gates, then wait for the complete
-    replacement CI matrix on the corrected head.
-12. Reply to review threads with the correction commit and evidence.
-13. Resolve threads only after the correction exists.
-14. Merge only when the current head is mergeable, every required current-head
-    check is green, and every actionable thread is resolved.
-15. Confirm the issue closes, update the owning roadmap epic, synchronize local
+7. Record the initial merge base and review head in an append-only PR review
+   ledger. The initial independent review covers that full range. Request normal
+   GitHub review once. If it is unavailable because of billing, service, or
+   configuration, request `@codex review` on the PR or perform an independent
+   local review; do not wait indefinitely for an unavailable reviewer.
+8. Disposition every finding as corrected, evidenced non-actionable, agreed
+   non-blocking deferral with a linked issue, or unresolved merge blocker.
+9. Batch coherent corrections where practical. Run the reproducer and every
+   failed or invalidated focused/affected local gate, then push without an
+   unrequested amend or force push.
+10. Append the corrected range, review path, finding disposition, and evidence to
+    the PR review ledger. Rereview only the delta from the previous reviewed head
+    through the corrected head, plus verification that the prior findings were
+    addressed. A correction rereview is not a second full review. Do not reopen
+    unchanged portions of the earlier diff unless the correction provides
+    concrete evidence of a new interaction. Record unrelated discoveries as
+    follow-up issues; escalate a newly discovered critical security, data-loss,
+    or correctness defect as a merge blocker.
+11. Repeat steps 8-10 only for actionable defects in the latest correction delta.
+    A repeated unchanged disagreement becomes an explicit blocker or operator
+    decision, not an unbounded review cycle.
+12. When review converges and no further code change is expected, mark the PR
+    ready for review. This transition triggers the classifier-selected protected
+    CI plan. Intermediate draft pushes intentionally do not run protected CI.
+13. Investigate every non-green check. A product correction returns the PR to
+    draft before the correction push, runs affected local gates, and receives a
+    review limited to the CI-correction delta before the PR becomes ready and
+    runs protected CI again. A diagnosed infrastructure, timeout, cancellation,
+    or flaky failure may rerun the same SHA without a code change.
+14. Reply to review threads with the correction commit and evidence. Resolve
+    threads only after their finding is dispositioned and any correction delta
+    has been reviewed.
+15. Merge only when the current head equals the reviewed head, is mergeable,
+    `Required CI` is green for that exact head, and every actionable thread is
+    resolved.
+16. Confirm the issue closes, update the owning roadmap epic, synchronize local
     `main`, and preserve unrelated worktree changes.
 
-A pre-correction green run is stale and does not satisfy the gate.
+A successful first protected run is sufficient when the head never changes. Any
+head-changing correction makes older CI and review-delta evidence stale for the
+changed boundary, but does not invalidate unaffected local evidence.
+After a PR becomes ready, return it to draft before every planned head change,
+including review corrections, base synchronization, conflict resolution, and
+dependency updates. If automation changes a ready head first, treat the resulting
+CI as provisional, return the PR to draft, review that delta, and mark it ready to
+trigger authoritative final CI.
 
 ## 10. Non-Green Recovery
 
@@ -341,8 +377,11 @@ If any build, test, runtime, review, or deployment check is not green:
    suppressing the symptom.
 5. Add regression coverage when the failure represents a product defect.
 6. Rerun the focused failure and the full affected gate; do not rerun unrelated
-   long suites locally when replacement CI will cover them.
-7. Push a new correction and require replacement CI.
+   long suites locally when protected CI will cover them.
+7. For a code correction, return the PR to draft before pushing, then review the
+   CI-correction delta and mark the PR ready to trigger new protected CI. If no
+   repository content changed, rerun the same SHA instead of creating a no-op
+   commit.
 8. Keep the PR open and the issue active until green.
 
 Do not merge around a failure, weaken a test without evidence, skip hooks, hide

@@ -1057,27 +1057,39 @@ Every issue follows this sequence:
 6. Validate outputs numerically or by checksum where behavior produces data.
 7. Use the execution protocol's validation ladder: focused inner-loop tests,
    tier-appropriate stable-candidate local evidence, affected correction gates,
-   and complete protected current-head replacement CI. Tier C/M work runs the
-   complete local candidate gate. Rerun performance only when its measured code
-   path, configuration, fixture, workload, environment, or measurement logic
-   changes.
+   and classifier-selected protected CI on the final reviewed head. Tier C/M
+   work runs the complete local candidate gate. Rerun performance only when its
+   measured code path, configuration, fixture, workload, environment, or
+   measurement logic changes.
 8. Inspect logs, metrics, traces, health, and durable state.
 9. Commit only issue files and preserve unrelated worktree changes.
-10. Push and open a PR linked to the issue and epic.
-11. Wait for automatic CI and review.
-12. Correct every actionable finding.
-13. Push a new correction commit and wait for replacement CI.
-14. Reply to and resolve review threads only after correction evidence exists.
-15. Merge only when the current head has green required checks and no unresolved
-    actionable review.
-16. Synchronize local `main`, confirm issue closure, and update epic/handoff state.
-17. Unless explicitly paused or blocked, select the highest-priority
+10. Push and open a draft PR linked to the issue and epic.
+11. Review the full initial PR diff. If normal GitHub review is unavailable, use
+    `@codex review` or independent local review rather than waiting indefinitely.
+12. Batch and validate corrections. Rereview only each correction delta and verify
+    the preceding findings; unrelated unchanged-code discoveries become follow-up
+    work unless they are critical merge blockers.
+13. After review convergence, mark the PR ready and run the classifier-selected
+    protected CI plan. Draft correction pushes intentionally skip protected CI.
+14. If CI requires code changes, return the PR to draft, review only that
+    correction delta, then mark it ready for final current-head CI. Rerun the same
+    SHA for diagnosed infrastructure failures that require no content change.
+15. Reply to and resolve review threads only after correction evidence and delta
+    review exist.
+16. Merge only when the current head equals the reviewed head, has green required
+    checks, and has no unresolved actionable review.
+17. Synchronize local `main`, confirm issue closure, and update epic/handoff state.
+18. Unless explicitly paused or blocked, select the highest-priority
     candidate-ready issue, post its plain-language synopsis and `READY` claim,
     and begin automatically.
 
+Every planned head change after readiness, including base synchronization and
+conflict resolution, returns the PR to draft before the change. Review that delta
+before marking the PR ready for authoritative current-head CI.
+
 Any red, canceled, timed-out, flaky, or missing required check blocks merge until
-it is understood and corrected. A stale green run from before a correction does
-not satisfy the gate.
+it is understood and corrected or rerun successfully on the same unchanged SHA.
+A stale green run from before a correction does not satisfy the gate.
 
 ## 25. Definition of Virtual-First Completion
 

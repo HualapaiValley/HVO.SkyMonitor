@@ -324,6 +324,51 @@ for suite in catalog layout shards installer; do
     exit 1
   }
 done
+
+extract_workflow_job() {
+  local target="$1" line job_name capturing=false
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]{2}([a-z0-9-]+):[[:space:]]*$ ]]; then
+      job_name="${BASH_REMATCH[1]}"
+      if [[ "$capturing" == true ]]; then
+        break
+      fi
+      if [[ "$job_name" == "$target" ]]; then
+        capturing=true
+      fi
+    fi
+    if [[ "$capturing" == true ]]; then
+      printf '%s\n' "$line"
+    fi
+  done < "$workflow"
+}
+
+grep -Fq 'types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]' "$workflow" || {
+  printf 'Pull request CI must follow ready/draft review transitions.\n' >&2
+  exit 1
+}
+changes_job="$(extract_workflow_job changes)"
+grep -Fxq "    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false" <<< "$changes_job" || {
+  printf 'Draft pull requests must not start the classifier-selected CI plan.\n' >&2
+  exit 1
+}
+required_job="$(extract_workflow_job required)"
+grep -Fxq '    if: always()' <<< "$required_job" || {
+  printf 'Required CI must report a conclusion for every pull request head.\n' >&2
+  exit 1
+}
+draft_failure_step=$'      - name: Block merge while review is in progress\n        if: github.event_name == '\''pull_request'\'' && github.event.pull_request.draft == true\n        run: |\n          echo '\''Required CI is intentionally blocked while the pull request is draft.'\'' >&2\n          exit 1'
+grep -Fq "$draft_failure_step" <<< "$required_job" || {
+  printf 'Draft Required CI must fail closed rather than conclude skipped.\n' >&2
+  exit 1
+}
+for step_name in 'Checkout' 'Require every current-head gate'; do
+  non_draft_step=$'      - name: '"$step_name"$'\n        if: github.event_name != '\''pull_request'\'' || github.event.pull_request.draft == false'
+  grep -Fq "$non_draft_step" <<< "$required_job" || {
+    printf 'Required CI step must run only for a non-draft head: %s\n' "$step_name" >&2
+    exit 1
+  }
+done
 grep -Fq "if: always() && needs.changes.outputs.deployment_shards == 'true'" "$workflow" || {
   printf 'Deployment shard log upload must follow the shard classifier output.\n' >&2
   exit 1

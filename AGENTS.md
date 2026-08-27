@@ -21,8 +21,8 @@
 - `tests/coverage.runsettings` excludes test assemblies, `TestSupport`, migrations, and build output; keep coverage configuration aligned when adding projects.
 - Use the risk-tiered validation ladder in `docs/planning/agent-execution.md`:
   focused tests in the inner loop, tier-appropriate local candidate evidence
-  before the first push, affected gates for corrections, and complete protected
-  replacement CI on the final head. Tier C/M work runs the complete local
+  before the first push, affected gates for corrections, and classifier-selected
+  protected CI on the final reviewed head. Tier C/M work runs the complete local
   candidate gate; Tier A/B work relies on focused/affected local evidence plus
   protected CI. Do not repeatedly run unchanged long suites or performance
   harnesses.
@@ -81,7 +81,14 @@
   capacity permits; raise that limit only after explicitly verifying capacity.
   The roadmap coordinator records claims in the owning roadmap epic and never
   lets agents edit the same worktree.
-- Every PR must build and test locally, push, receive review, correct every actionable finding, rerun replacement CI on the corrected head, resolve threads, and merge only when current-head required checks are green.
+- Every PR uses a draft-first convergence cycle: initial review covers the full
+  PR diff; correction rereviews cover only the delta from the previous reviewed
+  head and verify prior findings. Use `@codex review` or independent local review
+  when normal GitHub review is unavailable. After review converges, mark the PR
+  ready to run protected CI, and merge only when the reviewed current head has
+  green required checks. Return every planned post-ready head change, including a
+  failed-CI correction or base synchronization, to draft for narrow delta review
+  before final CI; do not repeat unchanged successful gates.
 - Performance-sensitive work requires reproducible baseline/after evidence for relevant I/O, CPU, allocations/working set, throughput, latency, and backlog. Unexplained regression blocks merge.
 - Validate produced outputs through checksums, numerical invariants, provenance, lineage, and durable state where applicable. Inspect logs, metrics, traces, and health behavior for host/worker changes.
 - If work stops or blocks, leave the resumable handoff required by the execution protocol and update the owning roadmap epic with the exact next action.
