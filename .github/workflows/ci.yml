@@ -6,6 +6,7 @@ on:
     branches: [main, 'release/**']
   pull_request:
     branches: [main, 'release/**']
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 permissions:
   contents: read
@@ -21,6 +22,7 @@ env:
 jobs:
   changes:
     name: Change Classification
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -539,11 +541,18 @@ jobs:
     timeout-minutes: 5
     needs: [changes, quality, deployment-contracts, build, unit, integration, architecture, migrations, coverage]
     steps:
+      - name: Block merge while review is in progress
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
+        run: |
+          echo 'Required CI is intentionally blocked while the pull request is draft.' >&2
+          exit 1
       - name: Checkout
+        if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Require every current-head gate
+        if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           DEPLOYMENT_PLAN: ${{ needs.changes.outputs.deployment }}

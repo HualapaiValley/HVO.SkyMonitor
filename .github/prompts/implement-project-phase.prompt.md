@@ -43,14 +43,18 @@ Validate checksums, numerical invariants, layout, recipe identity, provenance,
 lineage, and durable state. Inspect logs, metrics, traces, and health behavior.
 
 Use the execution protocol's validation ladder: focused tests in the inner loop,
-one complete local candidate gate before the first push, affected local gates
-for corrections, and complete replacement CI on the final head. Do not repeat
-unchanged long suites or performance harnesses. Commit only intended files,
-push, and open a PR linked to the issue and its owning roadmap epic. Wait for CI and automatic
-review. Correct every actionable finding, push correction commits, and require
-replacement CI on the corrected head. Reply to and resolve review threads only
-after correction evidence exists. Merge only when every required current-head
-check is green and no actionable thread remains.
+one tier-selected local candidate gate before the first push, affected local
+gates for corrections, and classifier-selected protected CI on the final
+reviewed head. Do not repeat unchanged long suites or performance harnesses.
+Commit only intended files, push, and open a draft PR linked to the issue and its
+owning roadmap epic. The initial independent review covers the full PR diff. If
+normal GitHub review is unavailable, use `@codex review` or independent local
+review. Batch corrections; each rereview covers only the correction delta and
+verifies prior findings. Mark the PR ready only after review convergence so it
+triggers protected CI. Return every planned post-ready head change, including a
+CI-driven correction or base synchronization, to draft for narrow delta review
+before final CI. Merge only when the reviewed current head has green required
+checks and no actionable thread remains.
 
 After merge, confirm issue closure, synchronize local `main`, preserve unrelated
 worktree changes, and update the owning roadmap epic with completed evidence and the next

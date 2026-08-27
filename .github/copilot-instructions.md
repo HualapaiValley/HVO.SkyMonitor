@@ -63,11 +63,13 @@ Do not introduce guidance here that conflicts with those sources.
 Before implementation, post the execution protocol's plain-language synopsis:
 why the issue is next, its practical outcome and benefit, what it unlocks, and
 the main exclusion. Every roadmap PR follows the validation ladder and complete
-push, review, correction, replacement-CI, thread-resolution, and
-current-head-green merge process in `docs/planning/agent-execution.md`. Use
+draft, bounded review, correction-delta rereview, final-CI, thread-resolution,
+and current-head-green merge process in `docs/planning/agent-execution.md`. Use
 focused inner-loop tests, tier-appropriate local candidate evidence, affected
-correction gates, and complete final CI rather than repeating unchanged long
-suites.
+correction gates, and classifier-selected CI on the final reviewed head rather
+than repeating unchanged long suites. Use `@codex review` or independent local
+review when normal GitHub review is unavailable. Return every planned post-ready
+head change to draft for bounded delta review before final CI.
 Performance-sensitive changes use canonical workloads and report relevant I/O,
 CPU, allocations/working set, throughput, latency, and backlog. Data-producing
 changes validate checksums, numerical invariants, provenance, lineage, and
