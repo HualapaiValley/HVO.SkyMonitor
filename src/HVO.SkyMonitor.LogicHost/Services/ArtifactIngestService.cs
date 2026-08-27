@@ -2553,7 +2553,7 @@ internal sealed partial class ArtifactIngestService(
         try
         {
             return source.Ordinal == 0 && resolved.Role == FrameArtifactRole.Preview &&
-                resolved.MediaType is CentralPresentationBaseDecoder.PackedMediaType or JpegImageCodec.MediaType &&
+                resolved.MediaType is CentralPresentationBaseDecoder.PackedMediaType or JpegImageCodec.MediaType or "image/png" &&
                 resolved.Layout is { } layout &&
                 string.Equals(CentralReconstructionDescriptorFactory.ComputeOutputIdentity(resolved),
                     expectedIdentity, StringComparison.OrdinalIgnoreCase) &&

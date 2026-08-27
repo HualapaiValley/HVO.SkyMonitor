@@ -882,7 +882,7 @@ public sealed class ArtifactIngestTests
             var retainedBase = await referenceScope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
                 .CentralArtifacts.Include(item => item.Layout).Include(item => item.Recipe).Include(item => item.Sources)
                 .SingleAsync(item => item.ArtifactId == baseArtifactId).ConfigureAwait(false);
-            ArtifactIngestService.MatchesPresentationReference(new CentralArtifactSource
+            var retainedBaseReference = new CentralArtifactSource
             {
                 ExpectedProductIdentitySha256 = baseOutputIdentity,
                 ExpectedMediaType = CentralPresentationBaseDecoder.PackedMediaType,
@@ -890,8 +890,13 @@ public sealed class ArtifactIngestTests
                 ExpectedHeightPixels = compatibility.HeightPixels,
                 ExpectedLayoutIdentitySha256 = compatibility.LayoutIdentitySha256,
                 ExpectedCoordinateIdentitySha256 = new string('E', 64)
-            }, retainedBase).Should().BeTrue(
+            };
+            ArtifactIngestService.MatchesPresentationReference(retainedBaseReference, retainedBase).Should().BeTrue(
                 "presentation coordinates are declared by the overlay and layer products, not base lineage");
+            retainedBase.MediaType = "image/png";
+            retainedBaseReference.ExpectedMediaType = "image/png";
+            ArtifactIngestService.MatchesPresentationReference(retainedBaseReference, retainedBase).Should().BeTrue(
+                "PNG is a supported retained presentation base");
         }
         var presentationCacheKey = CentralLayeredPresentationService.CreateCacheKey(
             centralCaptureId, overlayArtifact.ArtifactId, overlayArtifact.ChecksumSha256);
@@ -1412,6 +1417,11 @@ public sealed class ArtifactIngestTests
                 item.CentralArtifactId == stored.Id && item.Ordinal == 1)
             .ExecuteUpdateAsync(setters => setters.SetProperty(
                 item => item.ExpectedVariant, "persisted-corrupt-variant")).ConfigureAwait(false);
+        await db.CentralArtifacts.Where(item => item.Id == stored.Id)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.ReconstructionState, CentralReconstructionState.Quarantined)
+                .SetProperty(item => item.StateReasonCode, "lineage.source-identity-mismatch"))
+            .ConfigureAwait(false);
         using var telemetry = new CentralIngestTelemetry();
         var reconciler = new CentralArtifactReconciliationService(
             AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>(),

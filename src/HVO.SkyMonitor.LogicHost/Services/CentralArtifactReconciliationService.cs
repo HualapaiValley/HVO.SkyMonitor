@@ -1496,7 +1496,8 @@ internal sealed partial class CentralArtifactReconciliationService(
             }
         }
 
-        var provenanceQuarantined = false;
+        var provenanceQuarantined = artifact.ReconstructionState == CentralReconstructionState.Quarantined &&
+            artifact.StateReasonCode == "lineage.source-identity-mismatch";
         if (artifact.ObjectState == CentralArtifactObjectState.Available &&
             artifact.ReconstructionState == CentralReconstructionState.Complete &&
             ArtifactIngestService.HasStructuredSourceMismatch(artifact))
