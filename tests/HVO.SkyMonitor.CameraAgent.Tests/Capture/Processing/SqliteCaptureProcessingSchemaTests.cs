@@ -21,6 +21,30 @@ public sealed class SqliteCaptureProcessingSchemaTests
         {
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         }
+        using (var writer = await fixture.OpenAsync().ConfigureAwait(false))
+        {
+            const int sqliteDbConfigNoCheckpointOnClose = 1006;
+            var result = SQLitePCL.raw.sqlite3_db_config(
+                writer.Handle,
+                sqliteDbConfigNoCheckpointOnClose,
+                1,
+                out var checkpointDisabled);
+            Assert.AreEqual(SQLitePCL.raw.SQLITE_OK, result);
+            Assert.AreEqual(1, checkpointDisabled);
+            using var seed = writer.CreateCommand();
+            seed.CommandText = """
+                    PRAGMA wal_autocheckpoint = 0;
+                    INSERT INTO processing_nodes(
+                        capture_id, node_id, required, dependencies_json, recipe_name, output_role,
+                        output_variant, plan_sha256, status, reason, attempt, completed_unix_ms)
+                    VALUES(
+                        '10000000000000000000000000000001', 'retained-wal', 1, '[]', 'schema-test',
+                        'Preview', 'default', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                        'Completed', NULL, 1, 0);
+                    """;
+            await seed.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        Assert.IsTrue(File.Exists($"{fixture.DatabasePath}-wal"));
         using (var restarted = new SqliteCaptureProcessingStore(fixture.Options))
         {
             await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -30,6 +54,9 @@ public sealed class SqliteCaptureProcessingSchemaTests
         Assert.AreEqual(5L, await ScalarAsync(
             connection,
             "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(
+            connection,
+            "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'retained-wal';").ConfigureAwait(false));
         Assert.AreEqual(19L, await ScalarAsync(connection, """
             SELECT COUNT(*) FROM sqlite_schema
             WHERE name = 'capture_processing_schema'
@@ -39,6 +66,10 @@ public sealed class SqliteCaptureProcessingSchemaTests
         Assert.AreEqual(0L, await ScalarAsync(connection, """
             SELECT COUNT(*) FROM pragma_table_info('processing_outputs')
             WHERE name = 'legacy_recipe_version';
+            """).ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(connection, """
+            SELECT COUNT(*) FROM pragma_table_info('processing_outputs')
+            WHERE name = 'frame_artifact_recipe_version';
             """).ConfigureAwait(false));
     }
 
@@ -66,6 +97,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         var filesBefore = ReadDatabaseFiles(fixture.DatabasePath);
+        Assert.IsTrue(filesBefore.ContainsKey("raw-ingress.db-wal"));
 
         using var rejected = new SqliteCaptureProcessingStore(fixture.Options);
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
@@ -74,7 +106,12 @@ public sealed class SqliteCaptureProcessingSchemaTests
         CollectionAssert.AreEquivalent(filesBefore.Keys, filesAfter.Keys);
         foreach (var file in filesBefore)
         {
-            CollectionAssert.AreEqual(file.Value, filesAfter[file.Key]);
+            if (file.Key.EndsWith("-shm", StringComparison.Ordinal))
+            {
+                // Read-only WAL readers update transient read marks in shared memory.
+                continue;
+            }
+            CollectionAssert.AreEqual(file.Value, filesAfter[file.Key], file.Key);
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);

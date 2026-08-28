@@ -35,7 +35,8 @@ internal sealed record DurableProcessingOutput(
     string? ProductSchemaVersion = null,
     string? ContentIdentitySha256 = null,
     string AvailabilityState = "Available",
-    string? AvailabilityReason = null)
+    string? AvailabilityReason = null,
+    string? FrameArtifactRecipeVersion = null)
 {
     internal CaptureIdentityDescriptor Capture => Descriptor?.Capture ?? ProductManifest?.Capture
         ?? throw new InvalidDataException("Durable processing output has no capture descriptor.");
@@ -569,7 +570,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                    descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
                    algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
                    product_kind, product_schema_version, content_identity_sha256,
-                   availability_state, availability_reason
+                   availability_state, availability_reason, frame_artifact_recipe_version
             FROM processing_outputs
             WHERE artifact_id = $artifact_id
             LIMIT 2;
@@ -1502,9 +1503,10 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             SELECT output.output_identity_sha256, output.artifact_id, output.payload_relative_path, output.sidecar_relative_path,
                    output.descriptor_json, output.capture_id, output.agent_id, output.node_id, output.role, output.variant,
                    output.recipe_identity_sha256, output.algorithms_json, output.compatibility_json, output.total_integration_ticks,
-                     output.capture_sequence, output.product_kind,
-                     output.product_schema_version, output.content_identity_sha256,
-                     output.availability_state, output.availability_reason
+                      output.capture_sequence, output.product_kind,
+                      output.product_schema_version, output.content_identity_sha256,
+                      output.availability_state, output.availability_reason,
+                      output.frame_artifact_recipe_version
             FROM processing_outputs AS output
             WHERE output.agent_id = $agent_id
               AND output.availability_state = 'Available'
@@ -1584,8 +1586,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                     SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                            descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
                            algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                              product_kind, product_schema_version, content_identity_sha256,
-                             availability_state, availability_reason,
+                               product_kind, product_schema_version, content_identity_sha256,
+                              availability_state, availability_reason, frame_artifact_recipe_version,
                            ROW_NUMBER() OVER (
                                PARTITION BY capture_id ORDER BY node_id, output_identity_sha256) AS gallery_rank
                     FROM processing_outputs
@@ -1595,7 +1597,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                        descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
                          algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
                          product_kind, product_schema_version, content_identity_sha256,
-                         availability_state, availability_reason
+                         availability_state, availability_reason, frame_artifact_recipe_version
                 FROM ranked_outputs
                 WHERE gallery_rank <= $maximum_outputs
                 ORDER BY capture_id, node_id, output_identity_sha256;
@@ -1964,13 +1966,13 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
                 algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
                 committed_unix_ms, product_kind, product_schema_version,
-                content_identity_sha256)
+                content_identity_sha256, frame_artifact_recipe_version)
             VALUES (
                 $output_identity_sha256, $capture_id, $agent_id, $node_id, $artifact_id, $role, $variant,
                 $payload_relative_path, $sidecar_relative_path, $descriptor_json, $recipe_identity_sha256,
                 $algorithms_json, $compatibility_json, $total_integration_ticks, $capture_sequence,
                 $committed_unix_ms, $product_kind, $product_schema_version,
-                $content_identity_sha256)
+                $content_identity_sha256, $frame_artifact_recipe_version)
             ON CONFLICT(output_identity_sha256) DO NOTHING;
             """;
         AddOutputParameters(
@@ -1991,7 +1993,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                    descriptor_json, recipe_identity_sha256, algorithms_json, compatibility_json,
                    total_integration_ticks, capture_sequence, product_kind,
                    product_schema_version, content_identity_sha256,
-                   availability_state, availability_reason
+                   availability_state, availability_reason, frame_artifact_recipe_version
             FROM processing_outputs WHERE output_identity_sha256 = $output_identity_sha256;
             """;
         verify.Parameters.AddWithValue("$output_identity_sha256", output.OutputIdentitySha256);
@@ -2009,6 +2011,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             ? null : reader.GetString(12);
         var existingContentIdentity = await reader.IsDBNullAsync(13, cancellationToken).ConfigureAwait(false)
             ? null : reader.GetString(13);
+        var existingFrameArtifactRecipeVersion = await reader.IsDBNullAsync(16, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(16);
         if (!string.Equals(reader.GetString(0), captureId.ToString("N"), StringComparison.Ordinal) ||
             !string.Equals(reader.GetString(1), nodeId, StringComparison.Ordinal) ||
             !string.Equals(reader.GetString(2), output.ArtifactId.ToString("N"), StringComparison.Ordinal) ||
@@ -2022,7 +2026,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             reader.GetInt64(10) != output.CaptureSequence ||
             !string.Equals(existingProductKind, output.ProductKind?.ToString(), StringComparison.Ordinal) ||
             !string.Equals(existingProductSchemaVersion, output.ProductSchemaVersion, StringComparison.Ordinal) ||
-            !string.Equals(existingContentIdentity, output.ContentIdentitySha256, StringComparison.Ordinal))
+            !string.Equals(existingContentIdentity, output.ContentIdentitySha256, StringComparison.Ordinal) ||
+            !string.Equals(existingFrameArtifactRecipeVersion, output.FrameArtifactRecipeVersion, StringComparison.Ordinal))
         {
             throw new InvalidDataException("A processing output identity conflicts with committed immutable facts.");
         }
@@ -2095,6 +2100,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$product_kind", output.ProductKind?.ToString() ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$product_schema_version", (object?)output.ProductSchemaVersion ?? DBNull.Value);
         command.Parameters.AddWithValue("$content_identity_sha256", (object?)output.ContentIdentitySha256 ?? DBNull.Value);
+        command.Parameters.AddWithValue("$frame_artifact_recipe_version", (object?)output.FrameArtifactRecipeVersion ?? DBNull.Value);
     }
 
     private static async ValueTask<IReadOnlyList<DurableProcessingOutput>> ReadOutputsAsync(
@@ -2109,7 +2115,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                    descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
                      algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
                      product_kind, product_schema_version, content_identity_sha256,
-                     availability_state, availability_reason
+                     availability_state, availability_reason, frame_artifact_recipe_version
             FROM processing_outputs
             WHERE capture_id = $capture_id AND node_id = $node_id
             ORDER BY output_identity_sha256;
@@ -2203,6 +2209,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         var availabilityState = reader.GetString(18);
         var availabilityReason = await reader.IsDBNullAsync(19, cancellationToken).ConfigureAwait(false)
             ? null : reader.GetString(19);
+        var frameArtifactRecipeVersion = await reader.IsDBNullAsync(20, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(20);
         var typedManifest = productManifest as DurableTypedMetadataProductManifestV3;
         var sourceMatchesManifest = productManifest is null ||
             (productManifest.ProducerStepId is { } producerStepId
@@ -2248,7 +2256,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 productSchemaVersion,
                  contentIdentity,
                  availabilityState,
-                 availabilityReason));
+                 availabilityReason,
+                 frameArtifactRecipeVersion));
     }
 
     private sealed record ProcessingSchemaInspection(
@@ -2260,39 +2269,34 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         CancellationToken cancellationToken)
     {
         EnsureDatabaseFilesArePhysical();
-        var recoveryFiles = new[]
-        {
-            string.Concat(_databasePath, "-wal"),
-            string.Concat(_databasePath, "-journal")
-        }.Where(File.Exists).ToArray();
-        var hasRecoveryState = recoveryFiles.Length > 0 || File.Exists(string.Concat(_databasePath, "-shm"));
-        DirectoryInfo? snapshotRoot = null;
         try
         {
-            var inspectionPath = _databasePath;
-            var immutable = !hasRecoveryState;
-            if (!immutable)
-            {
-                snapshotRoot = Directory.CreateTempSubdirectory("hvo-processing-inspection-");
-                inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(_databasePath));
-                File.Copy(_databasePath, inspectionPath);
-                foreach (var recoveryFile in recoveryFiles)
-                {
-                    File.Copy(
-                        recoveryFile,
-                        string.Concat(inspectionPath, recoveryFile.AsSpan(_databasePath.Length)));
-                }
-            }
             using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
             {
-                DataSource = immutable
-                    ? string.Concat(new Uri(inspectionPath).AbsoluteUri, "?immutable=1")
-                    : inspectionPath,
-                Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
+                DataSource = _databasePath,
+                Mode = SqliteOpenMode.ReadOnly,
+                Cache = SqliteCacheMode.Private,
                 Pooling = false,
                 DefaultTimeout = _busyTimeoutSeconds
             }.ToString());
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            const int sqliteDbConfigNoCheckpointOnClose = 1006;
+            var configurationResult = SQLitePCL.raw.sqlite3_db_config(
+                connection.Handle,
+                sqliteDbConfigNoCheckpointOnClose,
+                1,
+                out var checkpointDisabled);
+            if (configurationResult != SQLitePCL.raw.SQLITE_OK || checkpointDisabled != 1)
+            {
+                throw new InvalidOperationException(
+                    "Capture processing SQLite inspection could not disable checkpoint-on-close.");
+            }
+            EnsureDatabaseFilesArePhysical();
+            using (var begin = connection.CreateCommand())
+            {
+                begin.CommandText = "BEGIN DEFERRED;";
+                await begin.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
             var rawVersion = await ExecuteScalarLongAsync(
                 connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
             if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
@@ -2313,10 +2317,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         catch (SqliteException exception)
         {
             throw new InvalidDataException("Capture processing SQLite schema inspection failed.", exception);
-        }
-        finally
-        {
-            snapshotRoot?.Delete(recursive: true);
         }
     }
 
@@ -2611,6 +2611,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             sidecar_relative_path TEXT NOT NULL,
             descriptor_json BLOB NOT NULL,
             recipe_identity_sha256 TEXT NOT NULL CHECK(length(recipe_identity_sha256) = 64),
+            frame_artifact_recipe_version TEXT NULL,
             algorithms_json BLOB NOT NULL,
             compatibility_json BLOB NOT NULL,
             total_integration_ticks INTEGER NOT NULL,

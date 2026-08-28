@@ -159,7 +159,8 @@ internal sealed class CaptureProcessingPersistence(
                 product.Algorithms,
                 product.Compatibility,
                 product.TotalIntegration,
-                baseOutput.CaptureSequence);
+                baseOutput.CaptureSequence,
+                FrameArtifactRecipeVersion: artifact.RecipeVersion);
             var nodeId = $"gallery-materialization-{product.OutputIdentitySha256[..16]}";
             var planSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
             {
@@ -506,7 +507,8 @@ internal sealed class CaptureProcessingPersistence(
                         rawCapture.Manifest.Descriptor.Capture.CaptureSequence,
                         null,
                         null,
-                        null));
+                        null,
+                        FrameArtifactRecipeVersion: artifact.RecipeVersion));
                 }
                 stopwatch.Stop();
                 _telemetry.RecordPersistence(node, product, stopwatch.Elapsed);
@@ -622,7 +624,7 @@ internal sealed class CaptureProcessingPersistence(
             product.Role,
             frame,
             product.SourceArtifactIds,
-            product.Recipe.Descriptor.ImplementationVersion);
+            output.FrameArtifactRecipeVersion);
         return new RestoredProcessingOutput(
             artifact.ArtifactId,
             frame.TimestampUtc,

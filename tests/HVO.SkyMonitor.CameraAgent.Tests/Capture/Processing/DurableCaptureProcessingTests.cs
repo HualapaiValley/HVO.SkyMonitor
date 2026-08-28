@@ -1246,7 +1246,7 @@ public sealed partial class DurableCaptureProcessingTests
             using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
             {
                 var persistence = CreatePersistence(fixture.Options, store, storage, telemetry);
-                var firstStep = new ProducingStep();
+                var firstStep = new ProducingStep(recipeVersion: "configured-artifact-v2");
                 var firstNode = CreateNode(firstStep);
                 first = await FrameProcessingWorker.ProcessGraphItemAsync(
                     fixture.Item,
@@ -1261,9 +1261,10 @@ public sealed partial class DurableCaptureProcessingTests
 
             CaptureLaneHandlerResult second;
             DurableProcessingNode? durable;
-            var restartedStep = new ProducingStep();
+            var restartedStep = new ProducingStep(recipeVersion: "configured-artifact-v2");
             var restartedNode = CreateNode(restartedStep);
-            var inspector = new RestoredFrameInspectingStep(fixture.Manifest.Scene!);
+            var inspector = new RestoredFrameInspectingStep(
+                fixture.Manifest.Scene!, "configured-artifact-v2");
             using (var telemetry = new CaptureProcessingTelemetry())
             using (var store = new SqliteCaptureProcessingStore(fixture.Options))
             using (var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance))
@@ -1302,6 +1303,8 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsEmpty(durable.Inputs);
             Assert.HasCount(1, durable.Outputs);
             var output = durable.Outputs[0];
+            Assert.AreEqual("configured-artifact-v2", output.FrameArtifactRecipeVersion);
+            Assert.AreEqual("test-v1", output.Artifact.Recipe.ImplementationVersion);
             Assert.AreEqual(fixture.Manifest.Descriptor.CycleEvidence, output.Descriptor!.CycleEvidence);
             Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, output.Descriptor.Artifact.SourceArtifactIds.Single());
             Assert.IsTrue(File.Exists(Path.Combine(root, output.PayloadRelativePath)));
@@ -3335,7 +3338,10 @@ public sealed partial class DurableCaptureProcessingTests
             decisionStartedUtc.AddMilliseconds(200));
     }
 
-    private class ProducingStep(string name = "normalize", string outputVariant = "none") :
+    private class ProducingStep(
+        string name = "normalize",
+        string outputVariant = "none",
+        string recipeVersion = "test-v1") :
         ICaptureProcessingStep, ICaptureProcessingGraphStep
     {
         public bool Enabled => true;
@@ -3371,7 +3377,7 @@ public sealed partial class DurableCaptureProcessingTests
             var artifact = context.AddDerivative(
                 OutputRole,
                 raw.Frame with { Metadata = raw.Frame.Metadata with { SourceId = "normalize" } },
-                "test-v1",
+                recipeVersion,
                 sources,
                 CaptureProcessingContext.CreateArtifactId(product.OutputIdentitySha256));
             context.AssociateProcessingProduct(artifact, product);
@@ -3770,7 +3776,9 @@ public sealed partial class DurableCaptureProcessingTests
         }
     }
 
-    private sealed class RestoredFrameInspectingStep(SceneProvenance expectedScene) : ICaptureProcessingStep
+    private sealed class RestoredFrameInspectingStep(
+        SceneProvenance expectedScene,
+        string expectedRecipeVersion) : ICaptureProcessingStep
     {
         public string Name => "inspect";
         public int Order => 1;
@@ -3778,7 +3786,9 @@ public sealed partial class DurableCaptureProcessingTests
 
         public ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
         {
-            Assert.AreEqual(expectedScene, context.GetDependencyArtifacts().Single().Frame.Metadata.Scene);
+            var dependency = context.GetDependencyArtifacts().Single();
+            Assert.AreEqual(expectedScene, dependency.Frame.Metadata.Scene);
+            Assert.AreEqual(expectedRecipeVersion, dependency.RecipeVersion);
             Assert.AreEqual(FrameArtifactRole.Raw, context.Artifacts!.Raw.Role);
             Assert.AreEqual(FrameArtifactRole.Calibrated, context.Artifacts[FrameArtifactRole.Calibrated].Role);
             Assert.HasCount(2, context.AllArtifacts);
