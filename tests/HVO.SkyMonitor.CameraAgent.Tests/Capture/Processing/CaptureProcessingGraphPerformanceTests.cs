@@ -6,6 +6,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
@@ -380,6 +381,8 @@ public sealed class CaptureProcessingGraphPerformanceTests
                 RawIngressRoot = root,
                 RawIngressReserveBytes = 0
             });
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(options);
             using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
@@ -575,6 +578,8 @@ public sealed class CaptureProcessingGraphPerformanceTests
         var database = Path.Combine(root, "journal", "raw-ingress.db");
         try
         {
+            var journal = new SqliteRawCaptureJournal(database, 1);
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using (var store = new SqliteCaptureProcessingStore(options))
             {
                 await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
@@ -597,9 +602,9 @@ public sealed class CaptureProcessingGraphPerformanceTests
                             output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
                             payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
                             algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                            legacy_recipe_version, committed_unix_ms)
+                            committed_unix_ms)
                         VALUES ($output, $capture, 'performance', 'node', $artifact, 'Preview', 'default',
-                            $payload, $sidecar, X'7B7D', $recipe, X'5B5D', X'7B7D', 1, $sequence, 'perf-v1', 0);
+                            $payload, $sidecar, X'7B7D', $recipe, X'5B5D', X'7B7D', 1, $sequence, 0);
                         """;
                     insert.Parameters.AddWithValue("$capture", captureId);
                     insert.Parameters.AddWithValue("$plan", new string('A', 64));
