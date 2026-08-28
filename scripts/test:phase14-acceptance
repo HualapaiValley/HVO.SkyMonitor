@@ -197,7 +197,7 @@ validate_evidence_contract() {
         "campaignIndexContract","statusContract","followUpFamilies"] | sort) and
       .issues == {definition:318,parent:305} and
       .inventory.relativePath == "deploy/split-host/acceptance/phase14-scenarios.json" and
-      .inventory.schemaVersion == $campaign.schemaVersion and .inventory.scenarioCount == 111 and
+      .inventory.schemaVersion == $campaign.schemaVersion and .inventory.scenarioCount == 113 and
       (.inventory.canonicalSha256 | digest) and
       (.inventory.reconciliation | contains("raw-boundary-payload-partially-written") and
         contains("a2e61a1bbff5decf454151ddae9eef72934d6113")) and
@@ -212,7 +212,7 @@ validate_evidence_contract() {
         "real-campaign":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "real-campaign")] | length),
         "deferred":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "deferred")] | length),
         "excluded":([$campaign.scenarios[] | select((matches($root; .)[0].disposition) == "excluded")] | length)
-      } and ([.dispositionSummary[]] | add) == 111 and
+      } and ([.dispositionSummary[]] | add) == 113 and
       ([.sourceFamilies[].id] | length) == ([.sourceFamilies[].id] | unique | length) and
       all(.sourceFamilies[]; . as $family |
         ($family.id | safe) and ($family.project | safe_path) and ($family.project | endswith(".csproj")) and
@@ -434,7 +434,8 @@ assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Ca
 assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Capture/Distribution/CaptureLaneFaults.cs" \
   CaptureLaneFaultPoint 'boundary:capture-lane:' '["BeforeHandler","AfterHandler"]'
 assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/CaptureProcessingFaults.cs" \
-  CaptureProcessingFaultPoint 'boundary:capture-processing:' '["BeforeNodeExecution"]'
+  CaptureProcessingFaultPoint 'boundary:capture-processing:' \
+  '["AfterSchemaTransactionBegan","BeforeNodeExecution","BeforeSchemaCommit"]'
 jq -e --argjson required "$required_ids" '
   .schemaVersion == 2 and ([.scenarios[].id] | sort) == ($required | sort) and
   ([.scenarios[] | select(.source | startswith("project-plan:phase-14-fault-row-"))] | length) == 12 and

@@ -1,5 +1,6 @@
 using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
@@ -33,7 +34,7 @@ public sealed class CalibrationTelemetryTests
         telemetry.ReplaceInventory(new CalibrationTelemetryInventory(
             new Dictionary<(string State, string Source), long>
             {
-                [("published", "legacy-synthetic-v1")] = 1
+                [("published", CalibrationLibraryBundleSources.SyntheticReferencesV1)] = 1
             },
             new Dictionary<(string Kind, string State), long>
             {

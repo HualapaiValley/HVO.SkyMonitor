@@ -195,11 +195,11 @@ phase14_source_validate_contract() {
     canonical_hash="${canonical_hash%% *}"
     jq -e --arg hash "$canonical_hash" --slurpfile inventory "$inventory" '
       .schemaVersion == 2 and .contract == "phase-14-deferred-evidence" and
-      .inventory.schemaVersion == 2 and .inventory.scenarioCount == 111 and
-      .inventory.canonicalSha256 == $hash and ($inventory[0].scenarios | length) == 111 and
-      .dispositionSummary["source-family-import"] == 103 and
-      (.sourceFamilies | length) == 3 and ([.sourceFamilies[].scenarioCount] | add) == 103 and
-      ([.sourceFamilies[].uniqueMethodCount] | add) == 25 and
+      .inventory.schemaVersion == 2 and .inventory.scenarioCount == 113 and
+      .inventory.canonicalSha256 == $hash and ($inventory[0].scenarios | length) == 113 and
+      .dispositionSummary["source-family-import"] == 105 and
+      (.sourceFamilies | length) == 3 and ([.sourceFamilies[].scenarioCount] | add) == 105 and
+      ([.sourceFamilies[].uniqueMethodCount] | add) == 26 and
       (.sourceEvidenceContract.requiredSourceRevision | test("^[0-9a-f]{40}$")) and
       (.sourceEvidenceContract.requiredSourceTree | test("^[0-9a-f]{40}$")) and
       (.sourceEvidenceContract.evidenceHarnessPolicy.requiredRevision == null or
@@ -255,7 +255,7 @@ phase14_source_method_map() {
         method_map="$(jq -c --arg fqn "$fqn" --arg methodId "$(phase14_source_method_id "$fqn")" \
           'map(if .fqn == $fqn then .methodId=$methodId else . end)' <<< "$method_map")" || return 1
     done < <(jq -r '[.[].fqn] | unique[]' <<< "$method_map")
-    [[ "$(jq 'length' <<< "$method_map")" == 103 && "$(jq '[.[].fqn] | unique | length' <<< "$method_map")" == 25 ]] || return 1
+    [[ "$(jq 'length' <<< "$method_map")" == 105 && "$(jq '[.[].fqn] | unique | length' <<< "$method_map")" == 26 ]] || return 1
     printf '%s\n' "$method_map"
 }
 
@@ -501,9 +501,9 @@ phase14_source_validate_publication() {
        (.acceptanceInputs.collectorImage | test("^[^[:space:]@]+@sha256:[0-9a-f]{64}$")) and
        all(.acceptanceInputs.catalogManifestSha256,.acceptanceInputs.catalogDatabaseSha256; test("^[0-9a-f]{64}$")) and
        (.acceptanceInputs.catalogDatabaseByteLength | numbers) > 0 and
-      (.entries | length == 103 and length == ([.[].scenarioId] | unique | length)) and
+      (.entries | length == 105 and length == ([.[].scenarioId] | unique | length)) and
       ([.entries[].scenarioId] | sort) == ([$mappings[].scenarioId] | sort) and
-      (.methodBundles | length == 25 and length == ([.[].relativePath] | unique | length)) and
+      (.methodBundles | length == 26 and length == ([.[].relativePath] | unique | length)) and
       all(.methodBundles[]; (keys | sort) == ["byteLength","relativePath","sha256"] and
         (.relativePath | test("^methods/[a-z0-9-]+/[0-9a-f]{16}/source-bundle\\.json$")) and
         (.byteLength | numbers) > 0 and (.byteLength | floor) == .byteLength and (.sha256 | test("^[0-9a-f]{64}$"))) and
@@ -809,7 +809,7 @@ phase14_source_import() {
                  sourceRevision:$revision,sourceTree:$tree}]' <<< "$index_entries")"
         done < <(jq -r '.[].scenarioId' <<< "$method_entries")
     done < <(jq -r '[.[] | [.family,.fqn]] | unique[] | @tsv' <<< "$method_map")
-    [[ "$(jq 'length' <<< "$index_entries")" == 103 ]] || return 1
+    [[ "$(jq 'length' <<< "$index_entries")" == 105 ]] || return 1
     jq -S -n --arg revision "$harness_revision" --arg tree "$PHASE14_HARNESS_TREE" --arg inventory "$inventory_hash" \
       --argjson acceptanceInputs "$acceptance_inputs" \
       --argjson entries "$(jq 'sort_by(.scenarioId)' <<< "$index_entries")" --argjson bundles "$(jq 'sort_by(.relativePath)' <<< "$bundle_entries")" \

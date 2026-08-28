@@ -38,9 +38,13 @@ public sealed class SqliteCalibrationLibraryStoreTests
             Assert.AreEqual(adopted.BundleIdentitySha256, duplicate.BundleIdentitySha256);
             Assert.AreEqual("published", adopted.PublicationState);
             var holds = await store.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
-            Assert.HasCount(5, holds);
+            Assert.HasCount(6, holds);
             Assert.IsTrue(holds.Any(hold => hold.PayloadRelativePath == fixture.Bundle.ProfileRelativePath &&
                 hold.SidecarRelativePath == fixture.Bundle.ProfileRelativePath));
+            Assert.IsTrue(holds.Any(hold =>
+                hold.PayloadRelativePath.EndsWith(
+                    $"/{CalibrationLibraryEvidenceNames.BundleEnvelope}", StringComparison.Ordinal) &&
+                hold.SidecarRelativePath == hold.PayloadRelativePath));
             Assert.IsNull((await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).ActiveBundle);
 
             using var restarted = CreateStore(root);
@@ -174,7 +178,7 @@ public sealed class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
-    public async Task SelectAsync_LegacyBundleRetainsCalibrationProfileSelectionBehavior()
+    public async Task SelectAsync_SyntheticBundleRequiresExactCalibrationModelProfile()
     {
         var root = CreateRoot();
         try
@@ -183,19 +187,32 @@ public sealed class SqliteCalibrationLibraryStoreTests
             using var store = fixture.Store;
             _ = await store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
             _ = await store.ActivateAsync(
-                fixture.Bundle.BundleId, "activate-legacy", 0, "operator", null,
+                fixture.Bundle.BundleId, "activate-synthetic", 0, "operator", null,
                 CancellationToken.None).ConfigureAwait(false);
-            var light = fixture.Light with
+            Assert.IsTrue((await store.SelectAsync(
+                fixture.Light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
+            Assert.AreEqual("synthetic-calibration-model", fixture.Light.Profiles.Calibration.Name);
+            Assert.AreEqual(
+                fixture.Bundle.AcquisitionModelIdentitySha256,
+                fixture.Light.Profiles.Calibration.Sha256);
+            var incompatibleProfiles = new[]
             {
-                Profiles = fixture.Light.Profiles with
-                {
-                    Calibration = new ProfileIdentityDescriptor("legacy-profile", "legacy-v2", string.Empty)
-                }
+                fixture.Light.Profiles.Calibration with { Sha256 = new string('F', 64) },
+                fixture.Light.Profiles.Calibration with { Name = "synthetic-reference" },
+                fixture.Light.Profiles.Calibration with { Version = "synthetic-calibration-model-v2" }
             };
+            foreach (var calibrationProfile in incompatibleProfiles)
+            {
+                var light = fixture.Light with
+                {
+                    Profiles = fixture.Light.Profiles with { Calibration = calibrationProfile }
+                };
 
-            var selected = await store.SelectAsync(light, CancellationToken.None).ConfigureAwait(false);
+                var selected = await store.SelectAsync(light, CancellationToken.None).ConfigureAwait(false);
 
-            Assert.IsTrue(selected.IsSelected, selected.ReasonCode);
+                Assert.IsFalse(selected.IsSelected);
+                Assert.AreEqual(CalibrationLibraryReasonCodes.IncompatibleIdentity, selected.ReasonCode);
+            }
         }
         finally
         {
@@ -314,6 +331,107 @@ public sealed class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    public async Task SelectAsync_RejectsManifestBytesThatDifferFromPersistedHash()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 1, 2, 4, 0, 0, TimeSpan.Zero));
+            var fixture = await CreateFixtureAsync(root, timeProvider).ConfigureAwait(false);
+            using var store = fixture.Store;
+            _ = await store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.ActivateAsync(
+                fixture.Bundle.BundleId, "activate-before-manifest-tamper", 0, "operator", null,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue((await store.SelectAsync(
+                fixture.Light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
+            var artifact = fixture.Bundle.Artifacts[0];
+            var manifestPath = Path.Combine(
+                root, artifact.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var originalTimestamp = File.GetLastWriteTimeUtc(manifestPath);
+            var originalBytes = await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(false);
+            var parsed = CaptureContractJson.ParseManifest(originalBytes);
+            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+            var manifest = parsed.Document!.Manifest!;
+            var timing = manifest.Descriptor.Timing;
+            var shift = TimeSpan.FromDays(1);
+            var tampered = manifest with
+            {
+                Descriptor = manifest.Descriptor with
+                {
+                    Timing = timing with
+                    {
+                        RequestedStartUtc = timing.RequestedStartUtc + shift,
+                        ExposureStartedUtc = timing.ExposureStartedUtc + shift,
+                        ExposureEndedUtc = timing.ExposureEndedUtc + shift,
+                        ReadoutCompletedUtc = timing.ReadoutCompletedUtc + shift,
+                        DurableIngressUtc = timing.DurableIngressUtc + shift,
+                        SetpointAppliedUtc = timing.SetpointAppliedUtc + shift
+                    }
+                }
+            };
+            var tamperedBytes = CaptureContractJson.Serialize(tampered);
+            Assert.AreEqual(originalBytes.Length, tamperedBytes.Length);
+            Assert.IsTrue(CaptureContractJson.ParseManifest(tamperedBytes).IsValid);
+            await File.WriteAllBytesAsync(manifestPath, tamperedBytes).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(manifestPath, originalTimestamp);
+            timeProvider.Advance(TimeSpan.FromMinutes(11));
+
+            var result = await store.SelectAsync(fixture.Light, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(result.IsSelected);
+            Assert.AreEqual(CalibrationLibraryReasonCodes.Corrupt, result.ReasonCode);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    public async Task ProcessingInputLoader_RejectsSyntheticManifestRecipeTamperingImmediately()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            var snapshot = await store.AdoptPublishedBundleAsync(
+                fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
+            var options = CreateOptions(root);
+            var loader = new CalibrationLibraryProcessingInputLoader(
+                options, new CameraAgentClearReferenceLoader(options));
+            var baseline = await loader.LoadAsync(snapshot, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(4, baseline.References);
+            var artifact = fixture.Bundle.Artifacts[0];
+            var manifestPath = Path.Combine(
+                root, artifact.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var parsed = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(false));
+            Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+            var manifest = parsed.Document!.Manifest!;
+            var tampered = manifest with
+            {
+                Descriptor = manifest.Descriptor with
+                {
+                    Artifact = manifest.Descriptor.Artifact with
+                    {
+                        Recipe = manifest.Descriptor.Artifact.Recipe with { Name = "tampered-calibration-reference" }
+                    }
+                }
+            };
+            await File.WriteAllBytesAsync(manifestPath, CaptureContractJson.Serialize(tampered)).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                loader.LoadAsync(snapshot, CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task AdoptPublishedBundleAsync_RejectsManifestThatRedirectsToAnotherPayload()
     {
         var root = CreateRoot();
@@ -344,7 +462,7 @@ public sealed class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
-    public async Task ReconcileAsync_AdoptsLegacyBundleWithoutChangingEvidenceAndIsRestartStable()
+    public async Task ReconcileAsync_AdoptsCanonicalSyntheticBundleWithoutChangingEvidenceAndIsRestartStable()
     {
         var root = CreateRoot();
         try
@@ -428,6 +546,39 @@ public sealed class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    public async Task ReconcileAsync_MissingMarkerForAdoptedBundleFailsWithoutMovingRetainedEvidence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var store = fixture.Store;
+            _ = await store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.ActivateAsync(
+                fixture.Bundle.BundleId, "activate-before-marker-loss", 0, "operator", null,
+                CancellationToken.None).ConfigureAwait(false);
+            var profilePath = Path.Combine(
+                root, fixture.Bundle.ProfileRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var evidenceDirectory = Path.GetDirectoryName(profilePath)!;
+            File.Delete(profilePath);
+
+            var summary = await new CalibrationLibraryReconciler(store, CreateOptions(root))
+                .ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(0, summary.Quarantined);
+            Assert.AreEqual(1, summary.Failed);
+            Assert.IsTrue(Directory.Exists(evidenceDirectory));
+            Assert.IsFalse((await store.SelectAsync(
+                fixture.Light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "quarantine", "calibration")));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task SelectAsync_RehashesAfterBoundedIntervalAndDetectsTimestampPreservingCorruption()
     {
         var root = CreateRoot();
@@ -466,6 +617,43 @@ public sealed class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    public async Task SelectAsync_DetectsTimestampPreservingCanonicalBundleTampering()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 1, 2, 4, 0, 0, TimeSpan.Zero));
+            var fixture = await CreateFixtureAsync(root, timeProvider).ConfigureAwait(false);
+            using var store = fixture.Store;
+            _ = await store.AdoptPublishedBundleAsync(fixture.Bundle, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.ActivateAsync(
+                fixture.Bundle.BundleId, "activate-envelope", 0, "operator", null,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue((await store.SelectAsync(
+                fixture.Light, CancellationToken.None).ConfigureAwait(false)).IsSelected);
+            var bundlePath = Path.Combine(
+                root,
+                Path.GetDirectoryName(fixture.Bundle.ProfileRelativePath)!,
+                CalibrationLibraryEvidenceNames.BundleEnvelope);
+            var originalTimestamp = File.GetLastWriteTimeUtc(bundlePath);
+            var bytes = await File.ReadAllBytesAsync(bundlePath).ConfigureAwait(false);
+            bytes[^1] ^= 0x01;
+            await File.WriteAllBytesAsync(bundlePath, bytes).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(bundlePath, originalTimestamp);
+            timeProvider.Advance(TimeSpan.FromMinutes(11));
+
+            var result = await store.SelectAsync(fixture.Light, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsFalse(result.IsSelected);
+            Assert.AreEqual(CalibrationLibraryReasonCodes.Corrupt, result.ReasonCode);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task ReconcileAsync_MalformedCommittedBundleRecordsFailureWithoutThrowing()
     {
         var root = CreateRoot();
@@ -478,7 +666,9 @@ public sealed class SqliteCalibrationLibraryStoreTests
             var source = Path.Combine(root, "calibration", "synthetic", new string('A', 64));
             Directory.CreateDirectory(source);
             await File.WriteAllTextAsync(
-                Path.Combine(source, "calibration-profile.json"), "{not-json").ConfigureAwait(false);
+                Path.Combine(source, "reference-calibration-profile.json"), "{not-json").ConfigureAwait(false);
+            await File.WriteAllTextAsync(
+                Path.Combine(source, CalibrationLibraryEvidenceNames.BundleEnvelope), "{not-json").ConfigureAwait(false);
             using var store = new SqliteCalibrationLibraryStore(
                 new InitializedIngress(), CreateOptions(root), TimeProvider.System);
             var reconciler = new CalibrationLibraryReconciler(store, CreateOptions(root));
@@ -562,69 +752,20 @@ public sealed class SqliteCalibrationLibraryStoreTests
                 EffectiveOffset = null,
                 TemperatureSetpointC = model.TemperatureC,
                 EffectiveTemperatureC = model.TemperatureC
+            },
+            Profiles = template.Descriptor.Profiles with
+            {
+                Calibration = new ProfileIdentityDescriptor(
+                    "synthetic-calibration-model",
+                    model.SchemaVersion,
+                    SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
         var syntheticStore = new SyntheticCalibrationReferenceStore(
             options, new CameraAgentClearReferenceLoader(options));
         var synthetic = await syntheticStore.GetOrCreateAsync(
             light, model, CancellationToken.None).ConfigureAwait(false);
-        var modelIdentity = synthetic.ReferenceManifests.Values.First().RelativeArtifactPath.Split('/')[2];
-        var outputLayout = light.Layout with
-        {
-            SampleDepthBits = 16,
-            ContainerDepthBits = 16,
-            BlackLevel = 0,
-            WhiteLevel = ushort.MaxValue,
-            StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
-            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
-        };
-        var artifacts = CalibrationReferenceKinds.All.Select(kind =>
-        {
-            var reference = synthetic.Profile.References.Single(candidate => candidate.Kind == kind);
-            var manifestRelativePath = synthetic.EvidenceFiles.Single(file =>
-                file.RelativePath.EndsWith($"/{kind}.json", StringComparison.Ordinal)).RelativePath;
-            return new CalibrationLibraryArtifactV1(
-                kind,
-                CalibrationLibraryArtifactRoles.Master,
-                reference.ArtifactId,
-                manifestRelativePath,
-                reference.PayloadSha256,
-                reference.Exposure,
-                reference.Gain,
-                null,
-                reference.TemperatureC,
-                null,
-                [],
-                null);
-        }).ToArray();
-        var profilePath = synthetic.EvidenceFiles.Single(file =>
-            file.RelativePath.EndsWith("/calibration-profile.json", StringComparison.Ordinal)).RelativePath;
-        var bundle = new CalibrationLibraryBundleV1(
-            CalibrationLibraryBundleV1.CurrentSchemaVersion,
-            $"legacy-{modelIdentity[..16]}",
-            CalibrationLibraryBundleSources.LegacySyntheticV1,
-            DateTimeOffset.UnixEpoch,
-            profilePath,
-            synthetic.ProfileIdentitySha256,
-            modelIdentity,
-            new CalibrationApplicabilityV1(
-                light.Capture.AgentId,
-                light.Capture.RigId,
-                light.Profiles.Rig.Sha256,
-                light.Profiles.Sensor.Sha256,
-                light.Layout,
-                outputLayout,
-                model.Gain,
-                model.Gain,
-                null,
-                null,
-                null,
-                null,
-                model.TemperatureC,
-                model.TemperatureC,
-                DateTimeOffset.UnixEpoch,
-                null),
-            artifacts);
+        var bundle = synthetic.LibraryBundle;
         Assert.IsTrue(CalibrationLibraryContract.Validate(bundle).IsValid);
         return new Fixture(new SqliteCalibrationLibraryStore(
             new InitializedIngress(), options, timeProvider ?? TimeProvider.System), bundle, light);

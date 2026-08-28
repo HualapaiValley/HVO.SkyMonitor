@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -868,6 +869,33 @@ public sealed class SqliteCalibrationLibraryStore(
         return state;
     }
 
+    internal async Task<bool> ContainsPublishedProfileAsync(
+        string profileRelativePath,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileRelativePath);
+        _ = ResolveSafePath(profileRelativePath);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT EXISTS(
+                    SELECT 1 FROM calibration_library_bundles
+                    WHERE profile_relative_path = $profile AND publication_state = 'published');
+                """;
+            command.Parameters.AddWithValue("$profile", profileRelativePath);
+            return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                CultureInfo.InvariantCulture) == 1;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<IReadOnlyList<CalibrationLibraryBundleSnapshot>> GetBundlesAsync(
         int maximumCount,
         CancellationToken cancellationToken)
@@ -1304,7 +1332,7 @@ public sealed class SqliteCalibrationLibraryStore(
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = """
-                    SELECT bundle_identity_sha256, profile_relative_path
+                    SELECT bundle_identity_sha256, profile_relative_path, source
                     FROM calibration_library_bundles WHERE retention_hold = 1
                     ORDER BY bundle_id;
                     """;
@@ -1317,6 +1345,21 @@ public sealed class SqliteCalibrationLibraryStore(
                         Guid.ParseExact(reader.GetString(0)[..32], "N"),
                         profilePath,
                         profilePath));
+                    if (string.Equals(
+                            reader.GetString(2),
+                            CalibrationLibraryBundleSources.SyntheticReferencesV1,
+                            StringComparison.Ordinal))
+                    {
+                        var separator = profilePath.LastIndexOf('/');
+                        var bundlePath = string.Concat(
+                            profilePath.AsSpan(0, separator + 1),
+                            CalibrationLibraryEvidenceNames.BundleEnvelope);
+                        _ = ResolveSafePath(bundlePath);
+                        holds.Add(new ProcessingRetentionHold(
+                            Guid.ParseExact(reader.GetString(0)[32..], "N"),
+                            bundlePath,
+                            bundlePath));
+                    }
                 }
             }
             return holds;
@@ -1427,10 +1470,22 @@ public sealed class SqliteCalibrationLibraryStore(
 
         ValidateProfile(profile, bundle);
         var evidence = new List<PublishedArtifactEvidence>(bundle.Artifacts.Count);
-        var files = new List<EvidenceFileFingerprint>(1 + bundle.Artifacts.Count * 2)
+        var files = new List<EvidenceFileFingerprint>(2 + bundle.Artifacts.Count * 2);
+        if (bundle.Source == CalibrationLibraryBundleSources.SyntheticReferencesV1)
         {
-            profileEvidence.Fingerprint
-        };
+            var separator = bundle.ProfileRelativePath.LastIndexOf('/');
+            var bundleRelativePath = string.Concat(
+                bundle.ProfileRelativePath.AsSpan(0, separator + 1),
+                CalibrationLibraryEvidenceNames.BundleEnvelope);
+            var bundleEvidence = await ReadStableFileAsync(
+                ResolveSafePath(bundleRelativePath), cancellationToken).ConfigureAwait(false);
+            if (!bundleEvidence.Bytes.AsSpan().SequenceEqual(CalibrationLibraryContractJson.Serialize(bundle)))
+            {
+                throw new InvalidDataException("The canonical synthetic calibration bundle envelope is invalid.");
+            }
+            files.Add(bundleEvidence.Fingerprint);
+        }
+        files.Add(profileEvidence.Fingerprint);
         foreach (var artifact in bundle.Artifacts)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1451,7 +1506,7 @@ public sealed class SqliteCalibrationLibraryStore(
                 manifest.Descriptor.Controls.EffectiveGain != artifact.Gain ||
                 manifest.Descriptor.Controls.EffectiveOffset != artifact.Offset ||
                 manifest.Descriptor.Controls.EffectiveTemperatureC != artifact.TemperatureC ||
-                !VirtualRequestedControlsMatch(bundle.Source, artifact, manifest.Descriptor.Controls) ||
+                !RequestedControlsMatch(bundle.Source, artifact, manifest.Descriptor.Controls) ||
                 !string.Equals(
                     manifest.Descriptor.Capture.AgentId,
                     bundle.Applicability.AgentId,
@@ -1466,7 +1521,7 @@ public sealed class SqliteCalibrationLibraryStore(
                     PayloadPathForManifest(artifact.ManifestRelativePath),
                     StringComparison.Ordinal) ||
                 !ManifestRoleMatches(bundle.Source, artifact.Role, manifest.Descriptor.Artifact.Role) ||
-                !VirtualCaptureSequenceMatches(
+                !CaptureSequenceMatches(
                     bundle, artifact, manifest.Descriptor.Capture.CaptureSequence) ||
                 !string.Equals(
                     manifest.Descriptor.Profiles.Rig.Sha256,
@@ -1476,6 +1531,7 @@ public sealed class SqliteCalibrationLibraryStore(
                     manifest.Descriptor.Profiles.Sensor.Sha256,
                     bundle.Applicability.SensorProfileSha256,
                     StringComparison.OrdinalIgnoreCase) ||
+                !AcquisitionModelMatchesLight(bundle, manifest.Descriptor.Profiles.Calibration) ||
                 !string.Equals(
                     manifest.Descriptor.Profiles.Calibration.Sha256,
                     bundle.AcquisitionModelIdentitySha256,
@@ -1598,25 +1654,45 @@ public sealed class SqliteCalibrationLibraryStore(
             : layout;
 
     private static bool ManifestRoleMatches(string bundleSource, string role, FrameArtifactRole manifestRole)
-        => bundleSource != CalibrationLibraryBundleSources.VirtualAcquisitionV1 ||
-           role == CalibrationLibraryArtifactRoles.Source && manifestRole == FrameArtifactRole.Raw ||
-           role == CalibrationLibraryArtifactRoles.Master && manifestRole == FrameArtifactRole.Combined;
+        => bundleSource switch
+        {
+            CalibrationLibraryBundleSources.SyntheticReferencesV1 =>
+                role == CalibrationLibraryArtifactRoles.Master && manifestRole == FrameArtifactRole.Raw,
+            CalibrationLibraryBundleSources.VirtualAcquisitionV1 =>
+                role == CalibrationLibraryArtifactRoles.Source && manifestRole == FrameArtifactRole.Raw ||
+                role == CalibrationLibraryArtifactRoles.Master && manifestRole == FrameArtifactRole.Combined,
+            _ => false
+        };
 
-    private static bool VirtualRequestedControlsMatch(
+    private static bool RequestedControlsMatch(
         string bundleSource,
         CalibrationLibraryArtifactV1 artifact,
         CaptureControlDescriptor controls)
-        => bundleSource != CalibrationLibraryBundleSources.VirtualAcquisitionV1 ||
-           controls.RequestedExposure == artifact.Exposure &&
-           controls.RequestedGain == artifact.Gain &&
-           controls.RequestedOffset == artifact.Offset &&
-           controls.TemperatureSetpointC == artifact.TemperatureC;
+        => bundleSource is CalibrationLibraryBundleSources.SyntheticReferencesV1 or
+               CalibrationLibraryBundleSources.VirtualAcquisitionV1 &&
+            controls.RequestedExposure == artifact.Exposure &&
+            controls.RequestedGain == artifact.Gain &&
+            controls.RequestedOffset == artifact.Offset &&
+            controls.TemperatureSetpointC == artifact.TemperatureC;
 
-    private static bool VirtualCaptureSequenceMatches(
+    private static bool CaptureSequenceMatches(
         CalibrationLibraryBundleV1 bundle,
         CalibrationLibraryArtifactV1 artifact,
         long actual)
     {
+        if (bundle.Source == CalibrationLibraryBundleSources.SyntheticReferencesV1)
+        {
+            var publicationIdentity = SyntheticPublicationIdentity(bundle);
+            if (publicationIdentity is null)
+            {
+                return false;
+            }
+            var syntheticHash = SHA256.HashData(Encoding.UTF8.GetBytes(
+                $"{publicationIdentity}:sequence:{artifact.Kind}"));
+            const ulong syntheticReservedStart = (ulong)long.MaxValue / 2;
+            var offset = BinaryPrimitives.ReadUInt64BigEndian(syntheticHash) % syntheticReservedStart;
+            return actual == checked((long)(syntheticReservedStart + offset));
+        }
         if (bundle.Source != CalibrationLibraryBundleSources.VirtualAcquisitionV1)
         {
             return true;
@@ -1657,9 +1733,26 @@ public sealed class SqliteCalibrationLibraryStore(
     {
         if (artifact.Role == CalibrationLibraryArtifactRoles.Master)
         {
-            return artifact.MasterBuildRecipe is { } expected
-                ? RecipeIdentityMatches(expected, actual)
-                : bundle.Source != CalibrationLibraryBundleSources.VirtualAcquisitionV1;
+            if (artifact.MasterBuildRecipe is { } expected)
+            {
+                return RecipeIdentityMatches(expected, actual);
+            }
+            if (bundle.Source == CalibrationLibraryBundleSources.SyntheticReferencesV1)
+            {
+                var syntheticReference = RecipeIdentityDescriptor.Create(
+                    "synthetic-calibration-reference",
+                    "1.0.0",
+                    SyntheticCalibrationReferenceGenerator.AlgorithmVersion,
+                    CaptureContractJson.SerializeToElement(new
+                    {
+                        schemaVersion = SyntheticCalibrationModelV1.CurrentSchemaVersion,
+                        modelIdentitySha256 = bundle.AcquisitionModelIdentitySha256,
+                        referenceKind = artifact.Kind,
+                        generator = SyntheticCalibrationReferenceGenerator.AlgorithmVersion
+                    }));
+                return RecipeIdentityMatches(syntheticReference, actual);
+            }
+            return false;
         }
         if (artifact.MasterBuildRecipe is not null)
         {
@@ -1856,8 +1949,13 @@ public sealed class SqliteCalibrationLibraryStore(
         {
             return;
         }
-        _validatedEvidence[bundle.BundleIdentitySha256] = await ValidatePublishedEvidenceAsync(
-            bundle.Bundle, cancellationToken).ConfigureAwait(false);
+        var evidence = await ValidatePublishedEvidenceAsync(bundle.Bundle, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginRead(connection);
+        await ValidatePersistedArtifactsAsync(
+            connection, transaction, bundle.Bundle, evidence.Artifacts, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        _validatedEvidence[bundle.BundleIdentitySha256] = evidence;
     }
 
     private bool FingerprintMatches(EvidenceFileFingerprint fingerprint)
@@ -1925,19 +2023,7 @@ public sealed class SqliteCalibrationLibraryStore(
         {
             return CalibrationLibraryReasonCodes.IncompatibleIdentity;
         }
-        if (string.Equals(active.Bundle.Source, CalibrationLibraryBundleSources.VirtualAcquisitionV1, StringComparison.Ordinal) &&
-            (!string.Equals(
-                light.Profiles.Calibration.Name,
-                "virtual-calibration-source-model",
-                StringComparison.Ordinal) ||
-             !string.Equals(
-                 light.Profiles.Calibration.Version,
-                 VirtualCalibrationSourceModelV1.CurrentSchemaVersion,
-                 StringComparison.Ordinal) ||
-             !string.Equals(
-                 light.Profiles.Calibration.Sha256,
-                 active.Bundle.AcquisitionModelIdentitySha256,
-                 StringComparison.OrdinalIgnoreCase)))
+        if (!AcquisitionModelMatchesLight(active.Bundle, light.Profiles.Calibration))
         {
             return CalibrationLibraryReasonCodes.IncompatibleIdentity;
         }
@@ -1973,6 +2059,33 @@ public sealed class SqliteCalibrationLibraryStore(
             return CalibrationLibraryReasonCodes.Stale;
         }
         return null;
+    }
+
+    private static bool AcquisitionModelMatchesLight(
+        CalibrationLibraryBundleV1 bundle,
+        ProfileIdentityDescriptor calibrationProfile)
+    {
+        var expected = bundle.Source switch
+        {
+            CalibrationLibraryBundleSources.SyntheticReferencesV1 =>
+                ("synthetic-calibration-model", SyntheticCalibrationModelV1.CurrentSchemaVersion),
+            CalibrationLibraryBundleSources.VirtualAcquisitionV1 =>
+                ("virtual-calibration-source-model", VirtualCalibrationSourceModelV1.CurrentSchemaVersion),
+            _ => (string.Empty, string.Empty)
+        };
+        return string.Equals(calibrationProfile.Name, expected.Item1, StringComparison.Ordinal) &&
+               string.Equals(calibrationProfile.Version, expected.Item2, StringComparison.Ordinal) &&
+               string.Equals(
+                   calibrationProfile.Sha256,
+                   bundle.AcquisitionModelIdentitySha256,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? SyntheticPublicationIdentity(CalibrationLibraryBundleV1 bundle)
+    {
+        var segments = bundle.ProfileRelativePath.Split('/');
+        var identity = segments.Length >= 2 ? segments[^2] : null;
+        return identity is { Length: 64 } && identity.All(Uri.IsHexDigit) ? identity : null;
     }
 
     private static bool ReadoutMatches(FrameLayoutDescriptor expected, FrameLayoutDescriptor actual)

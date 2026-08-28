@@ -1,7 +1,11 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
+using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
 
@@ -52,6 +56,9 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
             var expectedRole = bundle.Source == CalibrationLibraryBundleSources.VirtualAcquisitionV1
                 ? FrameArtifactRole.Combined
                 : FrameArtifactRole.Raw;
+            var expectedRecipe = bundle.Source == CalibrationLibraryBundleSources.SyntheticReferencesV1
+                ? SyntheticReferenceRecipe(bundle, envelope)
+                : envelope.MasterBuildRecipe;
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
                 manifest.Descriptor.Artifact.ArtifactId != envelope.ArtifactId ||
                 manifest.Descriptor.Artifact.Role != expectedRole ||
@@ -60,13 +67,36 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
                     manifest.Descriptor.Artifact.ChecksumSha256,
                     envelope.PayloadSha256,
                     StringComparison.OrdinalIgnoreCase) ||
-                manifest.Descriptor.Layout != bundle.Applicability.OutputLayout ||
+                NormalizeCompleteLayout(manifest.Descriptor.Layout) !=
+                NormalizeCompleteLayout(bundle.Applicability.OutputLayout) ||
                 manifest.Descriptor.Controls.EffectiveExposure != envelope.Exposure ||
                 manifest.Descriptor.Controls.EffectiveGain != envelope.Gain ||
                 manifest.Descriptor.Controls.EffectiveOffset != envelope.Offset ||
                 manifest.Descriptor.Controls.EffectiveTemperatureC != envelope.TemperatureC ||
+                manifest.Descriptor.Controls.RequestedExposure != envelope.Exposure ||
+                manifest.Descriptor.Controls.RequestedGain != envelope.Gain ||
+                manifest.Descriptor.Controls.RequestedOffset != envelope.Offset ||
+                manifest.Descriptor.Controls.TemperatureSetpointC != envelope.TemperatureC ||
+                !string.Equals(
+                    manifest.Descriptor.Capture.AgentId, bundle.Applicability.AgentId, StringComparison.Ordinal) ||
+                !string.Equals(
+                    manifest.Descriptor.Capture.RigId, bundle.Applicability.RigId, StringComparison.Ordinal) ||
+                !string.Equals(
+                    manifest.Descriptor.Profiles.Rig.Sha256,
+                    bundle.Applicability.RigProfileSha256,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    manifest.Descriptor.Profiles.Sensor.Sha256,
+                    bundle.Applicability.SensorProfileSha256,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !CalibrationProfileMatches(bundle, manifest.Descriptor.Profiles.Calibration) ||
+                !string.Equals(
+                    manifest.RelativeArtifactPath,
+                    PayloadPathForManifest(envelope.ManifestRelativePath),
+                    StringComparison.Ordinal) ||
+                !CaptureSequenceMatches(bundle, envelope, manifest.Descriptor.Capture.CaptureSequence) ||
                 !manifest.Descriptor.Artifact.SourceArtifactIds.SequenceEqual(envelope.OrderedSourceArtifactIds) ||
-                !RecipeMatches(envelope.MasterBuildRecipe, manifest.Descriptor.Artifact.Recipe))
+                !RecipeMatches(expectedRecipe, manifest.Descriptor.Artifact.Recipe))
             {
                 throw new InvalidDataException("The selected calibration master conflicts with its library envelope.");
             }
@@ -121,6 +151,95 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
            string.Equals(expected.SemanticVersion, actual.SemanticVersion, StringComparison.Ordinal) &&
            string.Equals(expected.ImplementationVersion, actual.ImplementationVersion, StringComparison.Ordinal) &&
            string.Equals(expected.OptionsSha256, actual.OptionsSha256, StringComparison.OrdinalIgnoreCase);
+
+    private static RecipeIdentityDescriptor SyntheticReferenceRecipe(
+        CalibrationLibraryBundleV1 bundle,
+        CalibrationLibraryArtifactV1 artifact)
+        => RecipeIdentityDescriptor.Create(
+            "synthetic-calibration-reference",
+            "1.0.0",
+            SyntheticCalibrationReferenceGenerator.AlgorithmVersion,
+            CaptureContractJson.SerializeToElement(new
+            {
+                schemaVersion = SyntheticCalibrationModelV1.CurrentSchemaVersion,
+                modelIdentitySha256 = bundle.AcquisitionModelIdentitySha256,
+                referenceKind = artifact.Kind,
+                generator = SyntheticCalibrationReferenceGenerator.AlgorithmVersion
+            }));
+
+    private static bool CalibrationProfileMatches(
+        CalibrationLibraryBundleV1 bundle,
+        ProfileIdentityDescriptor profile)
+    {
+        var expected = bundle.Source switch
+        {
+            CalibrationLibraryBundleSources.SyntheticReferencesV1 =>
+                ("synthetic-calibration-model", SyntheticCalibrationModelV1.CurrentSchemaVersion),
+            CalibrationLibraryBundleSources.VirtualAcquisitionV1 =>
+                ("virtual-calibration-source-model", VirtualCalibrationSourceModelV1.CurrentSchemaVersion),
+            _ => (string.Empty, string.Empty)
+        };
+        return string.Equals(profile.Name, expected.Item1, StringComparison.Ordinal) &&
+               string.Equals(profile.Version, expected.Item2, StringComparison.Ordinal) &&
+               string.Equals(profile.Sha256, bundle.AcquisitionModelIdentitySha256, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool CaptureSequenceMatches(
+        CalibrationLibraryBundleV1 bundle,
+        CalibrationLibraryArtifactV1 artifact,
+        long actual)
+    {
+        if (bundle.Source == CalibrationLibraryBundleSources.SyntheticReferencesV1)
+        {
+            var segments = bundle.ProfileRelativePath.Split('/');
+            var publicationIdentity = segments.Length >= 2 ? segments[^2] : null;
+            if (publicationIdentity is not { Length: 64 } || !publicationIdentity.All(Uri.IsHexDigit))
+            {
+                return false;
+            }
+            var syntheticHash = SHA256.HashData(Encoding.UTF8.GetBytes(
+                $"{publicationIdentity}:sequence:{artifact.Kind}"));
+            const ulong syntheticReservedStart = (ulong)long.MaxValue / 2;
+            var offset = BinaryPrimitives.ReadUInt64BigEndian(syntheticHash) % syntheticReservedStart;
+            return actual == checked((long)(syntheticReservedStart + offset));
+        }
+        if (bundle.Source != CalibrationLibraryBundleSources.VirtualAcquisitionV1 ||
+            !bundle.BundleId.StartsWith("bundle-", StringComparison.Ordinal))
+        {
+            return false;
+        }
+        var kindIndex = -1;
+        for (var index = 0; index < CalibrationReferenceKinds.All.Count; index++)
+        {
+            if (string.Equals(CalibrationReferenceKinds.All[index], artifact.Kind, StringComparison.Ordinal))
+            {
+                kindIndex = index;
+                break;
+            }
+        }
+        if (kindIndex < 0)
+        {
+            return false;
+        }
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{bundle.BundleId["bundle-".Length..]}:capture-sequence"));
+        const ulong reservedStart = (ulong)long.MaxValue / 2;
+        const ulong blockSize = 16;
+        var blockCount = reservedStart / blockSize;
+        var block = BinaryPrimitives.ReadUInt64BigEndian(hash) % blockCount;
+        return actual == checked((long)(reservedStart + block * blockSize + (uint)(13 + kindIndex - 1)));
+    }
+
+    private static string PayloadPathForManifest(string manifestPath)
+        => string.Concat(manifestPath.AsSpan(0, manifestPath.Length - ".json".Length), ".bin");
+
+    private static FrameLayoutDescriptor NormalizeCompleteLayout(FrameLayoutDescriptor layout)
+        => layout.SampleDepthBits == layout.ContainerDepthBits
+            ? layout with
+            {
+                StoredCodeTransform = layout.StoredCodeTransform ?? FrameStoredCodeTransform.IdentityV1,
+                LevelCodeSpace = layout.LevelCodeSpace ?? FrameLevelCodeSpace.StoredContainer
+            }
+            : layout;
 
     private string ResolveSafePath(string relativePath)
     {

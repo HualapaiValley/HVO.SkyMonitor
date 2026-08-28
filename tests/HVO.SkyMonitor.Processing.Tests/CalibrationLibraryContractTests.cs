@@ -46,12 +46,12 @@ public sealed class CalibrationLibraryContractTests
     }
 
     [TestMethod]
-    public void LegacyBundlePreservesUnknownAcquisitionFactsWithoutInventingSources()
+    public void SyntheticReferenceBundlePreservesDirectReferencesWithoutInventingSources()
     {
         var virtualBundle = CreateVirtualBundle();
-        var legacy = virtualBundle with
+        var synthetic = virtualBundle with
         {
-            Source = CalibrationLibraryBundleSources.LegacySyntheticV1,
+            Source = CalibrationLibraryBundleSources.SyntheticReferencesV1,
             Applicability = virtualBundle.Applicability with
             {
                 MinimumOffset = null,
@@ -70,49 +70,49 @@ public sealed class CalibrationLibraryContractTests
                 .ToArray()
         };
 
-        Assert.IsTrue(CalibrationLibraryContract.Validate(legacy).IsValid);
-        Assert.IsFalse(CalibrationLibraryContract.Validate(legacy with
+        Assert.IsTrue(CalibrationLibraryContract.Validate(synthetic).IsValid);
+        Assert.IsFalse(CalibrationLibraryContract.Validate(synthetic with
         {
-            Artifacts = [.. legacy.Artifacts, virtualBundle.Artifacts[0]]
+            Artifacts = [.. synthetic.Artifacts, virtualBundle.Artifacts[0]]
         }).IsValid);
-        Assert.IsFalse(CalibrationLibraryContract.Validate(legacy with
+        Assert.IsFalse(CalibrationLibraryContract.Validate(synthetic with
         {
-            Applicability = legacy.Applicability with { MinimumOffset = 1, MaximumOffset = 1 }
+            Applicability = synthetic.Applicability with { MinimumOffset = 1, MaximumOffset = 1 }
         }).IsValid);
-        Assert.IsFalse(CalibrationLibraryContract.Validate(legacy with
+        Assert.IsFalse(CalibrationLibraryContract.Validate(synthetic with
         {
-            Applicability = legacy.Applicability with
+            Applicability = synthetic.Applicability with
             {
                 MinimumLightExposure = TimeSpan.FromSeconds(5),
                 MaximumLightExposure = TimeSpan.FromSeconds(5)
             }
         }).IsValid);
-        Assert.IsFalse(CalibrationLibraryContract.Validate(legacy with
+        Assert.IsFalse(CalibrationLibraryContract.Validate(synthetic with
         {
-            Artifacts = legacy.Artifacts.Select((artifact, index) => index == 0
+            Artifacts = synthetic.Artifacts.Select((artifact, index) => index == 0
                 ? artifact with { Offset = 1 }
                 : artifact).ToArray()
         }).IsValid);
-        Assert.IsFalse(CalibrationLibraryContract.Validate(legacy with
+        Assert.IsFalse(CalibrationLibraryContract.Validate(synthetic with
         {
-            Applicability = legacy.Applicability with
+            Applicability = synthetic.Applicability with
             {
                 MinimumTemperatureC = null,
                 MaximumTemperatureC = null
             }
         }).IsValid);
-        Assert.IsFalse(CalibrationLibraryContract.Validate(legacy with
+        Assert.IsFalse(CalibrationLibraryContract.Validate(synthetic with
         {
-            Artifacts = legacy.Artifacts.Select(artifact => artifact with { TemperatureC = null }).ToArray(),
-            Applicability = legacy.Applicability with
+            Artifacts = synthetic.Artifacts.Select(artifact => artifact with { TemperatureC = null }).ToArray(),
+            Applicability = synthetic.Applicability with
             {
                 MinimumTemperatureC = null,
                 MaximumTemperatureC = null
             }
         }).IsValid);
-        Assert.IsFalse(CalibrationLibraryContract.Validate(legacy with
+        Assert.IsFalse(CalibrationLibraryContract.Validate(synthetic with
         {
-            Applicability = legacy.Applicability with { MinimumGain = 1, MaximumGain = 1 }
+            Applicability = synthetic.Applicability with { MinimumGain = 1, MaximumGain = 1 }
         }).IsValid);
     }
 

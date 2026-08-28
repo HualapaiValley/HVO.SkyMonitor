@@ -7,7 +7,7 @@ namespace HVO.SkyMonitor.Processing;
 
 public static class CalibrationLibraryBundleSources
 {
-    public const string LegacySyntheticV1 = "legacy-synthetic-v1";
+    public const string SyntheticReferencesV1 = "synthetic-references-v1";
     public const string VirtualAcquisitionV1 = "virtual-acquisition-v1";
 }
 
@@ -113,7 +113,7 @@ public static class CalibrationLibraryContract
         if (bundle is null ||
             !string.Equals(bundle.SchemaVersion, CalibrationLibraryBundleV1.CurrentSchemaVersion, StringComparison.Ordinal) ||
             string.IsNullOrWhiteSpace(bundle.BundleId) || bundle.BundleId.Length > 128 ||
-            bundle.Source is not (CalibrationLibraryBundleSources.LegacySyntheticV1 or CalibrationLibraryBundleSources.VirtualAcquisitionV1) ||
+            bundle.Source is not (CalibrationLibraryBundleSources.SyntheticReferencesV1 or CalibrationLibraryBundleSources.VirtualAcquisitionV1) ||
             bundle.CreatedUtc.Offset != TimeSpan.Zero ||
             !ValidRelativePath(bundle.ProfileRelativePath) ||
             !Sha256(bundle.ProfileIdentitySha256) || !Sha256(bundle.AcquisitionModelIdentitySha256) ||
@@ -157,15 +157,15 @@ public static class CalibrationLibraryContract
         }
 
         var sources = bundle.Artifacts.Where(static artifact => artifact.Role == CalibrationLibraryArtifactRoles.Source).ToArray();
-        if (bundle.Source == CalibrationLibraryBundleSources.LegacySyntheticV1)
+        if (bundle.Source == CalibrationLibraryBundleSources.SyntheticReferencesV1)
         {
             return sources.Length == 0 && masters.All(static master =>
                     master.OrderedSourceArtifactIds.Count == 0 && master.MasterBuildRecipe is null && master.Offset is null) &&
                    bundle.Applicability.MinimumOffset is null && bundle.Applicability.MaximumOffset is null &&
                    bundle.Applicability.MinimumLightExposure is null && bundle.Applicability.MaximumLightExposure is null &&
-                   LegacyFactsMatch(bundle.Applicability, masters)
+                   DirectReferenceFactsMatch(bundle.Applicability, masters)
                 ? CaptureContractValidationResult.Success
-                : Failure("bundle.artifacts.legacy");
+                : Failure("bundle.artifacts.synthetic");
         }
 
         foreach (var kind in CalibrationReferenceKinds.All)
@@ -321,13 +321,13 @@ public static class CalibrationLibraryContract
            artifact.TemperatureC == applicability.MinimumTemperatureC &&
            artifact.TemperatureC == applicability.MaximumTemperatureC;
 
-    private static bool LegacyFactsMatch(
+    private static bool DirectReferenceFactsMatch(
         CalibrationApplicabilityV1 applicability,
         IReadOnlyList<CalibrationLibraryArtifactV1> masters)
     {
         return applicability.MinimumTemperatureC is { } minimum && applicability.MaximumTemperatureC is { } maximum &&
-               masters.All(master => master.Gain >= applicability.MinimumGain && master.Gain <= applicability.MaximumGain &&
-                   master.TemperatureC is { } temperature && temperature >= minimum && temperature <= maximum);
+               applicability.MinimumGain == applicability.MaximumGain && minimum == maximum &&
+               masters.All(master => master.Gain == applicability.MinimumGain && master.TemperatureC == minimum);
     }
 
     private static bool Range(double minimum, double maximum, bool allowNegative)

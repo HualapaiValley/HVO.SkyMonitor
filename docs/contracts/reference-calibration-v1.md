@@ -54,10 +54,14 @@ flat, defect, and the output checksum covers exact corrected bytes.
 `synthetic-calibration-model-v1` deterministically generates spatial bias, dark
 fixed pattern, pixel-response variation, radial vignetting, and configured fixed
 defects. CameraAgent materializes four manifest-v2 reference artifacts under
-`calibration/synthetic/<MODEL_SHA256>/` using atomic immutable publication and
-retention holds. The canonical profile is the bundle commit marker: once present,
-any missing or changed member fails closed instead of being regenerated. The raw
-capture records the exact model identity, and the processing step rejects a
+`calibration/synthetic/<PUBLICATION_SHA256>/` using atomic immutable publication and
+retention holds. `calibration-library-bundle.json` records those direct references
+as `synthetic-references-v1` masters with empty source lineage, and
+`reference-calibration-profile.json` is the final commit marker. Once the marker
+is present, any missing or changed member fails closed instead of being
+regenerated. The publication identity binds the model to layout and rig/sensor
+profile hashes, while the bundle and raw capture retain the model-only identity
+used for source compatibility. The processing step rejects a
 different reference-generation model. VirtualSky applies the same configured model to ordinary light
 frames, but the correction recipe receives only persisted reference bytes and
 the canonical profile; it receives no ideal pixels or simulator truth. Reference
@@ -67,16 +71,14 @@ UI integration remain outside this contract.
 
 ## Additive Local Library Envelope
 
-`calibration-library-bundle-v1` indexes the existing profile and manifest-v2
-artifacts without changing their bytes, identities, paths, or commit marker. A
+`calibration-library-bundle-v1` indexes the profile and manifest-v2 artifacts. A
 bundle records exact agent/rig and sensor-profile identities, input and normalized
 linear-16 output layouts, gain/offset/exposure/temperature applicability, effective
 UTC interval, simulator acquisition-model identity, and source/master artifacts.
 
-`legacy-synthetic-v1` bundles retain the existing four references as masters and
-retain their declared temperature applicability while leaving unavailable
-source-frame, offset, and light-exposure facts explicitly absent. Missing facts
-are never synthesized during adoption. New
+`synthetic-references-v1` bundles contain the four deterministic direct references
+as masters and leave source-frame lineage, offset, and light-exposure facts
+explicitly absent. Missing facts are never synthesized during adoption.
 `virtual-acquisition-v1` bundles contain three immutable source frames per kind;
 bias, dark, and flat masters use `calibration-median-v1`, while defect masks use
 `calibration-bitwise-or-v1`. Master lineage lists source artifacts in acquisition

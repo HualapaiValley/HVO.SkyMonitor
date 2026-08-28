@@ -81,9 +81,28 @@ public sealed class CalibrationLibraryReconciler(
             {
                 (evidenceKey, observedBytes) = await ComputeEvidenceIdentityAsync(
                     directory, cancellationToken).ConfigureAwait(false);
-                var profilePath = Path.Combine(directory, "calibration-profile.json");
+                var profilePath = Path.Combine(directory, CalibrationLibraryEvidenceNames.ProfileMarker);
                 if (!File.Exists(profilePath))
                 {
+                    var profileRelativePath = Normalize(Path.GetRelativePath(_root, profilePath));
+                    if (await _store.ContainsPublishedProfileAsync(profileRelativePath, cancellationToken)
+                            .ConfigureAwait(false))
+                    {
+                        var failedOperation = new CalibrationReconciliationOperation(
+                            evidenceKey,
+                            relativeDirectory,
+                            null,
+                            "failed",
+                            CalibrationLibraryReasonCodes.Corrupt,
+                            "planned");
+                        await _store.PlanReconciliationAsync(
+                            failedOperation, observedBytes, cancellationToken).ConfigureAwait(false);
+                        await _store.CompleteReconciliationAsync(
+                            evidenceKey, failedOperation.Reason, cancellationToken).ConfigureAwait(false);
+                        _telemetry?.RecordValidationFailure("reconcile", failedOperation.Reason);
+                        failed++;
+                        continue;
+                    }
                     var quarantineRelativePath = Normalize(Path.Combine(
                         "quarantine", "calibration", $"{Path.GetFileName(directory)}-{evidenceKey[..12]}"));
                     var quarantineOperation = new CalibrationReconciliationOperation(
@@ -102,7 +121,7 @@ public sealed class CalibrationLibraryReconciler(
                     continue;
                 }
 
-                var bundle = await BuildLegacyBundleAsync(directory, cancellationToken).ConfigureAwait(false);
+                var bundle = await ReadCanonicalBundleAsync(directory, cancellationToken).ConfigureAwait(false);
                 _ = await _store.AdoptPublishedBundleAsync(bundle, cancellationToken).ConfigureAwait(false);
                 var operation = new CalibrationReconciliationOperation(
                     evidenceKey,
@@ -171,7 +190,7 @@ public sealed class CalibrationLibraryReconciler(
         return summary;
     }
 
-    private async Task<CalibrationLibraryBundleV1> BuildLegacyBundleAsync(
+    private async Task<CalibrationLibraryBundleV1> ReadCanonicalBundleAsync(
         string directory,
         CancellationToken cancellationToken)
     {
@@ -179,85 +198,30 @@ public sealed class CalibrationLibraryReconciler(
         var modelIdentity = Path.GetFileName(directory);
         if (modelIdentity.Length != 64 || !modelIdentity.All(Uri.IsHexDigit))
         {
-            throw new InvalidDataException("The legacy calibration directory identity is invalid.");
+            throw new InvalidDataException("The synthetic calibration directory identity is invalid.");
         }
-        var profilePath = Path.Combine(directory, "calibration-profile.json");
-        var profileJson = await File.ReadAllBytesAsync(profilePath, cancellationToken).ConfigureAwait(false);
-        var profile = ReferenceCalibrationProfileJson.Parse(profileJson)
-            ?? throw new InvalidDataException("The legacy calibration profile is invalid.");
-        if (profile.References is null || profile.References.Any(static reference => reference is null))
+        var bundlePath = Path.Combine(directory, CalibrationLibraryEvidenceNames.BundleEnvelope);
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, bundlePath);
+        var bundleInfo = new FileInfo(bundlePath);
+        if (!bundleInfo.Exists || bundleInfo.Length > CalibrationLibraryContractJson.MaximumBundleBytes)
         {
-            throw new InvalidDataException("The legacy calibration profile has invalid reference entries.");
+            throw new InvalidDataException("The canonical synthetic calibration bundle is missing or oversized.");
         }
-        var manifests = new List<(CalibrationReferenceDescriptorV1 Reference, string RelativePath, ArtifactManifestV2 Manifest)>();
-        foreach (var kind in CalibrationReferenceKinds.All)
+        var parsed = CalibrationLibraryContractJson.Parse(
+            await File.ReadAllBytesAsync(bundlePath, cancellationToken).ConfigureAwait(false));
+        var bundle = parsed.Value ?? throw new InvalidDataException(
+            $"The canonical synthetic calibration bundle is invalid ({parsed.Validation.FieldPath}).");
+        var relativeDirectory = Normalize(Path.GetRelativePath(_root, directory));
+        var expectedProfilePath = $"{relativeDirectory}/{CalibrationLibraryEvidenceNames.ProfileMarker}";
+        if (!string.Equals(bundle.Source, CalibrationLibraryBundleSources.SyntheticReferencesV1, StringComparison.Ordinal) ||
+            !string.Equals(bundle.BundleId, $"synthetic-{modelIdentity[..32].ToUpperInvariant()}", StringComparison.Ordinal) ||
+            !string.Equals(bundle.ProfileRelativePath, expectedProfilePath, StringComparison.Ordinal) ||
+            bundle.Artifacts.Any(artifact => !string.Equals(
+                Normalize(Path.GetDirectoryName(artifact.ManifestRelativePath) ?? string.Empty),
+                relativeDirectory,
+                StringComparison.Ordinal)))
         {
-            var reference = profile.References.SingleOrDefault(candidate => candidate.Kind == kind)
-                ?? throw new InvalidDataException("The legacy calibration profile is missing a reference kind.");
-            var manifestPath = Path.Combine(directory, $"{kind}.json");
-            RawIngressFileStore.EnsureNoSymbolicLinks(_root, manifestPath);
-            var parsed = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(manifestPath, cancellationToken).ConfigureAwait(false));
-            if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest ||
-                manifest.Descriptor.Artifact.ArtifactId != reference.ArtifactId ||
-                !string.Equals(
-                    manifest.Descriptor.Artifact.ChecksumSha256,
-                    reference.PayloadSha256,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(
-                    manifest.Descriptor.Profiles.Calibration.Sha256,
-                    modelIdentity,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidDataException("A legacy calibration manifest is invalid.");
-            }
-            manifests.Add((reference, Normalize(Path.GetRelativePath(_root, manifestPath)), manifest));
-        }
-        var first = manifests[0].Manifest.Descriptor;
-        var outputLayout = NormalizeCompleteLayout(first.Layout);
-        var artifacts = manifests.Select(item => new CalibrationLibraryArtifactV1(
-            item.Reference.Kind,
-            CalibrationLibraryArtifactRoles.Master,
-            item.Reference.ArtifactId,
-            item.RelativePath,
-            item.Reference.PayloadSha256,
-            item.Reference.Exposure,
-            item.Reference.Gain,
-            null,
-            item.Reference.TemperatureC,
-            null,
-            [],
-            null)).ToArray();
-        var bundle = new CalibrationLibraryBundleV1(
-            CalibrationLibraryBundleV1.CurrentSchemaVersion,
-            $"legacy-{modelIdentity[..32].ToUpperInvariant()}",
-            CalibrationLibraryBundleSources.LegacySyntheticV1,
-            DateTimeOffset.UnixEpoch,
-            Normalize(Path.GetRelativePath(_root, profilePath)),
-            Convert.ToHexString(SHA256.HashData(profileJson)),
-            modelIdentity,
-            new CalibrationApplicabilityV1(
-                first.Capture.AgentId,
-                first.Capture.RigId,
-                first.Profiles.Rig.Sha256,
-                first.Profiles.Sensor.Sha256,
-                outputLayout,
-                outputLayout,
-                profile.MinimumGain,
-                profile.MaximumGain,
-                null,
-                null,
-                null,
-                null,
-                profile.MinimumTemperatureC,
-                profile.MaximumTemperatureC,
-                profile.EffectiveFromUtc,
-                profile.EffectiveUntilUtc),
-            artifacts);
-        var validation = CalibrationLibraryContract.Validate(bundle);
-        if (!validation.IsValid)
-        {
-            throw new InvalidDataException($"The legacy calibration bundle is invalid ({validation.FieldPath}).");
+            throw new InvalidDataException("The canonical synthetic calibration bundle conflicts with its directory identity.");
         }
         return bundle;
     }
@@ -293,15 +257,6 @@ public sealed class CalibrationLibraryReconciler(
         RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(source)!);
         RawIngressFileStore.SyncDirectory(parent);
     }
-
-    private static FrameLayoutDescriptor NormalizeCompleteLayout(FrameLayoutDescriptor layout)
-        => layout.SampleDepthBits == layout.ContainerDepthBits
-            ? layout with
-            {
-                StoredCodeTransform = layout.StoredCodeTransform ?? FrameStoredCodeTransform.IdentityV1,
-                LevelCodeSpace = layout.LevelCodeSpace ?? FrameLevelCodeSpace.StoredContainer
-            }
-            : layout;
 
     private async Task<(string EvidenceKey, long ObservedBytes)> ComputeEvidenceIdentityAsync(
         string directory,

@@ -19,7 +19,7 @@ internal sealed class SqliteRawCaptureJournal(
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null)
 {
-    internal const int CurrentSchemaVersion = 11;
+    internal const int CurrentSchemaVersion = 12;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
     private static readonly HashSet<string> SharedSchemaObjectNames = new(StringComparer.Ordinal)
@@ -1475,7 +1475,8 @@ internal sealed class SqliteRawCaptureJournal(
             actualSchemaDefinitions.Keys.Any(name =>
                 !CanonicalSchemaDefinitions.Value.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)))
         {
-            throw new InvalidDataException("Raw ingress SQLite schema is not the canonical schema 11 definition.");
+            throw new InvalidDataException(
+                $"Raw ingress SQLite schema is not the canonical schema {CurrentSchemaVersion} definition.");
         }
     }
 
@@ -2112,7 +2113,7 @@ internal sealed class SqliteRawCaptureJournal(
         CREATE TABLE IF NOT EXISTS calibration_library_bundles (
             bundle_id TEXT PRIMARY KEY CHECK (length(bundle_id) BETWEEN 1 AND 128),
             bundle_identity_sha256 TEXT NOT NULL UNIQUE CHECK (length(bundle_identity_sha256) = 64),
-            source TEXT NOT NULL CHECK (source IN ('legacy-synthetic-v1', 'virtual-acquisition-v1')),
+            source TEXT NOT NULL CHECK (source IN ('synthetic-references-v1', 'virtual-acquisition-v1')),
             bundle_json BLOB NOT NULL CHECK (length(bundle_json) BETWEEN 1 AND 1048576),
             profile_relative_path TEXT COLLATE NOCASE NOT NULL UNIQUE,
             profile_identity_sha256 TEXT NOT NULL CHECK (length(profile_identity_sha256) = 64),
