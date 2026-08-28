@@ -117,8 +117,7 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<SqliteTransientCandidateJournal>());
         services.AddSingleton<ICameraAgentTransientOperatorProjection, SqliteCameraAgentTransientOperatorProjection>();
         services.AddSingleton<SqliteTransientRuntimeStore>();
-        services.AddSingleton<ITransientRuntimeManagement>(provider =>
-            provider.GetRequiredService<SqliteTransientRuntimeStore>());
+        services.AddSingleton<ITransientRuntimeManagement, TransientRuntimeManagement>();
         services.AddSingleton(provider => new TransientDetectorRuntime(
             provider.GetRequiredService<ICelestialCatalog>(),
             provider.GetService<IConstellationTopology>(),
@@ -304,6 +303,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "PresentationMaterializer", typeof(PresentationMaterializerCaptureProcessingStep),
             typeof(PresentationMaterializerProcessingStepOptions), 81, AutoInclude: false));
+        services.AddHostedService<EnvironmentalObservationSchemaInitializationService>();
         services.AddHostedService(provider => provider.GetRequiredService<EnvironmentalAcquisitionService>());
         services.AddHostedService<CalibrationLibraryValidationService>();
         services.AddHostedService<VirtualCalibrationAcquisitionRecoveryService>();

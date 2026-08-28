@@ -127,6 +127,34 @@ public interface ITransientRuntimeManagement
         CancellationToken cancellationToken);
 }
 
+internal sealed class TransientRuntimeManagement(
+    IRawCaptureIngress rawIngress,
+    SqliteTransientRuntimeStore store) : ITransientRuntimeManagement
+{
+    public async ValueTask<TransientRuntimeQuarantinePage> ReadQuarantinePageAsync(
+        int pageSize,
+        TransientRuntimeQuarantineCursor? cursor,
+        CancellationToken cancellationToken)
+    {
+        SqliteTransientRuntimeStore.ValidateQuarantineQuery(pageSize, cursor);
+        await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await store.ReadQuarantinePageAsync(pageSize, cursor, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<TransientRuntimeOperationReceipt> AbandonQuarantinedCaptureAsync(
+        TransientRuntimeOperationTarget target,
+        string idempotencyKey,
+        string actor,
+        string reasonCode,
+        CancellationToken cancellationToken)
+    {
+        SqliteTransientRuntimeStore.ValidateOperation(target, idempotencyKey, actor, reasonCode);
+        await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await store.AbandonQuarantinedCaptureAsync(
+            target, idempotencyKey, actor, reasonCode, cancellationToken).ConfigureAwait(false);
+    }
+}
+
 internal sealed record TransientRuntimeFrame(
     long RawCaptureRowId,
     string AgentId,
@@ -159,8 +187,10 @@ internal sealed record TransientRuntimeCandidate(
 
 internal sealed record TransientRuntimeTotals(long Frames, long Candidates, long Quarantined);
 
-internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
+internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement, IDisposable
 {
+    private static readonly Lazy<IReadOnlyDictionary<string, string>> CanonicalRuntimeSchemaDefinitions =
+        new(CreateCanonicalRuntimeSchemaDefinitions);
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
@@ -169,6 +199,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
     private readonly TransientWorkerTelemetry _telemetry;
     private readonly CaptureDistributionOptions _limits;
     private readonly bool _required;
+    private readonly SemaphoreSlim _initializeGate = new(1, 1);
+    private bool _initialized;
 
     public SqliteTransientRuntimeStore(
         IOptions<CameraAgentHostOptions> options,
@@ -189,20 +221,60 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
 
     internal async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = RuntimeSchemaSql;
+        if (Volatile.Read(ref _initialized))
+        {
+            return;
+        }
+        await _initializeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (_initialized)
+            {
+                return;
+            }
+            if (!File.Exists(_databasePath))
+            {
+                throw new InvalidOperationException("Raw ingress schema 11 must initialize before transient runtime state.");
+            }
+            EnsureDatabaseFilesArePhysical();
+            var inspection = await InspectRuntimeSchemaAsync(cancellationToken).ConfigureAwait(false);
+            if (inspection.RawVersion != SqliteRawCaptureJournal.CurrentSchemaVersion)
+            {
+                throw new InvalidOperationException(
+                    $"Raw ingress schema {inspection.RawVersion} is unsupported; schema {SqliteRawCaptureJournal.CurrentSchemaVersion} must initialize before transient runtime state.");
+            }
+            using var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
+            using (var transaction = BeginImmediate(connection))
+            {
+                var rawVersion = await ExecuteScalarLongAsync(
+                    connection, "PRAGMA user_version;", transaction, cancellationToken).ConfigureAwait(false);
+                var runtimeObjectCount = await CountRuntimeSchemaObjectsAsync(
+                    connection, transaction, cancellationToken).ConfigureAwait(false);
+                if (rawVersion != SqliteRawCaptureJournal.CurrentSchemaVersion)
+                {
+                    throw new InvalidOperationException("Raw ingress schema changed during transient runtime initialization.");
+                }
+                if (inspection.RuntimeObjectCount == 0 && runtimeObjectCount == 0)
+                {
+                    using var command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText = RuntimeSchemaSql;
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                await ValidateRuntimeSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await SqliteRawCaptureJournal.ValidateCanonicalSchemaDefinitionsAsync(
+                    connection, transaction, cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            await VerifyOperationsSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+            await ReconcileAsync(connection, cancellationToken).ConfigureAwait(false);
+            Volatile.Write(ref _initialized, true);
         }
-        catch (SqliteException exception)
+        finally
         {
-            throw new InvalidDataException("Transient runtime schema is malformed.", exception);
+            _initializeGate.Release();
         }
-        await MigrateLegacyFrameSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
-        await VerifyOperationsSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
-        await ReconcileAsync(connection, cancellationToken).ConfigureAwait(false);
     }
 
     internal async ValueTask<TransientRuntimeFrame?> ReadNextAsync(CancellationToken cancellationToken)
@@ -849,14 +921,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         TransientRuntimeQuarantineCursor? cursor,
         CancellationToken cancellationToken)
     {
-        if (pageSize is < 1 or > 100)
-        {
-            throw new ArgumentOutOfRangeException(nameof(pageSize));
-        }
-        if (cursor is { RawCaptureRowId: < 1 })
-        {
-            throw new ArgumentOutOfRangeException(nameof(cursor));
-        }
+        ValidateQuarantineQuery(pageSize, cursor);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = CreateQuarantineReadCommand(connection, transaction: null);
@@ -1328,7 +1393,21 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
             new TransientRuntimeQuarantineCursor(frameUpdated, reader.GetInt64(0)));
     }
 
-    private static void ValidateOperation(
+    internal static void ValidateQuarantineQuery(
+        int pageSize,
+        TransientRuntimeQuarantineCursor? cursor)
+    {
+        if (pageSize is < 1 or > 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        }
+        if (cursor is { RawCaptureRowId: < 1 })
+        {
+            throw new ArgumentOutOfRangeException(nameof(cursor));
+        }
+    }
+
+    internal static void ValidateOperation(
         TransientRuntimeOperationTarget target,
         string idempotencyKey,
         string actor,
@@ -1584,28 +1663,6 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async ValueTask MigrateLegacyFrameSchemaAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
-        using var inspect = connection.CreateCommand();
-        inspect.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transient_worker_frames';";
-        var schema = Convert.ToString(
-            await inspect.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture);
-        if (schema?.Contains("causal_succeeded", StringComparison.Ordinal) == true &&
-            schema.Contains("'abandoned'", StringComparison.Ordinal))
-        {
-            return;
-        }
-        using var transaction = BeginImmediate(connection);
-        using var migrate = connection.CreateCommand();
-        migrate.Transaction = transaction;
-        migrate.CommandText = LegacyFrameMigrationSql;
-        await migrate.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     private static async ValueTask VerifyOperationsSchemaAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
@@ -1796,6 +1853,14 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated busy timeout is a validated integer option; no SQL value is user supplied.")]
     private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
+        var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
+        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+        return connection;
+    }
+
+    private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(CancellationToken cancellationToken)
+    {
+        EnsureDatabaseFilesArePhysical();
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _databasePath,
@@ -1805,15 +1870,227 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        EnsureDatabaseFilesArePhysical();
         connection.CreateFunction<string?, string>(
             "hvo_sha256",
             static value => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty))),
             isDeterministic: true);
+        return connection;
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The busy timeout is a validated integer option; no SQL value is user supplied.")]
+    private async ValueTask ConfigureConnectionAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
         using var command = connection.CreateCommand();
         command.CommandText = $"PRAGMA busy_timeout = {_busyTimeoutSeconds * 1000}; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;";
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        return connection;
     }
+
+    internal static async ValueTask ValidateExistingRuntimeSchemaAsync(
+        string root,
+        int busyTimeoutSeconds,
+        CancellationToken cancellationToken)
+    {
+        var normalizedRoot = Path.GetFullPath(root);
+        var databasePath = Path.Combine(normalizedRoot, "journal", "raw-ingress.db");
+        if (!File.Exists(databasePath))
+        {
+            return;
+        }
+        try
+        {
+            _ = await InspectRuntimeSchemaAsync(
+                normalizedRoot, databasePath, busyTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidDataException exception) when (exception.InnerException is SqliteException)
+        {
+            // Raw ingress owns diagnostics for corruption in its canonical tables.
+        }
+    }
+
+    private ValueTask<RuntimeSchemaInspection> InspectRuntimeSchemaAsync(CancellationToken cancellationToken)
+        => InspectRuntimeSchemaAsync(_root, _databasePath, _busyTimeoutSeconds, cancellationToken);
+
+    private static async ValueTask<RuntimeSchemaInspection> InspectRuntimeSchemaAsync(
+        string root,
+        string databasePath,
+        int busyTimeoutSeconds,
+        CancellationToken cancellationToken)
+    {
+        EnsureDatabaseFilesArePhysical(root, databasePath);
+        var recoveryFiles = new[]
+        {
+            string.Concat(databasePath, "-wal"),
+            string.Concat(databasePath, "-journal")
+        }.Where(File.Exists).ToArray();
+        var hasRecoveryState = recoveryFiles.Length > 0 || File.Exists(string.Concat(databasePath, "-shm"));
+        DirectoryInfo? snapshotRoot = null;
+        try
+        {
+            var inspectionPath = databasePath;
+            var immutable = !hasRecoveryState;
+            if (!immutable)
+            {
+                snapshotRoot = Directory.CreateTempSubdirectory("hvo-transient-runtime-inspection-");
+                inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
+                File.Copy(databasePath, inspectionPath);
+                foreach (var recoveryFile in recoveryFiles)
+                {
+                    File.Copy(
+                        recoveryFile,
+                        string.Concat(inspectionPath, recoveryFile.AsSpan(databasePath.Length)));
+                }
+            }
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = immutable
+                    ? string.Concat(new Uri(inspectionPath).AbsoluteUri, "?immutable=1")
+                    : inspectionPath,
+                Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
+                Pooling = false,
+                DefaultTimeout = busyTimeoutSeconds
+            }.ToString());
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            var rawVersion = await ExecuteScalarLongAsync(
+                connection, "PRAGMA user_version;", null, cancellationToken).ConfigureAwait(false);
+            var runtimeObjectCount = await CountRuntimeSchemaObjectsAsync(
+                connection, null, cancellationToken).ConfigureAwait(false);
+            if (runtimeObjectCount > 0)
+            {
+                await ValidateRuntimeSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
+            }
+            if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
+            {
+                await SqliteRawCaptureJournal.ValidateCanonicalSchemaDefinitionsAsync(
+                    connection, null, cancellationToken).ConfigureAwait(false);
+            }
+            return new(rawVersion, runtimeObjectCount);
+        }
+        catch (SqliteException exception)
+        {
+            throw new InvalidDataException(
+                $"Transient runtime SQLite schema inspection failed for '{databasePath}'; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.",
+                exception);
+        }
+        finally
+        {
+            snapshotRoot?.Delete(recursive: true);
+        }
+    }
+
+    private static async ValueTask ValidateRuntimeSchemaAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        var actual = await ReadRuntimeSchemaDefinitionsAsync(connection, transaction, cancellationToken)
+            .ConfigureAwait(false);
+        if (CanonicalRuntimeSchemaDefinitions.Value.Any(expected =>
+                !actual.TryGetValue(expected.Key, out var definition) ||
+                !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
+            actual.Keys.Any(name => !CanonicalRuntimeSchemaDefinitions.Value.ContainsKey(name)))
+        {
+            throw new InvalidDataException(
+                "Transient runtime schema is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
+        }
+    }
+
+    private static async ValueTask<long> CountRuntimeSchemaObjectsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+        => await ExecuteScalarLongAsync(connection, RuntimeSchemaObjectCountSql, transaction, cancellationToken)
+            .ConfigureAwait(false);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Callers pass internal constant schema inspection statements only.")]
+    private static async ValueTask<long> ExecuteScalarLongAsync(
+        SqliteConnection connection,
+        string sql,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static Dictionary<string, string> CreateCanonicalRuntimeSchemaDefinitions()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = RuntimeSchemaSql;
+        command.ExecuteNonQuery();
+        return ReadRuntimeSchemaDefinitions(connection);
+    }
+
+    private static async ValueTask<Dictionary<string, string>> ReadRuntimeSchemaDefinitionsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = CreateRuntimeSchemaDefinitionCommand(connection, transaction);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            definitions.Add(reader.GetString(1), ReadSchemaDefinition(reader));
+        }
+        return definitions;
+    }
+
+    private static Dictionary<string, string> ReadRuntimeSchemaDefinitions(SqliteConnection connection)
+    {
+        using var command = CreateRuntimeSchemaDefinitionCommand(connection, null);
+        using var reader = command.ExecuteReader();
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            definitions.Add(reader.GetString(1), ReadSchemaDefinition(reader));
+        }
+        return definitions;
+    }
+
+    private static SqliteCommand CreateRuntimeSchemaDefinitionCommand(
+        SqliteConnection connection,
+        SqliteTransaction? transaction)
+    {
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = RuntimeSchemaDefinitionsSql;
+        return command;
+    }
+
+    private static string ReadSchemaDefinition(SqliteDataReader reader)
+    {
+        var definition = new StringBuilder();
+        foreach (var ordinal in new[] { 0, 2 })
+        {
+            var value = reader.GetString(ordinal);
+            definition.Append(value.Length).Append(':').Append(value);
+        }
+        var sql = SqliteRawCaptureJournal.NormalizeSchemaSql(reader.GetString(3));
+        definition.Append(sql.Length).Append(':').Append(sql);
+        return definition.ToString();
+    }
+
+    private void EnsureDatabaseFilesArePhysical()
+        => EnsureDatabaseFilesArePhysical(_root, _databasePath);
+
+    private static void EnsureDatabaseFilesArePhysical(string root, string databasePath)
+    {
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, databasePath);
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, string.Concat(databasePath, "-wal"));
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, string.Concat(databasePath, "-shm"));
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, string.Concat(databasePath, "-journal"));
+    }
+
+    public void Dispose() => _initializeGate.Dispose();
 
     private static SqliteTransaction BeginImmediate(SqliteConnection connection)
     {
@@ -1864,30 +2141,30 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement
             ON transient_worker_candidates(state, allocated_unix_ms, candidate_id);
         """;
 
-    private const string LegacyFrameMigrationSql = """
-        DROP INDEX ix_transient_worker_frames_ready;
-        ALTER TABLE transient_worker_frames RENAME TO transient_worker_frames_legacy;
-        CREATE TABLE transient_worker_frames (
-            raw_capture_row_id INTEGER PRIMARY KEY,
-            state TEXT NOT NULL CHECK (state IN ('queued', 'history', 'retry_wait', 'completed', 'quarantined', 'abandoned')),
-            attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
-            available_unix_ms INTEGER NOT NULL,
-            causal_succeeded INTEGER NOT NULL DEFAULT 0 CHECK (causal_succeeded IN (0, 1)),
-            failure_reason TEXT,
-            created_unix_ms INTEGER NOT NULL,
-            updated_unix_ms INTEGER NOT NULL,
-            FOREIGN KEY (raw_capture_row_id) REFERENCES raw_captures(raw_capture_row_id)
-        ) STRICT;
-        INSERT INTO transient_worker_frames(
-            raw_capture_row_id, state, attempt_count, available_unix_ms, causal_succeeded,
-            failure_reason, created_unix_ms, updated_unix_ms)
-        SELECT raw_capture_row_id, state, attempt_count, available_unix_ms, 0,
-               failure_reason, created_unix_ms, updated_unix_ms
-        FROM transient_worker_frames_legacy;
-        DROP TABLE transient_worker_frames_legacy;
-        CREATE INDEX ix_transient_worker_frames_ready
-            ON transient_worker_frames(state, available_unix_ms, raw_capture_row_id);
+    private const string RuntimeSchemaObjectCountSql = """
+        SELECT COUNT(*) FROM sqlite_schema
+        WHERE name IN (
+                'transient_worker_frames', 'ix_transient_worker_frames_ready',
+                'transient_worker_candidates', 'ix_transient_worker_candidates_pending')
+           OR name LIKE 'transient_worker_%'
+           OR name LIKE 'ix_transient_worker_%'
+           OR tbl_name IN ('transient_worker_frames', 'transient_worker_candidates');
         """;
+
+    private const string RuntimeSchemaDefinitionsSql = """
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_schema
+        WHERE sql IS NOT NULL AND (
+                name IN (
+                    'transient_worker_frames', 'ix_transient_worker_frames_ready',
+                    'transient_worker_candidates', 'ix_transient_worker_candidates_pending')
+                OR name LIKE 'transient_worker_%'
+                OR name LIKE 'ix_transient_worker_%'
+                OR tbl_name IN ('transient_worker_frames', 'transient_worker_candidates'))
+        ORDER BY type, name;
+        """;
+
+    private sealed record RuntimeSchemaInspection(long RawVersion, long RuntimeObjectCount);
 
     private sealed record TransientEvidenceSnapshot(
         int Offset,
