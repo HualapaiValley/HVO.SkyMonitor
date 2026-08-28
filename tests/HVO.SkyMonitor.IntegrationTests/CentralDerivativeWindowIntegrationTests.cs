@@ -2268,7 +2268,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Raw,
             RecipeVersion = "window-raw-v1",
-            ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+            ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
             MediaType = "application/x-hvo-linear-frame",
             ByteLength = payload.Length,
             ChecksumSha256 = checksum,

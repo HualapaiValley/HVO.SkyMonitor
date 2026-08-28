@@ -84,7 +84,7 @@ public sealed class CentralArtifactDeletionMigrationTests
                 ArtifactId = Guid.NewGuid(),
                 Role = FrameArtifactRole.Raw,
                 RecipeVersion = "retention-migration-v1",
-                ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+                ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
                 MediaType = "application/octet-stream",
                 ByteLength = 3,
                 ChecksumSha256 = Convert.ToHexString(SHA256.HashData([1, 2, 3])),

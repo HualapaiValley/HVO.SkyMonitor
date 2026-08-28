@@ -15,8 +15,6 @@ internal sealed class ArtifactIngestController(
     IArtifactIngestService ingestService,
     CentralIngestTelemetry telemetry) : ControllerBase
 {
-    private static readonly JsonSerializerOptions LegacySerializerOptions = new(JsonSerializerDefaults.Web);
-
     [HttpPost]
     [RequestSizeLimit(100 * 1024 * 1024)]
     public async Task<ActionResult<ArtifactUploadAcknowledgement>> IngestAsync(IFormFile payload, [FromForm] string manifest, CancellationToken cancellationToken)
@@ -24,23 +22,6 @@ internal sealed class ArtifactIngestController(
         ArgumentNullException.ThrowIfNull(payload);
         var manifestBytes = Encoding.UTF8.GetBytes(manifest);
         var parseResult = CaptureContractJson.ParseManifest(manifestBytes);
-        if (!parseResult.IsValid)
-        {
-            try
-            {
-                var legacy = JsonSerializer.Deserialize<ArtifactUploadManifest>(manifest, LegacySerializerOptions);
-                legacy?.Validate();
-                if (legacy is not null)
-                {
-                    parseResult = new ArtifactManifestParseResult(
-                        ArtifactManifestDocument.FromLegacy(legacy),
-                        CaptureContractValidationResult.Success);
-                }
-            }
-            catch (Exception exception) when (exception is JsonException or ArgumentException)
-            {
-            }
-        }
         var productParseResult = !parseResult.IsValid
             ? StructuredProcessingProductManifestJson.Parse(manifestBytes)
             : null;
@@ -117,7 +98,7 @@ internal sealed class ArtifactIngestController(
         CancellationToken cancellationToken)
     {
         var manifestBytes = Encoding.UTF8.GetBytes(manifest.GetRawText());
-        var parseResult = ParseManifest(manifestBytes);
+        var parseResult = CaptureContractJson.ParseManifest(manifestBytes);
         var productParseResult = !parseResult.IsValid
             ? StructuredProcessingProductManifestJson.Parse(manifestBytes)
             : null;
@@ -179,29 +160,5 @@ internal sealed class ArtifactIngestController(
                 Detail = exception.Message
             });
         }
-    }
-
-    private static ArtifactManifestParseResult ParseManifest(byte[] manifestBytes)
-    {
-        var parseResult = CaptureContractJson.ParseManifest(manifestBytes);
-        if (parseResult.IsValid)
-        {
-            return parseResult;
-        }
-        try
-        {
-            var legacy = JsonSerializer.Deserialize<ArtifactUploadManifest>(manifestBytes, LegacySerializerOptions);
-            legacy?.Validate();
-            if (legacy is not null)
-            {
-                return new ArtifactManifestParseResult(
-                    ArtifactManifestDocument.FromLegacy(legacy),
-                    CaptureContractValidationResult.Success);
-            }
-        }
-        catch (Exception exception) when (exception is JsonException or ArgumentException)
-        {
-        }
-        return parseResult;
     }
 }

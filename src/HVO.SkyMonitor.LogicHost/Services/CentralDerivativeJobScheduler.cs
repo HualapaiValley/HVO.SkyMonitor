@@ -556,7 +556,7 @@ internal sealed class CentralDerivativeJobScheduler(
                     continue;
                 }
                 var target = recipe.Window is null && !isCloudAssessment ? frame.Artifacts.FirstOrDefault(candidate =>
-                    candidate.ManifestSchemaVersion == ArtifactUploadManifest.CurrentSchemaVersion
+                    candidate.ManifestSchemaVersion == ArtifactManifestV2.CurrentSchemaVersion
                     && candidate.Role == recipe.TargetRole
                     && candidate.RecipeVersion == recipe.RecipeVersion
                     && (candidate.Variant ?? string.Empty) == recipe.TargetVariant
@@ -621,7 +621,7 @@ internal sealed class CentralDerivativeJobScheduler(
 
         var sources = frame.Artifacts.Where(candidate => candidate.Role == FrameArtifactRole.Raw && IsUsable(candidate)).ToArray();
         await EnsureWeatherCloudOverlayJobAsync(frame, now, cancellationToken).ConfigureAwait(false);
-        if (artifact.ManifestSchemaVersion != ArtifactUploadManifest.CurrentSchemaVersion)
+        if (artifact.ManifestSchemaVersion != ArtifactManifestV2.CurrentSchemaVersion)
         {
             return;
         }

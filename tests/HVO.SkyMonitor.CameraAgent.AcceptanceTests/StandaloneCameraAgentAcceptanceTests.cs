@@ -767,8 +767,6 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         Assert.AreEqual(0L, artifact.QuarantinedCount);
         Assert.AreEqual(0L, artifact.AbandonedCount);
         Assert.IsEmpty(await artifactOutbox.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false));
-        Assert.IsFalse(await artifactOutbox.HasUnknownRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false));
-        Assert.IsEmpty(artifactOutbox.List(root, 100));
 
         var fleet = await services.GetRequiredService<IFleetStatusOutbox>()
             .GetSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false);

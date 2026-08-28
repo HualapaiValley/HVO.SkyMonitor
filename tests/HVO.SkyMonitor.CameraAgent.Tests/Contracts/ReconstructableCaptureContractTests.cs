@@ -9,8 +9,6 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 [TestCategory("Unit")]
 public sealed class ReconstructableCaptureContractTests
 {
-    private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
-
     [TestMethod]
     public void SensorReadoutResolver_DerivesAsi174RoiAndRejectsImpossibleGeometry()
     {
@@ -105,62 +103,6 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
-    public void ManifestV1_CloudScenarioProvenanceRoundTripsAsOptionalLegacyScene()
-    {
-        var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new
-        {
-            schemaVersion = "virtual-cloud-scenario-v1",
-            scenarioId = "scn-legacy-cloud",
-            seed = 104
-        }));
-        var parametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(parameters);
-        var scene = new SceneProvenance(
-            "scene-v1-cloud",
-            "rig-v1",
-            "HYG",
-            "4.2",
-            new string('A', 64),
-            "EquidistantFisheye",
-            "projection-v1",
-            "astronomy-v1",
-            "sensor-v1",
-            CloudScenario: new CloudScenarioProvenance(
-                "virtual-cloud-scenario-v1",
-                "scn-legacy-cloud",
-                "1",
-                "virtual-cloud-value-field-v1",
-                parametersSha256,
-                104,
-                DateTimeOffset.UnixEpoch,
-                DateTimeOffset.UnixEpoch.AddSeconds(10),
-                DateTimeOffset.UnixEpoch.AddSeconds(14),
-                4,
-                parameters));
-        var legacy = new ArtifactUploadManifest(
-            ArtifactUploadManifest.CurrentSchemaVersion,
-            "agent-a",
-            Guid.Parse("00000000-0000-0000-0000-000000000001"),
-            Guid.Parse("00000000-0000-0000-0000-000000000002"),
-            FrameArtifactRole.Raw,
-            "application/octet-stream",
-            4,
-            new string('B', 64),
-            DateTimeOffset.UnixEpoch,
-            "raw-v1",
-            "frames/raw.bin",
-            scene);
-
-        var result = CaptureContractJson.ParseManifest(JsonSerializer.SerializeToUtf8Bytes(legacy, WebJsonOptions));
-        var cloud = result.Document!.LegacyManifest!.Scene!.CloudScenario!;
-
-        Assert.IsTrue(result.IsValid);
-        Assert.AreEqual(CaptureManifestCompleteness.LegacyIncomplete, result.Document.Completeness);
-        Assert.AreEqual(parametersSha256, cloud.ParametersSha256);
-        Assert.AreEqual("scn-legacy-cloud", cloud.ScenarioId);
-        Assert.AreEqual(DateTimeOffset.UnixEpoch.AddSeconds(14), cloud.IntegrationEndUtc);
-    }
-
-    [TestMethod]
     public void TransientScenarioProvenanceRoundTripsWithoutChangingDescriptorIdentity()
     {
         var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new
@@ -214,24 +156,6 @@ public sealed class ReconstructableCaptureContractTests
         Assert.IsFalse(Encoding.UTF8.GetString(CaptureContractJson.Serialize(withoutTransient))
             .Contains("transientScenario", StringComparison.Ordinal));
 
-        var legacy = new ArtifactUploadManifest(
-            ArtifactUploadManifest.CurrentSchemaVersion,
-            "agent-a",
-            Guid.Parse("00000000-0000-0000-0000-000000000001"),
-            Guid.Parse("00000000-0000-0000-0000-000000000002"),
-            FrameArtifactRole.Raw,
-            "application/octet-stream",
-            4,
-            new string('B', 64),
-            DateTimeOffset.UnixEpoch,
-            "raw-v1",
-            "frames/raw.bin",
-            scene);
-        var v1 = CaptureContractJson.ParseManifest(JsonSerializer.SerializeToUtf8Bytes(legacy, WebJsonOptions));
-        Assert.IsTrue(v1.IsValid);
-        Assert.AreEqual(transient.ParametersSha256,
-            v1.Document!.LegacyManifest!.Scene!.TransientScenario!.ParametersSha256);
-
         var tampered = enriched with
         {
             Scene = scene with
@@ -242,9 +166,6 @@ public sealed class ReconstructableCaptureContractTests
         var rejectedV2 = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(tampered));
         Assert.IsFalse(rejectedV2.IsValid);
         Assert.AreEqual("scene.transientScenario", rejectedV2.Validation.FieldPath);
-        var rejectedV1 = CaptureContractJson.ParseManifest(JsonSerializer.SerializeToUtf8Bytes(
-            legacy with { Scene = tampered.Scene }, WebJsonOptions));
-        Assert.IsFalse(rejectedV1.IsValid);
         var nullHash = enriched with
         {
             Scene = scene with
@@ -286,7 +207,7 @@ public sealed class ReconstructableCaptureContractTests
         var result = FrameReconstructor.TryReconstruct(parsed!.Descriptor, payload, out var frame);
 
         Assert.IsTrue(parse.IsValid);
-        Assert.AreEqual(CaptureManifestCompleteness.Complete, parse.Document!.Completeness);
+        Assert.IsNotNull(parse.Document);
         CollectionAssert.AreEqual(firstJson, secondJson);
         Assert.IsTrue(result.IsValid);
         Assert.IsNotNull(frame);
@@ -1125,32 +1046,6 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
-    public void ParseManifest_WithV1_ReturnsLegacyIncompleteWithoutDescriptor()
-    {
-        var legacy = new ArtifactUploadManifest(
-            ArtifactUploadManifest.CurrentSchemaVersion,
-            "agent-a",
-            Guid.Parse("00000000-0000-0000-0000-000000000001"),
-            Guid.Parse("00000000-0000-0000-0000-000000000002"),
-            FrameArtifactRole.Raw,
-            "application/octet-stream",
-            4,
-            new string('A', 64),
-            DateTimeOffset.UnixEpoch,
-            "raw-v1",
-            "frames/raw.bin");
-        var json = JsonSerializer.SerializeToUtf8Bytes(legacy, WebJsonOptions);
-
-        var result = CaptureContractJson.ParseManifest(json);
-
-        Assert.IsTrue(result.IsValid);
-        Assert.AreEqual(CaptureManifestCompleteness.LegacyIncomplete, result.Document!.Completeness);
-        Assert.IsNotNull(result.Document.LegacyManifest);
-        Assert.IsNull(result.Document.LegacyManifest.Scene);
-        Assert.IsNull(result.Document.Manifest);
-    }
-
-    [TestMethod]
     public void ParseManifest_WithUnknownOrMalformedVersion_ReturnsStableReason()
     {
         var unknown = CaptureContractJson.ParseManifest("{\"schemaVersion\":\"v3\"}"u8.ToArray());
@@ -1163,7 +1058,7 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
-    public void ParseManifest_WithInvalidV1OrV2_ReturnsStableReason()
+    public void ParseManifest_WithV1OrInvalidV2_ReturnsStableReason()
     {
         var invalidLegacy = CaptureContractJson.ParseManifest(
             "{\"schemaVersion\":\"v1\",\"agentId\":\"\"}"u8.ToArray());
@@ -1182,7 +1077,7 @@ public sealed class ReconstructableCaptureContractTests
 
         var currentResult = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(invalidCurrent));
 
-        Assert.AreEqual(CaptureContractReasonCodes.InvalidIdentity, invalidLegacy.Validation.ReasonCode);
+        Assert.AreEqual(CaptureContractReasonCodes.UnsupportedSchema, invalidLegacy.Validation.ReasonCode);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidIdentity, currentResult.Validation.ReasonCode);
     }
 
@@ -1383,7 +1278,6 @@ public sealed class ReconstructableCaptureContractTests
         var result = FrameReconstructor.TryReconstruct(parsed.Document!.Manifest!.Descriptor, payload, out var frame);
 
         Assert.IsTrue(parsed.IsValid);
-        Assert.AreEqual(CaptureManifestCompleteness.Complete, parsed.Document.Completeness);
         Assert.AreEqual(layout, parsed.Document.Manifest.Descriptor.Layout);
         Assert.IsTrue(result.IsValid);
         Assert.AreEqual(layout, frame!.Layout);
@@ -1409,14 +1303,13 @@ public sealed class ReconstructableCaptureContractTests
         var result = FrameReconstructor.TryReconstruct(parsed.Document!.Manifest!.Descriptor, payload, out var frame);
 
         Assert.IsTrue(parsed.IsValid);
-        Assert.AreEqual(CaptureManifestCompleteness.Complete, parsed.Document.Completeness);
         Assert.IsTrue(result.IsValid);
         Assert.AreEqual(FrameStoredCodeTransform.OpaqueContainerV1, frame!.Layout!.StoredCodeTransform);
         CollectionAssert.AreEqual(payload, frame.PixelData.ToArray());
     }
 
     [TestMethod]
-    public void ParseManifest_WithAmbiguousLowerDepthV2_PreservesBytesAsLegacyIncomplete()
+    public void ParseManifest_WithAmbiguousLowerDepthV2_IsRejected()
     {
         var payload = new byte[8];
         var legacy = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, payload);
@@ -1430,13 +1323,9 @@ public sealed class ReconstructableCaptureContractTests
         var encoded = CaptureContractJson.Serialize(manifest);
 
         var parsed = CaptureContractJson.ParseManifest(encoded);
-        var result = FrameReconstructor.TryReconstruct(parsed.Document!.Manifest!.Descriptor, payload, out var frame);
-
-        Assert.IsTrue(parsed.IsValid);
-        Assert.AreEqual(CaptureManifestCompleteness.LegacyIncomplete, parsed.Document.Completeness);
-        Assert.IsTrue(result.IsValid);
-        CollectionAssert.AreEqual(payload, frame!.PixelData.ToArray());
-        CollectionAssert.AreEqual(encoded, CaptureContractJson.Serialize(parsed.Document.Manifest));
+        Assert.IsFalse(parsed.IsValid);
+        Assert.AreEqual(CaptureContractReasonCodes.InvalidStoredCode, parsed.Validation.ReasonCode);
+        Assert.AreEqual("descriptor.layout.storedCodeTransform", parsed.Validation.FieldPath);
     }
 
     [TestMethod]

@@ -713,13 +713,13 @@ Requirements:
 
 | ID | Requirement |
 | --- | --- |
-| `CENTRAL-001` | Accept manifest v1 and v2 concurrently. |
+| `CENTRAL-001` | Accept canonical manifest v2 and structured processing-product manifests; reject retired upload schemas before persistence. |
 | `CENTRAL-002` | Persist capture sequence, timing, layout, metadata, profile identity, and reconstruction status in the canonical current schema. |
 | `CENTRAL-003` | Add variant, canonical recipe, and normalized source lineage. |
 | `CENTRAL-004` | Bind delayed upload to capture-time rig/profile identity. |
 | `CENTRAL-005` | Add internal streamed MinIO reader and writer abstractions. |
 | `CENTRAL-006` | Add authorized content and range retrieval with checksum verification. |
-| `CENTRAL-007` | Preserve legacy history as explicitly incomplete. |
+| `CENTRAL-007` | Preserve already-ingested historical incomplete records without accepting new incomplete uploads. |
 | `CENTRAL-008` | Never expose MinIO credentials or browser-direct storage references. |
 
 Exit gate `GATE-P08`:

@@ -28,12 +28,6 @@ public sealed class FileSystemFrameStorageService(
     public async ValueTask<StoredFrameReference> SaveAsync(
         string storageRoot,
         FrameArtifact artifact,
-        CancellationToken cancellationToken)
-        => await SaveCoreAsync(storageRoot, artifact, null, null, cancellationToken).ConfigureAwait(false);
-
-    public async ValueTask<StoredFrameReference> SaveAsync(
-        string storageRoot,
-        FrameArtifact artifact,
         ReconstructionDescriptor descriptor,
         CancellationToken cancellationToken)
     {
@@ -56,7 +50,7 @@ public sealed class FileSystemFrameStorageService(
     private async ValueTask<StoredFrameReference> SaveCoreAsync(
         string storageRoot,
         FrameArtifact artifact,
-        ReconstructionDescriptor? descriptor,
+        ReconstructionDescriptor descriptor,
         string? producerStepId,
         CancellationToken cancellationToken)
     {
@@ -97,10 +91,7 @@ public sealed class FileSystemFrameStorageService(
 
         var metadataPath = Path.Combine(directory, string.Concat(stem, ".json"));
         var relativePayloadPath = Path.GetRelativePath(storageRoot, payloadPath);
-        if (descriptor is not null)
-        {
-            ValidateVersionedDescriptorAgreement(descriptor, artifact, frame);
-        }
+        ValidateVersionedDescriptorAgreement(descriptor, artifact, frame);
 
         var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
@@ -111,40 +102,21 @@ public sealed class FileSystemFrameStorageService(
         }
         var payloadExists = File.Exists(payloadPath);
         var sidecarExists = File.Exists(metadataPath);
-        var unversionedSidecar = descriptor is null
-            ? JsonSerializer.SerializeToUtf8Bytes(metadata, SerializerOptions)
-            : null;
-        var upgradeProducerSidecar = false;
-        if (descriptor is not null)
+        var upgradeProducerSidecar = await ValidateExistingVersionedEvidenceAsync(
+            storageRoot,
+            descriptor,
+            payloadPath,
+            metadataPath,
+            relativePayloadPath,
+            producerStepId,
+            payloadExists,
+            sidecarExists,
+            cancellationToken).ConfigureAwait(false);
+        if (payloadExists && sidecarExists)
         {
-            upgradeProducerSidecar = await ValidateExistingVersionedEvidenceAsync(
-                storageRoot,
-                descriptor,
-                payloadPath,
-                metadataPath,
-                relativePayloadPath,
-                producerStepId,
-                payloadExists,
-                sidecarExists,
-                cancellationToken).ConfigureAwait(false);
-            if (payloadExists && sidecarExists)
-            {
-                RawIngressFileStore.SyncFile(storageRoot, payloadPath);
-                RawIngressFileStore.SyncFile(storageRoot, metadataPath);
-                RawIngressFileStore.SyncDirectory(directory);
-            }
-        }
-        else
-        {
-            await ValidateExistingUnversionedEvidenceAsync(
-                storageRoot,
-                frame.PixelData,
-                unversionedSidecar!,
-                payloadPath,
-                metadataPath,
-                payloadExists,
-                sidecarExists,
-                cancellationToken).ConfigureAwait(false);
+            RawIngressFileStore.SyncFile(storageRoot, payloadPath);
+            RawIngressFileStore.SyncFile(storageRoot, metadataPath);
+            RawIngressFileStore.SyncDirectory(directory);
         }
 
         try
@@ -154,10 +126,8 @@ public sealed class FileSystemFrameStorageService(
                 await WriteAtomicallyAsync(storageRoot, payloadPath, frame.PixelData, cancellationToken).ConfigureAwait(false);
             }
 
-            var sidecar = descriptor is null
-                ? unversionedSidecar!
-                : await CreateVersionedSidecarAsync(
-                    descriptor, payloadPath, relativePayloadPath, frame.Metadata.Scene, producerStepId, cancellationToken).ConfigureAwait(false);
+            var sidecar = await CreateVersionedSidecarAsync(
+                descriptor, payloadPath, relativePayloadPath, frame.Metadata.Scene, producerStepId, cancellationToken).ConfigureAwait(false);
             if (!sidecarExists)
             {
                 await WriteAtomicallyAsync(storageRoot, metadataPath, sidecar, cancellationToken).ConfigureAwait(false);
@@ -228,40 +198,6 @@ public sealed class FileSystemFrameStorageService(
             throw new ArgumentException(
                 $"Reconstruction descriptor does not match the stored artifact ({validation.ReasonCode ?? "descriptor.mismatch"}).",
                 nameof(descriptor));
-        }
-    }
-
-    private static async ValueTask ValidateExistingUnversionedEvidenceAsync(
-        string storageRoot,
-        ReadOnlyMemory<byte> expectedPayload,
-        ReadOnlyMemory<byte> expectedSidecar,
-        string payloadPath,
-        string sidecarPath,
-        bool payloadExists,
-        bool sidecarExists,
-        CancellationToken cancellationToken)
-    {
-        if (payloadExists)
-        {
-            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, payloadPath);
-            using var payload = new FileStream(
-                payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
-                bufferSize: 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var checksum = await PayloadChecksum.ComputeSha256Async(payload, cancellationToken).ConfigureAwait(false);
-            var expectedChecksum = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(expectedPayload.Span));
-            if (!string.Equals(checksum, expectedChecksum, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidDataException("Existing frame payload conflicts with the requested artifact identity.");
-            }
-        }
-        if (sidecarExists)
-        {
-            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, sidecarPath);
-            var existing = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-            if (!existing.AsSpan().SequenceEqual(expectedSidecar.Span))
-            {
-                throw new InvalidDataException("Existing frame sidecar conflicts with the requested artifact identity.");
-            }
         }
     }
 
@@ -624,44 +560,27 @@ public sealed class FileSystemFrameStorageService(
         try
         {
             var json = File.ReadAllBytes(path);
-            if (!TryReadSchemaVersion(json, out var hasSchemaVersion, out var schemaVersion))
+            var parsed = CaptureContractJson.ParseManifest(json);
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
             {
                 metadata = null!;
                 return false;
             }
-            if (hasSchemaVersion)
-            {
-                if (!string.Equals(schemaVersion, ArtifactManifestV2.CurrentSchemaVersion, StringComparison.Ordinal))
-                {
-                    metadata = null!;
-                    return false;
-                }
-
-                var parsed = CaptureContractJson.ParseManifest(json);
-                if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
-                {
-                    metadata = null!;
-                    return false;
-                }
-                var descriptor = manifest.Descriptor;
-                metadata = new StoredFrameMetadata(
-                    descriptor.Artifact.ArtifactId,
-                    descriptor.Artifact.Role,
-                    descriptor.Artifact.SourceArtifactIds,
-                    descriptor.Artifact.Recipe.ImplementationVersion,
-                    descriptor.Timing.ExposureStartedUtc,
-                    descriptor.Layout.Width,
-                    descriptor.Layout.Height,
-                    descriptor.Layout.PixelFormat,
-                    null);
-                versionedBinding = new VersionedSidecarBinding(
-                    manifest.RelativeArtifactPath,
-                    descriptor.Layout.ByteLength);
-                return true;
-            }
-
-            metadata = JsonSerializer.Deserialize<StoredFrameMetadata>(json, SerializerOptions)!;
-            return metadata is not null;
+            var descriptor = manifest.Descriptor;
+            metadata = new StoredFrameMetadata(
+                descriptor.Artifact.ArtifactId,
+                descriptor.Artifact.Role,
+                descriptor.Artifact.SourceArtifactIds,
+                descriptor.Artifact.Recipe.ImplementationVersion,
+                descriptor.Timing.ExposureStartedUtc,
+                descriptor.Layout.Width,
+                descriptor.Layout.Height,
+                descriptor.Layout.PixelFormat,
+                null);
+            versionedBinding = new VersionedSidecarBinding(
+                manifest.RelativeArtifactPath,
+                descriptor.Layout.ByteLength);
+            return true;
         }
         catch (JsonException)
         {
@@ -673,50 +592,6 @@ public sealed class FileSystemFrameStorageService(
             metadata = null!;
             return false;
         }
-    }
-
-    private static bool TryReadSchemaVersion(
-        ReadOnlySpan<byte> json,
-        out bool hasSchemaVersion,
-        out string? schemaVersion)
-    {
-        hasSchemaVersion = false;
-        schemaVersion = null;
-        var reader = new Utf8JsonReader(json);
-        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-        {
-            return false;
-        }
-
-        while (reader.Read())
-        {
-            if (reader.TokenType == JsonTokenType.EndObject)
-            {
-                return true;
-            }
-            if (reader.TokenType != JsonTokenType.PropertyName)
-            {
-                return false;
-            }
-
-            var isSchemaVersion = reader.ValueTextEquals("schemaVersion"u8);
-            if (!reader.Read())
-            {
-                return false;
-            }
-            if (isSchemaVersion)
-            {
-                hasSchemaVersion = true;
-                if (reader.TokenType != JsonTokenType.String)
-                {
-                    return false;
-                }
-                schemaVersion = reader.GetString();
-                return true;
-            }
-            reader.Skip();
-        }
-        return false;
     }
 
     private static bool MatchesVersionedBinding(
@@ -824,22 +699,15 @@ public sealed class FileSystemFrameStorageService(
 
     private static string? ResolvePayloadPath(string storageRoot, StoredFrameMetadata metadata)
     {
-        var currentPath = GetPayloadPath(storageRoot, metadata, normalizeToUtc: true);
-        if (File.Exists(currentPath))
-        {
-            return currentPath;
-        }
-
-        var legacyPath = GetPayloadPath(storageRoot, metadata, normalizeToUtc: false);
-        return File.Exists(legacyPath) ? legacyPath : null;
+        var currentPath = GetPayloadPath(storageRoot, metadata);
+        return File.Exists(currentPath) ? currentPath : null;
     }
 
     private static string GetPayloadPath(
         string storageRoot,
-        StoredFrameMetadata metadata,
-        bool normalizeToUtc)
+        StoredFrameMetadata metadata)
     {
-        var timestamp = normalizeToUtc ? metadata.TimestampUtc.ToUniversalTime() : metadata.TimestampUtc;
+        var timestamp = metadata.TimestampUtc.ToUniversalTime();
         var stem = string.Concat(
             timestamp.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture),
             "-", metadata.ArtifactId.ToString("N"));

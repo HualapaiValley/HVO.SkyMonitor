@@ -52,9 +52,10 @@ capture or discard accepted frames.
 5. Confirm pending/retry counts and oldest age decline while acknowledged count increases.
 6. Allow the next retention sweep to remove acknowledged derivatives older than policy.
 
-Attempts and retry deadlines survive CameraAgent restart. Valid legacy v1 JSON
-files under `outbox/` are imported without fabricating v2 facts; malformed
-legacy files are preserved and quarantined without stopping other uploads.
+Attempts and retry deadlines survive CameraAgent restart in the canonical SQLite
+outbox. A populated database with an unsupported schema or retired record shape
+fails initialization without migration or mutation and requires operator
+recovery from known canonical state.
 
 ## Restart Browsing
 
@@ -64,12 +65,10 @@ date/role listing from that index and requires the matching payload and JSON
 sidecar to exist and agree on artifact identity, role, timestamp, dimensions,
 and pixel format. Malformed, duplicate, or incomplete entries are skipped and
 logged rather than exposed as valid artifacts or blocking the rest of the day.
-New callers that supply a complete `ReconstructionDescriptor` store an
+Every caller supplies a complete `ReconstructionDescriptor` and stores an
 `ArtifactManifestV2` sidecar containing the same validated descriptor used for
-transport. Existing callers continue to write the unversioned legacy sidecar,
-and browsing reads both forms without rewriting or inventing missing legacy
-facts. A malformed or unsupported versioned sidecar is never downgraded to the
-legacy parser.
+transport. Browsing reads only that canonical form. A malformed, unversioned,
+or unsupported sidecar is skipped and never downgraded to another parser.
 Before publishing a v2 sidecar, storage verifies every overlapping frame and
 artifact fact, writes the payload, then streams SHA-256 from the published file.
 An ordinary v2 save failure makes a best-effort attempt to remove payload or
@@ -81,7 +80,7 @@ Raw ingress reconciles residual files and repairs this projection at startup;
 the JSONL index remains compatibility browsing state rather than durable truth.
 Before appending, the writer terminates any torn final line so a later valid
 commit remains independently browseable. Listings also inspect adjacent daily
-indexes to retain discovery of pre-hardening entries written with non-UTC offsets.
+indexes for bounded restart recovery.
 
 Listings use persisted UTC capture time, then artifact ID as a stable tie-break,
 and apply the caller's result limit. Files committed before an interrupted index

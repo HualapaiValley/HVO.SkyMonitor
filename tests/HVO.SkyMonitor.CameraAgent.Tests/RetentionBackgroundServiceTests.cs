@@ -32,7 +32,7 @@ public sealed class RetentionBackgroundServiceTests
             var timeProvider = new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero));
             var service = new RetentionBackgroundService(
                 new StubConfigurationAccessor(),
-                Options.Create(new CameraAgentHostOptions()), timeProvider, new FileSystemArtifactOutbox(),
+                Options.Create(new CameraAgentHostOptions()), timeProvider, new SqliteArtifactOutbox(),
                 new FixedCapacityProvider(50), new StoragePressureState(),
                 NullLogger<RetentionBackgroundService>.Instance);
 
@@ -66,7 +66,7 @@ public sealed class RetentionBackgroundServiceTests
             var service = new RetentionBackgroundService(
                 new StubConfigurationAccessor(), Options.Create(new CameraAgentHostOptions()),
                 new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
-                new FileSystemArtifactOutbox(), new FixedCapacityProvider(5), state,
+                new SqliteArtifactOutbox(), new FixedCapacityProvider(5), state,
                 NullLogger<RetentionBackgroundService>.Instance);
 
             await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
@@ -95,7 +95,7 @@ public sealed class RetentionBackgroundServiceTests
             var service = new RetentionBackgroundService(
                 new StubConfigurationAccessor(), Options.Create(new CameraAgentHostOptions()),
                 new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
-                new FileSystemArtifactOutbox(),
+                new SqliteArtifactOutbox(),
                 new DelegateCapacityProvider(root => root == Path.GetFullPath(failedRoot)
                     ? throw new IOException("probe failed")
                     : new StorageCapacity(1000, 500)),
@@ -121,8 +121,8 @@ public sealed class RetentionBackgroundServiceTests
         {
             var pending = await CreateStoredArtifactAsync(root, "pending", Guid.NewGuid()).ConfigureAwait(false);
             var eligible = await CreateStoredArtifactAsync(root, "eligible", Guid.NewGuid()).ConfigureAwait(false);
-            var outbox = new FileSystemArtifactOutbox();
-            await outbox.EnqueueAsync(root, CreateManifest(pending.ArtifactId, pending.RelativePath), CancellationToken.None)
+            using var outbox = new SqliteArtifactOutbox();
+            await outbox.EnqueueAsync(root, CreateManifest(root, pending.ArtifactId, pending.RelativePath), CancellationToken.None)
                 .ConfigureAwait(false);
             var service = CreateService(outbox);
 
@@ -154,7 +154,7 @@ public sealed class RetentionBackgroundServiceTests
                 new StubConfigurationAccessor(),
                 options,
                 new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)),
-                new FileSystemArtifactOutbox(),
+                new SqliteArtifactOutbox(),
                 new FixedCapacityProvider(50),
                 new StoragePressureState(),
                 NullLogger<RetentionBackgroundService>.Instance,
@@ -184,12 +184,16 @@ public sealed class RetentionBackgroundServiceTests
         try
         {
             var artifact = await CreateStoredArtifactAsync(root, "pending", Guid.NewGuid()).ConfigureAwait(false);
-            var outbox = new FileSystemArtifactOutbox();
-            var manifest = CreateManifest(artifact.ArtifactId, artifact.RelativePath);
+            using var outbox = new SqliteArtifactOutbox();
+            var manifest = CreateManifest(root, artifact.ArtifactId, artifact.RelativePath);
             await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false);
-            await outbox.AcknowledgeAsync(root, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+            var lease = await outbox.ClaimAsync(
+                root, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            await outbox.AcknowledgeAsync(root, lease, CreateAcknowledgement(manifest), CancellationToken.None)
+                .ConfigureAwait(false);
 
-            await CreateService(new FileSystemArtifactOutbox())
+            await CreateService(outbox)
                 .ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
 
             Assert.IsFalse(File.Exists(artifact.PayloadPath));
@@ -203,7 +207,7 @@ public sealed class RetentionBackgroundServiceTests
     }
 
     [TestMethod]
-    public async Task ApplyRetentionAsync_V2SidecarIsHeldUntilV1OutboxAcknowledgement()
+    public async Task ApplyRetentionAsync_V2SidecarIsHeldUntilSqliteAcknowledgement()
     {
         var root = CreateRoot();
         try
@@ -238,8 +242,9 @@ public sealed class RetentionBackgroundServiceTests
             var artifact = new FrameArtifact(descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, frame);
             var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var stored = await storage.SaveAsync(root, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
-            var outbox = new FileSystemArtifactOutbox();
-            var hold = CreateManifest(descriptor.Artifact.ArtifactId, stored.RelativePath);
+            using var outbox = new SqliteArtifactOutbox();
+            var hold = new ArtifactManifestV2(
+                ArtifactManifestV2.CurrentSchemaVersion, descriptor, stored.RelativePath);
             await outbox.EnqueueAsync(root, hold, CancellationToken.None).ConfigureAwait(false);
 
             await CreateService(outbox).ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
@@ -247,7 +252,11 @@ public sealed class RetentionBackgroundServiceTests
             Assert.IsTrue(File.Exists(stored.AbsolutePath));
             Assert.IsTrue(File.Exists(Path.ChangeExtension(stored.AbsolutePath, ".json")));
 
-            await outbox.AcknowledgeAsync(root, hold.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+            var lease = await outbox.ClaimAsync(
+                root, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            await outbox.AcknowledgeAsync(root, lease, CreateAcknowledgement(hold), CancellationToken.None)
+                .ConfigureAwait(false);
             await CreateService(outbox).ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
 
             Assert.IsFalse(File.Exists(stored.AbsolutePath));
@@ -362,40 +371,19 @@ public sealed class RetentionBackgroundServiceTests
     }
 
     [TestMethod]
-    public async Task ApplyRetentionAsync_MalformedOutboxManifestFailsClosed()
-    {
-        var root = CreateRoot();
-        try
-        {
-            var artifact = await CreateStoredArtifactAsync(root, "expired", Guid.NewGuid()).ConfigureAwait(false);
-            var outboxDirectory = Path.Combine(root, "outbox");
-            Directory.CreateDirectory(outboxDirectory);
-            await File.WriteAllTextAsync(Path.Combine(outboxDirectory, "invalid.json"), "{").ConfigureAwait(false);
-
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => CreateService(new FileSystemArtifactOutbox())
-                .ApplyRetentionAsync(CreateConfig(root), CancellationToken.None)).ConfigureAwait(false);
-
-            Assert.IsTrue(File.Exists(artifact.PayloadPath));
-            Assert.IsTrue(File.Exists(artifact.MetadataPath));
-        }
-        finally
-        {
-            DeleteRoot(root);
-        }
-    }
-
-    [TestMethod]
     public async Task ApplyRetentionAsync_MissingPendingPayloadFailsClosed()
     {
         var root = CreateRoot();
         try
         {
             var artifact = await CreateStoredArtifactAsync(root, "expired", Guid.NewGuid()).ConfigureAwait(false);
-            var outbox = new FileSystemArtifactOutbox();
+            using var outbox = new SqliteArtifactOutbox();
+            var missing = await CreateStoredArtifactAsync(root, "missing", Guid.NewGuid()).ConfigureAwait(false);
             await outbox.EnqueueAsync(
                 root,
-                CreateManifest(Guid.NewGuid(), Path.Combine("frames", "2020", "01", "01", "Raw", "missing.bin")),
+                CreateManifest(root, missing.ArtifactId, missing.RelativePath),
                 CancellationToken.None).ConfigureAwait(false);
+            File.Delete(missing.PayloadPath);
 
             await Assert.ThrowsExactlyAsync<InvalidDataException>(() => CreateService(outbox)
                 .ApplyRetentionAsync(CreateConfig(root), CancellationToken.None)).ConfigureAwait(false);
@@ -419,7 +407,7 @@ public sealed class RetentionBackgroundServiceTests
             using var cancellation = new CancellationTokenSource();
             await cancellation.CancelAsync().ConfigureAwait(false);
 
-            await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => CreateService(new FileSystemArtifactOutbox())
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => CreateService(new SqliteArtifactOutbox())
                 .ApplyRetentionAsync(CreateConfig(root), cancellation.Token)).ConfigureAwait(false);
 
             Assert.IsTrue(File.Exists(artifact.PayloadPath));
@@ -445,7 +433,7 @@ public sealed class RetentionBackgroundServiceTests
                     Path.GetRelativePath(root, sidecar))
             ]);
 
-            await CreateService(new FileSystemArtifactOutbox(), root, holds)
+            await CreateService(new SqliteArtifactOutbox(), root, holds)
                 .ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
 
             Assert.IsTrue(File.Exists(payload));
@@ -465,7 +453,7 @@ public sealed class RetentionBackgroundServiceTests
         {
             var (payload, sidecar) = await CreateDerivedMetadataEvidenceAsync(root).ConfigureAwait(false);
 
-            await CreateService(new FileSystemArtifactOutbox(), root, new FixedProcessingHolds([]))
+            await CreateService(new SqliteArtifactOutbox(), root, new FixedProcessingHolds([]))
                 .ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
 
             Assert.IsFalse(File.Exists(payload));
@@ -532,7 +520,7 @@ public sealed class RetentionBackgroundServiceTests
             File.SetLastWriteTimeUtc(payloadPath, createdUtc.UtcDateTime);
             File.SetLastWriteTimeUtc(sidecarPath, createdUtc.UtcDateTime);
 
-            await CreateService(new FileSystemArtifactOutbox(), root)
+            await CreateService(new SqliteArtifactOutbox(), root)
                 .ApplyRetentionAsync(CreateConfigWithMetadataPolicy(root), CancellationToken.None).ConfigureAwait(false);
 
             Assert.IsTrue(File.Exists(payloadPath));
@@ -579,7 +567,7 @@ public sealed class RetentionBackgroundServiceTests
                     CapturePipelineSchemaVersions.ExplicitV2,
                     CapturePipelineDependencyPolicy.RejectEnabledDependent)
             };
-            var service = CreateService(new FileSystemArtifactOutbox(), rawRoot);
+            var service = CreateService(new SqliteArtifactOutbox(), rawRoot);
 
             await service.ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
 
@@ -632,7 +620,7 @@ public sealed class RetentionBackgroundServiceTests
                     CapturePipelineDependencyPolicy.RejectEnabledDependent)
             };
 
-            await CreateService(new FileSystemArtifactOutbox(), rawRoot)
+            await CreateService(new SqliteArtifactOutbox(), rawRoot)
                 .ApplyRetentionAsync(config, CancellationToken.None).ConfigureAwait(false);
 
             Assert.IsTrue(File.Exists(retained));
@@ -662,7 +650,7 @@ public sealed class RetentionBackgroundServiceTests
             };
 
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
-                CreateService(new FileSystemArtifactOutbox(), rawRoot)
+                CreateService(new SqliteArtifactOutbox(), rawRoot)
                     .ApplyRetentionAsync(config, CancellationToken.None)).ConfigureAwait(false);
         }
         finally
@@ -739,7 +727,7 @@ public sealed class RetentionBackgroundServiceTests
                 new StubConfigurationAccessor(),
                 Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
                 new FixedTimeProvider(evaluatedUtc),
-                new FileSystemArtifactOutbox(),
+                new SqliteArtifactOutbox(),
                 new FixedCapacityProvider(50),
                 new StoragePressureState(),
                 NullLogger<RetentionBackgroundService>.Instance);
@@ -838,11 +826,35 @@ public sealed class RetentionBackgroundServiceTests
             artifactId, payloadPath, metadataPath, indexPath, Path.GetRelativePath(root, payloadPath));
     }
 
-    private static ArtifactUploadManifest CreateManifest(Guid artifactId, string relativePath)
+    private static ArtifactManifestV2 CreateManifest(string root, Guid artifactId, string relativePath)
+    {
+        relativePath = relativePath.Replace(Path.DirectorySeparatorChar, '/');
+        var payload = File.ReadAllBytes(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        var template = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono8, payload.Length, 1, payload.Length, payload);
+        var manifest = template with
+        {
+            Descriptor = template.Descriptor with
+            {
+                Artifact = template.Descriptor.Artifact with { ArtifactId = artifactId }
+            },
+            RelativeArtifactPath = relativePath
+        };
+        File.WriteAllBytes(
+            Path.ChangeExtension(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)), ".json"),
+            CaptureContractJson.Serialize(manifest));
+        return manifest;
+    }
+
+    private static ArtifactUploadAcknowledgement CreateAcknowledgement(ArtifactManifestV2 manifest)
         => new(
-            "v1", "agent-a", artifactId, Guid.NewGuid(), FrameArtifactRole.Raw,
-            "application/octet-stream", 4, new string('A', 64), DateTimeOffset.UnixEpoch,
-            "raw-v1", relativePath);
+            ArtifactUploadAcknowledgement.CurrentSchemaVersion,
+            manifest.IdempotencyKey,
+            manifest.Descriptor.Artifact.ArtifactId,
+            manifest.Descriptor.Artifact.ChecksumSha256,
+            manifest.Descriptor.Layout.ByteLength,
+            DateTimeOffset.UtcNow,
+            manifest.SchemaVersion);
 
     private static string CreateRoot()
         => Path.Combine(Path.GetTempPath(), "skymonitor-retention", Guid.NewGuid().ToString("N"));

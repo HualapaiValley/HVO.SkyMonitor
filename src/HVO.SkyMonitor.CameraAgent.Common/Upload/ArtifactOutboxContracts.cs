@@ -16,9 +16,7 @@ public enum ArtifactOutboxStatus
 public enum ArtifactOutboxManifestKind
 {
     ManifestV2,
-    StructuredProductV1,
-    LegacyV1,
-    MalformedLegacy
+    StructuredProductV1
 }
 
 public enum ArtifactUploadDisposition
@@ -64,8 +62,7 @@ public sealed record ArtifactOutboxRecord(
     string? LeaseToken,
     DateTimeOffset? LeaseExpiresUtc,
     string? LastReason,
-    ReadOnlyMemory<byte>? Acknowledgement,
-    string? LegacyEvidencePath)
+    ReadOnlyMemory<byte>? Acknowledgement)
 {
     public StructuredProcessingProductManifestV1? ProductManifest { get; init; }
 }

@@ -50,10 +50,3 @@ public readonly record struct CaptureContractValidationResult(string? ReasonCode
     public static CaptureContractValidationResult Failure(string reasonCode, string fieldPath)
         => new(reasonCode, fieldPath);
 }
-
-/// <summary>Indicates whether a parsed manifest contains complete reconstruction facts.</summary>
-public enum CaptureManifestCompleteness
-{
-    Complete,
-    LegacyIncomplete
-}

@@ -166,8 +166,8 @@ internal sealed class NoOpFileStorageProcessingStep(
                     }
                     else
                     {
-                        stored = await _frameStorageService.SaveAsync(
-                            Options.StorageRoot, artifact, cancellationToken).ConfigureAwait(false);
+                        throw new InvalidDataException(
+                            "File storage requires a reconstruction descriptor for every artifact.");
                     }
                 }
                 if (_centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload))

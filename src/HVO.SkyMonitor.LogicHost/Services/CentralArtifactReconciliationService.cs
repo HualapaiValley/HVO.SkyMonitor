@@ -1561,7 +1561,7 @@ internal sealed partial class CentralArtifactReconciliationService(
             }
             artifact.ReconciledAtUtc = reconciledAtUtc;
             artifact.StateReasonCode = null;
-            if (artifact.ManifestSchemaVersion == HVO.SkyMonitor.AgentCore.ArtifactUploadManifest.CurrentSchemaVersion
+            if (artifact.ManifestSchemaVersion == HVO.SkyMonitor.AgentCore.ArtifactManifestV2.CurrentSchemaVersion
                 || artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw)
             {
                 await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);

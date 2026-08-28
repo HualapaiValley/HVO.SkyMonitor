@@ -125,10 +125,35 @@ internal sealed class DerivedProductReconciler(
 
             var claimedPaths = new HashSet<string>(StringComparer.Ordinal);
             var modernCursor = await store.ReadFileCursorAsync("modern", cancellationToken).ConfigureAwait(false);
-            var modernPage = EnumeratePage("*.manifest.json", modernCursor).ToArray();
+            var modernPage = EnumeratePage("*.json", modernCursor).ToArray();
             foreach (var sidecar in modernPage)
             {
                 var sidecarRelative = Relative(sidecar);
+                if (!sidecar.EndsWith(".manifest.json", StringComparison.Ordinal))
+                {
+                    var current = await InspectCurrentOrphanSidecarAsync(sidecar, cancellationToken).ConfigureAwait(false);
+                    if (!current.IsCurrentManifest) continue;
+                    inspected++;
+                    if (await store.IsProcessingPathClaimedAsync(sidecarRelative, cancellationToken).ConfigureAwait(false))
+                    {
+                        _ = await store.DeleteClaimedOrphanOperationsAsync(
+                            sidecarRelative, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (current.Recoverable)
+                    {
+                        recoverable++;
+                        claimedPaths.Add(current.PayloadPath!);
+                        claimedPaths.Add(sidecar);
+                        continue;
+                    }
+                    var currentOperation = await PlanQuarantineAsync(
+                        null, current.PayloadPath, sidecar, current.Reason!, cancellationToken).ConfigureAwait(false);
+                    await ResumeOperationAsync(currentOperation, cancellationToken).ConfigureAwait(false);
+                    quarantined++;
+                    quarantineBytes += currentOperation.ObservedBytes;
+                    continue;
+                }
                 if (await store.IsProcessingPathClaimedAsync(sidecarRelative, cancellationToken).ConfigureAwait(false))
                 {
                     _ = await store.DeleteClaimedOrphanOperationsAsync(
@@ -162,86 +187,6 @@ internal sealed class DerivedProductReconciler(
                 modernPage.Length == _options.ReconciliationBatchSize ? Relative(modernPage[^1]) : null,
                 cancellationToken).ConfigureAwait(false);
 
-            var legacyCursor = await store.ReadFileCursorAsync("legacy", cancellationToken).ConfigureAwait(false);
-            var legacyPage = EnumerateLegacyPage(legacyCursor).ToArray();
-            foreach (var sidecar in legacyPage)
-            {
-                var sidecarRelative = Relative(sidecar);
-                if (await store.IsProcessingPathClaimedAsync(sidecarRelative, cancellationToken).ConfigureAwait(false))
-                {
-                    _ = await store.DeleteClaimedOrphanOperationsAsync(
-                        sidecarRelative, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-                var bytes = await File.ReadAllBytesAsync(sidecar, cancellationToken).ConfigureAwait(false);
-                var parsed = CaptureContractJson.ParseManifest(bytes);
-                if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
-                {
-                    var sibling = FindSingleLegacyPayload(sidecar);
-                    if (sibling is null) continue;
-                    var identity = ProcessingIdentity.ComputePayloadSha256(bytes);
-                    if (await InspectOrphanAgeAsync(
-                            $"orphan:legacy-malformed:{identity}", Relative(sibling), sidecarRelative,
-                            cancellationToken).ConfigureAwait(false))
-                    {
-                        claimedPaths.Add(sibling);
-                        claimedPaths.Add(sidecar);
-                        continue;
-                    }
-                    var malformed = await PlanQuarantineAsync(null, sibling, sidecar,
-                        "legacy-orphan-invalid-sidecar", cancellationToken).ConfigureAwait(false);
-                    await ResumeOperationAsync(malformed, cancellationToken).ConfigureAwait(false);
-                    quarantined++;
-                    quarantineBytes += malformed.ObservedBytes;
-                    continue;
-                }
-                inspected++;
-                if (!SqliteCaptureProcessingStore.IsCanonicalRelativePath(manifest.RelativeArtifactPath) ||
-                    !manifest.RelativeArtifactPath.StartsWith("derived/", StringComparison.Ordinal) ||
-                    !string.Equals(sidecarRelative, Path.ChangeExtension(manifest.RelativeArtifactPath, ".json"), StringComparison.Ordinal))
-                {
-                    var operation = await PlanQuarantineAsync(null, null, sidecar, "legacy-orphan-path-mismatch", cancellationToken).ConfigureAwait(false);
-                    await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
-                    quarantined++;
-                    continue;
-                }
-                var payloadPath = ResolveDerived(manifest.RelativeArtifactPath);
-                if (!File.Exists(payloadPath))
-                {
-                    var operation = await PlanQuarantineAsync(null, null, sidecar, "legacy-sidecar-without-payload", cancellationToken).ConfigureAwait(false);
-                    await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
-                    quarantined++;
-                    continue;
-                }
-                var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
-                if (payload.LongLength != manifest.Descriptor.Layout.ByteLength ||
-                    !string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), manifest.Descriptor.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    var operation = await PlanQuarantineAsync(null, payloadPath, sidecar, "legacy-orphan-payload-mismatch", cancellationToken).ConfigureAwait(false);
-                    await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
-                    quarantined++;
-                    continue;
-                }
-                var legacyIdentity = CaptureContractJson.ComputeManifestSha256(bytes);
-                var aging = await InspectOrphanAgeAsync(
-                    $"orphan:legacy:{legacyIdentity}", manifest.RelativeArtifactPath, sidecarRelative,
-                    cancellationToken).ConfigureAwait(false);
-                if (!aging)
-                {
-                    var operation = await PlanQuarantineAsync(null, payloadPath, sidecar,
-                        "legacy-orphan-recovery-window-expired", cancellationToken).ConfigureAwait(false);
-                    await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
-                    quarantined++;
-                    continue;
-                }
-                recoverable++;
-                claimedPaths.Add(payloadPath);
-                claimedPaths.Add(sidecar);
-            }
-            await store.SetFileCursorAsync("legacy",
-                legacyPage.Length == _options.ReconciliationBatchSize ? Relative(legacyPage[^1]) : null,
-                cancellationToken).ConfigureAwait(false);
-
             var payloadCursor = await store.ReadFileCursorAsync("payload", cancellationToken).ConfigureAwait(false);
             var payloadPage = EnumeratePage("*", payloadCursor).ToArray();
             foreach (var payload in payloadPage)
@@ -249,6 +194,8 @@ internal sealed class DerivedProductReconciler(
                 var relative = Relative(payload);
                 if (payload.EndsWith(".manifest.json", StringComparison.Ordinal) || payload.EndsWith(".tmp", StringComparison.Ordinal) ||
                     claimedPaths.Contains(payload) || await store.IsProcessingPathClaimedAsync(relative, cancellationToken).ConfigureAwait(false)) continue;
+                if (payload.EndsWith(".json", StringComparison.Ordinal) &&
+                    await IsCurrentManifestAsync(payload, cancellationToken).ConfigureAwait(false)) continue;
                 if (HasPotentialCompanion(payload)) continue;
                 inspected++;
                 var operation = await PlanQuarantineAsync(null, payload, null, "payload-without-sidecar", cancellationToken).ConfigureAwait(false);
@@ -301,6 +248,60 @@ internal sealed class DerivedProductReconciler(
         return (false, payloadPath, "orphan-recovery-window-expired");
     }
 
+    private async ValueTask<(bool IsCurrentManifest, bool Recoverable, string? PayloadPath, string? Reason)>
+        InspectCurrentOrphanSidecarAsync(string sidecarPath, CancellationToken cancellationToken)
+    {
+        byte[] bytes;
+        try
+        {
+            bytes = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            return (false, false, null, null);
+        }
+        var parsed = CaptureContractJson.ParseManifest(bytes);
+        if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
+            return (false, false, null, null);
+
+        var sidecarRelative = Relative(sidecarPath);
+        if (!SqliteCaptureProcessingStore.IsCanonicalRelativePath(manifest.RelativeArtifactPath) ||
+            !manifest.RelativeArtifactPath.StartsWith("derived/", StringComparison.Ordinal) ||
+            !string.Equals(sidecarRelative, Path.ChangeExtension(manifest.RelativeArtifactPath, ".json"), StringComparison.Ordinal))
+            return (true, false, null, "orphan-path-mismatch");
+        var payloadPath = ResolveDerived(manifest.RelativeArtifactPath);
+        if (!File.Exists(payloadPath)) return (true, false, null, "sidecar-without-payload");
+        if (new FileInfo(payloadPath).Length != manifest.Descriptor.Layout.ByteLength)
+            return (true, false, payloadPath, "payload-length-mismatch");
+        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(
+                ProcessingIdentity.ComputePayloadSha256(payload),
+                manifest.Descriptor.Artifact.ChecksumSha256,
+                StringComparison.OrdinalIgnoreCase))
+            return (true, false, payloadPath, "payload-checksum-mismatch");
+
+        var operationId = $"orphan:current:{CaptureContractJson.ComputeManifestSha256(bytes)}";
+        if (await InspectOrphanAgeAsync(
+                operationId, manifest.RelativeArtifactPath, sidecarRelative, cancellationToken).ConfigureAwait(false))
+            return (true, true, payloadPath, null);
+        return (true, false, payloadPath, "orphan-recovery-window-expired");
+    }
+
+    private static async ValueTask<bool> IsCurrentManifestAsync(
+        string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var parsed = CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
+            return parsed.IsValid && parsed.Document?.Manifest is not null;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
     private async ValueTask<bool> InspectOrphanAgeAsync(
         string operationId, string payloadRelativePath, string sidecarRelativePath,
         CancellationToken cancellationToken)
@@ -350,16 +351,23 @@ internal sealed class DerivedProductReconciler(
                 return await ValidatePayloadAsync(manifest, payloadPath, cancellationToken).ConfigureAwait(false);
             }
             var parsed = CaptureContractJson.ParseManifest(sidecar);
-            if (!parsed.IsValid || parsed.Document?.Manifest is not { } legacy ||
-                !string.Equals(row.PayloadRelativePath, legacy.RelativeArtifactPath, StringComparison.Ordinal) ||
+            if (!parsed.IsValid || parsed.Document?.Manifest is not { } current ||
+                !string.Equals(row.PayloadRelativePath, current.RelativeArtifactPath, StringComparison.Ordinal) ||
                 !string.Equals(row.SidecarRelativePath, Path.ChangeExtension(row.PayloadRelativePath, ".json"), StringComparison.Ordinal) ||
                 !PathsEqual(sidecarPath, ResolveCommitted(row, row.SidecarRelativePath)) ||
-                row.ArtifactId != legacy.Descriptor.Artifact.ArtifactId || row.CaptureId != legacy.Descriptor.Capture.CaptureId)
+                row.ArtifactId != current.Descriptor.Artifact.ArtifactId ||
+                row.CaptureId != current.Descriptor.Capture.CaptureId)
+            {
                 return "committed-identity-conflict";
+            }
             var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
-            return payload.LongLength == legacy.Descriptor.Layout.ByteLength &&
-                string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), legacy.Descriptor.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase)
-                ? null : "payload-checksum-mismatch";
+            return payload.LongLength == current.Descriptor.Layout.ByteLength &&
+                string.Equals(
+                    ProcessingIdentity.ComputePayloadSha256(payload),
+                    current.Descriptor.Artifact.ChecksumSha256,
+                    StringComparison.OrdinalIgnoreCase)
+                ? null
+                : "payload-checksum-mismatch";
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or System.Text.Json.JsonException or KeyNotFoundException)
         {
@@ -472,23 +480,12 @@ internal sealed class DerivedProductReconciler(
         .Where(path => afterRelativePath is null || string.CompareOrdinal(Relative(path), afterRelativePath) > 0)
         .Take(_options.ReconciliationBatchSize);
 
-    private IEnumerable<string> EnumerateLegacyPage(string? afterRelativePath) => Directory.EnumerateFiles(
-            _derivedRoot, "*.json", new EnumerationOptions
-            {
-                RecurseSubdirectories = true,
-                AttributesToSkip = FileAttributes.ReparsePoint
-            })
-        .Where(static path => !path.EndsWith(".manifest.json", StringComparison.Ordinal))
-        .Order(StringComparer.Ordinal)
-        .Where(path => afterRelativePath is null || string.CompareOrdinal(Relative(path), afterRelativePath) > 0)
-        .Take(_options.ReconciliationBatchSize);
-
     private static bool HasPotentialCompanion(string payloadPath)
     {
         var modern = Path.ChangeExtension(payloadPath, ".manifest.json");
-        if (!PathsEqual(modern, payloadPath) && File.Exists(modern)) return true;
-        var legacy = Path.ChangeExtension(payloadPath, ".json");
-        return !PathsEqual(legacy, payloadPath) && File.Exists(legacy);
+        var current = Path.ChangeExtension(payloadPath, ".json");
+        return !PathsEqual(modern, payloadPath) && File.Exists(modern) ||
+            !PathsEqual(current, payloadPath) && File.Exists(current);
     }
 
     private static string? FindSingleModernPayload(string sidecarPath)
@@ -499,18 +496,6 @@ internal sealed class DerivedProductReconciler(
         var stem = fileName[..^suffix.Length];
         return Directory.EnumerateFiles(Path.GetDirectoryName(sidecarPath)!, $"{stem}.*")
             .Where(path => !PathsEqual(path, sidecarPath) && !path.EndsWith(".tmp", StringComparison.Ordinal))
-            .Take(2).ToArray() is [var only] ? only : null;
-    }
-
-    private static string? FindSingleLegacyPayload(string sidecarPath)
-    {
-        if (!sidecarPath.EndsWith(".json", StringComparison.Ordinal) ||
-            sidecarPath.EndsWith(".manifest.json", StringComparison.Ordinal)) return null;
-        var stem = Path.GetFileNameWithoutExtension(sidecarPath);
-        return Directory.EnumerateFiles(Path.GetDirectoryName(sidecarPath)!, $"{stem}.*")
-            .Where(path => !PathsEqual(path, sidecarPath) &&
-                !path.EndsWith(".manifest.json", StringComparison.Ordinal) &&
-                !path.EndsWith(".tmp", StringComparison.Ordinal))
             .Take(2).ToArray() is [var only] ? only : null;
     }
 

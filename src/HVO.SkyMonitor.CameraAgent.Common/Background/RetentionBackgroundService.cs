@@ -308,49 +308,12 @@ public sealed class RetentionBackgroundService(
         var rootPrefix = string.Concat(normalizedRoot, Path.DirectorySeparatorChar);
         var paths = new HashSet<string>(PathComparer);
         var artifactIds = new HashSet<Guid>();
-        IReadOnlyList<ArtifactOutboxRetentionHold>? outboxHolds = null;
-        try
+        var outboxHolds = await _artifactOutbox.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
+        foreach (var hold in outboxHolds)
         {
-            if (await _artifactOutbox.HasUnknownRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false))
-            {
-                throw new InvalidDataException("Malformed outbox evidence prevents safe retention.");
-            }
-            outboxHolds = await _artifactOutbox.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
-        }
-        catch (NotSupportedException)
-        {
-            // Legacy filesystem outboxes remain supported while their shipped manifests are imported.
-        }
-        if (outboxHolds is not null)
-        {
-            foreach (var hold in outboxHolds)
-            {
-                AddHeldPath(normalizedRoot, rootPrefix, hold.RelativeArtifactPath, paths);
-                AddHeldPath(normalizedRoot, rootPrefix, hold.RelativeSidecarPath, paths);
-                artifactIds.Add(hold.ArtifactId);
-            }
-        }
-        else
-        {
-            foreach (var manifest in _artifactOutbox.EnumeratePending(normalizedRoot, cancellationToken))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (string.IsNullOrWhiteSpace(manifest.RelativeArtifactPath) || Path.IsPathRooted(manifest.RelativeArtifactPath))
-                {
-                    throw new InvalidDataException("Pending outbox manifest contains an invalid relative path.");
-                }
-
-                var path = Path.GetFullPath(Path.Combine(normalizedRoot, manifest.RelativeArtifactPath));
-                if (!path.StartsWith(rootPrefix, PathComparison) || !File.Exists(path))
-                {
-                    throw new InvalidDataException(
-                        $"Pending outbox payload '{manifest.RelativeArtifactPath}' is missing or outside its storage root.");
-                }
-
-                paths.Add(path);
-                paths.Add(Path.ChangeExtension(path, ".json"));
-                artifactIds.Add(manifest.ArtifactId);
-            }
+            AddHeldPath(normalizedRoot, rootPrefix, hold.RelativeArtifactPath, paths);
+            AddHeldPath(normalizedRoot, rootPrefix, hold.RelativeSidecarPath, paths);
+            artifactIds.Add(hold.ArtifactId);
         }
         if (_rawIngressHolds is not null)
         {

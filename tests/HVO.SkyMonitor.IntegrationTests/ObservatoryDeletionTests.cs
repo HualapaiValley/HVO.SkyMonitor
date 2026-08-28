@@ -218,26 +218,6 @@ public sealed class ObservatoryDeletionTests
             registration.DeviceId, deviceKey, "{}", null)).ConfigureAwait(false);
         await profileAttempt.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
 
-        var ingest = assertionScope.ServiceProvider.GetRequiredService<IArtifactIngestService>();
-        var payload = new byte[] { 1, 2, 3, 4 };
-        var manifest = new ArtifactUploadManifest(
-            ArtifactUploadManifest.CurrentSchemaVersion,
-            registration.DeviceId,
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            FrameArtifactRole.Raw,
-            "application/octet-stream",
-            payload.LongLength,
-            Convert.ToHexString(SHA256.HashData(payload)),
-            DateTimeOffset.UnixEpoch,
-            "raw-v1",
-            "frames/raw.bin");
-        Func<Task> ingestAttempt = async () => await ingest.IngestAsync(
-            ArtifactManifestDocument.FromLegacy(manifest),
-            new MemoryStream(payload),
-            CancellationToken.None).ConfigureAwait(false);
-        await ingestAttempt.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
-
         var raceObservatory = new Observatory
         {
             OwnerUserId = $"observatory-race-owner-{Guid.NewGuid():N}",

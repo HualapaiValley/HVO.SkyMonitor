@@ -18,8 +18,7 @@ public sealed class ArtifactUploadClientTests
     {
         using var client = new HttpClient(new ThrowingHandler()) { BaseAddress = new Uri("http://localhost/") };
         var uploadClient = CreateUploadClient(client);
-        var manifest = new ArtifactUploadManifest("v1", "agent", Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
-            "application/octet-stream", 1, new string('A', 64), DateTimeOffset.UnixEpoch, "raw-v1", "missing.bin");
+        var manifest = CreateManifest([1]) with { RelativeArtifactPath = "missing.bin" };
 
         var result = await uploadClient.UploadAsync(
             Path.GetTempPath(), CreateRecord(manifest), CancellationToken.None).ConfigureAwait(false);
@@ -39,8 +38,7 @@ public sealed class ArtifactUploadClientTests
             await File.WriteAllBytesAsync(Path.Combine(root, "payload.bin"), [1]).ConfigureAwait(false);
             using var client = new HttpClient(new TransportFailureHandler()) { BaseAddress = new Uri("http://localhost/") };
             var uploadClient = CreateUploadClient(client);
-            var manifest = new ArtifactUploadManifest("v1", "agent", Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
-                "application/octet-stream", 1, new string('A', 64), DateTimeOffset.UnixEpoch, "raw-v1", "payload.bin");
+            var manifest = CreateManifest([1]);
 
             var result = await uploadClient.UploadAsync(
                 root, CreateRecord(manifest), CancellationToken.None).ConfigureAwait(false);
@@ -68,9 +66,9 @@ public sealed class ArtifactUploadClientTests
         var acknowledgement = new ArtifactUploadAcknowledgement(
             ArtifactUploadAcknowledgement.CurrentSchemaVersion,
             manifest.IdempotencyKey,
-            manifest.ArtifactId,
-            manifest.ChecksumSha256,
-            manifest.ByteLength,
+            manifest.Descriptor.Artifact.ArtifactId,
+            manifest.Descriptor.Artifact.ChecksumSha256,
+            manifest.Descriptor.Layout.ByteLength,
             DateTimeOffset.UnixEpoch,
             manifest.SchemaVersion);
         using var client = new HttpClient(new ResponseHandler(_ => new HttpResponseMessage(HttpStatusCode.Accepted)
@@ -174,8 +172,8 @@ public sealed class ArtifactUploadClientTests
         await File.WriteAllBytesAsync(Path.Combine(root.Path, "payload.bin"), payload).ConfigureAwait(false);
         var manifest = CreateManifest(payload);
         var acknowledgement = new ArtifactUploadAcknowledgement(
-            "v1", manifest.IdempotencyKey, Guid.NewGuid(), manifest.ChecksumSha256,
-            manifest.ByteLength, DateTimeOffset.UnixEpoch, "v1");
+            "v1", manifest.IdempotencyKey, Guid.NewGuid(), manifest.Descriptor.Artifact.ChecksumSha256,
+            manifest.Descriptor.Layout.ByteLength, DateTimeOffset.UnixEpoch, "v1");
         using var client = new HttpClient(new ResponseHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(JsonSerializer.Serialize(acknowledgement), Encoding.UTF8, "application/json")
@@ -264,30 +262,29 @@ public sealed class ArtifactUploadClientTests
     private static ArtifactUploadClient CreateUploadClient(HttpClient client)
         => new(new TestHttpClientFactory(client), Options.Create(new CameraAgentHostOptions()), TimeProvider.System);
 
-    private static ArtifactUploadManifest CreateManifest(byte[] payload)
-        => new(
-            "v1", "agent", Guid.NewGuid(), Guid.NewGuid(), FrameArtifactRole.Raw,
-            "application/octet-stream", payload.LongLength,
-            Convert.ToHexString(SHA256.HashData(payload)), DateTimeOffset.UnixEpoch,
-            "raw-v1", "payload.bin");
+    private static ArtifactManifestV2 CreateManifest(byte[] payload)
+    {
+        var manifest = Contracts.ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono8, payload.Length, 1, payload.Length, payload);
+        return manifest with { RelativeArtifactPath = "payload.bin" };
+    }
 
-    private static ArtifactOutboxRecord CreateRecord(ArtifactUploadManifest manifest)
+    private static ArtifactOutboxRecord CreateRecord(ArtifactManifestV2 manifest)
         => new(
             manifest.IdempotencyKey,
-            ArtifactOutboxManifestKind.LegacyV1,
-            JsonSerializer.SerializeToUtf8Bytes(manifest),
-            ArtifactManifestDocument.FromLegacy(manifest),
-            manifest.ArtifactId,
-            manifest.Role,
+            ArtifactOutboxManifestKind.ManifestV2,
+            CaptureContractJson.Serialize(manifest),
+            ArtifactManifestDocument.FromCurrent(manifest),
+            manifest.Descriptor.Artifact.ArtifactId,
+            manifest.Descriptor.Artifact.Role,
             manifest.RelativeArtifactPath,
-            manifest.ChecksumSha256,
-            manifest.ByteLength,
-            manifest.MediaType,
+            manifest.Descriptor.Artifact.ChecksumSha256,
+            manifest.Descriptor.Layout.ByteLength,
+            manifest.Descriptor.Artifact.MediaType,
             ArtifactOutboxStatus.Pending,
             0,
             DateTimeOffset.UnixEpoch,
             DateTimeOffset.UnixEpoch,
-            null,
             null,
             null,
             null,

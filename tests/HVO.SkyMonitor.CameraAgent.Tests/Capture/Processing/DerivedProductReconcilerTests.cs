@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -10,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Data.Sqlite;
+using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -87,6 +89,53 @@ public sealed class DerivedProductReconcilerTests
             Assert.IsFalse(File.Exists(payload));
             Assert.AreEqual(1, Directory.EnumerateFiles(
                 Path.Combine(root, "processing-quarantine"), "orphan.json", SearchOption.AllDirectories).Count());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task RunAsync_CurrentManifestPublishedBeforeNodeCommitSurvivesRestartForDeterministicRetry()
+    {
+        var root = CreateRoot();
+        try
+        {
+            byte[] payload = [1, 2, 3, 4];
+            var template = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono8, payload.Length, 1, payload.Length, payload);
+            var relativePayloadPath = $"derived/2026/08/25/Calibrated/{template.Descriptor.Artifact.ArtifactId:N}.bin";
+            var manifest = template with
+            {
+                RelativeArtifactPath = relativePayloadPath,
+                ProducerStepId = "normalize"
+            };
+            var payloadPath = Path.Combine(root, relativePayloadPath.Replace('/', Path.DirectorySeparatorChar));
+            var sidecarPath = Path.ChangeExtension(payloadPath, ".json");
+            Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+            await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(sidecarPath, CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+
+            using (var store = await CreateStoreAsync(root).ConfigureAwait(false))
+            {
+                var first = await new DerivedProductReconciler(root, store)
+                    .RunAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(1, first.Recoverable);
+                Assert.AreEqual(0, first.Quarantined);
+            }
+
+            using (var restartedStore = await CreateStoreAsync(root).ConfigureAwait(false))
+            {
+                var restarted = await new DerivedProductReconciler(root, restartedStore)
+                    .RunAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(1, restarted.Recoverable);
+                Assert.AreEqual(0, restarted.Quarantined);
+            }
+            CollectionAssert.AreEqual(payload, await File.ReadAllBytesAsync(payloadPath).ConfigureAwait(false));
+            Assert.IsTrue(CaptureContractJson.ParseManifest(
+                await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false)).IsValid);
         }
         finally
         {
@@ -225,39 +274,6 @@ public sealed class DerivedProductReconcilerTests
             Assert.HasCount(1, actionable.Items);
             Assert.HasCount(4096, firstOrphans.Items);
             Assert.HasCount(3, remainingOrphans.Items);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [TestMethod]
-    [TestCategory("Unit")]
-    public async Task LegacyCursorIgnoresModernPrefixBeforePageLimit()
-    {
-        var root = CreateRoot();
-        try
-        {
-            var derived = Path.Combine(root, "derived");
-            Directory.CreateDirectory(derived);
-            for (var index = 0; index < 20; index++)
-                await File.WriteAllTextAsync(Path.Combine(derived, $"a-{index:D2}.manifest.json"), "{}").ConfigureAwait(false);
-            var payload = Path.Combine(derived, "z-legacy.bin");
-            var sidecar = Path.Combine(derived, "z-legacy.json");
-            await File.WriteAllTextAsync(payload, "payload").ConfigureAwait(false);
-            await File.WriteAllTextAsync(sidecar, "{}").ConfigureAwait(false);
-            using var store = await CreateStoreAsync(root).ConfigureAwait(false);
-            var reconciler = new DerivedProductReconciler(root, store,
-                new DerivedProductLifecycleOptions { ReconciliationBatchSize = 16 });
-
-            await reconciler.RunAsync(CancellationToken.None).ConfigureAwait(false);
-
-            var orphans = await store.ReadOrphanLifecyclePageAsync(null, 64, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsTrue(orphans.Items.Any(item => item.OperationId.StartsWith("orphan:legacy-malformed:", StringComparison.Ordinal)));
-            Assert.IsTrue(File.Exists(payload));
-            Assert.IsTrue(File.Exists(sidecar));
-            Assert.IsNull(await store.ReadFileCursorAsync("legacy", CancellationToken.None).ConfigureAwait(false));
         }
         finally
         {

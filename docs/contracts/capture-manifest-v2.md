@@ -4,24 +4,19 @@
 reconstruct immutable capture evidence. The contracts contain no persistence,
 HTTP, image-processing, camera-SDK, or host orchestration behavior.
 
-## Compatibility
+## Supported Schema
 
-`ArtifactUploadManifest` remains the shipped `v1` upload contract and retains
-its existing validation and idempotency semantics. `CaptureContractJson` parses
-a valid v1 document as `LegacyIncomplete`; its absent layout, timing, profile,
-variant, and lineage facts remain absent. It does not derive them from current
-registration or rig state.
-
-`ArtifactManifestV2` uses schema version `v2` and contains one
-`ReconstructionDescriptor`. Unknown schema versions and malformed v2 documents
-return stable validation results. Existing unversioned local sidecars and
-history remain readable and are not rewritten. A v2 sidecar is never treated as
-legacy when v2 validation fails.
+`ArtifactManifestV2` is the only capture upload and local frame-sidecar contract.
+It uses schema version `v2` and contains one `ReconstructionDescriptor`. Unknown
+schema versions, including retired v1 upload documents, and malformed v2
+documents return stable validation results and are rejected before persistence.
+Local frame storage reads and writes only versioned v2 sidecars. A malformed or
+unsupported sidecar is never reinterpreted as an unversioned document.
 
 `descriptor.cycleEvidence` and `descriptor.timing.setpointAppliedUtc` are
-additive optional v2 fields. Their absence means the legacy capture did not
+additive optional v2 fields. Their absence means the capture did not
 record those facts; readers do not infer them from current configuration. Null
-optional evidence is omitted during serialization, preserving legacy bytes and
+optional evidence is omitted during serialization, preserving existing bytes and
 descriptor hashes.
 
 `descriptor.location` is also additive and optional. It records the stable
@@ -30,7 +25,7 @@ effective interval used for the capture. It omits latitude, longitude,
 elevation, timezone, and the coordinate-derived canonical hash because the
 complete immutable snapshot is protected in CameraAgent local state. A
 coordinate-free hash of ID and version is used only as a processing
-compatibility axis. Absence means location is unknown; legacy captures are
+compatibility axis. Absence means location is unknown; existing captures are
 never assigned the current location.
 
 `descriptor.layout.readout`, `storedCodeTransform`, and `levelCodeSpace` are
@@ -38,11 +33,10 @@ additive optional v2 fields. Readout records native dimensions, native-coordinat
 ROI, integer bins, a versioned bin algorithm, and CFA origin. The stored-code
 transform distinguishes identity, right-aligned, left-shifted, and full-range
 scaled samples; level code space states whether black and white levels use
-native-sample or stored-container units. A full-depth legacy byte-aligned layout
+native-sample or stored-container units. A full-depth existing byte-aligned layout
 has unambiguous identity/stored-container defaults without changing its JSON.
-A lower-depth layout that omits either fact remains byte-valid but parses as
-`LegacyIncomplete`; readers must not infer the missing facts from free-form
-metadata.
+A lower-depth layout that omits either fact is rejected as ambiguous; readers
+must not infer the missing facts from free-form metadata.
 
 All snapshot longitude values use decimal degrees east-positive in `[-180, 180]`;
 west longitude is negative. The deployment-location version and canonical hash

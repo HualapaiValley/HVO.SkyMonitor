@@ -999,7 +999,9 @@ public sealed class DurableCaptureDistributionPerformanceTests
             Assert.HasCount(W3PayloadCount, payloadFiles);
             Assert.AreEqual(W3PayloadBytes, payloadBytesOnDisk);
             await ValidateLivePayloadEvidenceAsync(root, input, configuration).ConfigureAwait(false);
-            Assert.AreEqual(W3PayloadCount, outbox.List(root, W3PayloadCount).Count);
+            Assert.HasCount(
+                W3PayloadCount,
+                await outbox.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false));
             var firstHalfRssMedian = Median(rssSamples.Take(rssSamples.Count / 2));
             var finalHalfRssMedian = Median(rssSamples.Skip(rssSamples.Count / 2));
             Assert.IsLessThanOrEqualTo(firstHalfRssMedian + 64L * 1024 * 1024, finalHalfRssMedian);

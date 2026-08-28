@@ -8,7 +8,6 @@ namespace HVO.SkyMonitor.AgentCore;
 public static class CaptureContractJson
 {
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
-    private static readonly JsonSerializerOptions LegacySerializerOptions = CreateLegacySerializerOptions();
 
     public static byte[] Serialize(ArtifactManifestV2 manifest)
     {
@@ -30,7 +29,6 @@ public static class CaptureContractJson
 
             return schemaElement.GetString() switch
             {
-                ArtifactUploadManifest.CurrentSchemaVersion => ParseLegacy(utf8Json.Span),
                 ArtifactManifestV2.CurrentSchemaVersion => ParseCurrent(utf8Json.Span),
                 _ => Failure(CaptureContractReasonCodes.UnsupportedSchema, "schemaVersion")
             };
@@ -82,24 +80,6 @@ public static class CaptureContractJson
         var canonical = CanonicalizeDescriptor(descriptor);
         return Convert.ToHexString(SHA256.HashData(
             JsonSerializer.SerializeToUtf8Bytes(canonical, SerializerOptions)));
-    }
-
-    private static ArtifactManifestParseResult ParseLegacy(ReadOnlySpan<byte> json)
-    {
-        var manifest = JsonSerializer.Deserialize<ArtifactUploadManifest>(json, LegacySerializerOptions);
-        if (manifest is null)
-        {
-            return Failure(CaptureContractReasonCodes.InvalidJson, "$");
-        }
-        try
-        {
-            manifest.Validate();
-            return new(ArtifactManifestDocument.FromLegacy(manifest), CaptureContractValidationResult.Success);
-        }
-        catch (ArgumentException)
-        {
-            return Failure(CaptureContractReasonCodes.InvalidIdentity, "$");
-        }
     }
 
     private static ArtifactManifestParseResult ParseCurrent(ReadOnlySpan<byte> json)
@@ -172,13 +152,6 @@ public static class CaptureContractJson
             WriteIndented = false
         };
         options.Converters.Add(new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false));
-        return options;
-    }
-
-    private static JsonSerializerOptions CreateLegacySerializerOptions()
-    {
-        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-        options.Converters.Add(new JsonStringEnumConverter());
         return options;
     }
 
