@@ -31,7 +31,6 @@ internal sealed record DurableProcessingOutput(
     ProcessingCompatibilityIdentity Compatibility,
     TimeSpan TotalIntegration,
     long CaptureSequence,
-    string? LegacyRecipeVersion,
     ProcessingProductKind? ProductKind = null,
     string? ProductSchemaVersion = null,
     string? ContentIdentitySha256 = null,
@@ -177,20 +176,25 @@ internal sealed record CaptureProcessingOperationalState(
 
 internal sealed class SqliteCaptureProcessingStore : IDisposable
 {
+    internal const int CurrentSchemaVersion = 5;
     internal const int MaximumGalleryInputsPerNode = 8;
     internal const int MaximumProductQueryCount = 128;
     internal const int MaximumOutputSourceCount = LayeredPresentationJson.MaximumSourceArtifactCount;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
+        new(CreateCanonicalSchemaDefinitions);
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
     private readonly TimeProvider _timeProvider;
+    private readonly ICaptureProcessingFaultInjector _faultInjector;
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
     private bool _initialized;
 
     public SqliteCaptureProcessingStore(
         IOptions<CameraAgentHostOptions> options,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ICaptureProcessingFaultInjector? faultInjector = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var values = options.Value;
@@ -198,9 +202,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
         _busyTimeoutSeconds = values.RawIngressSqliteBusyTimeoutSeconds;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _faultInjector = faultInjector ?? NullCaptureProcessingFaultInjector.Instance;
     }
 
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The migration statement is selected only from internal constants.")]
     internal async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _initialized))
@@ -214,87 +218,57 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             {
                 return;
             }
-            Directory.CreateDirectory(Path.GetDirectoryName(_databasePath)!);
-            EnsureDatabaseFilesArePhysical();
-            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            EnsureDatabaseFilesArePhysical();
-            using (var versionCommand = connection.CreateCommand())
+            if (!File.Exists(_databasePath))
             {
-                versionCommand.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'capture_processing_schema';";
-                var schemaExists = Convert.ToInt32(
-                    await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                    System.Globalization.CultureInfo.InvariantCulture) == 1;
-                var version = 0;
-                if (schemaExists)
-                {
-                    versionCommand.CommandText = "SELECT COALESCE((SELECT version FROM capture_processing_schema WHERE schema_key = 1), 0);";
-                    version = Convert.ToInt32(
-                        await versionCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                        System.Globalization.CultureInfo.InvariantCulture);
-                }
-                if (version > 5)
-                {
-                    throw new InvalidOperationException($"Capture processing schema {version} is newer than supported schema 5.");
-                }
-                if (version < 5)
-                {
+                throw new InvalidOperationException(
+                    "Raw ingress schema 11 must be initialized before capture processing schema 5.");
+            }
+            EnsureDatabaseFilesArePhysical();
+            var inspection = await InspectExistingDatabaseAsync(cancellationToken).ConfigureAwait(false);
+            if (inspection.RawIngressVersion != SqliteRawCaptureJournal.CurrentSchemaVersion)
+            {
+                throw new InvalidOperationException(
+                    $"Raw ingress schema {inspection.RawIngressVersion} is unsupported; schema {SqliteRawCaptureJournal.CurrentSchemaVersion} must initialize before capture processing.");
+            }
+            var initializeSchema = inspection.ProcessingObjectCount == 0;
+            if (!initializeSchema && inspection.ProcessingVersion != CurrentSchemaVersion)
+            {
+                var version = inspection.ProcessingVersion ?? 0;
+                var relationship = version > CurrentSchemaVersion ? "newer than supported" : "unsupported";
+                throw new InvalidOperationException(
+                    $"Capture processing schema {version} is {relationship}; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
+            }
+            using var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
+            if (initializeSchema)
+            {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
-                    using var transaction = connection.BeginTransaction(deferred: false);
+                using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
-                    using var command = connection.CreateCommand();
-                    command.Transaction = transaction;
-                    command.CommandText = version switch
-                    {
-                        0 => SchemaSql,
-                        1 => string.Concat(ProcessingV2MigrationSql, ProcessingV3MigrationSql, ProcessingV4MigrationSql, ProcessingV5MigrationSql),
-                        2 => string.Concat(ProcessingV3MigrationSql, ProcessingV4MigrationSql, ProcessingV5MigrationSql),
-                        3 => string.Concat(ProcessingV4MigrationSql, ProcessingV5MigrationSql),
-                        4 => ProcessingV5MigrationSql,
-                        _ => throw new InvalidOperationException($"Unsupported capture processing schema {version}.")
-                    };
-                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                    if (version is 1 or 2 or 3)
-                    {
-                        await BackfillV4FactsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-                    }
-                    using (var finalizeVersion = connection.CreateCommand())
-                    {
-                        finalizeVersion.Transaction = transaction;
-                        finalizeVersion.CommandText = FinalizeV5VersionSql;
-                        await finalizeVersion.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                    }
-                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                _faultInjector.Inject(CaptureProcessingFaultPoint.AfterSchemaTransactionBegan, "schema");
+                var writableRawVersion = await ExecuteScalarLongAsync(
+                    connection, "PRAGMA user_version;", cancellationToken, transaction).ConfigureAwait(false);
+                var writableProcessingObjectCount = await CountProcessingSchemaObjectsAsync(
+                    connection, cancellationToken, transaction).ConfigureAwait(false);
+                if (writableRawVersion != SqliteRawCaptureJournal.CurrentSchemaVersion || writableProcessingObjectCount != 0)
+                {
+                    throw new InvalidOperationException(
+                        "Capture processing schema changed during initialization; restart after completing an explicit state-disposition procedure.");
                 }
+                await SqliteRawCaptureJournal.ValidateCanonicalSchemaDefinitionsAsync(
+                    connection, transaction, cancellationToken).ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = SchemaSql;
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+                _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeSchemaCommit, "schema");
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
-            using var integrity = connection.CreateCommand();
-            integrity.CommandText = "PRAGMA integrity_check;";
-            var result = Convert.ToString(
-                await integrity.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture);
-            if (!string.Equals(result, "ok", StringComparison.Ordinal))
+            else
             {
-                throw new InvalidDataException("Capture processing SQLite integrity check failed.");
+                await ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
             }
-            using var schemaObjects = connection.CreateCommand();
-            schemaObjects.CommandText = """
-                SELECT COUNT(*) FROM sqlite_master WHERE name IN (
-                    'capture_processing_schema', 'processing_nodes', 'processing_outputs',
-                    'ix_processing_outputs_capture_node', 'ix_processing_outputs_window',
-                     'ix_processing_nodes_status', 'ix_processing_nodes_recipe',
-                     'ix_processing_outputs_role', 'ix_processing_outputs_recipe',
-                     'processing_node_inputs', 'ix_processing_node_inputs_artifact',
-                     'processing_output_sources', 'ix_processing_output_sources_artifact',
-                     'ix_processing_outputs_product', 'processing_lifecycle_operations',
-                     'ix_processing_outputs_retention_available', 'ix_processing_outputs_retention_unavailable',
-                     'processing_reconciliation_state', 'processing_output_diagnostics');
-                """;
-            if (Convert.ToInt32(
-                await schemaObjects.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture) != 19)
-            {
-                throw new InvalidDataException("Capture processing SQLite schema is incomplete or drifted.");
-            }
-            await VerifyV5SchemaDefinitionsAsync(connection, cancellationToken).ConfigureAwait(false);
+            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
             Volatile.Write(ref _initialized, true);
         }
         finally
@@ -593,7 +567,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.CommandText = """
             SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                    descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
-                   algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version,
+                   algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
                    product_kind, product_schema_version, content_identity_sha256,
                    availability_state, availability_reason
             FROM processing_outputs
@@ -1528,7 +1502,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             SELECT output.output_identity_sha256, output.artifact_id, output.payload_relative_path, output.sidecar_relative_path,
                    output.descriptor_json, output.capture_id, output.agent_id, output.node_id, output.role, output.variant,
                    output.recipe_identity_sha256, output.algorithms_json, output.compatibility_json, output.total_integration_ticks,
-                    output.capture_sequence, output.legacy_recipe_version, output.product_kind,
+                     output.capture_sequence, output.product_kind,
                      output.product_schema_version, output.content_identity_sha256,
                      output.availability_state, output.availability_reason
             FROM processing_outputs AS output
@@ -1610,7 +1584,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                     SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                            descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
                            algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                             legacy_recipe_version, product_kind, product_schema_version, content_identity_sha256,
+                              product_kind, product_schema_version, content_identity_sha256,
                              availability_state, availability_reason,
                            ROW_NUMBER() OVER (
                                PARTITION BY capture_id ORDER BY node_id, output_identity_sha256) AS gallery_rank
@@ -1619,7 +1593,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 )
                 SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                        descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
-                        algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version,
+                         algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
                          product_kind, product_schema_version, content_identity_sha256,
                          availability_state, availability_reason
                 FROM ranked_outputs
@@ -1989,13 +1963,13 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
                 payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
                 algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                legacy_recipe_version, committed_unix_ms, product_kind, product_schema_version,
+                committed_unix_ms, product_kind, product_schema_version,
                 content_identity_sha256)
             VALUES (
                 $output_identity_sha256, $capture_id, $agent_id, $node_id, $artifact_id, $role, $variant,
                 $payload_relative_path, $sidecar_relative_path, $descriptor_json, $recipe_identity_sha256,
                 $algorithms_json, $compatibility_json, $total_integration_ticks, $capture_sequence,
-                $legacy_recipe_version, $committed_unix_ms, $product_kind, $product_schema_version,
+                $committed_unix_ms, $product_kind, $product_schema_version,
                 $content_identity_sha256)
             ON CONFLICT(output_identity_sha256) DO NOTHING;
             """;
@@ -2015,9 +1989,9 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         verify.CommandText = """
             SELECT capture_id, node_id, artifact_id, payload_relative_path, sidecar_relative_path,
                    descriptor_json, recipe_identity_sha256, algorithms_json, compatibility_json,
-                   total_integration_ticks, capture_sequence, legacy_recipe_version,
-                     product_kind, product_schema_version, content_identity_sha256,
-                     availability_state, availability_reason
+                   total_integration_ticks, capture_sequence, product_kind,
+                   product_schema_version, content_identity_sha256,
+                   availability_state, availability_reason
             FROM processing_outputs WHERE output_identity_sha256 = $output_identity_sha256;
             """;
         verify.Parameters.AddWithValue("$output_identity_sha256", output.OutputIdentitySha256);
@@ -2029,15 +2003,12 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         var existingDescriptorJson = await reader.GetFieldValueAsync<byte[]>(5, cancellationToken).ConfigureAwait(false);
         var existingAlgorithmsJson = await reader.GetFieldValueAsync<byte[]>(7, cancellationToken).ConfigureAwait(false);
         var existingCompatibilityJson = await reader.GetFieldValueAsync<byte[]>(8, cancellationToken).ConfigureAwait(false);
-        var existingLegacyRecipeVersion = await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false)
-            ? null
-            : reader.GetString(11);
-        var existingProductKind = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false)
+        var existingProductKind = await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(11);
+        var existingProductSchemaVersion = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false)
             ? null : reader.GetString(12);
-        var existingProductSchemaVersion = await reader.IsDBNullAsync(13, cancellationToken).ConfigureAwait(false)
+        var existingContentIdentity = await reader.IsDBNullAsync(13, cancellationToken).ConfigureAwait(false)
             ? null : reader.GetString(13);
-        var existingContentIdentity = await reader.IsDBNullAsync(14, cancellationToken).ConfigureAwait(false)
-            ? null : reader.GetString(14);
         if (!string.Equals(reader.GetString(0), captureId.ToString("N"), StringComparison.Ordinal) ||
             !string.Equals(reader.GetString(1), nodeId, StringComparison.Ordinal) ||
             !string.Equals(reader.GetString(2), output.ArtifactId.ToString("N"), StringComparison.Ordinal) ||
@@ -2049,7 +2020,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             !existingCompatibilityJson.AsSpan().SequenceEqual(compatibilityJson) ||
             reader.GetInt64(9) != output.TotalIntegration.Ticks ||
             reader.GetInt64(10) != output.CaptureSequence ||
-            !string.Equals(existingLegacyRecipeVersion, output.LegacyRecipeVersion, StringComparison.Ordinal) ||
             !string.Equals(existingProductKind, output.ProductKind?.ToString(), StringComparison.Ordinal) ||
             !string.Equals(existingProductSchemaVersion, output.ProductSchemaVersion, StringComparison.Ordinal) ||
             !string.Equals(existingContentIdentity, output.ContentIdentitySha256, StringComparison.Ordinal))
@@ -2121,7 +2091,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$compatibility_json", compatibilityJson);
         command.Parameters.AddWithValue("$total_integration_ticks", output.TotalIntegration.Ticks);
         command.Parameters.AddWithValue("$capture_sequence", output.CaptureSequence);
-        command.Parameters.AddWithValue("$legacy_recipe_version", (object?)output.LegacyRecipeVersion ?? DBNull.Value);
         command.Parameters.AddWithValue("$committed_unix_ms", committedUnixMilliseconds);
         command.Parameters.AddWithValue("$product_kind", output.ProductKind?.ToString() ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$product_schema_version", (object?)output.ProductSchemaVersion ?? DBNull.Value);
@@ -2138,7 +2107,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         command.CommandText = """
             SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                    descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
-                    algorithms_json, compatibility_json, total_integration_ticks, capture_sequence, legacy_recipe_version,
+                     algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
                      product_kind, product_schema_version, content_identity_sha256,
                      availability_state, availability_reason
             FROM processing_outputs
@@ -2225,15 +2194,15 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         var recipeIdentity = reader.GetString(10);
         var totalIntegration = TimeSpan.FromTicks(reader.GetInt64(13));
         var captureSequence = reader.GetInt64(14);
-        ProcessingProductKind? productKind = await reader.IsDBNullAsync(16, cancellationToken).ConfigureAwait(false)
-            ? null : Enum.Parse<ProcessingProductKind>(reader.GetString(16));
-        var productSchemaVersion = await reader.IsDBNullAsync(17, cancellationToken).ConfigureAwait(false)
+        ProcessingProductKind? productKind = await reader.IsDBNullAsync(15, cancellationToken).ConfigureAwait(false)
+            ? null : Enum.Parse<ProcessingProductKind>(reader.GetString(15));
+        var productSchemaVersion = await reader.IsDBNullAsync(16, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(16);
+        var contentIdentity = await reader.IsDBNullAsync(17, cancellationToken).ConfigureAwait(false)
             ? null : reader.GetString(17);
-        var contentIdentity = await reader.IsDBNullAsync(18, cancellationToken).ConfigureAwait(false)
-            ? null : reader.GetString(18);
-        var availabilityState = reader.GetString(19);
-        var availabilityReason = await reader.IsDBNullAsync(20, cancellationToken).ConfigureAwait(false)
-            ? null : reader.GetString(20);
+        var availabilityState = reader.GetString(18);
+        var availabilityReason = await reader.IsDBNullAsync(19, cancellationToken).ConfigureAwait(false)
+            ? null : reader.GetString(19);
         var typedManifest = productManifest as DurableTypedMetadataProductManifestV3;
         var sourceMatchesManifest = productManifest is null ||
             (productManifest.ProducerStepId is { } producerStepId
@@ -2275,7 +2244,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                 compatibility,
                 totalIntegration,
                 captureSequence,
-                await reader.IsDBNullAsync(15, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(15),
                 productKind,
                 productSchemaVersion,
                  contentIdentity,
@@ -2283,236 +2251,250 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                  availabilityReason));
     }
 
-    private static async ValueTask BackfillV4FactsAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
+    private sealed record ProcessingSchemaInspection(
+        long RawIngressVersion,
+        long ProcessingObjectCount,
+        int? ProcessingVersion);
+
+    private async ValueTask<ProcessingSchemaInspection> InspectExistingDatabaseAsync(
         CancellationToken cancellationToken)
     {
-        var rows = new List<LegacyOutputRow>();
-        using (var command = connection.CreateCommand())
+        EnsureDatabaseFilesArePhysical();
+        var recoveryFiles = new[]
         {
-            command.Transaction = transaction;
-            command.CommandText = """
-                SELECT output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
-                       payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256
-                FROM processing_outputs
-                ORDER BY output_identity_sha256;
-                """;
-            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            string.Concat(_databasePath, "-wal"),
+            string.Concat(_databasePath, "-journal")
+        }.Where(File.Exists).ToArray();
+        var hasRecoveryState = recoveryFiles.Length > 0 || File.Exists(string.Concat(_databasePath, "-shm"));
+        DirectoryInfo? snapshotRoot = null;
+        try
+        {
+            var inspectionPath = _databasePath;
+            var immutable = !hasRecoveryState;
+            if (!immutable)
             {
-                rows.Add(new LegacyOutputRow(
-                    reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
-                    reader.GetString(4), reader.GetString(5), reader.GetString(6), reader.GetString(7),
-                    reader.GetString(8), await reader.GetFieldValueAsync<byte[]>(9, cancellationToken).ConfigureAwait(false),
-                    reader.GetString(10)));
+                snapshotRoot = Directory.CreateTempSubdirectory("hvo-processing-inspection-");
+                inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(_databasePath));
+                File.Copy(_databasePath, inspectionPath);
+                foreach (var recoveryFile in recoveryFiles)
+                {
+                    File.Copy(
+                        recoveryFile,
+                        string.Concat(inspectionPath, recoveryFile.AsSpan(_databasePath.Length)));
+                }
             }
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = immutable
+                    ? string.Concat(new Uri(inspectionPath).AbsoluteUri, "?immutable=1")
+                    : inspectionPath,
+                Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
+                Pooling = false,
+                DefaultTimeout = _busyTimeoutSeconds
+            }.ToString());
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            var rawVersion = await ExecuteScalarLongAsync(
+                connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
+            if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
+            {
+                await SqliteRawCaptureJournal.ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+            }
+            var processingObjectCount = await CountProcessingSchemaObjectsAsync(
+                connection, cancellationToken).ConfigureAwait(false);
+            var processingVersion = processingObjectCount == 0
+                ? null
+                : await ReadProcessingVersionAsync(connection, cancellationToken).ConfigureAwait(false);
+            if (processingVersion == CurrentSchemaVersion)
+            {
+                await ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+            }
+            return new(rawVersion, processingObjectCount, processingVersion);
         }
-
-        foreach (var row in rows)
+        catch (SqliteException exception)
         {
-            ArtifactDescriptor artifact;
-            CaptureIdentityDescriptor capture;
-            ProcessingProductKind? kind = null;
-            string? schemaVersion = null;
-            string? contentIdentity = null;
-            string expectedOutputIdentity;
-            string expectedPayloadPath;
-            string expectedSidecarPath;
-            string expectedNodeId;
-            try
-            {
-                using var document = JsonDocument.Parse(row.Evidence);
-                if (!document.RootElement.TryGetProperty("schemaVersion", out var schemaElement) ||
-                    schemaElement.ValueKind != JsonValueKind.String)
-                    throw new InvalidDataException("Legacy processing output evidence has no schema version.");
-                var evidenceSchema = schemaElement.GetString();
-                if (evidenceSchema is DurableProcessingProductManifestV1.CurrentSchemaVersion or
-                    DurableEncodedProductManifestV2.CurrentSchemaVersion or
-                    DurableTypedMetadataProductManifestV3.CurrentSchemaVersion)
-                {
-                    var manifest = DurableProcessingProductManifestJson.Parse(row.Evidence);
-                    artifact = manifest.Artifact;
-                    capture = manifest.Capture;
-                    expectedOutputIdentity = manifest.OutputIdentitySha256;
-                    expectedPayloadPath = manifest.RelativeArtifactPath;
-                    expectedSidecarPath = Path.ChangeExtension(expectedPayloadPath, ".manifest.json");
-                    expectedNodeId = manifest.ProducerStepId ?? artifact.SourceId;
-                    if (manifest is DurableTypedMetadataProductManifestV3 typed)
-                    {
-                        kind = typed.Kind;
-                        schemaVersion = typed.ProductSchemaVersion;
-                        contentIdentity = typed.ContentIdentitySha256;
-                    }
-                }
-                else
-                {
-                    var parsed = CaptureContractJson.ParseManifest(row.Evidence);
-                    if (!parsed.IsValid || parsed.Document?.Manifest?.Descriptor is not { } descriptor)
-                        throw new InvalidDataException("Legacy processing output descriptor is invalid.");
-                    artifact = descriptor.Artifact;
-                    capture = descriptor.Capture;
-                    expectedOutputIdentity = ProcessingIdentity.CreateOutputIdentity(
-                        artifact.Role, artifact.Variant,
-                        ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256,
-                        artifact.SourceArtifactIds);
-                    expectedPayloadPath = parsed.Document.Manifest.RelativeArtifactPath;
-                    expectedSidecarPath = Path.ChangeExtension(expectedPayloadPath, ".json");
-                    expectedNodeId = parsed.Document.Manifest.ProducerStepId ?? artifact.SourceId;
-                }
-            }
-            catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException)
-            {
-                throw new InvalidDataException("Legacy processing output evidence is malformed.", exception);
-            }
-
-            var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256;
-            if (!IsCanonicalRelativePath(row.PayloadRelativePath) ||
-                !IsCanonicalRelativePath(row.SidecarRelativePath) ||
-                !string.Equals(row.OutputIdentity, expectedOutputIdentity, StringComparison.Ordinal) ||
-                !string.Equals(row.CaptureId, capture.CaptureId.ToString("N"), StringComparison.Ordinal) ||
-                !string.Equals(row.AgentId, capture.AgentId, StringComparison.Ordinal) ||
-                !string.Equals(row.NodeId, expectedNodeId, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(row.ArtifactId, artifact.ArtifactId.ToString("N"), StringComparison.Ordinal) ||
-                !string.Equals(row.Role, artifact.Role.ToString(), StringComparison.Ordinal) ||
-                !string.Equals(row.Variant, artifact.Variant, StringComparison.Ordinal) ||
-                !string.Equals(row.RecipeIdentitySha256, recipeIdentity, StringComparison.Ordinal) ||
-                !string.Equals(row.PayloadRelativePath, expectedPayloadPath, StringComparison.Ordinal) ||
-                !string.Equals(row.SidecarRelativePath, expectedSidecarPath, StringComparison.Ordinal) ||
-                artifact.SourceArtifactIds.Count > MaximumOutputSourceCount)
-                throw new InvalidDataException("Legacy processing output evidence conflicts with indexed identity facts.");
-
-            using (var update = connection.CreateCommand())
-            {
-                update.Transaction = transaction;
-                update.CommandText = """
-                    UPDATE processing_outputs
-                    SET product_kind = $kind, product_schema_version = $schema,
-                        content_identity_sha256 = $content
-                    WHERE output_identity_sha256 = $output;
-                    """;
-                update.Parameters.AddWithValue("$kind", kind?.ToString() ?? (object)DBNull.Value);
-                update.Parameters.AddWithValue("$schema", (object?)schemaVersion ?? DBNull.Value);
-                update.Parameters.AddWithValue("$content", (object?)contentIdentity ?? DBNull.Value);
-                update.Parameters.AddWithValue("$output", row.OutputIdentity);
-                await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
-            for (var ordinal = 0; ordinal < artifact.SourceArtifactIds.Count; ordinal++)
-            {
-                using var source = connection.CreateCommand();
-                source.Transaction = transaction;
-                source.CommandText = """
-                    INSERT INTO processing_output_sources(output_identity_sha256, source_ordinal, source_artifact_id)
-                    VALUES($output, $ordinal, $artifact);
-                    """;
-                source.Parameters.AddWithValue("$output", row.OutputIdentity);
-                source.Parameters.AddWithValue("$ordinal", ordinal);
-                source.Parameters.AddWithValue("$artifact", artifact.SourceArtifactIds[ordinal].ToString("N"));
-                await source.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
+            throw new InvalidDataException("Capture processing SQLite schema inspection failed.", exception);
+        }
+        finally
+        {
+            snapshotRoot?.Delete(recursive: true);
         }
     }
 
-    private static async ValueTask VerifyV5SchemaDefinitionsAsync(
+    private static async ValueTask ValidateSchemaAsync(
         SqliteConnection connection,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
     {
+        var rawVersion = await ExecuteScalarLongAsync(
+            connection, "PRAGMA user_version;", cancellationToken, transaction).ConfigureAwait(false);
+        if (rawVersion != SqliteRawCaptureJournal.CurrentSchemaVersion)
+        {
+            throw new InvalidDataException("Capture processing SQLite does not share canonical raw ingress schema 11.");
+        }
+        var integrity = await ExecuteScalarStringAsync(
+            connection, "PRAGMA integrity_check;", cancellationToken, transaction).ConfigureAwait(false);
+        if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Capture processing SQLite integrity check failed.");
+        }
+        if (await ExecuteScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken, transaction).ConfigureAwait(false) != 0)
+        {
+            throw new InvalidDataException("Capture processing SQLite foreign-key validation failed.");
+        }
+        if (await ExecuteScalarLongAsync(
+                connection,
+                $"SELECT COUNT(*) FROM capture_processing_schema WHERE schema_key = 1 AND version = {CurrentSchemaVersion};",
+                cancellationToken,
+                transaction).ConfigureAwait(false) != 1 ||
+            await ExecuteScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM capture_processing_schema;", cancellationToken, transaction).ConfigureAwait(false) != 1)
+        {
+            throw new InvalidDataException("Capture processing SQLite schema marker is invalid.");
+        }
+        var actual = await ReadSchemaDefinitionsAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+        if (CanonicalSchemaDefinitions.Value.Any(expected =>
+                !actual.TryGetValue(expected.Key, out var definition) ||
+                !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
+            actual.Keys.Any(name => !CanonicalSchemaDefinitions.Value.ContainsKey(name)))
+        {
+            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 5 definition.");
+        }
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the internal constant schema statement is executed.")]
+    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
         using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT name, sql FROM sqlite_master
-            WHERE type = 'table' AND name IN ('processing_outputs', 'processing_output_sources', 'processing_lifecycle_operations')
-            ORDER BY name;
-            """;
-        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        command.CommandText = SchemaSql;
+        command.ExecuteNonQuery();
+        return ReadSchemaDefinitions(connection);
+    }
+
+    private static async ValueTask<Dictionary<string, string>> ReadSchemaDefinitionsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
+    {
+        using var command = CreateSchemaDefinitionCommand(connection, transaction);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            definitions[reader.GetString(0)] = NormalizeSchemaSql(reader.GetString(1));
+            definitions.Add(reader.GetString(1), ReadSchemaDefinitionRow(reader));
         }
-        if (!definitions.TryGetValue("processing_outputs", out var outputs) ||
-             !outputs.Contains("check((product_kindisnullandproduct_schema_versionisnullandcontent_identity_sha256isnull)or(product_kindisnotnullandproduct_schema_versionisnotnullandcontent_identity_sha256isnotnull))", StringComparison.Ordinal) ||
-             !outputs.Contains("availability_statetextnotnulldefault'available'check(availability_statein('available','missing','quarantined'))", StringComparison.Ordinal) ||
-             !definitions.TryGetValue("processing_output_sources", out var sources) ||
-            !sources.Contains($"check(source_ordinal>=0andsource_ordinal<{MaximumOutputSourceCount})", StringComparison.Ordinal) ||
-            !sources.Contains("unique(output_identity_sha256,source_artifact_id)", StringComparison.Ordinal) ||
-             !sources.Contains("foreignkey(output_identity_sha256)referencesprocessing_outputs(output_identity_sha256)ondeletecascade", StringComparison.Ordinal) ||
-             !definitions.ContainsKey("processing_lifecycle_operations"))
-        {
-            throw new InvalidDataException("Capture processing SQLite schema definitions are drifted.");
-        }
-        await VerifyIndexDefinitionAsync(
-            connection,
-            "processing_outputs",
-            "ix_processing_outputs_product",
-            ["capture_id", "product_schema_version", "output_identity_sha256"],
-            cancellationToken).ConfigureAwait(false);
-        await VerifyIndexDefinitionAsync(
-            connection,
-            "processing_outputs",
-            "ix_processing_outputs_retention_available",
-            ["committed_unix_ms", "output_identity_sha256"],
-            cancellationToken).ConfigureAwait(false);
-        await VerifyIndexDefinitionAsync(
-            connection,
-            "processing_outputs",
-            "ix_processing_outputs_retention_unavailable",
-            ["unavailable_unix_ms", "output_identity_sha256"],
-            cancellationToken).ConfigureAwait(false);
-        await VerifyIndexDefinitionAsync(
-            connection,
-            "processing_output_sources",
-            "ix_processing_output_sources_artifact",
-            ["source_artifact_id", "output_identity_sha256"],
-            cancellationToken).ConfigureAwait(false);
+        return definitions;
     }
 
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Table and index names are fixed internal schema constants.")]
-    private static async ValueTask VerifyIndexDefinitionAsync(
+    private static Dictionary<string, string> ReadSchemaDefinitions(SqliteConnection connection)
+    {
+        using var command = CreateSchemaDefinitionCommand(connection, null);
+        using var reader = command.ExecuteReader();
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            definitions.Add(reader.GetString(1), ReadSchemaDefinitionRow(reader));
+        }
+        return definitions;
+    }
+
+    private static SqliteCommand CreateSchemaDefinitionCommand(
         SqliteConnection connection,
-        string tableName,
-        string indexName,
-        IReadOnlyList<string> expectedColumns,
+        SqliteTransaction? transaction)
+    {
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_schema
+            WHERE sql IS NOT NULL AND (
+                   name = 'capture_processing_schema'
+                OR name LIKE 'processing_%'
+                OR name LIKE 'ix_processing_%'
+                OR tbl_name IN (
+                    'capture_processing_schema', 'processing_nodes', 'processing_node_inputs',
+                    'processing_outputs', 'processing_output_sources', 'processing_lifecycle_operations',
+                    'processing_reconciliation_state', 'processing_output_diagnostics'))
+            ORDER BY type, name;
+            """;
+        return command;
+    }
+
+    private static string ReadSchemaDefinitionRow(SqliteDataReader reader)
+    {
+        var definition = new System.Text.StringBuilder();
+        foreach (var ordinal in new[] { 0, 2 })
+        {
+            var value = reader.GetString(ordinal);
+            definition.Append(value.Length).Append(':').Append(value);
+        }
+        var sql = SqliteRawCaptureJournal.NormalizeSchemaSql(reader.GetString(3));
+        definition.Append(sql.Length).Append(':').Append(sql);
+        return definition.ToString();
+    }
+
+    private static async ValueTask<long> CountProcessingSchemaObjectsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
+        => await ExecuteScalarLongAsync(connection, """
+            SELECT COUNT(*) FROM sqlite_schema
+            WHERE name = 'capture_processing_schema'
+               OR name LIKE 'processing_%'
+               OR name LIKE 'ix_processing_%';
+            """, cancellationToken, transaction).ConfigureAwait(false);
+
+    private static async ValueTask<int?> ReadProcessingVersionAsync(
+        SqliteConnection connection,
         CancellationToken cancellationToken)
     {
+        if (await ExecuteScalarLongAsync(
+                connection,
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'capture_processing_schema';",
+                cancellationToken).ConfigureAwait(false) != 1)
+        {
+            return null;
+        }
         using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA index_xinfo('{indexName}');";
-        var columns = new List<(string Name, bool Descending, string Collation)>();
-        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-        {
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                if (reader.GetBoolean(5))
-                {
-                    columns.Add((reader.GetString(2), reader.GetBoolean(3), reader.GetString(4)));
-                }
-            }
-        }
-        var expected = expectedColumns.Select(static column => (column, false, "BINARY")).ToArray();
-        if (!columns.SequenceEqual(expected))
-        {
-            throw new InvalidDataException($"Capture processing SQLite index '{indexName}' is drifted.");
-        }
-
-        command.CommandText = $"PRAGMA index_list('{tableName}');";
-        var found = false;
-        using var listReader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await listReader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (string.Equals(listReader.GetString(1), indexName, StringComparison.Ordinal))
-            {
-                found = listReader.GetInt64(2) == 0 &&
-                    string.Equals(listReader.GetString(3), "c", StringComparison.Ordinal);
-                break;
-            }
-        }
-        if (!found)
-        {
-            throw new InvalidDataException($"Capture processing SQLite index '{indexName}' ownership is drifted.");
-        }
+        command.CommandText = "SELECT version FROM capture_processing_schema WHERE schema_key = 1;";
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is null or DBNull
+            ? 0
+            : Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static string NormalizeSchemaSql(string sql) =>
-        new(sql.Where(static character => !char.IsWhiteSpace(character) && character != '"').Select(char.ToLowerInvariant).ToArray());
+    private static async ValueTask<long> ExecuteScalarLongAsync(
+        SqliteConnection connection,
+        string sql,
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
+        => Convert.ToInt64(
+            await ExecuteScalarAsync(connection, sql, cancellationToken, transaction).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+    private static async ValueTask<string> ExecuteScalarStringAsync(
+        SqliteConnection connection,
+        string sql,
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
+        => Convert.ToString(
+            await ExecuteScalarAsync(connection, sql, cancellationToken, transaction).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only internal constant SQL and PRAGMA statements are passed to this helper.")]
+    private static async ValueTask<object?> ExecuteScalarAsync(
+        SqliteConnection connection,
+        string sql,
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     internal static bool IsCanonicalRelativePath(string path)
     {
@@ -2522,34 +2504,43 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         return parts.All(static part => part.Length > 0 && part is not "." and not "..");
     }
 
-    private sealed record LegacyOutputRow(
-        string OutputIdentity,
-        string CaptureId,
-        string AgentId,
-        string NodeId,
-        string ArtifactId,
-        string Role,
-        string Variant,
-        string PayloadRelativePath,
-        string SidecarRelativePath,
-        byte[] Evidence,
-        string RecipeIdentitySha256);
-
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated value is a validated integer host option used only for SQLite PRAGMA configuration.")]
     private async ValueTask<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
+        var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
+        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+        return connection;
+    }
+
+    private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(CancellationToken cancellationToken)
+    {
+        EnsureDatabaseFilesArePhysical();
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _databasePath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
+            Mode = SqliteOpenMode.ReadWrite,
             Cache = SqliteCacheMode.Shared,
-            Pooling = false
+            Pooling = false,
+            DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout={checked(_busyTimeoutSeconds * 1000)};";
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        EnsureDatabaseFilesArePhysical();
         return connection;
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated value is a validated integer host option used only for SQLite PRAGMA configuration.")]
+    private async ValueTask ConfigureConnectionAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var journalMode = await ExecuteScalarStringAsync(
+            connection, "PRAGMA journal_mode=WAL;", cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Capture processing SQLite journal could not enter WAL mode.");
+        }
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout={checked(_busyTimeoutSeconds * 1000)};";
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private void EnsureDatabaseFilesArePhysical()
@@ -2557,6 +2548,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         RawIngressFileStore.EnsureNoSymbolicLinks(_root, _databasePath);
         RawIngressFileStore.EnsureNoSymbolicLinks(_root, string.Concat(_databasePath, "-wal"));
         RawIngressFileStore.EnsureNoSymbolicLinks(_root, string.Concat(_databasePath, "-shm"));
+        RawIngressFileStore.EnsureNoSymbolicLinks(_root, string.Concat(_databasePath, "-journal"));
     }
 
     public void Dispose()
@@ -2565,13 +2557,12 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
     }
 
     private const string SchemaSql = """
-        CREATE TABLE IF NOT EXISTS capture_processing_schema(
+        CREATE TABLE capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
             version INTEGER NOT NULL CHECK(version = 5)
         ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 5)
-            ON CONFLICT(schema_key) DO NOTHING;
-        CREATE TABLE IF NOT EXISTS processing_nodes(
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 5);
+        CREATE TABLE processing_nodes(
             capture_id TEXT NOT NULL,
             node_id TEXT NOT NULL,
             required INTEGER NOT NULL CHECK(required IN (0, 1)),
@@ -2591,144 +2582,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             outcome TEXT NULL CHECK(outcome IS NULL OR outcome IN ('Produced', 'Skipped', 'RetryableFailure', 'TerminalFailure')),
             PRIMARY KEY(capture_id, node_id)
         ) STRICT;
-        CREATE TABLE IF NOT EXISTS processing_node_inputs(
-            capture_id TEXT NOT NULL,
-            node_id TEXT NOT NULL,
-            input_ordinal INTEGER NOT NULL CHECK(input_ordinal >= 0 AND input_ordinal < 128),
-            kind TEXT NOT NULL CHECK(kind IN ('Artifact', 'AuxiliaryArtifact', 'CanonicalContext')),
-            name TEXT NULL CHECK(name IS NULL OR length(name) BETWEEN 1 AND 64),
-            artifact_id TEXT NULL CHECK(artifact_id IS NULL OR length(artifact_id) = 32),
-            role TEXT NULL,
-            variant TEXT NULL CHECK(variant IS NULL OR length(variant) BETWEEN 1 AND 128),
-            recipe_identity_sha256 TEXT NULL CHECK(recipe_identity_sha256 IS NULL OR length(recipe_identity_sha256) = 64),
-            schema_version TEXT NULL CHECK(schema_version IS NULL OR length(schema_version) BETWEEN 1 AND 128),
-            identity_sha256 TEXT NULL CHECK(identity_sha256 IS NULL OR length(identity_sha256) = 64),
-            selected_flag INTEGER NOT NULL CHECK(selected_flag IN (0, 1)),
-            PRIMARY KEY(capture_id, node_id, input_ordinal),
-            FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id)
-                ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-        ) STRICT;
-        CREATE TABLE IF NOT EXISTS processing_outputs(
-            output_identity_sha256 TEXT PRIMARY KEY CHECK(length(output_identity_sha256) = 64),
-            capture_id TEXT NOT NULL,
-            agent_id TEXT NOT NULL,
-            node_id TEXT NOT NULL,
-            artifact_id TEXT NOT NULL UNIQUE CHECK(length(artifact_id) = 32),
-            role TEXT NOT NULL,
-            variant TEXT NOT NULL,
-            payload_relative_path TEXT NOT NULL,
-            sidecar_relative_path TEXT NOT NULL,
-            descriptor_json BLOB NOT NULL,
-            recipe_identity_sha256 TEXT NOT NULL CHECK(length(recipe_identity_sha256) = 64),
-            algorithms_json BLOB NOT NULL,
-            compatibility_json BLOB NOT NULL,
-            total_integration_ticks INTEGER NOT NULL,
-            capture_sequence INTEGER NOT NULL CHECK(capture_sequence > 0),
-            legacy_recipe_version TEXT NULL,
-            committed_unix_ms INTEGER NOT NULL,
-            product_kind TEXT NULL CHECK(product_kind IS NULL OR product_kind IN ('PixelData', 'Metadata')),
-            product_schema_version TEXT NULL CHECK(product_schema_version IS NULL OR length(product_schema_version) BETWEEN 1 AND 128),
-            content_identity_sha256 TEXT NULL CHECK(content_identity_sha256 IS NULL OR length(content_identity_sha256) = 64),
-            availability_state TEXT NOT NULL DEFAULT 'Available' CHECK(availability_state IN ('Available', 'Missing', 'Quarantined')),
-            availability_reason TEXT NULL CHECK(availability_reason IS NULL OR length(availability_reason) BETWEEN 1 AND 128),
-            unavailable_unix_ms INTEGER NULL,
-            quarantine_relative_path TEXT NULL,
-            CHECK((product_kind IS NULL AND product_schema_version IS NULL AND content_identity_sha256 IS NULL) OR
-                  (product_kind IS NOT NULL AND product_schema_version IS NOT NULL AND content_identity_sha256 IS NOT NULL)),
-            FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id)
-                DEFERRABLE INITIALLY DEFERRED
-        ) STRICT;
-        CREATE TABLE IF NOT EXISTS processing_output_sources(
-            output_identity_sha256 TEXT NOT NULL CHECK(length(output_identity_sha256) = 64),
-            source_ordinal INTEGER NOT NULL CHECK(source_ordinal >= 0 AND source_ordinal < 512),
-            source_artifact_id TEXT NOT NULL CHECK(length(source_artifact_id) = 32),
-            PRIMARY KEY(output_identity_sha256, source_ordinal),
-            UNIQUE(output_identity_sha256, source_artifact_id),
-            FOREIGN KEY(output_identity_sha256) REFERENCES processing_outputs(output_identity_sha256)
-                ON DELETE CASCADE
-        ) STRICT;
-        CREATE TABLE IF NOT EXISTS processing_lifecycle_operations(
-            operation_id TEXT PRIMARY KEY CHECK(length(operation_id) BETWEEN 1 AND 128),
-            kind TEXT NOT NULL CHECK(kind IN ('quarantine', 'delete', 'orphan')),
-            output_identity_sha256 TEXT NULL CHECK(output_identity_sha256 IS NULL OR length(output_identity_sha256) = 64),
-            source_relative_path TEXT NULL,
-            companion_relative_path TEXT NULL,
-            destination_relative_path TEXT NOT NULL,
-            reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 128),
-            observed_bytes INTEGER NOT NULL CHECK(observed_bytes >= 0),
-            planned_unix_ms INTEGER NOT NULL
-            ,phase TEXT NOT NULL DEFAULT 'planned' CHECK(phase IN ('planned', 'moved', 'database-completed', 'files-deleted')),
-            CHECK((kind = 'quarantine' AND source_relative_path IS NOT NULL) OR kind IN ('orphan', 'delete'))
-        ) STRICT;
-        CREATE TABLE IF NOT EXISTS processing_reconciliation_state(
-            state_key INTEGER PRIMARY KEY CHECK(state_key = 1),
-            output_identity_sha256 TEXT NULL CHECK(output_identity_sha256 IS NULL OR length(output_identity_sha256) = 64),
-            modern_sidecar_relative_path TEXT NULL,
-            legacy_sidecar_relative_path TEXT NULL,
-            payload_relative_path TEXT NULL
-        ) STRICT;
-        CREATE TABLE IF NOT EXISTS processing_output_diagnostics(
-            diagnostic_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            output_identity_sha256 TEXT NOT NULL CHECK(length(output_identity_sha256) = 64),
-            capture_id TEXT NOT NULL CHECK(length(capture_id) = 32),
-            node_id TEXT NOT NULL,
-            availability_state TEXT NOT NULL CHECK(availability_state IN ('Missing', 'Quarantined')),
-            availability_reason TEXT NULL,
-            descriptor_json BLOB NOT NULL,
-            quarantine_relative_path TEXT NULL,
-            recorded_unix_ms INTEGER NOT NULL
-        ) STRICT;
-        CREATE INDEX IF NOT EXISTS ix_processing_outputs_capture_node
-            ON processing_outputs(capture_id, node_id);
-        CREATE INDEX IF NOT EXISTS ix_processing_outputs_window
-            ON processing_outputs(agent_id, node_id, role, capture_sequence);
-        CREATE INDEX IF NOT EXISTS ix_processing_nodes_status
-            ON processing_nodes(status, capture_id);
-        CREATE INDEX IF NOT EXISTS ix_processing_nodes_recipe
-            ON processing_nodes(upper(recipe_name), capture_id);
-        CREATE INDEX IF NOT EXISTS ix_processing_outputs_role
-            ON processing_outputs(role, capture_id);
-        CREATE INDEX IF NOT EXISTS ix_processing_outputs_recipe
-            ON processing_outputs(recipe_identity_sha256, capture_id);
-        CREATE INDEX IF NOT EXISTS ix_processing_outputs_product
-            ON processing_outputs(capture_id, product_schema_version, output_identity_sha256);
-        CREATE INDEX IF NOT EXISTS ix_processing_outputs_retention_available
-            ON processing_outputs(committed_unix_ms, output_identity_sha256) WHERE availability_state = 'Available';
-        CREATE INDEX IF NOT EXISTS ix_processing_outputs_retention_unavailable
-            ON processing_outputs(unavailable_unix_ms, output_identity_sha256) WHERE availability_state <> 'Available';
-        CREATE INDEX IF NOT EXISTS ix_processing_output_sources_artifact
-            ON processing_output_sources(source_artifact_id, output_identity_sha256);
-        CREATE INDEX IF NOT EXISTS ix_processing_node_inputs_artifact
-            ON processing_node_inputs(artifact_id, capture_id, node_id);
-        """;
-
-    private const string ProcessingV2MigrationSql = """
-        CREATE INDEX IF NOT EXISTS ix_processing_nodes_status
-            ON processing_nodes(status, capture_id);
-        CREATE INDEX IF NOT EXISTS ix_processing_nodes_recipe
-            ON processing_nodes(upper(recipe_name), capture_id);
-        CREATE INDEX IF NOT EXISTS ix_processing_outputs_role
-            ON processing_outputs(role, capture_id);
-        CREATE INDEX IF NOT EXISTS ix_processing_outputs_recipe
-            ON processing_outputs(recipe_identity_sha256, capture_id);
-        DROP TABLE capture_processing_schema;
-        CREATE TABLE capture_processing_schema(
-            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 2)
-        ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 2);
-        """;
-
-    private const string ProcessingV3MigrationSql = """
-        ALTER TABLE processing_nodes ADD COLUMN input_evidence_version INTEGER NULL
-            CHECK(input_evidence_version IS NULL OR input_evidence_version = 1);
-        ALTER TABLE processing_nodes ADD COLUMN processing_profile_identity_sha256 TEXT NULL
-            CHECK(processing_profile_identity_sha256 IS NULL OR length(processing_profile_identity_sha256) = 64);
-        ALTER TABLE processing_nodes ADD COLUMN started_unix_ms INTEGER NULL;
-        ALTER TABLE processing_nodes ADD COLUMN duration_ticks INTEGER NULL
-            CHECK(duration_ticks IS NULL OR duration_ticks >= 0);
-        ALTER TABLE processing_nodes ADD COLUMN outcome TEXT NULL
-            CHECK(outcome IS NULL OR outcome IN ('Produced', 'Skipped', 'RetryableFailure', 'TerminalFailure'));
         CREATE TABLE processing_node_inputs(
             capture_id TEXT NOT NULL,
             node_id TEXT NOT NULL,
@@ -2746,22 +2599,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id)
                 ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
         ) STRICT;
-        CREATE INDEX ix_processing_node_inputs_artifact
-            ON processing_node_inputs(artifact_id, capture_id, node_id);
-        DROP TABLE capture_processing_schema;
-        CREATE TABLE capture_processing_schema(
-            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 3)
-        ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 3);
-        """;
-
-    private const string ProcessingV4MigrationSql = """
-        DROP INDEX ix_processing_outputs_capture_node;
-        DROP INDEX ix_processing_outputs_window;
-        DROP INDEX ix_processing_outputs_role;
-        DROP INDEX ix_processing_outputs_recipe;
-        ALTER TABLE processing_outputs RENAME TO processing_outputs_v3;
         CREATE TABLE processing_outputs(
             output_identity_sha256 TEXT PRIMARY KEY CHECK(length(output_identity_sha256) = 64),
             capture_id TEXT NOT NULL,
@@ -2778,27 +2615,19 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             compatibility_json BLOB NOT NULL,
             total_integration_ticks INTEGER NOT NULL,
             capture_sequence INTEGER NOT NULL CHECK(capture_sequence > 0),
-            legacy_recipe_version TEXT NULL,
             committed_unix_ms INTEGER NOT NULL,
             product_kind TEXT NULL CHECK(product_kind IS NULL OR product_kind IN ('PixelData', 'Metadata')),
             product_schema_version TEXT NULL CHECK(product_schema_version IS NULL OR length(product_schema_version) BETWEEN 1 AND 128),
             content_identity_sha256 TEXT NULL CHECK(content_identity_sha256 IS NULL OR length(content_identity_sha256) = 64),
+            availability_state TEXT NOT NULL DEFAULT 'Available' CHECK(availability_state IN ('Available', 'Missing', 'Quarantined')),
+            availability_reason TEXT NULL CHECK(availability_reason IS NULL OR length(availability_reason) BETWEEN 1 AND 128),
+            unavailable_unix_ms INTEGER NULL,
+            quarantine_relative_path TEXT NULL,
             CHECK((product_kind IS NULL AND product_schema_version IS NULL AND content_identity_sha256 IS NULL) OR
                   (product_kind IS NOT NULL AND product_schema_version IS NOT NULL AND content_identity_sha256 IS NOT NULL)),
             FOREIGN KEY(capture_id, node_id) REFERENCES processing_nodes(capture_id, node_id)
                 DEFERRABLE INITIALLY DEFERRED
         ) STRICT;
-        INSERT INTO processing_outputs(
-            output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
-            payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
-            algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-            legacy_recipe_version, committed_unix_ms)
-        SELECT output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
-               payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
-               algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-               legacy_recipe_version, committed_unix_ms
-        FROM processing_outputs_v3;
-        DROP TABLE processing_outputs_v3;
         CREATE TABLE processing_output_sources(
             output_identity_sha256 TEXT NOT NULL CHECK(length(output_identity_sha256) = 64),
             source_ordinal INTEGER NOT NULL CHECK(source_ordinal >= 0 AND source_ordinal < 512),
@@ -2808,33 +2637,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             FOREIGN KEY(output_identity_sha256) REFERENCES processing_outputs(output_identity_sha256)
                 ON DELETE CASCADE
         ) STRICT;
-        CREATE INDEX ix_processing_outputs_capture_node
-            ON processing_outputs(capture_id, node_id);
-        CREATE INDEX ix_processing_outputs_window
-            ON processing_outputs(agent_id, node_id, role, capture_sequence);
-        CREATE INDEX ix_processing_outputs_role
-            ON processing_outputs(role, capture_id);
-        CREATE INDEX ix_processing_outputs_recipe
-            ON processing_outputs(recipe_identity_sha256, capture_id);
-        CREATE INDEX ix_processing_outputs_product
-            ON processing_outputs(capture_id, product_schema_version, output_identity_sha256);
-        CREATE INDEX ix_processing_output_sources_artifact
-            ON processing_output_sources(source_artifact_id, output_identity_sha256);
-        DROP TABLE capture_processing_schema;
-        CREATE TABLE capture_processing_schema(
-            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 4)
-        ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 4);
-        """;
-
-    private const string ProcessingV5MigrationSql = """
-        ALTER TABLE processing_outputs ADD COLUMN availability_state TEXT NOT NULL DEFAULT 'Available'
-            CHECK(availability_state IN ('Available', 'Missing', 'Quarantined'));
-        ALTER TABLE processing_outputs ADD COLUMN availability_reason TEXT NULL
-            CHECK(availability_reason IS NULL OR length(availability_reason) BETWEEN 1 AND 128);
-        ALTER TABLE processing_outputs ADD COLUMN unavailable_unix_ms INTEGER NULL;
-        ALTER TABLE processing_outputs ADD COLUMN quarantine_relative_path TEXT NULL;
         CREATE TABLE processing_lifecycle_operations(
             operation_id TEXT PRIMARY KEY CHECK(length(operation_id) BETWEEN 1 AND 128),
             kind TEXT NOT NULL CHECK(kind IN ('quarantine', 'delete', 'orphan')),
@@ -2844,8 +2646,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             destination_relative_path TEXT NOT NULL,
             reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 128),
             observed_bytes INTEGER NOT NULL CHECK(observed_bytes >= 0),
-            planned_unix_ms INTEGER NOT NULL,
-            phase TEXT NOT NULL DEFAULT 'planned' CHECK(phase IN ('planned', 'moved', 'database-completed', 'files-deleted')),
+            planned_unix_ms INTEGER NOT NULL
+            ,phase TEXT NOT NULL DEFAULT 'planned' CHECK(phase IN ('planned', 'moved', 'database-completed', 'files-deleted')),
             CHECK((kind = 'quarantine' AND source_relative_path IS NOT NULL) OR kind IN ('orphan', 'delete'))
         ) STRICT;
         CREATE TABLE processing_reconciliation_state(
@@ -2866,24 +2668,28 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             quarantine_relative_path TEXT NULL,
             recorded_unix_ms INTEGER NOT NULL
         ) STRICT;
+        CREATE INDEX ix_processing_outputs_capture_node
+            ON processing_outputs(capture_id, node_id);
+        CREATE INDEX ix_processing_outputs_window
+            ON processing_outputs(agent_id, node_id, role, capture_sequence);
+        CREATE INDEX ix_processing_nodes_status
+            ON processing_nodes(status, capture_id);
+        CREATE INDEX ix_processing_nodes_recipe
+            ON processing_nodes(upper(recipe_name), capture_id);
+        CREATE INDEX ix_processing_outputs_role
+            ON processing_outputs(role, capture_id);
+        CREATE INDEX ix_processing_outputs_recipe
+            ON processing_outputs(recipe_identity_sha256, capture_id);
+        CREATE INDEX ix_processing_outputs_product
+            ON processing_outputs(capture_id, product_schema_version, output_identity_sha256);
         CREATE INDEX ix_processing_outputs_retention_available
             ON processing_outputs(committed_unix_ms, output_identity_sha256) WHERE availability_state = 'Available';
         CREATE INDEX ix_processing_outputs_retention_unavailable
             ON processing_outputs(unavailable_unix_ms, output_identity_sha256) WHERE availability_state <> 'Available';
-        DROP TABLE capture_processing_schema;
-        CREATE TABLE capture_processing_schema(
-            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 5)
-        ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 5);
+        CREATE INDEX ix_processing_output_sources_artifact
+            ON processing_output_sources(source_artifact_id, output_identity_sha256);
+        CREATE INDEX ix_processing_node_inputs_artifact
+            ON processing_node_inputs(artifact_id, capture_id, node_id);
         """;
 
-    private const string FinalizeV5VersionSql = """
-        DROP TABLE capture_processing_schema;
-        CREATE TABLE capture_processing_schema(
-            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 5)
-        ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 5);
-        """;
 }

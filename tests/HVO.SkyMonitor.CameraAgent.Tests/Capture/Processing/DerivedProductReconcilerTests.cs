@@ -35,9 +35,11 @@ public sealed class DerivedProductReconcilerTests
         ActivitySource.AddActivityListener(listener);
         try
         {
-            await CreateReconciliationService(successRoot).RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
-            await CreateReconciliationService(failurePath).RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
-            await CreateReconciliationService(rawFailureRoot, new FailingIngress())
+            await (await CreateReconciliationServiceAsync(successRoot).ConfigureAwait(false))
+                .RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            await (await CreateReconciliationServiceAsync(failurePath).ConfigureAwait(false))
+                .RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            await (await CreateReconciliationServiceAsync(rawFailureRoot, new FailingIngress()).ConfigureAwait(false))
                 .RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
 
             var activities = stopped.Where(activity => activity.OperationName == "processing-artifact.reconcile").ToArray();
@@ -45,7 +47,7 @@ public sealed class DerivedProductReconcilerTests
             Assert.AreEqual(ActivityStatusCode.Ok, activities[0].Status);
             Assert.AreEqual(ActivityStatusCode.Error, activities[1].Status);
             Assert.AreEqual("reconciliation-failed", activities[1].StatusDescription);
-            Assert.AreEqual("DirectoryNotFoundException", activities[1].GetTagItem("error.type"));
+            Assert.AreEqual("InvalidOperationException", activities[1].GetTagItem("error.type"));
             Assert.AreEqual(ActivityStatusCode.Error, activities[2].Status);
             Assert.AreEqual("InvalidDataException", activities[2].GetTagItem("error.type"));
             Assert.IsFalse(activities.SelectMany(static activity => activity.TagObjects).Any(static tag =>
@@ -72,7 +74,7 @@ public sealed class DerivedProductReconcilerTests
             var payload = Path.Combine(derived, "orphan.json");
             await File.WriteAllTextAsync(temporary, "temporary").ConfigureAwait(false);
             await File.WriteAllTextAsync(payload, "{}").ConfigureAwait(false);
-            using var store = CreateStore(root);
+            using var store = await CreateStoreAsync(root).ConfigureAwait(false);
             var reconciler = new DerivedProductReconciler(root, store);
 
             var first = await reconciler.RunAsync(CancellationToken.None).ConfigureAwait(false);
@@ -106,7 +108,7 @@ public sealed class DerivedProductReconcilerTests
             var source = Path.Combine(derived, "payload.json");
             var moved = Path.Combine(destination, "payload.json");
             await File.WriteAllTextAsync(source, "{}").ConfigureAwait(false);
-            using var store = CreateStore(root);
+            using var store = await CreateStoreAsync(root).ConfigureAwait(false);
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var operation = new ProcessingLifecycleOperation(
                 "quarantine:resume", "quarantine", null, "derived/payload.json", null,
@@ -142,7 +144,7 @@ public sealed class DerivedProductReconcilerTests
             await File.WriteAllTextAsync(raw, "raw-evidence").ConfigureAwait(false);
             var sidecar = Path.Combine(derived, "malicious.manifest.json");
             await File.WriteAllTextAsync(sidecar, $$"""{"schemaVersion":"durable-processing-product-v1","relativeArtifactPath":"{{Path.GetRelativePath(root, raw).Replace('\\', '/')}}"}""").ConfigureAwait(false);
-            using var store = CreateStore(root);
+            using var store = await CreateStoreAsync(root).ConfigureAwait(false);
 
             await new DerivedProductReconciler(root, store).RunAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -167,7 +169,7 @@ public sealed class DerivedProductReconcilerTests
             Directory.CreateDirectory(derived);
             for (var index = 0; index < 4100; index++)
                 await File.WriteAllTextAsync(Path.Combine(derived, $"orphan-{index:D4}.json"), "{}").ConfigureAwait(false);
-            using var store = CreateStore(root);
+            using var store = await CreateStoreAsync(root).ConfigureAwait(false);
             var options = new DerivedProductLifecycleOptions { ReconciliationBatchSize = 4096 };
             var reconciler = new DerivedProductReconciler(root, store, options);
 
@@ -191,7 +193,7 @@ public sealed class DerivedProductReconcilerTests
         var root = CreateRoot();
         try
         {
-            using var store = CreateStore(root);
+            using var store = await CreateStoreAsync(root).ConfigureAwait(false);
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
             {
@@ -245,7 +247,7 @@ public sealed class DerivedProductReconcilerTests
             var sidecar = Path.Combine(derived, "z-legacy.json");
             await File.WriteAllTextAsync(payload, "payload").ConfigureAwait(false);
             await File.WriteAllTextAsync(sidecar, "{}").ConfigureAwait(false);
-            using var store = CreateStore(root);
+            using var store = await CreateStoreAsync(root).ConfigureAwait(false);
             var reconciler = new DerivedProductReconciler(root, store,
                 new DerivedProductLifecycleOptions { ReconciliationBatchSize = 16 });
 
@@ -263,8 +265,12 @@ public sealed class DerivedProductReconcilerTests
         }
     }
 
-    private static SqliteCaptureProcessingStore CreateStore(string root) => new(Options.Create(
-        new CameraAgentHostOptions { RawIngressRoot = root }));
+    private static async Task<SqliteCaptureProcessingStore> CreateStoreAsync(string root)
+    {
+        var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+        await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        return new(Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
+    }
 
     private static string CreateRoot()
     {
@@ -273,10 +279,15 @@ public sealed class DerivedProductReconcilerTests
         return root;
     }
 
-    private static DerivedProductReconciliationService CreateReconciliationService(
+    private static async Task<DerivedProductReconciliationService> CreateReconciliationServiceAsync(
         string root,
         IRawCaptureIngress? rawIngress = null)
     {
+        if (Directory.Exists(root))
+        {
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
         var services = new ServiceCollection();
         services.AddLogging();

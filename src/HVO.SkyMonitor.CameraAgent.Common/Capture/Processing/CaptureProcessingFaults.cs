@@ -2,6 +2,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal enum CaptureProcessingFaultPoint
 {
+    AfterSchemaTransactionBegan,
+    BeforeSchemaCommit,
     BeforeNodeExecution,
     AfterOutputsPublishedBeforeNodeCommit
 }

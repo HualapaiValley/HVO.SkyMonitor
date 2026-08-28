@@ -236,10 +236,10 @@ internal sealed class GalleryPerformanceFixture : IDisposable
                 output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
                 payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
                 algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                legacy_recipe_version, committed_unix_ms)
+                committed_unix_ms)
             VALUES($output_identity, $capture, 'issue-106-gallery', 'preview', $preview_artifact,
                 'Preview', 'gallery', $preview_path, $preview_sidecar, $preview_evidence,
-                $preview_recipe_identity, $algorithms, $compatibility, 0, $sequence, NULL, $durable_ms);
+                $preview_recipe_identity, $algorithms, $compatibility, 0, $sequence, $durable_ms);
             """;
         foreach (var name in new[]
         {

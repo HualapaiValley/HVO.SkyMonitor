@@ -2216,6 +2216,8 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var store = new SqliteCaptureProcessingStore(options);
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
@@ -2223,13 +2225,15 @@ public sealed partial class DurableCaptureProcessingTests
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var command = connection.CreateCommand();
                 command.CommandText = """
-                    CREATE TABLE capture_lane_work(
-                        work_id INTEGER PRIMARY KEY,
-                        state TEXT NOT NULL,
-                        lease_token TEXT NULL,
-                        lease_expires_unix_ms INTEGER NULL);
-                    INSERT INTO capture_lane_work(work_id, state, lease_token, lease_expires_unix_ms)
-                    VALUES (1, 'leased', 'current-token', 4102444800000);
+                    PRAGMA foreign_keys=OFF;
+                    INSERT INTO capture_lane_work(
+                        work_id, raw_capture_row_id, lane_name, agent_id, capture_sequence,
+                        required, ordered, state, attempt_count, available_unix_ms,
+                        lease_token, lease_expires_unix_ms, created_unix_ms, updated_unix_ms)
+                    VALUES (
+                        1, 1, 'standard', 'agent', 1,
+                        1, 1, 'leased', 1, 0,
+                        'current-token', 4102444800000, 0, 0);
                     """;
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
@@ -2272,30 +2276,13 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var store = new SqliteCaptureProcessingStore(options);
             await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
             {
                 await connection.OpenAsync().ConfigureAwait(false);
-                using var command = connection.CreateCommand();
-                command.CommandText = """
-                    CREATE TABLE raw_captures(
-                        raw_capture_row_id INTEGER PRIMARY KEY,
-                        capture_id TEXT NOT NULL,
-                        raw_artifact_id TEXT NOT NULL,
-                        agent_id TEXT NOT NULL,
-                        capture_sequence INTEGER NOT NULL,
-                        payload_relative_path TEXT NOT NULL,
-                        sidecar_relative_path TEXT NOT NULL,
-                        manifest_json BLOB NOT NULL,
-                        manifest_sha256 TEXT NOT NULL,
-                        state TEXT NOT NULL);
-                    CREATE TABLE capture_lane_work(
-                        raw_capture_row_id INTEGER NOT NULL,
-                        lane_name TEXT NOT NULL,
-                        state TEXT NOT NULL);
-                    """;
-                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
                 for (var sequence = 1; sequence <= 101; sequence++)
                 {
                     var template = ReconstructableCaptureContractTests.CreateManifest(
@@ -2318,20 +2305,30 @@ public sealed partial class DurableCaptureProcessingTests
                     var manifestJson = CaptureContractJson.Serialize(manifest);
                     using var insert = connection.CreateCommand();
                     insert.CommandText = """
+                        INSERT INTO raw_capture_assignments(capture_id, raw_artifact_id, agent_id, capture_sequence)
+                        VALUES ($capture, $artifact, $agent, $sequence);
                         INSERT INTO raw_captures(
-                            raw_capture_row_id, capture_id, raw_artifact_id, agent_id, capture_sequence,
-                            payload_relative_path, sidecar_relative_path, manifest_json, manifest_sha256, state)
-                        VALUES ($row, $capture, $artifact, $agent, $sequence, $payload, $sidecar, $manifest, $manifest_sha, 'committed');
+                            capture_id, raw_artifact_id, agent_id, capture_sequence, descriptor_sha256,
+                            manifest_sha256, payload_sha256, payload_length, payload_relative_path,
+                            sidecar_relative_path, manifest_json, exposure_started_unix_ms,
+                            durable_ingress_unix_ms, committed_unix_ms, state, retention_hold, evidence_origin)
+                        VALUES (
+                            $capture, $artifact, $agent, $sequence, $descriptor_sha,
+                            $manifest_sha, $payload_sha, 8, $payload,
+                            $sidecar, $manifest, $time,
+                            $time, $time, 'committed', 1, 'DeveloperFixture');
                         """;
-                    insert.Parameters.AddWithValue("$row", sequence);
                     insert.Parameters.AddWithValue("$capture", descriptor.Capture.CaptureId.ToString("N"));
                     insert.Parameters.AddWithValue("$artifact", descriptor.Artifact.ArtifactId.ToString("N"));
                     insert.Parameters.AddWithValue("$agent", descriptor.Capture.AgentId);
                     insert.Parameters.AddWithValue("$sequence", sequence);
+                    insert.Parameters.AddWithValue("$descriptor_sha", CaptureContractJson.ComputeDescriptorSha256(descriptor));
                     insert.Parameters.AddWithValue("$payload", manifest.RelativeArtifactPath);
                     insert.Parameters.AddWithValue("$sidecar", $"raw/{sequence}.json");
                     insert.Parameters.AddWithValue("$manifest", manifestJson);
                     insert.Parameters.AddWithValue("$manifest_sha", CaptureContractJson.ComputeManifestSha256(manifestJson));
+                    insert.Parameters.AddWithValue("$payload_sha", descriptor.Artifact.ChecksumSha256);
+                    insert.Parameters.AddWithValue("$time", descriptor.Timing.ExposureStartedUtc.ToUnixTimeMilliseconds());
                     await insert.ExecuteNonQueryAsync().ConfigureAwait(false);
                 }
             }
@@ -3032,6 +3029,8 @@ public sealed partial class DurableCaptureProcessingTests
             RawIngressRoot = root,
             RawIngressReserveBytes = 0
         });
+        var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+        await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         return new Fixture(
             manifest,
             options,
@@ -3074,6 +3073,8 @@ public sealed partial class DurableCaptureProcessingTests
         var reconstruction = FrameReconstructor.TryReconstruct(descriptor, payload, out var frame);
         Assert.IsTrue(reconstruction.IsValid);
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
+        var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+        await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         return new Fixture(
             manifest,
             options,

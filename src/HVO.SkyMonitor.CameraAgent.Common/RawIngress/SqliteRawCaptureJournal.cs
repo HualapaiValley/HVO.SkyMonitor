@@ -135,12 +135,15 @@ internal sealed class SqliteRawCaptureJournal(
         }
 
         await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-        await ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await ValidateSchemaAsync(connection, cancellationToken, _busyTimeoutSeconds).ConfigureAwait(false);
         await SynchronizeTransientPolicyAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task ValidateSchemaAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    internal static async Task ValidateSchemaAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken,
+        int? expectedBusyTimeoutSeconds = null)
     {
         var integrity = await ExecuteScalarStringAsync(connection, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false);
         if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
@@ -152,15 +155,7 @@ internal sealed class SqliteRawCaptureJournal(
         {
             throw new InvalidDataException("Raw ingress SQLite foreign-key validation failed.");
         }
-        var actualSchemaDefinitions = await ReadSchemaDefinitionsAsync(connection, cancellationToken).ConfigureAwait(false);
-        if (CanonicalSchemaDefinitions.Value.Any(expected =>
-                !actualSchemaDefinitions.TryGetValue(expected.Key, out var actual) ||
-                !string.Equals(actual, expected.Value, StringComparison.Ordinal)) ||
-            actualSchemaDefinitions.Keys.Any(name =>
-                !CanonicalSchemaDefinitions.Value.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)))
-        {
-            throw new InvalidDataException("Raw ingress SQLite schema is not the canonical schema 11 definition.");
-        }
+        await ValidateCanonicalSchemaDefinitionsAsync(connection, null, cancellationToken).ConfigureAwait(false);
         var schemaObjectCount = await ExecuteScalarLongAsync(connection, """
             SELECT COUNT(*) FROM sqlite_master
             WHERE name IN (
@@ -260,7 +255,10 @@ internal sealed class SqliteRawCaptureJournal(
         await VerifyIndexAsync(connection, "ix_transient_capture_work_backlog", "state,created_unix_ms,raw_capture_row_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_transient_candidate_conflicts_observed", "observed_unix_ms,conflict_id", cancellationToken).ConfigureAwait(false);
         await VerifyIndexAsync(connection, "ix_transient_candidate_conflicts_candidate", "candidate_id,conflict_id", cancellationToken).ConfigureAwait(false);
-        await VerifyConnectionSettingsAsync(connection, cancellationToken).ConfigureAwait(false);
+        if (expectedBusyTimeoutSeconds is { } busyTimeoutSeconds)
+        {
+            await VerifyConnectionSettingsAsync(connection, busyTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     internal Task<RawCaptureIdentity> ReserveIdentityAsync(
@@ -1353,13 +1351,16 @@ internal sealed class SqliteRawCaptureJournal(
         }
     }
 
-    private async Task VerifyConnectionSettingsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    private static async Task VerifyConnectionSettingsAsync(
+        SqliteConnection connection,
+        int busyTimeoutSeconds,
+        CancellationToken cancellationToken)
     {
         var synchronous = await ExecuteScalarLongAsync(connection, "PRAGMA synchronous;", cancellationToken).ConfigureAwait(false);
         var foreignKeys = await ExecuteScalarLongAsync(connection, "PRAGMA foreign_keys;", cancellationToken).ConfigureAwait(false);
         var busyTimeout = await ExecuteScalarLongAsync(connection, "PRAGMA busy_timeout;", cancellationToken).ConfigureAwait(false);
         var autoCheckpoint = await ExecuteScalarLongAsync(connection, "PRAGMA wal_autocheckpoint;", cancellationToken).ConfigureAwait(false);
-        if (synchronous != 2 || foreignKeys != 1 || busyTimeout != _busyTimeoutSeconds * 1000L || autoCheckpoint != 1000)
+        if (synchronous != 2 || foreignKeys != 1 || busyTimeout != busyTimeoutSeconds * 1000L || autoCheckpoint != 1000)
         {
             throw new InvalidDataException("Raw ingress SQLite connection settings do not match the durability policy.");
         }
@@ -1461,11 +1462,29 @@ internal sealed class SqliteRawCaptureJournal(
         return ReadSchemaDefinitions(connection);
     }
 
-    private static async Task<Dictionary<string, string>> ReadSchemaDefinitionsAsync(
+    internal static async Task ValidateCanonicalSchemaDefinitionsAsync(
         SqliteConnection connection,
+        SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
-        using var command = CreateSchemaDefinitionCommand(connection);
+        var actualSchemaDefinitions = await ReadSchemaDefinitionsAsync(
+            connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (CanonicalSchemaDefinitions.Value.Any(expected =>
+                !actualSchemaDefinitions.TryGetValue(expected.Key, out var actual) ||
+                !string.Equals(actual, expected.Value, StringComparison.Ordinal)) ||
+            actualSchemaDefinitions.Keys.Any(name =>
+                !CanonicalSchemaDefinitions.Value.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)))
+        {
+            throw new InvalidDataException("Raw ingress SQLite schema is not the canonical schema 11 definition.");
+        }
+    }
+
+    private static async Task<Dictionary<string, string>> ReadSchemaDefinitionsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = CreateSchemaDefinitionCommand(connection, transaction);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1477,7 +1496,7 @@ internal sealed class SqliteRawCaptureJournal(
 
     private static Dictionary<string, string> ReadSchemaDefinitions(SqliteConnection connection)
     {
-        using var command = CreateSchemaDefinitionCommand(connection);
+        using var command = CreateSchemaDefinitionCommand(connection, null);
         using var reader = command.ExecuteReader();
         var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
         while (reader.Read())
@@ -1487,9 +1506,12 @@ internal sealed class SqliteRawCaptureJournal(
         return definitions;
     }
 
-    private static SqliteCommand CreateSchemaDefinitionCommand(SqliteConnection connection)
+    private static SqliteCommand CreateSchemaDefinitionCommand(
+        SqliteConnection connection,
+        SqliteTransaction? transaction)
     {
         var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT type, name, tbl_name, sql
             FROM sqlite_schema

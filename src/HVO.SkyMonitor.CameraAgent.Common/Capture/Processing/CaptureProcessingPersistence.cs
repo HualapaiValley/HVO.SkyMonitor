@@ -159,8 +159,7 @@ internal sealed class CaptureProcessingPersistence(
                 product.Algorithms,
                 product.Compatibility,
                 product.TotalIntegration,
-                baseOutput.CaptureSequence,
-                product.Recipe.Descriptor.ImplementationVersion);
+                baseOutput.CaptureSequence);
             var nodeId = $"gallery-materialization-{product.OutputIdentitySha256[..16]}";
             var planSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(new
             {
@@ -505,7 +504,6 @@ internal sealed class CaptureProcessingPersistence(
                         product.Compatibility,
                         product.TotalIntegration,
                         rawCapture.Manifest.Descriptor.Capture.CaptureSequence,
-                        artifact.RecipeVersion,
                         null,
                         null,
                         null));
@@ -624,7 +622,7 @@ internal sealed class CaptureProcessingPersistence(
             product.Role,
             frame,
             product.SourceArtifactIds,
-            output.LegacyRecipeVersion ?? product.Recipe.Descriptor.ImplementationVersion);
+            product.Recipe.Descriptor.ImplementationVersion);
         return new RestoredProcessingOutput(
             artifact.ArtifactId,
             frame.TimestampUtc,
@@ -801,7 +799,6 @@ internal sealed class CaptureProcessingPersistence(
             product.Compatibility,
             product.TotalIntegration,
             sourceDescriptor.Capture.CaptureSequence,
-            null,
             typedManifest?.Kind,
             typedManifest?.ProductSchemaVersion,
             typedManifest?.ContentIdentitySha256);

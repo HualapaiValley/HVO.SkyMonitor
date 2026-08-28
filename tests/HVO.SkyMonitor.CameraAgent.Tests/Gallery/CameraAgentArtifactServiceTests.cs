@@ -520,10 +520,10 @@ public sealed class CameraAgentArtifactServiceTests
                         output_identity_sha256, capture_id, agent_id, node_id, artifact_id, role, variant,
                         payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
                         algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                        legacy_recipe_version, committed_unix_ms)
+                        committed_unix_ms)
                     VALUES ($identity, $capture, $agent, $node, $artifact, $role, 'reader',
                             $payload, $sidecar, $descriptor, $recipe, $algorithms, $compatibility,
-                            0, $sequence, NULL, $committed);
+                            0, $sequence, $committed);
                     """;
                 output.Parameters.AddWithValue("$identity", outputIdentity);
                 output.Parameters.AddWithValue("$capture", raw.Descriptor.Capture.CaptureId.ToString("N"));
