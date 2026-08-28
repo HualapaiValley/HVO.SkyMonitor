@@ -26,10 +26,10 @@ manifest round-trip, deterministic observation identity, and targetless
 simulated-fact production. The configured two-host integration fixture proves
 raw ingress, derivative processing, provisioning-owned enrichment, durable edge
 outbox, authenticated LogicHost ingest, and central `CloudCover` persistence.
-Manifest v1 remains legacy-incomplete but round-trips its optional scene and
-cloud provenance. Manifest v2 carries the same additive cloud provenance;
-existing v1/v2 and old sidecars without that property retain their previous
-identities and behavior.
+At this evidence's 2026-07-18 revision, manifest v1 still round-tripped optional
+scene and cloud provenance as legacy-incomplete. That revision-bound
+compatibility behavior is superseded: fresh canonical runtimes reject v1 before
+persistence. Manifest v2 carries the canonical cloud provenance.
 
 ## Performance Candidate
 

@@ -39,7 +39,13 @@ internal interface IArtifactIngestService
         CancellationToken cancellationToken);
 }
 
-internal sealed record ArtifactIngestResult(DeviceUploadResult Upload, bool ReadyForAcknowledgement);
+internal sealed record ArtifactIngestReceipt(
+    Guid RegistrationId,
+    Guid ObservatoryId,
+    string StorageReference,
+    DateTimeOffset AcceptedAtUtc);
+
+internal sealed record ArtifactIngestResult(ArtifactIngestReceipt Receipt, bool ReadyForAcknowledgement);
 
 internal sealed record ArtifactIngestManifest(
     string SchemaVersion,
@@ -67,8 +73,6 @@ internal sealed record ArtifactIngestManifest(
 
     public IReadOnlyList<Guid> SourceArtifactIds => ArtifactDescriptor?.SourceArtifactIds ?? [];
 
-    public bool IsReconstructable => CaptureDescriptor is not null;
-
     public static ArtifactIngestManifest Create(ArtifactManifestDocument document)
     {
         ArgumentNullException.ThrowIfNull(document);
@@ -79,6 +83,10 @@ internal sealed record ArtifactIngestManifest(
             throw new ArgumentException($"Manifest v2 is invalid: {validation.ReasonCode} at {validation.FieldPath}.", nameof(document));
         }
         var descriptor = current.Descriptor;
+        if (descriptor.Location is null)
+        {
+            throw new ArgumentException("Current artifact manifests require capture location provenance.", nameof(document));
+        }
         return new(
             current.SchemaVersion,
             descriptor.Capture.AgentId,
@@ -107,6 +115,10 @@ internal sealed record ArtifactIngestManifest(
         }
         var descriptor = productManifest.Descriptor;
         var source = descriptor.SourceCapture;
+        if (source.Location is null)
+        {
+            throw new ArgumentException("Current structured product manifests require capture location provenance.", nameof(productManifest));
+        }
         var artifact = descriptor.Artifact;
         return new(
             productManifest.SchemaVersion,
@@ -579,14 +591,12 @@ internal sealed partial class ArtifactIngestService(
 
         var identityOnSubmittedFrame = await dbContext.CentralArtifacts.AnyAsync(artifact =>
             artifact.ArtifactId == manifest.ArtifactId
-            && (artifact.DevicePublicId == devicePublicId
-                || artifact.DevicePublicId == null && artifact.Frame!.DevicePublicId == devicePublicId)
+            && artifact.DevicePublicId == devicePublicId
             && artifact.Frame!.FrameId == manifest.FrameId, cancellationToken).ConfigureAwait(false);
         var identityConflict = !identityOnSubmittedFrame
             && await dbContext.CentralArtifacts.AnyAsync(artifact =>
                 artifact.ArtifactId == manifest.ArtifactId
-                && (artifact.DevicePublicId == devicePublicId
-                    || artifact.DevicePublicId == null && artifact.Frame!.DevicePublicId == devicePublicId),
+                && artifact.DevicePublicId == devicePublicId,
                 cancellationToken).ConfigureAwait(false);
         if (identityConflict)
         {
@@ -594,25 +604,6 @@ internal sealed partial class ArtifactIngestService(
                 "The artifact identity is already associated with a different frame for this device.");
         }
         dbContext.ChangeTracker.Clear();
-
-        var historicalArtifactId = await TryEnrichHistoricalV1ArtifactAsync(
-            registration, manifest, devicePublicId, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
-        if (historicalArtifactId.HasValue)
-        {
-            dbContext.ChangeTracker.Clear();
-            var enriched = await ReconcileExistingAsync(
-                manifest,
-                timeProvider.GetUtcNow(),
-                ExistingArtifactReconciliationMode.MultipartDuplicate,
-                cancellationToken,
-                historicalArtifactId.Value).ConfigureAwait(false);
-            telemetry.RecordRequest(
-                manifest.SchemaVersion,
-                enriched.ReadyForAcknowledgement ? "accepted" : "pending-reference",
-                manifest.ByteLength,
-                timeProvider.GetElapsedTime(started));
-            return enriched;
-        }
 
         var existingFrame = await dbContext.CentralFrames
             .Include(frame => frame.Artifacts).ThenInclude(artifact => artifact.IngestIdentities)
@@ -641,8 +632,7 @@ internal sealed partial class ArtifactIngestService(
             var result = await PublishAndPersistUnderObjectLockAsync().ConfigureAwait(false);
             persisted = true;
             await ScheduleDerivativesAfterObjectLockAsync(
-                registration.DevicePublicId ?? throw new InvalidOperationException(
-                    "An active device registration has no public identity."),
+                devicePublicId,
                 manifest.ArtifactId,
                 now,
                 cancellationToken).ConfigureAwait(false);
@@ -724,13 +714,10 @@ internal sealed partial class ArtifactIngestService(
                 await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
                 throw;
             }
-            if (manifest.IsReconstructable)
-            {
-                await EnsureV2IntentAsync(
-                    registration, manifest, storageReference, timeProvider.GetUtcNow(), cancellationToken)
-                    .ConfigureAwait(false);
-                dbContext.ChangeTracker.Clear();
-            }
+            await EnsureV2IntentAsync(
+                registration, manifest, storageReference, timeProvider.GetUtcNow(), cancellationToken)
+                .ConfigureAwait(false);
+            dbContext.ChangeTracker.Clear();
             try
             {
                 await EnsureStorageReferenceNotRetiredAsync(storageReference, cancellationToken).ConfigureAwait(false);
@@ -755,7 +742,7 @@ internal sealed partial class ArtifactIngestService(
             }
             var result = await PersistAsync(
                 registration, manifest, storageReference, objectLock, now, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(result.Upload.StorageReference, storageReference, StringComparison.Ordinal))
+            if (!string.Equals(result.Receipt.StorageReference, storageReference, StringComparison.Ordinal))
             {
                 await RemoveUncommittedObjectUnderLockAsync(storageReference, objectKey).ConfigureAwait(false);
             }
@@ -786,107 +773,6 @@ internal sealed partial class ArtifactIngestService(
     {
         var mediaTypeKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(manifest.MediaType)));
         return $"minio://{bucket}/artifacts/{devicePublicId:N}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}-{mediaTypeKey}.bin";
-    }
-
-    private async Task<Guid?> TryEnrichHistoricalV1ArtifactAsync(
-        DeviceRegistration registration,
-        ArtifactIngestManifest manifest,
-        Guid devicePublicId,
-        DateTimeOffset receivedAtUtc,
-        CancellationToken cancellationToken)
-    {
-        if (!string.Equals(manifest.SchemaVersion, ArtifactManifestV2.CurrentSchemaVersion, StringComparison.Ordinal))
-        {
-            return null;
-        }
-        var hasHistoricalCandidate = await dbContext.CentralArtifacts.AsNoTracking().AnyAsync(item =>
-            item.ArtifactId == manifest.ArtifactId &&
-            item.ManifestSchemaVersion == "v1" &&
-            item.ReconstructionState == CentralReconstructionState.LegacyIncomplete &&
-            item.ObjectState == CentralArtifactObjectState.Available &&
-            item.Frame!.DevicePublicId == devicePublicId &&
-            item.Frame.FrameId == manifest.FrameId,
-            cancellationToken).ConfigureAwait(false);
-        if (!hasHistoricalCandidate)
-        {
-            return null;
-        }
-
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-        await AcquireArtifactIdentityLocksAsync(
-            devicePublicId, manifest.SourceArtifactIds.Append(manifest.ArtifactId), cancellationToken).ConfigureAwait(false);
-        await AcquireFrameIdentityLockAsync(devicePublicId, manifest.FrameId, cancellationToken).ConfigureAwait(false);
-        var artifact = await dbContext.CentralArtifacts
-            .Include(item => item.IngestIdentities)
-            .Include(item => item.Layout)
-            .Include(item => item.Recipe)
-            .Include(item => item.Sources)
-            .Include(item => item.StructuredProduct)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Control)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
-            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
-            .AsSplitQuery()
-            .SingleOrDefaultAsync(item =>
-                item.ArtifactId == manifest.ArtifactId &&
-                item.ManifestSchemaVersion == "v1" &&
-                item.ReconstructionState == CentralReconstructionState.LegacyIncomplete &&
-                item.ObjectState == CentralArtifactObjectState.Available &&
-                item.Frame!.DevicePublicId == devicePublicId &&
-                item.Frame.FrameId == manifest.FrameId,
-                cancellationToken).ConfigureAwait(false);
-        if (artifact is null)
-        {
-            await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
-            return null;
-        }
-        if (await dbContext.CentralArtifacts.AnyAsync(item =>
-                item.Id != artifact.Id &&
-                item.ArtifactId == manifest.ArtifactId &&
-                item.DevicePublicId == devicePublicId,
-                cancellationToken).ConfigureAwait(false))
-        {
-            throw new ArtifactIngestConflictException(
-                "The artifact identity is already associated with a different canonical frame for this device.");
-        }
-
-        var frame = artifact.Frame ?? throw new InvalidOperationException("The historical central artifact frame was not loaded.");
-        if (frame.RegistrationId != registration.Id ||
-            !string.Equals(frame.AgentId, manifest.AgentId, StringComparison.Ordinal) ||
-            artifact.Role != manifest.Role ||
-            !string.Equals(artifact.MediaType, manifest.MediaType, StringComparison.Ordinal) ||
-            artifact.ByteLength != manifest.ByteLength ||
-            !string.Equals(artifact.ChecksumSha256, manifest.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArtifactIngestConflictException(
-                "The retained historical artifact conflicts with the canonical manifest.");
-        }
-        if (artifact.IngestIdentities.Any(identity =>
-                !string.Equals(identity.ManifestSchemaVersion, "v1", StringComparison.Ordinal)))
-        {
-            throw new ArtifactIngestConflictException(
-                "The retained historical artifact already has a different canonical identity.");
-        }
-
-        frame.CapturedAtUtc = manifest.CapturedAtUtc;
-        EnrichSceneProvenance(frame, manifest);
-        artifact.DevicePublicId = devicePublicId;
-        artifact.RecipeVersion = manifest.RecipeVersion;
-        artifact.ManifestSchemaVersion = manifest.SchemaVersion;
-        artifact.IdempotencyKey = manifest.IdempotencyKey.ToUpperInvariant();
-        dbContext.CentralArtifactIngestIdentities.Add(new CentralArtifactIngestIdentity
-        {
-            CentralArtifactId = artifact.Id,
-            Artifact = artifact,
-            ManifestSchemaVersion = manifest.SchemaVersion,
-            IdempotencyKey = manifest.IdempotencyKey.ToUpperInvariant()
-        });
-        await ApplyReconstructionAsync(
-            frame, artifact, manifest, devicePublicId, receivedAtUtc, cancellationToken).ConfigureAwait(false);
-        await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
-        return artifact.Id;
     }
 
     private async Task EnsureV2IntentAsync(
@@ -1223,16 +1109,12 @@ internal sealed partial class ArtifactIngestService(
                 .Where(artifact => artifact.Id == centralArtifactId)
                 .Select(artifact => new { artifact.DevicePublicId, artifact.Frame!.FrameId })
                 .SingleAsync(cancellationToken).ConfigureAwait(false);
-            var verificationDevicePublicId = identity.DevicePublicId;
-            if (verificationDevicePublicId.HasValue)
-            {
-                await AcquireArtifactIdentityLocksAsync(
-                    verificationDevicePublicId.Value,
-                    manifest.SourceArtifactIds.Append(manifest.ArtifactId),
-                    cancellationToken).ConfigureAwait(false);
-                await AcquireFrameIdentityLockAsync(
-                    verificationDevicePublicId.Value, identity.FrameId, cancellationToken).ConfigureAwait(false);
-            }
+            await AcquireArtifactIdentityLocksAsync(
+                identity.DevicePublicId,
+                manifest.SourceArtifactIds.Append(manifest.ArtifactId),
+                cancellationToken).ConfigureAwait(false);
+            await AcquireFrameIdentityLockAsync(
+                identity.DevicePublicId, identity.FrameId, cancellationToken).ConfigureAwait(false);
             dbContext.ChangeTracker.Clear();
             var existing = await LoadExistingArtifactAsync(centralArtifactId, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(existing.StorageReference, lockedStorageReference, StringComparison.Ordinal))
@@ -1337,11 +1219,8 @@ internal sealed partial class ArtifactIngestService(
             cancellationToken).ConfigureAwait(false);
         try
         {
-            if (reservation.DevicePublicId.HasValue)
-            {
-                await AcquireArtifactIdentityLocksAsync(
-                    reservation.DevicePublicId.Value, [reservation.ArtifactId], cancellationToken).ConfigureAwait(false);
-            }
+            await AcquireArtifactIdentityLocksAsync(
+                reservation.DevicePublicId, [reservation.ArtifactId], cancellationToken).ConfigureAwait(false);
             dbContext.ChangeTracker.Clear();
             var existing = await LoadExistingArtifactAsync(reservation.CentralArtifactId, cancellationToken)
                 .ConfigureAwait(false);
@@ -1571,7 +1450,6 @@ internal sealed partial class ArtifactIngestService(
                         FrameId = manifest.FrameId,
                         CapturedAtUtc = manifest.CapturedAtUtc,
                         FirstReceivedAtUtc = receivedAtUtc,
-                        RigProfileVersion = manifest.IsReconstructable ? null : registration.CurrentRigProfileVersion,
                         SceneProvenanceJson = SerializeScene(manifest)
                     };
                     dbContext.CentralFrames.Add(frame);
@@ -1590,9 +1468,9 @@ internal sealed partial class ArtifactIngestService(
                 await ResolveWaitingSourcesAsync(artifact, devicePublicId, cancellationToken).ConfigureAwait(false);
                 await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                 await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
-                var ready = artifact.ReconstructionState is CentralReconstructionState.Complete or CentralReconstructionState.LegacyIncomplete;
+                var ready = artifact.ReconstructionState == CentralReconstructionState.Complete;
                 return new ArtifactIngestResult(
-                    new DeviceUploadResult(registration.Id, registration.ObservatoryId, storageReference, receivedAtUtc), ready);
+                    new ArtifactIngestReceipt(registration.Id, registration.ObservatoryId, storageReference, receivedAtUtc), ready);
             }
             catch (Exception exception) when (IsCaptureSequenceConflict(exception))
             {
@@ -1728,7 +1606,7 @@ internal sealed partial class ArtifactIngestService(
                     artifact.Role == FrameArtifactRole.Raw))
             .Select(artifact => new
             {
-                DevicePublicId = artifact.DevicePublicId ?? artifact.Frame!.DevicePublicId,
+                artifact.DevicePublicId,
                 artifact.ArtifactId
             })
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
@@ -1756,8 +1634,7 @@ internal sealed partial class ArtifactIngestService(
         var cycleEvidenceJson = descriptor.CycleEvidence is null ? null : JsonSerializer.Serialize(descriptor.CycleEvidence);
         if (frame.CaptureSequence.HasValue)
         {
-            if (frame.Location is null
-                && frame.LocationEvidenceState != CentralCaptureLocationEvidenceState.LegacyIncomplete)
+            if (frame.Location is null)
             {
                 await dbContext.Entry(frame).Reference(item => item.Location).LoadAsync(cancellationToken)
                     .ConfigureAwait(false);
@@ -2854,11 +2731,7 @@ internal sealed partial class ArtifactIngestService(
         ArtifactIngestManifest manifest,
         CancellationToken cancellationToken)
     {
-        var existing = frame.Artifacts.FirstOrDefault(artifact =>
-            artifact.ArtifactId == manifest.ArtifactId
-            || !manifest.IsReconstructable
-                && artifact.Role == manifest.Role
-                && artifact.RecipeVersion == manifest.RecipeVersion);
+        var existing = frame.Artifacts.FirstOrDefault(artifact => artifact.ArtifactId == manifest.ArtifactId);
         if (existing is null)
         {
             return;
@@ -2873,7 +2746,7 @@ internal sealed partial class ArtifactIngestService(
                 .Include(artifact => artifact.StructuredProduct)
                 .SingleAsync(artifact => artifact.Id == existing.Id, cancellationToken).ConfigureAwait(false);
         }
-        if (manifest.IsReconstructable && existing.ArtifactId == manifest.ArtifactId)
+        if (existing.ArtifactId == manifest.ArtifactId)
         {
             EnsureManifestMatches(existing, manifest);
             EnsureStructuredProductMatches(existing, manifest);
@@ -2911,9 +2784,9 @@ internal sealed partial class ArtifactIngestService(
     {
         var frame = artifact.Frame ?? throw new InvalidOperationException("The central artifact frame was not loaded.");
         var ready = artifact.ObjectState == CentralArtifactObjectState.Available
-            && artifact.ReconstructionState is CentralReconstructionState.Complete or CentralReconstructionState.LegacyIncomplete;
+            && artifact.ReconstructionState == CentralReconstructionState.Complete;
         return new ArtifactIngestResult(
-            new DeviceUploadResult(frame.RegistrationId, frame.ObservatoryId, artifact.StorageReference, artifact.ReceivedAtUtc),
+            new ArtifactIngestReceipt(frame.RegistrationId, frame.ObservatoryId, artifact.StorageReference, artifact.ReceivedAtUtc),
             ready);
     }
 
@@ -3023,7 +2896,7 @@ internal sealed partial class ArtifactIngestService(
         Guid CentralArtifactId,
         Guid CentralFrameId,
         Guid ArtifactId,
-        Guid? DevicePublicId,
+        Guid DevicePublicId,
         string StorageReference,
         long ByteLength,
         string ChecksumSha256,

@@ -348,7 +348,8 @@ internal sealed partial class CentralArtifactReconciliationService(
             return true;
         }
         if (await db.CentralObjectRecoveryDispositions.AsNoTracking()
-            .AnyAsync(item => item.OperationToken == null
+            .AnyAsync(item => item.Kind == CentralObjectRecoveryKinds.OrphanQuarantine
+                && item.OperationToken == null
                 && (item.State == CentralObjectRecoveryStates.PendingCopy
                     || item.State == CentralObjectRecoveryStates.PendingDelete), cancellationToken).ConfigureAwait(false))
         {
@@ -651,8 +652,8 @@ internal sealed partial class CentralArtifactReconciliationService(
         var owners = await GetObjectOwnerStatesAsync(db, objectKey, cancellationToken).ConfigureAwait(false);
         if (owners.Count == 0)
         {
-            if (await EnsureDispositionAsync(db, token, objectKey, byteLength,
-                    CentralObjectRecoveryKinds.OrphanQuarantine, cancellationToken).ConfigureAwait(false))
+            if (await EnsureOrphanDispositionAsync(
+                    db, token, objectKey, byteLength, cancellationToken).ConfigureAwait(false))
             {
                 statistics.Orphans++;
                 statistics.OrphanBytes += byteLength;
@@ -666,8 +667,6 @@ internal sealed partial class CentralArtifactReconciliationService(
             {
                 return;
             }
-            _ = await EnsureDispositionAsync(db, token, objectKey, byteLength,
-                CentralObjectRecoveryKinds.ExpiredDelete, cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -686,19 +685,16 @@ internal sealed partial class CentralArtifactReconciliationService(
         return objectKey.AsSpan(prefix.Length, 32).IndexOfAnyExcept(LowerHexCharacters) < 0;
     }
 
-    private async Task<bool> EnsureDispositionAsync(
+    private async Task<bool> EnsureOrphanDispositionAsync(
         ApplicationDbContext db,
         Guid token,
         string sourceObjectKey,
         long byteLength,
-        string kind,
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
         var identity = CreateObjectKeyIdentity(sourceObjectKey);
-        var target = kind == CentralObjectRecoveryKinds.OrphanQuarantine
-            ? CreateQuarantineObjectKey(sourceObjectKey)
-            : null;
+        var target = CreateQuarantineObjectKey(sourceObjectKey);
         var identityMatches = await db.CentralObjectRecoveryDispositions.AsNoTracking()
             .Where(item => item.SourceObjectIdentitySha256 == identity)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -725,7 +721,9 @@ internal sealed partial class CentralArtifactReconciliationService(
                 db.ChangeTracker.Clear();
                 return false;
             }
-            if (existing.OperationToken is not null)
+            if (existing.OperationToken is not null
+                || existing.CentralArtifactId is not null
+                || existing.Kind != CentralObjectRecoveryKinds.OrphanQuarantine)
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 db.ChangeTracker.Clear();
@@ -737,11 +735,8 @@ internal sealed partial class CentralArtifactReconciliationService(
                 db.ChangeTracker.Clear();
                 return false;
             }
-            existing.Kind = kind;
             existing.TargetObjectKey = target;
-            existing.State = kind == CentralObjectRecoveryKinds.OrphanQuarantine
-                ? CentralObjectRecoveryStates.PendingCopy
-                : CentralObjectRecoveryStates.PendingDelete;
+            existing.State = CentralObjectRecoveryStates.PendingCopy;
             existing.ByteLength = byteLength;
             existing.ContentChecksumSha256 = null;
             existing.ReasonCode = null;
@@ -757,10 +752,8 @@ internal sealed partial class CentralArtifactReconciliationService(
             SourceObjectIdentitySha256 = identity,
             SourceObjectKey = sourceObjectKey,
             TargetObjectKey = target,
-            Kind = kind,
-            State = kind == CentralObjectRecoveryKinds.OrphanQuarantine
-                ? CentralObjectRecoveryStates.PendingCopy
-                : CentralObjectRecoveryStates.PendingDelete,
+            Kind = CentralObjectRecoveryKinds.OrphanQuarantine,
+            State = CentralObjectRecoveryStates.PendingCopy,
             ByteLength = byteLength,
             CreatedAtUtc = now,
             UpdatedAtUtc = now
@@ -890,7 +883,9 @@ internal sealed partial class CentralArtifactReconciliationService(
         CancellationToken cancellationToken)
     {
         var ids = await db.CentralObjectRecoveryDispositions.AsNoTracking()
-            .Where(item => item.OperationToken == null
+            .Where(item => item.Kind == CentralObjectRecoveryKinds.OrphanQuarantine
+                && item.OperationToken == null
+                && item.CentralArtifactId == null
                 && (item.State == CentralObjectRecoveryStates.PendingCopy
                     || item.State == CentralObjectRecoveryStates.PendingDelete))
             .OrderBy(item => item.UpdatedAtUtc)
@@ -913,22 +908,12 @@ internal sealed partial class CentralArtifactReconciliationService(
                 db.ChangeTracker.Clear();
                 var disposition = await db.CentralObjectRecoveryDispositions.SingleAsync(item => item.Id == id, cancellationToken)
                     .ConfigureAwait(false);
-                if (disposition.State is not (CentralObjectRecoveryStates.PendingCopy or CentralObjectRecoveryStates.PendingDelete))
+                if (disposition.Kind != CentralObjectRecoveryKinds.OrphanQuarantine
+                    || disposition.OperationToken is not null
+                    || disposition.CentralArtifactId is not null
+                    || disposition.State is not (CentralObjectRecoveryStates.PendingCopy or CentralObjectRecoveryStates.PendingDelete))
                 {
                     continue;
-                }
-                if (disposition.Kind == CentralObjectRecoveryKinds.ExpiredDelete
-                    && disposition.State == CentralObjectRecoveryStates.PendingDelete)
-                {
-                    var readyForLegacyDelete = await AdoptOrFenceLegacyExpiredDeleteAsync(
-                        db, disposition.Id, cancellationToken).ConfigureAwait(false);
-                    if (!readyForLegacyDelete)
-                    {
-                        continue;
-                    }
-                    db.ChangeTracker.Clear();
-                    disposition = await db.CentralObjectRecoveryDispositions.SingleAsync(
-                        item => item.Id == id, cancellationToken).ConfigureAwait(false);
                 }
                 if (disposition.State == CentralObjectRecoveryStates.PendingCopy)
                 {
@@ -936,15 +921,15 @@ internal sealed partial class CentralArtifactReconciliationService(
                     {
                         continue;
                     }
-                    var source = await TryGetObjectFingerprintAsync(minio, disposition.SourceObjectKey, cancellationToken)
+                    var sourceFingerprint = await TryGetObjectFingerprintAsync(minio, disposition.SourceObjectKey, cancellationToken)
                         .ConfigureAwait(false);
-                    var target = await TryGetObjectFingerprintAsync(minio, disposition.TargetObjectKey!, cancellationToken)
+                    var targetFingerprint = await TryGetObjectFingerprintAsync(minio, disposition.TargetObjectKey!, cancellationToken)
                         .ConfigureAwait(false);
-                    if (source is null)
+                    if (sourceFingerprint is null)
                     {
-                        if (target is null || disposition.ContentChecksumSha256 is null
-                            || target.ByteLength != disposition.ByteLength
-                            || !string.Equals(target.ChecksumSha256, disposition.ContentChecksumSha256, StringComparison.Ordinal))
+                        if (targetFingerprint is null || disposition.ContentChecksumSha256 is null
+                            || targetFingerprint.ByteLength != disposition.ByteLength
+                            || !string.Equals(targetFingerprint.ChecksumSha256, disposition.ContentChecksumSha256, StringComparison.Ordinal))
                         {
                             disposition.State = CentralObjectRecoveryStates.Failed;
                             disposition.ReasonCode = "orphan.source-and-quarantine-missing";
@@ -961,13 +946,13 @@ internal sealed partial class CentralArtifactReconciliationService(
                         continue;
                     }
 
-                    disposition.ByteLength = source.ByteLength;
-                    disposition.ContentChecksumSha256 = source.ChecksumSha256;
+                    disposition.ByteLength = sourceFingerprint.ByteLength;
+                    disposition.ContentChecksumSha256 = sourceFingerprint.ChecksumSha256;
                     disposition.UpdatedAtUtc = timeProvider.GetUtcNow();
                     await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
                     await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                    if (target is null || target.ByteLength != source.ByteLength
-                        || !string.Equals(target.ChecksumSha256, source.ChecksumSha256, StringComparison.Ordinal))
+                    if (targetFingerprint is null || targetFingerprint.ByteLength != sourceFingerprint.ByteLength
+                        || !string.Equals(targetFingerprint.ChecksumSha256, sourceFingerprint.ChecksumSha256, StringComparison.Ordinal))
                     {
                         if (!await FenceDispositionOwnershipAsync(db, disposition, cancellationToken).ConfigureAwait(false))
                         {
@@ -977,12 +962,12 @@ internal sealed partial class CentralArtifactReconciliationService(
                         await minio.CopyObjectAsync(new CopyObjectArgs().WithBucket(Bucket)
                             .WithObject(disposition.TargetObjectKey!).WithCopyObjectSource(copySource), cancellationToken)
                             .ConfigureAwait(false);
-                        target = await TryGetObjectFingerprintAsync(minio, disposition.TargetObjectKey!, cancellationToken)
+                        targetFingerprint = await TryGetObjectFingerprintAsync(minio, disposition.TargetObjectKey!, cancellationToken)
                             .ConfigureAwait(false);
                     }
                     await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
-                    if (target is null || target.ByteLength != source.ByteLength
-                        || !string.Equals(target.ChecksumSha256, source.ChecksumSha256, StringComparison.Ordinal))
+                    if (targetFingerprint is null || targetFingerprint.ByteLength != sourceFingerprint.ByteLength
+                        || !string.Equals(targetFingerprint.ChecksumSha256, sourceFingerprint.ChecksumSha256, StringComparison.Ordinal))
                     {
                         disposition.State = CentralObjectRecoveryStates.Failed;
                         disposition.ReasonCode = "orphan.quarantine-content-mismatch";
@@ -997,37 +982,34 @@ internal sealed partial class CentralArtifactReconciliationService(
                     continue;
                 }
 
-                if (disposition.Kind == CentralObjectRecoveryKinds.OrphanQuarantine)
+                var target = await TryGetObjectFingerprintAsync(minio, disposition.TargetObjectKey!, cancellationToken)
+                    .ConfigureAwait(false);
+                if (target is null || disposition.ContentChecksumSha256 is null
+                    || target.ByteLength != disposition.ByteLength
+                    || !string.Equals(target.ChecksumSha256, disposition.ContentChecksumSha256, StringComparison.Ordinal))
                 {
-                    var target = await TryGetObjectFingerprintAsync(minio, disposition.TargetObjectKey!, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (target is null || disposition.ContentChecksumSha256 is null
-                        || target.ByteLength != disposition.ByteLength
-                        || !string.Equals(target.ChecksumSha256, disposition.ContentChecksumSha256, StringComparison.Ordinal))
-                    {
-                        disposition.State = CentralObjectRecoveryStates.Failed;
-                        disposition.ReasonCode = "orphan.quarantine-not-durable";
-                        disposition.UpdatedAtUtc = timeProvider.GetUtcNow();
-                        await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
-                        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-                    var source = await TryGetObjectFingerprintAsync(minio, disposition.SourceObjectKey, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (source is not null
-                        && (source.ByteLength != disposition.ByteLength
-                            || !string.Equals(source.ChecksumSha256, disposition.ContentChecksumSha256, StringComparison.Ordinal)))
-                    {
-                        disposition.TargetObjectKey = CreateQuarantineObjectKey(disposition.SourceObjectKey);
-                        disposition.State = CentralObjectRecoveryStates.PendingCopy;
-                        disposition.ByteLength = source.ByteLength;
-                        disposition.ContentChecksumSha256 = null;
-                        disposition.ReasonCode = null;
-                        disposition.UpdatedAtUtc = timeProvider.GetUtcNow();
-                        await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
-                        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
+                    disposition.State = CentralObjectRecoveryStates.Failed;
+                    disposition.ReasonCode = "orphan.quarantine-not-durable";
+                    disposition.UpdatedAtUtc = timeProvider.GetUtcNow();
+                    await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
+                    await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                var source = await TryGetObjectFingerprintAsync(minio, disposition.SourceObjectKey, cancellationToken)
+                    .ConfigureAwait(false);
+                if (source is not null
+                    && (source.ByteLength != disposition.ByteLength
+                        || !string.Equals(source.ChecksumSha256, disposition.ContentChecksumSha256, StringComparison.Ordinal)))
+                {
+                    disposition.TargetObjectKey = CreateQuarantineObjectKey(disposition.SourceObjectKey);
+                    disposition.State = CentralObjectRecoveryStates.PendingCopy;
+                    disposition.ByteLength = source.ByteLength;
+                    disposition.ContentChecksumSha256 = null;
+                    disposition.ReasonCode = null;
+                    disposition.UpdatedAtUtc = timeProvider.GetUtcNow();
+                    await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
+                    await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    continue;
                 }
                 if (!await FenceDispositionOwnershipAsync(db, disposition, cancellationToken).ConfigureAwait(false))
                 {
@@ -1046,120 +1028,15 @@ internal sealed partial class CentralArtifactReconciliationService(
                 disposition.ReasonCode = null;
                 disposition.UpdatedAtUtc = timeProvider.GetUtcNow();
                 await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-                if (disposition.Kind == CentralObjectRecoveryKinds.OrphanQuarantine)
-                {
-                    statistics.Quarantined++;
-                    statistics.QuarantinedBytes += disposition.ByteLength;
-                    telemetry.RecordRecoveryInventory("quarantined", 1, disposition.ByteLength);
-                }
-                else
-                {
-                    statistics.Deleted++;
-                    statistics.DeletedBytes += disposition.ByteLength;
-                    telemetry.RecordRecoveryInventory("deleted", 1, disposition.ByteLength);
-                }
+                statistics.Quarantined++;
+                statistics.QuarantinedBytes += disposition.ByteLength;
+                telemetry.RecordRecoveryInventory("quarantined", 1, disposition.ByteLength);
             }
             finally
             {
                 await objectLock.DisposeAsync().ConfigureAwait(false);
             }
         }
-    }
-
-    private async Task<bool> AdoptOrFenceLegacyExpiredDeleteAsync(
-        ApplicationDbContext db,
-        Guid dispositionId,
-        CancellationToken cancellationToken)
-    {
-        db.ChangeTracker.Clear();
-        await using var transaction = await db.Database.BeginTransactionAsync(
-            System.Data.IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
-        _ = await CentralArtifactRetentionLock.AcquireDispositionAsync(db, dispositionId, cancellationToken)
-            .ConfigureAwait(false);
-        var disposition = await db.CentralObjectRecoveryDispositions.SingleOrDefaultAsync(item =>
-            item.Id == dispositionId
-            && item.OperationToken == null
-            && item.Kind == CentralObjectRecoveryKinds.ExpiredDelete
-            && item.State == CentralObjectRecoveryStates.PendingDelete, cancellationToken).ConfigureAwait(false);
-        if (disposition is null)
-        {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-            return false;
-        }
-
-        var storageReference = BucketPrefix + disposition.SourceObjectKey;
-        var artifacts = storageReference.Length > 512
-            ? []
-            : await db.CentralArtifacts.FromSqlInterpolated($"""
-                    SELECT * FROM [CentralArtifacts] WITH (UPDLOCK, HOLDLOCK)
-                    WHERE [StorageReference] COLLATE Latin1_General_100_BIN2 = {storageReference}
-                    """)
-                .ToListAsync(cancellationToken).ConfigureAwait(false);
-        var storageReferenceSha256 = SHA256.HashData(Encoding.Unicode.GetBytes(storageReference));
-        var transientOwnerStates = await db.CentralTransientDerivativeOutputIntents.AsNoTracking()
-            .Where(intent => EF.Property<byte[]>(intent, "StorageReferenceSha256") == storageReferenceSha256
-                && EF.Functions.Collate(intent.StorageReference, BinaryCollation) == storageReference)
-            .Select(intent => intent.ObjectState)
-            .ToArrayAsync(cancellationToken).ConfigureAwait(false);
-        var now = timeProvider.GetUtcNow();
-        if (artifacts.Count == 0 && transientOwnerStates.Length == 0)
-        {
-            disposition.Kind = CentralObjectRecoveryKinds.OrphanQuarantine;
-            disposition.TargetObjectKey = CreateQuarantineObjectKey(disposition.SourceObjectKey);
-            disposition.State = CentralObjectRecoveryStates.PendingCopy;
-            disposition.ContentChecksumSha256 = null;
-            disposition.ReasonCode = "ownership.expired-record-removed";
-            disposition.UpdatedAtUtc = now;
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return false;
-        }
-
-        var artifact = artifacts.Count == 1 ? artifacts[0] : null;
-        var references = new CentralArtifactRetentionReferences(db);
-        var held = false;
-        foreach (var owner in artifacts)
-        {
-            held |= await references.IsHeldAsync(owner.Id, cancellationToken).ConfigureAwait(false);
-        }
-        var activeOwner = artifacts.Any(owner => owner.ObjectState != CentralArtifactObjectState.Expired)
-            || transientOwnerStates.Any(state => state != CentralArtifactObjectState.Expired);
-        var tokenizedOwner = artifacts.Any(owner => owner.RetentionDeletionToken is not null);
-        if (activeOwner || tokenizedOwner || held)
-        {
-            disposition.State = CentralObjectRecoveryStates.Cancelled;
-            disposition.ReasonCode = held ? "ownership.held" : "ownership.ambiguous";
-            disposition.UpdatedAtUtc = now;
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return false;
-        }
-        if (artifact is null)
-        {
-            disposition.ReasonCode = null;
-            disposition.UpdatedAtUtc = now;
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            db.ChangeTracker.Clear();
-            return true;
-        }
-
-        var operationToken = Guid.NewGuid();
-        artifact.RetentionDeletionToken = operationToken;
-        artifact.RetentionDeletionRequestedAtUtc = now;
-        artifact.RetentionDeletionCompletedAtUtc = null;
-        disposition.CentralArtifactId = artifact.Id;
-        disposition.OperationToken = operationToken;
-        disposition.AttemptCount = 0;
-        disposition.LastAttemptAtUtc = null;
-        disposition.NextAttemptAtUtc = now;
-        disposition.CompletedAtUtc = null;
-        disposition.ReasonCode = null;
-        disposition.UpdatedAtUtc = now;
-        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        db.ChangeTracker.Clear();
-        return false;
     }
 
     private async Task<bool> FenceDispositionOwnershipAsync(
@@ -1169,18 +1046,13 @@ internal sealed partial class CentralArtifactReconciliationService(
     {
         var owners = await GetObjectOwnerStatesAsync(db, disposition.SourceObjectKey, cancellationToken)
             .ConfigureAwait(false);
-        if (disposition.Kind == CentralObjectRecoveryKinds.ExpiredDelete && owners.Count == 0)
+        if (disposition.Kind != CentralObjectRecoveryKinds.OrphanQuarantine
+            || disposition.OperationToken is not null
+            || disposition.CentralArtifactId is not null)
         {
-            disposition.Kind = CentralObjectRecoveryKinds.OrphanQuarantine;
-            disposition.TargetObjectKey = CreateQuarantineObjectKey(disposition.SourceObjectKey);
-            disposition.State = CentralObjectRecoveryStates.PendingCopy;
-            disposition.ContentChecksumSha256 = null;
-            disposition.ReasonCode = "ownership.expired-record-removed";
-            disposition.UpdatedAtUtc = timeProvider.GetUtcNow();
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return false;
         }
-        if (owners.Any(state => state != CentralArtifactObjectState.Expired))
+        if (owners.Count != 0)
         {
             disposition.State = CentralObjectRecoveryStates.Cancelled;
             disposition.ReasonCode = "ownership.active";

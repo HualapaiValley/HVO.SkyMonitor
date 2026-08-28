@@ -123,7 +123,6 @@ public sealed class DeviceRigProfileSeederTests
             FriendlyName: "Test",
             RegistrationToken: "token",
             HeartbeatEndpoint: "/api/device/heartbeat",
-            UploadEndpoint: "/api/device/upload",
             HeartbeatIntervalSeconds: 60,
             IssuedAtUtc: DateTimeOffset.UtcNow,
             ExpiresAtUtc: DateTimeOffset.UtcNow.AddHours(1),

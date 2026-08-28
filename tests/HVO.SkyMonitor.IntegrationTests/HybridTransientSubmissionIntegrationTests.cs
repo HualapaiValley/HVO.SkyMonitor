@@ -907,6 +907,7 @@ public sealed partial class HybridTransientSubmissionIntegrationTests
             .Include(item => item.Frame)!.ThenInclude(item => item!.Timing)
             .Include(item => item.Frame)!.ThenInclude(item => item!.Control)
             .Include(item => item.Frame)!.ThenInclude(item => item!.Profiles)
+            .Include(item => item.Frame)!.ThenInclude(item => item!.Location)
             .Where(item => sourceIds.Contains(item.Id))
             .OrderBy(item => item.Frame!.CaptureSequence)
             .ToArrayAsync().ConfigureAwait(false);

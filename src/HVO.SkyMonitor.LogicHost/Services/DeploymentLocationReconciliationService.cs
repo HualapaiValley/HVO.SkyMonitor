@@ -286,7 +286,6 @@ internal sealed partial class DeploymentLocationReconciliationService(
             .Select(item => item.CentralFrameId);
         var artifacts = dbContext.CentralArtifacts.AsNoTracking()
             .Where(item => activeFrameIds.Contains(item.CentralFrameId)
-                && item.DevicePublicId != null
                 && item.ObjectState == CentralArtifactObjectState.Available
                 && item.ReconstructionState == CentralReconstructionState.Complete);
         if (work.SchedulingCentralFrameId is { } schedulingFrame
@@ -297,7 +296,7 @@ internal sealed partial class DeploymentLocationReconciliationService(
         }
         var batch = await artifacts.OrderBy(item => item.Frame!.Id).ThenBy(item => item.ArtifactId)
             .Take(settings.SchedulingBatchSize)
-            .Select(item => new { FrameId = item.Frame!.Id, DevicePublicId = item.DevicePublicId!.Value, item.ArtifactId })
+            .Select(item => new { FrameId = item.Frame!.Id, item.DevicePublicId, item.ArtifactId })
             .ToArrayAsync(cancellationToken).ConfigureAwait(false);
         if (batch.Length == 0)
         {

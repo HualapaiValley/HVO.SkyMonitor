@@ -33,9 +33,9 @@ internal sealed class DeviceRigProfileConfiguration : IEntityTypeConfiguration<D
             .HasMaxLength(262144)
             .IsRequired();
 
-        builder.Property(profile => profile.ProfileName).HasMaxLength(128);
-        builder.Property(profile => profile.ProfileVersion).HasMaxLength(128);
-        builder.Property(profile => profile.ProfileSha256).HasMaxLength(64);
+        builder.Property(profile => profile.ProfileName).HasMaxLength(128).IsRequired();
+        builder.Property(profile => profile.ProfileVersion).HasMaxLength(128).IsRequired();
+        builder.Property(profile => profile.ProfileSha256).HasMaxLength(64).IsRequired();
 
         builder.Property(profile => profile.SoftwareVersion)
             .HasMaxLength(64);

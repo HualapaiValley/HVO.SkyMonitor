@@ -32,8 +32,7 @@ internal static class CentralObjectOwnershipFence
             var dispositionKeys = await db.CentralObjectRecoveryDispositions.AsNoTracking()
                 .Where(disposition => disposition.SourceObjectIdentitySha256 == objectKeyIdentity
                     && disposition.Kind == CentralObjectRecoveryKinds.ExpiredDelete
-                    && (disposition.OperationToken != null
-                        || disposition.State == CentralObjectRecoveryStates.Completed))
+                    && disposition.OperationToken != null)
                 .Select(disposition => disposition.SourceObjectKey)
                 .ToArrayAsync(cancellationToken).ConfigureAwait(false);
             if (dispositionKeys.Any(key => string.Equals(key, objectKey, StringComparison.Ordinal)))

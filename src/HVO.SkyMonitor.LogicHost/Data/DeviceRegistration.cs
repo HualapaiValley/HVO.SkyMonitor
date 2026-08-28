@@ -31,7 +31,7 @@ internal sealed class DeviceRegistration
 
     public string? ObservatoryLocationCanonicalSha256 { get; set; }
 
-    public RegistrationLocationEvidenceState LocationEvidenceState { get; set; } = RegistrationLocationEvidenceState.LegacyIncomplete;
+    public RegistrationLocationEvidenceState LocationEvidenceState { get; set; } = RegistrationLocationEvidenceState.ObservatoryPinned;
 
     public string OwnerUserId { get; set; } = string.Empty;
 
@@ -85,9 +85,8 @@ internal enum DeviceRegistrationStatus
 
 internal enum RegistrationLocationEvidenceState
 {
-    LegacyIncomplete = 0,
-    ObservatoryPinned = 1,
-    DeploymentPending = 2,
-    DeploymentAcknowledged = 3,
-    DeploymentRejected = 4
+    ObservatoryPinned,
+    DeploymentPending,
+    DeploymentAcknowledged,
+    DeploymentRejected
 }

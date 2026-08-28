@@ -60,7 +60,6 @@ internal sealed class CentralDerivativeJobScheduler(
 {
     internal const string SourceInvalidatedReason = "The derivative source artifact is not usable.";
     internal const string ResultInvalidatedReason = "The derivative result artifact is not usable.";
-    internal const string LegacySourceSkippedReason = "The legacy derivative source is not reconstructable.";
     internal const string LocationUnresolvedReason = "location.reported-unresolved";
     internal const string LocationMismatchReason = "location.mismatch";
     internal const string SchedulingConcurrencyMarker = "HVO.SkyMonitor.ReconciliationSchedulingConcurrency";
@@ -147,8 +146,7 @@ internal sealed class CentralDerivativeJobScheduler(
         var center = orderedSources[2];
         var job = CreateJob(center, recipe, result: null, now);
         job.RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateHybridSubmissionRequestIdentity(
-            center.DevicePublicId ?? throw new CentralDerivativeJobStateException(
-                "The Hybrid transient center source has no device identity."),
+            center.DevicePublicId,
             center.ArtifactId,
             envelope.SubmissionIdentitySha256,
             recipe);
@@ -301,8 +299,7 @@ internal sealed class CentralDerivativeJobScheduler(
                 ?? throw new CentralDerivativeJobStateException("The transient convergence job could not be created.");
             successor.RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateReprocessRequestIdentity(
                 provisionalJobId,
-                source.DevicePublicId ?? throw new CentralDerivativeJobStateException(
-                    "The transient convergence source has no device identity."),
+                source.DevicePublicId,
                 source.ArtifactId,
                 recipe);
             var successorValidation = dbContext.CentralTransientValidationJobs.Local.Single(item =>
@@ -1192,11 +1189,8 @@ internal sealed class CentralDerivativeJobScheduler(
             || job.AvailableAtUtc.HasValue
             || job.Status != CentralDerivativeJobStatus.Pending
                 && job.Status != CentralDerivativeJobStatus.RetryableFailure
-                && job.Status != CentralDerivativeJobStatus.Skipped
                 && job.Status != CentralDerivativeJobStatus.Quarantined
             || job.Status == CentralDerivativeJobStatus.RetryableFailure && !IsInvalidationFailure(job)
-            || job.Status == CentralDerivativeJobStatus.Skipped
-                && !string.Equals(job.LastError, LegacySourceSkippedReason, StringComparison.Ordinal)
             || job.Status == CentralDerivativeJobStatus.Quarantined
                 && !IsLocationResolutionFailure(job))
         {

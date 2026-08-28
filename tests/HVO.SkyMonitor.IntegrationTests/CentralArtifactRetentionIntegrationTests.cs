@@ -113,6 +113,47 @@ public sealed class CentralArtifactRetentionIntegrationTests
     }
 
     [TestMethod]
+    public async Task Release_ReusesCancelledOrphanDispositionForTokenizedDeletion()
+    {
+        await using var database = await CreateDatabaseAsync("CancelledOrphan").ConfigureAwait(false);
+        var seeded = await SeedAsync(database.Context, "cancelled-orphan", [11, 12, 13]).ConfigureAwait(false);
+        await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
+        var dispositionId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+        database.Context.CentralObjectRecoveryDispositions.Add(new CentralObjectRecoveryDisposition
+        {
+            Id = dispositionId,
+            SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(seeded.ObjectKey),
+            SourceObjectKey = seeded.ObjectKey,
+            TargetObjectKey = $"quarantine/orphans/{Guid.NewGuid():N}.bin",
+            Kind = CentralObjectRecoveryKinds.OrphanQuarantine,
+            State = CentralObjectRecoveryStates.Cancelled,
+            ByteLength = seeded.Payload.LongLength,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            CompletedAtUtc = now,
+            ReasonCode = "object-owned"
+        });
+        await database.Context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralArtifactRetentionTelemetry();
+
+        (await CreateService(database.Context, GetFixtureMinio(), telemetry)
+            .ReleaseAsync(seeded.ArtifactId, CancellationToken.None).ConfigureAwait(false))
+            .Should().Be(CentralArtifactRetentionResult.Released);
+
+        database.Context.ChangeTracker.Clear();
+        var disposition = await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
+            .SingleAsync(item => item.Id == dispositionId).ConfigureAwait(false);
+        disposition.Kind.Should().Be(CentralObjectRecoveryKinds.ExpiredDelete);
+        disposition.State.Should().Be(CentralObjectRecoveryStates.Completed);
+        disposition.CentralArtifactId.Should().Be(seeded.ArtifactId);
+        disposition.OperationToken.Should().NotBeNull();
+        disposition.TargetObjectKey.Should().BeNull();
+        disposition.ReasonCode.Should().BeNull();
+        await AssertMissingAsync(seeded.ObjectKey).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task Release_HappyPathUsesSeventeenEfCommandsNineteenTotalAndTwoTransactions()
     {
         await using var database = await CreateDatabaseAsync("ProtocolBudget").ConfigureAwait(false);
@@ -307,73 +348,6 @@ public sealed class CentralArtifactRetentionIntegrationTests
         dispositions.Should().ContainSingle();
         dispositions[0].State.Should().Be(CentralObjectRecoveryStates.Completed);
         dispositions[0].AttemptCount.Should().Be(1);
-    }
-
-    [TestMethod]
-    public async Task LegacyDisposition_ConcurrentReconciliationAndRequestAdoptionConvergeOnce()
-    {
-        await using var database = await CreateDatabaseAsync("LegacyAdoptionRace").ConfigureAwait(false);
-        var seeded = await SeedAsync(database.Context, "legacy-adoption-race", [68, 69]).ConfigureAwait(false);
-        await PutAsync(seeded.ObjectKey, seeded.Payload).ConfigureAwait(false);
-        var now = DateTimeOffset.UtcNow;
-        var legacyId = Guid.NewGuid();
-        database.Context.CentralObjectRecoveryDispositions.Add(new CentralObjectRecoveryDisposition
-        {
-            Id = legacyId,
-            SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(seeded.ObjectKey),
-            SourceObjectKey = seeded.ObjectKey,
-            Kind = CentralObjectRecoveryKinds.ExpiredDelete,
-            State = CentralObjectRecoveryStates.PendingDelete,
-            ByteLength = seeded.Payload.LongLength,
-            CreatedAtUtc = now,
-            UpdatedAtUtc = now
-        });
-        await database.Context.SaveChangesAsync().ConfigureAwait(false);
-        database.Context.ChangeTracker.Clear();
-
-        using var telemetry = new CentralArtifactRetentionTelemetry();
-        var reservationEntered = new TaskCompletionSource<Guid>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var reservationGate = new ManualResetEventSlim();
-        var service = CreateService(database.Context, GetFixtureMinio(), telemetry);
-        service.ReservationFaultInjector = (_, operationToken) =>
-        {
-            reservationEntered.TrySetResult(operationToken);
-            if (!reservationGate.Wait(TimeSpan.FromSeconds(15)))
-            {
-                throw new TimeoutException("The reconciliation barrier did not release reservation adoption.");
-            }
-            return null;
-        };
-
-        var release = service.ReleaseAsync(seeded.ArtifactId, CancellationToken.None);
-        var operationToken = await reservationEntered.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-        var candidateObserver = new ReconciliationCandidateObserver();
-        await using var reconciliationServices = CreateReconciliationServices(
-            database.ConnectionString, candidateObserver);
-        var reconciler = new CentralArtifactReconciliationService(
-            reconciliationServices.GetRequiredService<IServiceScopeFactory>(),
-            TimeProvider.System,
-            AssemblyHooks.Fixture.Factory.Services.GetRequiredService<CentralIngestTelemetry>(),
-            NullLogger<CentralArtifactReconciliationService>.Instance);
-        var reconciliation = reconciler.ReconcileAsync(CancellationToken.None);
-        await candidateObserver.LegacyCandidateRead.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-        reservationGate.Set();
-
-        (await release.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false))
-            .Should().Be(CentralArtifactRetentionResult.Released);
-        _ = await reconciliation.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
-
-        database.Context.ChangeTracker.Clear();
-        var disposition = await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
-            .SingleAsync(item => item.Id == legacyId).ConfigureAwait(false);
-        disposition.OperationToken.Should().Be(operationToken);
-        disposition.CentralArtifactId.Should().Be(seeded.ArtifactId);
-        disposition.State.Should().Be(CentralObjectRecoveryStates.Completed);
-        disposition.AttemptCount.Should().Be(1);
-        (await database.Context.CentralObjectRecoveryDispositions.AsNoTracking()
-            .CountAsync(item => item.SourceObjectIdentitySha256 == disposition.SourceObjectIdentitySha256)
-            .ConfigureAwait(false)).Should().Be(1);
-        await AssertMissingAsync(seeded.ObjectKey).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -1551,18 +1525,6 @@ public sealed class CentralArtifactRetentionIntegrationTests
         return services.BuildServiceProvider();
     }
 
-    private static ServiceProvider CreateReconciliationServices(
-        string connectionString,
-        IInterceptor interceptor)
-    {
-        var services = new ServiceCollection();
-        services.AddDbContext<ApplicationDbContext>(options => options
-            .UseSqlServer(connectionString)
-            .AddInterceptors(interceptor));
-        services.AddSingleton<IMinioClient>(GetFixtureMinio());
-        return services.BuildServiceProvider();
-    }
-
     private static CentralArtifactRetentionWorker CreateWorker(
         ServiceProvider services,
         CentralArtifactRetentionTelemetry telemetry,
@@ -1826,30 +1788,6 @@ public sealed class CentralArtifactRetentionIntegrationTests
             return ValueTask.FromResult(result);
         }
     }
-
-    private sealed class ReconciliationCandidateObserver : DbCommandInterceptor
-    {
-        private readonly TaskCompletionSource legacyCandidateRead =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public Task LegacyCandidateRead => legacyCandidateRead.Task;
-
-        public override ValueTask<DbDataReader> ReaderExecutedAsync(
-            DbCommand command,
-            CommandExecutedEventData eventData,
-            DbDataReader result,
-            CancellationToken cancellationToken = default)
-        {
-            if (command.CommandText.Contains("OperationToken] IS NULL", StringComparison.Ordinal)
-                && command.CommandText.Contains("[UpdatedAtUtc]", StringComparison.Ordinal)
-                && command.CommandText.Contains("ORDER BY", StringComparison.Ordinal))
-            {
-                legacyCandidateRead.TrySetResult();
-            }
-            return ValueTask.FromResult(result);
-        }
-    }
-
 
     private sealed class StatusDeleteHandler(HttpStatusCode statusCode) : HttpMessageHandler
     {

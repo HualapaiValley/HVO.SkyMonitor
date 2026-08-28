@@ -400,12 +400,14 @@ internal sealed partial class CentralArtifactRetentionService(
             return new(CentralArtifactRetentionResult.Held, null, artifact.ByteLength);
         }
 
-        if (disposition is not null
-            && (disposition.OperationToken is not null
-                || disposition.Kind != CentralObjectRecoveryKinds.ExpiredDelete
-                || disposition.State is not (CentralObjectRecoveryStates.PendingDelete
-                    or CentralObjectRecoveryStates.Completed
-                    or CentralObjectRecoveryStates.Cancelled)))
+        var reusableCancelledOrphan = disposition is
+        {
+            Kind: CentralObjectRecoveryKinds.OrphanQuarantine,
+            State: CentralObjectRecoveryStates.Cancelled,
+            OperationToken: null,
+            CentralArtifactId: null
+        };
+        if (disposition is not null && !reusableCancelledOrphan)
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             dbContext.ChangeTracker.Clear();
@@ -423,38 +425,28 @@ internal sealed partial class CentralArtifactRetentionService(
         artifact.RetentionDeletionToken = operationToken;
         artifact.RetentionDeletionRequestedAtUtc = now;
         artifact.RetentionDeletionCompletedAtUtc = null;
-        if (disposition is null)
+        disposition ??= new CentralObjectRecoveryDisposition
         {
-            disposition = new CentralObjectRecoveryDisposition
-            {
-                SourceObjectIdentitySha256 = identity,
-                SourceObjectKey = objectKey,
-                Kind = CentralObjectRecoveryKinds.ExpiredDelete,
-                State = CentralObjectRecoveryStates.PendingDelete,
-                CentralArtifactId = artifact.Id,
-                OperationToken = operationToken,
-                ByteLength = artifact.ByteLength,
-                AttemptCount = 1,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now,
-                LastAttemptAtUtc = now,
-                NextAttemptAtUtc = null
-            };
+            SourceObjectIdentitySha256 = identity,
+            SourceObjectKey = objectKey,
+        };
+        disposition.TargetObjectKey = null;
+        disposition.Kind = CentralObjectRecoveryKinds.ExpiredDelete;
+        disposition.State = CentralObjectRecoveryStates.PendingDelete;
+        disposition.CentralArtifactId = artifact.Id;
+        disposition.OperationToken = operationToken;
+        disposition.ByteLength = artifact.ByteLength;
+        disposition.ContentChecksumSha256 = null;
+        disposition.AttemptCount = 1;
+        disposition.CreatedAtUtc = now;
+        disposition.UpdatedAtUtc = now;
+        disposition.LastAttemptAtUtc = now;
+        disposition.NextAttemptAtUtc = null;
+        disposition.CompletedAtUtc = null;
+        disposition.ReasonCode = null;
+        if (!reusableCancelledOrphan)
+        {
             dbContext.CentralObjectRecoveryDispositions.Add(disposition);
-        }
-        else
-        {
-            disposition.Kind = CentralObjectRecoveryKinds.ExpiredDelete;
-            disposition.State = CentralObjectRecoveryStates.PendingDelete;
-            disposition.CentralArtifactId = artifact.Id;
-            disposition.OperationToken = operationToken;
-            disposition.ByteLength = artifact.ByteLength;
-            disposition.AttemptCount = 1;
-            disposition.LastAttemptAtUtc = now;
-            disposition.NextAttemptAtUtc = null;
-            disposition.CompletedAtUtc = null;
-            disposition.ReasonCode = null;
-            disposition.UpdatedAtUtc = now;
         }
         var injectedFault = ReservationFaultInjector?.Invoke(attempt, operationToken);
         if (injectedFault is not null)

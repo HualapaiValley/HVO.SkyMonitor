@@ -204,7 +204,6 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             "CameraAgent Integration Device",
             "integration-registration-token",
             "/api/device/heartbeat",
-            "/api/device/upload",
             60,
             activeDevice.IssuedAtUtc,
             activeDevice.ExpiresAtUtc,

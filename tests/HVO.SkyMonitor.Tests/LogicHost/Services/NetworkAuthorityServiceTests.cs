@@ -258,7 +258,7 @@ public sealed class NetworkAuthorityServiceTests
         {
             Frame = frame,
             CentralFrameId = frame.Id,
-            DevicePublicId = registration.DevicePublicId,
+            DevicePublicId = registration.DevicePublicId!.Value,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Raw,
             RecipeVersion = "raw-v1",
@@ -570,7 +570,7 @@ public sealed class NetworkAuthorityServiceTests
         {
             Frame = frame,
             CentralFrameId = frame.Id,
-            DevicePublicId = registration.DevicePublicId,
+            DevicePublicId = registration.DevicePublicId!.Value,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Raw,
             RecipeVersion = "raw-v1",
@@ -588,7 +588,7 @@ public sealed class NetworkAuthorityServiceTests
         {
             Frame = frame,
             CentralFrameId = frame.Id,
-            DevicePublicId = registration.DevicePublicId,
+            DevicePublicId = registration.DevicePublicId!.Value,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Preview,
             RecipeVersion = "preview-v1",
@@ -606,7 +606,7 @@ public sealed class NetworkAuthorityServiceTests
         {
             Frame = frame,
             CentralFrameId = frame.Id,
-            DevicePublicId = registration.DevicePublicId,
+            DevicePublicId = registration.DevicePublicId!.Value,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.AnnotatedPreview,
             RecipeVersion = "svg-v1",

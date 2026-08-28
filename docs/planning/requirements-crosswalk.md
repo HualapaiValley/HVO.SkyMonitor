@@ -74,7 +74,7 @@ state and evidence.
 
 | IDs | Requirement group | Owning source | Phase/issues |
 | --- | --- | --- | --- |
-| `CENTRAL-001`-`CENTRAL-008` | Concurrent v1/v2 ingest, reconstructable normalized records, capture-time profile binding, streamed object access, authorized range retrieval, explicit legacy state, and no storage credential exposure | `docs/project-plan.md` phase 8 | #98, #99; umbrella #60 |
+| `CENTRAL-001`-`CENTRAL-008` | Canonical manifest-v2 and structured-product ingest, reconstructable normalized records, exact capture-time profile binding, fail-closed current location/profile identity, streamed object access, authorized range retrieval, and no storage credential exposure | `docs/project-plan.md` phase 8 | #98, #99, #466; umbrella #60, #458 |
 | `WORKER-001`-`WORKER-008` | Hosted worker, leases, verified inputs, shared execution, idempotent output/lineage, crash recovery, telemetry/health, and audited requeue/supersede | `docs/project-plan.md` phase 9 | #100 |
 | `WINDOW-001`-`WINDOW-007` | Durable ordered inputs/dependencies, lifecycle, offsets/deadlines/compatibility, sequence-based resolution, pins, historical outputs, and non-transient proof | `docs/project-plan.md` phase 10 | #101 |
 | `ENV-001`-`ENV-004` | Versioned time/source/unit/quality/staleness observations, central temporal association without defaults, and durable edge delivery | `docs/project-plan.md` phase 11 | #103, #157 |

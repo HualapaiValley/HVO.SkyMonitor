@@ -2618,7 +2618,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                 {
                     Id = Id($"{prefix}:artifact-row:{index}"),
                     CentralFrameId = frame.Id,
-                    DevicePublicId = registration.DevicePublicId,
+                    DevicePublicId = registration.DevicePublicId!.Value,
                     ArtifactId = artifacts[index],
                     Role = FrameArtifactRole.Raw,
                     RecipeVersion = "raw-v1",

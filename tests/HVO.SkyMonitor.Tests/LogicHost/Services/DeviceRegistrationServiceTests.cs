@@ -17,7 +17,7 @@ public sealed class DeviceRegistrationServiceTests
         var timeProvider = new TestTimeProvider(now);
         var observatoryId = Guid.NewGuid();
 
-        AddObservatory(context, new Observatory
+        await AddObservatoryAsync(context, new Observatory
         {
             Id = observatoryId,
             OwnerUserId = "owner-1",
@@ -72,7 +72,7 @@ public sealed class DeviceRegistrationServiceTests
         var timeProvider = new TestTimeProvider(now);
         var observatoryId = Guid.NewGuid();
 
-        AddObservatory(context, new Observatory
+        await AddObservatoryAsync(context, new Observatory
         {
             Id = observatoryId,
             OwnerUserId = "owner-99",
@@ -145,7 +145,7 @@ public sealed class DeviceRegistrationServiceTests
             TimeZoneId = "Pacific/Honolulu",
             IsActive = true
         };
-        AddObservatory(context, observatory);
+        await AddObservatoryAsync(context, observatory);
         context.DeviceRegistrations.Add(new DeviceRegistration
         {
             DeviceId = "active-camera",
@@ -204,8 +204,8 @@ public sealed class DeviceRegistrationServiceTests
             IssuedAtUtc = now.AddMinutes(-5),
             ExpiresAtUtc = now.AddMinutes(10)
         };
-        AddObservatory(context, firstObservatory);
-        AddObservatory(context, secondObservatory);
+        await AddObservatoryAsync(context, firstObservatory);
+        await AddObservatoryAsync(context, secondObservatory);
         context.DeviceRegistrations.Add(existing);
         await context.SaveChangesAsync().ConfigureAwait(false);
         var service = new DeviceRegistrationService(context, new TestTimeProvider(now));
@@ -243,7 +243,7 @@ public sealed class DeviceRegistrationServiceTests
             TimeZoneId = "Pacific/Honolulu",
             IsActive = true
         };
-        AddObservatory(context, foreignObservatory);
+        await AddObservatoryAsync(context, foreignObservatory);
         await context.SaveChangesAsync().ConfigureAwait(false);
         var service = new DeviceRegistrationService(context, new TestTimeProvider(DateTimeOffset.UtcNow));
 
@@ -281,7 +281,7 @@ public sealed class DeviceRegistrationServiceTests
         return new ApplicationDbContext(options);
     }
 
-    private static void AddObservatory(ApplicationDbContext context, Observatory observatory)
+    private static async Task AddObservatoryAsync(ApplicationDbContext context, Observatory observatory)
     {
         if (!context.Users.Local.Any(user => user.Id == observatory.OwnerUserId))
         {
@@ -301,6 +301,17 @@ public sealed class DeviceRegistrationServiceTests
             Role = ObservatoryMembershipRole.Owner,
             AddedAtUtc = DateTimeOffset.UnixEpoch
         });
+        _ = await ObservatoryLocationAuthority.ApplyAsync(
+            context,
+            observatory,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId,
+            observatory.AllowedDeploymentRadiusMeters,
+            DateTimeOffset.UnixEpoch,
+            "test",
+            CancellationToken.None);
     }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider

@@ -57,7 +57,7 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
         foreach (var artifact in artifacts)
         {
             await scheduler.EnsureRequiredJobsAsync(
-                artifact.DevicePublicId!.Value, artifact.ArtifactId, now, cancellationToken).ConfigureAwait(false);
+                artifact.DevicePublicId, artifact.ArtifactId, now, cancellationToken).ConfigureAwait(false);
         }
         if (artifacts.Count > 0)
         {
@@ -77,7 +77,6 @@ internal sealed partial class CentralTransientRetrospectiveScheduler(
         ArgumentException.ThrowIfNullOrWhiteSpace(executionOptionsIdentity);
         return dbContext.CentralArtifacts.AsNoTracking()
             .Where(artifact => artifact.Role == sourceRole
-                && artifact.DevicePublicId != null
                 && artifact.ObjectState == CentralArtifactObjectState.Available
                 && artifact.ReconstructionState == CentralReconstructionState.Complete
                 && artifact.Frame!.CaptureSequence != null

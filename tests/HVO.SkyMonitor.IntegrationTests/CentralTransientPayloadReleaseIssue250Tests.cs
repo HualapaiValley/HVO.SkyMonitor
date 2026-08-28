@@ -795,7 +795,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 .Select(artifact => new
                 {
                     artifact.Frame!.RegistrationId,
-                    DevicePublicId = artifact.DevicePublicId!.Value
+                    artifact.DevicePublicId
                 }).SingleAsync().ConfigureAwait(false);
             var observatory = new Observatory
             {
@@ -833,7 +833,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 .Where(item => item.Id == clearSeed.Items[0].RecordId)
                 .Select(item => new
                 {
-                    DevicePublicId = item.DevicePublicId!.Value,
+                    item.DevicePublicId,
                     item.ArtifactId,
                     RigId = item.Frame!.RigId!
                 }).SingleAsync().ConfigureAwait(false);

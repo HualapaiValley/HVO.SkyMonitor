@@ -35,7 +35,7 @@ public sealed class CentralTransientAcceptanceManifestTests
         "post-commit-invalidation",
         "version-preserving-reprocessing",
         "retrospective-version-selection",
-        "retrospective-null-device-starvation-guard"
+        "retrospective-required-device-identity"
     ];
 
     [TestMethod]

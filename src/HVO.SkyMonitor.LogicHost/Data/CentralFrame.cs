@@ -37,7 +37,7 @@ internal sealed class CentralFrame
 
     public string? SceneProvenanceJson { get; set; }
 
-    public CentralCaptureLocationEvidenceState LocationEvidenceState { get; set; } = CentralCaptureLocationEvidenceState.LegacyIncomplete;
+    public CentralCaptureLocationEvidenceState LocationEvidenceState { get; set; } = CentralCaptureLocationEvidenceState.ReportedUnresolved;
 
     public CentralCaptureLocation? Location { get; set; }
 

@@ -144,8 +144,8 @@ public sealed class DeploymentLocationHealthCheckTests
             IsActive = true
         };
         context.Observatories.Add(observatory);
-        await ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
-            context, observatory, UtcNow, "test", CancellationToken.None);
+        await ObservatoryLocationAuthority.ApplyAsync(
+            context, observatory, 35, -113, 500, "UTC", null, UtcNow, "test", CancellationToken.None);
         await context.SaveChangesAsync();
         using var telemetry = new DeploymentLocationTelemetry();
 
@@ -253,8 +253,8 @@ public sealed class DeploymentLocationHealthCheckTests
             IsActive = true
         };
         context.Observatories.Add(observatory);
-        var current = await ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
-            context, observatory, UtcNow, "test", CancellationToken.None);
+        var current = await ObservatoryLocationAuthority.ApplyAsync(
+            context, observatory, 35, -113, 500, "UTC", null, UtcNow, "test", CancellationToken.None);
         context.ObservatoryLocationVersions.Add(new ObservatoryLocationVersion
         {
             Observatory = observatory,

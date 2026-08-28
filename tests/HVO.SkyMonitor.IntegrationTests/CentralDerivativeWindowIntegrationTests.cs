@@ -2155,6 +2155,46 @@ public sealed class CentralDerivativeWindowIntegrationTests
             };
             db.DeviceRegistrations.Add(registration);
         }
+        var observatoryLocation = await ObservatoryLocationAuthority.ApplyAsync(
+            db,
+            registration.Observatory!,
+            registration.Observatory!.LatitudeDegrees,
+            registration.Observatory.LongitudeDegrees,
+            registration.Observatory.ElevationMeters,
+            registration.Observatory.TimeZoneId,
+            registration.Observatory.AllowedDeploymentRadiusMeters,
+            capturedAtUtc.AddDays(-1),
+            "window-integration",
+            CancellationToken.None).ConfigureAwait(false);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var deploymentLocationId = $"{scenario}-window-location";
+        var deploymentLocation = await db.DeviceDeploymentLocationVersions.SingleOrDefaultAsync(item =>
+            item.RegistrationId == registration.Id && item.LocationId == deploymentLocationId && item.Version == 1)
+            .ConfigureAwait(false);
+        if (deploymentLocation is null)
+        {
+            var deploymentSnapshot = DeploymentLocationSnapshot.Create(
+                deploymentLocationId,
+                1,
+                "window-integration",
+                null,
+                DateTimeOffset.UnixEpoch,
+                null,
+                observatoryLocation.LatitudeDegrees,
+                observatoryLocation.LongitudeDegrees,
+                observatoryLocation.ElevationMeters,
+                observatoryLocation.TimeZoneId);
+            _ = await uploadScope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>()
+                .ProposeAsync(
+                    registration,
+                    deploymentSnapshot,
+                    DeploymentLocationSourceKind.Inherited,
+                    "window-integration",
+                    CancellationToken.None).ConfigureAwait(false);
+            deploymentLocation = await db.DeviceDeploymentLocationVersions.SingleAsync(item =>
+                item.RegistrationId == registration.Id && item.LocationId == deploymentLocationId && item.Version == 1)
+                .ConfigureAwait(false);
+        }
         var isBayer = pixelFormat == CameraPixelFormat.BayerRggb16;
         var rig = new CameraRigConfig(
             new SensorProfile(
@@ -2208,7 +2248,19 @@ public sealed class CentralDerivativeWindowIntegrationTests
             RigId = $"{scenario}-rig",
             CaptureSequence = sequence,
             CapturedAtUtc = capturedAtUtc,
-            FirstReceivedAtUtc = DateTimeOffset.UtcNow
+            FirstReceivedAtUtc = DateTimeOffset.UtcNow,
+            LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved,
+            Location = new CentralCaptureLocation
+            {
+                DeviceDeploymentLocationVersionId = deploymentLocation.Id,
+                DeploymentLocation = deploymentLocation,
+                LocationId = deploymentLocation.LocationId,
+                Version = deploymentLocation.Version,
+                Source = deploymentLocation.Source,
+                HorizontalAccuracyMeters = deploymentLocation.HorizontalAccuracyMeters,
+                EffectiveFromUtc = deploymentLocation.EffectiveFromUtc,
+                EffectiveUntilUtc = deploymentLocation.EffectiveUntilUtc
+            }
         };
         frame.Timing = new CentralCaptureTiming
         {

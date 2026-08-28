@@ -1447,7 +1447,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 CaptureContractJson.SerializeToElement(recipe.InputSelector)).GetRawText(),
             RequestedRecipeIdentitySha256 = recipe.RequestedRecipeIdentitySha256,
             RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateRequestIdentity(
-                source.DevicePublicId!.Value, source.ArtifactId, recipe),
+                source.DevicePublicId, source.ArtifactId, recipe),
             Status = CentralDerivativeJobStatus.Pending,
             ResolutionCompletedAtUtc = createdAtUtc,
             AttemptCount = 0,

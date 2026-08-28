@@ -123,7 +123,7 @@ public sealed class IntegrationTestFixture : IDisposable
             IsActive = true
         };
         db.Observatories.Add(observatory);
-        db.DeviceRegistrations.Add(new DeviceRegistration
+        var registration = new DeviceRegistration
         {
             Id = Guid.NewGuid(),
             DeviceId = deviceId,
@@ -141,8 +141,38 @@ public sealed class IntegrationTestFixture : IDisposable
             ActivatedAtUtc = now,
             DevicePublicId = Guid.NewGuid(),
             DeviceKeyHash = DeviceRegistrationService.ComputeSha256("cameraagent-integration-key")
-        });
+        };
+        db.DeviceRegistrations.Add(registration);
+        _ = await ObservatoryLocationAuthority.ApplyAsync(
+            db,
+            observatory,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId,
+            observatory.AllowedDeploymentRadiusMeters,
+            DateTimeOffset.UnixEpoch.AddDays(-2),
+            "integration-test",
+            CancellationToken.None).ConfigureAwait(false);
         await db.SaveChangesAsync().ConfigureAwait(false);
+        var deployment = DeploymentLocationSnapshot.Create(
+            "inherited-observatory",
+            1,
+            "observatory-fallback",
+            null,
+            DateTimeOffset.UnixEpoch.AddDays(-1),
+            null,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId);
+        _ = await scope.ServiceProvider.GetRequiredService<IDeploymentLocationAuthorityService>()
+            .ProposeAsync(
+                registration,
+                deployment,
+                DeploymentLocationSourceKind.Inherited,
+                "integration-test",
+                CancellationToken.None).ConfigureAwait(false);
     }
 
     public async Task<ActiveDeviceFixture> GetActiveDeviceAsync(string deviceId)

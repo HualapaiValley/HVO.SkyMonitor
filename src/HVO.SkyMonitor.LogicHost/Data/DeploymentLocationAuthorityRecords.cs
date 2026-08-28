@@ -138,8 +138,7 @@ internal sealed class CentralCaptureLocation
 
 internal enum CentralCaptureLocationEvidenceState
 {
-    LegacyIncomplete = 0,
-    ReportedUnresolved = 1,
-    ReportedResolved = 2,
-    Mismatch = 3
+    ReportedUnresolved,
+    ReportedResolved,
+    Mismatch
 }

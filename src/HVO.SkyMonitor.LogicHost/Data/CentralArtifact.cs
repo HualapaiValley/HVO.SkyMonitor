@@ -13,7 +13,7 @@ internal sealed class CentralArtifact
 
     public Guid ArtifactId { get; set; }
 
-    public Guid? DevicePublicId { get; set; }
+    public Guid DevicePublicId { get; set; }
 
     public FrameArtifactRole Role { get; set; }
 
@@ -41,7 +41,7 @@ internal sealed class CentralArtifact
 
     public CentralArtifactObjectState ObjectState { get; set; } = CentralArtifactObjectState.Available;
 
-    public CentralReconstructionState ReconstructionState { get; set; } = CentralReconstructionState.LegacyIncomplete;
+    public CentralReconstructionState ReconstructionState { get; set; } = CentralReconstructionState.PendingReference;
 
     public string? StateReasonCode { get; set; }
 

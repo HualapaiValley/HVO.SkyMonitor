@@ -27,8 +27,8 @@ public sealed class DeviceRegistrationOwnershipTests
             "owner-1", Guid.NewGuid(), "missing-observatory-device", "Missing Snapshot");
 
         context.Observatories.AddRange(firstObservatory, secondObservatory);
-        AddOwnerMembership(context, firstObservatory);
-        AddOwnerMembership(context, secondObservatory);
+        await AddOwnerMembershipAsync(context, firstObservatory);
+        await AddOwnerMembershipAsync(context, secondObservatory);
         context.DeviceRegistrations.AddRange(
             firstRegistration,
             secondRegistration,
@@ -80,8 +80,8 @@ public sealed class DeviceRegistrationOwnershipTests
             "owner-1", secondObservatory.Id, "inconsistent-device", "Inconsistent");
 
         context.Observatories.AddRange(firstObservatory, secondObservatory);
-        AddOwnerMembership(context, firstObservatory);
-        AddOwnerMembership(context, secondObservatory);
+        await AddOwnerMembershipAsync(context, firstObservatory);
+        await AddOwnerMembershipAsync(context, secondObservatory);
         context.DeviceRegistrations.AddRange(firstRegistration, inconsistentRegistration);
         await context.SaveChangesAsync().ConfigureAwait(false);
         var service = CreateEnvelopeService(context);
@@ -156,7 +156,7 @@ public sealed class DeviceRegistrationOwnershipTests
         var observatory = CreateObservatory("owner-1", "Inactive Observatory", isActive: false);
         var registration = CreateRegistration("owner-1", observatory.Id, "device-1", "Inactive Snapshot");
         context.Observatories.Add(observatory);
-        AddOwnerMembership(context, observatory);
+        await AddOwnerMembershipAsync(context, observatory);
         context.DeviceRegistrations.Add(registration);
         await context.SaveChangesAsync().ConfigureAwait(false);
         var service = CreateEnvelopeService(context);
@@ -225,7 +225,7 @@ public sealed class DeviceRegistrationOwnershipTests
         };
     }
 
-    private static void AddOwnerMembership(ApplicationDbContext context, Observatory observatory)
+    private static async Task AddOwnerMembershipAsync(ApplicationDbContext context, Observatory observatory)
     {
         if (!context.Users.Local.Any(user => user.Id == observatory.OwnerUserId))
         {
@@ -244,6 +244,17 @@ public sealed class DeviceRegistrationOwnershipTests
             Role = ObservatoryMembershipRole.Owner,
             AddedAtUtc = Now
         });
+        _ = await ObservatoryLocationAuthority.ApplyAsync(
+            context,
+            observatory,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId,
+            observatory.AllowedDeploymentRadiusMeters,
+            observatory.CreatedAtUtc,
+            "test",
+            CancellationToken.None);
     }
 
     private static ApplicationDbContext CreateContext()

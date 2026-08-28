@@ -190,7 +190,7 @@ public sealed class CameraAgentTransientCandidateTransportTests
             TimeProvider.System);
 
     private static DeviceSecrets CreateSecrets() => new(
-        Guid.NewGuid(), Guid.NewGuid(), "device", "registration", "/heartbeat", "/upload", 30,
+        Guid.NewGuid(), Guid.NewGuid(), "device", "registration", "/heartbeat", 30,
         DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddYears(1), "device-key", new CentralIdentityOptions());
 
     private static HttpResponseMessage Response(

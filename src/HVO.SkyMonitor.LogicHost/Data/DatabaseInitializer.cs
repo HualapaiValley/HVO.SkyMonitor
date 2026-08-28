@@ -10,14 +10,12 @@ internal enum DatabaseInitializationStage
     Migrate,
     MarkRunning,
     Seed,
-    Backfill,
     Complete
 }
 
 internal sealed record DatabaseInitializationResult(
     Guid AttemptId,
     string TargetMigrationId,
-    int BackfilledObservatories,
     TimeSpan Elapsed);
 
 internal sealed partial class DatabaseInitializer(
@@ -61,12 +59,6 @@ internal sealed partial class DatabaseInitializer(
             await DatabaseSeeder.SeedAsync(
                 services,
                 logger).ConfigureAwait(false);
-            stage = DatabaseInitializationStage.Backfill;
-            var backfilled = await ObservatoryLocationBackfill.RunStrictAsync(
-                dbContext,
-                timeProvider,
-                logger,
-                cancellationToken).ConfigureAwait(false);
             stage = DatabaseInitializationStage.Complete;
             state = await dbContext.DatabaseInitializationState.SingleAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -78,7 +70,6 @@ internal sealed partial class DatabaseInitializer(
             return new(
                 attemptId,
                 targetMigration,
-                backfilled,
                 timeProvider.GetElapsedTime(started));
         }
         catch (Exception exception)

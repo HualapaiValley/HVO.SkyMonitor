@@ -283,8 +283,9 @@ ordinary renderer hot path.
 
 `TransientScenarioProvenance` records canonical parameters and SHA-256,
 algorithm identity, seed/epoch, logical integration interval, sample count, and
-sky/sensor primitive counts. Manifest v1/v2 parsing verifies those values and
-the canonical parameter hash. Processing recipes receive the normal image
+sky/sensor primitive counts. Canonical manifest v2 parsing verifies those values
+and the canonical parameter hash; retired manifest versions fail validation.
+Processing recipes receive the normal image
 artifact, not simulator provenance as a detector feature. Semantic oracle labels
 exist only in the separate test-owned
 `tests/fixtures/virtual-sky/transient-detection-oracle-v1.json`. The stimulus

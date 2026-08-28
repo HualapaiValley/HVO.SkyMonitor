@@ -38,7 +38,7 @@ internal static class ObservatoryMembershipConfiguration
             table.HasTrigger("TR_ObservatoryMembershipAudits_Immutable");
             table.HasCheckConstraint(
                 "CK_ObservatoryMembershipAudits_Action",
-                "[Action] IN (N'Granted', N'RoleChanged', N'Removed', N'LegacyBackfilled', N'LegacyRejected')");
+                "[Action] IN (N'Granted', N'RoleChanged', N'Removed')");
             table.HasCheckConstraint(
                 "CK_ObservatoryMembershipAudits_PreviousRole",
                 "[PreviousRole] IS NULL OR [PreviousRole] IN (N'Viewer', N'Manager', N'Owner')");
@@ -47,10 +47,9 @@ internal static class ObservatoryMembershipConfiguration
                 "[NewRole] IS NULL OR [NewRole] IN (N'Viewer', N'Manager', N'Owner')");
             table.HasCheckConstraint(
                 "CK_ObservatoryMembershipAudits_Transition",
-                "([Action] IN (N'Granted', N'LegacyBackfilled') AND [PreviousRole] IS NULL AND [NewRole] IS NOT NULL) " +
+                "([Action] = N'Granted' AND [PreviousRole] IS NULL AND [NewRole] IS NOT NULL) " +
                 "OR ([Action] = N'RoleChanged' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NOT NULL AND [PreviousRole] <> [NewRole]) " +
-                "OR ([Action] = N'Removed' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NULL) " +
-                "OR ([Action] = N'LegacyRejected' AND [PreviousRole] IS NULL AND [NewRole] IS NULL)");
+                "OR ([Action] = N'Removed' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NULL)");
         });
         entity.HasKey(item => item.Id);
         entity.Property(item => item.TargetUserId).HasMaxLength(450).IsRequired();

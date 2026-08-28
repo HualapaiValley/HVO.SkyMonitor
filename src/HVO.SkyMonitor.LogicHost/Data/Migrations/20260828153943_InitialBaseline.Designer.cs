@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20260827053705_InitialBaseline")]
+    [Migration("20260828153943_InitialBaseline")]
     partial class InitialBaseline
     {
         /// <inheritdoc />
@@ -181,7 +181,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<DateTimeOffset?>("CreatedUtc")
                         .HasColumnType("datetimeoffset");
 
-                    b.Property<Guid?>("DevicePublicId")
+                    b.Property<Guid>("DevicePublicId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("IdempotencyKey")
@@ -293,8 +293,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .IsUnique();
 
                     b.HasIndex("DevicePublicId", "ArtifactId")
-                        .IsUnique()
-                        .HasFilter("[DevicePublicId] IS NOT NULL");
+                        .IsUnique();
 
                     b.HasIndex("CentralFrameId", "ReceivedAtUtc", "ArtifactId");
 
@@ -1342,7 +1341,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)")
-                        .HasDefaultValue("LegacyIncomplete");
+                        .HasDefaultValue("ReportedUnresolved");
 
                     b.Property<Guid?>("LogicalCameraInstallationId")
                         .HasColumnType("uniqueidentifier");
@@ -1491,7 +1490,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         {
                             t.HasCheckConstraint("CK_CentralObjectRecoveryDispositions_AttemptCount", "[AttemptCount] >= 0");
 
-                            t.HasCheckConstraint("CK_CentralObjectRecoveryDispositions_RetentionDeletion", "[OperationToken] IS NULL AND [CentralArtifactId] IS NULL OR [OperationToken] IS NOT NULL AND [CentralArtifactId] IS NOT NULL AND [Kind] = 'ExpiredDelete' AND [State] IN ('PendingDelete', 'Completed', 'Failed')");
+                            t.HasCheckConstraint("CK_CentralObjectRecoveryDispositions_RetentionDeletion", "[OperationToken] IS NULL AND [CentralArtifactId] IS NULL AND [Kind] = 'OrphanQuarantine' AND [TargetObjectKey] IS NOT NULL OR [OperationToken] IS NOT NULL AND [CentralArtifactId] IS NOT NULL AND [Kind] = 'ExpiredDelete' AND [State] IN ('PendingDelete', 'Completed', 'Failed')");
 
                             t.HasCheckConstraint("CK_CentralObjectRecoveryDispositions_TokenizedState", "[OperationToken] IS NULL OR ([State] = 'PendingDelete' AND [CompletedAtUtc] IS NULL) OR ([State] = 'Completed' AND [CompletedAtUtc] IS NOT NULL AND [LastAttemptAtUtc] IS NOT NULL AND [AttemptCount] > 0 AND [NextAttemptAtUtc] IS NULL AND [ReasonCode] IS NULL AND [CompletedAtUtc] >= [LastAttemptAtUtc]) OR ([State] = 'Failed' AND [CompletedAtUtc] IS NULL AND [LastAttemptAtUtc] IS NOT NULL AND [AttemptCount] > 0 AND [NextAttemptAtUtc] IS NULL AND [ReasonCode] IS NOT NULL)");
 
@@ -4677,104 +4676,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         });
                 });
 
-            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.DeviceImageUpload", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("AgentId")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<Guid?>("ArtifactId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("ArtifactRole")
-                        .HasMaxLength(32)
-                        .HasColumnType("nvarchar(32)");
-
-                    b.Property<long?>("ByteLength")
-                        .HasColumnType("bigint");
-
-                    b.Property<DateTimeOffset>("CapturedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("ChecksumSha256")
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.Property<string>("ContentType")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<Guid>("DevicePublicId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("FileName")
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<Guid?>("FrameId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("IdempotencyKey")
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.Property<string>("ManifestSchemaVersion")
-                        .HasMaxLength(16)
-                        .HasColumnType("nvarchar(16)");
-
-                    b.Property<Guid>("ObservatoryId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("PayloadBase64Length")
-                        .HasColumnType("int");
-
-                    b.Property<DateTimeOffset>("ReceivedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("RecipeVersion")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<Guid>("RegistrationId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int?>("RigProfileVersion")
-                        .HasColumnType("int");
-
-                    b.Property<string>("SceneProvenanceJson")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("StorageReference")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AgentId");
-
-                    b.HasIndex("CapturedAtUtc");
-
-                    b.HasIndex("DevicePublicId");
-
-                    b.HasIndex("IdempotencyKey")
-                        .IsUnique()
-                        .HasFilter("[IdempotencyKey] IS NOT NULL");
-
-                    b.HasIndex("ObservatoryId");
-
-                    b.HasIndex("RegistrationId");
-
-                    b.HasIndex("AgentId", "FrameId", "ArtifactRole", "RecipeVersion");
-
-                    b.ToTable("DeviceImageUploads", (string)null);
-                });
-
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.DeviceRegistration", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4832,7 +4733,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)")
-                        .HasDefaultValue("LegacyIncomplete");
+                        .HasDefaultValue("ObservatoryPinned");
 
                     b.Property<double>("ObservatoryElevationMeters")
                         .HasColumnType("float");
@@ -4960,14 +4861,17 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("ProfileName")
+                        .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
 
                     b.Property<string>("ProfileSha256")
+                        .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
                     b.Property<string>("ProfileVersion")
+                        .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
 
@@ -5772,13 +5676,13 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         {
                             t.HasTrigger("TR_ObservatoryMembershipAudits_Immutable");
 
-                            t.HasCheckConstraint("CK_ObservatoryMembershipAudits_Action", "[Action] IN (N'Granted', N'RoleChanged', N'Removed', N'LegacyBackfilled', N'LegacyRejected')");
+                            t.HasCheckConstraint("CK_ObservatoryMembershipAudits_Action", "[Action] IN (N'Granted', N'RoleChanged', N'Removed')");
 
                             t.HasCheckConstraint("CK_ObservatoryMembershipAudits_NewRole", "[NewRole] IS NULL OR [NewRole] IN (N'Viewer', N'Manager', N'Owner')");
 
                             t.HasCheckConstraint("CK_ObservatoryMembershipAudits_PreviousRole", "[PreviousRole] IS NULL OR [PreviousRole] IN (N'Viewer', N'Manager', N'Owner')");
 
-                            t.HasCheckConstraint("CK_ObservatoryMembershipAudits_Transition", "([Action] IN (N'Granted', N'LegacyBackfilled') AND [PreviousRole] IS NULL AND [NewRole] IS NOT NULL) OR ([Action] = N'RoleChanged' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NOT NULL AND [PreviousRole] <> [NewRole]) OR ([Action] = N'Removed' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NULL) OR ([Action] = N'LegacyRejected' AND [PreviousRole] IS NULL AND [NewRole] IS NULL)");
+                            t.HasCheckConstraint("CK_ObservatoryMembershipAudits_Transition", "([Action] = N'Granted' AND [PreviousRole] IS NULL AND [NewRole] IS NOT NULL) OR ([Action] = N'RoleChanged' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NOT NULL AND [PreviousRole] <> [NewRole]) OR ([Action] = N'Removed' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NULL)");
                         });
 
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);

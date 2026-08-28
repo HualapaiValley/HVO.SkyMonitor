@@ -94,6 +94,17 @@ public sealed class DeploymentLocationTelemetryTests
             IssuedAtUtc = DateTimeOffset.UnixEpoch
         };
         db.AddRange(observatory, registration);
+        _ = await ObservatoryLocationAuthority.ApplyAsync(
+            db,
+            observatory,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId,
+            observatory.AllowedDeploymentRadiusMeters,
+            observatory.CreatedAtUtc,
+            "test",
+            CancellationToken.None);
         await db.SaveChangesAsync();
         var service = new DeploymentLocationAuthorityService(db, TimeProvider.System);
 

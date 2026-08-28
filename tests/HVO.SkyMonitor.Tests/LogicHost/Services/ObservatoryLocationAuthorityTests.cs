@@ -47,6 +47,31 @@ public sealed class ObservatoryLocationAuthorityTests
     }
 
     [TestMethod]
+    public async Task EnsureCurrentVersionAsync_IncompleteAuthorityFailsWithoutMutation()
+    {
+        await using var context = CreateContext();
+        var observatory = new Observatory
+        {
+            Name = "Incomplete authority",
+            LatitudeDegrees = 35.347,
+            LongitudeDegrees = -113.878,
+            ElevationMeters = 520,
+            TimeZoneId = "America/Phoenix",
+            IsActive = true
+        };
+        context.Observatories.Add(observatory);
+
+        Func<Task> act = () => ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
+            context, observatory, DateTimeOffset.UtcNow, "test", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*authority is incomplete*");
+        observatory.CurrentLocationVersion.Should().BeNull();
+        observatory.CurrentLocationCanonicalSha256.Should().BeNull();
+        context.ObservatoryLocationVersions.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task CreateAndLocationUpdate_AppendImmutableVersions()
     {
         await using var context = CreateContext();
@@ -198,70 +223,6 @@ public sealed class ObservatoryLocationAuthorityTests
         frame.LocationEvidenceState.Should().Be(CentralCaptureLocationEvidenceState.ReportedResolved);
         (await context.DeviceDeploymentLocationVersions.CountAsync(item =>
             item.Status == DeploymentLocationResolutionStatus.Pending)).Should().Be(0);
-    }
-
-    [TestMethod]
-    public async Task Backfill_NormalizesWindowsTimeZoneAndLeavesInvalidLegacyLocationForOwnerRepair()
-    {
-        await using var context = CreateContext();
-        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 7, 24, 0, 0, 0, TimeSpan.Zero));
-        var windows = new Observatory
-        {
-            OwnerUserId = "owner",
-            Name = "Windows time zone",
-            LatitudeDegrees = 35,
-            LongitudeDegrees = -113,
-            ElevationMeters = 500,
-            TimeZoneId = "Pacific Standard Time",
-            CreatedAtUtc = clock.GetUtcNow(),
-            IsActive = true
-        };
-        var invalid = new Observatory
-        {
-            OwnerUserId = "owner",
-            Name = "Invalid time zone",
-            LatitudeDegrees = 35,
-            LongitudeDegrees = -113,
-            ElevationMeters = 500,
-            TimeZoneId = "Not/A-Time-Zone",
-            CreatedAtUtc = clock.GetUtcNow(),
-            IsActive = true
-        };
-        context.Observatories.AddRange(windows, invalid);
-        context.ObservatoryMemberships.AddRange(
-            new ObservatoryMembership
-            {
-                ObservatoryId = windows.Id,
-                UserId = "owner",
-                Role = ObservatoryMembershipRole.Owner,
-                AddedAtUtc = clock.GetUtcNow()
-            },
-            new ObservatoryMembership
-            {
-                ObservatoryId = invalid.Id,
-                UserId = "owner",
-                Role = ObservatoryMembershipRole.Owner,
-                AddedAtUtc = clock.GetUtcNow()
-            });
-        await context.SaveChangesAsync();
-
-        var count = await ObservatoryLocationBackfill.RunAsync(context, clock);
-
-        count.Should().Be(1);
-        var normalizedWindows = await context.Observatories.SingleAsync(item => item.Id == windows.Id);
-        var invalidLegacy = await context.Observatories.SingleAsync(item => item.Id == invalid.Id);
-        normalizedWindows.TimeZoneId.Should().Be("America/Los_Angeles");
-        normalizedWindows.CurrentLocationVersion.Should().Be(1);
-        invalidLegacy.CurrentLocationVersion.Should().BeNull();
-
-        var service = new ObservatoryService(
-            context,
-            clock,
-            new DeploymentLocationAuthorityService(context, clock));
-        var repaired = await service.CreateOrUpdateAsync(new ObservatoryUpsertRequest(
-            invalidLegacy.Id, "owner", invalidLegacy.Name, 35, -113, 500, "UTC", true));
-        repaired.CurrentLocationVersion.Should().Be(1);
-        repaired.TimeZoneId.Should().Be("UTC");
     }
 
     [TestMethod]

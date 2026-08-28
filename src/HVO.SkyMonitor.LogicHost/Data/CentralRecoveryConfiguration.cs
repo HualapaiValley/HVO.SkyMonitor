@@ -27,7 +27,7 @@ internal static class CentralRecoveryConfiguration
             table.HasCheckConstraint("CK_CentralObjectRecoveryDispositions_AttemptCount", "[AttemptCount] >= 0");
             table.HasCheckConstraint(
                 "CK_CentralObjectRecoveryDispositions_RetentionDeletion",
-                "[OperationToken] IS NULL AND [CentralArtifactId] IS NULL OR [OperationToken] IS NOT NULL AND [CentralArtifactId] IS NOT NULL AND [Kind] = 'ExpiredDelete' AND [State] IN ('PendingDelete', 'Completed', 'Failed')");
+                "[OperationToken] IS NULL AND [CentralArtifactId] IS NULL AND [Kind] = 'OrphanQuarantine' AND [TargetObjectKey] IS NOT NULL OR [OperationToken] IS NOT NULL AND [CentralArtifactId] IS NOT NULL AND [Kind] = 'ExpiredDelete' AND [State] IN ('PendingDelete', 'Completed', 'Failed')");
             table.HasCheckConstraint(
                 "CK_CentralObjectRecoveryDispositions_TokenizedState",
                 "[OperationToken] IS NULL OR ([State] = 'PendingDelete' AND [CompletedAtUtc] IS NULL) OR ([State] = 'Completed' AND [CompletedAtUtc] IS NOT NULL AND [LastAttemptAtUtc] IS NOT NULL AND [AttemptCount] > 0 AND [NextAttemptAtUtc] IS NULL AND [ReasonCode] IS NULL AND [CompletedAtUtc] >= [LastAttemptAtUtc]) OR ([State] = 'Failed' AND [CompletedAtUtc] IS NULL AND [LastAttemptAtUtc] IS NOT NULL AND [AttemptCount] > 0 AND [NextAttemptAtUtc] IS NULL AND [ReasonCode] IS NOT NULL)");

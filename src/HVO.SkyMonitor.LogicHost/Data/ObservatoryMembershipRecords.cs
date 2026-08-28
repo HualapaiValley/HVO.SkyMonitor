@@ -11,9 +11,7 @@ internal enum ObservatoryMembershipAuditAction
 {
     Granted,
     RoleChanged,
-    Removed,
-    LegacyBackfilled,
-    LegacyRejected
+    Removed
 }
 
 internal sealed class ObservatoryMembership

@@ -75,6 +75,10 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Envelope);
 
         var envelope = DeserializeEnvelope(request.Envelope);
+        if (!string.Equals(envelope.EnvelopeVersion, "v2", StringComparison.Ordinal))
+        {
+            throw new DeviceRegistrationException("The registration envelope version is no longer supported.");
+        }
 
         if (!string.Equals(envelope.DeviceId, request.DeviceId, StringComparison.Ordinal))
         {
@@ -135,39 +139,32 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
             now,
             registration.OwnerUserId,
             cancellationToken).ConfigureAwait(false);
-        if (string.Equals(envelope.EnvelopeVersion, "v2", StringComparison.Ordinal) &&
-            (envelope.ObservatoryLocationVersion != observatoryLocation.Version ||
-             !string.Equals(
-                 envelope.ObservatoryLocationCanonicalSha256,
-                 observatoryLocation.CanonicalSha256,
-                 StringComparison.OrdinalIgnoreCase)))
+        if (envelope.ObservatoryLocationVersion != observatoryLocation.Version ||
+            !string.Equals(
+                envelope.ObservatoryLocationCanonicalSha256,
+                observatoryLocation.CanonicalSha256,
+                StringComparison.OrdinalIgnoreCase))
         {
             throw new DeviceRegistrationException(
                 "The Observatory location changed after envelope issuance. Restart registration.");
         }
-        if (string.Equals(envelope.EnvelopeVersion, "v2", StringComparison.Ordinal)
-            && request.DeploymentLocation is null)
+        if (request.DeploymentLocation is null)
         {
             throw new DeviceRegistrationException("A v2 registration requires the protected deployment location.");
         }
-        var supportsDeploymentLocation = !string.Equals(
-            envelope.EnvelopeVersion, "v1", StringComparison.Ordinal);
-        if (supportsDeploymentLocation && request.DeploymentLocation is not null
-            && (!Enum.IsDefined(request.DeploymentLocationSourceKind)
-                || request.DeploymentLocationSourceKind == DeploymentLocationSourceKind.Unspecified))
+        if (!Enum.IsDefined(request.DeploymentLocationSourceKind)
+            || request.DeploymentLocationSourceKind == DeploymentLocationSourceKind.Unspecified)
         {
             throw new DeviceRegistrationException("Deployment location source kind is invalid.");
         }
 
         registration.DevicePublicId ??= envelope.DevicePublicId;
-        var locationAcknowledgment = !supportsDeploymentLocation || request.DeploymentLocation is null
-            ? null
-            : await deploymentLocationAuthority.ProposeAsync(
-                registration,
-                request.DeploymentLocation,
-                request.DeploymentLocationSourceKind,
-                $"bootstrap:{registration.DeviceId}",
-                cancellationToken).ConfigureAwait(false);
+        var locationAcknowledgment = await deploymentLocationAuthority.ProposeAsync(
+            registration,
+            request.DeploymentLocation,
+            request.DeploymentLocationSourceKind,
+            $"bootstrap:{registration.DeviceId}",
+            cancellationToken).ConfigureAwait(false);
 
         var secrets = new DeviceBootstrapSecretPayload(
             registration.DevicePublicId ?? envelope.DevicePublicId,
@@ -175,7 +172,6 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
             registration.FriendlyName,
             envelope.RegistrationToken,
             "/api/device/heartbeat",
-            "/api/device/upload",
             "/api/device/profile/rig",
             DefaultHeartbeatIntervalSeconds,
             now,
@@ -303,7 +299,6 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
         string FriendlyName,
         string RegistrationToken,
         string HeartbeatEndpoint,
-        string UploadEndpoint,
         string RigProfileEndpoint,
         int HeartbeatIntervalSeconds,
         DateTimeOffset IssuedAtUtc,

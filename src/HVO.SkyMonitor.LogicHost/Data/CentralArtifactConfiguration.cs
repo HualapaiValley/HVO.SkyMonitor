@@ -26,6 +26,7 @@ internal sealed class CentralArtifactConfiguration : IEntityTypeConfiguration<Ce
         builder.Property(artifact => artifact.StorageReference).HasMaxLength(512)
             .UseCollation("Latin1_General_100_BIN2").IsRequired();
         builder.Property(artifact => artifact.IdempotencyKey).HasMaxLength(64).IsRequired();
+        builder.Property(artifact => artifact.DevicePublicId).IsRequired();
         builder.Property(artifact => artifact.ReceivedAtUtc).IsRequired();
         builder.Property(artifact => artifact.SourceId).HasMaxLength(256);
         builder.Property(artifact => artifact.Variant).HasMaxLength(128);
@@ -35,8 +36,7 @@ internal sealed class CentralArtifactConfiguration : IEntityTypeConfiguration<Ce
         builder.Property(artifact => artifact.RowVersion).IsRowVersion();
         builder.HasIndex(artifact => artifact.IdempotencyKey).IsUnique();
         builder.HasIndex(artifact => new { artifact.DevicePublicId, artifact.ArtifactId })
-            .IsUnique()
-            .HasFilter("[DevicePublicId] IS NOT NULL");
+            .IsUnique();
         builder.HasIndex(artifact => new { artifact.CentralFrameId, artifact.Role, artifact.RecipeVersion });
         builder.HasIndex(artifact => new { artifact.CentralFrameId, artifact.ArtifactId }).IsUnique();
         builder.HasIndex(artifact => new { artifact.CentralFrameId, artifact.ReceivedAtUtc, artifact.ArtifactId });

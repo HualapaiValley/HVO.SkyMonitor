@@ -26,8 +26,11 @@ public sealed class CentralCloudProcessingIntegrationTests
 
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var reference = CreateRaw(device, scenario, "rig-1", 1, now.AddMinutes(-10));
-        var current = CreateRaw(device, scenario, "rig-1", 2, now);
+        var deployment = await db.DeviceDeploymentLocationVersions.SingleAsync(item =>
+            item.RegistrationId == device.RegistrationId &&
+            item.Status == DeploymentLocationResolutionStatus.Acknowledged).ConfigureAwait(false);
+        var reference = CreateRaw(device, deployment, scenario, "rig-1", 1, now.AddMinutes(-10));
+        var current = CreateRaw(device, deployment, scenario, "rig-1", 2, now);
         var environmentalSource = new EnvironmentalObservationSourceRecord
         {
             IdentitySha256 = Hash("weather-source-identity"),
@@ -110,9 +113,12 @@ public sealed class CentralCloudProcessingIntegrationTests
 
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var reference = CreateRaw(device, scenario, "rig-1", 1, now.AddMinutes(-10));
-        var replacement = CreateRaw(device, scenario, "rig-1", 2, now.AddMinutes(-5));
-        var current = CreateRaw(device, scenario, "rig-1", 3, now);
+        var deployment = await db.DeviceDeploymentLocationVersions.SingleAsync(item =>
+            item.RegistrationId == device.RegistrationId &&
+            item.Status == DeploymentLocationResolutionStatus.Acknowledged).ConfigureAwait(false);
+        var reference = CreateRaw(device, deployment, scenario, "rig-1", 1, now.AddMinutes(-10));
+        var replacement = CreateRaw(device, deployment, scenario, "rig-1", 2, now.AddMinutes(-5));
+        var current = CreateRaw(device, deployment, scenario, "rig-1", 3, now);
         db.CentralArtifacts.AddRange(reference, replacement, current);
         db.CentralClearReferenceDesignations.Add(new CentralClearReferenceDesignation
         {
@@ -272,6 +278,7 @@ public sealed class CentralCloudProcessingIntegrationTests
 
     private static CentralArtifact CreateRaw(
         ActiveDeviceFixture device,
+        DeviceDeploymentLocationVersion deployment,
         string agentId,
         string rigId,
         long sequence,
@@ -288,6 +295,18 @@ public sealed class CentralCloudProcessingIntegrationTests
             CaptureSequence = sequence,
             CapturedAtUtc = capturedAtUtc,
             FirstReceivedAtUtc = capturedAtUtc,
+            LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved,
+            Location = new CentralCaptureLocation
+            {
+                DeviceDeploymentLocationVersionId = deployment.Id,
+                DeploymentLocation = deployment,
+                LocationId = deployment.LocationId,
+                Version = deployment.Version,
+                Source = deployment.Source,
+                HorizontalAccuracyMeters = deployment.HorizontalAccuracyMeters,
+                EffectiveFromUtc = deployment.EffectiveFromUtc,
+                EffectiveUntilUtc = deployment.EffectiveUntilUtc
+            },
             Timing = new CentralCaptureTiming
             {
                 RequestedStartUtc = capturedAtUtc.AddSeconds(-2),

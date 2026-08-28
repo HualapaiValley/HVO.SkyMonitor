@@ -40,7 +40,7 @@ public sealed class DeploymentLocationReconciliationWorkerTests
             now,
             now);
         var secrets = new DeviceSecrets(
-            Guid.NewGuid(), observatory.ObservatoryId, "Camera", "token", "/heartbeat", "/upload", 60,
+            Guid.NewGuid(), observatory.ObservatoryId, "Camera", "token", "/heartbeat", 60,
             now.AddHours(-1), now.AddHours(1), "device-key", new CentralIdentityOptions());
         DeviceSecrets? saved = null;
         var secretStore = new Mock<IDeviceSecretStore>();
@@ -112,7 +112,7 @@ public sealed class DeploymentLocationReconciliationWorkerTests
             observatory, approved, DeploymentLocationSourceKind.Gps,
             DeploymentLocationResolutionStatus.Acknowledged, "owner-approved", now, now);
         var secrets = new DeviceSecrets(
-            Guid.NewGuid(), observatory.ObservatoryId, "Camera", "token", "/heartbeat", "/upload", 60,
+            Guid.NewGuid(), observatory.ObservatoryId, "Camera", "token", "/heartbeat", 60,
             now.AddHours(-1), now.AddHours(1), "device-key", new CentralIdentityOptions());
         var secretStore = new Mock<IDeviceSecretStore>();
         secretStore.Setup(item => item.GetAsync(It.IsAny<CancellationToken>())).ReturnsAsync(secrets);
@@ -256,7 +256,7 @@ public sealed class DeploymentLocationReconciliationWorkerTests
             35.347, -113.878, 520, "America/Phoenix");
         var secretStore = new Mock<IDeviceSecretStore>();
         secretStore.Setup(item => item.GetAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new DeviceSecrets(
-            Guid.NewGuid(), Guid.NewGuid(), "Camera", "token", "/heartbeat", "/upload", 60,
+            Guid.NewGuid(), Guid.NewGuid(), "Camera", "token", "/heartbeat", 60,
             now.AddHours(-1), now.AddHours(1), "key", new CentralIdentityOptions()));
         var identityStore = new Mock<IDeviceIdentityStore>();
         identityStore.Setup(item => item.GetOrCreateAsync(It.IsAny<CancellationToken>()))
@@ -324,7 +324,7 @@ public sealed class DeploymentLocationReconciliationWorkerTests
             null);
         var secretStore = new Mock<IDeviceSecretStore>();
         secretStore.Setup(item => item.GetAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new DeviceSecrets(
-            Guid.NewGuid(), observatoryId, "Camera", "token", "/heartbeat", "/upload", 60,
+            Guid.NewGuid(), observatoryId, "Camera", "token", "/heartbeat", 60,
             now.AddHours(-1), now.AddHours(1), "key", new CentralIdentityOptions()));
         var identityStore = new Mock<IDeviceIdentityStore>();
         identityStore.Setup(item => item.GetOrCreateAsync(It.IsAny<CancellationToken>()))

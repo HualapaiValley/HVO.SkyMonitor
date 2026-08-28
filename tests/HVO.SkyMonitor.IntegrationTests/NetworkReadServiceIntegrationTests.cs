@@ -108,7 +108,7 @@ public sealed class NetworkReadServiceIntegrationTests
         {
             Frame = frame,
             CentralFrameId = frame.Id,
-            DevicePublicId = registration.DevicePublicId,
+            DevicePublicId = registration.DevicePublicId!.Value,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Raw,
             RecipeVersion = "raw-v1",
@@ -126,7 +126,7 @@ public sealed class NetworkReadServiceIntegrationTests
         {
             Frame = frame,
             CentralFrameId = frame.Id,
-            DevicePublicId = registration.DevicePublicId,
+            DevicePublicId = registration.DevicePublicId!.Value,
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Preview,
             RecipeVersion = "preview-v1",

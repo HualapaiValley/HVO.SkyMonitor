@@ -13,7 +13,6 @@ internal static class ObservatoryLocationAuthority
         string actor,
         CancellationToken cancellationToken)
     {
-        now = ToMilliseconds(now);
         if (observatory.CurrentLocationVersion is { } currentVersion &&
             observatory.CurrentLocationCanonicalSha256 is { Length: 64 } currentHash)
         {
@@ -28,19 +27,7 @@ internal static class ObservatoryLocationAuthority
                 return current;
             }
         }
-
-        var last = await dbContext.ObservatoryLocationVersions
-            .Where(item => item.ObservatoryId == observatory.Id)
-            .OrderByDescending(item => item.Version)
-            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        if (last is not null)
-        {
-            observatory.CurrentLocationVersion = last.Version;
-            observatory.CurrentLocationCanonicalSha256 = last.CanonicalSha256;
-            return last;
-        }
-
-        return AddVersion(dbContext, observatory, 1, now, actor);
+        throw new InvalidOperationException("Observatory location authority is incomplete.");
     }
 
     internal static async Task<ObservatoryLocationVersion> ApplyAsync(

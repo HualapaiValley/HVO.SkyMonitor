@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
@@ -34,6 +35,8 @@ internal sealed class DeviceRigProfileService(
     TimeProvider timeProvider,
     ILogger<DeviceRigProfileService> logger) : IDeviceRigProfileService
 {
+    private static readonly JsonSerializerOptions RigSerializerOptions = CreateRigSerializerOptions();
+
     public async Task<DeviceRigProfileUpsertResult> UpsertAsync(DeviceRigProfileUpsertRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -54,7 +57,7 @@ internal sealed class DeviceRigProfileService(
 
         var canonicalJson = CanonicalizeJson(request.RigConfigJson);
         var configHash = ComputeSha256Hex(canonicalJson);
-        var identity = HistoricalRigProfileResolver.TryResolveIdentity(canonicalJson);
+        var identity = CreateIdentity(canonicalJson);
 
         var latest = await dbContext.Set<DeviceRigProfile>()
             .Where(profile => profile.DevicePublicId == registration.DevicePublicId.Value)
@@ -64,10 +67,6 @@ internal sealed class DeviceRigProfileService(
 
         if (latest is not null && string.Equals(latest.ConfigHash, configHash, StringComparison.Ordinal))
         {
-            if (identity is not null && latest.ProfileSha256 is null)
-            {
-                ApplyIdentity(latest, identity);
-            }
             registration.LastSeenUtc = now;
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
@@ -91,9 +90,9 @@ internal sealed class DeviceRigProfileService(
             Version = nextVersion,
             ConfigHash = configHash,
             ConfigJson = canonicalJson,
-            ProfileName = identity?.Name,
-            ProfileVersion = identity?.Version,
-            ProfileSha256 = identity?.Sha256,
+            ProfileName = identity.Name,
+            ProfileVersion = identity.Version,
+            ProfileSha256 = identity.Sha256,
             SoftwareVersion = string.IsNullOrWhiteSpace(request.SoftwareVersion) ? null : request.SoftwareVersion.Trim(),
             CreatedAtUtc = now,
             EffectiveFromUtc = now
@@ -133,11 +132,61 @@ internal sealed class DeviceRigProfileService(
         return Convert.ToHexString(bytes);
     }
 
-    private static void ApplyIdentity(DeviceRigProfile profile, ProfileIdentityDescriptor identity)
+    private static ProfileIdentityDescriptor CreateIdentity(string canonicalJson)
     {
-        profile.ProfileName = identity.Name;
-        profile.ProfileVersion = identity.Version;
-        profile.ProfileSha256 = identity.Sha256;
+        var rig = JsonSerializer.Deserialize<CameraRigConfig>(canonicalJson, RigSerializerOptions);
+        if (rig?.Sensor is null || rig.Optics is null || rig.Orientation is null || rig.Pipeline is null ||
+            string.IsNullOrWhiteSpace(rig.ProfileVersion) || rig.ProfileVersion.Length > 128)
+        {
+            throw new JsonException("RigConfigJson must contain a complete current camera rig configuration.");
+        }
+        if (string.IsNullOrWhiteSpace(rig.Sensor.Name)
+            || rig.Sensor.WidthPixels <= 0
+            || rig.Sensor.HeightPixels <= 0
+            || !double.IsFinite(rig.Sensor.PixelSizeMicrons)
+            || rig.Sensor.PixelSizeMicrons <= 0
+            || !Enum.IsDefined(rig.Sensor.ColorMode)
+            || !Enum.IsDefined(rig.Sensor.PixelFormat)
+            || string.IsNullOrWhiteSpace(rig.Optics.ProjectionModel)
+            || !double.IsFinite(rig.Optics.FieldOfViewDegrees)
+            || rig.Optics.FieldOfViewDegrees <= 0
+            || !double.IsFinite(rig.Orientation.BoresightAltitudeDegrees)
+            || rig.Orientation.BoresightAltitudeDegrees is < -90 or > 90
+            || !double.IsFinite(rig.Orientation.BoresightAzimuthDegrees)
+            || !double.IsFinite(rig.Orientation.RollAdjustmentDegrees)
+            || rig.Pipeline.CaptureInterval <= TimeSpan.Zero
+            || rig.Pipeline.DayExposure <= TimeSpan.Zero
+            || rig.Pipeline.NightExposure <= TimeSpan.Zero
+            || !double.IsFinite(rig.Pipeline.DayGain)
+            || rig.Pipeline.DayGain < 0
+            || !double.IsFinite(rig.Pipeline.NightGain)
+            || rig.Pipeline.NightGain < 0
+            || !Enum.IsDefined(rig.Pipeline.CadenceMode))
+        {
+            throw new JsonException("RigConfigJson contains an invalid current camera rig configuration.");
+        }
+        if (rig.Readout is not null)
+        {
+            try
+            {
+                _ = SensorReadoutResolver.Resolve(rig.Sensor, rig.Readout);
+            }
+            catch (Exception exception) when (exception is ArgumentException or OverflowException)
+            {
+                throw new JsonException("RigConfigJson contains an invalid sensor readout.", exception);
+            }
+        }
+        return new ProfileIdentityDescriptor("rig", rig.ProfileVersion, CameraRigProfileIdentity.ComputeSha256(rig));
+    }
+
+    private static JsonSerializerOptions CreateRigSerializerOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            RespectRequiredConstructorParameters = true
+        };
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
     }
 
     private static string CanonicalizeJson(string json)
