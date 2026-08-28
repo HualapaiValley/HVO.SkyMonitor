@@ -120,7 +120,7 @@ public sealed class InfrastructureCaptureProcessingStepTests
     }
 
     [TestMethod]
-    public async Task ExplicitStorageConsumesOnlyDeclaredDependencyArtifacts()
+    public async Task ExplicitStorageRejectsSelectedDerivativeWithoutReconstructionEvidence()
     {
         var context = CreateContext();
         context.BeginNode("included", []);
@@ -129,10 +129,6 @@ public sealed class InfrastructureCaptureProcessingStepTests
         var excluded = context.AddDerivative(FrameArtifactRole.AnnotatedPreview, CreateFrame(2), "annotation-v1");
         context.BeginNode("storage", ["included"]);
         var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
-        storage.Setup(service => service.SaveAsync(
-                "/tmp/camera", included, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new StoredFrameReference("included.bin", "/tmp/camera/included.bin",
-                included.Frame.TimestampUtc, included.Role));
         var step = new NoOpFileStorageProcessingStep(
             new CaptureProcessingStepMetadata("storage", "Storage", 100),
             new NoOpFileStorageProcessingStepOptions { UpdateLatestFrame = false },
@@ -142,12 +138,10 @@ public sealed class InfrastructureCaptureProcessingStepTests
             Options.Create(new CameraAgentHostOptions()),
             NullLogger<NoOpFileStorageProcessingStep>.Instance);
 
-        await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
-        storage.Verify(service => service.SaveAsync(
-            "/tmp/camera", included, It.IsAny<CancellationToken>()), Times.Once);
-        storage.Verify(service => service.SaveAsync(
-            It.IsAny<string>(), excluded, It.IsAny<CancellationToken>()), Times.Never);
+        storage.VerifyNoOtherCalls();
         Assert.IsEmpty(context.ProcessingOutcomes);
         var evidence = context.GetCurrentInputEvidence();
         Assert.HasCount(1, evidence);
@@ -156,7 +150,7 @@ public sealed class InfrastructureCaptureProcessingStepTests
     }
 
     [TestMethod]
-    public async Task ExplicitStorageRawDependencyPublishesOnlyRawLatestFrame()
+    public async Task ExplicitStorageRejectsRawDependencyWithoutIngressManifest()
     {
         var context = CreateContext();
         var raw = context.Artifacts!.Raw;
@@ -164,12 +158,7 @@ public sealed class InfrastructureCaptureProcessingStepTests
         _ = context.AddDerivative(FrameArtifactRole.Preview, CreateFrame(1), "preview-v1");
         context.BeginNode("storage", [], ["$raw"]);
         var storage = new Mock<IFrameStorageService>(MockBehavior.Strict);
-        storage.Setup(service => service.SaveAsync(
-                "/tmp/camera", raw, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new StoredFrameReference(
-                "raw.bin", "/tmp/camera/raw.bin", raw.Frame.TimestampUtc, raw.Role));
         var latest = new Mock<ILatestFrameAccessor>(MockBehavior.Strict);
-        latest.Setup(accessor => accessor.Update(raw));
         var step = new NoOpFileStorageProcessingStep(
             new CaptureProcessingStepMetadata("storage", "Storage", 100),
             new NoOpFileStorageProcessingStepOptions
@@ -183,12 +172,10 @@ public sealed class InfrastructureCaptureProcessingStepTests
             Options.Create(new CameraAgentHostOptions()),
             NullLogger<NoOpFileStorageProcessingStep>.Instance);
 
-        await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
-        storage.Verify(service => service.SaveAsync(
-            "/tmp/camera", raw, It.IsAny<CancellationToken>()), Times.Once);
         storage.VerifyNoOtherCalls();
-        latest.Verify(accessor => accessor.Update(raw), Times.Once);
         latest.VerifyNoOtherCalls();
         Assert.HasCount(1, context.GetCurrentInputEvidence());
         Assert.AreEqual(raw.ArtifactId, context.GetCurrentInputEvidence()[0].ArtifactId);

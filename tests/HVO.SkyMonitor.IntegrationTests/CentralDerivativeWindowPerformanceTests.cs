@@ -2282,7 +2282,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
                 DevicePublicId = devicePublicId,
                 Role = FrameArtifactRole.Raw,
                 RecipeVersion = "issue-101-raw-v1",
-                ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+                ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
                 MediaType = "application/x-hvo-linear-frame",
                 ByteLength = byteLength,
                 ChecksumSha256 = checksum ?? new string('0', 64),

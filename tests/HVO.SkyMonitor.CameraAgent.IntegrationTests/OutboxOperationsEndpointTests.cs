@@ -249,13 +249,61 @@ public sealed class OutboxOperationsEndpointTests
             return ValueTask.FromResult(OutboxOperationDisposition.Applied);
         }
 
-        public ValueTask EnqueueAsync(string root, ArtifactUploadManifest manifest, CancellationToken cancellationToken)
+        public ValueTask InitializeAsync(string root, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask EnqueueAsync(
+            string root, ArtifactManifestV2 manifest, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask EnqueueAsync(
+            string root, StructuredProcessingProductManifestV1 manifest, CancellationToken cancellationToken)
             => ValueTask.CompletedTask;
 
-        public IReadOnlyList<ArtifactUploadManifest> List(
-            string root, int maximumResults, IReadOnlySet<string>? excludedIdempotencyKeys = null) => [];
+        public ValueTask<ArtifactOutboxLease?> ClaimAsync(
+            string root, string owner, TimeSpan leaseDuration, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
 
-        public IEnumerable<ArtifactUploadManifest> EnumeratePending(string root, CancellationToken cancellationToken) => [];
+        public ValueTask RenewAsync(
+            string root, ArtifactOutboxLease lease, TimeSpan leaseDuration, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask RetryAsync(
+            string root, ArtifactOutboxLease lease, DateTimeOffset nextAttemptUtc, string reason,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask AcknowledgeAsync(
+            string root, ArtifactOutboxLease lease, ArtifactUploadAcknowledgement acknowledgement,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask QuarantineAsync(
+            string root, ArtifactOutboxLease lease, string reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask ReplayAsync(
+            string root, string idempotencyKey, string actor, string reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask AbandonAsync(
+            string root, string idempotencyKey, string actor, string reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<ArtifactOutboxRecord?> ReadAsync(
+            string root, string idempotencyKey, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<IReadOnlyList<ArtifactOutboxAuditEntry>> ReadAuditAsync(
+            string root, string idempotencyKey, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<IReadOnlyList<ArtifactOutboxRetentionHold>> GetRetentionHoldsAsync(
+            string root, CancellationToken cancellationToken)
+            => ValueTask.FromResult<IReadOnlyList<ArtifactOutboxRetentionHold>>([]);
+
+        public ValueTask<IReadOnlyList<Guid>> GetAcknowledgedArtifactIdsAsync(
+            string root, IReadOnlySet<Guid> artifactIds, CancellationToken cancellationToken)
+            => ValueTask.FromResult<IReadOnlyList<Guid>>([]);
+
+        public ValueTask<ArtifactOutboxSnapshot> GetSnapshotAsync(string root, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new ArtifactOutboxSnapshot(0, 0, null, 0, 0, 0, 0, 0, 0));
     }
 
     private sealed class OperationalEnvironmentalOutbox : IEnvironmentalObservationOutbox

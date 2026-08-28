@@ -52,19 +52,13 @@ public sealed record ArtifactManifestV2(
     }
 }
 
-/// <summary>Parsed v1 or v2 artifact manifest without fabricated legacy facts.</summary>
-public sealed record ArtifactManifestDocument(
-    CaptureManifestCompleteness Completeness,
-    ArtifactUploadManifest? LegacyManifest,
-    ArtifactManifestV2? Manifest)
+/// <summary>Parsed current artifact manifest.</summary>
+public sealed record ArtifactManifestDocument(ArtifactManifestV2 Manifest)
 {
-    public static ArtifactManifestDocument FromLegacy(ArtifactUploadManifest manifest)
-        => new(CaptureManifestCompleteness.LegacyIncomplete, manifest, null);
-
     public static ArtifactManifestDocument FromCurrent(ArtifactManifestV2 manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        return new(manifest.Descriptor.Layout.GetManifestCompleteness(), null, manifest);
+        return new(manifest);
     }
 }
 

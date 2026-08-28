@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -52,65 +51,19 @@ public sealed class SqliteArtifactOutbox(
             }
 
             var directory = OutboxDirectory(root);
+            var existingState = await InspectExistingStateAsync(root, cancellationToken).ConfigureAwait(false);
             Directory.CreateDirectory(directory);
             EnsureDatabaseFilesArePhysical(root);
             using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
             EnsureDatabaseFilesArePhysical(root);
-            var existingVersion = 0;
-            using (var existingSchema = connection.CreateCommand())
+            if (!existingState)
             {
-                existingSchema.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'artifact_outbox_schema';";
-                var schemaExists = Convert.ToInt32(
-                    await existingSchema.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                    System.Globalization.CultureInfo.InvariantCulture) == 1;
-                if (schemaExists)
-                {
-                    existingSchema.CommandText = "SELECT COALESCE((SELECT version FROM artifact_outbox_schema WHERE schema_key = 1), 0);";
-                    existingVersion = Convert.ToInt32(
-                        await existingSchema.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                        System.Globalization.CultureInfo.InvariantCulture);
-                    if (existingVersion > 2)
-                    {
-                        throw new InvalidOperationException($"Artifact outbox schema {existingVersion} is newer than supported schema 2.");
-                    }
-                }
-            }
-            if (existingVersion == 0)
-            {
+                using var transaction = BeginImmediate(connection);
                 using var command = connection.CreateCommand();
+                command.Transaction = transaction;
                 command.CommandText = SchemaSql;
                 await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
-            using (var migration = connection.CreateCommand())
-            {
-                migration.CommandText = "SELECT version FROM artifact_outbox_schema WHERE schema_key = 1;";
-                var version = Convert.ToInt32(
-                    await migration.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                    System.Globalization.CultureInfo.InvariantCulture);
-                if (version == 1)
-                {
-                    using var transaction = BeginImmediate(connection);
-                    migration.Transaction = transaction;
-                    migration.CommandText = MigrationV2Sql;
-                    await migration.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                }
-            }
-            using (var version = connection.CreateCommand())
-            {
-                version.CommandText = "SELECT version FROM artifact_outbox_schema WHERE schema_key = 1;";
-                var value = Convert.ToInt32(
-                    await version.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                    System.Globalization.CultureInfo.InvariantCulture);
-                if (value != 2)
-                {
-                    throw new InvalidOperationException($"Artifact outbox schema {value} is not supported.");
-                }
-            }
-            using (var operationalIndex = connection.CreateCommand())
-            {
-                operationalIndex.CommandText = "CREATE INDEX IF NOT EXISTS ix_artifact_outbox_operations ON artifact_outbox_records(status, record_id DESC);";
-                await operationalIndex.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
             using (var integrity = connection.CreateCommand())
             {
@@ -124,7 +77,6 @@ public sealed class SqliteArtifactOutbox(
                 }
             }
 
-            await ImportLegacyEvidenceAsync(root, connection, cancellationToken).ConfigureAwait(false);
             lock (_initializedLock)
             {
                 _initializedRoots.Add(root);
@@ -168,32 +120,6 @@ public sealed class SqliteArtifactOutbox(
             descriptor.Layout.ByteLength,
             descriptor.Artifact.MediaType,
             descriptor.Artifact.CreatedUtc,
-            legacyEvidencePath: null,
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    public async ValueTask EnqueueAsync(
-        string root,
-        ArtifactUploadManifest manifest,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(manifest);
-        manifest.Validate();
-        root = NormalizeRoot(root);
-        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
-        await InsertAsync(
-            root,
-            manifest.IdempotencyKey,
-            ArtifactOutboxManifestKind.LegacyV1,
-            FileSystemArtifactOutbox.SerializeCanonical(manifest),
-            manifest.ArtifactId,
-            manifest.Role,
-            manifest.RelativeArtifactPath,
-            manifest.ChecksumSha256.ToUpperInvariant(),
-            manifest.ByteLength,
-            manifest.MediaType,
-            manifest.CapturedAtUtc,
-            legacyEvidencePath: null,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -228,7 +154,6 @@ public sealed class SqliteArtifactOutbox(
             descriptor.ByteLength,
             descriptor.Artifact.MediaType,
             descriptor.Artifact.CreatedUtc,
-            legacyEvidencePath: null,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -806,62 +731,6 @@ public sealed class SqliteArtifactOutbox(
             ReadCount(reader, 6), ReadCount(reader, 7), ReadCount(reader, 8), _timeProvider.GetUtcNow());
     }
 
-    public async ValueTask<bool> HasUnknownRetentionHoldsAsync(
-        string root,
-        CancellationToken cancellationToken)
-    {
-        root = NormalizeRoot(root);
-        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
-        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT EXISTS(
-                SELECT 1 FROM artifact_outbox_records
-                WHERE status IN ('pending', 'leased', 'retry', 'quarantined')
-                  AND (manifest_kind = 'malformed-legacy' OR artifact_id IS NULL OR relative_artifact_path IS NULL));
-            """;
-        return Convert.ToInt32(
-            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture) == 1;
-    }
-
-    public IReadOnlyList<ArtifactUploadManifest> List(
-        string root,
-        int maximumResults,
-        IReadOnlySet<string>? excludedIdempotencyKeys = null)
-    {
-        if (maximumResults is < 1 or > 10_000)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maximumResults));
-        }
-        var records = ReadCompatibilityRecordsAsync(root, includeQuarantined: false, CancellationToken.None)
-            .AsTask().GetAwaiter().GetResult();
-        return records
-            .Where(record => excludedIdempotencyKeys?.Contains(record.IdempotencyKey) != true)
-            .Where(static record => record.ProductManifest is null)
-            .Select(ToLegacyManifest)
-            .Take(maximumResults)
-            .ToArray();
-    }
-
-    public IEnumerable<ArtifactUploadManifest> EnumeratePending(string root, CancellationToken cancellationToken)
-    {
-        var records = ReadCompatibilityRecordsAsync(root, includeQuarantined: true, cancellationToken)
-            .AsTask().GetAwaiter().GetResult();
-        if (records.Any(static record => record.ManifestKind == ArtifactOutboxManifestKind.MalformedLegacy))
-        {
-            throw new InvalidDataException("Malformed legacy outbox evidence requires operator resolution.");
-        }
-        foreach (var record in records)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (record.ProductManifest is null)
-            {
-                yield return ToLegacyManifest(record);
-            }
-        }
-    }
-
     private async ValueTask ResolveQuarantineAsync(
         string root,
         string idempotencyKey,
@@ -899,8 +768,7 @@ public sealed class SqliteArtifactOutbox(
                   SET status = 'pending', next_attempt_unix_ms = $now, last_reason = NULL,
                       lease_owner = NULL, lease_token = NULL, lease_expires_unix_ms = NULL,
                       updated_unix_ms = $now
-                  WHERE idempotency_key = $key AND status = 'quarantined'
-                    AND manifest_kind != 'malformed-legacy';
+                    WHERE idempotency_key = $key AND status = 'quarantined';
                   """;
             command.Parameters.AddWithValue("$actor", Bound(actor, 128));
             command.Parameters.AddWithValue("$reason", Bound(reason, 512));
@@ -929,7 +797,6 @@ public sealed class SqliteArtifactOutbox(
         long payloadLength,
         string mediaType,
         DateTimeOffset createdUtc,
-        string? legacyEvidencePath,
         CancellationToken cancellationToken)
     {
         var now = _timeProvider.GetUtcNow();
@@ -942,10 +809,9 @@ public sealed class SqliteArtifactOutbox(
                 INSERT INTO artifact_outbox_records(
                     idempotency_key, manifest_kind, manifest_bytes, artifact_id, role,
                     relative_artifact_path, payload_sha256, payload_length, media_type,
-                    status, attempt_count, next_attempt_unix_ms, created_unix_ms, updated_unix_ms,
-                    legacy_evidence_path)
+                    status, attempt_count, next_attempt_unix_ms, created_unix_ms, updated_unix_ms)
                 VALUES ($key, $kind, $bytes, $artifact, $role, $path, $sha, $length, $media,
-                        'pending', 0, $next, $created, $now, $legacy)
+                        'pending', 0, $next, $created, $now)
                 ON CONFLICT(idempotency_key) DO NOTHING;
                 """;
             insert.Parameters.AddWithValue("$key", idempotencyKey);
@@ -960,7 +826,6 @@ public sealed class SqliteArtifactOutbox(
             insert.Parameters.AddWithValue("$next", now.ToUnixTimeMilliseconds());
             insert.Parameters.AddWithValue("$created", createdUtc.ToUnixTimeMilliseconds());
             insert.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
-            insert.Parameters.AddWithValue("$legacy", (object?)legacyEvidencePath ?? DBNull.Value);
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
@@ -995,206 +860,6 @@ public sealed class SqliteArtifactOutbox(
             throw new ArtifactOutboxConflictException("Artifact outbox idempotency key conflicts with committed canonical evidence.");
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async ValueTask ImportLegacyEvidenceAsync(
-        string root,
-        SqliteConnection connection,
-        CancellationToken cancellationToken)
-    {
-        foreach (var path in FileSystemArtifactOutbox.EnumerateManifestPaths(root, cancellationToken))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            byte[] observed;
-            ArtifactUploadManifest? manifest = null;
-            string? failure = null;
-            try
-            {
-                RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
-                observed = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-                var parsed = CaptureContractJson.ParseManifest(observed);
-                manifest = parsed.IsValid ? parsed.Document?.LegacyManifest : null;
-                if (manifest is null)
-                {
-                    failure = "malformed-legacy-manifest";
-                }
-                else if (!string.Equals(
-                    Path.GetFileNameWithoutExtension(path), manifest.IdempotencyKey, StringComparison.Ordinal))
-                {
-                    failure = "legacy-filename-mismatch";
-                    manifest = null;
-                }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                observed = [];
-                failure = "unreadable-legacy-evidence";
-            }
-
-            var evidencePath = Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
-            if (manifest is not null)
-            {
-                await ImportValidLegacyAsync(
-                    connection, manifest, FileSystemArtifactOutbox.SerializeCanonical(manifest), evidencePath, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                await ImportMalformedLegacyAsync(
-                    connection, evidencePath, observed, failure!, cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
-
-    private async ValueTask ImportValidLegacyAsync(
-        SqliteConnection connection,
-        ArtifactUploadManifest manifest,
-        byte[] canonicalBytes,
-        string evidencePath,
-        CancellationToken cancellationToken)
-    {
-        using var transaction = BeginImmediate(connection);
-        var now = _timeProvider.GetUtcNow();
-        using (var insert = connection.CreateCommand())
-        {
-            insert.Transaction = transaction;
-            insert.CommandText = """
-                INSERT INTO artifact_outbox_records(
-                    idempotency_key, manifest_kind, manifest_bytes, artifact_id, role,
-                    relative_artifact_path, payload_sha256, payload_length, media_type,
-                    status, attempt_count, next_attempt_unix_ms, created_unix_ms, updated_unix_ms,
-                    legacy_evidence_path)
-                VALUES ($key, 'legacy-v1', $bytes, $artifact, $role, $path, $sha, $length, $media,
-                        'pending', 0, $now, $created, $now, $evidence)
-                ON CONFLICT(idempotency_key) DO NOTHING;
-                """;
-            insert.Parameters.AddWithValue("$key", manifest.IdempotencyKey);
-            insert.Parameters.AddWithValue("$bytes", canonicalBytes);
-            insert.Parameters.AddWithValue("$artifact", manifest.ArtifactId.ToString("N"));
-            insert.Parameters.AddWithValue("$role", manifest.Role.ToString());
-            insert.Parameters.AddWithValue("$path", manifest.RelativeArtifactPath);
-            insert.Parameters.AddWithValue("$sha", manifest.ChecksumSha256.ToUpperInvariant());
-            insert.Parameters.AddWithValue("$length", manifest.ByteLength);
-            insert.Parameters.AddWithValue("$media", manifest.MediaType);
-            insert.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
-            insert.Parameters.AddWithValue("$created", manifest.CapturedAtUtc.ToUnixTimeMilliseconds());
-            insert.Parameters.AddWithValue("$evidence", evidencePath);
-            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        var existing = await ReadManifestBytesAsync(
-            connection, transaction, manifest.IdempotencyKey, cancellationToken).ConfigureAwait(false);
-        if (!existing.AsSpan().SequenceEqual(canonicalBytes))
-        {
-            await InsertConflictAsync(
-                connection, transaction, manifest.IdempotencyKey, canonicalBytes, "legacy-import-conflict", cancellationToken)
-                .ConfigureAwait(false);
-            if (await QuarantineByKeyAsync(
-                    connection, transaction, manifest.IdempotencyKey, "legacy-import-conflict", cancellationToken)
-                .ConfigureAwait(false))
-            {
-                await InsertAuditAsync(
-                    connection,
-                    transaction,
-                    manifest.IdempotencyKey,
-                    "quarantine",
-                    "legacy-import",
-                    "legacy-import-conflict",
-                    cancellationToken).ConfigureAwait(false);
-            }
-        }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async ValueTask ImportMalformedLegacyAsync(
-        SqliteConnection connection,
-        string evidencePath,
-        byte[] observed,
-        string reason,
-        CancellationToken cancellationToken)
-    {
-        var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat("legacy\n", evidencePath))));
-        var now = _timeProvider.GetUtcNow();
-        using var transaction = BeginImmediate(connection);
-        var inserted = false;
-        using (var command = connection.CreateCommand())
-        {
-            command.Transaction = transaction;
-            command.CommandText = """
-                INSERT INTO artifact_outbox_records(
-                    idempotency_key, manifest_kind, manifest_bytes, status, attempt_count,
-                    next_attempt_unix_ms, created_unix_ms, updated_unix_ms, last_reason, legacy_evidence_path)
-                VALUES ($key, 'malformed-legacy', $bytes, 'quarantined', 0, $now, $now, $now, $reason, $evidence)
-                ON CONFLICT(idempotency_key) DO NOTHING;
-                """;
-            command.Parameters.AddWithValue("$key", key);
-            command.Parameters.AddWithValue("$bytes", observed);
-            command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
-            command.Parameters.AddWithValue("$reason", reason);
-            command.Parameters.AddWithValue("$evidence", evidencePath);
-            inserted = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
-        }
-        var existing = await ReadManifestBytesAsync(connection, transaction, key, cancellationToken).ConfigureAwait(false);
-        if (!existing.AsSpan().SequenceEqual(observed))
-        {
-            await InsertConflictAsync(connection, transaction, key, observed, reason, cancellationToken).ConfigureAwait(false);
-        }
-        if (inserted)
-        {
-            await InsertAuditAsync(connection, transaction, key, "quarantine", "legacy-import", reason, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async ValueTask<IReadOnlyList<ArtifactOutboxRecord>> ReadCompatibilityRecordsAsync(
-        string root,
-        bool includeQuarantined,
-        CancellationToken cancellationToken)
-    {
-        root = NormalizeRoot(root);
-        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
-        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = string.Concat(
-            SelectColumns,
-            includeQuarantined
-                ? " WHERE status IN ('pending', 'leased', 'retry', 'quarantined') ORDER BY next_attempt_unix_ms, created_unix_ms, idempotency_key;"
-                : " WHERE status = 'pending' OR (status = 'retry' AND next_attempt_unix_ms <= $now) OR (status = 'leased' AND lease_expires_unix_ms <= $now) ORDER BY next_attempt_unix_ms, created_unix_ms, idempotency_key;");
-        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
-        var records = new List<ArtifactOutboxRecord>();
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            records.Add(await ReadRecordAsync(reader, cancellationToken).ConfigureAwait(false));
-        }
-        return records;
-    }
-
-    private static ArtifactUploadManifest ToLegacyManifest(ArtifactOutboxRecord record)
-    {
-        if (record.Manifest?.LegacyManifest is { } legacy)
-        {
-            return legacy;
-        }
-        if (record.Manifest?.Manifest is not { } manifest)
-        {
-            throw new InvalidDataException("Outbox record does not contain a valid deliverable manifest.");
-        }
-        var descriptor = manifest.Descriptor;
-        var recipe = descriptor.Artifact.Recipe;
-        return new ArtifactUploadManifest(
-            ArtifactUploadManifest.CurrentSchemaVersion,
-            descriptor.Capture.AgentId,
-            descriptor.Artifact.ArtifactId,
-            descriptor.Capture.CaptureId,
-            descriptor.Artifact.Role,
-            descriptor.Artifact.MediaType,
-            descriptor.Layout.ByteLength,
-            descriptor.Artifact.ChecksumSha256,
-            descriptor.Timing.ExposureStartedUtc,
-            string.Concat(recipe.Name, ":", recipe.SemanticVersion, ":", recipe.OptionsSha256),
-            manifest.RelativeArtifactPath,
-            manifest.Scene);
     }
 
     private static async ValueTask<ArtifactOutboxRecord> ReadByIdAsync(
@@ -1262,21 +927,6 @@ public sealed class SqliteArtifactOutbox(
                 }
             }
         }
-        else if (kind != ArtifactOutboxManifestKind.MalformedLegacy)
-        {
-            var parsed = CaptureContractJson.ParseManifest(bytes);
-            if (!parsed.IsValid || parsed.Document is null)
-            {
-                if (status != ArtifactOutboxStatus.Quarantined)
-                {
-                    throw new InvalidDataException("Committed artifact outbox manifest bytes are invalid.");
-                }
-            }
-            else
-            {
-                manifest = parsed.Document;
-            }
-        }
         return new ArtifactOutboxRecord(
             reader.GetString(1), kind, bytes, manifest,
             reader.IsDBNull(4) ? null : Guid.ParseExact(reader.GetString(4), "N"),
@@ -1293,8 +943,7 @@ public sealed class SqliteArtifactOutbox(
             reader.IsDBNull(15) ? null : reader.GetString(15),
             reader.IsDBNull(16) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(16)),
             reader.IsDBNull(17) ? null : reader.GetString(17),
-            reader.IsDBNull(18) ? null : await reader.GetFieldValueAsync<byte[]>(18, cancellationToken).ConfigureAwait(false),
-            reader.IsDBNull(19) ? null : reader.GetString(19))
+            reader.IsDBNull(18) ? null : await reader.GetFieldValueAsync<byte[]>(18, cancellationToken).ConfigureAwait(false))
         {
             ProductManifest = productManifest
         };
@@ -1548,7 +1197,7 @@ public sealed class SqliteArtifactOutbox(
             DateTimeOffset.FromUnixTimeMilliseconds(updatedUnixMilliseconds),
             DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(8)),
             reader.IsDBNull(11) ? null : OutboxOperationsReasonCodes.Sanitize(reader.GetString(11)),
-            isQuarantined && kind != ArtifactOutboxManifestKind.MalformedLegacy,
+            isQuarantined,
             isQuarantined,
             new ArtifactOutboxOperationsCursor(reader.GetInt64(0)));
     }
@@ -1619,30 +1268,6 @@ public sealed class SqliteArtifactOutbox(
         command.Parameters.AddWithValue("$key", idempotencyKey);
         return (byte[])(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("Imported artifact outbox evidence was not committed."));
-    }
-
-    private static async ValueTask<string?> ResolveCompatibilityKeyAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string requestedKey,
-        CancellationToken cancellationToken)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = string.Concat(
-            SelectColumns,
-            " WHERE status IN ('pending', 'leased', 'retry') ORDER BY created_unix_ms, idempotency_key;");
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            var record = await ReadRecordAsync(reader, cancellationToken).ConfigureAwait(false);
-            if (string.Equals(record.IdempotencyKey, requestedKey, StringComparison.Ordinal) ||
-                string.Equals(ToLegacyManifest(record).IdempotencyKey, requestedKey, StringComparison.Ordinal))
-            {
-                return record.IdempotencyKey;
-            }
-        }
-        return null;
     }
 
     private static async ValueTask ValidatePayloadAsync(
@@ -1741,8 +1366,7 @@ public sealed class SqliteArtifactOutbox(
         ArtifactOutboxRecord record,
         CancellationToken cancellationToken)
     {
-        if (record.ManifestKind == ArtifactOutboxManifestKind.MalformedLegacy
-            || record.Manifest is null && record.ProductManifest is null
+        if (record.Manifest is null && record.ProductManifest is null
             || string.IsNullOrWhiteSpace(record.RelativeArtifactPath)
             || string.IsNullOrWhiteSpace(record.PayloadSha256)
             || record.PayloadLength is null)
@@ -1774,6 +1398,249 @@ public sealed class SqliteArtifactOutbox(
         {
             throw new InvalidOperationException("Artifact evidence checksum must match before replay.");
         }
+    }
+
+    private static async ValueTask<bool> InspectExistingStateAsync(
+        string root,
+        CancellationToken cancellationToken)
+    {
+        var databasePath = DatabasePath(root);
+        if (!File.Exists(databasePath))
+        {
+            return false;
+        }
+
+        EnsureDatabaseFilesArePhysical(root);
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        var tables = new HashSet<string>(StringComparer.Ordinal);
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';";
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                tables.Add(reader.GetString(0));
+            }
+        }
+        if (tables.Count == 0)
+        {
+            throw new InvalidDataException("Existing artifact outbox database has no canonical schema.");
+        }
+
+        string[] requiredTables =
+        [
+            "artifact_outbox_schema",
+            "artifact_outbox_records",
+            "artifact_outbox_audit",
+            "artifact_outbox_conflicts",
+            "artifact_outbox_operations"
+        ];
+        if (requiredTables.Any(table => !tables.Contains(table)))
+        {
+            throw new InvalidDataException("Artifact outbox database is not canonical schema 2.");
+        }
+
+        var actualSchema = await ReadSchemaObjectsAsync(connection, cancellationToken).ConfigureAwait(false);
+        var canonicalSchema = CanonicalSchemaObjects.Value;
+        if (actualSchema.Count != canonicalSchema.Count ||
+            canonicalSchema.Any(expected =>
+                !actualSchema.TryGetValue(expected.Key, out var actual) ||
+                !string.Equals(actual, expected.Value, StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException("Artifact outbox database structure is not canonical schema 2.");
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT version FROM artifact_outbox_schema WHERE schema_key = 1;";
+            var version = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (version is null || Convert.ToInt32(version, System.Globalization.CultureInfo.InvariantCulture) != 2)
+            {
+                throw new InvalidOperationException("Artifact outbox database is not supported canonical schema 2.");
+            }
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA integrity_check;";
+            var result = Convert.ToString(
+                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (!string.Equals(result, "ok", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Artifact outbox SQLite integrity check failed.");
+            }
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT idempotency_key, manifest_kind, manifest_bytes, artifact_id, role,
+                       relative_artifact_path, payload_sha256, payload_length, media_type, status,
+                       attempt_count, lease_owner, lease_token, lease_expires_unix_ms,
+                       completion_token, acknowledgement, acknowledged_unix_ms,
+                       terminal_actor, terminal_reason, terminal_unix_ms
+                FROM artifact_outbox_records;
+                """;
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (!string.Equals(reader.GetString(1), "v2", StringComparison.Ordinal) ||
+                    Enumerable.Range(3, 7).Any(reader.IsDBNull) || reader.GetInt32(10) < 0)
+                {
+                    throw new InvalidDataException("Artifact outbox contains incomplete current rows.");
+                }
+
+                var key = reader.GetString(0);
+                var bytes = await reader.GetFieldValueAsync<byte[]>(2, cancellationToken).ConfigureAwait(false);
+                var parsed = CaptureContractJson.ParseManifest(bytes);
+                if (parsed.IsValid && parsed.Document?.Manifest is { } manifest)
+                {
+                    ValidateCanonicalRow(
+                        reader, key, bytes, manifest.IdempotencyKey,
+                        manifest.Descriptor.Artifact, manifest.RelativeArtifactPath,
+                        manifest.Descriptor.Layout.ByteLength, manifest.SchemaVersion,
+                        CaptureContractJson.Serialize(manifest));
+                    continue;
+                }
+
+                var product = StructuredProcessingProductManifestJson.Parse(bytes);
+                if (!product.IsValid || product.Manifest is not { } productManifest)
+                {
+                    throw new InvalidDataException("Artifact outbox contains invalid current manifest rows.");
+                }
+                ValidateCanonicalRow(
+                    reader, key, bytes, productManifest.IdempotencyKey,
+                    productManifest.Descriptor.Artifact, productManifest.RelativeArtifactPath,
+                    productManifest.Descriptor.ByteLength, productManifest.SchemaVersion,
+                    StructuredProcessingProductManifestJson.Serialize(productManifest));
+            }
+        }
+        return true;
+    }
+
+    private static void ValidateCanonicalRow(
+        SqliteDataReader reader,
+        string key,
+        byte[] bytes,
+        string expectedKey,
+        ArtifactDescriptor artifact,
+        string relativeArtifactPath,
+        long byteLength,
+        string manifestSchemaVersion,
+        byte[] canonicalBytes)
+    {
+        if (!string.Equals(key, expectedKey, StringComparison.Ordinal) ||
+            !bytes.AsSpan().SequenceEqual(canonicalBytes) ||
+            !string.Equals(reader.GetString(3), artifact.ArtifactId.ToString("N"), StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(4), artifact.Role.ToString(), StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(5), relativeArtifactPath, StringComparison.Ordinal) ||
+            !string.Equals(reader.GetString(6), artifact.ChecksumSha256.ToUpperInvariant(), StringComparison.Ordinal) ||
+            reader.GetInt64(7) != byteLength ||
+            !string.Equals(reader.GetString(8), artifact.MediaType, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Artifact outbox current manifest identity is inconsistent.");
+        }
+
+        var status = reader.GetString(9);
+        _ = ParseStatus(status);
+        var leased = string.Equals(status, "leased", StringComparison.Ordinal);
+        var acknowledged = string.Equals(status, "acknowledged", StringComparison.Ordinal);
+        var abandoned = string.Equals(status, "abandoned", StringComparison.Ordinal);
+        if (leased != !reader.IsDBNull(11) || leased != !reader.IsDBNull(12) || leased != !reader.IsDBNull(13) ||
+            acknowledged != !reader.IsDBNull(14) || acknowledged != !reader.IsDBNull(15) || acknowledged != !reader.IsDBNull(16) ||
+            abandoned != !reader.IsDBNull(17) || abandoned != !reader.IsDBNull(18) || abandoned != !reader.IsDBNull(19))
+        {
+            throw new InvalidDataException("Artifact outbox current row state is inconsistent.");
+        }
+        if (!acknowledged) return;
+
+        ArtifactUploadAcknowledgement acknowledgement;
+        try
+        {
+            acknowledgement = JsonSerializer.Deserialize<ArtifactUploadAcknowledgement>(
+                reader.GetFieldValue<byte[]>(15))
+                ?? throw new InvalidDataException("Artifact outbox acknowledgement evidence is null.");
+            acknowledgement.Validate();
+        }
+        catch (Exception exception) when (exception is JsonException or ArgumentException)
+        {
+            throw new InvalidDataException("Artifact outbox acknowledgement evidence is invalid.", exception);
+        }
+        if (!string.Equals(acknowledgement.SchemaVersion, ArtifactUploadAcknowledgement.CurrentSchemaVersion, StringComparison.Ordinal) ||
+            !string.Equals(acknowledgement.AcceptedManifestSchemaVersion, manifestSchemaVersion, StringComparison.Ordinal) ||
+            !string.Equals(acknowledgement.IdempotencyKey, key, StringComparison.OrdinalIgnoreCase) ||
+            acknowledgement.ArtifactId != artifact.ArtifactId ||
+            !string.Equals(acknowledgement.ChecksumSha256, artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase) ||
+            acknowledgement.ByteLength != byteLength)
+        {
+            throw new InvalidDataException("Artifact outbox acknowledgement evidence conflicts with its canonical manifest.");
+        }
+    }
+
+    private static async ValueTask<Dictionary<string, string>> ReadSchemaObjectsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type, name;";
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add($"{reader.GetString(0)}:{reader.GetString(1)}", NormalizeSchemaSql(reader.GetString(2)));
+        }
+        return result;
+    }
+
+    private static Dictionary<string, string> CreateCanonicalSchemaObjects()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = SchemaSql;
+            command.ExecuteNonQuery();
+        }
+        using var schema = connection.CreateCommand();
+        schema.CommandText = "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type, name;";
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        using var reader = schema.ExecuteReader();
+        while (reader.Read())
+        {
+            result.Add($"{reader.GetString(0)}:{reader.GetString(1)}", NormalizeSchemaSql(reader.GetString(2)));
+        }
+        return result;
+    }
+
+    private static string NormalizeSchemaSql(string sql)
+    {
+        var result = new List<char>(sql.Length);
+        var inLiteral = false;
+        for (var index = 0; index < sql.Length; index++)
+        {
+            var character = sql[index];
+            if (character == '\'')
+            {
+                result.Add(character);
+                if (inLiteral && index + 1 < sql.Length && sql[index + 1] == '\'')
+                {
+                    result.Add(sql[++index]);
+                    continue;
+                }
+                inLiteral = !inLiteral;
+                continue;
+            }
+            if (inLiteral || !char.IsWhiteSpace(character)) result.Add(character);
+        }
+        return new string(result.ToArray());
     }
 
     private static string NormalizeRoot(string root)
@@ -1836,16 +1703,12 @@ public sealed class SqliteArtifactOutbox(
     {
         ArtifactOutboxManifestKind.ManifestV2 => "v2",
         ArtifactOutboxManifestKind.StructuredProductV1 => "v2",
-        ArtifactOutboxManifestKind.LegacyV1 => "legacy-v1",
-        ArtifactOutboxManifestKind.MalformedLegacy => "malformed-legacy",
         _ => throw new ArgumentOutOfRangeException(nameof(kind))
     };
 
     private static ArtifactOutboxManifestKind ParseKind(string value) => value switch
     {
         "v2" => ArtifactOutboxManifestKind.ManifestV2,
-        "legacy-v1" => ArtifactOutboxManifestKind.LegacyV1,
-        "malformed-legacy" => ArtifactOutboxManifestKind.MalformedLegacy,
         _ => throw new InvalidDataException("Artifact outbox manifest kind is invalid.")
     };
 
@@ -1867,6 +1730,9 @@ public sealed class SqliteArtifactOutbox(
     private static StringComparison PathComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase
         : StringComparison.Ordinal;
+
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaObjects =
+        new(CreateCanonicalSchemaObjects, LazyThreadSafetyMode.ExecutionAndPublication);
 
     public void Dispose()
     {
@@ -1900,29 +1766,28 @@ public sealed class SqliteArtifactOutbox(
         SELECT record_id, idempotency_key, manifest_kind, manifest_bytes, artifact_id, role,
                relative_artifact_path, payload_sha256, payload_length, media_type, status,
                attempt_count, next_attempt_unix_ms, created_unix_ms, lease_owner, lease_token,
-               lease_expires_unix_ms, last_reason, acknowledgement, legacy_evidence_path
+               lease_expires_unix_ms, last_reason, acknowledgement
         FROM artifact_outbox_records
         """;
 
     private const string SchemaSql = """
-        CREATE TABLE IF NOT EXISTS artifact_outbox_schema(
+        CREATE TABLE artifact_outbox_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 1)
+            version INTEGER NOT NULL CHECK(version = 2)
         ) STRICT;
-        INSERT INTO artifact_outbox_schema(schema_key, version) VALUES (1, 1)
-            ON CONFLICT(schema_key) DO NOTHING;
+        INSERT INTO artifact_outbox_schema(schema_key, version) VALUES (1, 2);
 
-        CREATE TABLE IF NOT EXISTS artifact_outbox_records(
+        CREATE TABLE artifact_outbox_records(
             record_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            idempotency_key TEXT NOT NULL UNIQUE,
-            manifest_kind TEXT NOT NULL CHECK(manifest_kind IN ('v2', 'legacy-v1', 'malformed-legacy')),
-            manifest_bytes BLOB NOT NULL,
-            artifact_id TEXT NULL CHECK(artifact_id IS NULL OR length(artifact_id) = 32),
-            role TEXT NULL,
-            relative_artifact_path TEXT NULL,
-            payload_sha256 TEXT NULL CHECK(payload_sha256 IS NULL OR length(payload_sha256) = 64),
-            payload_length INTEGER NULL CHECK(payload_length IS NULL OR payload_length >= 0),
-            media_type TEXT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE CHECK(length(idempotency_key) = 64),
+            manifest_kind TEXT NOT NULL CHECK(manifest_kind = 'v2'),
+            manifest_bytes BLOB NOT NULL CHECK(length(manifest_bytes) > 0),
+            artifact_id TEXT NOT NULL CHECK(length(artifact_id) = 32),
+            role TEXT NOT NULL CHECK(role IN ('Raw', 'Calibrated', 'Combined', 'Preview', 'AnnotatedPreview', 'Metadata')),
+            relative_artifact_path TEXT NOT NULL CHECK(length(relative_artifact_path) > 0),
+            payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256) = 64),
+            payload_length INTEGER NOT NULL CHECK(payload_length >= 0),
+            media_type TEXT NOT NULL CHECK(length(media_type) > 0),
             status TEXT NOT NULL CHECK(status IN ('pending', 'leased', 'retry', 'acknowledged', 'quarantined', 'abandoned')),
             attempt_count INTEGER NOT NULL CHECK(attempt_count >= 0),
             next_attempt_unix_ms INTEGER NOT NULL,
@@ -1938,26 +1803,39 @@ public sealed class SqliteArtifactOutbox(
             terminal_actor TEXT NULL,
             terminal_reason TEXT NULL,
             terminal_unix_ms INTEGER NULL,
-            legacy_evidence_path TEXT NULL,
-            CHECK(status != 'leased' OR (lease_owner IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_unix_ms IS NOT NULL))
+            CHECK((status = 'leased') = (lease_owner IS NOT NULL)),
+            CHECK((status = 'leased') = (lease_token IS NOT NULL)),
+            CHECK((status = 'leased') = (lease_expires_unix_ms IS NOT NULL)),
+            CHECK((status = 'acknowledged') = (completion_token IS NOT NULL)),
+            CHECK((status = 'acknowledged') = (acknowledgement IS NOT NULL)),
+            CHECK((status = 'acknowledged') = (acknowledged_unix_ms IS NOT NULL)),
+            CHECK((status = 'abandoned') = (terminal_actor IS NOT NULL)),
+            CHECK((status = 'abandoned') = (terminal_reason IS NOT NULL)),
+            CHECK((status = 'abandoned') = (terminal_unix_ms IS NOT NULL))
         ) STRICT;
 
-        CREATE INDEX IF NOT EXISTS ix_artifact_outbox_claim
+        CREATE INDEX ix_artifact_outbox_claim
             ON artifact_outbox_records(status, next_attempt_unix_ms, created_unix_ms, idempotency_key);
-        CREATE INDEX IF NOT EXISTS ix_artifact_outbox_lease
+        CREATE INDEX ix_artifact_outbox_lease
             ON artifact_outbox_records(status, lease_expires_unix_ms, created_unix_ms, idempotency_key);
+        CREATE INDEX ix_artifact_outbox_operations
+            ON artifact_outbox_records(status, record_id DESC);
 
-        CREATE TABLE IF NOT EXISTS artifact_outbox_audit(
+        CREATE TABLE artifact_outbox_audit(
             audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
             idempotency_key TEXT NOT NULL,
             action TEXT NOT NULL,
             actor TEXT NOT NULL,
             reason TEXT NOT NULL,
             occurred_unix_ms INTEGER NOT NULL,
+            operation_key TEXT NULL,
             FOREIGN KEY(idempotency_key) REFERENCES artifact_outbox_records(idempotency_key)
         ) STRICT;
 
-        CREATE TABLE IF NOT EXISTS artifact_outbox_conflicts(
+        CREATE UNIQUE INDEX ux_artifact_outbox_audit_operation
+            ON artifact_outbox_audit(operation_key) WHERE operation_key IS NOT NULL;
+
+        CREATE TABLE artifact_outbox_conflicts(
             conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
             idempotency_key TEXT NOT NULL,
             conflicting_manifest_bytes BLOB NOT NULL,
@@ -1965,12 +1843,7 @@ public sealed class SqliteArtifactOutbox(
             observed_unix_ms INTEGER NOT NULL,
             FOREIGN KEY(idempotency_key) REFERENCES artifact_outbox_records(idempotency_key)
         ) STRICT;
-        """;
 
-    private const string MigrationV2Sql = """
-        ALTER TABLE artifact_outbox_audit ADD COLUMN operation_key TEXT NULL;
-        CREATE UNIQUE INDEX ux_artifact_outbox_audit_operation
-            ON artifact_outbox_audit(operation_key) WHERE operation_key IS NOT NULL;
         CREATE TABLE artifact_outbox_operations(
             operation_key TEXT NOT NULL PRIMARY KEY CHECK(length(operation_key) BETWEEN 1 AND 128),
             idempotency_key TEXT NOT NULL,
@@ -1980,12 +1853,5 @@ public sealed class SqliteArtifactOutbox(
             occurred_unix_ms INTEGER NOT NULL,
             FOREIGN KEY(idempotency_key) REFERENCES artifact_outbox_records(idempotency_key)
         ) STRICT;
-        CREATE TABLE artifact_outbox_schema_v2(
-            schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 2)
-        ) STRICT;
-        INSERT INTO artifact_outbox_schema_v2(schema_key, version) VALUES(1, 2);
-        DROP TABLE artifact_outbox_schema;
-        ALTER TABLE artifact_outbox_schema_v2 RENAME TO artifact_outbox_schema;
         """;
 }

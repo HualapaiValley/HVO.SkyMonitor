@@ -985,9 +985,8 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(CameraPixelFormat.Mono8, latestFrame!.PixelFormat);
             Assert.AreEqual(annotation.OutputVariant, latestFrame.RecipeVersion);
             frameStorage.VerifyNoOtherCalls();
-            var outboxRecords = outbox.List(root, 10);
+            var outboxRecords = await outbox.GetRetentionHoldsAsync(root, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(1, outboxRecords);
-            Assert.AreEqual(FrameArtifactRole.Raw, outboxRecords[0].Role);
             Assert.AreEqual(fixture.Manifest.Descriptor.Artifact.ArtifactId, outboxRecords[0].ArtifactId);
         }
         finally
@@ -2545,7 +2544,7 @@ public sealed partial class DurableCaptureProcessingTests
             new RetentionConfigurationAccessor(),
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
             new RetentionTimeProvider(new DateTimeOffset(2026, 8, 25, 12, 0, 0, TimeSpan.Zero)),
-            new FileSystemArtifactOutbox(),
+            new SqliteArtifactOutbox(),
             new RetentionCapacityProvider(),
             new StoragePressureState(),
             NullLogger<RetentionBackgroundService>.Instance,
@@ -3897,11 +3896,6 @@ public sealed partial class DurableCaptureProcessingTests
 
     private sealed class ThrowAfterSaveStorage(IFrameStorageService inner) : IFrameStorageService
     {
-        public ValueTask<StoredFrameReference> SaveAsync(
-            string storageRoot,
-            FrameArtifact artifact,
-            CancellationToken cancellationToken) => inner.SaveAsync(storageRoot, artifact, cancellationToken);
-
         public async ValueTask<StoredFrameReference> SaveAsync(
             string storageRoot,
             FrameArtifact artifact,

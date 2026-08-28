@@ -150,9 +150,17 @@ public sealed class ArtifactOutboxDrainServiceTests
     [TestMethod]
     public void UploadIdentity_SameRoleWithDistinctVariantRecipeLabels_DoesNotCollide()
     {
-        var frameId = Guid.NewGuid();
-        var first = TestManifest(FrameArtifactRole.Preview) with { FrameId = frameId, RecipeVersion = "preview-v1:display" };
-        var second = TestManifest(FrameArtifactRole.Preview) with { FrameId = frameId, RecipeVersion = "preview-v1:local" };
+        var first = TestManifest("display");
+        var second = first with
+        {
+            Descriptor = first.Descriptor with
+            {
+                Artifact = first.Descriptor.Artifact with
+                {
+                    Recipe = first.Descriptor.Artifact.Recipe with { ImplementationVersion = "local" }
+                }
+            }
+        };
 
         Assert.AreNotEqual(first.IdempotencyKey, second.IdempotencyKey);
     }
@@ -173,17 +181,22 @@ public sealed class ArtifactOutboxDrainServiceTests
         Assert.AreEqual(TimeSpan.FromSeconds(expectedSeconds), delay);
     }
 
-    private static ArtifactUploadManifest TestManifest(FrameArtifactRole role)
-        => new(
-            ArtifactUploadManifest.CurrentSchemaVersion,
-            "agent",
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            role,
-            "application/octet-stream",
-            1,
-            new string('A', 64),
-            DateTimeOffset.UnixEpoch,
-            "recipe-v1",
-            "frames/2026-07-14/raw.bin");
+    private static ArtifactManifestV2 TestManifest(string implementationVersion)
+    {
+        var manifest = Contracts.ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono8, 1, 1, 1, [1]);
+        return manifest with
+        {
+            Descriptor = manifest.Descriptor with
+            {
+                Artifact = manifest.Descriptor.Artifact with
+                {
+                    Recipe = manifest.Descriptor.Artifact.Recipe with
+                    {
+                        ImplementationVersion = implementationVersion
+                    }
+                }
+            }
+        };
+    }
 }

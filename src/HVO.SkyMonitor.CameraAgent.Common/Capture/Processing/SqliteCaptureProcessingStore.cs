@@ -713,7 +713,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         if (column == "modern") command.CommandText = "SELECT modern_sidecar_relative_path FROM processing_reconciliation_state WHERE state_key = 1;";
-        else if (column == "legacy") command.CommandText = "SELECT legacy_sidecar_relative_path FROM processing_reconciliation_state WHERE state_key = 1;";
         else if (column == "payload") command.CommandText = "SELECT payload_relative_path FROM processing_reconciliation_state WHERE state_key = 1;";
         else throw new ArgumentOutOfRangeException(nameof(column));
         var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -726,7 +725,6 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         if (column == "modern") command.CommandText = "UPDATE processing_reconciliation_state SET modern_sidecar_relative_path = $cursor WHERE state_key = 1;";
-        else if (column == "legacy") command.CommandText = "UPDATE processing_reconciliation_state SET legacy_sidecar_relative_path = $cursor WHERE state_key = 1;";
         else if (column == "payload") command.CommandText = "UPDATE processing_reconciliation_state SET payload_relative_path = $cursor WHERE state_key = 1;";
         else throw new ArgumentOutOfRangeException(nameof(column));
         command.Parameters.AddWithValue("$cursor", (object?)cursor ?? DBNull.Value);

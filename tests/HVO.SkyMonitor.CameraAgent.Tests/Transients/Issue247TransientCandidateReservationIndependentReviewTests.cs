@@ -499,7 +499,7 @@ public sealed class Issue247TransientCandidateReservationIndependentReviewTests
             new StubConfigurationAccessor(),
             Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
             new FixedTimeProvider(new DateTimeOffset(2035, 1, 1, 12, 0, 0, TimeSpan.Zero)),
-            new FileSystemArtifactOutbox(),
+            new SqliteArtifactOutbox(),
             new SignalingCapacityProvider(capacityEntered),
             new StoragePressureState(),
             NullLogger<RetentionBackgroundService>.Instance,

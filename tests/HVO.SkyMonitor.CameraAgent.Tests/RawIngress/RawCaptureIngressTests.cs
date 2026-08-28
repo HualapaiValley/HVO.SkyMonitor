@@ -667,8 +667,7 @@ public sealed class RawCaptureIngressTests
             var sidecar = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(
                 Path.ChangeExtension(receipt.StoredFrame.AbsolutePath, ".json")).ConfigureAwait(false));
             Assert.IsTrue(sidecar.IsValid, sidecar.Validation.ReasonCode);
-            Assert.AreEqual(CaptureManifestCompleteness.Complete, sidecar.Document!.Completeness);
-            Assert.AreEqual(layout, sidecar.Document.Manifest!.Descriptor.Layout);
+            Assert.AreEqual(layout, sidecar.Document!.Manifest.Descriptor.Layout);
         }
         finally
         {

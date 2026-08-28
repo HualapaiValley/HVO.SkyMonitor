@@ -323,7 +323,7 @@ public sealed class CentralCloudProcessingIntegrationTests
             ArtifactId = Guid.NewGuid(),
             Role = FrameArtifactRole.Raw,
             RecipeVersion = "raw-v1",
-            ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+            ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
             MediaType = "application/x-hvo-linear-frame",
             ByteLength = 8,
             ChecksumSha256 = Hash($"payload-{sequence}"),

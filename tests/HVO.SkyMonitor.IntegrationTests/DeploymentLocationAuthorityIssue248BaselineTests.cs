@@ -2622,7 +2622,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     ArtifactId = artifacts[index],
                     Role = FrameArtifactRole.Raw,
                     RecipeVersion = "raw-v1",
-                    ManifestSchemaVersion = ArtifactUploadManifest.CurrentSchemaVersion,
+                    ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
                     MediaType = "application/octet-stream",
                     ByteLength = 4,
                     ChecksumSha256 = new string('D', 64),

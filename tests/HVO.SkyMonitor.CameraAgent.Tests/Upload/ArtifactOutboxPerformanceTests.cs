@@ -52,7 +52,7 @@ public sealed class ArtifactOutboxPerformanceTests
             Assert.AreEqual(payloadSha256, await ComputeSha256Async(payloadPath).ConfigureAwait(false));
 
             var w3m = await MeasureW3MetadataAsync(
-                Path.Combine(workRoot, "w3m"), payloadSha256).ConfigureAwait(false);
+                Path.Combine(workRoot, "w3m"), payloadPath, payloadSha256).ConfigureAwait(false);
             var w3p = await MeasureW3PayloadAsync(
                 Path.Combine(workRoot, "w3p"), payloadRelativePath, payloadSha256).ConfigureAwait(false);
 
@@ -115,7 +115,10 @@ public sealed class ArtifactOutboxPerformanceTests
         }
     }
 
-    private static async Task<W3MetadataMeasurement> MeasureW3MetadataAsync(string root, string payloadSha256)
+    private static async Task<W3MetadataMeasurement> MeasureW3MetadataAsync(
+        string root,
+        string sourcePayloadPath,
+        string payloadSha256)
     {
         Directory.CreateDirectory(root);
         var clock = new MutableTimeProvider(StartUtc);
@@ -139,6 +142,8 @@ public sealed class ArtifactOutboxPerformanceTests
             for (var index = 0; index < W3MetadataCount; index++)
             {
                 var manifest = CreateManifest(
+                    root,
+                    sourcePayloadPath,
                     "issue-97-w3m",
                     index,
                     $"metadata/{index:D5}.bin",
@@ -226,11 +231,14 @@ public sealed class ArtifactOutboxPerformanceTests
         string payloadSha256)
     {
         var clock = new MutableTimeProvider(StartUtc);
+        var sourcePayloadPath = Path.Combine(root, payloadRelativePath.Replace('/', Path.DirectorySeparatorChar));
         var manifests = Enumerable.Range(0, W3PayloadCount)
             .Select(index => CreateManifest(
+                root,
+                sourcePayloadPath,
                 "issue-97-w3p",
                 20_000 + index,
-                payloadRelativePath,
+                $"payload/capture-{index:D5}.bin",
                 payloadSha256,
                 CanonicalPayloadBytes))
             .ToArray();
@@ -440,9 +448,11 @@ public sealed class ArtifactOutboxPerformanceTests
         string payloadSha256)
     {
         var conflict = CreateManifest(
-            "issue-97-quarantine", 40_000, payloadRelativePath, payloadSha256, CanonicalPayloadBytes);
+            root, Path.Combine(root, payloadRelativePath.Replace('/', Path.DirectorySeparatorChar)),
+            "issue-97-quarantine", 40_000, "payload/quarantine-conflict.bin", payloadSha256, CanonicalPayloadBytes);
         var follower = CreateManifest(
-            "issue-97-quarantine", 40_001, payloadRelativePath, payloadSha256, CanonicalPayloadBytes);
+            root, Path.Combine(root, payloadRelativePath.Replace('/', Path.DirectorySeparatorChar)),
+            "issue-97-quarantine", 40_001, "payload/quarantine-follower.bin", payloadSha256, CanonicalPayloadBytes);
         handler.Register(conflict);
         handler.Register(follower);
         handler.ConflictIdempotencyKey = conflict.IdempotencyKey;
@@ -507,24 +517,53 @@ public sealed class ArtifactOutboxPerformanceTests
             audit.Select(static entry => entry.Action).ToArray());
     }
 
-    private static ArtifactUploadManifest CreateManifest(
+    private static ArtifactManifestV2 CreateManifest(
+        string root,
+        string sourcePayloadPath,
         string agentId,
         int index,
         string relativePath,
         string payloadSha256,
         long payloadLength)
-        => new(
-            ArtifactUploadManifest.CurrentSchemaVersion,
-            agentId,
-            CreateGuid(index, 0x1170),
-            CreateGuid(index, 0x2270),
-            FrameArtifactRole.Raw,
-            "application/octet-stream",
-            payloadLength,
-            payloadSha256,
-            StartUtc.AddMilliseconds(index),
-            "legacy-v1-performance",
-            relativePath);
+    {
+        var payloadPath = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+        if (!File.Exists(payloadPath))
+        {
+            if (CreateHardLink(sourcePayloadPath, payloadPath) != 0)
+            {
+                throw new IOException($"Unable to create performance fixture hard link (errno {Marshal.GetLastPInvokeError()}).");
+            }
+        }
+        var createdUtc = StartUtc.AddMilliseconds(index);
+        var profile = new ProfileIdentityDescriptor("performance", "1.0.0", new string('A', 64));
+        var descriptor = new ReconstructionDescriptor(
+            new CaptureIdentityDescriptor(agentId, "performance-rig", index + 1L, CreateGuid(index, 0x2270)),
+            new CaptureTimingDescriptor(
+                createdUtc.AddSeconds(-4), createdUtc.AddSeconds(-3), createdUtc.AddSeconds(-2),
+                createdUtc.AddSeconds(-1), createdUtc),
+            new CaptureControlDescriptor(
+                TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1, null, null, null, null),
+            new CaptureProfileSet(profile, profile, profile, profile, profile),
+            new FrameLayoutDescriptor(
+                checked((int)payloadLength), 1, checked((int)payloadLength), CameraPixelFormat.Mono8,
+                FrameByteOrder.NotApplicable, 8, 8, FrameSamplePacking.ByteAligned,
+                ColorFilterArrayPattern.None, 0, 255, payloadLength),
+            new ArtifactDescriptor(
+                CreateGuid(index, 0x1170), FrameArtifactRole.Raw, "performance", "native", createdUtc, [],
+                RecipeIdentityDescriptor.Create(
+                    "capture-raw", "1.0.0", "performance", JsonSerializer.SerializeToElement(new { index })),
+                "application/octet-stream", payloadSha256));
+        var manifest = new ArtifactManifestV2(
+            ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath);
+        File.WriteAllBytes(Path.ChangeExtension(payloadPath, ".json"), CaptureContractJson.Serialize(manifest));
+        return manifest;
+    }
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "link", CharSet = CharSet.Ansi, BestFitMapping = false,
+        ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int CreateHardLink(string existingPath, string newPath);
 
     private static Guid CreateGuid(int index, short marker)
         => new(index + 1, marker, marker, 1, 2, 3, 4, 5, 6, 7, 8);
@@ -726,9 +765,9 @@ public sealed class ArtifactOutboxPerformanceTests
     private sealed class CountingUploadHandler : HttpMessageHandler
     {
         private readonly MutableTimeProvider _clock;
-        private readonly Dictionary<string, ArtifactUploadManifest> _manifests;
+        private readonly Dictionary<string, ArtifactManifestV2> _manifests;
 
-        public CountingUploadHandler(MutableTimeProvider clock, IEnumerable<ArtifactUploadManifest> manifests)
+        public CountingUploadHandler(MutableTimeProvider clock, IEnumerable<ArtifactManifestV2> manifests)
         {
             _clock = clock;
             _manifests = manifests.ToDictionary(static manifest => manifest.IdempotencyKey, StringComparer.OrdinalIgnoreCase);
@@ -750,7 +789,7 @@ public sealed class ArtifactOutboxPerformanceTests
 
         public int OutageAndRecoveryAcknowledgements { get; private set; }
 
-        public void Register(ArtifactUploadManifest manifest) => _manifests.Add(manifest.IdempotencyKey, manifest);
+        public void Register(ArtifactManifestV2 manifest) => _manifests.Add(manifest.IdempotencyKey, manifest);
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -768,7 +807,8 @@ public sealed class ArtifactOutboxPerformanceTests
             await request.Content.CopyToAsync(sink, cancellationToken).ConfigureAwait(false);
             TotalRequests++;
             TotalConsumedBytes += sink.BytesWritten;
-            var isW3PayloadRequest = string.Equals(manifest.AgentId, "issue-97-w3p", StringComparison.Ordinal);
+            var isW3PayloadRequest = string.Equals(
+                manifest.Descriptor.Capture.AgentId, "issue-97-w3p", StringComparison.Ordinal);
             if (isW3PayloadRequest)
             {
                 OutageAndRecoveryRequests++;
@@ -788,9 +828,9 @@ public sealed class ArtifactOutboxPerformanceTests
             var acknowledgement = new ArtifactUploadAcknowledgement(
                 ArtifactUploadAcknowledgement.CurrentSchemaVersion,
                 manifest.IdempotencyKey,
-                manifest.ArtifactId,
-                manifest.ChecksumSha256,
-                manifest.ByteLength,
+                manifest.Descriptor.Artifact.ArtifactId,
+                manifest.Descriptor.Artifact.ChecksumSha256,
+                manifest.Descriptor.Layout.ByteLength,
                 _clock.GetUtcNow(),
                 manifest.SchemaVersion);
             acknowledgement.Validate();

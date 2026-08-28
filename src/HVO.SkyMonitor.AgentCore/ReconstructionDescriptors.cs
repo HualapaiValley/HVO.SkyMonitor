@@ -139,11 +139,6 @@ public sealed record FrameLayoutDescriptor(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FrameLevelCodeSpace? LevelCodeSpace { get; init; }
 
-    internal CaptureManifestCompleteness GetManifestCompleteness()
-        => StoredCodeTransform.HasValue && LevelCodeSpace.HasValue || SampleDepthBits == ContainerDepthBits
-            ? CaptureManifestCompleteness.Complete
-            : CaptureManifestCompleteness.LegacyIncomplete;
-
     public CaptureContractValidationResult Validate()
         => ReconstructionDescriptorValidator.ValidateLayout(this);
 }
@@ -610,6 +605,7 @@ internal static class ReconstructionDescriptorValidator
     private static CaptureContractValidationResult ValidateStoredCodeSemantics(FrameLayoutDescriptor layout)
     {
         if (layout.StoredCodeTransform.HasValue != layout.LevelCodeSpace.HasValue ||
+            layout.SampleDepthBits < layout.ContainerDepthBits && !layout.StoredCodeTransform.HasValue ||
             layout.StoredCodeTransform.HasValue && !Enum.IsDefined(layout.StoredCodeTransform.Value) ||
             layout.LevelCodeSpace.HasValue && !Enum.IsDefined(layout.LevelCodeSpace.Value))
         {

@@ -172,7 +172,7 @@ internal sealed class CentralClearReferenceService(
     {
         if (artifact.ObjectState != CentralArtifactObjectState.Available ||
             artifact.ReconstructionState != CentralReconstructionState.Complete ||
-            artifact.ManifestSchemaVersion != ArtifactUploadManifest.CurrentSchemaVersion ||
+            artifact.ManifestSchemaVersion != ArtifactManifestV2.CurrentSchemaVersion ||
             artifact.Role != FrameArtifactRole.Raw || artifact.Frame is not { } frame ||
             frame.RegistrationId != registrationId ||
             !string.Equals(frame.RigId, rigId, StringComparison.Ordinal) ||

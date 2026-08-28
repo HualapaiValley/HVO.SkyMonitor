@@ -271,27 +271,35 @@ public sealed class VirtualSkyPipelineTests
         Assert.AreEqual(byte.MaxValue, previewPayload[previewLayout.StrideBytes + 1]);
         AssertLineageReachesRaw(defaultPreview.Parsed.Document.Manifest.Descriptor, manifests);
 
-        var pending = services.GetRequiredService<IArtifactOutbox>().List(Fixture.StorageRoot, 1000);
-        Assert.IsNotEmpty(pending);
-        Assert.IsTrue(pending.All(item => item.Role == FrameArtifactRole.Raw));
-        Assert.IsTrue(pending.All(item => item.AgentId == "cameraagent-integration-test"));
-        Assert.IsTrue(pending.All(item => File.Exists(Path.Combine(Fixture.StorageRoot, item.RelativeArtifactPath))));
-        Assert.IsTrue(pending.Any(item => item.Scene is not null));
-        Assert.IsTrue(pending.Where(item => item.Role == FrameArtifactRole.Raw).All(item => item.FrameId != item.ArtifactId));
+        var pending = new List<ArtifactManifestV2>();
         using (var outbox = new SqliteConnection(
             $"Data Source={Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db")}"))
         {
             await outbox.OpenAsync().ConfigureAwait(false);
             using var outboxCommand = outbox.CreateCommand();
-            outboxCommand.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE manifest_kind = 'v2' AND status = 'pending';";
-            Assert.IsGreaterThanOrEqualTo(pending.Count, Convert.ToInt32(
-                await outboxCommand.ExecuteScalarAsync().ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture));
+            outboxCommand.CommandText =
+                "SELECT manifest_bytes FROM artifact_outbox_records WHERE manifest_kind = 'v2' AND status = 'pending';";
+            var reader = await outboxCommand.ExecuteReaderAsync().ConfigureAwait(false);
+            await using (reader.ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync().ConfigureAwait(false))
+                {
+                    var parsed = CaptureContractJson.ParseManifest((byte[])reader[0]);
+                    Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
+                    pending.Add(parsed.Document!.Manifest);
+                }
+            }
             outboxCommand.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status = 'pending' AND manifest_kind != 'v2';";
             Assert.AreEqual(0, Convert.ToInt32(
                 await outboxCommand.ExecuteScalarAsync().ConfigureAwait(false),
                 System.Globalization.CultureInfo.InvariantCulture));
         }
+        Assert.IsNotEmpty(pending);
+        Assert.IsTrue(pending.All(item => item.Descriptor.Artifact.Role == FrameArtifactRole.Raw));
+        Assert.IsTrue(pending.All(item => item.Descriptor.Capture.AgentId == "cameraagent-integration-test"));
+        Assert.IsTrue(pending.All(item => File.Exists(Path.Combine(Fixture.StorageRoot, item.RelativeArtifactPath))));
+        Assert.IsTrue(pending.Any(item => item.Scene is not null));
+        Assert.IsTrue(pending.All(item => item.Descriptor.Capture.CaptureId != item.Descriptor.Artifact.ArtifactId));
 
         await WaitUntilAsync(HasNoUnfinishedLaneWork, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         using var journal = new SqliteConnection($"Data Source={Path.Combine(Fixture.StorageRoot, "journal", "raw-ingress.db")}");
@@ -346,7 +354,7 @@ public sealed class VirtualSkyPipelineTests
         var localOnlyPreviewId = Guid.ParseExact(
             Convert.ToString(await processingCommand.ExecuteScalarAsync().ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture)!,
             "N");
-        Assert.IsFalse(pending.Any(item => item.ArtifactId == localOnlyPreviewId));
+        Assert.IsFalse(pending.Any(item => item.Descriptor.Artifact.ArtifactId == localOnlyPreviewId));
 
         var uploadCheckpoint = ReadPendingOutboxCheckpoint();
         var configuredUploadOptions = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;

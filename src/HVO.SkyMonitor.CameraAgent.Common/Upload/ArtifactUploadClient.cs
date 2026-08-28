@@ -211,20 +211,6 @@ public sealed class ArtifactUploadClient(
                 productDescriptor.Artifact.MediaType,
                 productDescriptor.SourceCapture.Timing.ExposureStartedUtc);
         }
-        if (record.Manifest?.LegacyManifest is { } legacy)
-        {
-            legacy.Validate();
-            return new(
-                legacy.SchemaVersion,
-                legacy.IdempotencyKey,
-                legacy.ArtifactId,
-                legacy.Role,
-                legacy.RelativeArtifactPath,
-                legacy.ChecksumSha256,
-                legacy.ByteLength,
-                legacy.MediaType,
-                legacy.CapturedAtUtc);
-        }
         if (record.Manifest?.Manifest is not { } current)
         {
             throw new InvalidDataException("Outbox record does not contain a deliverable artifact manifest.");

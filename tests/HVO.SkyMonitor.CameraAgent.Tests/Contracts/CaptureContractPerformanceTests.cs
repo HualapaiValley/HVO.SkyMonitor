@@ -20,7 +20,6 @@ public sealed class CaptureContractPerformanceTests
     private const int WarmupOperations = 5;
     private const int MeasuredOperations = 30;
     private static readonly JsonSerializerOptions OutputJsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-    private static readonly JsonSerializerOptions WireJsonOptions = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
     public async Task W1AndW2_SerializationValidationHashAndReconstructionEvidence()
@@ -61,19 +60,6 @@ public sealed class CaptureContractPerformanceTests
         var payload = new byte[checked(stride * height)];
         var manifest = ReconstructableCaptureContractTests.CreateManifest(format, width, height, stride, payload);
         var encoded = CaptureContractJson.Serialize(manifest);
-        var legacy = new ArtifactUploadManifest(
-            ArtifactUploadManifest.CurrentSchemaVersion,
-            manifest.Descriptor.Capture.AgentId,
-            manifest.Descriptor.Artifact.ArtifactId,
-            manifest.Descriptor.Capture.CaptureId,
-            manifest.Descriptor.Artifact.Role,
-            manifest.Descriptor.Artifact.MediaType,
-            payload.LongLength,
-            manifest.Descriptor.Artifact.ChecksumSha256,
-            manifest.Descriptor.Timing.ExposureStartedUtc,
-            "raw-v1",
-            manifest.RelativeArtifactPath);
-        var legacySize = JsonSerializer.SerializeToUtf8Bytes(legacy, WireJsonOptions).Length;
 
         var reconstruction = FrameReconstructor.TryReconstruct(manifest.Descriptor, payload, out var reconstructed);
         Assert.IsTrue(reconstruction.IsValid);
@@ -83,7 +69,6 @@ public sealed class CaptureContractPerformanceTests
 
         var stages = new[]
         {
-            Measure("legacy-v1-serialize", () => GC.KeepAlive(JsonSerializer.SerializeToUtf8Bytes(legacy, WireJsonOptions))),
             Measure("serialize", () => GC.KeepAlive(CaptureContractJson.Serialize(manifest))),
             Measure("deserialize-validate", () =>
             {
@@ -114,10 +99,7 @@ public sealed class CaptureContractPerformanceTests
             Height = height,
             Format = format.ToString(),
             PayloadBytes = payload.LongLength,
-            ManifestV1Bytes = legacySize,
-            ManifestV2Bytes = encoded.Length,
-            ManifestSizeDeltaBytes = encoded.Length - legacySize,
-            ManifestSizeIncreasePercent = (encoded.Length - legacySize) * 100.0 / legacySize,
+            CanonicalManifestBytes = encoded.Length,
             ChecksumSha256 = manifest.Descriptor.Artifact.ChecksumSha256,
             ZeroCopyVerified = zeroCopyVerified,
             Stages = stages,
@@ -144,15 +126,24 @@ public sealed class CaptureContractPerformanceTests
                 Offset: descriptor.Controls.EffectiveOffset),
             descriptor.Layout.StrideBytes);
 
-        var legacy = MeasureStorageStage(
-                "legacy-v1-save",
-                Path.Combine(outputRoot, string.Concat("legacy-", Guid.NewGuid().ToString("N"))),
-                iteration => service.SaveAsync(
-                    Path.Combine(outputRoot, "legacy-work"),
-                    new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, frame),
-                    CancellationToken.None),
+        var baseline = MeasureStorageStage(
+                "canonical-v2-save-baseline",
+                Path.Combine(outputRoot, string.Concat("baseline-", Guid.NewGuid().ToString("N"))),
+                iteration =>
+                {
+                    var operationDescriptor = descriptor with
+                    {
+                        Capture = descriptor.Capture with { CaptureSequence = iteration + 1 },
+                        Artifact = descriptor.Artifact with { ArtifactId = Guid.NewGuid() }
+                    };
+                    return service.SaveAsync(
+                        Path.Combine(outputRoot, "baseline-work"),
+                        new FrameArtifact(operationDescriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, frame),
+                        operationDescriptor,
+                        CancellationToken.None);
+                },
                 payload.LongLength,
-                payloadBytesReadPerOperation: 0);
+                payload.LongLength);
         var current = MeasureStorageStage(
                 "v2-save-verify-sidecar",
                 Path.Combine(outputRoot, string.Concat("v2-", Guid.NewGuid().ToString("N"))),
@@ -175,11 +166,11 @@ public sealed class CaptureContractPerformanceTests
                 payload.LongLength,
                 payload.LongLength);
         return new StorageComparison(
-            legacy,
+            baseline,
             current,
-            (current.MedianMilliseconds - legacy.MedianMilliseconds) * 100.0 / legacy.MedianMilliseconds,
-            (current.P95Milliseconds - legacy.P95Milliseconds) * 100.0 / legacy.P95Milliseconds,
-            (current.OperationsPerSecond - legacy.OperationsPerSecond) * 100.0 / legacy.OperationsPerSecond);
+            (current.MedianMilliseconds - baseline.MedianMilliseconds) * 100.0 / baseline.MedianMilliseconds,
+            (current.P95Milliseconds - baseline.P95Milliseconds) * 100.0 / baseline.P95Milliseconds,
+            (current.OperationsPerSecond - baseline.OperationsPerSecond) * 100.0 / baseline.OperationsPerSecond);
     }
 
     private static StorageMeasurement MeasureStorageStage(
@@ -270,7 +261,7 @@ public sealed class CaptureContractPerformanceTests
     }
 
     private sealed record StorageComparison(
-        StorageMeasurement Legacy,
+        StorageMeasurement Baseline,
         StorageMeasurement Current,
         double MedianLatencyChangePercent,
         double P95LatencyChangePercent,

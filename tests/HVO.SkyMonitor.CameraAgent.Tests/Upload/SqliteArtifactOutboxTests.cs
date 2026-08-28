@@ -19,6 +19,11 @@ public sealed class SqliteArtifactOutboxTests
     private static readonly DateTimeOffset StartUtc = new(2026, 7, 15, 12, 0, 0, TimeSpan.Zero);
     private static readonly byte[] Payload = [1, 2, 3, 4];
     private static readonly string[] ResolutionActions = ["quarantine", "replay", "quarantine", "abandon"];
+    private static readonly string[] CanonicalIndexes =
+    [
+        "ix_artifact_outbox_claim", "ix_artifact_outbox_lease", "ix_artifact_outbox_operations",
+        "ux_artifact_outbox_audit_operation"
+    ];
 
     [TestMethod]
     [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase", Justification = "The fixture proves lowercase SHA-256 canonicalization.")]
@@ -105,7 +110,6 @@ public sealed class SqliteArtifactOutboxTests
             root.Path, CancellationToken.None).ConfigureAwait(false);
         Assert.HasCount(1, holds);
         Assert.AreEqual("derived/scene.manifest.json", holds[0].RelativeSidecarPath.Replace('\\', '/'));
-        Assert.IsEmpty(restarted.List(root.Path, 10));
     }
 
     [TestMethod]
@@ -352,7 +356,7 @@ public sealed class SqliteArtifactOutboxTests
         {
             await connection.OpenAsync().ConfigureAwait(false);
             using var command = connection.CreateCommand();
-            command.CommandText = "UPDATE artifact_outbox_records SET status = 'quarantined', last_reason = 'test-quarantine' WHERE idempotency_key IN ($key0, $key1, $key2); UPDATE artifact_outbox_records SET manifest_bytes = zeroblob(1048576), acknowledgement = zeroblob(1048576), lease_token = printf('%.*c', 100000, 'x'), media_type = printf('%.*c', 1000, 'm'), role = 'not-a-role' WHERE idempotency_key = $key0;";
+            command.CommandText = "UPDATE artifact_outbox_records SET status = 'quarantined', last_reason = 'test-quarantine' WHERE idempotency_key IN ($key0, $key1, $key2); UPDATE artifact_outbox_records SET manifest_bytes = zeroblob(1048576), media_type = printf('%.*c', 1000, 'm') WHERE idempotency_key = $key0;";
             command.Parameters.AddWithValue("$key0", manifests[0].IdempotencyKey);
             command.Parameters.AddWithValue("$key1", manifests[1].IdempotencyKey);
             command.Parameters.AddWithValue("$key2", manifests[2].IdempotencyKey);
@@ -379,7 +383,7 @@ public sealed class SqliteArtifactOutboxTests
             root.Path, manifests[0].IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(detail);
         Assert.HasCount(128, detail.MediaType!);
-        Assert.IsNull(detail.Role);
+        Assert.AreEqual(FrameArtifactRole.Raw, detail.Role);
     }
 
     [TestMethod]
@@ -531,55 +535,199 @@ public sealed class SqliteArtifactOutboxTests
     }
 
     [TestMethod]
-    public async Task Initialize_ImportsValidLegacyAndQuarantinesMalformedWithoutChangingEitherFile()
+    [DataRow("schema-1")]
+    [DataRow("schema-2-old")]
+    [DataRow("version-zero")]
+    [DataRow("legacy-row")]
+    public async Task Initialize_UnsupportedPopulatedStateIsRejectedWithoutMutation(string state)
     {
         using var root = new TemporaryRoot();
-        var legacy = CreateLegacyManifest();
-        var fileOutbox = new FileSystemArtifactOutbox();
-        await fileOutbox.EnqueueAsync(root.Path, legacy, CancellationToken.None).ConfigureAwait(false);
-        var validPath = Path.Combine(root.Path, "outbox", string.Concat(legacy.IdempotencyKey, ".json"));
-        var validBytes = await File.ReadAllBytesAsync(validPath, CancellationToken.None).ConfigureAwait(false);
-        var malformedPath = Path.Combine(root.Path, "outbox", "malformed.json");
-        var malformedBytes = "{"u8.ToArray();
-        await File.WriteAllBytesAsync(malformedPath, malformedBytes, CancellationToken.None).ConfigureAwait(false);
+        await SeedUnsupportedDatabaseAsync(root.Path, state).ConfigureAwait(false);
+        var beforeDatabase = await SnapshotUnsupportedDatabaseAsync(root.Path).ConfigureAwait(false);
+        var before = SnapshotOutboxFiles(root.Path);
 
-        using (var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc)))
+        using var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        Exception? failure = null;
+        try
         {
             await outbox.InitializeAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
-            var imported = await outbox.ReadAsync(root.Path, legacy.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(imported);
-            Assert.AreEqual(ArtifactOutboxManifestKind.LegacyV1, imported.ManifestKind);
-            Assert.AreEqual(ArtifactOutboxStatus.Pending, imported.Status);
-            Assert.AreEqual("outbox/" + Path.GetFileName(validPath), imported.LegacyEvidencePath);
-            Assert.HasCount(1, outbox.List(root.Path, 10));
-            Assert.ThrowsExactly<InvalidDataException>(() =>
-                outbox.EnumeratePending(root.Path, CancellationToken.None).ToArray());
-            var snapshot = await outbox.GetSnapshotAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(2, snapshot.HeldCount);
-            Assert.AreEqual(1, snapshot.QuarantinedCount);
-            Assert.HasCount(1, await outbox.GetRetentionHoldsAsync(root.Path, CancellationToken.None).ConfigureAwait(false));
-            var operations = await outbox.ReadOperationsPageAsync(root.Path, 10, null, CancellationToken.None).ConfigureAwait(false);
-            var malformed = operations.Items.Single(item => item.ManifestKind == ArtifactOutboxManifestKind.MalformedLegacy);
-            Assert.IsFalse(malformed.CanReplay);
-            Assert.IsTrue(malformed.CanAbandon);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or InvalidOperationException)
+        {
+            failure = exception;
         }
 
-        using (var restarted = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc)))
-        {
-            await restarted.InitializeAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
-            var snapshot = await restarted.GetSnapshotAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(1, snapshot.QuarantinedCount);
-        }
-        CollectionAssert.AreEqual(validBytes, await File.ReadAllBytesAsync(validPath, CancellationToken.None).ConfigureAwait(false));
-        CollectionAssert.AreEqual(malformedBytes, await File.ReadAllBytesAsync(malformedPath, CancellationToken.None).ConfigureAwait(false));
+        Assert.IsNotNull(failure);
+        CollectionAssert.AreEqual(before, SnapshotOutboxFiles(root.Path));
+        CollectionAssert.AreEqual(
+            beforeDatabase,
+            await SnapshotUnsupportedDatabaseAsync(root.Path).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Initialize_FreshDatabaseHasExactCurrentSchemaAndNoLegacyEvidenceColumn()
+    {
+        using var root = new TemporaryRoot();
+        using var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+
+        await outbox.InitializeAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
 
         using var connection = OpenDatabase(root.Path);
-        await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM artifact_outbox_audit WHERE action = 'quarantine' AND actor = 'legacy-import';";
-        Assert.AreEqual(1L, Convert.ToInt64(
-            await command.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture));
+        await connection.OpenAsync().ConfigureAwait(false);
+        using (var columns = connection.CreateCommand())
+        {
+            columns.CommandText = "PRAGMA table_info(artifact_outbox_records);";
+            var observed = new Dictionary<string, int>(StringComparer.Ordinal);
+            using var reader = await columns.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false))
+            {
+                observed.Add(reader.GetString(1), reader.GetInt32(3));
+            }
+            Assert.IsFalse(observed.ContainsKey("legacy_evidence_path"));
+            foreach (var required in new[]
+                     {
+                         "idempotency_key", "manifest_kind", "manifest_bytes", "artifact_id", "role",
+                         "relative_artifact_path", "payload_sha256", "payload_length", "media_type", "status"
+                     })
+            {
+                Assert.AreEqual(1, observed[required], required);
+            }
+        }
+        using (var indexes = connection.CreateCommand())
+        {
+            indexes.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name;";
+            var observed = new List<string>();
+            using var reader = await indexes.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false)) observed.Add(reader.GetString(0));
+            CollectionAssert.AreEqual(CanonicalIndexes, observed.ToArray());
+        }
+    }
+
+    [TestMethod]
+    public async Task Initialize_MalformedCurrentRowIsRejectedReadOnlyWithoutChangingRetentionEvidence()
+    {
+        using var root = new TemporaryRoot();
+        var manifest = CreateManifest(root.Path, "frames/retained.bin", StartUtc, 1);
+        using (var initialized = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc)))
+        {
+            await initialized.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        }
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var corrupt = connection.CreateCommand();
+            corrupt.CommandText = "PRAGMA ignore_check_constraints=ON; UPDATE artifact_outbox_records SET relative_artifact_path = 'frames/different.bin';";
+            Assert.AreEqual(1, await corrupt.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+        var beforeDatabase = await SnapshotCurrentDatabaseAsync(root.Path).ConfigureAwait(false);
+        var before = SnapshotOutboxFiles(root.Path);
+
+        using var restarted = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await restarted.InitializeAsync(root.Path, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(before, SnapshotOutboxFiles(root.Path));
+        CollectionAssert.AreEqual(beforeDatabase, await SnapshotCurrentDatabaseAsync(root.Path).ConfigureAwait(false));
+        Assert.IsTrue(beforeDatabase.Any(value => value.Contains("frames/different.bin", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task Initialize_MalformedAcknowledgementIsRejectedReadOnlyWithoutMutation()
+    {
+        using var root = new TemporaryRoot();
+        _ = await SeedAcknowledgedRecordAsync(root.Path).ConfigureAwait(false);
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var corrupt = connection.CreateCommand();
+            corrupt.CommandText = "UPDATE artifact_outbox_records SET acknowledgement = X'7B';";
+            Assert.AreEqual(1, await corrupt.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+
+        await AssertAcknowledgementInitializationFailsWithoutMutationAsync(root.Path).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow("acknowledgement-schema")]
+    [DataRow("accepted-manifest-version")]
+    [DataRow("idempotency-key")]
+    [DataRow("artifact-id")]
+    [DataRow("checksum")]
+    [DataRow("length")]
+    public async Task Initialize_MismatchedAcknowledgementBindingIsRejectedReadOnlyWithoutMutation(string binding)
+    {
+        using var root = new TemporaryRoot();
+        var manifest = await SeedAcknowledgedRecordAsync(root.Path).ConfigureAwait(false);
+        var acknowledgement = CreateAcknowledgement(manifest);
+        var mismatched = binding switch
+        {
+            "acknowledgement-schema" => acknowledgement with { SchemaVersion = "v999" },
+            "accepted-manifest-version" => acknowledgement with { AcceptedManifestSchemaVersion = "artifact-manifest-v999" },
+            "idempotency-key" => acknowledgement with { IdempotencyKey = new string('B', 64) },
+            "artifact-id" => acknowledgement with { ArtifactId = Guid.NewGuid() },
+            "checksum" => acknowledgement with { ChecksumSha256 = new string('C', 64) },
+            "length" => acknowledgement with { ByteLength = acknowledgement.ByteLength + 1 },
+            _ => throw new ArgumentOutOfRangeException(nameof(binding), binding, "Unknown acknowledgement binding.")
+        };
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var corrupt = connection.CreateCommand();
+            corrupt.CommandText = "UPDATE artifact_outbox_records SET acknowledgement = $acknowledgement;";
+            corrupt.Parameters.AddWithValue(
+                "$acknowledgement", JsonSerializer.SerializeToUtf8Bytes(mismatched));
+            Assert.AreEqual(1, await corrupt.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+
+        await AssertAcknowledgementInitializationFailsWithoutMutationAsync(root.Path).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow("completion-token")]
+    [DataRow("acknowledgement")]
+    [DataRow("acknowledged-timestamp")]
+    public async Task Initialize_NonAcknowledgedCompletionEvidenceIsRejectedReadOnlyWithoutMutation(string field)
+    {
+        using var root = new TemporaryRoot();
+        var manifest = CreateManifest(root.Path, "frames/pending.bin", StartUtc, 1);
+        using (var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc)))
+        {
+            await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+        }
+        using (var connection = OpenDatabase(root.Path))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var corrupt = connection.CreateCommand();
+            corrupt.CommandText = """
+                PRAGMA ignore_check_constraints=ON;
+                UPDATE artifact_outbox_records SET
+                    completion_token = CASE WHEN $field = 'completion-token' THEN 'forbidden' ELSE completion_token END,
+                    acknowledgement = CASE WHEN $field = 'acknowledgement' THEN X'7B7D' ELSE acknowledgement END,
+                    acknowledged_unix_ms = CASE WHEN $field = 'acknowledged-timestamp' THEN 0 ELSE acknowledged_unix_ms END;
+                """;
+            corrupt.Parameters.AddWithValue("$field", field);
+            Assert.AreEqual(1, await corrupt.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+
+        await AssertAcknowledgementInitializationFailsWithoutMutationAsync(root.Path).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task Initialize_FreshStoreRestartAcceptsRuntimeGeneratedAcknowledgement()
+    {
+        using var root = new TemporaryRoot();
+        var manifest = await SeedAcknowledgedRecordAsync(root.Path).ConfigureAwait(false);
+
+        using var restarted = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        await restarted.InitializeAsync(root.Path, CancellationToken.None).ConfigureAwait(false);
+        var record = await restarted.ReadAsync(
+            root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNotNull(record);
+        Assert.AreEqual(ArtifactOutboxStatus.Acknowledged, record.Status);
+        Assert.IsTrue(record.Acknowledgement.HasValue);
+        Assert.IsTrue(record.Acknowledgement.Value.Span.SequenceEqual(
+            JsonSerializer.SerializeToUtf8Bytes(CreateAcknowledgement(manifest))));
     }
 
     [TestMethod]
@@ -647,18 +795,44 @@ public sealed class SqliteArtifactOutboxTests
         return manifest;
     }
 
-    private static ArtifactUploadManifest CreateLegacyManifest() => new(
-        ArtifactUploadManifest.CurrentSchemaVersion,
-        "legacy-agent",
-        Guid.NewGuid(),
-        Guid.NewGuid(),
-        FrameArtifactRole.Raw,
-        "application/octet-stream",
-        Payload.LongLength,
-        Convert.ToHexString(SHA256.HashData(Payload)),
-        StartUtc,
-        "raw-v1",
-        "frames/legacy.bin");
+    private static async Task<ArtifactManifestV2> SeedAcknowledgedRecordAsync(string root)
+    {
+        var manifest = CreateManifest(root, "frames/acknowledged.bin", StartUtc, 1);
+        using var outbox = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(
+            root, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        await outbox.AcknowledgeAsync(
+            root,
+            lease,
+            CreateAcknowledgement(manifest),
+            CancellationToken.None).ConfigureAwait(false);
+        return manifest;
+    }
+
+    private static ArtifactUploadAcknowledgement CreateAcknowledgement(ArtifactManifestV2 manifest)
+        => new(
+            ArtifactUploadAcknowledgement.CurrentSchemaVersion,
+            manifest.IdempotencyKey,
+            manifest.Descriptor.Artifact.ArtifactId,
+            manifest.Descriptor.Artifact.ChecksumSha256,
+            manifest.Descriptor.Layout.ByteLength,
+            StartUtc,
+            manifest.SchemaVersion);
+
+    private static async Task AssertAcknowledgementInitializationFailsWithoutMutationAsync(string root)
+    {
+        var beforeDatabase = await SnapshotAcknowledgedDatabaseAsync(root).ConfigureAwait(false);
+        var beforeFiles = SnapshotOutboxFiles(root);
+
+        using var restarted = new SqliteArtifactOutbox(new MutableTimeProvider(StartUtc));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await restarted.InitializeAsync(root, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(beforeFiles, SnapshotOutboxFiles(root));
+        CollectionAssert.AreEqual(beforeDatabase, await SnapshotAcknowledgedDatabaseAsync(root).ConfigureAwait(false));
+    }
 
     private static StructuredProcessingProductManifestV1 CreateStructuredManifest(string root, string relativePath)
     {
@@ -726,6 +900,106 @@ public sealed class SqliteArtifactOutboxTests
 
     private static SqliteConnection OpenDatabase(string root)
         => new($"Data Source={Path.Combine(root, "outbox", "artifact-outbox.db")};Mode=ReadWrite");
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "The command is assembled exclusively from fixed test fixture SQL selected by a DataRow value.")]
+    private static async Task SeedUnsupportedDatabaseAsync(string root, string state)
+    {
+        var outboxDirectory = Path.Combine(root, "outbox");
+        Directory.CreateDirectory(outboxDirectory);
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(outboxDirectory, "artifact-outbox.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        var schema = state == "version-zero"
+            ? string.Empty
+            : $"CREATE TABLE artifact_outbox_schema(schema_key INTEGER PRIMARY KEY, version INTEGER NOT NULL); INSERT INTO artifact_outbox_schema VALUES(1, {(state == "schema-1" ? 1 : 2)});";
+        command.CommandText = string.Concat(schema, """
+            CREATE TABLE artifact_outbox_records(
+                idempotency_key TEXT, manifest_kind TEXT, manifest_bytes BLOB, artifact_id TEXT,
+                role TEXT, relative_artifact_path TEXT, payload_sha256 TEXT, payload_length INTEGER,
+                media_type TEXT, legacy_evidence_path TEXT);
+            CREATE TABLE artifact_outbox_audit(id INTEGER);
+            CREATE TABLE artifact_outbox_conflicts(id INTEGER);
+            CREATE TABLE artifact_outbox_operations(id INTEGER);
+            """, state == "legacy-row"
+                ? "INSERT INTO artifact_outbox_records VALUES('legacy-key','legacy-v1',x'7B7D','00000000000000000000000000000001','Raw','frames/legacy.bin','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',1,'application/octet-stream','outbox/legacy.json');"
+                : "INSERT INTO artifact_outbox_records VALUES('unsupported','v2',x'7B7D','00000000000000000000000000000001','Raw','frames/raw.bin','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',1,'application/octet-stream',NULL);");
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
+    private static string[] SnapshotOutboxFiles(string root)
+        => Directory.EnumerateFiles(Path.Combine(root, "outbox"))
+            .Order(StringComparer.Ordinal)
+            .Select(path => string.Concat(
+                Path.GetFileName(path), ":", Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))))
+            .ToArray();
+
+    private static async Task<string[]> SnapshotUnsupportedDatabaseAsync(string root)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(root, "outbox", "artifact-outbox.db"),
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync().ConfigureAwait(false);
+        var values = new List<string>();
+        using (var schema = connection.CreateCommand())
+        {
+            schema.CommandText = "SELECT type || ':' || name || ':' || COALESCE(sql, '') FROM sqlite_master ORDER BY type, name;";
+            using var reader = await schema.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false)) values.Add(reader.GetString(0));
+        }
+        using (var rows = connection.CreateCommand())
+        {
+            rows.CommandText = "SELECT quote(idempotency_key) || ':' || quote(manifest_kind) || ':' || hex(manifest_bytes) || ':' || quote(relative_artifact_path) || ':' || quote(legacy_evidence_path) FROM artifact_outbox_records ORDER BY idempotency_key;";
+            using var reader = await rows.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false)) values.Add(reader.GetString(0));
+        }
+        return values.ToArray();
+    }
+
+    private static async Task<string[]> SnapshotCurrentDatabaseAsync(string root)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(root, "outbox", "artifact-outbox.db"),
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT idempotency_key || ':' || relative_artifact_path || ':' || payload_sha256 || ':' || payload_length || ':' || status || ':' || hex(manifest_bytes) FROM artifact_outbox_records ORDER BY record_id;";
+        var values = new List<string>();
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        while (await reader.ReadAsync().ConfigureAwait(false)) values.Add(reader.GetString(0));
+        return values.ToArray();
+    }
+
+    private static async Task<string[]> SnapshotAcknowledgedDatabaseAsync(string root)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(root, "outbox", "artifact-outbox.db"),
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync().ConfigureAwait(false);
+        var values = new List<string>();
+        using (var schema = connection.CreateCommand())
+        {
+            schema.CommandText = "SELECT type || ':' || name || ':' || COALESCE(sql, '') FROM sqlite_master ORDER BY type, name;";
+            using var reader = await schema.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false)) values.Add(reader.GetString(0));
+        }
+        using (var rows = connection.CreateCommand())
+        {
+            rows.CommandText = "SELECT record_id || ':' || idempotency_key || ':' || manifest_kind || ':' || hex(manifest_bytes) || ':' || artifact_id || ':' || relative_artifact_path || ':' || payload_sha256 || ':' || payload_length || ':' || status || ':' || quote(completion_token) || ':' || hex(acknowledgement) || ':' || quote(acknowledged_unix_ms) FROM artifact_outbox_records ORDER BY record_id;";
+            using var reader = await rows.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false)) values.Add(reader.GetString(0));
+        }
+        return values.ToArray();
+    }
 
     private sealed class MutableTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {

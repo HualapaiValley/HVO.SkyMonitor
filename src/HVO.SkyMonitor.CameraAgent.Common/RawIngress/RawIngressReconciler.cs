@@ -138,10 +138,6 @@ internal sealed class RawIngressReconciler(
             }
             inspected++;
             var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-            if (IsLegacySidecar(sidecar))
-            {
-                continue;
-            }
             var parsed = CaptureContractJson.ParseManifest(sidecar);
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
             {
@@ -487,33 +483,6 @@ internal sealed class RawIngressReconciler(
             {
                 _directorySyncRecorder?.Invoke();
             }
-        }
-    }
-
-    private static bool IsLegacySidecar(ReadOnlyMemory<byte> json)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            return root.ValueKind == JsonValueKind.Object &&
-                   !root.TryGetProperty("schemaVersion", out _) &&
-                   root.TryGetProperty("artifactId", out var artifactId) &&
-                   artifactId.ValueKind == JsonValueKind.String &&
-                   Guid.TryParse(artifactId.GetString(), out var parsedArtifactId) && parsedArtifactId != Guid.Empty &&
-                   root.TryGetProperty("role", out var role) &&
-                   role.ValueKind == JsonValueKind.String &&
-                   Enum.TryParse<FrameArtifactRole>(role.GetString(), ignoreCase: false, out var parsedRole) && Enum.IsDefined(parsedRole) &&
-                   root.TryGetProperty("timestampUtc", out var timestamp) && timestamp.TryGetDateTimeOffset(out _) &&
-                   root.TryGetProperty("width", out var width) && width.TryGetInt32(out var parsedWidth) && parsedWidth > 0 &&
-                   root.TryGetProperty("height", out var height) && height.TryGetInt32(out var parsedHeight) && parsedHeight > 0 &&
-                   root.TryGetProperty("pixelFormat", out var pixelFormat) &&
-                   pixelFormat.ValueKind == JsonValueKind.String &&
-                   Enum.TryParse<CameraPixelFormat>(pixelFormat.GetString(), ignoreCase: false, out var parsedFormat) && Enum.IsDefined(parsedFormat);
-        }
-        catch (JsonException)
-        {
-            return false;
         }
     }
 
