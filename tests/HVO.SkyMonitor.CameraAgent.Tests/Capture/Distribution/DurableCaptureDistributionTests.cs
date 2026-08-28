@@ -572,7 +572,7 @@ public sealed class DurableCaptureDistributionTests
     }
 
     [TestMethod]
-    public async Task SchemaV1Migration_BackfillsEnabledLanesAtomicallyAndRetriesAfterInterruption()
+    public async Task PopulatedV1Schema_DoesNotBackfillEnabledLanes()
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-lanes-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(root, "journal"));
@@ -674,19 +674,16 @@ public sealed class DurableCaptureDistributionTests
                 1,
                 distributionOptions: distribution,
                 laneFaultInjector: new NullCaptureLaneFaultInjector());
-            await retry.InitializeAsync(policy.Definitions, CancellationToken.None).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                retry.InitializeAsync(policy.Definitions, CancellationToken.None)).ConfigureAwait(false);
             using var verify = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion,
+            Assert.AreEqual(1L,
                 await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
-            Assert.AreEqual(6L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
             Assert.AreEqual(3L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
-            Assert.AreEqual(0L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM capture_lane_contexts;").ConfigureAwait(false));
-            Assert.AreEqual(1L, await ScalarLongAsync(
-                verify, "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'secondary' AND state = 'abandoned';").ConfigureAwait(false));
-            Assert.AreEqual(1L, await ScalarLongAsync(
-                verify, "SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'secondary' AND state = 'pending';").ConfigureAwait(false));
-            Assert.AreEqual(2L, await ScalarLongAsync(
-                verify, "SELECT pressure_state FROM capture_lane_definitions WHERE lane_name = 'secondary';").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarLongAsync(
+                verify,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('capture_lane_work','capture_lane_contexts');")
+                .ConfigureAwait(false));
         }
         finally
         {

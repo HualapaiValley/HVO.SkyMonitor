@@ -49,6 +49,13 @@ public sealed class CaptureControlPerformanceTests
         var git = await ReadGitEvidenceAsync(repositoryRoot).ConfigureAwait(false);
         var run = ReadEvidenceRun(git);
         ValidateRunSequence(run);
+        Assert.IsTrue(GCSettings.IsServerGC, "Issue #257 evidence requires Server GC.");
+        Assert.AreEqual(
+            "0",
+            Environment.GetEnvironmentVariable("DOTNET_GCDynamicAdaptationMode"),
+            "Issue #257 allocation deltas require DATAS-disabled Server GC.");
+        var gcDynamicAdaptationMode = ReadGcDynamicAdaptationMode();
+        Assert.AreEqual(0L, gcDynamicAdaptationMode, "The runtime must authenticate DATAS-disabled Server GC.");
         var revision = run.Revision;
         var pinnedSdk = ReadPinnedSdkVersion(repositoryRoot);
         var actualSdk = (await RunProcessAsync(repositoryRoot, "dotnet", "--version").ConfigureAwait(false)).Trim();
@@ -73,12 +80,12 @@ public sealed class CaptureControlPerformanceTests
                 2080,
                 CameraPixelFormat.BayerRggb16).ConfigureAwait(false)
         };
-        var command = $"DOTNET_gcServer=1 HVO_ISSUE_257_EVIDENCE=1 HVO_EVIDENCE_REVISION={revision} HVO_EVIDENCE_TRIAL={run.Trial} HVO_ISSUE_257_OUTPUT_ROOT={run.OutputRoot} dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/" +
+        var command = $"DOTNET_gcServer=1 DOTNET_GCDynamicAdaptationMode=0 HVO_ISSUE_257_EVIDENCE=1 HVO_EVIDENCE_REVISION={revision} HVO_EVIDENCE_TRIAL={run.Trial} HVO_ISSUE_257_OUTPUT_ROOT={run.OutputRoot} dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/" +
             "HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter \"FullyQualifiedName~" +
             "HVO.SkyMonitor.CameraAgent.Tests.Capture.CaptureControlPerformanceTests." +
             "W1AndW2SparseMeteringWritesCaptureControlEvidence\"";
         var durableOrder = run.Trial % 2 == 1 ? "UB" : "BU";
-        var durableLaneCommand = $"DOTNET_gcServer=1 HVO_ISSUE_257_EVIDENCE=1 HVO_EVIDENCE_REVISION={revision} " +
+        var durableLaneCommand = $"DOTNET_gcServer=1 DOTNET_GCDynamicAdaptationMode=0 HVO_ISSUE_257_EVIDENCE=1 HVO_EVIDENCE_REVISION={revision} " +
             $"HVO_EVIDENCE_TRIAL={run.Trial} HVO_ISSUE_257_ORDER={durableOrder} HVO_ISSUE_257_OUTPUT_ROOT={run.OutputRoot} dotnet test " +
             "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build " +
             "--configuration Release --filter \"FullyQualifiedName~DurableCaptureDistributionPerformanceTests." +
@@ -131,6 +138,7 @@ public sealed class CaptureControlPerformanceTests
                 Runtime = RuntimeInformation.FrameworkDescription,
                 Configuration = BuildConfiguration,
                 ServerGc = GCSettings.IsServerGC,
+                GcDynamicAdaptationMode = gcDynamicAdaptationMode,
                 ProcessorCount = Environment.ProcessorCount,
                 Cpu = ReadCpuModel(),
                 TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
@@ -1090,6 +1098,16 @@ public sealed class CaptureControlPerformanceTests
             }
         }
         throw new DirectoryNotFoundException("Repository root was not found.");
+    }
+
+    private static long ReadGcDynamicAdaptationMode()
+    {
+        var configuration = GC.GetConfigurationVariables();
+        if (!configuration.TryGetValue("GCDynamicAdaptationMode", out var value))
+        {
+            throw new InvalidOperationException("The runtime did not report GCDynamicAdaptationMode.");
+        }
+        return Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
     private enum RunnerScenario

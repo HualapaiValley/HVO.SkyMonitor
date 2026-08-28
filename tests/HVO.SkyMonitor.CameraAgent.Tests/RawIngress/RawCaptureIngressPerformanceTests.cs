@@ -206,9 +206,9 @@ public sealed class RawCaptureIngressPerformanceTests
         var payload = input.Payload;
         var databasePath = Path.Combine(root, "journal", "raw-ingress.db");
         var journal = new SqliteRawCaptureJournal(databasePath, busyTimeoutSeconds: 5);
-        var migrationStarted = Stopwatch.GetTimestamp();
+        var initializationStarted = Stopwatch.GetTimestamp();
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var migrationMilliseconds = Stopwatch.GetElapsedTime(migrationStarted).TotalMilliseconds;
+        var initializationMilliseconds = Stopwatch.GetElapsedTime(initializationStarted).TotalMilliseconds;
         using var connection = new SqliteConnection($"Data Source={databasePath}");
         await connection.OpenAsync().ConfigureAwait(false);
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
@@ -332,7 +332,7 @@ public sealed class RawCaptureIngressPerformanceTests
         return new
         {
             Records = W3MetadataCount,
-            MigrationMilliseconds = migrationMilliseconds,
+            InitializationMilliseconds = initializationMilliseconds,
             InsertMilliseconds = insertMilliseconds,
             QueryMilliseconds = queryMilliseconds,
             RecordsPerSecond = W3MetadataCount / (insertMilliseconds / 1000d),

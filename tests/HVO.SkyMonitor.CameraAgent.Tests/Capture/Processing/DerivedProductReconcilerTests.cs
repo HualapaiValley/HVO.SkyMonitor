@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -21,6 +22,7 @@ public sealed class DerivedProductReconcilerTests
     public async Task RunOnceAsync_EmitsSafeSuccessAndFailureActivities()
     {
         var successRoot = CreateRoot();
+        var rawFailureRoot = CreateRoot();
         var failurePath = Path.Combine(CreateRoot(), "not-a-directory");
         await File.WriteAllTextAsync(failurePath, "failure").ConfigureAwait(false);
         var stopped = new List<Activity>();
@@ -35,19 +37,24 @@ public sealed class DerivedProductReconcilerTests
         {
             await CreateReconciliationService(successRoot).RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
             await CreateReconciliationService(failurePath).RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+            await CreateReconciliationService(rawFailureRoot, new FailingIngress())
+                .RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
 
             var activities = stopped.Where(activity => activity.OperationName == "processing-artifact.reconcile").ToArray();
-            Assert.HasCount(2, activities);
+            Assert.HasCount(3, activities);
             Assert.AreEqual(ActivityStatusCode.Ok, activities[0].Status);
             Assert.AreEqual(ActivityStatusCode.Error, activities[1].Status);
             Assert.AreEqual("reconciliation-failed", activities[1].StatusDescription);
             Assert.AreEqual("DirectoryNotFoundException", activities[1].GetTagItem("error.type"));
+            Assert.AreEqual(ActivityStatusCode.Error, activities[2].Status);
+            Assert.AreEqual("InvalidDataException", activities[2].GetTagItem("error.type"));
             Assert.IsFalse(activities.SelectMany(static activity => activity.TagObjects).Any(static tag =>
                 tag.Key is "path" or "capture_id" or "artifact_id" or "exception" or "payload"));
         }
         finally
         {
             Directory.Delete(successRoot, recursive: true);
+            Directory.Delete(rawFailureRoot, recursive: true);
             Directory.Delete(Path.GetDirectoryName(failurePath)!, recursive: true);
         }
     }
@@ -266,7 +273,9 @@ public sealed class DerivedProductReconcilerTests
         return root;
     }
 
-    private static DerivedProductReconciliationService CreateReconciliationService(string root)
+    private static DerivedProductReconciliationService CreateReconciliationService(
+        string root,
+        IRawCaptureIngress? rawIngress = null)
     {
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
         var services = new ServiceCollection();
@@ -282,6 +291,19 @@ public sealed class DerivedProductReconcilerTests
             provider.GetRequiredService<CaptureProcessingTelemetry>(),
             provider.GetRequiredService<CaptureProcessingState>(),
             provider.GetRequiredService<CaptureDistributionService>(),
-            NullLogger<DerivedProductReconciliationService>.Instance);
+            NullLogger<DerivedProductReconciliationService>.Instance,
+            rawIngress);
+    }
+
+    private sealed class FailingIngress : IRawCaptureIngress
+    {
+        public ValueTask InitializeAsync(CancellationToken cancellationToken)
+            => ValueTask.FromException(new InvalidDataException("invalid raw evidence"));
+
+        public ValueTask<RawCaptureReceipt?> AcceptAsync(
+            HVO.SkyMonitor.AgentCore.CameraModuleConfig configuration,
+            HVO.SkyMonitor.AgentCore.CaptureLoopSubmission submission,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
 }

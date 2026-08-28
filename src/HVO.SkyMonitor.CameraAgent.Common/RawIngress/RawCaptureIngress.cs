@@ -40,6 +40,7 @@ internal sealed class RawCaptureIngress :
     private readonly CaptureLaneTelemetry? _laneTelemetry;
     private readonly CapturePipelineTraceStore? _captureTraceStore;
     private bool _initialized;
+    private bool _journalValidated;
     private bool _capacityRevalidationRequired;
     private long _minimumRecoveryCapacityBytes;
     private FileStream? _processLock;
@@ -121,9 +122,11 @@ internal sealed class RawCaptureIngress :
             {
                 _files.EnsureRootIsPhysical();
                 _processLock ??= AcquireProcessLock();
-                using var migrationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.migrate");
+                using var initializationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.initialize");
+                Volatile.Write(ref _journalValidated, false);
                 await _journal.InitializeAsync(_lanePolicy.Definitions, cancellationToken).ConfigureAwait(false);
-                migrationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+                Volatile.Write(ref _journalValidated, true);
+                initializationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 using var reconciliationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.reconcile");
                 var reconciliation = await new RawIngressReconciler(
                     _options.RawIngressRoot,
@@ -199,7 +202,7 @@ internal sealed class RawCaptureIngress :
             }
             catch (Exception exception)
             {
-                await SetFailureAvailabilityAsync("initialization-failed").ConfigureAwait(false);
+                SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, "initialization-failed");
                 _telemetry.RecordFailure("initialization", FailureReason(exception));
                 _logger.RawIngressIntegrityFailed(FailureReason(exception));
                 if (exception is Microsoft.Data.Sqlite.SqliteException)
@@ -547,6 +550,7 @@ internal sealed class RawCaptureIngress :
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(submission);
         if (submission.Result.Frame is null) return RawCapturePublicationState.DefinitelyNotCommitted;
+        if (!Volatile.Read(ref _journalValidated)) return RawCapturePublicationState.Unknown;
         try
         {
             var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);

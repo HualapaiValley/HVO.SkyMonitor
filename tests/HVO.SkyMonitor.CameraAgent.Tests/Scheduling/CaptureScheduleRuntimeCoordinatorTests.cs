@@ -256,7 +256,7 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
     }
 
     [TestMethod]
-    public async Task Runner_PersistedV1GrantRetainsSolarDefaultsAndTransitions()
+    public async Task Runner_PersistedCurrentV2LegacyControlsRetainSolarDefaultsAndTransitions()
     {
         using var fixture = await RuntimeFixture.CreateAsync(legacyHostMetered: true).ConfigureAwait(false);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -299,7 +299,6 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
     }
 
     [TestMethod]
-    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion)]
     [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion)]
     public async Task PersistedLegacyProfile_GrantedIngressEvidenceUsesNormalizedEffectiveIdentity(
         string schemaVersion)
@@ -436,7 +435,6 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
     }
 
     [TestMethod]
-    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion)]
     [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion)]
     public async Task RestoredOperatorProfile_PreUpgradeStageFromBasisReplaysBeforeStrictValidation(
         string schemaVersion)
@@ -714,9 +712,7 @@ public sealed class CaptureScheduleRuntimeCoordinatorTests
                         }
                     }
                 };
-                var profile = persistedProfileSchemaVersion == LocalCaptureProfileDefinition.CurrentSchemaVersion
-                    ? LocalCaptureProfileDefinition.CreateV2(persistedConfiguration, persistedSchedule)
-                    : LocalCaptureProfileDefinition.Create(persistedConfiguration, persistedSchedule);
+                var profile = LocalCaptureProfileDefinition.CreateV2(persistedConfiguration, persistedSchedule);
                 var profileJson = System.Text.Encoding.UTF8.GetBytes(
                     CaptureContractJson.SerializeToElement(profile).GetRawText());
                 using var connection = new SqliteConnection(

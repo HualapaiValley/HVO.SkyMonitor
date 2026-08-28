@@ -801,10 +801,9 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     [TestMethod]
-    public async Task SchemaV3Migration_InitializesOwnedTransientPolicyWhenNoLegacyWorkExists()
+    public async Task CanonicalSchema_InitializesOwnedTransientPolicyIdempotently()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
-        await fixture.SimulateV3Async(activeLegacyWork: false).ConfigureAwait(false);
 
         await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
 
@@ -819,7 +818,7 @@ public sealed class SqliteTransientCandidateJournalTests
     }
 
     [TestMethod]
-    public async Task SchemaV9Migration_BackfillsCanonicalCandidateState()
+    public async Task PopulatedV9Schema_DoesNotBackfillCanonicalCandidateState()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
         var source = await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);
@@ -834,15 +833,17 @@ public sealed class SqliteTransientCandidateJournalTests
             "ALTER TABLE transient_candidates DROP COLUMN candidate_state; PRAGMA user_version = 9;")
             .ConfigureAwait(false);
 
-        await fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            fixture.ReinitializeAsync(TransientOperatingMode.Edge, required: false)).ConfigureAwait(false);
 
-        Assert.AreEqual(11L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
-        Assert.AreEqual("Provisional", await fixture.ScalarStringAsync(
-            "SELECT candidate_state FROM transient_candidates;").ConfigureAwait(false));
+        Assert.AreEqual(9L, await fixture.ScalarLongAsync("PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(0L, await fixture.ScalarLongAsync(
+            "SELECT COUNT(*) FROM pragma_table_info('transient_candidates') WHERE name = 'candidate_state';")
+            .ConfigureAwait(false));
     }
 
     [TestMethod]
-    public async Task SchemaV3Migration_RefusesActiveLegacyTransientLaneCollision()
+    public async Task PopulatedV3Schema_RefusesActiveLegacyTransientLaneCollision()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
         await fixture.AddRawSourceAsync(1, 100).ConfigureAwait(false);

@@ -5,9 +5,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
@@ -18,6 +20,24 @@ public sealed class CaptureProcessingGraphTests
 {
     private const string HistoricalAnnotationPlanSha256 = "58C88E48E07E3297224DEC1894808E8E85E063D65F9B30EE4550C43EF16B6ADA";
     private const string HistoricalWeatherPlanSha256 = "7BDBFFBDAA1D2A219494E5CF9C13A10C433E605E28C375990DA2FFD39271C57F";
+
+    [TestMethod]
+    public void AddCameraAgentInfrastructure_InitializesRawSchemaBeforeProcessingHostedServices()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
+        var hostedTypes = services
+            .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
+            .Select(static descriptor => descriptor.ImplementationType)
+            .ToList();
+
+        var configurationIndex = hostedTypes.IndexOf(typeof(CameraAgentConfigurationInitializer));
+        Assert.IsGreaterThanOrEqualTo(0, configurationIndex);
+        Assert.IsTrue(configurationIndex < hostedTypes.IndexOf(typeof(CaptureProcessingStateRefreshService)));
+        Assert.IsTrue(configurationIndex < hostedTypes.IndexOf(typeof(DerivedProductReconciliationService)));
+        Assert.IsTrue(configurationIndex < hostedTypes.IndexOf(typeof(ProjectedSceneStageReconciliationService)));
+    }
     private static readonly string[] ExpectedTopologicalOrder = ["first", "middle", "last"];
     private static readonly string[] ExpectedProducerConsumerOrder = ["producer", "consumer"];
     private static readonly string[] ExpectedProducerDependency = ["producer"];
@@ -525,7 +545,9 @@ public sealed class CaptureProcessingGraphTests
         Assert.AreEqual(LocalCaptureProfileDefinition.CurrentSchemaVersion, profile.SchemaVersion);
         Assert.IsTrue(LocalCaptureProfileContract.Validate(profile).IsValid);
         Assert.IsFalse(LocalCaptureProfileContract.Validate(legacy).IsValid);
-        Assert.IsTrue(LocalCaptureProfileContract.ValidatePersistedRevision(legacy).IsValid);
+        var legacyPersistedValidation = LocalCaptureProfileContract.ValidatePersistedRevision(legacy);
+        Assert.IsFalse(legacyPersistedValidation.IsValid);
+        Assert.AreEqual("localProfile.schemaVersion", legacyPersistedValidation.FieldPath);
         Assert.IsTrue(serialized.TryGetProperty("dependencyPolicy", out _));
         Assert.IsFalse(serializedLegacy.TryGetProperty("dependencyPolicy", out _));
         Assert.AreEqual(
@@ -537,9 +559,6 @@ public sealed class CaptureProcessingGraphTests
             applied.Pipeline.DependencyPolicy);
         Assert.AreEqual(CapturePipelineSchemaVersions.LegacyV1, appliedLegacy.Pipeline.SchemaVersion);
         Assert.AreEqual(CapturePipelineDependencyPolicy.LegacyInference, appliedLegacy.Pipeline.DependencyPolicy);
-        Assert.AreEqual(
-            "2BAEFC40154CF604FD5F7E6BA355F8CBAB3E084C89960B7F97DD1D7EA4A6AB2F",
-            LocalCaptureProfileContract.ComputePersistedRevisionSha256(legacy));
         using var telemetry = new CaptureProcessingTelemetry();
         using var services = new ServiceCollection().BuildServiceProvider();
         var executableLegacy = legacy with

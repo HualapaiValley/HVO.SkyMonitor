@@ -529,7 +529,7 @@ public sealed class TransientWorkerRuntimeTests
     }
 
     [TestMethod]
-    public async Task RawIngressV10_MigratesRuntimeOperationAuditSchemaToV11()
+    public async Task RawIngressV10_DoesNotCreateRuntimeOperationAuditSchema()
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-v11-migration", Guid.NewGuid().ToString("N"));
         try
@@ -551,13 +551,14 @@ public sealed class TransientWorkerRuntimeTests
             }
 
             using var restarted = CreateProvider(root);
-            await restarted.GetRequiredService<IRawCaptureIngress>()
-                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => restarted
+                .GetRequiredService<IRawCaptureIngress>()
+                .InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
             using var verify = await OpenAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(11L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
-            Assert.AreEqual(30L, await ScalarAsync(verify,
+            Assert.AreEqual(10L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(verify,
                 "SELECT COUNT(*) FROM pragma_table_info('transient_runtime_operations');").ConfigureAwait(false));
-            Assert.AreEqual(1L, await ScalarAsync(verify,
+            Assert.AreEqual(0L, await ScalarAsync(verify,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'ix_transient_runtime_operations_target';").ConfigureAwait(false));
         }
         finally

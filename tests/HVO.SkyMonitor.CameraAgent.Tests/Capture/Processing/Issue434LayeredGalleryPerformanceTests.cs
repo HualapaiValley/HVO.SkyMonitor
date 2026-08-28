@@ -28,6 +28,8 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var rawJournal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
+            await rawJournal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
             using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
@@ -46,8 +48,6 @@ public sealed partial class DurableCaptureProcessingTests
                 await File.ReadAllBytesAsync(Path.Combine(root, manifestOutput.PayloadRelativePath)).ConfigureAwait(false))
                 .Document;
             Assert.IsNotNull(manifest);
-            var rawJournal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
-            await rawJournal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var artifacts = new CameraAgentArtifactService(fixture.Options, store, new CameraAgentPreviewEncoder());
 
             var uncached = new double[Issue434UncachedMeasurements];

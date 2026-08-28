@@ -80,26 +80,16 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_PersistedLegacyControlPoliciesNormalizeDuringHostRestart()
+    public async Task InitializeAsync_PersistedCurrentV2LegacyControlPoliciesNormalizeDuringHostRestart()
     {
         var cases = new[]
         {
             new LegacyControlCase(
-                LocalCaptureProfileDefinition.LegacySchemaVersion,
-                new CameraControlPolicy
-                {
-                    AutoExposure = CameraFeatureDirective.Enabled,
-                    AutoGain = CameraFeatureDirective.Disabled
-                },
-                AutomaticControlOwnership.HostMetered,
-                AutomaticControlOwnership.Disabled,
-                CapturePipelineSchemaVersions.LegacyV1),
-            new LegacyControlCase(
-                LocalCaptureProfileDefinition.LegacySchemaVersion,
+                LocalCaptureProfileDefinition.CurrentSchemaVersion,
                 null,
                 AutomaticControlOwnership.Disabled,
                 AutomaticControlOwnership.Disabled,
-                CapturePipelineSchemaVersions.LegacyV1),
+                CapturePipelineSchemaVersions.ExplicitV2),
             new LegacyControlCase(
                 LocalCaptureProfileDefinition.CurrentSchemaVersion,
                 new CameraControlPolicy
@@ -217,6 +207,55 @@ public sealed class SqliteCaptureScheduleStoreTests
         }
     }
 
+    [TestMethod]
+    public async Task InitializeAsync_InactiveChecksumValidPersistedV1ProfileFailsClosed()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var initializer = new JournalInitializer(root);
+            var configuration = HostConfiguration();
+            using (var store = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System))
+            {
+                _ = await store.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                var legacy = LocalCaptureProfileDefinition.Create(configuration, configuration.Schedule!);
+                var profileJson = System.Text.Encoding.UTF8.GetBytes(
+                    CaptureContractJson.SerializeToElement(legacy).GetRawText());
+                using var document = System.Text.Json.JsonDocument.Parse(profileJson);
+                var rawProfileSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(document.RootElement);
+                using var connection = new SqliteConnection(
+                    $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO capture_schedule_revisions(
+                        revision_id, revision_number, profile_json, profile_sha256, schedule_sha256,
+                        source, actor, reason, created_unix_ms)
+                    VALUES ('inactive-legacy-v1', 2, $json, $profile_sha, $schedule_sha,
+                            'test', 'test', 'inactive legacy row', 1);
+                    """;
+                command.Parameters.AddWithValue("$json", profileJson);
+                command.Parameters.AddWithValue("$profile_sha", rawProfileSha256);
+                command.Parameters.AddWithValue(
+                    "$schedule_sha",
+                    CaptureScheduleContract.ComputeSha256(legacy.Schedule));
+                Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+                var validation = LocalCaptureProfileContract.ValidatePersistedRevision(legacy);
+                Assert.IsFalse(validation.IsValid);
+                Assert.AreEqual("localProfile.schemaVersion", validation.FieldPath);
+            }
+            using var restarted = new SqliteCaptureScheduleStore(initializer, options, TimeProvider.System);
+
+            _ = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                restarted.InitializeAsync(configuration, CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private sealed record LegacyControlCase(
         string ProfileSchemaVersion,
         CameraControlPolicy? Policy,
@@ -316,21 +355,6 @@ public sealed class SqliteCaptureScheduleStoreTests
             var timeProvider = new SettableTimeProvider(new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero));
             var seed = await SeedNormalizedDuplicateRevisionsAsync(
                 root, options, initializer, persistedConfiguration, timeProvider).ConfigureAwait(false);
-            using (var setup = new SqliteConnection(
-                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
-            {
-                await setup.OpenAsync().ConfigureAwait(false);
-                using var command = setup.CreateCommand();
-                command.CommandText = """
-                    CREATE TABLE recovery_state_updates(marker INTEGER NOT NULL);
-                    CREATE TRIGGER count_recovery_state_updates
-                    AFTER UPDATE ON capture_schedule_state
-                    BEGIN
-                        INSERT INTO recovery_state_updates(marker) VALUES (1);
-                    END;
-                    """;
-                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-            }
             var recoveryUtc = new DateTimeOffset(2026, 2, 2, 0, 0, 0, TimeSpan.Zero);
             timeProvider.UtcNow = recoveryUtc;
             var expectedFileProfile = SqliteCaptureScheduleStore.CreateFileProfile(fileConfiguration);
@@ -365,7 +389,6 @@ public sealed class SqliteCaptureScheduleStoreTests
                 await verification.OpenAsync().ConfigureAwait(false);
                 Assert.AreEqual(3, await CountRevisionsAsync(verification).ConfigureAwait(false));
                 Assert.AreEqual(1, await CountActivationsAsync(verification).ConfigureAwait(false));
-                Assert.AreEqual(1, await CountRecoveryStateUpdatesAsync(verification).ConfigureAwait(false));
             }
             timeProvider.UtcNow = recoveryUtc.AddDays(1);
 
@@ -381,7 +404,6 @@ public sealed class SqliteCaptureScheduleStoreTests
             await repeatedVerification.OpenAsync().ConfigureAwait(false);
             Assert.AreEqual(3, await CountRevisionsAsync(repeatedVerification).ConfigureAwait(false));
             Assert.AreEqual(1, await CountActivationsAsync(repeatedVerification).ConfigureAwait(false));
-            Assert.AreEqual(1, await CountRecoveryStateUpdatesAsync(repeatedVerification).ConfigureAwait(false));
         }
         finally
         {
@@ -441,8 +463,6 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     [TestMethod]
-    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion, true)]
-    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion, false)]
     [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion, true)]
     [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion, false)]
     public async Task InitializeAsync_ChecksumValidUndefinedLegacyDirectiveFailsBeforeNormalization(
@@ -599,7 +619,6 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     [TestMethod]
-    [DataRow(LocalCaptureProfileDefinition.LegacySchemaVersion)]
     [DataRow(LocalCaptureProfileDefinition.CurrentSchemaVersion)]
     public async Task StageAsync_PreUpgradeLegacyCommandReplaysButNewKeyIsRejected(string schemaVersion)
     {
@@ -1198,13 +1217,6 @@ public sealed class SqliteCaptureScheduleStoreTests
     {
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM capture_schedule_activations;";
-        return (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
-    }
-
-    private static async Task<long> CountRecoveryStateUpdatesAsync(SqliteConnection connection)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM recovery_state_updates;";
         return (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
     }
 

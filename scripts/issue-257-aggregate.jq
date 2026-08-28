@@ -44,12 +44,30 @@ def stats:
         w2CpuMilliseconds: ($lane | map(.w2.cpuMilliseconds) | stats),
         w2AllocatedBytes: ($lane | map(.w2.allocatedBytes) | stats),
         w2RssDeltaBytes: ($lane | map(.w2.rssAfterBytes - .w2.rssBeforeBytes) | stats),
-        w3MMigrationMilliseconds: ($lane | map(.w3M.migrationMilliseconds) | stats),
-        w3MCpuMilliseconds: ($lane | map(.w3M.cpuMilliseconds) | stats),
-        w3MAllocatedBytes: ($lane | map(.w3M.allocatedBytes) | stats),
+        w3MInitializationMilliseconds: ($lane | map(.w3M.initializationMilliseconds) | stats),
+        w3MInitializationCpuMilliseconds: ($lane | map(.w3M.initializationCpuMilliseconds) | stats),
+        w3MInitializationAllocatedBytes: ($lane | map(.w3M.initializationAllocatedBytes) | stats),
+        w3MInitializationRssDeltaBytes: ($lane | map(.w3M.rssAfterInitializationBytes - .w3M.rssBeforeInitializationBytes) | stats),
+        w3MCanonicalInsertionMilliseconds: ($lane | map(.w3M.canonicalInsertionMilliseconds) | stats),
+        w3MCanonicalInsertionRecordsPerSecond: ($lane | map(.w3M.canonicalInsertionRecordsPerSecond) | stats),
+        w3MCanonicalInsertionReferenceRowsPerSecond: ($lane | map(.w3M.canonicalInsertionReferenceRowsPerSecond) | stats),
+        w3MCanonicalInsertionCpuMilliseconds: ($lane | map(.w3M.canonicalInsertionCpuMilliseconds) | stats),
+        w3MCanonicalInsertionAllocatedBytes: ($lane | map(.w3M.canonicalInsertionAllocatedBytes) | stats),
+        w3MCanonicalInsertionRssDeltaBytes: ($lane | map(.w3M.rssAfterCanonicalInsertionBytes - .w3M.rssBeforeCanonicalInsertionBytes) | stats),
+        w3MDatabaseBytesAfterInitialization: ($lane | map(.w3M.databaseBytesAfterInitialization) | stats),
+        w3MWalBytesAfterInitialization: ($lane | map(.w3M.walBytesAfterInitialization) | stats),
+        w3MDatabaseBytesAfterCanonicalInsertion: ($lane | map(.w3M.databaseBytesAfterCanonicalInsertion) | stats),
+        w3MWalBytesAfterCanonicalInsertion: ($lane | map(.w3M.walBytesAfterCanonicalInsertion) | stats),
+        w3MRestartCpuMilliseconds: ($lane | map(.w3M.restartCpuMilliseconds) | stats),
         w3MRestartAllocatedBytes: ($lane | map(.w3M.restartAllocatedBytes) | stats),
         w3MRestartDiscoveryMedianMilliseconds: ($lane | map(.w3M.restartDiscoveryMedianMilliseconds) | stats),
+        w3MRestartDiscoveryMinimumMilliseconds: ($lane | map(.w3M.restartDiscoveryMinimumMilliseconds) | stats),
+        w3MRestartDiscoveryMaximumMilliseconds: ($lane | map(.w3M.restartDiscoveryMaximumMilliseconds) | stats),
+        w3MRestartRssBeforeBytes: ($lane | map(.w3M.rssBeforeRestartBytes) | stats),
+        w3MRestartRssAfterBytes: ($lane | map(.w3M.rssAfterRestartBytes) | stats),
         syntheticIndexedTraversalMilliseconds: ($lane | map(.w3M.syntheticIndexedTraversalMilliseconds) | stats),
+        syntheticIndexedTraversalRowsPerSecond: ($lane | map(.w3M.syntheticIndexedTraversalRowsPerSecond) | stats),
+        paginationMilliseconds: ($lane | map(.w3M.paginationMilliseconds) | stats),
         unblockedProductionClaimP95Milliseconds: ($lane | map(.blockedComparison.unblocked.standardClaimP95Milliseconds) | stats),
         blockedProductionClaimP95Milliseconds: ($lane | map(.blockedComparison.blocked.standardClaimP95Milliseconds) | stats),
         unblockedProductionClaimMaximumMilliseconds: ($lane | map(.blockedComparison.unblocked.standardClaimMaximumMilliseconds) | stats),
@@ -70,7 +88,37 @@ def stats:
         w2SparseMeterAllocatedBytes: ($control | map(.workloads[] | select(.id == "W2") | .candidate.allocatedBytesTotal) | stats)
     },
     gates: {
+        runtimeConfiguration: (
+            ([$lane[] | .environment.serverGc == true and .environment.gcDynamicAdaptationMode == 0] | all) and
+            ([$control[] | .environment.serverGc == true and .environment.gcDynamicAdaptationMode == 0] | all)),
         perTrialCorrectness: (([$lane[] |
+            .w3M.rawRows == 10000 and
+            .w3M.laneWorkRows == 30000 and
+            .w3M.referenceRowsPerCapture == 3 and
+            .w3M.contextRows == 1000 and
+            .w3M.canonicalInsertionTransactions == 1 and
+            .w3M.canonicalInsertionStatements == 51001 and
+            .w3M.canonicalInsertionRawRecordsPerSecond == .w3M.canonicalInsertionRecordsPerSecond and
+            .w3M.canonicalLaneStatements == 30000 and
+            .w3M.canonicalLaneRows == 30000 and
+            .w3M.observedProductionTransactions == 1 and
+            .w3M.queryPlanUsesIndex == true and
+            (.w3M.queryPlan | type) == "array" and
+            ([.w3M.queryPlan[] | contains("ix_capture_lane_work_ordered")] | any) and
+            .w3M.syntheticIndexedTraversalLabel == "Direct test-owned SQL traversal; not production SqliteCaptureLaneStore.ClaimAsync latency." and
+            .w3M.syntheticIndexedTraversalRows == 10000 and
+            .w3M.paginationPageSize == 257 and
+            .w3M.paginationRows == 10000 and
+            .w3M.userVersion == 11 and
+            .w3M.integrityCheck == "ok" and
+            .w3M.payloadFiles == 0 and
+            .w3M.persistedPayloadCopyCount == 0 and
+            (.w3M.restartTrialMilliseconds | length) == 5 and
+            ([.w3M.restartTrialMilliseconds[] | type == "number" and . >= 0] | all) and
+            .w3M.restartDiscoveryMinimumMilliseconds == (.w3M.restartTrialMilliseconds | min) and
+            .w3M.restartDiscoveryMedianMilliseconds == (.w3M.restartTrialMilliseconds | sort | .[2]) and
+            .w3M.restartDiscoveryMaximumMilliseconds == (.w3M.restartTrialMilliseconds | max) and
+            .w3M.restartDiscoveredRowsPerTrial == [30000, 30000, 30000, 30000, 30000] and
             .blockedComparison.unblocked.finalPendingLaneRows == 0 and
             .blockedComparison.blocked.finalPendingLaneRows == 0 and
             .blockedComparison.unblocked.finalQuarantinedLaneRows == 0 and
@@ -104,5 +152,5 @@ def stats:
         candidateOnlyTrialRanges: "Reported as min/median/max and maximumToMinimumRatio; no equivalent historical baseline exists, so range ratios are diagnostic rather than regression gates."
     }
 } |
-.result = {passed: (.gates.perTrialCorrectness and .gates.runtimeSignals and .gates.rssGrowthWithinDeclaredAbsoluteBudget),
+.result = {passed: (.gates.runtimeConfiguration and .gates.perTrialCorrectness and .gates.runtimeSignals and .gates.rssGrowthWithinDeclaredAbsoluteBudget),
     scope: "functional isolation, correctness, durability, runtime signals, and RSS bounds; latency causality is N/A"}

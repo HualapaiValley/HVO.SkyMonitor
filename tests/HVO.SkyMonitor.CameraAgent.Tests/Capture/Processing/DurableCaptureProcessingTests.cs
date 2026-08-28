@@ -617,6 +617,8 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var rawJournal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
+            await rawJournal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
             using var store = new SqliteCaptureProcessingStore(fixture.Options);
             using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
@@ -635,8 +637,6 @@ public sealed partial class DurableCaptureProcessingTests
                 await File.ReadAllBytesAsync(Path.Combine(root, manifestOutput.PayloadRelativePath)).ConfigureAwait(false))
                 .Document!;
             var selected = new[] { manifest.Layers[0].LayerIdentitySha256 };
-            var rawJournal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
-            await rawJournal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             await rawJournal.ReserveIdentityAsync(
                 fixture.Manifest.Descriptor.Capture.AgentId,
                 fixture.Manifest.Descriptor.Capture.CaptureId,
@@ -1527,6 +1527,8 @@ public sealed partial class DurableCaptureProcessingTests
         try
         {
             var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            await new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1)
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([
                 new CelestialCatalogObject("star", "Star", 0, 0, 1)
             ])).BuildAsync(new VisibleSceneRequest(
@@ -1570,8 +1572,6 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
             }
 
-            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
-            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var restarted = new SqliteCaptureProcessingStore(fixture.Options);
             var products = await restarted.ReadCaptureProductsAsync(
                 fixture.Manifest.Descriptor.Capture.CaptureId,

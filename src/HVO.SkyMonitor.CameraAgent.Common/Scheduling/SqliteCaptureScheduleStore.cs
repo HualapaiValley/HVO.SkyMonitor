@@ -107,6 +107,7 @@ public sealed class SqliteCaptureScheduleStore(
             var fileSha256 = LocalCaptureProfileContract.ComputeSha256(fileProfile);
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            await ValidatePersistedRevisionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             if (snapshot is null)
             {
@@ -1243,6 +1244,29 @@ public sealed class SqliteCaptureScheduleStore(
             : await ReadRevisionAsync(connection, transaction, pendingId, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("The pending capture schedule revision is missing.");
         return new CaptureScheduleStoreSnapshot(active, pending, version, lastEvaluated, updated);
+    }
+
+    private static async Task ValidatePersistedRevisionsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var revisionIds = new List<string>();
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "SELECT revision_id FROM capture_schedule_revisions ORDER BY revision_number;";
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                revisionIds.Add(reader.GetString(0));
+            }
+        }
+        foreach (var revisionId in revisionIds)
+        {
+            _ = await ReadRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidDataException("A durable capture schedule revision is missing.");
+        }
     }
 
     private async Task<CaptureScheduleRevisionSnapshot> InsertRevisionAsync(
