@@ -16,21 +16,6 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestCategory("Unit")]
 public sealed class StandaloneW6ProfileTests
 {
-    private static readonly IReadOnlyDictionary<string, string> Pre433HistoricalPlanSha256s =
-        new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["projected-scene"] = "43678EA0F4440E611BAAEE90864128A6691404E008289DF0D53965D57B84B4D9",
-            ["calibration"] = "F78C7C80FE1614D5DDE773DEED1DEB570840D974CF7D4CCB4188B2FBC0BC405C",
-            ["calibrated-preview"] = "C12900BBDCE042B994277E4E0F3D8CF7CBEADF038BC642FC6B01C80ECFE1435A",
-            ["rolling"] = "3D8C8BB7F89830B66E17A3DE97C0E1517E2198EBC76637E69DF5214787BD3E09",
-            ["quality"] = "74FCF615403E8488D214F195A5EAE9B8BCA89FF00B45C9D25A90995215166058",
-            ["cloud"] = "C3937D26381FB9343A0C2439548D718B62CAA7778FE965B9E48D5E8C7BBD620E",
-            ["combined-preview"] = "F86502BE3335BEF3D77A7B9BA3613D703B70B297E9C64F016F9B204B051C2E61",
-            ["sky-annotation"] = "369E3771B85E36A555D516241B66AF9A11D1D7AF6E564359BB8D53F4E4C20754",
-            ["weather-overlay"] = "D6187E7E7D8F377FA1F912F31C55005A8A922C609266D1425FF00D1E1B74C7C4",
-            ["storage"] = "43AAE55408B69B7B1946395176ECEFA5ED77361CAEA1E1E81C4409B5A20A539D",
-            ["telemetry"] = "461C6454B441D84F01830076279AC915DC6A88824C663A73DF1D7B7C8D6A8E60"
-        };
     private static readonly ObservatoryLocation Location = new(
         35.5599378,
         -113.9119818,
@@ -68,7 +53,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "FD3E214AD0A65808F481789D341CEE763443DA8383A52EC55FE52E07DD42F07F",
+            "40D49A5166B07FACECA41173263DA75DA8A9A7E28480CB361BDA34191994DB61",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -123,7 +108,7 @@ public sealed class StandaloneW6ProfileTests
             "2538EB75560857DA6319DD4F20533C6F6B768E7DB47F95B661150B85D6ECFBAB",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "14225DF460F651A0F51C578F2BE55A6B81E3F1B5770E15B2D65AFBC2DBBDC1D9",
+            "44A1253961E3BE879BF69C27DC57F24DD492FE4416232913EEB99E6273D7A7E5",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(4, preview.EffectiveNodes);
@@ -242,106 +227,6 @@ public sealed class StandaloneW6ProfileTests
         StringAssert.Contains(exception.Message, "w6-constellation-layer", StringComparison.Ordinal);
     }
 
-    [TestMethod]
-    public async Task Pre433W6FixturePinsEveryAllowlistedHistoricalNodeAndExcludesChangedCloud()
-    {
-        var current = await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false);
-        var prefix = current.Pipeline!.Steps.TakeWhile(static step => step.Id != "scene-presentation").ToList();
-        var oldAnnotation = new CaptureProcessingStepConfig("Annotation", "sky-annotation", 70,
-            SerializeLegacyOptions(new AnnotationProcessingStepOptions
-            {
-                MarkRadius = 6,
-                MarkerValue = 144,
-                DrawLabels = true,
-                MaximumLabelMagnitude = 2.5,
-                LabelScale = 2,
-                DrawConstellationLines = true,
-                ConstellationIds = ["ORI", "UMA", "UMI", "CAS", "CYG", "LYR"],
-                ConstellationLineValue = 160,
-                ConstellationLineRed = 96,
-                ConstellationLineGreen = 160,
-                ConstellationLineBlue = 255,
-                ConstellationLineThickness = 2,
-                ConstellationLineOpacity = 0.8,
-                DrawImageCircle = true,
-                DrawCardinalDirections = true,
-                DrawMetadataCorners = true,
-                RequireProjectedSceneDependency = true,
-                TopLeftTokens = ["agent-identity", "capture-sequence", "utc"],
-                TopRightTokens = ["schedule-profile", "exposure", "cadence", "gain", "offset", "sensor-setpoint"],
-                BottomLeftTokens = ["environment"],
-                BottomRightTokens = ["catalog", "calibration", "stack", "processing-profile"],
-                EnvironmentalKinds = [EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationKind.RelativeHumidity,
-                    EnvironmentalObservationKind.AtmosphericPressure, EnvironmentalObservationKind.WindSpeed,
-                    EnvironmentalObservationKind.RainState, EnvironmentalObservationKind.CloudCover],
-                MetadataValue = 255,
-                MetadataScale = 1,
-                MetadataInset = 4,
-                MetadataLineSpacing = 2,
-                ImageCircleValue = 96,
-                CardinalValue = 255,
-                CardinalScale = 2,
-                RecipeVersion = "projected-scene-annotation-v3",
-                OutputVariant = "w6-annotated"
-            }), ["combined-preview", "projected-scene"]);
-        var oldWeather = new CaptureProcessingStepConfig("WeatherCloudOverlay", "weather-overlay", 80,
-            SerializeLegacyOptions(new WeatherCloudOverlayProcessingStepOptions
-            {
-                RecipeVersion = "weather-cloud-overlay-v1",
-                OutputVariant = "w6-weather-overlay",
-                LineThickness = 1,
-                DrawLabels = true,
-                MaximumLabelCharacters = 32
-            }), ["sky-annotation", "cloud"], Required: false);
-        var currentStorage = current.Pipeline.Steps.Single(static step => step.Id == "storage");
-        var oldStorage = currentStorage with
-        {
-            DependsOn = ["projected-scene", "calibration", "calibrated-preview", "rolling", "combined-preview",
-                "quality", "cloud", "sky-annotation", "weather-overlay"]
-        };
-        var currentTelemetry = current.Pipeline.Steps.Single(static step => step.Id == "telemetry");
-        var oldTelemetry = currentTelemetry with
-        {
-            DependsOn = [.. oldStorage.DependsOn!, "storage"]
-        };
-        var oldConfig = current with
-        {
-            Pipeline = current.Pipeline with { Steps = [.. prefix, oldAnnotation, oldWeather, oldStorage, oldTelemetry] }
-        };
-        using var provider = CreateProvider();
-        var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(oldConfig);
-        try
-        {
-            var hashes = graph.Nodes.ToDictionary(static node => node.Id, static node => node.LegacyPlanSha256);
-            Assert.IsNotNull(hashes["cloud"]);
-            Assert.IsNotNull(hashes["projected-scene"]);
-            Assert.IsNotNull(hashes["calibration"]);
-            Assert.IsNotNull(hashes["calibrated-preview"]);
-            Assert.IsNotNull(hashes["rolling"]);
-            Assert.IsNotNull(hashes["combined-preview"]);
-            Assert.IsNotNull(hashes["quality"]);
-            Assert.IsNotNull(hashes["sky-annotation"]);
-            Assert.IsNotNull(hashes["weather-overlay"]);
-            Assert.IsNotNull(hashes["storage"]);
-            Assert.IsNotNull(hashes["telemetry"]);
-            foreach (var expected in Pre433HistoricalPlanSha256s)
-                Assert.AreEqual(expected.Value, hashes[expected.Key], $"{expected.Key}:{hashes[expected.Key]}");
-            var currentGraph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(current);
-            try
-            {
-                Assert.IsNull(currentGraph.Nodes.Single(static node => node.Id == "cloud").LegacyPlanSha256);
-            }
-            finally
-            {
-                currentGraph.DisposeSteps();
-            }
-        }
-        finally
-        {
-            graph.DisposeSteps();
-        }
-    }
-
     private static async Task<CameraModuleConfig> LoadAsync(string fileName)
     {
         var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
@@ -351,14 +236,6 @@ public sealed class StandaloneW6ProfileTests
             Observatory = Location
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance);
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
-    }
-
-    private static System.Text.Json.JsonElement SerializeLegacyOptions<T>(T options)
-    {
-        var node = System.Text.Json.JsonSerializer.SerializeToNode(options)!.AsObject();
-        node.Remove("enabled");
-        node.Remove("Enabled");
-        return System.Text.Json.JsonSerializer.SerializeToElement(node);
     }
 
     private static ServiceProvider CreateProvider()

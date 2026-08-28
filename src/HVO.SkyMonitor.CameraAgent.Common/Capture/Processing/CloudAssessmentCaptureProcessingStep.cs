@@ -16,11 +16,8 @@ internal sealed class CloudAssessmentCaptureProcessingStep(
     CameraAgentRecipeExecutionAdapter adapter,
     CameraAgentClearReferenceLoader clearReferenceLoader,
     CameraAgentCloudEnvironment? cloudEnvironment = null)
-    : ConfigurableCaptureProcessingStep<CloudAssessmentProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep,
-      ILegacyCaptureProcessingPlanContract
+    : ConfigurableCaptureProcessingStep<CloudAssessmentProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
 {
-    internal const string LegacyPlanContract = "cloud-assessment-untyped-plan-v1";
-    public string LegacyPlanContractId => LegacyPlanContract;
     public bool Enabled { get; } = RegisterReference(options, clearReferenceLoader);
 
     public string RecipeName => BuiltInProcessingRecipes.CloudAssessment;

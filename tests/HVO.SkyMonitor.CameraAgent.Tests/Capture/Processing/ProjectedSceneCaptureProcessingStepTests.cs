@@ -396,9 +396,29 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             var previewFrame = new CameraFrame(
                 startedUtc, 2, 2, CameraPixelFormat.Mono8, new byte[4],
                 new FrameMetadata(TimeSpan.FromSeconds(2), 1, 0), 2);
+            var previewSources = new[] { fixture.Descriptor.Artifact.ArtifactId };
+            var previewRecipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
+                "encoded-preview", "1.0.0", "encoded-preview-v1", JsonSerializer.SerializeToElement(new { })));
+            var previewIdentity = ProcessingIdentity.CreateOutputIdentity(
+                FrameArtifactRole.Preview, "preview-v1", previewRecipe.IdentitySha256, previewSources);
             var previewArtifact = fixture.Context.AddDerivative(
                 FrameArtifactRole.Preview, previewFrame, "preview-v1",
-                [fixture.Descriptor.Artifact.ArtifactId]);
+                previewSources, CaptureProcessingContext.CreateArtifactId(previewIdentity));
+            fixture.Context.AssociateProcessingProduct(previewArtifact, new ProcessingProduct(
+                FrameArtifactRole.Preview,
+                "preview-v1",
+                previewIdentity,
+                "application/x-hvo-packed-frame",
+                new FrameLayoutDescriptor(
+                    2, 2, 2, CameraPixelFormat.Mono8, FrameByteOrder.NotApplicable, 8, 8,
+                    FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 0, byte.MaxValue, 4),
+                previewFrame.PixelData,
+                PayloadChecksum.ComputeSha256(previewFrame.PixelData.Span),
+                previewRecipe,
+                [new("encoded-preview", "encoded-preview-v1")],
+                previewSources,
+                previewFrame.Metadata.Exposure,
+                sceneProduct.Compatibility));
             fixture.Context.BeginNode("annotation", ["preview", "projected-scene"]);
             var annotation = new AnnotationCaptureProcessingStep(
                 new CaptureProcessingStepMetadata("annotation", "Annotation", 70),

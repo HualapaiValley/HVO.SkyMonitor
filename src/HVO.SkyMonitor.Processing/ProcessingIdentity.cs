@@ -6,6 +6,8 @@ namespace HVO.SkyMonitor.Processing;
 
 public static class ProcessingIdentity
 {
+    public const string BoundInputSchemaVersion = "hvo-processing-bound-inputs-v2";
+
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
     public static ProcessingRecipeIdentity CreateRecipeIdentity(
@@ -95,26 +97,9 @@ public static class ProcessingIdentity
                 annotation.ProjectionOverlay,
                 annotation.MetadataOverlay
             }, SerializerOptions));
-        if (auxiliaryInputs is null or { Count: 0 })
-        {
-            var legacyEnvelope = JsonSerializer.SerializeToElement(new
-            {
-                input = new
-                {
-                    kind = selector.Kind.ToString(),
-                    role = selector.Role.ToString(),
-                    selector.Variant,
-                    recipeIdentitySha256 = selector.RecipeIdentitySha256?.ToUpperInvariant()
-                },
-                parameters = normalizedOptions,
-                annotationIdentitySha256 = annotationIdentity
-            }, SerializerOptions);
-            return CaptureContractJson.Canonicalize(legacyEnvelope);
-        }
-
         var envelope = JsonSerializer.SerializeToElement(new
         {
-            schema = "hvo-processing-bound-inputs-v2",
+            schema = BoundInputSchemaVersion,
             input = new
             {
                 kind = selector.Kind.ToString(),
@@ -124,7 +109,7 @@ public static class ProcessingIdentity
             },
             parameters = normalizedOptions,
             annotationIdentitySha256 = annotationIdentity,
-            auxiliaryInputs = auxiliaryInputs.OrderBy(static input => input.Name, StringComparer.Ordinal).Select(static input => new
+            auxiliaryInputs = (auxiliaryInputs ?? []).OrderBy(static input => input.Name, StringComparer.Ordinal).Select(static input => new
             {
                 input.Name,
                 kind = input.Kind.ToString(),

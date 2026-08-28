@@ -10,11 +10,9 @@ internal abstract class PreviewCaptureProcessingStepBase<TOptions>(
     CaptureProcessingStepMetadata metadata,
     TOptions options,
     CameraAgentRecipeExecutionAdapter adapter,
-    IReadOnlySet<FrameArtifactRole> acceptedInputRoles) : ConfigurableCaptureProcessingStep<TOptions>(metadata, options), ICaptureProcessingGraphStep,
-    ILegacyCaptureProcessingPlanContract
+    IReadOnlySet<FrameArtifactRole> acceptedInputRoles) : ConfigurableCaptureProcessingStep<TOptions>(metadata, options), ICaptureProcessingGraphStep
     where TOptions : PreviewProcessingStepOptions, new()
 {
-    public abstract string LegacyPlanContractId { get; }
     public bool Enabled => Options.Enabled;
 
     public string RecipeName => BuiltInProcessingRecipes.EncodedPreview;
@@ -91,8 +89,6 @@ internal sealed class PreviewCaptureProcessingStep(
             FrameArtifactRole.Combined
         })
 {
-    internal const string LegacyPlanContract = "preview-plan-v1";
-    public override string LegacyPlanContractId => LegacyPlanContract;
 }
 
 internal sealed class CalibratedPreviewCaptureProcessingStep(
@@ -104,8 +100,6 @@ internal sealed class CalibratedPreviewCaptureProcessingStep(
         adapter,
         new HashSet<FrameArtifactRole> { FrameArtifactRole.Calibrated })
 {
-    internal const string LegacyPlanContract = "calibrated-preview-plan-v1";
-    public override string LegacyPlanContractId => LegacyPlanContract;
 }
 
 internal sealed class CombinedPreviewCaptureProcessingStep(
@@ -117,8 +111,6 @@ internal sealed class CombinedPreviewCaptureProcessingStep(
         adapter,
         new HashSet<FrameArtifactRole> { FrameArtifactRole.Combined })
 {
-    internal const string LegacyPlanContract = "combined-preview-plan-v1";
-    public override string LegacyPlanContractId => LegacyPlanContract;
 }
 
 public class PreviewProcessingStepOptions : IValidatableObject

@@ -6,6 +6,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Reflection;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
@@ -655,9 +656,6 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     : item.Config.DependsOn ?? [],
                 StringComparer.OrdinalIgnoreCase),
             StringComparer.OrdinalIgnoreCase);
-        var allowUntypedCloudLegacy = configured.Any(static item =>
-                item.Step is WeatherCloudOverlayCaptureProcessingStep) &&
-            configured.All(static item => item.Step is not CloudPresentationLayerCaptureProcessingStep);
         var ordered = new List<CaptureProcessingGraphNode>(configured.Count);
         while (ordered.Count < configured.Count)
         {
@@ -704,9 +702,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     item.Config.Options,
                     item.Config.DependsOn?.ToArray(),
                     item.Config.Publication,
-                    optionalDependencies,
-                    ComputeAllowedLegacyPlanSha256(
-                        item.Config, item.Step, graphStep, dependencies, allowUntypedCloudLegacy)));
+                    optionalDependencies));
                 remainingDependencies.Remove(item.Step.Name);
                 foreach (var unresolved in remainingDependencies.Values)
                 {
@@ -750,6 +746,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 config.Required,
                 config.Options,
                 recipe = graphStep?.RecipeName,
+                recipeIdentitySchema = graphStep is null ? null : ProcessingIdentity.BoundInputSchemaVersion,
                 outputRole = graphStep?.OutputRole,
                 outputVariant = graphStep?.OutputVariant,
                 outputSchemaVersion = graphStep?.OutputSchemaVersion,
@@ -765,6 +762,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 config.Required,
                 config.Options,
                 recipe = graphStep?.RecipeName,
+                recipeIdentitySchema = graphStep is null ? null : ProcessingIdentity.BoundInputSchemaVersion,
                 outputRole = graphStep?.OutputRole,
                 outputVariant = graphStep?.OutputVariant,
                 outputSchemaVersion = graphStep?.OutputSchemaVersion,
@@ -773,81 +771,6 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 config.Publication
             });
         return CaptureContractJson.ComputeCanonicalJsonSha256(plan);
-    }
-
-    private static string ComputeLegacyNodePlanSha256(
-        CaptureProcessingStepConfig config,
-        ICaptureProcessingStep step,
-        ICaptureProcessingGraphStep? graphStep,
-        IReadOnlyList<string> dependencies)
-    {
-        var plan = config.Publication is null
-            ? JsonSerializer.SerializeToElement(new
-            {
-                config.Type,
-                id = step.Name,
-                order = step.Order,
-                dependencies,
-                config.Required,
-                config.Options,
-                recipe = graphStep?.RecipeName,
-                outputRole = graphStep?.OutputRole,
-                outputVariant = graphStep?.OutputVariant
-            })
-            : CaptureContractJson.SerializeToElement(new
-            {
-                config.Type,
-                id = step.Name,
-                order = step.Order,
-                dependencies,
-                config.Required,
-                config.Options,
-                recipe = graphStep?.RecipeName,
-                outputRole = graphStep?.OutputRole,
-                outputVariant = graphStep?.OutputVariant,
-                config.Publication
-            });
-        return CaptureContractJson.ComputeCanonicalJsonSha256(plan);
-    }
-
-    private static string? ComputeAllowedLegacyPlanSha256(
-        CaptureProcessingStepConfig config,
-        ICaptureProcessingStep step,
-        ICaptureProcessingGraphStep? graphStep,
-        IReadOnlyList<string> dependencies,
-        bool allowUntypedCloudLegacy)
-    {
-        var allowed = step switch
-        {
-            ProjectedSceneCaptureProcessingStep projected when
-                projected.LegacyPlanContractId == ProjectedSceneCaptureProcessingStep.LegacyPlanContract => true,
-            CalibrationCaptureProcessingStep calibration when
-                calibration.LegacyPlanContractId == CalibrationCaptureProcessingStep.LegacyPlanContract => true,
-            PreviewCaptureProcessingStep preview when
-                preview.LegacyPlanContractId == PreviewCaptureProcessingStep.LegacyPlanContract => true,
-            CalibratedPreviewCaptureProcessingStep preview when
-                preview.LegacyPlanContractId == CalibratedPreviewCaptureProcessingStep.LegacyPlanContract => true,
-            CombinedPreviewCaptureProcessingStep preview when
-                preview.LegacyPlanContractId == CombinedPreviewCaptureProcessingStep.LegacyPlanContract => true,
-            RollingCombinationCaptureProcessingStep rolling when
-                rolling.LegacyPlanContractId == RollingCombinationCaptureProcessingStep.LegacyPlanContract => true,
-            ImageQualityCaptureProcessingStep quality when
-                quality.LegacyPlanContractId == ImageQualityCaptureProcessingStep.LegacyPlanContract => true,
-            CloudAssessmentCaptureProcessingStep cloud when allowUntypedCloudLegacy &&
-                cloud.LegacyPlanContractId == CloudAssessmentCaptureProcessingStep.LegacyPlanContract => true,
-            AnnotationCaptureProcessingStep annotation when
-                annotation.LegacyPlanContractId == AnnotationCaptureProcessingStep.LegacyPlanContract => true,
-            WeatherCloudOverlayCaptureProcessingStep weather when
-                weather.LegacyPlanContractId == WeatherCloudOverlayCaptureProcessingStep.LegacyPlanContract => true,
-            NoOpFileStorageProcessingStep storage when
-                storage.LegacyPlanContractId == NoOpFileStorageProcessingStep.LegacyPlanContract => true,
-            TelemetryCaptureProcessingStep telemetry when
-                telemetry.LegacyPlanContractId == TelemetryCaptureProcessingStep.LegacyPlanContract => true,
-            _ => false
-        };
-        return allowed
-            ? ComputeLegacyNodePlanSha256(config, step, graphStep, dependencies)
-            : null;
     }
 
     private ICaptureProcessingStep CreateStep(

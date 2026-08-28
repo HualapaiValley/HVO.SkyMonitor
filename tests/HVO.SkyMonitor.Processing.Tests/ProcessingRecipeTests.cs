@@ -113,6 +113,28 @@ public sealed class ProcessingRecipeTests
             Json("null"),
             ProcessingInputSelector.Raw());
         Assert.AreEqual(requestedWithUndefinedOptions.IdentitySha256, requestedWithNullOptions.IdentitySha256);
+        var requestedWithNullAuxiliaries = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            BuiltInProcessingRecipes.NoOpAnalyzer,
+            EmptyOptions(),
+            ProcessingInputSelector.Raw(),
+            auxiliaryInputs: null);
+        var requestedWithEmptyAuxiliaries = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            BuiltInProcessingRecipes.NoOpAnalyzer,
+            EmptyOptions(),
+            ProcessingInputSelector.Raw(),
+            auxiliaryInputs: []);
+        Assert.AreEqual(requestedWithNullAuxiliaries.IdentitySha256, requestedWithEmptyAuxiliaries.IdentitySha256);
+        var canonicalPreview = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            BuiltInProcessingRecipes.EncodedPreview,
+            JsonSerializer.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed")),
+            ProcessingInputSelector.Raw("source"),
+            auxiliaryInputs: []);
+        Assert.AreEqual(
+            "81281FA59B3BF1788659B07D2BD415D760CF0BD5015782341AE173E93E9CF273",
+            canonicalPreview.IdentitySha256);
+        Assert.AreNotEqual(
+            "8EBC03FA468DE991D5B80040359752A5232D9C278B91045B180EA64C2CACAE6E",
+            canonicalPreview.IdentitySha256);
         Assert.ThrowsExactly<ArgumentException>(() => BuiltInProcessingRecipes.CreateRequestedIdentity(
             "unknown", EmptyOptions(), ProcessingInputSelector.Raw()));
         Assert.ThrowsExactly<ArgumentNullException>(() => BuiltInProcessingRecipes.CreateRequestedIdentity(

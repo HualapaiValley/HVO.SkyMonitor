@@ -459,24 +459,6 @@ public sealed class TransientTemporalBackgroundTests
             TransientTemporalBackgroundReasonCodes.IncompatibleMask,
             Request(TransientTemporalBackgroundKind.CausalProvisional, malformedSaturation, positions));
 
-        var legacyDescriptor = saturationSource.Input.Descriptor with
-        {
-            InputIdentitySha256 = string.Empty,
-            SaturationMaskChecksumSha256 = null
-        };
-        legacyDescriptor = legacyDescriptor with
-        {
-            InputIdentitySha256 = TransientContractJson.ComputeDetectorInputIdentitySha256(legacyDescriptor)
-        };
-        var legacyInput = CreateWindow();
-        saturationSource = legacyInput[TransientTemporalPosition.NMinus1];
-        legacyInput[TransientTemporalPosition.NMinus1] = saturationSource with
-        {
-            Input = saturationSource.Input with { Descriptor = legacyDescriptor }
-        };
-        AssertReason(
-            TransientTemporalBackgroundReasonCodes.IncompatibleMask,
-            Request(TransientTemporalBackgroundKind.CausalProvisional, legacyInput, positions));
     }
 
     private static Dictionary<TransientTemporalPosition, TransientTemporalSource> CreateWindow()

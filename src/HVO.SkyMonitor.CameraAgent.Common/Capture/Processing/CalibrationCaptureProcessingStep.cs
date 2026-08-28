@@ -17,11 +17,8 @@ internal sealed class CalibrationCaptureProcessingStep(
     CameraAgentRecipeExecutionAdapter adapter,
     SyntheticCalibrationReferenceStore? syntheticReferences = null,
     SqliteCalibrationLibraryStore? calibrationLibrary = null,
-    CalibrationLibraryProcessingInputLoader? libraryInputLoader = null) : ConfigurableCaptureProcessingStep<CalibrationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep,
-    ILegacyCaptureProcessingPlanContract
+    CalibrationLibraryProcessingInputLoader? libraryInputLoader = null) : ConfigurableCaptureProcessingStep<CalibrationProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
 {
-    internal const string LegacyPlanContract = "calibration-plan-v1";
-    public string LegacyPlanContractId => LegacyPlanContract;
     public bool Enabled => Options.Enabled;
 
     public string RecipeName => Options.UsesReferences

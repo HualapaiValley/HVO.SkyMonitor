@@ -184,18 +184,29 @@ public sealed class CameraAgentProcessingConformanceTests
         Assert.IsTrue(CalibrationCaptureProcessingStep.MatchesSyntheticCalibrationModel(matchingDescriptor, model));
         Assert.IsFalse(CalibrationCaptureProcessingStep.MatchesSyntheticCalibrationModel(
             matchingDescriptor, model with { Seed = model.Seed + 1 }));
-        var reconstructedArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+        Assert.ThrowsExactly<InvalidDataException>(() => CameraAgentRecipeExecutionAdapter.CreateArtifact(
             ProcessingConformanceFixture.CameraConfig,
             new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Raw, fallbackFrame),
             "source",
+            reconstructionDescriptor: fallbackDescriptor));
+        var descriptorBoundArtifact = CameraAgentRecipeExecutionAdapter.CreateArtifact(
+            ProcessingConformanceFixture.CameraConfig,
+            new FrameArtifact(
+                fallbackDescriptor.Artifact.ArtifactId,
+                FrameArtifactRole.Raw,
+                fallbackFrame,
+                recipeVersion: "conflicting-free-form-version"),
+            "source",
             reconstructionDescriptor: fallbackDescriptor);
-        Assert.AreEqual(fallbackDescriptor.Capture.CaptureSequence, reconstructedArtifact.CaptureSequence);
+        Assert.AreEqual(
+            ProcessingIdentity.CreateRecipeIdentity(fallbackDescriptor.Artifact.Recipe).IdentitySha256,
+            descriptorBoundArtifact.RecipeIdentitySha256);
 
         var typedProduct = new ProcessingProduct(
             FrameArtifactRole.Metadata, "typed", new string('1', 64), "application/json", null, new byte[] { 1 },
             new string('2', 64), ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(
                 "typed", "1.0.0", "typed-v1", JsonSerializer.SerializeToElement(new { }))), [], [], TimeSpan.Zero,
-            reconstructedArtifact.Compatibility)
+            descriptorBoundArtifact.Compatibility)
         {
             Kind = ProcessingProductKind.Metadata,
             SchemaVersion = "typed-v1",
@@ -212,6 +223,12 @@ public sealed class CameraAgentProcessingConformanceTests
             ProcessingConformanceFixture.CreateRequest(input), CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status);
+        Assert.AreEqual(
+            "81281FA59B3BF1788659B07D2BD415D760CF0BD5015782341AE173E93E9CF273",
+            outcome.Products.Single().Recipe.IdentitySha256);
+        Assert.AreNotEqual(
+            "8EBC03FA468DE991D5B80040359752A5232D9C278B91045B180EA64C2CACAE6E",
+            outcome.Products.Single().Recipe.IdentitySha256);
         ProcessingConformanceFixture.AssertProduct(outcome.Products.Single());
 
         var configuredSensor = ProcessingConformanceFixture.CameraConfig.Rig.Sensor with

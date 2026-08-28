@@ -98,7 +98,9 @@ The factory reports bytes scanned and copied. SHA-256 verification scans the sou
 RGGB conversion additionally scans each logical source sample and copies exactly one
 half-resolution output. Input identity covers normalized source evidence, output
 layout and levels, compatibility profiles, conversion identity, and the source-to-
-detector transform. It contains no persistence assertion, path, object key, scenario
+detector transform. Detector identity additionally requires the canonical saturation-
+mask checksum so changed exclusion masks cannot reuse prior detector outputs. It
+contains no persistence assertion, path, object key, scenario
 label, expected classification, truth geometry, or truth mask. Timing provenance may
 name a simulator or other source implementation and version, but hidden simulator
 scenario identity and expected/truth data never enter detector contracts.

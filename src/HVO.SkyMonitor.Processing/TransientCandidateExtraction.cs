@@ -210,7 +210,7 @@ public static class TransientCandidateExtractionFactory
             background.Descriptor,
             Sha256(hardMask.Bits.Span),
             Sha256(background.NoSupportMask.Bits.Span),
-            target.Input.Descriptor.SaturationMaskChecksumSha256!.ToUpperInvariant(),
+            target.Input.Descriptor.SaturationMaskChecksumSha256.ToUpperInvariant(),
             request.CenteredContextConverged,
             request.OrderedSources.Select(static source => new TransientCandidateExtractionSourceV1(
                 source.Position,
@@ -385,7 +385,6 @@ public static class TransientCandidateExtractionFactory
         }
         if (request.Target.Position != TransientTemporalPosition.N || request.Target.Input is null ||
             request.Target.Input.Descriptor is null || request.Target.Input.SaturationMask is null ||
-            request.Target.Input.Descriptor.SaturationMaskChecksumSha256 is null ||
             !TransientContractJson.Validate(request.Target.Input.Descriptor).IsValid)
         {
             return (TransientCandidateExtractionReasonCodes.InvalidRequest, "target");

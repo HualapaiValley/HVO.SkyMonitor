@@ -409,6 +409,40 @@ public sealed class ArtifactIngestTests
             "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
 
         using var rawResponse = await PostAsync(client, rawManifest, rawPayload).ConfigureAwait(false);
+        rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var metadataFactsManifest = productManifest with
+        {
+            Descriptor = productManifest.Descriptor with
+            {
+                Artifact = productManifest.Descriptor.Artifact with
+                {
+                    MediaType = PresentationMetadataFactsProductV1.MediaType
+                },
+                ProductSchemaVersion = PresentationMetadataFactsProductV1.CurrentSchemaVersion
+            }
+        };
+        var retiredManifestBytes = Encoding.UTF8.GetBytes(
+            Encoding.UTF8.GetString(StructuredProcessingProductManifestJson.Serialize(metadataFactsManifest)).Replace(
+                PresentationMetadataFactsProductV1.CurrentSchemaVersion,
+                "presentation-metadata-facts-v1",
+                StringComparison.Ordinal));
+        var retiredParse = StructuredProcessingProductManifestJson.Parse(retiredManifestBytes);
+        retiredParse.IsValid.Should().BeFalse();
+        retiredParse.Validation.FieldPath.Should().Be("artifact.mediaType");
+        using var retiredDocument = JsonDocument.Parse(retiredManifestBytes);
+        var retiredIdempotencyKey = CaptureContractJson.ComputeCanonicalJsonSha256(
+            retiredDocument.RootElement.GetProperty("descriptor"));
+        using var retiredResponse = await PostStructuredBytesAsync(
+            client,
+            retiredManifestBytes,
+            layerBytes,
+            PresentationMetadataFactsProductV1.MediaType,
+            retiredIdempotencyKey).ConfigureAwait(false);
+        retiredResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        await AssertStructuredRejectedBeforePersistenceAsync(
+            registrationId,
+            metadataFactsManifest.Descriptor.Artifact.ArtifactId,
+            retiredIdempotencyKey).ConfigureAwait(false);
         using var productResponse = await PostAsync(client, productManifest, layerBytes).ConfigureAwait(false);
         using var duplicateResponse = await PostAsync(client, productManifest, layerBytes).ConfigureAwait(false);
         var conflictingManifest = productManifest with
@@ -420,7 +454,6 @@ public sealed class ArtifactIngestTests
         };
         using var conflictingResponse = await PostAsync(client, conflictingManifest, layerBytes).ConfigureAwait(false);
 
-        rawResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
         productResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
         var duplicateBody = await duplicateResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
         duplicateResponse.StatusCode.Should().Be(HttpStatusCode.Accepted, duplicateBody);
@@ -4451,6 +4484,56 @@ public sealed class ArtifactIngestTests
         { Content = content };
         request.Headers.TryAddWithoutValidation("Idempotency-Key", manifest.IdempotencyKey);
         return await client.SendAsync(request).ConfigureAwait(false);
+    }
+
+    private static async Task<HttpResponseMessage> PostStructuredBytesAsync(
+        HttpClient client,
+        byte[] manifestBytes,
+        byte[] payloadBytes,
+        string mediaType,
+        string idempotencyKey)
+    {
+        var content = new MultipartFormDataContent();
+        content.Add(new ByteArrayContent(manifestBytes)
+        {
+            Headers = { ContentType = new MediaTypeHeaderValue("application/json") }
+        }, "manifest");
+        content.Add(new ByteArrayContent(payloadBytes)
+        {
+            Headers = { ContentType = new MediaTypeHeaderValue(mediaType) }
+        }, "payload", "artifact.json");
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post, new Uri("/api/v1.0/artifacts", UriKind.Relative))
+        { Content = content };
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        return await client.SendAsync(request).ConfigureAwait(false);
+    }
+
+    private static async Task AssertStructuredRejectedBeforePersistenceAsync(
+        Guid registrationId,
+        Guid artifactId,
+        string idempotencyKey)
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await db.CentralArtifacts.CountAsync(item => item.ArtifactId == artifactId).ConfigureAwait(false)).Should().Be(0);
+        (await db.CentralArtifactIngestIdentities.CountAsync(item =>
+            item.IdempotencyKey == idempotencyKey).ConfigureAwait(false)).Should().Be(0);
+        var devicePublicId = await db.DeviceRegistrations.Where(item => item.Id == registrationId)
+            .Select(item => item.DevicePublicId!.Value).SingleAsync().ConfigureAwait(false);
+        var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
+        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-artifacts"))
+            .ConfigureAwait(false))
+        {
+            return;
+        }
+        await foreach (var item in minio.ListObjectsEnumAsync(new ListObjectsArgs()
+            .WithBucket("skymonitor-artifacts")
+            .WithPrefix($"artifacts/{devicePublicId:N}/")
+            .WithRecursive(true)))
+        {
+            item.Key.Should().NotContain(idempotencyKey);
+        }
     }
 
     private static async Task<HttpResponseMessage> PostStatusAsync(HttpClient client, ArtifactManifestV2 manifest)

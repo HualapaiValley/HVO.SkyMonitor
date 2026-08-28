@@ -480,7 +480,7 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    public async Task IncompatibleNewNode_CannotClaimLegacyPlanHash()
+    public async Task BlockedNodeWithStalePlanHash_IsRejectedWithoutMutatingCommittedNode()
     {
         var root = CreateTestRoot();
         try
@@ -502,11 +502,14 @@ public sealed partial class DurableCaptureProcessingTests
                 "sky-annotation", CancellationToken.None).ConfigureAwait(false))!;
             Assert.AreEqual(oldHash, persisted.PlanSha256);
 
+            var blocker = new OutcomeStep(ProcessingOutcome.TerminalFailure("test.blocker-terminal"));
             var incompatible = new PackedAnnotationProducingStep();
             var graph = new CaptureProcessingGraph([
-                new CaptureProcessingGraphNode("sky-annotation", incompatible, [], true,
+                new CaptureProcessingGraphNode("blocker", blocker, [], false,
+                    "blocker", FrameArtifactRole.Metadata, "blocker", new string('B', 64)),
+                new CaptureProcessingGraphNode("sky-annotation", incompatible, ["blocker"], true,
                     incompatible.RecipeName, incompatible.OutputRole, incompatible.OutputVariant,
-                    new string('N', 64), LegacyPlanSha256: oldHash)
+                    new string('N', 64))
             ]);
 
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
@@ -514,6 +517,16 @@ public sealed partial class DurableCaptureProcessingTests
                     fixture.Item, graph, persistence, telemetry, 2,
                     NullLogger.Instance, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.AreEqual(0, incompatible.ExecutionCount);
+            Assert.IsNull(await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "blocker", CancellationToken.None).ConfigureAwait(false));
+            var unchanged = (await store.ReadNodeAsync(fixture.Manifest.Descriptor.Capture.CaptureId,
+                "sky-annotation", CancellationToken.None).ConfigureAwait(false))!;
+            Assert.AreEqual(oldHash, unchanged.PlanSha256);
+            Assert.AreEqual(DurableProcessingNodeStatus.Completed, unchanged.Status);
+            Assert.AreEqual(persisted.Attempt, unchanged.Attempt);
+            CollectionAssert.AreEqual(
+                persisted.Outputs.Select(static output => output.OutputIdentitySha256).ToArray(),
+                unchanged.Outputs.Select(static output => output.OutputIdentitySha256).ToArray());
         }
         finally
         {
@@ -755,7 +768,7 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    public async Task PreTypedCloudRestoresOnlyInOldGraphAndCannotSatisfyLayeredCloud()
+    public async Task PreTypedCloudPlan_IsRejectedWithoutMutation()
     {
         var root = CreateTestRoot();
         try
@@ -802,50 +815,21 @@ public sealed partial class DurableCaptureProcessingTests
             using var restartedStore = new SqliteCaptureProcessingStore(restartedFixture.Options);
             using var restartedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
             var cloud = CreateRealCloudStep(root);
-            var annotationProduct = CreatePackedProduct(restartedFixture.Item, FrameArtifactRole.AnnotatedPreview,
-                BuiltInProcessingRecipes.Annotation, "w6-annotated", [0, 64, 128, 255]);
-            var annotation = new FixedArtifactProducingStep(annotationProduct);
-            var weather = new DependencyMetadataProducingStep("weather-overlay", "w6-weather-overlay");
-            var storageContinuation = new DependencyCountingStep();
-            var oldGraph = new CaptureProcessingGraph([
-                new CaptureProcessingGraphNode("sky-annotation", annotation, [], true, annotation.RecipeName,
-                    annotation.OutputRole, annotation.OutputVariant, new string('A', 64)),
-                new CaptureProcessingGraphNode("cloud", cloud, [], false, cloud.RecipeName,
-                    cloud.OutputRole, cloud.OutputVariant, new string('C', 64),
-                    LegacyPlanSha256: Pre433CloudPlanSha256),
-                new CaptureProcessingGraphNode("weather-overlay", weather, ["sky-annotation", "cloud"], true,
-                    BuiltInProcessingRecipes.WeatherCloudOverlay, weather.OutputRole, weather.OutputVariant,
-                    new string('W', 64)),
-                new CaptureProcessingGraphNode("storage", storageContinuation, ["weather-overlay"], true,
-                    null, null, null, new string('S', 64))
-            ]);
-            var resumed = await FrameProcessingWorker.ProcessGraphItemAsync(
-                restartedFixture.Item, oldGraph,
-                CreatePersistence(restartedFixture.Options, restartedStore, restartedStorage, restartedTelemetry),
-                restartedTelemetry, 2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
-
-            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, resumed.Outcome, resumed.Reason);
-            Assert.AreEqual(1, storageContinuation.ExecutionCount);
-            Assert.AreEqual("test-dependency-v1", storageContinuation.DependencySchemaVersion);
-            Assert.AreEqual(DurableProcessingNodeStatus.Completed, (await restartedStore.ReadNodeAsync(
-                restartedFixture.Manifest.Descriptor.Capture.CaptureId, "weather-overlay",
-                CancellationToken.None).ConfigureAwait(false))!.Status);
-            var restored = await restartedStore.ReadNodeAsync(
-                restartedFixture.Manifest.Descriptor.Capture.CaptureId, "cloud", CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(restored);
-            Assert.IsNull(restored.Outputs.Single().ProductSchemaVersion);
-            Assert.IsNull(restored.Outputs.Single().ContentIdentitySha256);
-
-            var layeredCloud = CreateRealCloudStep(root);
             await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                 await FrameProcessingWorker.ProcessGraphItemAsync(
                     restartedFixture.Item,
-                    new CaptureProcessingGraph([new CaptureProcessingGraphNode("cloud", layeredCloud, [], false,
-                        layeredCloud.RecipeName, layeredCloud.OutputRole, layeredCloud.OutputVariant,
+                    new CaptureProcessingGraph([new CaptureProcessingGraphNode("cloud", cloud, [], false,
+                        cloud.RecipeName, cloud.OutputRole, cloud.OutputVariant,
                         new string('N', 64))]),
                     CreatePersistence(restartedFixture.Options, restartedStore, restartedStorage, restartedTelemetry),
-                    restartedTelemetry, 3, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false))
+                    restartedTelemetry, 2, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false))
                 .ConfigureAwait(false);
+            var unchanged = await restartedStore.ReadNodeAsync(
+                restartedFixture.Manifest.Descriptor.Capture.CaptureId, "cloud", CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(unchanged);
+            Assert.AreEqual(Pre433CloudPlanSha256, unchanged.PlanSha256);
+            Assert.IsNull(unchanged.Outputs.Single().ProductSchemaVersion);
+            Assert.IsNull(unchanged.Outputs.Single().ContentIdentitySha256);
         }
         finally
         {

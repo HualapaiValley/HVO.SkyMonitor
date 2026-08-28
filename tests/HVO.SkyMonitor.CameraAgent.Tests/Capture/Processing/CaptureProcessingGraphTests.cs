@@ -18,8 +18,6 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class CaptureProcessingGraphTests
 {
-    private const string HistoricalAnnotationPlanSha256 = "58C88E48E07E3297224DEC1894808E8E85E063D65F9B30EE4550C43EF16B6ADA";
-    private const string HistoricalWeatherPlanSha256 = "7BDBFFBDAA1D2A219494E5CF9C13A10C433E605E28C375990DA2FFD39271C57F";
 
     [TestMethod]
     public void AddCameraAgentInfrastructure_InitializesRawSchemaBeforeProcessingHostedServices()
@@ -806,63 +804,6 @@ public sealed class CaptureProcessingGraphTests
 
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(config));
         StringAssert.Contains(exception.Message, "required dependency inputs", StringComparison.Ordinal);
-    }
-
-    [TestMethod]
-    public void CreateGraph_LegacyPlanCompatibilityIsAllowlistedAndOptionExact()
-    {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
-            }).Build());
-        using var provider = services.BuildServiceProvider();
-        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
-        var baseline = CreateConfig();
-        CameraModuleConfig Config(int radius) => CreateExplicitConfig(
-            new CaptureProcessingStepConfig("Calibration", "calibration", DependsOn: ["$raw"]),
-            new CaptureProcessingStepConfig("RollingCombination", "rolling", DependsOn: ["calibration"]),
-            new CaptureProcessingStepConfig("CombinedPreview", "combined-preview", DependsOn: ["rolling"]),
-            new CaptureProcessingStepConfig("CloudAssessment", "cloud", DependsOn: ["calibration"]),
-            new CaptureProcessingStepConfig("Annotation", "sky-annotation", DependsOn: ["combined-preview"],
-                Options: JsonSerializer.SerializeToElement(new { markRadius = radius })),
-            new CaptureProcessingStepConfig("WeatherCloudOverlay", "weather-overlay",
-                DependsOn: ["sky-annotation", "cloud"])) with
-        {
-            Rig = baseline.Rig with
-            {
-                Sensor = baseline.Rig.Sensor with { PixelFormat = CameraPixelFormat.Mono16 }
-            }
-        };
-
-        var first = factory.CreateGraph(Config(4));
-        var changed = factory.CreateGraph(Config(5));
-        try
-        {
-            Assert.IsNotNull(first.Nodes.Single(static node => node.Id == "cloud").LegacyPlanSha256);
-            Assert.IsNotNull(first.Nodes.Single(static node => node.Id == "calibration").LegacyPlanSha256);
-            Assert.IsNotNull(first.Nodes.Single(static node => node.Id == "rolling").LegacyPlanSha256);
-            Assert.IsNotNull(first.Nodes.Single(static node => node.Id == "combined-preview").LegacyPlanSha256);
-            Assert.HasCount(64, first.Nodes.Single(static node => node.Id == "sky-annotation").LegacyPlanSha256!);
-            Assert.HasCount(64, first.Nodes.Single(static node => node.Id == "weather-overlay").LegacyPlanSha256!);
-            Assert.AreEqual(HistoricalAnnotationPlanSha256,
-                first.Nodes.Single(static node => node.Id == "sky-annotation").LegacyPlanSha256);
-            Assert.AreEqual(HistoricalWeatherPlanSha256,
-                first.Nodes.Single(static node => node.Id == "weather-overlay").LegacyPlanSha256);
-            Assert.AreNotEqual(
-                first.Nodes.Single(static node => node.Id == "sky-annotation").LegacyPlanSha256,
-                changed.Nodes.Single(static node => node.Id == "sky-annotation").LegacyPlanSha256);
-            Assert.AreEqual(
-                first.Nodes.Single(static node => node.Id == "weather-overlay").LegacyPlanSha256,
-                changed.Nodes.Single(static node => node.Id == "weather-overlay").LegacyPlanSha256);
-        }
-        finally
-        {
-            first.DisposeSteps();
-            changed.DisposeSteps();
-        }
     }
 
     [TestMethod]

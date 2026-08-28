@@ -386,7 +386,7 @@ internal sealed class CloudPresentationLayerProcessingStepOptions
 
 internal sealed class EnvironmentPresentationLayerProcessingStepOptions
 {
-    [Required, MaxLength(128)] public string FactsOutputVariant { get; init; } = "presentation-metadata-facts-v1";
+    [Required, MaxLength(128)] public string FactsOutputVariant { get; init; } = "presentation-metadata-facts-v2";
     [Required, MaxLength(128)] public string OutputVariant { get; init; } = "environment-layer-v1";
     [Required, MaxLength(128)] public string StackPreviewVariant { get; init; } = "combined-preview";
     [Range(1, 65536)] public int WidthPixels { get; init; }
@@ -415,7 +415,7 @@ internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
     [Required, MaxLength(128)] public string CloudMaskVariant { get; init; } = "cloud-mask-layer-v1";
     [Required, MaxLength(128)] public string CloudLabelVariant { get; init; } = "cloud-label-layer-v1";
     [Required, MaxLength(128)] public string EnvironmentVariant { get; init; } = "environment-layer-v1";
-    [Required, MaxLength(128)] public string EnvironmentFactsVariant { get; init; } = "presentation-metadata-facts-v1";
+    [Required, MaxLength(128)] public string EnvironmentFactsVariant { get; init; } = "presentation-metadata-facts-v2";
     [Range(0, 1_000_000)] public int ConstellationOpacityMillionths { get; init; } = 800_000;
     public IReadOnlyList<PresentationLayerSelectionOptions> Layers { get; init; } = [];
 
@@ -437,7 +437,7 @@ internal sealed class PresentationMaterializerProcessingStepOptions : IValidatab
     [Required, MaxLength(128)] public string CloudMaskVariant { get; init; } = "cloud-mask-layer-v1";
     [Required, MaxLength(128)] public string CloudLabelVariant { get; init; } = "cloud-label-layer-v1";
     [Required, MaxLength(128)] public string EnvironmentVariant { get; init; } = "environment-layer-v1";
-    [Required, MaxLength(128)] public string EnvironmentFactsVariant { get; init; } = "presentation-metadata-facts-v1";
+    [Required, MaxLength(128)] public string EnvironmentFactsVariant { get; init; } = "presentation-metadata-facts-v2";
     public IReadOnlyList<string> EnabledLayerKinds { get; init; } = [];
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
