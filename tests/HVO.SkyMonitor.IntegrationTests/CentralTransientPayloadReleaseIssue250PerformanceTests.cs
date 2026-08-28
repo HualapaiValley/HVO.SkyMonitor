@@ -2668,7 +2668,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                  [CapturedAtUtc], [FirstReceivedAtUtc], [LocationEvidenceState])
             VALUES
                 (@history_frame_id, NEWID(), @history_device_public_id, NEWID(), N'issue-250-w3m-history', NEWID(),
-                 '2025-01-02T00:00:00+00:00', '2025-01-02T00:00:00+00:00', N'LegacyIncomplete');
+                 '2025-01-02T00:00:00+00:00', '2025-01-02T00:00:00+00:00', N'PendingReference');
             DECLARE @history_frames int = @@ROWCOUNT;
 
             INSERT INTO [CentralTransientEvents] ([Id], [AgentId], [EventId], [EventCreatedUtc])

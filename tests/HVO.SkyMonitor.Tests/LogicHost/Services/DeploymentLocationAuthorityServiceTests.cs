@@ -444,6 +444,17 @@ public sealed class DeploymentLocationAuthorityServiceTests
             AddedAtUtc = ProposalUtc.AddDays(-1)
         });
         context.AddRange(observatory, registration);
+        _ = await ObservatoryLocationAuthority.ApplyAsync(
+            context,
+            observatory,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId,
+            observatory.AllowedDeploymentRadiusMeters,
+            observatory.CreatedAtUtc,
+            "test",
+            CancellationToken.None);
         await context.SaveChangesAsync();
         return registration;
     }

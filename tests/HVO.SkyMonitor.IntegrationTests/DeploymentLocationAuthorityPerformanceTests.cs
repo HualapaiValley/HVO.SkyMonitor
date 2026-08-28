@@ -234,8 +234,21 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
         }).ToArray();
         db.Observatories.AddRange(observatories);
         await db.SaveChangesAsync().ConfigureAwait(false);
-        var backfilled = await ObservatoryLocationBackfill.RunAsync(db, TimeProvider.System).ConfigureAwait(false);
-        Assert.AreEqual(ObservatoryCount, backfilled);
+        foreach (var observatory in observatories)
+        {
+            _ = await ObservatoryLocationAuthority.ApplyAsync(
+                db,
+                observatory,
+                observatory.LatitudeDegrees,
+                observatory.LongitudeDegrees,
+                observatory.ElevationMeters,
+                observatory.TimeZoneId,
+                observatory.AllowedDeploymentRadiusMeters,
+                now,
+                "performance-seed",
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        await db.SaveChangesAsync().ConfigureAwait(false);
         var captureStartUtc = DateTimeOffset.UtcNow;
 
         var agents = new List<ScaleAgent>(AgentCount);

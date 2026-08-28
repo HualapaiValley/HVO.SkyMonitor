@@ -811,7 +811,6 @@ public sealed partial class Program
         builder.Services.AddSingleton<EnvironmentalObservationTelemetry>();
         builder.Services.AddSingleton<EnvironmentalRetentionState>();
         builder.Services.AddHostedService<EnvironmentalObservationRetentionWorker>();
-        builder.Services.AddScoped<IDeviceUploadService, DeviceUploadService>();
         builder.Services.AddScoped<IArtifactIngestService, ArtifactIngestService>();
         builder.Services.AddSingleton<CentralIngestTelemetry>();
         builder.Services.AddScoped<ICentralArtifactRetrievalService, CentralArtifactRetrievalService>();
@@ -888,8 +887,6 @@ public sealed partial class Program
                 {
                     var result = await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>()
                         .RunAsync(CancellationToken.None).ConfigureAwait(false);
-                    scope.ServiceProvider.GetRequiredService<DeploymentLocationTelemetry>()
-                        .RecordBackfill(result.BackfilledObservatories);
                     Log.DatabaseInitializationCompleted(
                         logger,
                         result.AttemptId,

@@ -221,12 +221,12 @@
       "dockerRequired": true
     },
     {
-      "id": "retrospective-null-device-starvation-guard",
+      "id": "retrospective-required-device-identity",
       "workload": "W3M",
-      "fault": "Old rows with null device identity precede schedulable rows",
+      "fault": "Generated query regresses to a legacy nullable-device predicate despite required canonical identity",
       "control": "Generated SQL inspection",
-      "expectedDurableState": "Unschedulable rows are filtered before ordering and Take so they cannot consume the batch",
-      "test": "HVO.SkyMonitor.Tests.LogicHost.Services.CentralTransientValidationExecutorTests.RetrospectiveCandidateQuery_FiltersNullDeviceIdentityBeforeBatching",
+      "expectedDurableState": "The scheduler relies on the required device identity enforced by the canonical schema",
+      "test": "HVO.SkyMonitor.Tests.LogicHost.Services.CentralTransientValidationExecutorTests.RetrospectiveCandidateQuery_UsesRequiredDeviceIdentityWithoutLegacyNullFilter",
       "dockerRequired": false
     }
   ]

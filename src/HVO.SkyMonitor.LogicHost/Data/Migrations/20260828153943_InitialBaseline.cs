@@ -80,7 +80,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 {
                     table.PrimaryKey("PK_CentralObjectRecoveryDispositions", x => x.Id);
                     table.CheckConstraint("CK_CentralObjectRecoveryDispositions_AttemptCount", "[AttemptCount] >= 0");
-                    table.CheckConstraint("CK_CentralObjectRecoveryDispositions_RetentionDeletion", "[OperationToken] IS NULL AND [CentralArtifactId] IS NULL OR [OperationToken] IS NOT NULL AND [CentralArtifactId] IS NOT NULL AND [Kind] = 'ExpiredDelete' AND [State] IN ('PendingDelete', 'Completed', 'Failed')");
+                    table.CheckConstraint("CK_CentralObjectRecoveryDispositions_RetentionDeletion", "[OperationToken] IS NULL AND [CentralArtifactId] IS NULL AND [Kind] = 'OrphanQuarantine' AND [TargetObjectKey] IS NOT NULL OR [OperationToken] IS NOT NULL AND [CentralArtifactId] IS NOT NULL AND [Kind] = 'ExpiredDelete' AND [State] IN ('PendingDelete', 'Completed', 'Failed')");
                     table.CheckConstraint("CK_CentralObjectRecoveryDispositions_TokenizedState", "[OperationToken] IS NULL OR ([State] = 'PendingDelete' AND [CompletedAtUtc] IS NULL) OR ([State] = 'Completed' AND [CompletedAtUtc] IS NOT NULL AND [LastAttemptAtUtc] IS NOT NULL AND [AttemptCount] > 0 AND [NextAttemptAtUtc] IS NULL AND [ReasonCode] IS NULL AND [CompletedAtUtc] >= [LastAttemptAtUtc]) OR ([State] = 'Failed' AND [CompletedAtUtc] IS NULL AND [LastAttemptAtUtc] IS NOT NULL AND [AttemptCount] > 0 AND [NextAttemptAtUtc] IS NULL AND [ReasonCode] IS NOT NULL)");
                     table.CheckConstraint("CK_CentralObjectRecoveryDispositions_TokenizedTimestamps", "[OperationToken] IS NULL OR ([UpdatedAtUtc] >= [CreatedAtUtc] AND ([LastAttemptAtUtc] IS NULL OR [LastAttemptAtUtc] >= [CreatedAtUtc]))");
                 });
@@ -149,37 +149,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     table.CheckConstraint("CK_DatabaseInitializationState_Singleton", "[Id] = 1");
                     table.CheckConstraint("CK_DatabaseInitializationState_Status", "[Status] IN (N'Running', N'Completed', N'Failed')");
                     table.CheckConstraint("CK_DatabaseInitializationState_Version", "[InitializationVersion] > 0");
-                });
-
-            migrationBuilder.CreateTable(
-                name: "DeviceImageUploads",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    RegistrationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    RigProfileVersion = table.Column<int>(type: "int", nullable: true),
-                    CapturedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    ReceivedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    ContentType = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    FileName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
-                    PayloadBase64Length = table.Column<int>(type: "int", nullable: false),
-                    StorageReference = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
-                    IdempotencyKey = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
-                    ArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    FrameId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    ArtifactRole = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
-                    RecipeVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
-                    ManifestSchemaVersion = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: true),
-                    ChecksumSha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
-                    ByteLength = table.Column<long>(type: "bigint", nullable: true),
-                    AgentId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
-                    SceneProvenanceJson = table.Column<string>(type: "nvarchar(max)", nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_DeviceImageUploads", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
@@ -700,7 +669,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     ObservatoryTimeZoneId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
                     ObservatoryLocationVersion = table.Column<long>(type: "bigint", nullable: true),
                     ObservatoryLocationCanonicalSha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
-                    LocationEvidenceState = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "LegacyIncomplete"),
+                    LocationEvidenceState = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "ObservatoryPinned"),
                     OwnerUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: false),
                     OwnerDisplayName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
                     OwnerEmail = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
@@ -868,10 +837,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_ObservatoryMembershipAudits", x => x.Id);
-                    table.CheckConstraint("CK_ObservatoryMembershipAudits_Action", "[Action] IN (N'Granted', N'RoleChanged', N'Removed', N'LegacyBackfilled', N'LegacyRejected')");
+                    table.CheckConstraint("CK_ObservatoryMembershipAudits_Action", "[Action] IN (N'Granted', N'RoleChanged', N'Removed')");
                     table.CheckConstraint("CK_ObservatoryMembershipAudits_NewRole", "[NewRole] IS NULL OR [NewRole] IN (N'Viewer', N'Manager', N'Owner')");
                     table.CheckConstraint("CK_ObservatoryMembershipAudits_PreviousRole", "[PreviousRole] IS NULL OR [PreviousRole] IN (N'Viewer', N'Manager', N'Owner')");
-                    table.CheckConstraint("CK_ObservatoryMembershipAudits_Transition", "([Action] IN (N'Granted', N'LegacyBackfilled') AND [PreviousRole] IS NULL AND [NewRole] IS NOT NULL) OR ([Action] = N'RoleChanged' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NOT NULL AND [PreviousRole] <> [NewRole]) OR ([Action] = N'Removed' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NULL) OR ([Action] = N'LegacyRejected' AND [PreviousRole] IS NULL AND [NewRole] IS NULL)");
+                    table.CheckConstraint("CK_ObservatoryMembershipAudits_Transition", "([Action] = N'Granted' AND [PreviousRole] IS NULL AND [NewRole] IS NOT NULL) OR ([Action] = N'RoleChanged' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NOT NULL AND [PreviousRole] <> [NewRole]) OR ([Action] = N'Removed' AND [PreviousRole] IS NOT NULL AND [NewRole] IS NULL)");
                     table.ForeignKey(
                         name: "FK_ObservatoryMembershipAudits_Observatories_ObservatoryId",
                         column: x => x.ObservatoryId,
@@ -1213,9 +1182,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     Version = table.Column<int>(type: "int", nullable: false),
                     ConfigHash = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
                     ConfigJson = table.Column<string>(type: "nvarchar(max)", maxLength: 262144, nullable: false),
-                    ProfileName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
-                    ProfileVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
-                    ProfileSha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
+                    ProfileName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ProfileVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ProfileSha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
                     SoftwareVersion = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
                     CreatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     EffectiveFromUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
@@ -1711,7 +1680,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     CaptureSequence = table.Column<long>(type: "bigint", nullable: true),
                     CycleEvidenceJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
                     SceneProvenanceJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
-                    LocationEvidenceState = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "LegacyIncomplete")
+                    LocationEvidenceState = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "ReportedUnresolved")
                 },
                 constraints: table =>
                 {
@@ -1818,7 +1787,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     CentralFrameId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     ArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     Role = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
                     RecipeVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
                     ManifestSchemaVersion = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
@@ -3423,8 +3392,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "IX_CentralArtifacts_DevicePublicId_ArtifactId",
                 table: "CentralArtifacts",
                 columns: new[] { "DevicePublicId", "ArtifactId" },
-                unique: true,
-                filter: "[DevicePublicId] IS NOT NULL");
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralArtifacts_IdempotencyKey",
@@ -4482,43 +4450,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 columns: new[] { "RegistrationId", "ReceivedAtUtc" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_DeviceImageUploads_AgentId",
-                table: "DeviceImageUploads",
-                column: "AgentId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_DeviceImageUploads_AgentId_FrameId_ArtifactRole_RecipeVersion",
-                table: "DeviceImageUploads",
-                columns: new[] { "AgentId", "FrameId", "ArtifactRole", "RecipeVersion" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_DeviceImageUploads_CapturedAtUtc",
-                table: "DeviceImageUploads",
-                column: "CapturedAtUtc");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_DeviceImageUploads_DevicePublicId",
-                table: "DeviceImageUploads",
-                column: "DevicePublicId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_DeviceImageUploads_IdempotencyKey",
-                table: "DeviceImageUploads",
-                column: "IdempotencyKey",
-                unique: true,
-                filter: "[IdempotencyKey] IS NOT NULL");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_DeviceImageUploads_ObservatoryId",
-                table: "DeviceImageUploads",
-                column: "ObservatoryId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_DeviceImageUploads_RegistrationId",
-                table: "DeviceImageUploads",
-                column: "RegistrationId");
-
-            migrationBuilder.CreateIndex(
                 name: "IX_DeviceRegistrations_DeviceId",
                 table: "DeviceRegistrations",
                 column: "DeviceId");
@@ -5057,9 +4988,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             migrationBuilder.DropTable(
                 name: "DeviceHeartbeatRecords");
-
-            migrationBuilder.DropTable(
-                name: "DeviceImageUploads");
 
             migrationBuilder.DropTable(
                 name: "EnvironmentalObservationLineage");

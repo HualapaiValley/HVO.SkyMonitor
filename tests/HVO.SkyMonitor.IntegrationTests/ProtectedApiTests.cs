@@ -254,12 +254,7 @@ public sealed class ProtectedApiTests
         var excludedArtifact = CreateScopedArtifact(excluded.Id, "excluded");
         var selectedRegistration = CreateRegistration(selected, viewer.Id, "selected");
         var excludedRegistration = CreateRegistration(excluded, viewer.Id, "excluded");
-        var selectedLegacyArtifactId = Guid.NewGuid();
-        var excludedLegacyArtifactId = Guid.NewGuid();
         db.DeviceRegistrations.AddRange(selectedRegistration, excludedRegistration);
-        db.DeviceImageUploads.AddRange(
-            CreateLegacyUpload(excludedRegistration, selected.Id, selectedLegacyArtifactId),
-            CreateLegacyUpload(selectedRegistration, excluded.Id, excludedLegacyArtifactId));
         db.CentralFrames.AddRange(selectedArtifact.Frame!, excludedArtifact.Frame!);
         await db.SaveChangesAsync().ConfigureAwait(false);
 
@@ -304,9 +299,7 @@ public sealed class ProtectedApiTests
         var historyIds = history.EnumerateArray().Select(item => item.EnumerateObject().Single(property =>
             property.Name.Equals("artifactId", StringComparison.OrdinalIgnoreCase)).Value.GetGuid()).ToArray();
         CollectionAssert.Contains(historyIds, selectedArtifact.ArtifactId);
-        CollectionAssert.Contains(historyIds, selectedLegacyArtifactId);
         CollectionAssert.DoesNotContain(historyIds, excludedArtifact.ArtifactId);
-        CollectionAssert.DoesNotContain(historyIds, excludedLegacyArtifactId);
 
         using var mutation = await readClient.PostAsJsonAsync(
             new Uri("/api/internal/observatories", UriKind.Relative),
@@ -458,27 +451,6 @@ public sealed class ProtectedApiTests
             DevicePublicId = Guid.NewGuid(),
             IssuedAtUtc = DateTimeOffset.UtcNow,
             ActivatedAtUtc = DateTimeOffset.UtcNow
-        };
-
-    private static DeviceImageUpload CreateLegacyUpload(
-        DeviceRegistration registration,
-        Guid captureObservatoryId,
-        Guid artifactId)
-        => new()
-        {
-            RegistrationId = registration.Id,
-            DevicePublicId = registration.DevicePublicId!.Value,
-            ObservatoryId = captureObservatoryId,
-            CapturedAtUtc = DateTimeOffset.UtcNow,
-            ReceivedAtUtc = DateTimeOffset.UtcNow,
-            ContentType = "image/jpeg",
-            PayloadBase64Length = 4,
-            StorageReference = $"legacy-scope-test/{artifactId:N}",
-            ArtifactId = artifactId,
-            ArtifactRole = HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview.ToString(),
-            ChecksumSha256 = new string('B', 64),
-            ByteLength = 1,
-            AgentId = registration.DeviceId
         };
 
 }

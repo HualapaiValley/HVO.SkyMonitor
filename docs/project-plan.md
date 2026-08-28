@@ -493,7 +493,7 @@ Requirements:
 | `CTR-006` | Persist ordered source-artifact lineage. |
 | `CTR-007` | Persist capture-time rig, calibration, mask, sensor, and processing-profile identities. |
 | `CTR-008` | Define canonical recipe name, semantic version, implementation version, options, and hash. |
-| `CTR-009` | Add manifest v2 while preserving v1 parsing as `LegacyIncomplete`. |
+| `CTR-009` | Define manifest v2 as the canonical capture contract; fresh canonical runtimes reject retired v1 manifests before persistence. |
 | `CTR-010` | Version local sidecars with the same reconstruction descriptor. |
 
 Exit gate `GATE-P01`:
@@ -719,14 +719,14 @@ Requirements:
 | `CENTRAL-004` | Bind delayed upload to capture-time rig/profile identity. |
 | `CENTRAL-005` | Add internal streamed MinIO reader and writer abstractions. |
 | `CENTRAL-006` | Add authorized content and range retrieval with checksum verification. |
-| `CENTRAL-007` | Preserve already-ingested historical incomplete records without accepting new incomplete uploads. |
+| `CENTRAL-007` | Reject retired schemas, null profile identities, and incomplete capture locations without runtime repair; persist missing exact current references only as `PendingReference`. |
 | `CENTRAL-008` | Never expose MinIO credentials or browser-direct storage references. |
 
 Exit gate `GATE-P08`:
 
 - LogicHost reconstructs every supported raw layout from central records alone.
 - Delayed upload resolves the correct historical profile.
-- V1/v2 concurrent ingest remains idempotent.
+- Canonical manifest-v2 retry and status remain idempotent while unknown or retired manifests fail closed.
 - Retrieval re-verifies length and checksum.
 
 ## 16. Phase 9 - Central Derivative Execution
@@ -875,7 +875,7 @@ Requirements:
 | `READOUT-001` | Configure native sensor geometry, mono/RGB/CFA response, meaningful sample depth, container/packing, stored-code alignment/transfer, stride, byte order, levels/units, and deterministic response without preset-name branches. |
 | `READOUT-002` | Configure native-coordinate ROI, X/Y binning and algorithm, CFA origin/parity, and output geometry; transform calibrated optics and projected coordinates exactly. |
 | `READOUT-003` | Support representative 8-, 10-, 12-, 14-, and 16-bit modes and reject impossible, misaligned, or unsupported readout/pipeline combinations before acquisition. |
-| `READOUT-004` | Add stored-code transform/level-space to manifest v2 and central layout additively; use canonical defaults only when old facts prove them and classify ambiguous existing lower-depth history as byte-preserved `LegacyIncomplete`. |
+| `READOUT-004` | Add stored-code transform/level-space to manifest v2 and central layout; require explicit facts for lower-depth history and reject ambiguous retired descriptors at the fresh canonical boundary. |
 | `SCHED-001` | Evaluate local weekly schedules, exceptions, blackouts, and overrides using fixed or solar-relative day/twilight/night boundaries. |
 | `SCHED-002` | Keep exposure and cadence independent; persist deterministic precedence, DST/clock/restart behavior, active revision, next transition, and admission reason. |
 | `SCHED-003` | Define no-catch-up clock/restart behavior, one-shot replay protection, boundary-crossing exposure completion, and explicit no-solar-event fallback or closed state. |

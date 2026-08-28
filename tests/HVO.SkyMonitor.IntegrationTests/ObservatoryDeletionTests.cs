@@ -156,6 +156,9 @@ public sealed class ObservatoryDeletionTests
             Version = 1,
             ConfigHash = new string('A', 64),
             ConfigJson = "{}",
+            ProfileName = "rig",
+            ProfileVersion = "rig-v1",
+            ProfileSha256 = new string('B', 64),
             CreatedAtUtc = DateTimeOffset.UnixEpoch,
             EffectiveFromUtc = DateTimeOffset.UnixEpoch
         };
@@ -255,6 +258,17 @@ public sealed class ObservatoryDeletionTests
                 Role = ObservatoryMembershipRole.Owner,
                 AddedAtUtc = DateTimeOffset.UtcNow
             });
+            _ = await ObservatoryLocationAuthority.ApplyAsync(
+                setupDb,
+                raceObservatory,
+                raceObservatory.LatitudeDegrees,
+                raceObservatory.LongitudeDegrees,
+                raceObservatory.ElevationMeters,
+                raceObservatory.TimeZoneId,
+                raceObservatory.AllowedDeploymentRadiusMeters,
+                raceObservatory.CreatedAtUtc,
+                "integration-test",
+                CancellationToken.None).ConfigureAwait(false);
             await setupDb.SaveChangesAsync().ConfigureAwait(false);
         }
         lockInterceptor.Arm(raceObservatory.Id);

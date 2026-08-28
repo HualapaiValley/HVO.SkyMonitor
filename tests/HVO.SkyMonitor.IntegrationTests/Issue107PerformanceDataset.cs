@@ -450,7 +450,7 @@ internal static class Issue107PerformanceDatasetSeeder
                     FirstReceivedAtUtc = capturedAtUtc.AddSeconds(1),
                     RigId = $"rig-{datasetOrdinal}",
                     CaptureSequence = captureIndex + 1,
-                    LocationEvidenceState = CentralCaptureLocationEvidenceState.LegacyIncomplete
+                    LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedUnresolved
                 };
                 var artifacts = new CentralArtifact[ArtifactRoles.Length];
                 for (var artifactOrdinal = 0; artifactOrdinal < ArtifactRoles.Length; artifactOrdinal++)

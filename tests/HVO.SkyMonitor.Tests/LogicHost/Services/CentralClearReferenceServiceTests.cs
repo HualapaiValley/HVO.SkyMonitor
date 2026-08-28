@@ -98,6 +98,13 @@ public sealed class CentralClearReferenceServiceTests
                 EffectiveExposureTicks = TimeSpan.FromSeconds(1).Ticks,
                 RequestedGain = 1,
                 EffectiveGain = 1
+            },
+            Location = new CentralCaptureLocation
+            {
+                LocationId = "test-location",
+                Version = 1,
+                Source = "test",
+                EffectiveFromUtc = now.AddDays(-1)
             }
         };
         foreach (var kind in Enum.GetValues<CentralProfileKind>())

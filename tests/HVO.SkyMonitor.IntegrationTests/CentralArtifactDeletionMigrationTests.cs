@@ -60,10 +60,39 @@ public sealed class CentralArtifactDeletionMigrationTests
                     ([Id], [SourceObjectIdentitySha256], [SourceObjectKey], [Kind], [State], [ByteLength],
                      [CreatedAtUtc], [UpdatedAtUtc], [AttemptCount])
                 VALUES
-                    (NEWID(), REPLICATE('D', 64), N'invalid/attempt.bin', N'ExpiredDelete',
-                     N'PendingDelete', 12, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET(), -1);
+                    (NEWID(), REPLICATE('D', 64), N'invalid/attempt.bin', N'OrphanQuarantine',
+                     N'PendingCopy', 12, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET(), -1);
                 """);
             await negativeAttempt.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+
+            Func<Task> unfencedExpiredDelete = () => database.Context.Database.ExecuteSqlRawAsync("""
+                INSERT INTO [CentralObjectRecoveryDispositions]
+                    ([Id], [SourceObjectIdentitySha256], [SourceObjectKey], [Kind], [State], [ByteLength],
+                     [CreatedAtUtc], [UpdatedAtUtc], [AttemptCount])
+                VALUES
+                    (NEWID(), REPLICATE('A', 64), N'invalid/unfenced-expired.bin', N'ExpiredDelete',
+                     N'PendingDelete', 12, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET(), 0);
+                """);
+            await unfencedExpiredDelete.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+
+            Func<Task> orphanWithoutTarget = () => database.Context.Database.ExecuteSqlRawAsync("""
+                INSERT INTO [CentralObjectRecoveryDispositions]
+                    ([Id], [SourceObjectIdentitySha256], [SourceObjectKey], [Kind], [State], [ByteLength],
+                     [CreatedAtUtc], [UpdatedAtUtc], [AttemptCount])
+                VALUES
+                    (NEWID(), REPLICATE('8', 64), N'invalid/orphan-without-target.bin', N'OrphanQuarantine',
+                     N'PendingCopy', 12, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET(), 0);
+                """);
+            await orphanWithoutTarget.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
+
+            (await database.Context.Database.ExecuteSqlRawAsync("""
+                INSERT INTO [CentralObjectRecoveryDispositions]
+                    ([Id], [SourceObjectIdentitySha256], [SourceObjectKey], [TargetObjectKey], [Kind], [State],
+                     [ByteLength], [CreatedAtUtc], [UpdatedAtUtc], [AttemptCount])
+                VALUES
+                    (NEWID(), REPLICATE('9', 64), N'valid/orphan.bin', N'quarantine/orphan.bin',
+                     N'OrphanQuarantine', N'PendingCopy', 12, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET(), 0);
+                """).ConfigureAwait(false)).Should().Be(1);
 
             var now = DateTimeOffset.UtcNow;
             var frame = new CentralFrame

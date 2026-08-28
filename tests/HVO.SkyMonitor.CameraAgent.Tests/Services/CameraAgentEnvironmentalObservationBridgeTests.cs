@@ -215,7 +215,6 @@ public sealed class CameraAgentEnvironmentalObservationBridgeTests
             "test",
             "registration-token",
             "/api/device/heartbeat",
-            "/api/device/upload",
             60,
             Epoch,
             Epoch.AddDays(1),

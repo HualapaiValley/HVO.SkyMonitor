@@ -56,8 +56,8 @@ A completed standalone CameraAgent can:
 - Extend manifest v2 and central normalized layout additively with nullable
   stored-code transform and level-code-space fields. Existing 16-bit identity
   layouts may use the canonical identity/stored-code default only when the old
-  descriptor proves it unambiguously. Existing lower-depth camera history with
-  insufficient canonical facts remains byte-preserved `LegacyIncomplete`; do
+  descriptor proves it unambiguously. Retired lower-depth camera history with
+  insufficient canonical facts is not admitted into fresh canonical state; do
   not infer native precision/alignment from free-form metadata. New readout
   profiles require both fields before acquisition.
 - Support Mono, rendered RGB, and configured CFA raw modes without preset-name

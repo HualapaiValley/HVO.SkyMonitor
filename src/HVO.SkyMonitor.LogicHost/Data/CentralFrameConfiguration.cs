@@ -18,7 +18,7 @@ internal sealed class CentralFrameConfiguration : IEntityTypeConfiguration<Centr
         builder.Property(frame => frame.CycleEvidenceJson);
         builder.Property(frame => frame.LocationEvidenceState)
             .HasConversion<string>().HasMaxLength(32)
-            .HasDefaultValue(CentralCaptureLocationEvidenceState.LegacyIncomplete).IsRequired();
+            .HasDefaultValue(CentralCaptureLocationEvidenceState.ReportedUnresolved).IsRequired();
         builder.HasIndex(frame => frame.LocationEvidenceState);
         builder.HasIndex(frame => frame.RegistrationId);
         builder.HasIndex(frame => new { frame.RegistrationId, frame.FirstReceivedAtUtc, frame.Id });

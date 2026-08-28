@@ -484,7 +484,7 @@ internal sealed partial class CentralDerivativeJobOperationsService(
             requestedIdentity,
             CentralDerivativeRecipeCatalog.DefaultMaxAttempts);
         var standardRequestIdentity = CentralDerivativeJobIdentity.CreateRequestIdentity(
-            previous.SourceArtifact.DevicePublicId!.Value, previous.SourceArtifact.ArtifactId, plan);
+            previous.SourceArtifact.DevicePublicId, previous.SourceArtifact.ArtifactId, plan);
         var requestIdentity = standardRequestIdentity;
         var existing = await dbContext.CentralDerivativeJobs
             .SingleOrDefaultAsync(candidate => candidate.RequestIdentitySha256 == requestIdentity, cancellationToken)

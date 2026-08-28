@@ -30,7 +30,6 @@ internal sealed record DeviceBootstrapSecretsPayload(
     string FriendlyName,
     string RegistrationToken,
     string HeartbeatEndpoint,
-    string UploadEndpoint,
     int HeartbeatIntervalSeconds,
     DateTimeOffset IssuedAtUtc,
     DateTimeOffset ExpiresAtUtc,

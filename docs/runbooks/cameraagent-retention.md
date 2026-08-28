@@ -120,10 +120,10 @@ idempotency key, artifact ID, checksum, length, and accepted schema before
 recording acknowledgement and releasing a derivative's local artifact. It does not remove an ingress-owned raw
 payload or manifest-v2 sidecar while the SQLite retention hold remains active.
 
-New work is persisted as canonical manifest v2. LogicHost accepts both legacy v1
-and canonical v2 manifests, validates the complete v2 reconstruction descriptor,
-and acknowledges the schema version it persisted. Version 1 remains a
-compatibility path and does not claim central reconstructability.
+New work is persisted as canonical manifest v2. LogicHost accepts only canonical
+v2 capture manifests, validates the complete reconstruction descriptor, and
+acknowledges the schema version it persisted. Retired v1 manifests are rejected
+before persistence and handled as permanent quarantined upload failures.
 OAuth client-credentials bearer authentication is the supported upload mode.
 An API key, rejected bearer identity, or inactive registration results in an
 `authentication-rejected` quarantine rather than an infinite retry.

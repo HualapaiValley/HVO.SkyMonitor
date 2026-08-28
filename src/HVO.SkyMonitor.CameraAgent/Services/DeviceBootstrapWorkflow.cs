@@ -91,7 +91,6 @@ internal sealed class DeviceBootstrapWorkflow(
             secretsPayload.FriendlyName,
             secretsPayload.RegistrationToken,
             secretsPayload.HeartbeatEndpoint,
-            secretsPayload.UploadEndpoint,
             secretsPayload.HeartbeatIntervalSeconds,
             secretsPayload.IssuedAtUtc,
             secretsPayload.ExpiresAtUtc,

@@ -261,6 +261,9 @@ public sealed class CentralRecoveryPerformanceTests
         table.Columns.Add("IdempotencyKey", typeof(string));
         table.Columns.Add("ObjectState", typeof(string));
         table.Columns.Add("ReconstructionState", typeof(string));
+        table.Columns.Add("ObjectVerificationRetryCount", typeof(int));
+        table.Columns.Add("RecoveryGeneration", typeof(long));
+        table.Columns.Add("ReferenceRetryCount", typeof(int));
         var devicePublicId = Guid.NewGuid();
         for (var index = 0; index < MetadataArtifactCount; index++)
         {
@@ -268,7 +271,7 @@ public sealed class CentralRecoveryPerformanceTests
             table.Rows.Add(Guid.NewGuid(), frameId, artifactId, devicePublicId, "Preview", "w3m-v1", "legacy",
                 "application/octet-stream", 1L, new string('A', 64), $"minio://legacy-w3m/{runId}/{index:D5}",
                 DateTimeOffset.UnixEpoch, Convert.ToHexString(SHA256.HashData(artifactId.ToByteArray())),
-                "Available", "LegacyIncomplete");
+                "Available", "Complete", 0, 0L, 0);
         }
         await using var connection = new SqlConnection(AssemblyHooks.Fixture.SqlServerConnectionString);
         await connection.OpenAsync().ConfigureAwait(false);

@@ -534,7 +534,7 @@ public sealed class DeploymentLocationReconciliationServiceTests
                     frame.Artifacts.Add(new CentralArtifact
                     {
                         CentralFrameId = frame.Id,
-                        DevicePublicId = registration.DevicePublicId,
+                        DevicePublicId = registration.DevicePublicId!.Value,
                         ArtifactId = Guid.NewGuid(),
                         Role = FrameArtifactRole.Raw,
                         RecipeVersion = "raw-v1",

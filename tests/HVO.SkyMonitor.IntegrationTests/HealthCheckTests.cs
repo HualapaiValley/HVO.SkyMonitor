@@ -9,7 +9,9 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.TestHost;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -41,44 +43,65 @@ public sealed class HealthCheckTests
     [TestMethod]
     public async Task HealthCheckReportsExplicitFixtureCatalogAsync()
     {
-        // Arrange
-        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        var connection = new SqlConnectionStringBuilder(AssemblyHooks.Fixture.SqlServerConnectionString)
         {
-            await ObservatoryLocationBackfill.RunAsync(
-                scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
-                TimeProvider.System).ConfigureAwait(false);
+            InitialCatalog = $"SkyMonitorCatalogHealth_{Guid.NewGuid():N}"
+        }.ConnectionString;
+        await using (var setup = new ApplicationDbContext(
+                         new DbContextOptionsBuilder<ApplicationDbContext>()
+                             .UseSqlServer(connection)
+                             .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
+                             .Options))
+        {
+            await setup.Database.MigrateAsync().ConfigureAwait(false);
         }
-        var request = new Uri("/health", UriKind.Relative);
-
-        // Act
-        var response = await _client!.GetAsync(request).ConfigureAwait(false);
-
-        // Assert
-        response.EnsureSuccessStatusCode();
-        Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode);
-        using var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
-        Assert.AreEqual("Degraded", payload.RootElement.GetProperty("status").GetString());
-        var catalog = payload.RootElement.GetProperty("checks").EnumerateArray()
-            .Single(check => check.GetProperty("name").GetString() == "catalog");
-        Assert.AreEqual("Degraded", catalog.GetProperty("status").GetString());
-        StringAssert.Contains(
-            catalog.GetProperty("description").GetString(),
-            "Fixture celestial catalog snapshot",
-            StringComparison.Ordinal);
-        var identity = catalog.GetProperty("data");
-        Assert.AreEqual("Fixture", identity.GetProperty("Kind").GetString());
-        Assert.AreEqual("hyg-v42-fixture", identity.GetProperty("CatalogId").GetString());
-        Assert.AreEqual("explicit-manifest-v2", identity.GetProperty("CatalogIdentitySource").GetString());
-        Assert.AreEqual("4.2-fixture.1", identity.GetProperty("CatalogVersion").GetString());
-        Assert.AreEqual(9, identity.GetProperty("RowCount").GetInt64());
-        var worker = payload.RootElement.GetProperty("checks").EnumerateArray()
-            .Single(check => check.GetProperty("name").GetString() == "central-derivative-worker");
-        Assert.AreEqual("Healthy", worker.GetProperty("status").GetString());
-        var workerData = worker.GetProperty("data");
-        Assert.AreEqual("disabled", workerData.GetProperty("Status").GetString());
-        CollectionAssert.AreEquivalent(
-            WorkerHealthDataKeys,
-            workerData.EnumerateObject().Select(property => property.Name).ToArray());
+        var factory = AssemblyHooks.Fixture.Factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<DbContextOptions<ApplicationDbContext>>();
+                services.RemoveAll<ApplicationDbContext>();
+                services.AddDbContext<ApplicationDbContext>(options => options
+                    .UseSqlServer(connection)
+                    .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
+            }));
+        try
+        {
+            using var client = factory.CreateClient();
+            using var response = await client.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode);
+            using var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+            Assert.AreEqual("Degraded", payload.RootElement.GetProperty("status").GetString());
+            var catalog = payload.RootElement.GetProperty("checks").EnumerateArray()
+                .Single(check => check.GetProperty("name").GetString() == "catalog");
+            Assert.AreEqual("Degraded", catalog.GetProperty("status").GetString());
+            StringAssert.Contains(
+                catalog.GetProperty("description").GetString(),
+                "Fixture celestial catalog snapshot",
+                StringComparison.Ordinal);
+            var identity = catalog.GetProperty("data");
+            Assert.AreEqual("Fixture", identity.GetProperty("Kind").GetString());
+            Assert.AreEqual("hyg-v42-fixture", identity.GetProperty("CatalogId").GetString());
+            Assert.AreEqual("explicit-manifest-v2", identity.GetProperty("CatalogIdentitySource").GetString());
+            Assert.AreEqual("4.2-fixture.1", identity.GetProperty("CatalogVersion").GetString());
+            Assert.AreEqual(9, identity.GetProperty("RowCount").GetInt64());
+            var worker = payload.RootElement.GetProperty("checks").EnumerateArray()
+                .Single(check => check.GetProperty("name").GetString() == "central-derivative-worker");
+            Assert.AreEqual("Healthy", worker.GetProperty("status").GetString());
+            var workerData = worker.GetProperty("data");
+            Assert.AreEqual("disabled", workerData.GetProperty("Status").GetString());
+            CollectionAssert.AreEquivalent(
+                WorkerHealthDataKeys,
+                workerData.EnumerateObject().Select(property => property.Name).ToArray());
+        }
+        finally
+        {
+            await factory.DisposeAsync().ConfigureAwait(false);
+            SqlConnection.ClearAllPools();
+            await using var db = new ApplicationDbContext(
+                new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlServer(connection).Options);
+            await db.Database.EnsureDeletedAsync().ConfigureAwait(false);
+        }
     }
 
     [TestMethod]
@@ -228,7 +251,7 @@ public sealed class HealthCheckTests
                 ReceivedAtUtc = DateTimeOffset.UtcNow - CentralArtifactConsistencyHealthCheck.StaleAfter - TimeSpan.FromMinutes(1),
                 IdempotencyKey = idempotencyKey,
                 ObjectState = CentralArtifactObjectState.Pending,
-                ReconstructionState = CentralReconstructionState.LegacyIncomplete,
+                ReconstructionState = CentralReconstructionState.PendingReference,
                 StateReasonCode = "object.pending-test",
                 ObjectVerificationToken = Guid.NewGuid(),
                 ObjectVerificationRequestedAtUtc = DateTimeOffset.UtcNow

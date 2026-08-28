@@ -35,6 +35,10 @@ internal sealed class ArtifactIngestController(
                 Detail = $"{parseResult.Validation.ReasonCode} at {parseResult.Validation.FieldPath}"
             });
         }
+        if ((productParseResult?.Manifest?.Descriptor.SourceCapture ?? parseResult.Document?.Manifest.Descriptor)?.Location is null)
+        {
+            return BadRequest(new ProblemDetails { Title = "Capture location provenance is required" });
+        }
         var delivery = productParseResult?.Manifest is { } productManifest
             ? ArtifactIngestManifest.Create(productManifest)
             : ArtifactIngestManifest.Create(parseResult.Document!);
@@ -70,7 +74,7 @@ internal sealed class ArtifactIngestController(
                 delivery.ArtifactId,
                 delivery.ChecksumSha256.ToUpperInvariant(),
                 delivery.ByteLength,
-                result.Upload.AcceptedAtUtc,
+                result.Receipt.AcceptedAtUtc,
                 delivery.SchemaVersion));
         }
         catch (ArtifactIntegrityException exception)
@@ -108,6 +112,10 @@ internal sealed class ArtifactIngestController(
             telemetry.RecordValidation("unknown", "rejected");
             return BadRequest(new ProblemDetails { Title = "Invalid artifact manifest" });
         }
+        if ((productParseResult?.Manifest?.Descriptor.SourceCapture ?? parseResult.Document?.Manifest.Descriptor)?.Location is null)
+        {
+            return BadRequest(new ProblemDetails { Title = "Capture location provenance is required" });
+        }
         var delivery = productParseResult?.Manifest is { } productManifest
             ? ArtifactIngestManifest.Create(productManifest)
             : ArtifactIngestManifest.Create(parseResult.Document!);
@@ -141,7 +149,7 @@ internal sealed class ArtifactIngestController(
                 delivery.ArtifactId,
                 delivery.ChecksumSha256.ToUpperInvariant(),
                 delivery.ByteLength,
-                result.Upload.AcceptedAtUtc,
+                result.Receipt.AcceptedAtUtc,
                 delivery.SchemaVersion));
         }
         catch (ArtifactIntegrityException)

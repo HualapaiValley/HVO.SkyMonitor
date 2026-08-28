@@ -12,6 +12,7 @@ using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
 using System.Security.Cryptography;
 using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -19,6 +20,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestCategory("Integration")]
 public sealed class DeviceApiControllerTests
 {
+    private static readonly JsonSerializerOptions IndentedJsonOptions = new() { WriteIndented = true };
     private HttpClient? _client;
 
     [TestInitialize]
@@ -185,12 +187,15 @@ public sealed class DeviceApiControllerTests
     public async Task RigProfileUpsertCreatesV1ThenIsIdempotentForEquivalentJson()
     {
         var (deviceId, deviceKey, registrationId, devicePublicId, _) = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = ProcessingConformanceFixture.CameraConfig.Rig;
+        var compact = JsonSerializer.Serialize(rig);
+        var indented = JsonSerializer.Serialize(rig, IndentedJsonOptions);
 
         using var first = await _client!.PostAsJsonAsync(new Uri("/api/device/profile/rig", UriKind.Relative), new
         {
             deviceId,
             deviceKey,
-            rigConfigJson = "{\"b\":2,\"a\":1}",
+            rigConfigJson = compact,
             softwareVersion = "0.0.1"
         }).ConfigureAwait(false);
 
@@ -206,7 +211,7 @@ public sealed class DeviceApiControllerTests
         {
             deviceId,
             deviceKey,
-            rigConfigJson = "{\"a\":1,\"b\":2}",
+            rigConfigJson = indented,
             softwareVersion = "0.0.1"
         }).ConfigureAwait(false);
 
@@ -226,9 +231,34 @@ public sealed class DeviceApiControllerTests
             .ConfigureAwait(false);
 
         profiles.Count.Should().Be(1);
+        profiles[0].ProfileName.Should().Be("rig");
+        profiles[0].ProfileVersion.Should().Be(rig.ProfileVersion);
+        profiles[0].ProfileSha256.Should().Be(CameraRigProfileIdentity.ComputeSha256(rig));
         var registration = await db.DeviceRegistrations.SingleAsync(r => r.Id == registrationId).ConfigureAwait(false);
         registration.CurrentRigProfileVersion.Should().Be(1);
         registration.CurrentRigProfileHash.Should().Be(firstPayload.RigProfileHash);
+    }
+
+    [TestMethod]
+    public async Task RigProfileUpsertRejectsIncompleteTypedConfigurationWithoutMutation()
+    {
+        var (deviceId, deviceKey, registrationId, _, _) = await SeedBootstrappedActiveDeviceAsync().ConfigureAwait(false);
+
+        using var response = await _client!.PostAsJsonAsync(new Uri("/api/device/profile/rig", UriKind.Relative), new
+        {
+            deviceId,
+            deviceKey,
+            rigConfigJson = "{}"
+        }).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await db.DeviceRigProfiles.AnyAsync(item => item.RegistrationId == registrationId).ConfigureAwait(false))
+            .Should().BeFalse();
+        var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
+        registration.CurrentRigProfileVersion.Should().BeNull();
+        registration.CurrentRigProfileHash.Should().BeNull();
     }
 
     [TestMethod]
@@ -270,6 +300,7 @@ public sealed class DeviceApiControllerTests
             Role = ObservatoryMembershipRole.Owner,
             AddedAtUtc = observatory.CreatedAtUtc
         });
+        await SeedObservatoryLocationAsync(db, observatory).ConfigureAwait(false);
         await db.SaveChangesAsync().ConfigureAwait(false);
 
         var deviceId = $"device-{Guid.NewGuid():N}";
@@ -348,7 +379,7 @@ public sealed class DeviceApiControllerTests
     }
 
     [TestMethod]
-    public async Task PreChangeV1Envelope_RedeemsWithoutFabricatingLocationEvidence()
+    public async Task PreChangeV1Envelope_FailsClosedWithoutFabricatingLocationEvidence()
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var services = scope.ServiceProvider;
@@ -383,7 +414,7 @@ public sealed class DeviceApiControllerTests
             DeviceKeyHash = DeviceRegistrationService.ComputeSha256(deviceKey),
             RegistrationTokenHash = DeviceRegistrationService.ComputeSha256(registrationToken),
             EnvelopeVersion = "v1",
-            LocationEvidenceState = RegistrationLocationEvidenceState.LegacyIncomplete,
+            LocationEvidenceState = RegistrationLocationEvidenceState.ObservatoryPinned,
             IssuedAtUtc = now,
             ExpiresAtUtc = now.AddMinutes(10)
         };
@@ -416,33 +447,20 @@ public sealed class DeviceApiControllerTests
             observatory.LongitudeDegrees,
             observatory.ElevationMeters,
             observatory.TimeZoneId);
-        var result = await services.GetRequiredService<IDeviceBootstrapService>().BootstrapAsync(
+        Func<Task> act = () => services.GetRequiredService<IDeviceBootstrapService>().BootstrapAsync(
             new DeviceBootstrapRequest(
                 registration.DeviceId,
                 protectedEnvelope,
                 DeploymentLocation: clientShapedDeployment,
-                DeploymentLocationSourceKind: HVO.SkyMonitor.AgentCore.DeploymentLocationSourceKind.Manual))
-            .ConfigureAwait(false);
+                DeploymentLocationSourceKind: HVO.SkyMonitor.AgentCore.DeploymentLocationSourceKind.Manual));
 
-        result.EnvelopeVersion.Should().Be("v1");
-        var ciphertext = Convert.FromBase64String(result.Payload.Ciphertext);
-        var plaintext = new byte[ciphertext.Length];
-        using (var aes = new AesGcm(Convert.FromBase64String(result.DeviceKey), 16))
-        {
-            aes.Decrypt(
-                Convert.FromBase64String(result.Payload.Nonce),
-                ciphertext,
-                Convert.FromBase64String(result.Payload.Tag),
-                plaintext);
-        }
-        using var secrets = JsonDocument.Parse(plaintext);
-        secrets.RootElement.GetProperty("deploymentLocationAcknowledgment").ValueKind
-            .Should().Be(JsonValueKind.Null);
+        await act.Should().ThrowAsync<DeviceRegistrationException>()
+            .WithMessage("*version*supported*").ConfigureAwait(false);
         db.ChangeTracker.Clear();
         var activated = await db.DeviceRegistrations.SingleAsync(item => item.Id == registration.Id)
             .ConfigureAwait(false);
-        activated.Status.Should().Be(DeviceRegistrationStatus.Active);
-        activated.LocationEvidenceState.Should().Be(RegistrationLocationEvidenceState.LegacyIncomplete);
+        activated.Status.Should().Be(DeviceRegistrationStatus.Pending);
+        activated.LocationEvidenceState.Should().Be(RegistrationLocationEvidenceState.ObservatoryPinned);
         (await db.DeviceDeploymentLocationVersions.AnyAsync(item => item.RegistrationId == registration.Id)
             .ConfigureAwait(false)).Should().BeFalse();
     }
@@ -513,6 +531,8 @@ public sealed class DeviceApiControllerTests
                 Role = ObservatoryMembershipRole.Owner,
                 AddedAtUtc = secondObservatory.CreatedAtUtc
             });
+        await SeedObservatoryLocationAsync(db, firstObservatory).ConfigureAwait(false);
+        await SeedObservatoryLocationAsync(db, secondObservatory).ConfigureAwait(false);
         await db.SaveChangesAsync().ConfigureAwait(false);
 
         var firstRegistration = await registrationService.CreatePendingAsync(new DeviceRegistrationCreateRequest(
@@ -585,6 +605,21 @@ public sealed class DeviceApiControllerTests
         envelope.RegistrationId.Should().Be(firstRegistration.Id);
         firstRegistration.DeviceKeyHash.Should().NotBeNullOrWhiteSpace();
         secondRegistration.DeviceKeyHash.Should().BeNull();
+    }
+
+    private static async Task SeedObservatoryLocationAsync(ApplicationDbContext db, Observatory observatory)
+    {
+        _ = await ObservatoryLocationAuthority.ApplyAsync(
+            db,
+            observatory,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId,
+            observatory.AllowedDeploymentRadiusMeters,
+            observatory.CreatedAtUtc,
+            "integration-test",
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     private static async Task<(string DeviceId, string DeviceKey, Guid RegistrationId, Guid DevicePublicId, Guid ObservatoryId)>

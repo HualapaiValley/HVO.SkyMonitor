@@ -45,7 +45,6 @@ public sealed class DeviceSecretsCentralIdentityConfiguratorTests
             "Agent",
             "ticket",
             "/api/device/heartbeat",
-            "/api/device/upload",
             60,
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow.AddDays(1),

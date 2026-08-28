@@ -70,6 +70,7 @@ public sealed class DeploymentLocationProposalApiTests
                 Role = ObservatoryMembershipRole.Owner,
                 AddedAtUtc = now
             });
+            await SeedObservatoryLocationAsync(db, observatory, now).ConfigureAwait(false);
             await db.SaveChangesAsync().ConfigureAwait(false);
             deployment = DeploymentLocationSnapshot.Create(
                 "active-device-location", 2, "gps-receiver", 3, now.AddHours(-1), null,
@@ -156,6 +157,7 @@ public sealed class DeploymentLocationProposalApiTests
                 Role = ObservatoryMembershipRole.Owner,
                 AddedAtUtc = now
             });
+            await SeedObservatoryLocationAsync(db, observatory, now).ConfigureAwait(false);
             await db.SaveChangesAsync().ConfigureAwait(false);
             registrationId = registration.Id;
             deployment = DeploymentLocationSnapshot.Create(
@@ -258,6 +260,7 @@ public sealed class DeploymentLocationProposalApiTests
                 Role = ObservatoryMembershipRole.Owner,
                 AddedAtUtc = now
             });
+            await SeedObservatoryLocationAsync(db, observatory, now).ConfigureAwait(false);
             await db.SaveChangesAsync().ConfigureAwait(false);
             var deployment = DeploymentLocationSnapshot.Create(
                 "deployment-api-location",
@@ -429,5 +432,23 @@ public sealed class DeploymentLocationProposalApiTests
             "integration-test-cleanup",
             remaining.ConcurrencyToken).ConfigureAwait(false);
         cleanup.Status.Should().Be(DeploymentLocationMutationStatus.Applied);
+    }
+
+    private static async Task SeedObservatoryLocationAsync(
+        ApplicationDbContext db,
+        Observatory observatory,
+        DateTimeOffset effectiveFromUtc)
+    {
+        _ = await ObservatoryLocationAuthority.ApplyAsync(
+            db,
+            observatory,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId,
+            observatory.AllowedDeploymentRadiusMeters,
+            effectiveFromUtc,
+            "integration-test",
+            CancellationToken.None).ConfigureAwait(false);
     }
 }

@@ -37,6 +37,9 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestCategory("Integration")]
 public sealed class ArtifactIngestTests
 {
+    private static readonly ConcurrentDictionary<string, CaptureLocationProvenance> DefaultLocations =
+        new(StringComparer.Ordinal);
+
     [TestMethod]
     [DataRow("schema-less")]
     [DataRow("malformed")]
@@ -197,6 +200,7 @@ public sealed class ArtifactIngestTests
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Control)
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
             .SingleAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
         artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
         artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
@@ -257,7 +261,7 @@ public sealed class ArtifactIngestTests
         var evidence = await evidenceDb.CentralArtifactProcessingEvidence
             .SingleAsync(item => item.CentralArtifactId == result.Id).ConfigureAwait(false);
         result.IdempotencyKey.Should().Be(CentralDerivativeOutputWriter.CreateArtifactIdempotencyKey(
-            result.DevicePublicId!.Value, evidence.OutputIdentitySha256));
+            result.DevicePublicId, evidence.OutputIdentitySha256));
         evidence.AlgorithmsJson.Should().Contain("image-statistics");
         var attempt = await evidenceDb.CentralDerivativeJobAttempts
             .SingleAsync(item => item.CentralDerivativeJobId == evidence.CentralDerivativeJobId).ConfigureAwait(false);
@@ -1686,6 +1690,27 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    public async Task MultipartIngestV2_WithoutCaptureLocation_FailsBeforePersistence()
+    {
+        var fixture = AssemblyHooks.Fixture;
+        var (deviceId, _) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        byte[] payload = [1, 2, 3, 4];
+        var manifest = CreateManifestV2(deviceId, CreateRig("missing-location-rig"), payload, 169);
+        manifest = manifest with { Descriptor = manifest.Descriptor with { Location = null } };
+        using var client = fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        (await db.CentralArtifacts.AnyAsync(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
+            .ConfigureAwait(false)).Should().BeFalse();
+    }
+
+    [TestMethod]
     [DataRow(-1, false)]
     [DataRow(0, true)]
     [DataRow(119_999, true)]
@@ -1839,7 +1864,7 @@ public sealed class ArtifactIngestTests
             var db = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var source = await db.CentralArtifacts.SingleAsync(item =>
                 item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
-            devicePublicId = source.DevicePublicId!.Value;
+            devicePublicId = source.DevicePublicId;
             var annotation = await db.CentralDerivativeJobs.SingleAsync(item =>
                 item.SourceCentralArtifactId == source.Id
                 && item.RecipeName == BuiltInProcessingRecipes.Annotation).ConfigureAwait(false);
@@ -1958,7 +1983,7 @@ public sealed class ArtifactIngestTests
                 .Select(item => new { item.Id, item.DevicePublicId })
                 .SingleAsync().ConfigureAwait(false);
             sourceId = sourceIdentity.Id;
-            devicePublicId = sourceIdentity.DevicePublicId!.Value;
+            devicePublicId = sourceIdentity.DevicePublicId;
             await schedulingDb.CentralDerivativeJobs.Where(job => job.SourceCentralArtifactId != sourceId
                     && (job.Status == CentralDerivativeJobStatus.Pending
                         || job.Status == CentralDerivativeJobStatus.RetryableFailure))
@@ -2319,7 +2344,7 @@ public sealed class ArtifactIngestTests
         conflictResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
         await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
         var db = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        (await db.CentralArtifacts.CountAsync(item => item.DevicePublicId != null && item.ArtifactId == artifactId)
+        (await db.CentralArtifacts.CountAsync(item => item.ArtifactId == artifactId)
             .ConfigureAwait(false)).Should().Be(1);
     }
 
@@ -2404,10 +2429,10 @@ public sealed class ArtifactIngestTests
         using var ownerClient = await ArtifactRetrievalTests.CreateUserClientAsync(
             TestUsers.Operator.Username, TestUsers.Operator.Password).ConfigureAwait(false);
         var centralPreview = await ReadDerivativeAsync(
-            ownerClient, source.DevicePublicId!.Value, executions[BuiltInProcessingRecipes.EncodedPreview].ArtifactId!.Value)
+            ownerClient, source.DevicePublicId, executions[BuiltInProcessingRecipes.EncodedPreview].ArtifactId!.Value)
             .ConfigureAwait(false);
         var centralAnnotation = await ReadDerivativeAsync(
-            ownerClient, source.DevicePublicId!.Value, executions[BuiltInProcessingRecipes.Annotation].ArtifactId!.Value)
+            ownerClient, source.DevicePublicId, executions[BuiltInProcessingRecipes.Annotation].ArtifactId!.Value)
             .ConfigureAwait(false);
         var decodedPreview = JpegImageCodec.DecodeJpeg(centralPreview);
         var decodedAnnotation = JpegImageCodec.DecodeJpeg(centralAnnotation);
@@ -2828,6 +2853,38 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
+    public async Task MultipartIngestV2_WithCaseMismatchedHistoricalRig_IsPendingReference()
+    {
+        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
+        var rig = CreateRig("case-sensitive-rig");
+        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var manifest = CreateManifestV2(deviceId, rig, payload, captureSequence: 211);
+        manifest = manifest with
+        {
+            Descriptor = manifest.Descriptor with
+            {
+                Profiles = manifest.Descriptor.Profiles with
+                {
+                    Rig = manifest.Descriptor.Profiles.Rig with { Name = "RIG" }
+                }
+            }
+        };
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
+
+        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
+
+        ((int)response.StatusCode).Should().Be(425);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var artifact = await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralArtifacts
+            .SingleAsync(item => item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
+        artifact.ReconstructionState.Should().Be(CentralReconstructionState.PendingReference);
+        artifact.StateReasonCode.Should().Be("profile.rig-not-found");
+    }
+
+    [TestMethod]
     public async Task IngestStatus_PendingReferenceAvoidsPayloadRetryAndEventuallyAcknowledges()
     {
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
@@ -3237,10 +3294,7 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
-    [DataRow(true)]
-    [DataRow(false)]
-    public async Task MultipartIngestV2_CompletedTombstoneSurvivesArtifactOwnerRemovalAndRejectsReplay(
-        bool tokenized)
+    public async Task MultipartIngestV2_CompletedTokenizedTombstoneSurvivesArtifactOwnerRemovalAndRejectsReplay()
     {
         var fixture = AssemblyHooks.Fixture;
         var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
@@ -3289,9 +3343,9 @@ public sealed class ArtifactIngestTests
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Expired,
                 ReconstructionState = CentralReconstructionState.Complete,
-                RetentionDeletionToken = tokenized ? token : null,
-                RetentionDeletionRequestedAtUtc = tokenized ? now : null,
-                RetentionDeletionCompletedAtUtc = tokenized ? now : null
+                RetentionDeletionToken = token,
+                RetentionDeletionRequestedAtUtc = now,
+                RetentionDeletionCompletedAtUtc = now
             };
             var disposition = new CentralObjectRecoveryDisposition
             {
@@ -3299,8 +3353,8 @@ public sealed class ArtifactIngestTests
                 SourceObjectKey = objectKey,
                 Kind = CentralObjectRecoveryKinds.ExpiredDelete,
                 State = CentralObjectRecoveryStates.Completed,
-                CentralArtifactId = tokenized ? artifact.Id : null,
-                OperationToken = tokenized ? token : null,
+                CentralArtifactId = artifact.Id,
+                OperationToken = token,
                 ByteLength = 1,
                 AttemptCount = 1,
                 LastAttemptAtUtc = now,
@@ -3313,19 +3367,6 @@ public sealed class ArtifactIngestTests
             dispositionId = disposition.Id;
             await db.CentralArtifacts.Where(item => item.Id == artifact.Id).ExecuteDeleteAsync().ConfigureAwait(false);
             await db.CentralFrames.Where(item => item.Id == frame.Id).ExecuteDeleteAsync().ConfigureAwait(false);
-            if (!tokenized)
-            {
-                disposition.State = CentralObjectRecoveryStates.PendingDelete;
-                await db.SaveChangesAsync().ConfigureAwait(false);
-                (await CentralObjectOwnershipFence.IsRetiredAsync(
-                    db, storageReference, CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
-                disposition.State = CentralObjectRecoveryStates.Cancelled;
-                await db.SaveChangesAsync().ConfigureAwait(false);
-                (await CentralObjectOwnershipFence.IsRetiredAsync(
-                    db, storageReference, CancellationToken.None).ConfigureAwait(false)).Should().BeFalse();
-                disposition.State = CentralObjectRecoveryStates.Completed;
-                await db.SaveChangesAsync().ConfigureAwait(false);
-            }
             (await CentralObjectOwnershipFence.IsRetiredAsync(
                 db, storageReference, CancellationToken.None).ConfigureAwait(false)).Should().BeTrue();
         }
@@ -3724,6 +3765,7 @@ public sealed class ArtifactIngestTests
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Control)
             .Include(item => item.Frame)!.ThenInclude(frame => frame!.Profiles)
+            .Include(item => item.Frame)!.ThenInclude(frame => frame!.Location)
             .Include(item => item.Sources)
             .Include(item => item.Layout)
             .Include(item => item.Recipe)
@@ -3883,7 +3925,7 @@ public sealed class ArtifactIngestTests
             .ToArray();
         jobs.Should().HaveCount(expectedRecipes.Length);
         jobs.Select(job => job.RequestIdentitySha256).Should().BeEquivalentTo(expectedRecipes.Select(recipe =>
-            CentralDerivativeJobIdentity.CreateRequestIdentity(artifact.DevicePublicId!.Value, artifact.ArtifactId, recipe)));
+            CentralDerivativeJobIdentity.CreateRequestIdentity(artifact.DevicePublicId, artifact.ArtifactId, recipe)));
     }
 
     [TestMethod]
@@ -4122,80 +4164,6 @@ public sealed class ArtifactIngestTests
     }
 
     [TestMethod]
-    public async Task MultipartIngestV2_AfterMigrationPreservedDuplicateArtifactIds_EnrichesMatchingHistoricalRow()
-    {
-        var fixture = AssemblyHooks.Fixture;
-        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
-        var rig = CreateRig("migration-enrichment-rig");
-        await SeedRigProfileAsync(registrationId, rig).ConfigureAwait(false);
-        var payload = new byte[] { 1, 2, 3, 4 };
-        var manifest = CreateManifestV2(deviceId, rig, payload, 25);
-        const string bucket = "skymonitor-artifacts";
-        var objectKey = $"artifacts/migration/{Guid.NewGuid():N}";
-        var minio = fixture.Factory.Services.GetRequiredService<IMinioClient>();
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket)).ConfigureAwait(false))
-        {
-            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket)).ConfigureAwait(false);
-        }
-        await minio.PutObjectAsync(new PutObjectArgs().WithBucket(bucket).WithObject(objectKey)
-            .WithStreamData(new MemoryStream(payload)).WithObjectSize(payload.LongLength)
-            .WithContentType(manifest.Descriptor.Artifact.MediaType)).ConfigureAwait(false);
-        Guid targetArtifactRowId;
-        Guid duplicateFrameId;
-        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
-            var targetFrame = CreateLegacyFrame(registration, manifest.Descriptor.Capture.CaptureId);
-            var duplicateFrame = CreateLegacyFrame(registration, Guid.NewGuid());
-            duplicateFrameId = duplicateFrame.FrameId;
-            var targetArtifact = CreateLegacyArtifact(targetFrame, manifest, $"minio://{bucket}/{objectKey}");
-            var duplicateArtifact = CreateLegacyArtifact(duplicateFrame, manifest, $"minio://{bucket}/migration/duplicate");
-            targetArtifactRowId = targetArtifact.Id;
-            db.CentralFrames.AddRange(targetFrame, duplicateFrame);
-            db.CentralArtifacts.AddRange(targetArtifact, duplicateArtifact);
-            await db.SaveChangesAsync().ConfigureAwait(false);
-        }
-        using var client = fixture.Factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
-
-        using var response = await PostAsync(client, manifest, payload).ConfigureAwait(false);
-
-        var responseBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-        response.StatusCode.Should().Be(HttpStatusCode.Accepted, responseBody);
-        await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
-        var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var artifacts = await assertionDb.CentralArtifacts.Include(item => item.IngestIdentities)
-            .Where(item => item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId)
-            .ToListAsync().ConfigureAwait(false);
-        artifacts.Should().HaveCount(2);
-        var enriched = artifacts.Single(item => item.Id == targetArtifactRowId);
-        enriched.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
-        enriched.ManifestSchemaVersion.Should().Be(ArtifactManifestV2.CurrentSchemaVersion);
-        enriched.IdempotencyKey.Should().Be(manifest.IdempotencyKey);
-        enriched.IngestIdentities.Should().HaveCount(2);
-        enriched.IngestIdentities.Should().ContainSingle(identity => identity.ManifestSchemaVersion == "v1");
-        enriched.IngestIdentities.Should().ContainSingle(identity =>
-            identity.ManifestSchemaVersion == ArtifactManifestV2.CurrentSchemaVersion &&
-            identity.IdempotencyKey == manifest.IdempotencyKey);
-        artifacts.Single(item => item.Id != targetArtifactRowId).ReconstructionState.Should().Be(CentralReconstructionState.LegacyIncomplete);
-        artifacts.Single(item => item.Id != targetArtifactRowId).IngestIdentities.Should().ContainSingle();
-
-        var secondHistoricalAlias = CreateManifestV2(
-            deviceId,
-            rig,
-            payload,
-            33,
-            artifactId: manifest.Descriptor.Artifact.ArtifactId,
-            captureId: duplicateFrameId);
-        using var conflict = await PostAsync(client, secondHistoricalAlias, payload).ConfigureAwait(false);
-        conflict.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        assertionDb.ChangeTracker.Clear();
-        (await assertionDb.CentralArtifacts.CountAsync(item =>
-            item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false)).Should().Be(2);
-    }
-
-    [TestMethod]
     public async Task Reconciliation_PendingLineage_ConvergesWhenSameDeviceSourceArrives()
     {
         var fixture = AssemblyHooks.Fixture;
@@ -4216,9 +4184,8 @@ public sealed class ArtifactIngestTests
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
             var sourceManifest = CreateManifestV2(deviceId, rig, payload, 27, artifactId: sourceArtifactId);
-            var sourceFrame = CreateLegacyFrame(registration, sourceManifest.Descriptor.Capture.CaptureId);
-            var sourceArtifact = CreateLegacyArtifact(sourceFrame, sourceManifest, "minio://migration/source-arrived");
-            sourceArtifact.DevicePublicId = registration.DevicePublicId;
+            var sourceFrame = CreateTestFrame(registration, sourceManifest.Descriptor.Capture.CaptureId);
+            var sourceArtifact = CreateTestArtifact(sourceFrame, sourceManifest, "minio://migration/source-arrived");
             sourceArtifact.ReconstructionState = CentralReconstructionState.Complete;
             sourceArtifact.StateReasonCode = null;
             sourceRowId = sourceArtifact.Id;
@@ -4370,64 +4337,6 @@ public sealed class ArtifactIngestTests
         convergenceCycles.Should().BeLessThanOrEqualTo(
             CentralArtifactReconciliationService.MaximumStagingConvergenceCycles);
         CentralArtifactReconciliationService.MaximumStagingConvergenceCycles.Should().BeLessThanOrEqualTo(47);
-    }
-
-    [TestMethod]
-    public async Task HistoryQuery_PreservesIncompleteLegacyUploadVisibility()
-    {
-        var fixture = AssemblyHooks.Fixture;
-        var (deviceId, registrationId) = await SeedActiveDeviceAsync().ConfigureAwait(false);
-        var lateArtifactId = Guid.NewGuid();
-        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
-            db.DeviceImageUploads.Add(new DeviceImageUpload
-            {
-                RegistrationId = registration.Id,
-                DevicePublicId = registration.DevicePublicId!.Value,
-                ObservatoryId = registration.ObservatoryId,
-                CapturedAtUtc = DateTimeOffset.UnixEpoch,
-                ReceivedAtUtc = DateTimeOffset.UnixEpoch,
-                ContentType = "application/octet-stream",
-                PayloadBase64Length = 4,
-                StorageReference = "stubs://legacy/visible",
-                AgentId = deviceId
-            });
-            db.DeviceImageUploads.Add(new DeviceImageUpload
-            {
-                RegistrationId = registration.Id,
-                DevicePublicId = registration.DevicePublicId.Value,
-                ObservatoryId = registration.ObservatoryId,
-                CapturedAtUtc = DateTimeOffset.UnixEpoch.AddSeconds(1),
-                ReceivedAtUtc = DateTimeOffset.UnixEpoch.AddSeconds(1),
-                ContentType = "application/octet-stream",
-                PayloadBase64Length = 0,
-                StorageReference = "minio://legacy/late-complete",
-                IdempotencyKey = Convert.ToHexString(SHA256.HashData(lateArtifactId.ToByteArray())),
-                ArtifactId = lateArtifactId,
-                FrameId = Guid.NewGuid(),
-                ArtifactRole = FrameArtifactRole.Raw.ToString(),
-                RecipeVersion = "raw-v1",
-                ManifestSchemaVersion = "v1",
-                ChecksumSha256 = PayloadChecksum,
-                ByteLength = 4,
-                AgentId = deviceId
-            });
-            await db.SaveChangesAsync().ConfigureAwait(false);
-        }
-        using var client = fixture.Factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", await GetUserTokenAsync(client).ConfigureAwait(false));
-
-        using var history = await client.GetAsync(
-            new Uri($"/api/v1.0/artifacts?agentId={deviceId}", UriKind.Relative)).ConfigureAwait(false);
-
-        history.StatusCode.Should().Be(HttpStatusCode.OK);
-        var body = await history.Content.ReadAsStringAsync().ConfigureAwait(false);
-        body.Should().Contain(lateArtifactId.ToString());
-        body.Should().NotContain("stubs://");
-        body.Should().NotContain("minio://");
-        body.Should().NotContain("StorageReference");
     }
 
     [TestMethod]
@@ -4665,7 +4574,8 @@ public sealed class ArtifactIngestTests
                 RecipeIdentityDescriptor.Create("capture-raw", "1.0.0", "raw-ingress-v1", JsonSerializer.SerializeToElement(new { normalization = "none" })),
                 "application/x-skymonitor-mono8", Convert.ToHexString(SHA256.HashData(payload))))
         {
-            Location = location
+            Location = location ?? DefaultLocations.GetValueOrDefault(deviceId)
+                ?? throw new InvalidOperationException("The test device has no canonical capture location.")
         };
         return new ArtifactManifestV2("v2", descriptor, "frames/raw.bin");
     }
@@ -4783,7 +4693,8 @@ public sealed class ArtifactIngestTests
     private static async Task<CaptureLocationProvenance> SeedAcknowledgedDeploymentLocationAsync(
         Guid registrationId,
         DateTimeOffset? effectiveFromUtc = null,
-        DateTimeOffset? effectiveUntilUtc = null)
+        DateTimeOffset? effectiveUntilUtc = null,
+        string locationId = "inherited-observatory")
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -4791,7 +4702,7 @@ public sealed class ArtifactIngestTests
             .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
         var observatory = registration.Observatory!;
         var deployment = DeploymentLocationSnapshot.Create(
-            "inherited-observatory",
+            locationId,
             1,
             "observatory-fallback",
             null,
@@ -4818,9 +4729,14 @@ public sealed class ArtifactIngestTests
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var registration = await db.DeviceRegistrations.Include(item => item.Observatory)
             .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
-        _ = await ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
+        _ = await ObservatoryLocationAuthority.ApplyAsync(
             db,
             registration.Observatory!,
+            registration.Observatory!.LatitudeDegrees,
+            registration.Observatory.LongitudeDegrees,
+            registration.Observatory.ElevationMeters,
+            registration.Observatory.TimeZoneId,
+            registration.Observatory.AllowedDeploymentRadiusMeters,
             DateTimeOffset.UtcNow,
             "integration-test",
             CancellationToken.None).ConfigureAwait(false);
@@ -4838,7 +4754,7 @@ public sealed class ArtifactIngestTests
         await db.SaveChangesAsync().ConfigureAwait(false);
     }
 
-    private static CentralFrame CreateLegacyFrame(DeviceRegistration registration, Guid frameId)
+    private static CentralFrame CreateTestFrame(DeviceRegistration registration, Guid frameId)
         => new()
         {
             RegistrationId = registration.Id,
@@ -4850,7 +4766,7 @@ public sealed class ArtifactIngestTests
             FirstReceivedAtUtc = DateTimeOffset.UnixEpoch
         };
 
-    private static CentralArtifact CreateLegacyArtifact(
+    private static CentralArtifact CreateTestArtifact(
         CentralFrame frame,
         ArtifactManifestV2 manifest,
         string storageReference)
@@ -4862,10 +4778,10 @@ public sealed class ArtifactIngestTests
             CentralFrameId = frame.Id,
             Frame = frame,
             ArtifactId = descriptor.Artifact.ArtifactId,
-            DevicePublicId = null,
+            DevicePublicId = frame.DevicePublicId,
             Role = descriptor.Artifact.Role,
-            RecipeVersion = "legacy-raw-v1",
-            ManifestSchemaVersion = "v1",
+            RecipeVersion = descriptor.Artifact.Recipe.ImplementationVersion,
+            ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
             MediaType = descriptor.Artifact.MediaType,
             ByteLength = descriptor.Layout.ByteLength,
             ChecksumSha256 = descriptor.Artifact.ChecksumSha256,
@@ -4873,12 +4789,12 @@ public sealed class ArtifactIngestTests
             ReceivedAtUtc = DateTimeOffset.UnixEpoch,
             IdempotencyKey = idempotencyKey,
             ObjectState = CentralArtifactObjectState.Available,
-            ReconstructionState = CentralReconstructionState.LegacyIncomplete,
-            StateReasonCode = "manifest.legacy-incomplete"
+            ReconstructionState = CentralReconstructionState.PendingReference,
+            StateReasonCode = "lineage.source-not-found"
         };
         artifact.IngestIdentities.Add(new CentralArtifactIngestIdentity
         {
-            ManifestSchemaVersion = "v1",
+            ManifestSchemaVersion = ArtifactManifestV2.CurrentSchemaVersion,
             IdempotencyKey = idempotencyKey
         });
         return artifact;
@@ -4923,7 +4839,7 @@ public sealed class ArtifactIngestTests
             OwnerUserId = owner.Id,
             Name = "Artifact Observatory",
             TimeZoneId = "UTC",
-            CreatedAtUtc = DateTimeOffset.UtcNow,
+            CreatedAtUtc = DateTimeOffset.UnixEpoch.AddDays(-2),
             IsActive = true
         };
         var registration = new DeviceRegistration
@@ -4955,7 +4871,30 @@ public sealed class ArtifactIngestTests
             AddedAtUtc = observatory.CreatedAtUtc
         });
         db.DeviceRegistrations.Add(registration);
+        _ = await ObservatoryLocationAuthority.ApplyAsync(
+            db,
+            observatory,
+            observatory.LatitudeDegrees,
+            observatory.LongitudeDegrees,
+            observatory.ElevationMeters,
+            observatory.TimeZoneId,
+            observatory.AllowedDeploymentRadiusMeters,
+            observatory.CreatedAtUtc,
+            "integration-test",
+            CancellationToken.None).ConfigureAwait(false);
         await db.SaveChangesAsync().ConfigureAwait(false);
+        DefaultLocations[deviceId] = await SeedAcknowledgedDeploymentLocationAsync(
+            registration.Id,
+            locationId: "default-observatory").ConfigureAwait(false);
+        for (var step = 0; step < 10; step++)
+        {
+            await using var processScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+            if (!await processScope.ServiceProvider.GetRequiredService<IDeploymentLocationReconciliationProcessor>()
+                    .ProcessNextAsync().ConfigureAwait(false))
+            {
+                break;
+            }
+        }
         return (deviceId, registration.Id);
     }
 

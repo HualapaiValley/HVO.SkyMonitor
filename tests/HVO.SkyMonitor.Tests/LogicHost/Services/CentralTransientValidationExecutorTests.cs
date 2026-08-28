@@ -66,7 +66,7 @@ public sealed class CentralTransientValidationExecutorTests
     }
 
     [TestMethod]
-    public void RetrospectiveCandidateQuery_FiltersNullDeviceIdentityBeforeBatching()
+    public void RetrospectiveCandidateQuery_UsesRequiredDeviceIdentityWithoutLegacyNullFilter()
     {
         using var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseSqlServer("Server=localhost;Database=skymonitor-query;Integrated Security=true;TrustServerCertificate=true")
@@ -88,8 +88,6 @@ public sealed class CentralTransientValidationExecutorTests
             .Take(100)
             .ToQueryString();
 
-        sql.Should().Contain("[c].[DevicePublicId] IS NOT NULL");
-        sql.IndexOf("[c].[DevicePublicId] IS NOT NULL", StringComparison.Ordinal)
-            .Should().BeLessThan(sql.IndexOf("ORDER BY", StringComparison.Ordinal));
+        sql.Should().NotContain("[c].[DevicePublicId] IS NOT NULL");
     }
 }

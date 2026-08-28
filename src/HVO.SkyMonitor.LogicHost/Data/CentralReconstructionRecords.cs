@@ -12,7 +12,6 @@ internal enum CentralArtifactObjectState
 
 internal enum CentralReconstructionState
 {
-    LegacyIncomplete,
     PendingReference,
     Complete,
     Quarantined

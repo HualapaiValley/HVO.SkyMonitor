@@ -397,7 +397,7 @@ public sealed class DerivativeJobIntegrationTests
             .Should().ThrowAsync<CentralDerivativeJobStateException>().ConfigureAwait(false);
 
         source.ObjectState = CentralArtifactObjectState.Available;
-        source.ReconstructionState = CentralReconstructionState.LegacyIncomplete;
+        source.ReconstructionState = CentralReconstructionState.PendingReference;
         await db.SaveChangesAsync().ConfigureAwait(false);
         var scheduler = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>();
         await scheduler.EnsureRequiredJobsAsync(source, now, CancellationToken.None).ConfigureAwait(false);
@@ -881,7 +881,7 @@ public sealed class DerivativeJobIntegrationTests
                 CaptureContractJson.SerializeToElement(recipe.InputSelector)).GetRawText(),
             RequestedRecipeIdentitySha256 = recipe.RequestedRecipeIdentitySha256,
             RequestIdentitySha256 = CentralDerivativeJobIdentity.CreateRequestIdentity(
-                source.DevicePublicId!.Value, source.ArtifactId, recipe),
+                source.DevicePublicId, source.ArtifactId, recipe),
             Status = CentralDerivativeJobStatus.Pending,
             ResolutionCompletedAtUtc = now,
             AttemptCount = 0,

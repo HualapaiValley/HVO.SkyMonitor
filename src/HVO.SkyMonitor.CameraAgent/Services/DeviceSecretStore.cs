@@ -25,7 +25,6 @@ internal sealed record DeviceSecrets(
     string FriendlyName,
     string RegistrationToken,
     string HeartbeatEndpoint,
-    string UploadEndpoint,
     int HeartbeatIntervalSeconds,
     DateTimeOffset IssuedAtUtc,
     DateTimeOffset ExpiresAtUtc,

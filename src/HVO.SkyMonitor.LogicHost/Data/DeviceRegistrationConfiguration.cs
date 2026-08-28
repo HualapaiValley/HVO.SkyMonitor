@@ -38,7 +38,7 @@ internal sealed class DeviceRegistrationConfiguration : IEntityTypeConfiguration
         builder.Property(registration => registration.ObservatoryLocationCanonicalSha256).HasMaxLength(64);
         builder.Property(registration => registration.LocationEvidenceState)
             .HasConversion<string>().HasMaxLength(32)
-            .HasDefaultValue(RegistrationLocationEvidenceState.LegacyIncomplete).IsRequired();
+            .HasDefaultValue(RegistrationLocationEvidenceState.ObservatoryPinned).IsRequired();
 
         builder.Property(registration => registration.OwnerUserId)
             .HasMaxLength(450)
