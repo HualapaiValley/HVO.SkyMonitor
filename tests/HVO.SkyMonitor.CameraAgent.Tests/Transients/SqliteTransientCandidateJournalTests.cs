@@ -20,6 +20,130 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 public sealed class SqliteTransientCandidateJournalTests
 {
     [TestMethod]
+    public async Task RuntimeStore_EmptyInitializationCreatesCanonicalSchemaIdempotently()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var first = fixture.CreateRuntimeStore();
+        var second = fixture.CreateRuntimeStore();
+
+        await Task.WhenAll(
+            first.InitializeAsync(CancellationToken.None).AsTask(),
+            second.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+        var databasePath = Path.Combine(fixture.Root, "journal", "raw-ingress.db");
+        using var connection = new SqliteConnection($"Data Source={databasePath};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT name FROM sqlite_schema
+            WHERE name LIKE 'transient_worker_%' OR name LIKE 'ix_transient_worker_%'
+            ORDER BY name;
+            """;
+        var names = new List<string>();
+        using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync().ConfigureAwait(false))
+            {
+                names.Add(reader.GetString(0));
+            }
+        }
+        string[] expectedNames =
+        [
+            "ix_transient_worker_candidates_pending",
+            "ix_transient_worker_frames_ready",
+            "transient_worker_candidates",
+            "transient_worker_frames"
+        ];
+        CollectionAssert.AreEqual(expectedNames, names);
+        command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('transient_worker_frames') WHERE name = 'causal_succeeded';";
+        Assert.AreEqual(1L, await command.ExecuteScalarAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_LegacyFrameSchemaIsRejectedWithoutRewrite()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var databasePath = Path.Combine(fixture.Root, "journal", "raw-ingress.db");
+        using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE transient_worker_frames (
+                    raw_capture_row_id INTEGER PRIMARY KEY,
+                    state TEXT NOT NULL CHECK (state IN ('queued', 'history', 'retry_wait', 'completed', 'quarantined')),
+                    attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
+                    available_unix_ms INTEGER NOT NULL,
+                    failure_reason TEXT,
+                    created_unix_ms INTEGER NOT NULL,
+                    updated_unix_ms INTEGER NOT NULL
+                ) STRICT;
+                CREATE INDEX ix_transient_worker_frames_ready
+                    ON transient_worker_frames(state, available_unix_ms, raw_capture_row_id);
+                INSERT INTO transient_worker_frames(
+                    raw_capture_row_id, state, attempt_count, available_unix_ms,
+                    failure_reason, created_unix_ms, updated_unix_ms)
+                VALUES(777, 'queued', 2, 10, 'retained', 1, 2);
+                """;
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+        var filesBefore = ReadDatabaseFiles(databasePath);
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await fixture.CreateRuntimeStore().InitializeAsync(CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        StringAssert.Contains(exception.Message, "state-disposition", StringComparison.Ordinal);
+        AssertDatabaseFilesUnchanged(filesBefore, ReadDatabaseFiles(databasePath));
+        using var verify = new SqliteConnection($"Data Source={databasePath};Mode=ReadOnly;Pooling=False");
+        await verify.OpenAsync().ConfigureAwait(false);
+        using var read = verify.CreateCommand();
+        read.CommandText = "SELECT COUNT(*) FROM transient_worker_frames WHERE raw_capture_row_id = 777 AND attempt_count = 2;";
+        Assert.AreEqual(1L, await read.ExecuteScalarAsync().ConfigureAwait(false));
+        read.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'transient_worker_candidates';";
+        Assert.AreEqual(0L, await read.ExecuteScalarAsync().ConfigureAwait(false));
+        read.CommandText = "SELECT COUNT(*) FROM pragma_table_info('transient_worker_frames') WHERE name = 'causal_succeeded';";
+        Assert.AreEqual(0L, await read.ExecuteScalarAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task RuntimeStore_PartialOrExtendedSchemaIsRejected()
+    {
+        using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
+        var store = fixture.CreateRuntimeStore();
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var databasePath = Path.Combine(fixture.Root, "journal", "raw-ingress.db");
+        using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TRIGGER unexpected_transient_worker_trigger
+                AFTER INSERT ON transient_worker_frames
+                BEGIN
+                    SELECT 1;
+                END;
+                """;
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+        var filesBefore = ReadDatabaseFiles(databasePath);
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await fixture.CreateRuntimeStore().InitializeAsync(CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        StringAssert.Contains(exception.Message, "state-disposition", StringComparison.Ordinal);
+        AssertDatabaseFilesUnchanged(filesBefore, ReadDatabaseFiles(databasePath));
+        using var verify = new SqliteConnection($"Data Source={databasePath};Mode=ReadOnly;Pooling=False");
+        await verify.OpenAsync().ConfigureAwait(false);
+        using var read = verify.CreateCommand();
+        read.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'unexpected_transient_worker_trigger';";
+        Assert.AreEqual(1L, await read.ExecuteScalarAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task RuntimeStore_RestartRecoversStagedWorkAndHistoryIsNotReclaimed()
     {
         using var fixture = await Fixture.CreateAsync().ConfigureAwait(false);
@@ -137,7 +261,12 @@ public sealed class SqliteTransientCandidateJournalTests
         Assert.AreEqual(100L, quarantined.HeldSourceBytes);
         Assert.AreEqual(2, quarantined.PressureLevel);
 
-        var quarantine = (await ((ITransientRuntimeManagement)store)
+        var restarted = fixture.CreateRuntimeStore();
+        await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var restartedBacklog = await fixture.Journal.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1L, restartedBacklog.ActiveCount);
+        Assert.AreEqual(100L, restartedBacklog.HeldSourceBytes);
+        var quarantine = (await ((ITransientRuntimeManagement)restarted)
             .ReadQuarantinePageAsync(10, null, CancellationToken.None).ConfigureAwait(false)).Items.Single();
         var target = new TransientRuntimeOperationTarget(
             quarantine.RawCaptureRowId, quarantine.LaneWorkId, quarantine.OuterLaneWorkId,
@@ -149,7 +278,7 @@ public sealed class SqliteTransientCandidateJournalTests
             new TransientRuntimeExternalOwnershipEvidence("d331-0821084607", new string('D', 64), true));
         Assert.AreEqual(
             TransientRuntimeOperationDisposition.Applied,
-            (await ((ITransientRuntimeManagement)store).AbandonQuarantinedCaptureAsync(
+            (await ((ITransientRuntimeManagement)restarted).AbandonQuarantinedCaptureAsync(
                 target, "test-abandon", "owner-id", "operator-approved-loss", CancellationToken.None)
                 .ConfigureAwait(false)).Disposition);
         var released = await fixture.Journal.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
@@ -162,7 +291,7 @@ public sealed class SqliteTransientCandidateJournalTests
             "SELECT state FROM transient_worker_frames;").ConfigureAwait(false));
         Assert.AreEqual("abandoned", await fixture.ScalarStringAsync(
             "SELECT state FROM transient_capture_work;").ConfigureAwait(false));
-        Assert.IsEmpty(await store.LoadWindowAsync("agent", 1, [0], CancellationToken.None).ConfigureAwait(false));
+        Assert.IsEmpty(await restarted.LoadWindowAsync("agent", 1, [0], CancellationToken.None).ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -1606,6 +1735,22 @@ public sealed class SqliteTransientCandidateJournalTests
                 ObservationExtraction: null,
                 AssessmentExecution: null))
             .ToArray();
+    }
+
+    private static Dictionary<string, byte[]> ReadDatabaseFiles(string databasePath)
+        => new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm", $"{databasePath}-journal" }
+            .Where(File.Exists)
+            .ToDictionary(static path => Path.GetFileName(path), File.ReadAllBytes, StringComparer.Ordinal);
+
+    private static void AssertDatabaseFilesUnchanged(
+        IReadOnlyDictionary<string, byte[]> expected,
+        IReadOnlyDictionary<string, byte[]> actual)
+    {
+        CollectionAssert.AreEquivalent(expected.Keys.ToArray(), actual.Keys.ToArray());
+        foreach (var file in expected)
+        {
+            CollectionAssert.AreEqual(file.Value, actual[file.Key], file.Key);
+        }
     }
 
     internal sealed class Fixture : IDisposable

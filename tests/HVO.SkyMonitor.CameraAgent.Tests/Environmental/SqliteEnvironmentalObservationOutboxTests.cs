@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Diagnostics.Metrics;
+using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
@@ -253,6 +254,56 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         Assert.AreEqual(LocalEnvironmentalObservationCommitDisposition.Duplicate, projected.Disposition);
         Assert.AreEqual(EnvironmentalObservationEnqueueDisposition.Enqueued, projected.DeliveryDisposition);
         Assert.AreEqual(EnvironmentalObservationEnqueueDisposition.Duplicate, replay.DeliveryDisposition);
+    }
+
+    [TestMethod]
+    public async Task CurrentV1AndV2IdentityLineageHistoryAndDeliverySurviveRestart()
+    {
+        var v1 = CreateFact(Guid.NewGuid());
+        var v2 = v1 with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V2,
+            ObservationId = Guid.NewGuid(),
+            Source = v1.Source with { Kind = EnvironmentalObservationSourceKind.Derived },
+            Lineage =
+            [
+                new EnvironmentalObservationReference(
+                    EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(v1),
+                    v1.ObservationId)
+            ]
+        };
+        var target = new EnvironmentalObservationResolvedTarget(Guid.NewGuid(), Guid.NewGuid());
+        LocalEnvironmentalObservationCommitResult v1Result;
+        LocalEnvironmentalObservationCommitResult v2Result;
+        using (var first = new SqliteEnvironmentalObservationOutbox())
+        {
+            v1Result = await first.CommitLocalAsync(_root!, v1, CancellationToken.None).ConfigureAwait(false);
+            v2Result = await first.CommitLocalAsync(_root!, v2, target, CancellationToken.None).ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+
+        using var restarted = new SqliteEnvironmentalObservationOutbox();
+        var history = await restarted.ReadLocalPageAsync(
+            _root!, EnvironmentalObservationKind.RelativeHumidity, 10, null, CancellationToken.None)
+            .ConfigureAwait(false);
+        var lease = await restarted.ClaimAsync(
+            _root!, "v2-restart", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.HasCount(2, history.Items);
+        Assert.AreNotEqual(v1Result.Record.SourceIdentitySha256, v2Result.Record.SourceIdentitySha256);
+        Assert.IsTrue(history.Items.Any(static item =>
+            item.Fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V1));
+        Assert.IsTrue(history.Items.Any(static item =>
+            item.Fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V2));
+        Assert.IsNotNull(lease);
+        Assert.AreEqual(EnvironmentalObservationSchemaVersions.V2, lease.Record.Observation.SchemaVersion);
+        var databasePath = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
+        using var verify = new SqliteConnection($"Data Source={databasePath};Mode=ReadOnly;Pooling=False");
+        await verify.OpenAsync().ConfigureAwait(false);
+        using var command = verify.CreateCommand();
+        command.CommandText = "SELECT referenced_record_id FROM environmental_observation_local_lineage WHERE local_record_id = $record;";
+        command.Parameters.AddWithValue("$record", v2Result.Record.RecordId);
+        Assert.AreEqual(v1Result.Record.RecordId, await command.ExecuteScalarAsync().ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -792,7 +843,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
     }
 
     [TestMethod]
-    public async Task Version2MigrationBackfillsSurvivingDeliveryRowsIntoLocalHistoryIdempotently()
+    public async Task Version2DatabaseIsRejectedWithoutBackfillOrMutation()
     {
         var observation = CreateObservation(Guid.NewGuid());
         var movedTarget = observation with
@@ -831,40 +882,140 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         }
         SqliteConnection.ClearAllPools();
 
-        using (var migrated = new SqliteEnvironmentalObservationOutbox())
-        using (var concurrent = new SqliteEnvironmentalObservationOutbox())
+        var filesBefore = ReadDatabaseFiles(databasePath);
+
+        using var rejected = new SqliteEnvironmentalObservationOutbox();
+        var initializer = new EnvironmentalObservationSchemaInitializationService(
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root! }), rejected);
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await initializer.StartAsync(CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+        StringAssert.Contains(exception.Message, "state-disposition", StringComparison.Ordinal);
+
+        var filesAfter = ReadDatabaseFiles(databasePath);
+        AssertDatabaseFilesUnchanged(filesBefore, filesAfter);
+        using var verify = new SqliteConnection($"Data Source={databasePath};Mode=ReadOnly;Pooling=False");
+        await verify.OpenAsync().ConfigureAwait(false);
+        using var verifyCommand = verify.CreateCommand();
+        verifyCommand.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(2L, await verifyCommand.ExecuteScalarAsync().ConfigureAwait(false));
+        verifyCommand.CommandText = "SELECT COUNT(*) FROM environmental_observation_outbox;";
+        Assert.AreEqual(2L, await verifyCommand.ExecuteScalarAsync().ConfigureAwait(false));
+        verifyCommand.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'environmental_observation_journal';";
+        Assert.AreEqual(0L, await verifyCommand.ExecuteScalarAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow(1)]
+    [DataRow(4)]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The switch selects one of two fixed test statements.")]
+    public async Task UnsupportedVersionMarkerIsRejectedWithoutMutation(int version)
+    {
+        using (var current = new SqliteEnvironmentalObservationOutbox())
         {
-            var snapshots = await Task.WhenAll(
-                migrated.GetLocalSnapshotAsync(_root!, CancellationToken.None).AsTask(),
-                concurrent.GetLocalSnapshotAsync(_root!, CancellationToken.None).AsTask()).ConfigureAwait(false);
-            Assert.IsTrue(snapshots.All(static snapshot => snapshot.StoredCount == 1));
-            Assert.AreEqual(2, (await migrated.GetSnapshotAsync(_root!, CancellationToken.None)
-                .ConfigureAwait(false)).StoredCount);
+            await current.EnqueueAsync(
+                _root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
         }
-        using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+        SqliteConnection.ClearAllPools();
+        var databasePath = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
+        using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
         {
             await connection.OpenAsync().ConfigureAwait(false);
             using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA user_version;";
-            Assert.AreEqual(3L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
-            command.CommandText = "SELECT COUNT(*) FROM environmental_observation_outbox WHERE local_record_id IS NOT NULL;";
-            Assert.AreEqual(2L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
+            command.CommandText = version switch
+            {
+                1 => "PRAGMA user_version=1;",
+                4 => "PRAGMA user_version=4;",
+                _ => throw new InvalidOperationException("Unsupported test schema version.")
+            };
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        var filesBefore = ReadDatabaseFiles(databasePath);
+
+        using var rejected = new SqliteEnvironmentalObservationOutbox();
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await rejected.GetSnapshotAsync(_root!, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        AssertDatabaseFilesUnchanged(filesBefore, ReadDatabaseFiles(databasePath));
+    }
+
+    [TestMethod]
+    public async Task UnsupportedVersionInWalIsRejectedWithoutChangingRecoveryFiles()
+    {
+        using (var current = new SqliteEnvironmentalObservationOutbox())
+        {
+            await current.EnqueueAsync(
+                _root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
         }
         SqliteConnection.ClearAllPools();
-        using var restarted = new SqliteEnvironmentalObservationOutbox();
-        Assert.AreEqual(1, (await restarted.GetLocalSnapshotAsync(_root!, CancellationToken.None)
-            .ConfigureAwait(false)).StoredCount);
-        var receiver = new FaithfulCentralReceiver(TimeProvider.System);
-        for (var index = 0; index < 2; index++)
+        var databasePath = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
+        using var setup = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+        await setup.OpenAsync().ConfigureAwait(false);
+        const int sqliteDbConfigNoCheckpointOnClose = 1006;
+        var result = SQLitePCL.raw.sqlite3_db_config(
+            setup.Handle, sqliteDbConfigNoCheckpointOnClose, 1, out var enabled);
+        Assert.AreEqual(SQLitePCL.raw.SQLITE_OK, result);
+        Assert.AreEqual(1, enabled);
+        using (var command = setup.CreateCommand())
         {
-            var lease = await restarted.ClaimAsync(
-                _root!, "migration", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
-            Assert.IsNotNull(lease);
-            await restarted.AcknowledgeAsync(
-                _root!, lease, receiver.Ingest(lease.Record.Observation), CancellationToken.None).ConfigureAwait(false);
+            command.CommandText = "PRAGMA wal_autocheckpoint=0; PRAGMA user_version=4;";
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
-        Assert.AreEqual(0, (await restarted.GetSnapshotAsync(_root!, CancellationToken.None)
-            .ConfigureAwait(false)).StoredCount);
+        var filesBefore = ReadDatabaseFiles(databasePath);
+        Assert.IsTrue(filesBefore.ContainsKey(Path.GetFileName($"{databasePath}-wal")));
+        Assert.IsTrue(filesBefore.ContainsKey(Path.GetFileName($"{databasePath}-shm")));
+
+        using var rejected = new SqliteEnvironmentalObservationOutbox();
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+            await rejected.GetSnapshotAsync(_root!, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        AssertDatabaseFilesUnchanged(filesBefore, ReadDatabaseFiles(databasePath));
+    }
+
+    [TestMethod]
+    public async Task MalformedCurrentSchemaIsRejectedWithoutRepair()
+    {
+        using (var current = new SqliteEnvironmentalObservationOutbox())
+        {
+            await current.EnqueueAsync(
+                _root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+        var databasePath = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
+        using var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        const int sqliteDbConfigNoCheckpointOnClose = 1006;
+        var result = SQLitePCL.raw.sqlite3_db_config(
+            connection.Handle, sqliteDbConfigNoCheckpointOnClose, 1, out var enabled);
+        Assert.AreEqual(SQLitePCL.raw.SQLITE_OK, result);
+        Assert.AreEqual(1, enabled);
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                PRAGMA wal_autocheckpoint=0;
+                CREATE TRIGGER unexpected_environment_trigger
+                AFTER INSERT ON environmental_observation_outbox
+                BEGIN
+                    SELECT 1;
+                END;
+                """;
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        var filesBefore = ReadDatabaseFiles(databasePath);
+
+        using var rejected = new SqliteEnvironmentalObservationOutbox();
+        var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await rejected.GetSnapshotAsync(_root!, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+        StringAssert.Contains(exception.Message, "archive the database", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "state-disposition", StringComparison.Ordinal);
+        AssertDatabaseFilesUnchanged(filesBefore, ReadDatabaseFiles(databasePath));
+
+        using var read = connection.CreateCommand();
+        read.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'unexpected_environment_trigger';";
+        Assert.AreEqual(1L, await read.ExecuteScalarAsync().ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -1314,6 +1465,22 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
                 EnvironmentalObservationQuality.Good,
                 0.5),
             []);
+    }
+
+    private static Dictionary<string, byte[]> ReadDatabaseFiles(string databasePath)
+        => new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm", $"{databasePath}-journal" }
+            .Where(File.Exists)
+            .ToDictionary(static path => Path.GetFileName(path), File.ReadAllBytes, StringComparer.Ordinal);
+
+    private static void AssertDatabaseFilesUnchanged(
+        IReadOnlyDictionary<string, byte[]> expected,
+        IReadOnlyDictionary<string, byte[]> actual)
+    {
+        CollectionAssert.AreEquivalent(expected.Keys.ToArray(), actual.Keys.ToArray());
+        foreach (var file in expected)
+        {
+            CollectionAssert.AreEqual(file.Value, actual[file.Key], file.Key);
+        }
     }
 
     private sealed class MutableTargetResolver(EnvironmentalObservationResolvedTarget? target)

@@ -265,6 +265,56 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
+    public async Task InitializeAsync_WhenTransientRuntimeSchemaIsLegacy_FailsBeforeRawIngressMutation()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var databasePath = Path.Combine(root, "journal", "raw-ingress.db");
+            await new SqliteRawCaptureJournal(databasePath, 1)
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            SqliteConnection.ClearAllPools();
+            using (var setup = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+            {
+                await setup.OpenAsync().ConfigureAwait(false);
+                const int sqliteDbConfigNoCheckpointOnClose = 1006;
+                var result = SQLitePCL.raw.sqlite3_db_config(
+                    setup.Handle, sqliteDbConfigNoCheckpointOnClose, 1, out var enabled);
+                Assert.AreEqual(SQLitePCL.raw.SQLITE_OK, result);
+                Assert.AreEqual(1, enabled);
+                using var command = setup.CreateCommand();
+                command.CommandText = """
+                    PRAGMA wal_autocheckpoint=0;
+                    CREATE TABLE transient_worker_frames (
+                        raw_capture_row_id INTEGER PRIMARY KEY,
+                        state TEXT NOT NULL CHECK (state IN ('queued', 'history', 'retry_wait', 'completed', 'quarantined')),
+                        attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
+                        available_unix_ms INTEGER NOT NULL,
+                        failure_reason TEXT,
+                        created_unix_ms INTEGER NOT NULL,
+                        updated_unix_ms INTEGER NOT NULL
+                    ) STRICT;
+                    CREATE INDEX ix_transient_worker_frames_ready
+                        ON transient_worker_frames(state, available_unix_ms, raw_capture_row_id);
+                    """;
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            var filesBefore = ReadDatabaseFiles(databasePath);
+            using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
+
+            var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                ingress.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+            StringAssert.Contains(exception.Message, "state-disposition", StringComparison.Ordinal);
+            AssertDatabaseFilesUnchanged(filesBefore, ReadDatabaseFiles(databasePath));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     [DataRow("ALTER TABLE raw_capture_sequences ADD COLUMN accepted_drift TEXT;")]
     [DataRow("CREATE TABLE unexpected_schema_object(value TEXT);")]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Data rows contain fixed schema-drift statements only.")]
@@ -2354,6 +2404,22 @@ public sealed class RawCaptureIngressTests
             CreateSubmission(Timestamp(10), [10, 20, 30, 40]),
             CancellationToken.None).ConfigureAwait(false);
         Assert.Fail("The injected process-kill boundary was not reached.");
+    }
+
+    private static Dictionary<string, byte[]> ReadDatabaseFiles(string databasePath)
+        => new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm", $"{databasePath}-journal" }
+            .Where(File.Exists)
+            .ToDictionary(static path => Path.GetFileName(path), File.ReadAllBytes, StringComparer.Ordinal);
+
+    private static void AssertDatabaseFilesUnchanged(
+        IReadOnlyDictionary<string, byte[]> expected,
+        IReadOnlyDictionary<string, byte[]> actual)
+    {
+        CollectionAssert.AreEquivalent(expected.Keys.ToArray(), actual.Keys.ToArray());
+        foreach (var file in expected)
+        {
+            CollectionAssert.AreEqual(file.Value, actual[file.Key], file.Key);
+        }
     }
 
     private static RawCaptureIngress CreateIngress(

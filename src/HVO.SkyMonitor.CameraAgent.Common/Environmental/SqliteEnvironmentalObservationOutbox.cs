@@ -28,6 +28,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     IEnvironmentalOnDemandCommandStore, ILocalEnvironmentalRetentionStore, IDisposable
 {
     private const int CurrentSchemaVersion = 3;
+    private static readonly Lazy<IReadOnlyDictionary<string, string>> CanonicalSchemaDefinitions =
+        new(CreateCanonicalSchemaDefinitions);
     private const int MaximumAuditRecords = 10_000;
     internal const int MaximumOperationReceipts = 10_000;
     internal const int OperationReceiptRetentionDays = 30;
@@ -1708,7 +1710,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         return OutboxOperationDisposition.Applied;
     }
 
-    private async ValueTask InitializeAsync(string root, CancellationToken cancellationToken)
+    internal async ValueTask InitializeAsync(string root, CancellationToken cancellationToken)
     {
         lock (_initializedLock)
         {
@@ -1730,168 +1732,48 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             }
             Directory.CreateDirectory(DatabaseDirectory(root));
             EnsureDatabaseFilesArePhysical(root);
-            using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
-            EnsureDatabaseFilesArePhysical(root);
-            using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA user_version;";
-            var version = Convert.ToInt32(
-                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture);
-            if (version > CurrentSchemaVersion)
+            var inspection = File.Exists(DatabasePath(root))
+                ? await InspectExistingDatabaseAsync(root, cancellationToken).ConfigureAwait(false)
+                : new EnvironmentalSchemaInspection(0, 0);
+            var initializeSchema = inspection.SchemaVersion == 0 && inspection.SchemaObjectCount == 0;
+            if (!initializeSchema && inspection.SchemaVersion != CurrentSchemaVersion)
             {
+                var relationship = inspection.SchemaVersion > CurrentSchemaVersion
+                    ? "newer than supported"
+                    : "unsupported";
                 throw new InvalidOperationException(
-                    $"Environmental observation outbox schema {version} is newer than supported schema {CurrentSchemaVersion}.");
+                    $"Environmental observation schema {inspection.SchemaVersion} is {relationship}; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
             }
-            command.CommandText = SchemaSql;
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            using (var transaction = connection.BeginTransaction(deferred: false))
+            using var connection = await OpenUnconfiguredAsync(root, cancellationToken).ConfigureAwait(false);
+            if (initializeSchema)
             {
-                command.Transaction = transaction;
-                command.CommandText = "PRAGMA user_version;";
-                version = Convert.ToInt32(
-                    await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                    System.Globalization.CultureInfo.InvariantCulture);
-                if (version > CurrentSchemaVersion)
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+                using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+                var writableVersion = await ExecuteScalarLongAsync(
+                    connection, "PRAGMA user_version;", transaction, cancellationToken).ConfigureAwait(false);
+                var writableObjectCount = await CountSchemaObjectsAsync(
+                    connection, transaction, cancellationToken).ConfigureAwait(false);
+                if (writableVersion == 0 && writableObjectCount == 0)
+                {
+                    using var command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText = CanonicalSchemaSql;
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else if (writableVersion != CurrentSchemaVersion)
                 {
                     throw new InvalidOperationException(
-                        $"Environmental observation outbox schema {version} is newer than supported schema {CurrentSchemaVersion}.");
+                        "Environmental observation schema changed during initialization; restart after completing an explicit state-disposition procedure.");
                 }
-                if (version < 2)
-                {
-                    command.CommandText = MigrationV2Sql;
-                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-                if (version < 3)
-                {
-                    command.CommandText = MigrationV3Sql;
-                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                    await BackfillLocalJournalAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-                    command.CommandText = $"PRAGMA user_version={CurrentSchemaVersion};";
-                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                await ValidateSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                command.Transaction = null;
             }
-            command.CommandText = "PRAGMA user_version;";
-            version = Convert.ToInt32(
-                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture);
-            if (version != CurrentSchemaVersion)
+            else
             {
-                throw new InvalidOperationException($"Environmental observation outbox schema {version} is not supported.");
+                await ValidateSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
             }
-            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE (type = 'table' AND name IN ('environmental_observation_metadata','environmental_observation_outbox','environmental_observation_outbox_audit') AND sql LIKE '%STRICT%') OR (type = 'index' AND name IN ('ux_environment_identity','ix_environment_claim','ix_environment_lease'));";
-            var schemaObjects = Convert.ToInt32(
-                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture);
-            if (schemaObjects != 6)
-            {
-                throw new InvalidDataException("Environmental observation outbox schema check failed.");
-            }
-            command.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'environmental_observation_outbox';";
-            var tableSql = Convert.ToString(
-                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
-            string[] requiredConstraints =
-            [
-                "payload_bytes = length(payload)",
-                "status = 'leased' AND lease_owner IS NOT NULL AND lease_token IS NOT NULL",
-                "status != 'leased' AND lease_owner IS NULL AND lease_token IS NULL"
-            ];
-            if (requiredConstraints.Any(fragment => !tableSql.Contains(fragment, StringComparison.Ordinal)))
-            {
-                throw new InvalidDataException("Environmental observation outbox constraints are not supported.");
-            }
-            command.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'environmental_observation_metadata';";
-            var metadataSql = Convert.ToString(
-                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
-            if (!metadataSql.Contains("stored_count", StringComparison.Ordinal) ||
-                !metadataSql.Contains("stored_bytes", StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("Environmental observation outbox metadata schema is not supported.");
-            }
-            await VerifyIndexAsync(
-                connection,
-                "environmental_observation_outbox",
-                "ux_environment_identity",
-                ["source_identity_sha256", "observation_id"],
-                unique: true,
-                cancellationToken).ConfigureAwait(false);
-            await VerifyIndexAsync(
-                connection,
-                "environmental_observation_outbox",
-                "ix_environment_claim",
-                ["status", "next_attempt_unix_ms", "created_unix_ms", "record_id"],
-                unique: false,
-                cancellationToken).ConfigureAwait(false);
-            await VerifyIndexAsync(
-                connection,
-                "environmental_observation_outbox",
-                "ix_environment_lease",
-                ["status", "lease_expires_unix_ms", "created_unix_ms", "record_id"],
-                unique: false,
-                cancellationToken).ConfigureAwait(false);
-            await VerifyIndexAsync(
-                connection,
-                "environmental_observation_journal",
-                "ux_environment_local_identity",
-                ["source_identity_sha256", "observation_id"],
-                unique: true,
-                cancellationToken).ConfigureAwait(false);
-            await VerifyIndexAsync(
-                connection,
-                "environmental_observation_journal",
-                "ix_environment_local_history",
-                ["observation_kind", "observed_at_unix_ms", "source_identity_sha256", "observation_id", "record_id"],
-                unique: false,
-                cancellationToken).ConfigureAwait(false);
-            await VerifyIndexAsync(
-                connection,
-                "environmental_observation_journal",
-                "ix_environment_local_retention",
-                ["recorded_unix_ms", "valid_through_unix_ms", "record_id"],
-                unique: false,
-                cancellationToken).ConfigureAwait(false);
-            await VerifyIndexAsync(
-                connection,
-                "environmental_observation_journal",
-                "ix_environment_local_page",
-                ["observation_kind", "observed_at_unix_ms", "record_id"],
-                unique: false,
-                cancellationToken).ConfigureAwait(false);
-            command.CommandText = "PRAGMA integrity_check;";
-            var integrity = Convert.ToString(
-                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture);
-            if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("Environmental observation outbox SQLite integrity check failed.");
-            }
-            command.CommandText = """
-                SELECT stored_count = (SELECT COUNT(*) FROM environmental_observation_outbox)
-                    AND stored_bytes = (SELECT COALESCE(SUM(payload_bytes), 0) FROM environmental_observation_outbox)
-                FROM environmental_observation_metadata WHERE metadata_key = 1;
-                """;
-            var metadataMatches = Convert.ToInt32(
-                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture);
-            if (metadataMatches != 1)
-            {
-                throw new InvalidDataException("Environmental observation outbox metadata counters are inconsistent.");
-            }
-            command.CommandText = """
-                SELECT stored_count = (SELECT COUNT(*) FROM environmental_observation_journal)
-                    AND stored_bytes = (SELECT COALESCE(SUM(payload_bytes), 0) FROM environmental_observation_journal)
-                FROM environmental_observation_journal_metadata WHERE metadata_key = 1;
-                """;
-            var localMetadataMatches = Convert.ToInt32(
-                await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                System.Globalization.CultureInfo.InvariantCulture);
-            if (localMetadataMatches != 1)
-            {
-                throw new InvalidDataException("Local environmental observation metadata counters are inconsistent.");
-            }
+            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
             lock (_initializedLock)
             {
                 _initializedRoots.Add(root);
@@ -2192,128 +2074,6 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             await metadata.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async ValueTask BackfillLocalJournalAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CancellationToken cancellationToken)
-    {
-        var legacy = new List<(long RecordId, EnvironmentalObservationV1 Observation, long RecordedUnixMs)>();
-        using (var read = connection.CreateCommand())
-        {
-            read.Transaction = transaction;
-            read.CommandText = "SELECT record_id, payload, created_unix_ms FROM environmental_observation_outbox ORDER BY record_id;";
-            using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                var parsed = EnvironmentalObservationJson.Parse((byte[])reader.GetValue(1));
-                if (parsed.Observation is null)
-                {
-                    throw new InvalidDataException("A legacy environmental outbox payload cannot be migrated to local history.");
-                }
-                legacy.Add((reader.GetInt64(0), parsed.Observation, reader.GetInt64(2)));
-            }
-        }
-
-        foreach (var item in legacy)
-        {
-            var fact = new EnvironmentalObservationFactV1(
-                item.Observation.SchemaVersion,
-                item.Observation.ObservationId,
-                item.Observation.Source,
-                item.Observation.ObservedAtUtc,
-                item.Observation.ObservedFromUtc,
-                item.Observation.ObservedThroughUtc,
-                item.Observation.ValidFromUtc,
-                item.Observation.ValidThroughUtc,
-                item.Observation.StaleAfterUtc,
-                item.Observation.Value,
-                item.Observation.Lineage,
-                item.Observation.Target.RigId);
-            var canonical = EnvironmentalObservationFactJson.Parse(EnvironmentalObservationFactJson.Serialize(fact)).Fact
-                ?? throw new InvalidDataException("A legacy environmental observation cannot be canonicalized as a targetless fact.");
-            var payload = EnvironmentalObservationFactJson.Serialize(canonical);
-            var sourceIdentity = EnvironmentalObservationFactJson.ComputeSourceIdentitySha256(canonical);
-            var sourceContentIdentity = EnvironmentalObservationFactJson.ComputeSourceContentSha256(canonical);
-            var contentIdentity = EnvironmentalObservationFactJson.ComputeContentSha256(canonical);
-            using (var insert = connection.CreateCommand())
-            {
-                insert.Transaction = transaction;
-                insert.CommandText = """
-                    INSERT OR IGNORE INTO environmental_observation_journal(
-                    source_identity_sha256, source_content_sha256, observation_id, content_sha256,
-                        schema_version, observation_kind, rig_id, source_kind, quality, observed_at_unix_ms,
-                        valid_from_unix_ms, valid_through_unix_ms, stale_after_unix_ms,
-                        payload, payload_bytes, recorded_unix_ms,
-                        central_target_site_id, central_target_agent_id, central_target_rig_id)
-                    VALUES($source, $sourceContent, $observation, $content, $schema, $kind, $rig, $sourceKind,
-                        $quality, $observed, $validFrom, $validThrough, $staleAfter, $payload, $bytes, $recorded,
-                        $targetSite, $targetAgent, $targetRig);
-                    """;
-                AddLocalRecordParameters(
-                    insert, canonical, sourceIdentity, sourceContentIdentity, contentIdentity, payload, item.RecordedUnixMs);
-                AddDeliveryTargetParameters(insert, new EnvironmentalObservationResolvedTarget(
-                    item.Observation.Target.SiteId,
-                    item.Observation.Target.AgentId ?? throw new InvalidDataException(
-                        "Legacy environmental delivery state is missing its device target."),
-                    item.Observation.Target.RigId));
-                await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
-            long localRecordId;
-            using (var verify = connection.CreateCommand())
-            {
-                verify.Transaction = transaction;
-                verify.CommandText = "SELECT record_id, content_sha256 FROM environmental_observation_journal WHERE source_identity_sha256 = $source AND observation_id = $observation;";
-                verify.Parameters.AddWithValue("$source", sourceIdentity);
-                verify.Parameters.AddWithValue("$observation", canonical.ObservationId.ToString("D"));
-                using var reader = await verify.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ||
-                    !string.Equals(reader.GetString(1), contentIdentity, StringComparison.Ordinal))
-                {
-                    throw new EnvironmentalObservationIdentityConflictException(
-                        "Legacy environmental delivery state conflicts with targetless local history.");
-                }
-                localRecordId = reader.GetInt64(0);
-            }
-            var localRecord = await ReadLocalRecordAsync(
-                connection, transaction, localRecordId, cancellationToken).ConfigureAwait(false);
-            await LinkLineageAsync(connection, transaction, localRecord, cancellationToken).ConfigureAwait(false);
-            using var link = connection.CreateCommand();
-            link.Transaction = transaction;
-            link.CommandText = "UPDATE environmental_observation_outbox SET local_record_id = $local WHERE record_id = $record AND (local_record_id IS NULL OR local_record_id = $local);";
-            link.Parameters.AddWithValue("$local", localRecordId);
-            link.Parameters.AddWithValue("$record", item.RecordId);
-            if (await link.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-            {
-                throw new InvalidDataException("Legacy environmental delivery state could not be linked to local history.");
-            }
-            using var projection = connection.CreateCommand();
-            projection.Transaction = transaction;
-            projection.CommandText = """
-                INSERT OR IGNORE INTO environmental_observation_central_projection(
-                    local_record_id, status, outbox_record_id, target_site_id, target_agent_id,
-                    target_rig_id, updated_unix_ms)
-                VALUES($local, 'staged', $outbox, $site, $agent, $rig, $updated);
-                """;
-            projection.Parameters.AddWithValue("$local", localRecordId);
-            projection.Parameters.AddWithValue("$outbox", item.RecordId);
-            projection.Parameters.AddWithValue("$site", item.Observation.Target.SiteId.ToString("D"));
-            projection.Parameters.AddWithValue("$agent", item.Observation.Target.AgentId.Value.ToString("D"));
-            projection.Parameters.AddWithValue("$rig", (object?)item.Observation.Target.RigId ?? DBNull.Value);
-            projection.Parameters.AddWithValue("$updated", item.RecordedUnixMs);
-            await projection.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        using var metadata = connection.CreateCommand();
-        metadata.Transaction = transaction;
-        metadata.CommandText = """
-            UPDATE environmental_observation_journal_metadata
-            SET stored_count = (SELECT COUNT(*) FROM environmental_observation_journal),
-                stored_bytes = (SELECT COALESCE(SUM(payload_bytes), 0) FROM environmental_observation_journal)
-            WHERE metadata_key = 1;
-            """;
-        await metadata.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static void AddLocalRecordParameters(
@@ -2935,63 +2695,308 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             reader.IsDBNull(6) ? null : reader.GetInt64(6));
     }
 
-    private static async ValueTask VerifyIndexAsync(
-        SqliteConnection connection,
-        string tableName,
-        string indexName,
-        IReadOnlyList<string> expectedColumns,
-        bool unique,
-        CancellationToken cancellationToken)
+    private async ValueTask<SqliteConnection> OpenAsync(string root, CancellationToken cancellationToken)
     {
-        using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA index_info('{indexName}');";
-        var columns = new List<string>();
-        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-        {
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                columns.Add(reader.GetString(2));
-            }
-        }
-        if (!columns.SequenceEqual(expectedColumns, StringComparer.Ordinal))
-        {
-            throw new InvalidDataException($"Environmental observation outbox index '{indexName}' is not supported.");
-        }
-        command.CommandText = $"PRAGMA index_list('{tableName}');";
-        using var indexReader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        var uniquenessMatches = false;
-        while (await indexReader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (string.Equals(indexReader.GetString(1), indexName, StringComparison.Ordinal))
-            {
-                uniquenessMatches = (indexReader.GetInt64(2) != 0) == unique;
-                break;
-            }
-        }
-        if (!uniquenessMatches)
-        {
-            throw new InvalidDataException($"Environmental observation outbox index '{indexName}' uniqueness is not supported.");
-        }
+        var connection = await OpenUnconfiguredAsync(root, cancellationToken, pooled: true).ConfigureAwait(false);
+        await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+        return connection;
     }
 
-    private async ValueTask<SqliteConnection> OpenAsync(string root, CancellationToken cancellationToken)
+    private async ValueTask<SqliteConnection> OpenUnconfiguredAsync(
+        string root,
+        CancellationToken cancellationToken,
+        bool pooled = false)
     {
         EnsureDatabaseFilesArePhysical(root);
         var builder = new SqliteConnectionStringBuilder
         {
             DataSource = DatabasePath(root),
             Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Shared,
-            Pooling = true,
+            Cache = pooled ? SqliteCacheMode.Shared : SqliteCacheMode.Private,
+            Pooling = pooled,
             DefaultTimeout = busyTimeoutSeconds
         };
         var connection = new SqliteConnection(builder.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         EnsureDatabaseFilesArePhysical(root);
+        return connection;
+    }
+
+    private async ValueTask ConfigureConnectionAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
         using var command = connection.CreateCommand();
         command.CommandText = $"PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout={busyTimeoutSeconds * 1000};";
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        return connection;
+    }
+
+    private async ValueTask<EnvironmentalSchemaInspection> InspectExistingDatabaseAsync(
+        string root,
+        CancellationToken cancellationToken)
+    {
+        var databasePath = DatabasePath(root);
+        var hasRecoveryState = File.Exists(string.Concat(databasePath, "-wal")) ||
+            File.Exists(string.Concat(databasePath, "-shm")) ||
+            File.Exists(string.Concat(databasePath, "-journal"));
+        DirectoryInfo? snapshotRoot = null;
+        try
+        {
+            var inspectionPath = databasePath;
+            var immutable = !hasRecoveryState;
+            if (!immutable)
+            {
+                (snapshotRoot, inspectionPath) = CopyStableDatabaseSnapshot(
+                    databasePath, "hvo-environment-inspection-");
+            }
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = immutable
+                    ? string.Concat(new Uri(inspectionPath).AbsoluteUri, "?immutable=1")
+                    : inspectionPath,
+                Mode = immutable ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
+                Pooling = false,
+                DefaultTimeout = busyTimeoutSeconds
+            }.ToString());
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            var version = await ExecuteScalarLongAsync(
+                connection, "PRAGMA user_version;", null, cancellationToken).ConfigureAwait(false);
+            var objectCount = await CountSchemaObjectsAsync(connection, null, cancellationToken).ConfigureAwait(false);
+            if (version == CurrentSchemaVersion)
+            {
+                await ValidateSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
+            }
+            return new(checked((int)version), objectCount);
+        }
+        catch (Exception exception) when (exception is SqliteException or IOException or InvalidDataException)
+        {
+            throw new InvalidDataException(
+                $"Environmental observation SQLite schema inspection failed for '{databasePath}'; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.",
+                exception);
+        }
+        finally
+        {
+            snapshotRoot?.Delete(recursive: true);
+        }
+    }
+
+    private static (DirectoryInfo Root, string DatabasePath) CopyStableDatabaseSnapshot(
+        string databasePath,
+        string temporaryPrefix)
+    {
+        var sourcePaths = new[]
+        {
+            databasePath,
+            string.Concat(databasePath, "-wal"),
+            string.Concat(databasePath, "-journal")
+        };
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            DirectoryInfo? snapshotRoot = null;
+            try
+            {
+                var before = sourcePaths.Select(ReadDatabaseFileState).ToArray();
+                snapshotRoot = Directory.CreateTempSubdirectory(temporaryPrefix);
+                var inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
+                foreach (var source in before.Where(static state => state.Exists))
+                {
+                    File.Copy(
+                        source.Path,
+                        string.Concat(inspectionPath, source.Path.AsSpan(databasePath.Length)));
+                }
+                var after = sourcePaths.Select(ReadDatabaseFileState).ToArray();
+                if (before.SequenceEqual(after))
+                {
+                    return (snapshotRoot, inspectionPath);
+                }
+            }
+            catch (IOException)
+            {
+                snapshotRoot?.Delete(recursive: true);
+                if (attempt == 2)
+                {
+                    throw;
+                }
+                continue;
+            }
+            snapshotRoot?.Delete(recursive: true);
+        }
+        throw new IOException("Environmental observation SQLite files changed during schema inspection.");
+    }
+
+    private static DatabaseFileState ReadDatabaseFileState(string path)
+    {
+        var file = new FileInfo(path);
+        if (!file.Exists)
+        {
+            return new(path, false, 0, 0, string.Empty);
+        }
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 128 * 1024,
+            FileOptions.SequentialScan);
+        return new(
+            path,
+            true,
+            file.Length,
+            file.LastWriteTimeUtc.Ticks,
+            Convert.ToHexString(SHA256.HashData(stream)));
+    }
+
+    private static async ValueTask ValidateSchemaAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        if (await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", transaction, cancellationToken)
+                .ConfigureAwait(false) != CurrentSchemaVersion)
+        {
+            throw new InvalidDataException("Environmental observation schema version is not canonical schema 3.");
+        }
+        var actual = await ReadSchemaDefinitionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (CanonicalSchemaDefinitions.Value.Any(expected =>
+                !actual.TryGetValue(expected.Key, out var definition) ||
+                !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
+            actual.Keys.Any(name => !CanonicalSchemaDefinitions.Value.ContainsKey(name)))
+        {
+            throw new InvalidDataException(
+                "Environmental observation schema is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
+        }
+        var integrity = await ExecuteScalarStringAsync(
+            connection, "PRAGMA integrity_check;", transaction, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Environmental observation SQLite integrity check failed.");
+        }
+        if (await ExecuteScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", transaction, cancellationToken)
+                .ConfigureAwait(false) != 0)
+        {
+            throw new InvalidDataException("Environmental observation SQLite foreign-key validation failed.");
+        }
+        if (await ExecuteScalarLongAsync(connection, """
+                SELECT stored_count = (SELECT COUNT(*) FROM environmental_observation_outbox)
+                    AND stored_bytes = (SELECT COALESCE(SUM(payload_bytes), 0) FROM environmental_observation_outbox)
+                FROM environmental_observation_metadata WHERE metadata_key = 1;
+                """, transaction, cancellationToken).ConfigureAwait(false) != 1)
+        {
+            throw new InvalidDataException("Environmental observation outbox metadata counters are inconsistent.");
+        }
+        if (await ExecuteScalarLongAsync(connection, """
+                SELECT stored_count = (SELECT COUNT(*) FROM environmental_observation_journal)
+                    AND stored_bytes = (SELECT COALESCE(SUM(payload_bytes), 0) FROM environmental_observation_journal)
+                FROM environmental_observation_journal_metadata WHERE metadata_key = 1;
+                """, transaction, cancellationToken).ConfigureAwait(false) != 1)
+        {
+            throw new InvalidDataException("Local environmental observation metadata counters are inconsistent.");
+        }
+    }
+
+    private static async ValueTask<long> CountSchemaObjectsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+        => await ExecuteScalarLongAsync(connection, """
+            SELECT COUNT(*) FROM sqlite_schema
+            WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%';
+            """, transaction, cancellationToken).ConfigureAwait(false);
+
+    private static async ValueTask<long> ExecuteScalarLongAsync(
+        SqliteConnection connection,
+        string sql,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+        => Convert.ToInt64(
+            await ExecuteScalarAsync(connection, sql, transaction, cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+    private static async ValueTask<string> ExecuteScalarStringAsync(
+        SqliteConnection connection,
+        string sql,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+        => Convert.ToString(
+            await ExecuteScalarAsync(connection, sql, transaction, cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private static async ValueTask<object?> ExecuteScalarAsync(
+        SqliteConnection connection,
+        string sql,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = CanonicalSchemaSql;
+        command.ExecuteNonQuery();
+        return ReadSchemaDefinitions(connection);
+    }
+
+    private static async ValueTask<Dictionary<string, string>> ReadSchemaDefinitionsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = CreateSchemaDefinitionCommand(connection, transaction);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            definitions.Add(reader.GetString(1), ReadSchemaDefinition(reader));
+        }
+        return definitions;
+    }
+
+    private static Dictionary<string, string> ReadSchemaDefinitions(SqliteConnection connection)
+    {
+        using var command = CreateSchemaDefinitionCommand(connection, null);
+        using var reader = command.ExecuteReader();
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            definitions.Add(reader.GetString(1), ReadSchemaDefinition(reader));
+        }
+        return definitions;
+    }
+
+    private static SqliteCommand CreateSchemaDefinitionCommand(
+        SqliteConnection connection,
+        SqliteTransaction? transaction)
+    {
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_schema
+            WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+            ORDER BY type, name;
+            """;
+        return command;
+    }
+
+    private static string ReadSchemaDefinition(SqliteDataReader reader)
+    {
+        var definition = new System.Text.StringBuilder();
+        foreach (var ordinal in new[] { 0, 2 })
+        {
+            var value = reader.GetString(ordinal);
+            definition.Append(value.Length).Append(':').Append(value);
+        }
+        var sql = SqliteRawCaptureJournal.NormalizeSchemaSql(reader.GetString(3));
+        definition.Append(sql.Length).Append(':').Append(sql);
+        return definition.ToString();
     }
 
     private static bool FixedHash(string expected, string actual)
@@ -3040,6 +3045,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         RawIngressFileStore.EnsureNoSymbolicLinks(root, databasePath);
         RawIngressFileStore.EnsureNoSymbolicLinks(root, string.Concat(databasePath, "-wal"));
         RawIngressFileStore.EnsureNoSymbolicLinks(root, string.Concat(databasePath, "-shm"));
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, string.Concat(databasePath, "-journal"));
     }
     private static string Bound(string value, int maximum) => value.Length <= maximum ? value : value[..maximum];
     private static StringComparer PathComparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
@@ -3063,6 +3069,15 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         EnvironmentalObservationV1? Observation,
         EnvironmentalObservationEnqueueDisposition? EnqueueDisposition);
 
+    private sealed record EnvironmentalSchemaInspection(int SchemaVersion, long SchemaObjectCount);
+
+    private sealed record DatabaseFileState(
+        string Path,
+        bool Exists,
+        long Length,
+        long LastWriteUtcTicks,
+        string Sha256);
+
     private const string OperationsSelectColumns = """
         SELECT record_id, status, attempt_count, payload_bytes, last_reason, created_unix_ms, updated_unix_ms
         FROM environmental_observation_outbox
@@ -3083,7 +3098,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             action TEXT NOT NULL CHECK(action IN ('replay','abandon')),
             actor TEXT NOT NULL CHECK(length(actor) BETWEEN 1 AND 128),
             reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 512),
-            occurred_unix_ms INTEGER NOT NULL) STRICT;
+            occurred_unix_ms INTEGER NOT NULL,
+            operation_key TEXT NULL) STRICT;
         CREATE TABLE IF NOT EXISTS environmental_observation_outbox(
             record_id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
             source_identity_sha256 TEXT NOT NULL CHECK(length(source_identity_sha256) = 64),
@@ -3102,6 +3118,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             last_reason TEXT NULL,
             created_unix_ms INTEGER NOT NULL,
             updated_unix_ms INTEGER NOT NULL,
+            local_record_id INTEGER NULL
+                REFERENCES environmental_observation_journal(record_id) ON DELETE RESTRICT,
             CHECK(payload_bytes = length(payload)),
             CHECK((status = 'leased' AND lease_owner IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_unix_ms IS NOT NULL)
                 OR (status != 'leased' AND lease_owner IS NULL AND lease_token IS NULL AND lease_expires_unix_ms IS NULL))) STRICT;
@@ -3115,8 +3133,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             ON environmental_observation_outbox(status, lease_expires_unix_ms, created_unix_ms, record_id);
         """;
 
-    private const string MigrationV2Sql = """
-        ALTER TABLE environmental_observation_outbox_audit ADD COLUMN operation_key TEXT NULL;
+    private const string OperationsSchemaSql = """
         CREATE UNIQUE INDEX ux_environment_audit_operation
             ON environmental_observation_outbox_audit(operation_key) WHERE operation_key IS NOT NULL;
         CREATE TABLE environmental_observation_outbox_operations(
@@ -3127,10 +3144,9 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 64),
             occurred_unix_ms INTEGER NOT NULL
         ) STRICT;
-        PRAGMA user_version=2;
         """;
 
-    private const string MigrationV3Sql = """
+    private const string LocalSchemaSql = """
         CREATE TABLE environmental_observation_journal_metadata(
             metadata_key INTEGER NOT NULL PRIMARY KEY CHECK(metadata_key = 1),
             stored_count INTEGER NOT NULL DEFAULT 0 CHECK(stored_count >= 0),
@@ -3286,8 +3302,6 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             UNIQUE(association_id, local_record_id)) STRICT;
         CREATE INDEX ix_environment_association_evidence_record
             ON environmental_capture_association_evidence(local_record_id, association_id);
-        ALTER TABLE environmental_observation_outbox ADD COLUMN local_record_id INTEGER NULL
-            REFERENCES environmental_observation_journal(record_id) ON DELETE RESTRICT;
         CREATE INDEX ix_environment_delivery_local_record
             ON environmental_observation_outbox(local_record_id) WHERE local_record_id IS NOT NULL;
         CREATE TABLE environmental_observation_central_projection(
@@ -3307,5 +3321,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             UNIQUE(local_record_id, target_site_id, target_agent_id, target_rig_id)) STRICT;
         CREATE INDEX ix_environment_projection_waiting
             ON environmental_observation_central_projection(status, updated_unix_ms, local_record_id);
+        PRAGMA user_version=3;
         """;
+
+    private const string CanonicalSchemaSql = SchemaSql + OperationsSchemaSql + LocalSchemaSql;
 }

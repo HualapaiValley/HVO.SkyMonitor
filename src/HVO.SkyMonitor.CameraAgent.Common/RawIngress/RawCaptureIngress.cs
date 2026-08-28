@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -124,6 +125,10 @@ internal sealed class RawCaptureIngress :
                 _processLock ??= AcquireProcessLock();
                 using var initializationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.initialize");
                 Volatile.Write(ref _journalValidated, false);
+                await SqliteTransientRuntimeStore.ValidateExistingRuntimeSchemaAsync(
+                    _options.RawIngressRoot,
+                    _options.RawIngressSqliteBusyTimeoutSeconds,
+                    cancellationToken).ConfigureAwait(false);
                 await _journal.InitializeAsync(_lanePolicy.Definitions, cancellationToken).ConfigureAwait(false);
                 Volatile.Write(ref _journalValidated, true);
                 initializationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
