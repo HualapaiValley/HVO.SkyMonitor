@@ -173,13 +173,13 @@ public sealed class PresentationMetadataFactsBuilderTests
             Assert.Throws<ArgumentException>(() => PresentationProcessingProducts.CreateMetadataFactsProduct(
                 mismatchedSources,
                 "facts", [fixture.SceneArtifact, fixture.StackArtifact]));
-            var legacy = WithRecomputedIdentity(result.Facts with
+            var retired = WithRecomputedIdentity(result.Facts with
             {
-                SchemaVersion = PresentationMetadataFactsProductV1.LegacySchemaVersion,
+                SchemaVersion = "presentation-metadata-facts-v1",
                 SourceArtifactIds = null
             });
             Assert.Throws<ArgumentException>(() => PresentationProcessingProducts.CreateMetadataFactsProduct(
-                legacy,
+                retired,
                 "facts", [fixture.SceneArtifact, fixture.StackArtifact]));
             CollectionAssert.AreEqual(
                 new[] { fixture.SceneArtifact.ArtifactId, fixture.StackArtifact.ArtifactId },

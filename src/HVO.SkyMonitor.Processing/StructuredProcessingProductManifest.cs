@@ -117,7 +117,6 @@ public static class StructuredProcessingProductContracts
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
             (PresentationProcessingProducts.ManifestMediaType, OverlayManifestV1.CurrentSchemaVersion) => true,
             (PresentationMetadataFactsProductV1.MediaType,
-                PresentationMetadataFactsProductV1.LegacySchemaVersion or
                 PresentationMetadataFactsProductV1.CurrentSchemaVersion) => true,
             _ => false
         };
@@ -186,12 +185,6 @@ public sealed record StructuredProcessingProductManifestParseResult(
 public static class StructuredProcessingProductManifestJson
 {
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
-    private static readonly JsonSerializerOptions LegacyDescriptorSerializerOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
-    };
-
     public static byte[] Serialize(StructuredProcessingProductManifestV1 manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
@@ -228,11 +221,9 @@ public static class StructuredProcessingProductManifestJson
         {
             descriptor = JsonSerializer.Deserialize<StructuredProcessingProductDescriptorV1>(json, SerializerOptions);
         }
-        catch (JsonException)
+        catch (JsonException exception)
         {
-            // DescriptorJson written before canonical transport persistence used numeric enums.
-            descriptor = JsonSerializer.Deserialize<StructuredProcessingProductDescriptorV1>(
-                json, LegacyDescriptorSerializerOptions);
+            throw new InvalidDataException("The structured processing product descriptor is malformed.", exception);
         }
         descriptor = descriptor ?? throw new InvalidDataException(
             "The structured processing product descriptor is empty.");

@@ -42,7 +42,7 @@ public sealed record TransientDetectorInputDescriptorV1(
     [property: JsonRequired] ProcessingCompatibilityIdentity Compatibility,
     [property: JsonRequired] ProcessingAlgorithmIdentity Conversion,
     [property: JsonRequired] TransientDetectorTransformV1 SourceToDetectorTransform,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SaturationMaskChecksumSha256 = null)
+    [property: JsonRequired] string SaturationMaskChecksumSha256)
 {
     public const string CurrentSchemaVersion = "transient-detector-input-v1";
 }

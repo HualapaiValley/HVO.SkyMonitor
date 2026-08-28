@@ -42,7 +42,8 @@ Malformed artifact metadata or annotation geometry is rejected before identity b
 Named auxiliary inputs are unique case-insensitively. Canonical JSON context rejects
 duplicate properties and non-canonical byte representations; auxiliary order does not
 change identity because names are sorted before binding. Requests without auxiliary
-inputs retain the original v1 identity envelope.
+inputs bind an explicit empty auxiliary-input array in the canonical v2 envelope;
+`null` and an empty collection therefore produce the same identity.
 Unexpected recipe exceptions are terminal; retryable outcomes must be returned explicitly by
 the recipe.
 

@@ -10,11 +10,8 @@ internal sealed class ImageQualityCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     ImageQualityProcessingStepOptions options,
     CameraAgentRecipeExecutionAdapter adapter)
-    : ConfigurableCaptureProcessingStep<ImageQualityProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep,
-      ILegacyCaptureProcessingPlanContract
+    : ConfigurableCaptureProcessingStep<ImageQualityProcessingStepOptions>(metadata, options), ICaptureProcessingGraphStep
 {
-    internal const string LegacyPlanContract = "image-quality-plan-v1";
-    public string LegacyPlanContractId => LegacyPlanContract;
     public bool Enabled => Options.Enabled;
 
     public string RecipeName => BuiltInProcessingRecipes.ImageQuality;

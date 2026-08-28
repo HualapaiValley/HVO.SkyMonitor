@@ -81,7 +81,6 @@ public sealed record PresentationMetadataFactsProductV1(
     PresentationMetadataFactsV1 Corners,
     IReadOnlyList<Guid>? SourceArtifactIds = null)
 {
-    public const string LegacySchemaVersion = "presentation-metadata-facts-v1";
     public const string CurrentSchemaVersion = "presentation-metadata-facts-v2";
     public const string MediaType = "application/vnd.hvo.presentation-metadata-facts+json";
 }

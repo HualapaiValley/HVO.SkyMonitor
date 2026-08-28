@@ -44,14 +44,14 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedLocalProfileSha256 = "966C360EA52CDCE8AC150A138D94903587B56B2D2F0EC2618AE5E6506259388C";
     private const string ExpectedScheduleSha256 = "6A5E298C74CA520E3EB3EEE6CE67D30A8BDFC1340ACC2FE1AA5DDDF0F6F9CFDD";
     private const string ExpectedDesiredGraphSha256 = "13DBCBB11F6FBF633B2259FFC668F5109E33F664501ED38B03F6F7ED4AE3F363";
-    private const string ExpectedEffectiveGraphSha256 = "FD3E214AD0A65808F481789D341CEE763443DA8383A52EC55FE52E07DD42F07F";
+    private const string ExpectedEffectiveGraphSha256 = "40D49A5166B07FACECA41173263DA75DA8A9A7E28480CB361BDA34191994DB61";
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479";
     private const string ExpectedMonoProcessingSha256 = "2F106F303DE1CD41AE1E1B8B001B15BD521A6121A9595BD3BB0D38B00DE30631";
     private const string ExpectedMonoLocalProfileSha256 = "72473832303887743861B9C82F1F11A55147254E34948C628EE1FBE77DF42B7D";
     private const string ExpectedMonoScheduleSha256 = "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80";
     private const string ExpectedMonoDesiredGraphSha256 = "2538EB75560857DA6319DD4F20533C6F6B768E7DB47F95B661150B85D6ECFBAB";
-    private const string ExpectedMonoEffectiveGraphSha256 = "14225DF460F651A0F51C578F2BE55A6B81E3F1B5770E15B2D65AFBC2DBBDC1D9";
+    private const string ExpectedMonoEffectiveGraphSha256 = "44A1253961E3BE879BF69C27DC57F24DD492FE4416232913EEB99E6273D7A7E5";
     private const string CentralHandlerReadyRecord = "HVO211_HANDLER_READY";
     private const string CentralHandlerAttemptRecord = "HVO211_HANDLER_ATTEMPT";
     private static readonly string[] ExpectedCatalogRows = ["11734", "24378", "24549", "27919", "32263", "37173"];
@@ -2971,9 +2971,9 @@ public sealed class StandaloneW6DockerAcceptanceTests
             manifestArtifact.SourceArtifactIds.ToArray());
         Assert.IsTrue(facts.ContentIdentitySha256 is { Length: 64 });
         var factsProduct = productManifests[facts.ArtifactId];
-        var parsedFacts = JsonSerializer.Deserialize<PresentationMetadataFactsProductV1>(
-            File.ReadAllBytes(Path.Combine(root, factsProduct.RelativeArtifactPath)), EvidenceJson);
-        Assert.IsNotNull(parsedFacts);
+        var parsedFacts = PresentationProcessingProducts.ParseMetadataFacts(
+            File.ReadAllBytes(Path.Combine(root, factsProduct.RelativeArtifactPath)));
+        Assert.AreEqual(PresentationMetadataFactsProductV1.CurrentSchemaVersion, parsedFacts.SchemaVersion);
         Assert.AreEqual(facts.ContentIdentitySha256, parsedFacts.FactsIdentitySha256);
         Assert.HasCount(6, parsedFacts.Environment);
         Assert.HasCount(1, parsedFacts.Environment.Select(static item => item.PolicyIdentitySha256)

@@ -292,14 +292,22 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
                 ArtifactManifestV2.CurrentSchemaVersion, descriptor, "light.bin");
             Assert.IsTrue(FrameReconstructor.TryReconstruct(
                 descriptor, generated.PixelData, out var frame).IsValid);
+            var rawArtifact = new FrameArtifact(
+                descriptor.Artifact.ArtifactId,
+                FrameArtifactRole.Raw,
+                frame!,
+                recipeVersion: ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256);
             var submission = new CaptureLoopSubmission(
                 new CaptureRequest(started, job.Plan.ApplicableLightExposure, CaptureMode.Still),
                 new CaptureResult(
-                    frame,
+                    frame!,
                     new CaptureSetpoint(job.Plan.ApplicableLightExposure, job.Plan.Gain, null, null),
                     TimeSpan.Zero,
                     CaptureMode.Still,
-                    false),
+                    false)
+                {
+                    Artifacts = new FrameArtifactSet(rawArtifact)
+                },
                 started,
                 job.Plan.ApplicableLightExposure,
                 TimeSpan.Zero);

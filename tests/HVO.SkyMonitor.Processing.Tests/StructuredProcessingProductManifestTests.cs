@@ -46,18 +46,14 @@ public sealed class StructuredProcessingProductManifestTests
 
     [TestMethod]
     [TestCategory("Unit")]
-    public void DescriptorParserAcceptsLegacyNumericEnumsAndWritesCanonicalStrings()
+    public void DescriptorParserRejectsNumericEnums()
     {
         var descriptor = CreateManifest().Descriptor;
-        var legacyJson = JsonSerializer.Serialize(descriptor);
+        var numericEnumJson = JsonSerializer.Serialize(descriptor);
 
-        var parsed = StructuredProcessingProductManifestJson.ParseDescriptor(legacyJson);
-        var canonical = Encoding.UTF8.GetString(
-            StructuredProcessingProductManifestJson.SerializeDescriptor(parsed));
-
-        Assert.AreEqual(descriptor.Artifact.ArtifactId, parsed.Artifact.ArtifactId);
-        Assert.IsFalse(legacyJson.Contains("\"Role\":\"", StringComparison.Ordinal));
-        StringAssert.Contains(canonical, "\"role\":\"Metadata\"", StringComparison.Ordinal);
+        Assert.IsFalse(numericEnumJson.Contains("\"Role\":\"", StringComparison.Ordinal));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            StructuredProcessingProductManifestJson.ParseDescriptor(numericEnumJson));
     }
 
     [TestMethod]
@@ -142,25 +138,26 @@ public sealed class StructuredProcessingProductManifestTests
         Assert.AreEqual(facts.FactsIdentitySha256,
             PresentationProcessingProducts.ParseMetadataFacts(canonical).FactsIdentitySha256);
 
-        var legacy = facts with
+        var retired = facts with
         {
-            SchemaVersion = PresentationMetadataFactsProductV1.LegacySchemaVersion,
+            SchemaVersion = "presentation-metadata-facts-v1",
             FactsIdentitySha256 = string.Empty,
             SourceArtifactIds = null,
             Corners = facts.Corners with { SourceIdentitySha256 = string.Empty }
         };
-        var legacyIdentity = PresentationProcessingProducts.ComputeMetadataFactsIdentity(legacy);
-        legacy = legacy with
+        var retiredIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(
+            CaptureContractJson.SerializeToElement(retired));
+        retired = retired with
         {
-            FactsIdentitySha256 = legacyIdentity,
-            Corners = legacy.Corners with { SourceIdentitySha256 = legacyIdentity }
+            FactsIdentitySha256 = retiredIdentity,
+            Corners = retired.Corners with { SourceIdentitySha256 = retiredIdentity }
         };
-        var legacyJson = JsonNode.Parse(CaptureContractJson.SerializeToElement(legacy).GetRawText())!.AsObject();
-        legacyJson.Remove("sourceArtifactIds");
-        var legacyBytes = Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(
-            JsonSerializer.SerializeToElement(legacyJson)).GetRawText());
-        Assert.AreEqual(legacyIdentity,
-            PresentationProcessingProducts.ParseMetadataFacts(legacyBytes).FactsIdentitySha256);
+        var retiredJson = JsonNode.Parse(CaptureContractJson.SerializeToElement(retired).GetRawText())!.AsObject();
+        retiredJson.Remove("sourceArtifactIds");
+        var retiredBytes = Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(
+            JsonSerializer.SerializeToElement(retiredJson)).GetRawText());
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            PresentationProcessingProducts.ParseMetadataFacts(retiredBytes));
 
         var tampered = facts with { Capture = JsonSerializer.SerializeToElement(new { exposure = "tampered" }) };
         var tamperedBytes = Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(

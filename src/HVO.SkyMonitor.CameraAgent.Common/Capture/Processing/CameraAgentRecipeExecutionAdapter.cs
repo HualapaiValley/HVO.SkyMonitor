@@ -56,7 +56,7 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
             artifact.ArtifactId,
             artifact.Role,
             variant,
-            product?.Recipe.IdentitySha256 ?? NormalizeLegacyRecipeIdentity(artifact.RecipeVersion),
+            product?.Recipe.IdentitySha256 ?? ResolveRecipeIdentity(artifact, reconstructionDescriptor),
             "application/x-hvo-frame",
             layout,
             frame.PixelData,
@@ -243,13 +243,24 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
     private static string HashText(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 
-    private static string NormalizeLegacyRecipeIdentity(string? recipeVersion)
+    private static string ResolveRecipeIdentity(
+        FrameArtifact artifact,
+        ReconstructionDescriptor? reconstructionDescriptor)
     {
+        if (reconstructionDescriptor?.Artifact.ArtifactId == artifact.ArtifactId)
+        {
+            return ProcessingIdentity.CreateRecipeIdentity(reconstructionDescriptor.Artifact.Recipe).IdentitySha256;
+        }
+        if (reconstructionDescriptor is not null)
+        {
+            throw new InvalidDataException("The reconstruction descriptor does not identify the processing artifact.");
+        }
+        var recipeVersion = artifact.RecipeVersion;
         if (recipeVersion is { Length: 64 } && recipeVersion.All(Uri.IsHexDigit))
         {
             return recipeVersion.ToUpperInvariant();
         }
         return Convert.ToHexString(SHA256.HashData(
-            Encoding.UTF8.GetBytes(recipeVersion ?? "legacy-raw-source-v1")));
+            Encoding.UTF8.GetBytes(recipeVersion ?? "raw-source-v1")));
     }
 }

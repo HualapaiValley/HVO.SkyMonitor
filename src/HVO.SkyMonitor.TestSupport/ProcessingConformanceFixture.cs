@@ -24,7 +24,7 @@ public static class ProcessingConformanceFixture
 
     public const string ExpectedPayloadHex = "000000FF";
     public const string ExpectedChecksumSha256 = "E3820096CB82366B860B8A4E668453A7AAAF423AF03BDF289FA308EA03A79332";
-    public const string ExpectedRecipeIdentitySha256 = "8EBC03FA468DE991D5B80040359752A5232D9C278B91045B180EA64C2CACAE6E";
+    public const string ExpectedRecipeIdentitySha256 = "81281FA59B3BF1788659B07D2BD415D760CF0BD5015782341AE173E93E9CF273";
 
     public static RecipeIdentityDescriptor SourceRecipe { get; } = RecipeIdentityDescriptor.Create(
         "virtual-raw",

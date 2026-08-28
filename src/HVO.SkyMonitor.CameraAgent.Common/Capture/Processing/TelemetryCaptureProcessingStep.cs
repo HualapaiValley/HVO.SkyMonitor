@@ -16,11 +16,8 @@ internal sealed class TelemetryCaptureProcessingStep(
     TelemetryProcessingStepOptions options,
     ICaptureTelemetrySink telemetrySink,
     CaptureTelemetryMetricsRecorder metricsRecorder,
-    ILogger<TelemetryCaptureProcessingStep> logger) : ConfigurableCaptureProcessingStep<TelemetryProcessingStepOptions>(metadata, options), ICaptureProcessingOutcomeConsumer,
-    ILegacyCaptureProcessingPlanContract
+    ILogger<TelemetryCaptureProcessingStep> logger) : ConfigurableCaptureProcessingStep<TelemetryProcessingStepOptions>(metadata, options), ICaptureProcessingOutcomeConsumer
 {
-    internal const string LegacyPlanContract = "telemetry-plan-v1";
-    public string LegacyPlanContractId => LegacyPlanContract;
     private readonly ICaptureTelemetrySink _telemetrySink = telemetrySink;
     private readonly CaptureTelemetryMetricsRecorder _metricsRecorder = metricsRecorder;
     private readonly ILogger<TelemetryCaptureProcessingStep> _logger = logger;

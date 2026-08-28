@@ -95,10 +95,8 @@ public static class PresentationProcessingProducts
     public static void ValidateMetadataFacts(PresentationMetadataFactsProductV1 facts)
     {
         ArgumentNullException.ThrowIfNull(facts);
-        if (facts.SchemaVersion is not (PresentationMetadataFactsProductV1.LegacySchemaVersion or
-                PresentationMetadataFactsProductV1.CurrentSchemaVersion) ||
+        if (facts.SchemaVersion != PresentationMetadataFactsProductV1.CurrentSchemaVersion ||
             facts.CaptureId == Guid.Empty || facts.CaptureSequence < 0 || facts.Environment is null ||
-            facts.SchemaVersion == PresentationMetadataFactsProductV1.CurrentSchemaVersion &&
             (facts.SourceArtifactIds is null || facts.SourceArtifactIds.Count != 2 ||
              facts.SourceArtifactIds.Any(static id => id == Guid.Empty) ||
              facts.SourceArtifactIds.Distinct().Count() != facts.SourceArtifactIds.Count) ||
@@ -271,22 +269,7 @@ public static class PresentationProcessingProducts
         };
 
     private static JsonElement SerializeMetadataFacts(PresentationMetadataFactsProductV1 facts) =>
-        facts.SchemaVersion == PresentationMetadataFactsProductV1.LegacySchemaVersion
-            ? CaptureContractJson.SerializeToElement(new
-            {
-                facts.SchemaVersion,
-                facts.FactsIdentitySha256,
-                facts.CaptureId,
-                facts.CaptureSequence,
-                facts.Capture,
-                facts.Environment,
-                facts.Catalog,
-                facts.Calibration,
-                facts.Stack,
-                facts.ProcessingProfile,
-                facts.Corners
-            })
-            : CaptureContractJson.SerializeToElement(facts);
+        CaptureContractJson.SerializeToElement(facts);
 }
 
 /// <summary>Host-neutral packed-frame materialization boundary with complete explicit immediate lineage.</summary>

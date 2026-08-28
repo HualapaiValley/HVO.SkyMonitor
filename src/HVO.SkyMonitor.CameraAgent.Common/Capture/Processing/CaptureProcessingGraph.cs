@@ -62,11 +62,6 @@ internal interface ICaptureProcessingOutcomeConsumer
 {
 }
 
-internal interface ILegacyCaptureProcessingPlanContract
-{
-    string LegacyPlanContractId { get; }
-}
-
 public sealed record CaptureProcessingGraphNode(
     string Id,
     ICaptureProcessingStep Step,
@@ -81,8 +76,7 @@ public sealed record CaptureProcessingGraphNode(
     JsonElement? EffectiveOptions = null,
     IReadOnlyList<string>? DeclaredDependencies = null,
     CaptureProcessingPublicationPolicy? Publication = null,
-    IReadOnlySet<string>? OptionalDependencies = null,
-    string? LegacyPlanSha256 = null);
+    IReadOnlySet<string>? OptionalDependencies = null);
 
 public sealed record CaptureProcessingPlanNode(
     string Id,

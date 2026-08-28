@@ -22,10 +22,8 @@ internal sealed class AnnotationCaptureProcessingStep(
     CameraAgentRecipeExecutionAdapter adapter,
     IServiceProvider? serviceProvider = null)
     : ConfigurableCaptureProcessingStep<AnnotationProcessingStepOptions>(metadata, options),
-       ICaptureProcessingGraphStep, ICompoundCaptureProcessingGraphStep, ILegacyCaptureProcessingPlanContract
+       ICaptureProcessingGraphStep, ICompoundCaptureProcessingGraphStep
 {
-    internal const string LegacyPlanContract = "annotation-plan-v1";
-    public string LegacyPlanContractId => LegacyPlanContract;
     public bool Enabled => Options.Enabled;
 
     public string RecipeName => BuiltInProcessingRecipes.Annotation;
@@ -203,7 +201,8 @@ internal sealed class AnnotationCaptureProcessingStep(
         var input = CameraAgentRecipeExecutionAdapter.CreateArtifact(
             context.Config,
             preview,
-            previewProduct?.Variant ?? preview.RecipeVersion ?? "legacy-preview",
+            previewProduct?.Variant ?? preview.RecipeVersion ?? throw new InvalidDataException(
+                "The annotation input does not have a canonical variant identity."),
             context.AcquisitionTiming,
             context.ReconstructionDescriptor,
             previewProduct);

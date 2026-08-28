@@ -14,11 +14,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     IProjectedSceneStagingReader stagingReader,
     CameraAgentRecipeExecutionAdapter adapter)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
-       IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
-       ILegacyCaptureProcessingPlanContract
+       IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit
 {
-    internal const string LegacyPlanContract = "projected-scene-plan-v1";
-    public string LegacyPlanContractId => LegacyPlanContract;
     private const string StageInputName = "virtual-render-scene";
 
     public bool Enabled => true;
