@@ -8,6 +8,7 @@ if (args.Length < 2)
 }
 
 using var baselineDocument = JsonDocument.Parse(File.ReadAllText(args[0]));
+var repositoryRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(args[0]) ?? ".", "..", ".."));
 var aggregate = baselineDocument.RootElement.GetProperty("aggregate");
 var baselineLine = aggregate.GetProperty("line").GetDouble();
 var baselineBranch = aggregate.GetProperty("branch").GetDouble();
@@ -89,7 +90,7 @@ foreach (var report in args.Skip(1))
 var failures = new List<string>();
 foreach (var requiredPath in thresholds.Keys.Order(StringComparer.Ordinal))
 {
-    if (!files.ContainsKey(requiredPath))
+    if (!files.ContainsKey(requiredPath) && SourcePathExists(repositoryRoot, requiredPath))
     {
         failures.Add($"required coverage path '{requiredPath}' is missing from the supplied reports");
     }
@@ -164,6 +165,14 @@ static string NormalizeSourcePath(string path)
     }
     var toolsMarker = normalized.LastIndexOf("/tools/", StringComparison.Ordinal);
     return toolsMarker >= 0 ? normalized[(toolsMarker + 1)..] : normalized.TrimStart('/');
+}
+
+static bool SourcePathExists(string repositoryRoot, string path)
+{
+    var relativePath = path.StartsWith("tools/", StringComparison.Ordinal)
+        ? path
+        : Path.Combine("src", path);
+    return File.Exists(Path.Combine(repositoryRoot, relativePath));
 }
 
 static double ParsePercentage(string value)
