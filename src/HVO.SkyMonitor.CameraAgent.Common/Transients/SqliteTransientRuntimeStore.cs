@@ -234,7 +234,8 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
             }
             if (!File.Exists(_databasePath))
             {
-                throw new InvalidOperationException("Raw ingress schema 11 must initialize before transient runtime state.");
+                throw new InvalidOperationException(
+                    $"Raw ingress schema {SqliteRawCaptureJournal.CurrentSchemaVersion} must initialize before transient runtime state.");
             }
             EnsureDatabaseFilesArePhysical();
             var inspection = await InspectRuntimeSchemaAsync(cancellationToken).ConfigureAwait(false);

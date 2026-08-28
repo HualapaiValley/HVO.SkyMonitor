@@ -89,7 +89,8 @@ internal sealed class CalibrationCaptureProcessingStep(
                         AuxiliaryInputs: bundle.AuxiliaryInputs,
                         InputArtifactId: input.ArtifactId), cancellationToken).ConfigureAwait(false);
                 }
-                catch (InvalidDataException)
+                catch (Exception exception) when (exception is InvalidDataException or IOException or
+                                                   UnauthorizedAccessException or CalibrationLibraryStoreConflictException)
                 {
                     outcome = ProcessingOutcome.TerminalFailure(
                         ProcessingReasonCodes.CalibrationReferenceChecksumMismatch,
@@ -206,8 +207,12 @@ internal sealed class CalibrationCaptureProcessingStep(
                descriptor.Profiles.Calibration.Name,
                "synthetic-calibration-model",
                StringComparison.Ordinal) &&
-           string.Equals(
-               descriptor.Profiles.Calibration.Sha256,
+            string.Equals(
+                descriptor.Profiles.Calibration.Version,
+                model.SchemaVersion,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                descriptor.Profiles.Calibration.Sha256,
                SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model),
                StringComparison.OrdinalIgnoreCase);
 }

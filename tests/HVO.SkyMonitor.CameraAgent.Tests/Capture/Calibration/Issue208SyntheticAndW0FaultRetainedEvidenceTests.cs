@@ -28,7 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 [DoNotParallelize]
 [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
     Justification = "The retained-evidence harness passes only fixed SQL queries to its helpers.")]
-public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
+public sealed class Issue208SyntheticAndW0FaultRetainedEvidenceTests
 {
 #if DEBUG
     private const string BuildConfiguration = "Debug";
@@ -39,28 +39,31 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
     private const int Height = 48;
     private const int SourcesPerKind = 3;
     private const int Seed = 208;
-    private const string ExpectedLegacyBundleId = "legacy-517BBB80CB2C7BF36CEC36F5832833E7";
-    private const string ExpectedLegacyProfileIdentitySha256 =
+    private const string ExpectedSyntheticBundleId = "synthetic-517BBB80CB2C7BF36CEC36F5832833E7";
+    private const string ExpectedSyntheticProfileIdentitySha256 =
         "0F37C86AC1F98FCB5EC3ADA82CCAC271A091E430D44174860ACF9D230A3B5851";
     private static readonly DateTimeOffset FixedUtcNow = new(2026, 7, 26, 12, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions EvidenceJsonOptions = CreateEvidenceJsonOptions();
-    private static readonly Dictionary<string, FileIdentity> ExpectedLegacyFiles = new(StringComparer.Ordinal)
+    private static readonly Dictionary<string, FileIdentity> ExpectedSyntheticFiles = new(StringComparer.Ordinal)
     {
         ["bias.bin"] = new(6144, "70F4CE894BD99D133E756673F14A7C61379DEBD5666B12F16C19685496999654"),
-        ["bias.json"] = new(2678, "E0335989251732B5D03EE9BCCA991F2558E77AB43D42ACD2055A9826BA246E79"),
-        ["calibration-profile.json"] = new(1309, ExpectedLegacyProfileIdentitySha256),
+        ["bias.json"] = new(2684, "6CAF9EB53450035090406F975991BF61B979B0BCD458051EA4A8EB1B31EFAD86"),
+        ["calibration-library-bundle.json"] = new(
+            3396,
+            "9340674A51C8BEFC40AD61AF026D3B969193022978692A843CB948C499E3DB81"),
+        ["reference-calibration-profile.json"] = new(1309, ExpectedSyntheticProfileIdentitySha256),
         ["dark.bin"] = new(6144, "63390266A137CE75B7206685D5EF7E4127B59CF4E15666FEE318EE08448EE545"),
-        ["dark.json"] = new(2646, "2150E2463691316DB7D899B701E56AB21CB6AD70D927C336ECC726AF7D0771F3"),
+        ["dark.json"] = new(2652, "ECACFF1BB48EBF133EA8C45C2B855C0978EB6D907AD101B7270131776EDBA14C"),
         ["defect.bin"] = new(6144, "8BBE6FB07EAB2C1D495B0ACE6EA73B0E05780594CE5D7622A507FB3375E4135A"),
-        ["defect.json"] = new(2684, "DE7D81F95C51815513CA08B3063984B020CB619B82DF7AE5E98152CA95FFFC10"),
+        ["defect.json"] = new(2690, "B4BDC3376265C7350D4CF429937E0626BA11D79851802927B40E5B3AAFEE3464"),
         ["flat.bin"] = new(6144, "DD9C69178B6E074F2DDAFEC3ED7EE26A107D27A3977B090BD8A94B74866DBB69"),
-        ["flat.json"] = new(2646, "E0F955988AABACB1109202297BA0796F89FD0DFAC36830BF798927B5356EA08F")
+        ["flat.json"] = new(2652, "69DC396CA056CB444D10E8846AAEA014B3625A37B7A486FBACB560FF60A7CBF1")
     };
 
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
-    public async Task C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence()
+    public async Task C208SyntheticAndW0Fault_RetainsCanonicalRestartEvidence()
     {
         if (!string.Equals(BuildConfiguration, "Release", StringComparison.Ordinal))
         {
@@ -71,8 +74,8 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
         var git = await ReadGitEvidenceAsync(repositoryRoot).ConfigureAwait(false);
         var revision = GetEvidenceRevision(git);
         var outputDirectory = Path.Combine(repositoryRoot, "TestResults", "issue-208", revision);
-        var outputPath = Path.Combine(outputDirectory, "c208-legacy-w0-fault-retained-evidence.json");
-        var legacyRoot = CreateTemporaryRoot("legacy");
+        var outputPath = Path.Combine(outputDirectory, "c208-synthetic-w0-fault-retained-evidence.json");
+        var syntheticRoot = CreateTemporaryRoot("synthetic");
         var w0Root = CreateTemporaryRoot("w0");
         Directory.CreateDirectory(outputDirectory);
 
@@ -85,7 +88,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
             var allocatedStarted = GC.GetTotalAllocatedBytes(precise: true);
             var workingSetStarted = process.WorkingSet64;
 
-            var legacy = await RunLegacyAsync(legacyRoot).ConfigureAwait(false);
+            var synthetic = await RunSyntheticAsync(syntheticRoot).ConfigureAwait(false);
             var faultTrials = new List<W0FaultTrialEvidence>();
             foreach (var boundary in CreatePublicationBoundaries())
             {
@@ -96,7 +99,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
             process.Refresh();
             var evidence = new
             {
-                SchemaVersion = "issue-208-c208-legacy-w0-fault-retained-evidence-v1",
+                SchemaVersion = "issue-208-c208-synthetic-w0-fault-retained-evidence-v1",
                 Issue = 208,
                 GeneratedUtc = DateTimeOffset.UtcNow,
                 Revision = revision,
@@ -104,8 +107,8 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
                     "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj " +
                     "--configuration Release --filter \"FullyQualifiedName=" +
                     "HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration." +
-                    "Issue208LegacyAndW0FaultRetainedEvidenceTests." +
-                    "C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence\"",
+                    "Issue208SyntheticAndW0FaultRetainedEvidenceTests." +
+                    "C208SyntheticAndW0Fault_RetainsCanonicalRestartEvidence\"",
                 Machine = new
                 {
                     OperatingSystem = RuntimeInformation.OSDescription,
@@ -133,7 +136,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
                     Git = git,
                     Harness = Path.GetRelativePath(repositoryRoot, GetType().Assembly.Location),
                     HarnessSource = "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Calibration/" +
-                        "Issue208LegacyAndW0FaultRetainedEvidenceTests.cs",
+                        "Issue208SyntheticAndW0FaultRetainedEvidenceTests.cs",
                     ProductionPaths = new[]
                     {
                         typeof(SyntheticCalibrationReferenceStore).FullName,
@@ -145,7 +148,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
                     },
                     Assemblies = new[]
                     {
-                        ReadAssemblyEvidence(typeof(Issue208LegacyAndW0FaultRetainedEvidenceTests)),
+                        ReadAssemblyEvidence(typeof(Issue208SyntheticAndW0FaultRetainedEvidenceTests)),
                         ReadAssemblyEvidence(typeof(SqliteCalibrationLibraryStore)),
                         ReadAssemblyEvidence(typeof(CalibrationLibraryBundleV1)),
                         ReadAssemblyEvidence(typeof(CalibrationMasterBuilder))
@@ -153,9 +156,9 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
                 },
                 WorkloadManifest = new
                 {
-                    Legacy = new
+                    Synthetic = new
                     {
-                        Name = "C208-legacy",
+                        Name = "C208-synthetic",
                         ValidShippedFormat = ReferenceCalibrationProfileV1.CurrentSchemaVersion,
                         ValidBundleCount = 1,
                         IncompleteCopyCount = 1,
@@ -189,13 +192,13 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
                     TotalAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedStarted,
                     WorkingSetStartBytes = workingSetStarted,
                     WorkingSetEndBytes = process.WorkingSet64,
-                    Legacy = legacy.Measurements,
+                    Synthetic = synthetic.Measurements,
                     W0FaultTrials = faultTrials.Select(static trial => trial.Measurements).ToArray(),
                     TerminalBoundaries = terminalBoundaries.Measurements
                 },
                 Correctness = new
                 {
-                    Legacy = legacy.Correctness,
+                    Synthetic = synthetic.Correctness,
                     W0FaultTrials = faultTrials.Select(static trial => trial.Correctness).ToArray(),
                     TerminalBoundaries = terminalBoundaries.Correctness,
                     AllInjectedFaultsObserved = faultTrials.All(static trial => trial.Correctness.FaultObserved) &&
@@ -216,37 +219,37 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
         }
         finally
         {
-            DeleteRoot(legacyRoot);
+            DeleteRoot(syntheticRoot);
             DeleteRoot(w0Root);
         }
     }
 
-    private static async Task<LegacyEvidence> RunLegacyAsync(string root)
+    private static async Task<SyntheticEvidence> RunSyntheticAsync(string root)
     {
         var started = Stopwatch.GetTimestamp();
         var options = CreateOptions(root);
         var syntheticStore = new SyntheticCalibrationReferenceStore(
             options, new CameraAgentClearReferenceLoader(options));
-        var validModel = LegacyModel(Seed);
-        var incompleteModel = LegacyModel(Seed + 1);
-        var corruptModel = LegacyModel(Seed + 2);
-        var validLight = LegacyLight(validModel);
+        var validModel = SyntheticModel(Seed);
+        var incompleteModel = SyntheticModel(Seed + 1);
+        var corruptModel = SyntheticModel(Seed + 2);
+        var validLight = SyntheticLight(validModel);
         var valid = await syntheticStore.GetOrCreateAsync(validLight, validModel, CancellationToken.None)
             .ConfigureAwait(false);
         var incomplete = await syntheticStore.GetOrCreateAsync(
-            LegacyLight(incompleteModel), incompleteModel, CancellationToken.None).ConfigureAwait(false);
+            SyntheticLight(incompleteModel), incompleteModel, CancellationToken.None).ConfigureAwait(false);
         var corrupt = await syntheticStore.GetOrCreateAsync(
-            LegacyLight(corruptModel), corruptModel, CancellationToken.None).ConfigureAwait(false);
+            SyntheticLight(corruptModel), corruptModel, CancellationToken.None).ConfigureAwait(false);
         var validDirectory = RelativeDirectory(valid);
         var incompleteDirectory = RelativeDirectory(incomplete);
         var corruptDirectory = RelativeDirectory(corrupt);
-        var incompleteBundleId = $"legacy-{Path.GetFileName(incompleteDirectory)[..32].ToUpperInvariant()}";
-        var corruptBundleId = $"legacy-{Path.GetFileName(corruptDirectory)[..32].ToUpperInvariant()}";
+        var incompleteBundleId = $"synthetic-{Path.GetFileName(incompleteDirectory)[..32].ToUpperInvariant()}";
+        var corruptBundleId = $"synthetic-{Path.GetFileName(corruptDirectory)[..32].ToUpperInvariant()}";
         var validBefore = HashDirectory(root, validDirectory);
-        Assert.AreEqual(ExpectedLegacyProfileIdentitySha256, valid.ProfileIdentitySha256);
-        AssertHashesEqual(ExpectedLegacyFiles, validBefore);
+        Assert.AreEqual(ExpectedSyntheticProfileIdentitySha256, valid.ProfileIdentitySha256);
+        AssertHashesEqual(ExpectedSyntheticFiles, validBefore);
 
-        File.Delete(Resolve(root, $"{incompleteDirectory}/calibration-profile.json"));
+        File.Delete(Resolve(root, $"{incompleteDirectory}/reference-calibration-profile.json"));
         var incompleteBefore = HashDirectory(root, incompleteDirectory);
         var corruptPayload = Resolve(root, $"{corruptDirectory}/{CalibrationReferenceKinds.Bias}.bin");
         var corruptBytes = await File.ReadAllBytesAsync(corruptPayload).ConfigureAwait(false);
@@ -269,11 +272,11 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
             var bundles = await store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(1, bundles);
             validBundleId = bundles[0].Bundle.BundleId;
-            Assert.AreEqual(ExpectedLegacyBundleId, validBundleId);
-            Assert.AreEqual(CalibrationLibraryBundleSources.LegacySyntheticV1, bundles[0].Bundle.Source);
+            Assert.AreEqual(ExpectedSyntheticBundleId, validBundleId);
+            Assert.AreEqual(CalibrationLibraryBundleSources.SyntheticReferencesV1, bundles[0].Bundle.Source);
             Assert.AreEqual(valid.ProfileIdentitySha256, bundles[0].Bundle.ProfileIdentitySha256);
             Assert.AreEqual(valid.EvidenceFiles.Single(static file =>
-                file.RelativePath.EndsWith("/calibration-profile.json", StringComparison.Ordinal)).RelativePath,
+                file.RelativePath.EndsWith("/reference-calibration-profile.json", StringComparison.Ordinal)).RelativePath,
                 bundles[0].Bundle.ProfileRelativePath);
             var beforeActivation = await store.SelectAsync(validLight, CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(beforeActivation.IsSelected);
@@ -297,7 +300,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
             Assert.AreEqual(0, restart.Quarantined);
             Assert.AreEqual(1, restart.Failed);
             _ = await restarted.ActivateAsync(
-                validBundleId, "c208-legacy-activate", 0, "evidence-harness", "valid v1 selection",
+                validBundleId, "c208-synthetic-activate", 0, "evidence-harness", "valid v1 selection",
                 CancellationToken.None).ConfigureAwait(false);
             selected = await restarted.SelectAsync(validLight, CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(selected.IsSelected, selected.ReasonCode);
@@ -334,7 +337,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
         Assert.IsNull(corruptReconciliation.QuarantineRelativePath);
         Assert.AreEqual(corruptAfter.Values.Sum(static file => file.Length), corruptReconciliation.ObservedBytes);
         Assert.IsNotNull(corruptReconciliation.CompletedUnixMs);
-        return new LegacyEvidence(
+        return new SyntheticEvidence(
             new
             {
                 WallMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds,
@@ -350,9 +353,9 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
                 RestartReconciliation = restart,
                 ValidBundleId = validBundleId,
                 ValidProfileIdentitySha256 = valid.ProfileIdentitySha256,
-                PinnedValidProfileIdentitySha256 = ExpectedLegacyProfileIdentitySha256,
+                PinnedValidProfileIdentitySha256 = ExpectedSyntheticProfileIdentitySha256,
                 ValidFiles = validAfter,
-                PinnedValidFiles = ExpectedLegacyFiles,
+                PinnedValidFiles = ExpectedSyntheticFiles,
                 IncompleteOriginalRelativePath = incompleteDirectory,
                 IncompleteQuarantineRelativePath = Normalize(Path.GetRelativePath(root, quarantineDirectory)),
                 IncompleteFiles = incompleteAfter,
@@ -366,7 +369,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
                 CorruptReconciliation = corruptReconciliation,
                 PublishedBundleCount = rows.BundleCount,
                 SelectedBundleId = selected.Bundle?.Bundle.BundleId,
-                ValidBytesAndPathsPreserved = ExpectedLegacyFiles.SequenceEqual(validAfter),
+                ValidBytesAndPathsPreserved = ExpectedSyntheticFiles.SequenceEqual(validAfter),
                 InvalidEvidencePreserved = corruptBefore.SequenceEqual(corruptAfter) &&
                     incompleteBefore.Values.OrderBy(static file => file.Sha256)
                         .SequenceEqual(incompleteAfter.Values.OrderBy(static file => file.Sha256)),
@@ -840,7 +843,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
         }
     }
 
-    private static SyntheticCalibrationModelV1 LegacyModel(int seed)
+    private static SyntheticCalibrationModelV1 SyntheticModel(int seed)
         => new()
         {
             Seed = seed,
@@ -849,7 +852,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
             Defects = [new SyntheticCalibrationDefect(seed % Width, seed % Height)]
         };
 
-    private static ReconstructionDescriptor LegacyLight(SyntheticCalibrationModelV1 model)
+    private static ReconstructionDescriptor SyntheticLight(SyntheticCalibrationModelV1 model)
     {
         var template = ReconstructableCaptureContractTests.CreateManifest(
             CameraPixelFormat.Mono16, Width, Height, Width * 2, new byte[Width * Height * 2]).Descriptor;
@@ -868,6 +871,13 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
             {
                 StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
                 LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+            },
+            Profiles = template.Profiles with
+            {
+                Calibration = new ProfileIdentityDescriptor(
+                    "synthetic-calibration-model",
+                    model.SchemaVersion,
+                    SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
     }
@@ -899,6 +909,12 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
         IReadOnlyDictionary<string, FileIdentity> actual)
     {
         CollectionAssert.AreEquivalent(expected.Keys.ToArray(), actual.Keys.ToArray());
+        if (expected.Any(file => !actual.TryGetValue(file.Key, out var value) || value != file.Value))
+        {
+            Assert.Fail(string.Join(
+                Environment.NewLine,
+                actual.Select(static file => $"{file.Key}: {file.Value.Length} {file.Value.Sha256}")));
+        }
         foreach (var file in expected)
         {
             Assert.AreEqual(file.Value, actual[file.Key], file.Key);
@@ -1334,7 +1350,7 @@ public sealed class Issue208LegacyAndW0FaultRetainedEvidenceTests
         object Measurements,
         TerminalBoundaryCorrectness Correctness);
 
-    private sealed record LegacyEvidence(object Measurements, object Correctness);
+    private sealed record SyntheticEvidence(object Measurements, object Correctness);
 
     private sealed record GitEvidence(
         string Head,

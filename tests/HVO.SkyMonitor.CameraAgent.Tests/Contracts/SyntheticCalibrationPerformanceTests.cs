@@ -70,23 +70,33 @@ public sealed class SyntheticCalibrationPerformanceTests
             var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
             var loader = new CameraAgentClearReferenceLoader(options);
             var store = new SyntheticCalibrationReferenceStore(options, loader);
+            var descriptor = manifest.Descriptor with
+            {
+                Profiles = manifest.Descriptor.Profiles with
+                {
+                    Calibration = new ProfileIdentityDescriptor(
+                        "synthetic-calibration-model",
+                        model.SchemaVersion,
+                        SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
+                }
+            };
             var process = Process.GetCurrentProcess();
             var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
             var cpuBefore = process.TotalProcessorTime;
             var rssBefore = Environment.WorkingSet;
             var started = Stopwatch.GetTimestamp();
-            var first = await store.GetOrCreateAsync(manifest.Descriptor, model, CancellationToken.None).ConfigureAwait(false);
+            var first = await store.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false);
             var initializeMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             var initializeCpuMilliseconds = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
             var initializeAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
             var rssAfter = Environment.WorkingSet;
             var files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).ToArray();
             var persistedBytes = files.Sum(static path => new FileInfo(path).Length);
-            Assert.HasCount(9, files);
+            Assert.HasCount(10, files);
             Assert.HasCount(4, first.References);
 
             started = Stopwatch.GetTimestamp();
-            var cached = await store.GetOrCreateAsync(manifest.Descriptor, model, CancellationToken.None).ConfigureAwait(false);
+            var cached = await store.GetOrCreateAsync(descriptor, model, CancellationToken.None).ConfigureAwait(false);
             var cachedMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             Assert.AreSame(first, cached);
 
@@ -96,7 +106,7 @@ public sealed class SyntheticCalibrationPerformanceTests
             cpuBefore = process.TotalProcessorTime;
             started = Stopwatch.GetTimestamp();
             var restarted = await restartedStore.GetOrCreateAsync(
-                manifest.Descriptor, model, CancellationToken.None).ConfigureAwait(false);
+                descriptor, model, CancellationToken.None).ConfigureAwait(false);
             var restartMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             var restartCpuMilliseconds = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
             var restartAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
@@ -117,15 +127,15 @@ public sealed class SyntheticCalibrationPerformanceTests
                     AllocatedBytes = initializeAllocatedBytes,
                     RssBeforeBytes = rssBefore,
                     RssAfterBytes = rssAfter,
-                    FileWrites = 9,
-                    AtomicRenames = 9,
-                    FilesHashed = 18
+                    FileWrites = 10,
+                    AtomicRenames = 10,
+                    FilesHashed = 20
                 },
                 CachedLookup = new
                 {
                     LatencyMilliseconds = cachedMilliseconds,
-                    FilesHashed = 9,
-                    MetadataValidations = 9,
+                    FilesHashed = 10,
+                    MetadataValidations = 10,
                     FileWrites = 0
                 },
                 RestartValidation = new
@@ -133,8 +143,8 @@ public sealed class SyntheticCalibrationPerformanceTests
                     LatencyMilliseconds = restartMilliseconds,
                     CpuMilliseconds = restartCpuMilliseconds,
                     AllocatedBytes = restartAllocatedBytes,
-                    FilesHashed = 27,
-                    MetadataValidations = 9,
+                    FilesHashed = 30,
+                    MetadataValidations = 10,
                     FileWrites = 0
                 },
                 ProfileIdentitySha256 = first.ProfileIdentitySha256,

@@ -222,7 +222,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             if (!File.Exists(_databasePath))
             {
                 throw new InvalidOperationException(
-                    "Raw ingress schema 11 must be initialized before capture processing schema 5.");
+                    $"Raw ingress schema {SqliteRawCaptureJournal.CurrentSchemaVersion} must be initialized before capture processing schema 5.");
             }
             EnsureDatabaseFilesArePhysical();
             var inspection = await InspectExistingDatabaseAsync(cancellationToken).ConfigureAwait(false);
@@ -2327,7 +2327,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             connection, "PRAGMA user_version;", cancellationToken, transaction).ConfigureAwait(false);
         if (rawVersion != SqliteRawCaptureJournal.CurrentSchemaVersion)
         {
-            throw new InvalidDataException("Capture processing SQLite does not share canonical raw ingress schema 11.");
+            throw new InvalidDataException(
+                $"Capture processing SQLite does not share canonical raw ingress schema {SqliteRawCaptureJournal.CurrentSchemaVersion}.");
         }
         var integrity = await ExecuteScalarStringAsync(
             connection, "PRAGMA integrity_check;", cancellationToken, transaction).ConfigureAwait(false);

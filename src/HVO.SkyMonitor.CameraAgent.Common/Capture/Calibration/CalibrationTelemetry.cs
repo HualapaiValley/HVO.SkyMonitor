@@ -229,7 +229,7 @@ public sealed class CalibrationTelemetry : IDisposable
         => kind is "bias" or "dark" or "flat" or "defect" ? kind : "other";
 
     private static string NormalizeSource(string source)
-        => source is CalibrationLibraryBundleSources.LegacySyntheticV1 or
+        => source is CalibrationLibraryBundleSources.SyntheticReferencesV1 or
             CalibrationLibraryBundleSources.VirtualAcquisitionV1 ? source : "other";
 
     private static string NormalizeOutcome(string outcome)

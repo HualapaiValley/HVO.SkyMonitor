@@ -531,7 +531,7 @@ public sealed class TransientWorkerRuntimeTests
     [TestMethod]
     public async Task RawIngressV10_DoesNotCreateRuntimeOperationAuditSchema()
     {
-        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-v11-migration", Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-current-migration", Guid.NewGuid().ToString("N"));
         try
         {
             using (var provider = CreateProvider(root))
@@ -575,7 +575,7 @@ public sealed class TransientWorkerRuntimeTests
     [DataRow("strict")]
     [DataRow("foreign-key")]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The test mutates the locally generated canonical schema with fixed replacements to exercise drift detection.")]
-    public async Task CurrentV11RuntimeOperationSchemaDrift_FailsClosed(string drift)
+    public async Task CurrentRuntimeOperationSchemaDrift_FailsClosed(string drift)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-transient-runtime-schema", Guid.NewGuid().ToString("N"));
         try

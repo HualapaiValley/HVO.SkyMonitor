@@ -1,9 +1,16 @@
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+
+internal static class CalibrationLibraryEvidenceNames
+{
+    internal const string BundleEnvelope = "calibration-library-bundle.json";
+    internal const string ProfileMarker = "reference-calibration-profile.json";
+}
 
 public enum CalibrationPublicationFaultPoint
 {
@@ -11,6 +18,8 @@ public enum CalibrationPublicationFaultPoint
     AfterPayloadPublished,
     BeforeManifestWrite,
     AfterManifestPublished,
+    BeforeBundleWrite,
+    AfterBundlePublished,
     BeforeProfileWrite,
     AfterProfilePublished,
     DirectorySynced,
@@ -102,7 +111,7 @@ public sealed class CalibrationArtifactPublisher(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(relativePath);
-        if (!relativePath.EndsWith("/reference-calibration-profile.json", StringComparison.Ordinal))
+        if (!relativePath.EndsWith($"/{CalibrationLibraryEvidenceNames.ProfileMarker}", StringComparison.Ordinal))
         {
             throw new ArgumentException("The calibration profile marker path is invalid.", nameof(relativePath));
         }
@@ -116,6 +125,30 @@ public sealed class CalibrationArtifactPublisher(
             _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterProfilePublished, relativePath);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
             _faultInjector.Inject(CalibrationPublicationFaultPoint.DirectorySynced, relativePath);
+        }
+        finally
+        {
+            lifecycle.Release();
+        }
+    }
+
+    public async Task PublishBundleEnvelopeAsync(
+        string relativePath,
+        ReadOnlyMemory<byte> bundle,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(relativePath);
+        if (!relativePath.EndsWith($"/{CalibrationLibraryEvidenceNames.BundleEnvelope}", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("The calibration bundle envelope path is invalid.", nameof(relativePath));
+        }
+        var lifecycle = RawIngressLifecycleLock.ForRoot(_root);
+        await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _faultInjector.Inject(CalibrationPublicationFaultPoint.BeforeBundleWrite, relativePath);
+            await WriteImmutableAsync(Resolve(relativePath), bundle, cancellationToken).ConfigureAwait(false);
+            _faultInjector.Inject(CalibrationPublicationFaultPoint.AfterBundlePublished, relativePath);
         }
         finally
         {

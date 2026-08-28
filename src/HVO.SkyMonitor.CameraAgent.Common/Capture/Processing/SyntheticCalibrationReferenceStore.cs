@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Collections.Concurrent;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Imaging;
@@ -13,6 +14,7 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal sealed record SyntheticCalibrationBundle(
+    CalibrationLibraryBundleV1 LibraryBundle,
     ReferenceCalibrationProfileV1 Profile,
     ReadOnlyMemory<byte> ProfileJson,
     string ProfileIdentitySha256,
@@ -29,9 +31,14 @@ internal sealed record SyntheticCalibrationEvidenceFile(
 
 internal sealed class SyntheticCalibrationReferenceStore(
     IOptions<CameraAgentHostOptions> options,
-    CameraAgentClearReferenceLoader loader)
+    CameraAgentClearReferenceLoader loader,
+    CalibrationArtifactPublisher? publisher = null,
+    SqliteCalibrationLibraryStore? calibrationLibrary = null)
 {
     private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
+    private readonly CalibrationArtifactPublisher _publisher = publisher ??
+        new CalibrationArtifactPublisher(options, NullCalibrationPublicationFaultInjector.Instance);
+    private readonly SqliteCalibrationLibraryStore? _calibrationLibrary = calibrationLibrary;
     private readonly ConcurrentDictionary<string, Task<SyntheticCalibrationBundle>> _cache = new(StringComparer.Ordinal);
 
     internal async ValueTask<SyntheticCalibrationBundle> GetOrCreateAsync(
@@ -42,25 +49,25 @@ internal sealed class SyntheticCalibrationReferenceStore(
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(lightDescriptor);
         ArgumentNullException.ThrowIfNull(model);
+        if (!CalibrationCaptureProcessingStep.MatchesSyntheticCalibrationModel(lightDescriptor, model))
+        {
+            throw new InvalidDataException("The synthetic calibration source model identity does not match the light capture.");
+        }
         var layout = lightDescriptor.Layout;
         var modelElement = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new
         {
             model,
-            layout.Width,
-            layout.Height,
-            layout.PixelFormat,
-            layout.ByteOrder,
-            layout.SampleDepthBits,
-            layout.ContainerDepthBits,
-            layout.Packing,
-            layout.CfaPattern,
-            RigProfileSha256 = lightDescriptor.Profiles.Rig.Sha256,
-            SensorProfileSha256 = lightDescriptor.Profiles.Sensor.Sha256
+            lightDescriptor.Capture.AgentId,
+            lightDescriptor.Capture.RigId,
+            InputLayout = layout,
+            lightDescriptor.Profiles
         }));
-        var modelIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(modelElement);
+        var publicationIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(modelElement);
+        var sourceModelIdentity = SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model);
         var task = _cache.GetOrAdd(
-            modelIdentity,
-            _ => CreateAsync(lightDescriptor, model, modelIdentity, CancellationToken.None));
+            publicationIdentity,
+            _ => CreateAsync(
+                lightDescriptor, model, publicationIdentity, sourceModelIdentity, CancellationToken.None));
         try
         {
             var bundle = await task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -69,7 +76,7 @@ internal sealed class SyntheticCalibrationReferenceStore(
         }
         catch when (task.IsFaulted || task.IsCanceled)
         {
-            _cache.TryRemove(new KeyValuePair<string, Task<SyntheticCalibrationBundle>>(modelIdentity, task));
+            _cache.TryRemove(new KeyValuePair<string, Task<SyntheticCalibrationBundle>>(publicationIdentity, task));
             throw;
         }
     }
@@ -77,23 +84,26 @@ internal sealed class SyntheticCalibrationReferenceStore(
     private async Task<SyntheticCalibrationBundle> CreateAsync(
         ReconstructionDescriptor lightDescriptor,
         SyntheticCalibrationModelV1 model,
-        string modelIdentity,
+        string publicationIdentity,
+        string sourceModelIdentity,
         CancellationToken cancellationToken)
     {
         var layout = lightDescriptor.Layout;
-        var relativeDirectory = Path.Combine("calibration", "synthetic", modelIdentity.ToUpperInvariant());
-        var profileRelativePath = Normalize(Path.Combine(relativeDirectory, "calibration-profile.json"));
-        EnsureCommittedBundleIsComplete(relativeDirectory, profileRelativePath);
+        var relativeDirectory = Path.Combine("calibration", "synthetic", publicationIdentity.ToUpperInvariant());
+        var bundleRelativePath = Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.BundleEnvelope));
+        var profileRelativePath = Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.ProfileMarker));
+        EnsureCommittedBundleIsComplete(relativeDirectory, bundleRelativePath, profileRelativePath);
         var generated = SyntheticCalibrationReferenceGenerator.Generate(
             layout.Width, layout.Height, layout.PixelFormat, model);
         var referenceInputs = new Dictionary<string, ProcessingArtifact>(StringComparer.Ordinal);
         var referenceManifests = new Dictionary<string, ArtifactManifestV2>(StringComparer.Ordinal);
         var descriptors = new List<CalibrationReferenceDescriptorV1>(4);
+        var libraryArtifacts = new List<CalibrationLibraryArtifactV1>(4);
         foreach (var reference in CreateReferences(generated, model))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var artifactId = CreateGuid(modelIdentity, reference.Kind);
-            var captureId = CreateGuid(modelIdentity, $"capture:{reference.Kind}");
+            var artifactId = CreateGuid(publicationIdentity, reference.Kind);
+            var captureId = CreateGuid(publicationIdentity, $"capture:{reference.Kind}");
             var payloadRelativePath = Normalize(Path.Combine(relativeDirectory, $"{reference.Kind}.bin"));
             var manifestRelativePath = Normalize(Path.Combine(relativeDirectory, $"{reference.Kind}.json"));
             var payload = reference.Frame.PixelData;
@@ -101,7 +111,8 @@ internal sealed class SyntheticCalibrationReferenceStore(
             var descriptor = CreateDescriptor(
                 lightDescriptor,
                 model,
-                modelIdentity,
+                publicationIdentity,
+                sourceModelIdentity,
                 reference.Kind,
                 reference.Exposure,
                 artifactId,
@@ -113,12 +124,12 @@ internal sealed class SyntheticCalibrationReferenceStore(
                 ArtifactManifestV2.CurrentSchemaVersion,
                 descriptor,
                 payloadRelativePath);
-            await WriteImmutableAsync(payloadRelativePath, payload, cancellationToken).ConfigureAwait(false);
-            await WriteImmutableAsync(
+            await _publisher.PublishPairAsync(
+                payloadRelativePath,
+                payload,
                 manifestRelativePath,
                 CaptureContractJson.Serialize(manifest),
                 cancellationToken).ConfigureAwait(false);
-            loader.RegisterRetentionHold(manifestRelativePath);
             referenceInputs.Add(reference.Kind, CameraAgentClearReferenceLoader.CreateArtifact(descriptor, payload));
             referenceManifests.Add(reference.Kind, manifest);
             descriptors.Add(new CalibrationReferenceDescriptorV1(
@@ -128,11 +139,24 @@ internal sealed class SyntheticCalibrationReferenceStore(
                 reference.Exposure,
                 model.Gain,
                 model.TemperatureC));
+            libraryArtifacts.Add(new CalibrationLibraryArtifactV1(
+                reference.Kind,
+                CalibrationLibraryArtifactRoles.Master,
+                artifactId,
+                manifestRelativePath,
+                payloadSha256,
+                reference.Exposure,
+                model.Gain,
+                null,
+                model.TemperatureC,
+                null,
+                [],
+                null));
         }
 
         var profile = new ReferenceCalibrationProfileV1(
             ReferenceCalibrationProfileV1.CurrentSchemaVersion,
-            $"synthetic-{modelIdentity[..16].ToUpperInvariant()}",
+            $"synthetic-{publicationIdentity[..16].ToUpperInvariant()}",
             model.SchemaVersion,
             "VirtualSky deterministic software reference generation; not a physical calibration",
             DateTimeOffset.UnixEpoch,
@@ -148,10 +172,50 @@ internal sealed class SyntheticCalibrationReferenceStore(
             descriptors);
         var profileJson = ReferenceCalibrationProfileJson.Serialize(profile);
         var profileIdentity = ProcessingIdentity.ComputePayloadSha256(profileJson);
-        await WriteImmutableAsync(
+        var outputLayout = referenceManifests.Values.First().Descriptor.Layout;
+        var bundle = new CalibrationLibraryBundleV1(
+            CalibrationLibraryBundleV1.CurrentSchemaVersion,
+            $"synthetic-{publicationIdentity[..32].ToUpperInvariant()}",
+            CalibrationLibraryBundleSources.SyntheticReferencesV1,
+            DateTimeOffset.UnixEpoch,
+            profileRelativePath,
+            profileIdentity,
+            sourceModelIdentity,
+            new CalibrationApplicabilityV1(
+                lightDescriptor.Capture.AgentId,
+                lightDescriptor.Capture.RigId,
+                lightDescriptor.Profiles.Rig.Sha256,
+                lightDescriptor.Profiles.Sensor.Sha256,
+                layout,
+                outputLayout,
+                model.Gain,
+                model.Gain,
+                null,
+                null,
+                null,
+                null,
+                model.TemperatureC,
+                model.TemperatureC,
+                DateTimeOffset.UnixEpoch,
+                null),
+            libraryArtifacts);
+        await _publisher.PublishBundleEnvelopeAsync(
+            bundleRelativePath,
+            CalibrationLibraryContractJson.Serialize(bundle),
+            cancellationToken).ConfigureAwait(false);
+        await _publisher.PublishProfileMarkerAsync(
             profileRelativePath,
             profileJson,
             cancellationToken).ConfigureAwait(false);
+        foreach (var manifestRelativePath in libraryArtifacts.Select(static artifact => artifact.ManifestRelativePath))
+        {
+            loader.RegisterRetentionHold(manifestRelativePath);
+        }
+        if (_calibrationLibrary is not null)
+        {
+            _ = await _calibrationLibrary.AdoptPublishedBundleAsync(bundle, CancellationToken.None).ConfigureAwait(false);
+            _publisher.InjectFault(CalibrationPublicationFaultPoint.AfterSqlitePublication, bundleRelativePath);
+        }
         var auxiliaryInputs = new List<ProcessingAuxiliaryInput>
         {
             new(
@@ -167,6 +231,7 @@ internal sealed class SyntheticCalibrationReferenceStore(
             ProcessingInputSelector.Raw(pair.Key),
             ArtifactId: pair.Value.ArtifactId)));
         return new SyntheticCalibrationBundle(
+            bundle,
             profile,
             profileJson,
             profileIdentity,
@@ -179,7 +244,8 @@ internal sealed class SyntheticCalibrationReferenceStore(
     private static ReconstructionDescriptor CreateDescriptor(
         ReconstructionDescriptor light,
         SyntheticCalibrationModelV1 model,
-        string modelIdentity,
+        string publicationIdentity,
+        string sourceModelIdentity,
         string kind,
         TimeSpan exposure,
         Guid artifactId,
@@ -192,7 +258,7 @@ internal sealed class SyntheticCalibrationReferenceStore(
         var recipeOptions = CaptureContractJson.SerializeToElement(new
         {
             schemaVersion = model.SchemaVersion,
-            modelIdentitySha256 = modelIdentity,
+            modelIdentitySha256 = sourceModelIdentity,
             referenceKind = kind,
             generator = SyntheticCalibrationReferenceGenerator.AlgorithmVersion
         });
@@ -200,7 +266,7 @@ internal sealed class SyntheticCalibrationReferenceStore(
             new CaptureIdentityDescriptor(
                 light.Capture.AgentId,
                 light.Capture.RigId,
-                CreateCaptureSequence(modelIdentity, kind),
+                CreateCaptureSequence(publicationIdentity, kind),
                 captureId),
             new CaptureTimingDescriptor(created, created, created.Add(exposure), created.Add(exposure), created.Add(exposure)),
             new CaptureControlDescriptor(
@@ -214,15 +280,10 @@ internal sealed class SyntheticCalibrationReferenceStore(
                 model.TemperatureC),
             light.Profiles with
             {
-                Calibration = new ProfileIdentityDescriptor("synthetic-calibration", model.SchemaVersion, modelIdentity)
+                Calibration = new ProfileIdentityDescriptor(
+                    "synthetic-calibration-model", model.SchemaVersion, sourceModelIdentity)
             },
-            light.Layout with
-            {
-                StrideBytes = frame.StrideBytes,
-                BlackLevel = 0,
-                WhiteLevel = ushort.MaxValue,
-                ByteLength = frame.PixelData.Length
-            },
+            CreateOutputLayout(light.Layout, frame),
             new ArtifactDescriptor(
                 artifactId,
                 FrameArtifactRole.Raw,
@@ -239,70 +300,10 @@ internal sealed class SyntheticCalibrationReferenceStore(
                 payloadSha256));
     }
 
-    private async ValueTask WriteImmutableAsync(
-        string relativePath,
-        ReadOnlyMemory<byte> bytes,
-        CancellationToken cancellationToken)
-    {
-        var path = ResolvePath(relativePath);
-        var directory = Path.GetDirectoryName(path)!;
-        var directoryExisted = Directory.Exists(directory);
-        Directory.CreateDirectory(directory);
-        if (!directoryExisted)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(_root, directory);
-        }
-        RawIngressFileStore.EnsureNoSymbolicLinks(_root, path);
-        if (File.Exists(path))
-        {
-            var info = new FileInfo(path);
-            var existing = new FileStream(
-                path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            byte[] existingHash;
-            await using (existing.ConfigureAwait(false))
-            {
-                existingHash = await SHA256.HashDataAsync(existing, cancellationToken).ConfigureAwait(false);
-            }
-            var expectedHash = SHA256.HashData(bytes.Span);
-            if (info.Length != bytes.Length || !CryptographicOperations.FixedTimeEquals(existingHash, expectedHash))
-            {
-                throw new InvalidDataException("Synthetic calibration reference conflicts with immutable evidence.");
-            }
-            return;
-        }
-
-        var temporaryPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            var stream = new FileStream(
-                temporaryPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                4096,
-                FileOptions.Asynchronous | FileOptions.WriteThrough);
-            await using (stream.ConfigureAwait(false))
-            {
-                await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not guarantee durable filesystem publication.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
-            }
-            File.Move(temporaryPath, path, overwrite: false);
-            RawIngressFileStore.SyncDirectory(directory);
-        }
-        finally
-        {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
-        }
-    }
-
-    private void EnsureCommittedBundleIsComplete(string relativeDirectory, string profileRelativePath)
+    private void EnsureCommittedBundleIsComplete(
+        string relativeDirectory,
+        string bundleRelativePath,
+        string profileRelativePath)
     {
         var directory = ResolvePath(Normalize(relativeDirectory));
         var profileExists = File.Exists(ResolvePath(profileRelativePath));
@@ -320,6 +321,7 @@ internal sealed class SyntheticCalibrationReferenceStore(
                 Normalize(Path.Combine(relativeDirectory, $"{kind}.bin")),
                 Normalize(Path.Combine(relativeDirectory, $"{kind}.json"))
             })
+            .Append(bundleRelativePath)
             .Append(profileRelativePath);
         if (required.Any(path => !File.Exists(ResolvePath(path))))
         {
@@ -337,7 +339,8 @@ internal sealed class SyntheticCalibrationReferenceStore(
                 Normalize(Path.Combine(relativeDirectory, $"{kind}.bin")),
                 Normalize(Path.Combine(relativeDirectory, $"{kind}.json"))
             })
-            .Append(Normalize(Path.Combine(relativeDirectory, "calibration-profile.json")))
+            .Append(Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.BundleEnvelope)))
+            .Append(Normalize(Path.Combine(relativeDirectory, CalibrationLibraryEvidenceNames.ProfileMarker)))
             .ToArray();
         var evidence = new SyntheticCalibrationEvidenceFile[paths.Length];
         for (var index = 0; index < paths.Length; index++)
@@ -418,6 +421,20 @@ internal sealed class SyntheticCalibrationReferenceStore(
         var offset = BinaryPrimitives.ReadUInt64BigEndian(hash) % reservedStart;
         return checked((long)(reservedStart + offset));
     }
+
+    private static FrameLayoutDescriptor CreateOutputLayout(FrameLayoutDescriptor input, Linear16Frame frame)
+        => input with
+        {
+            StrideBytes = frame.StrideBytes,
+            SampleDepthBits = 16,
+            ContainerDepthBits = 16,
+            Packing = FrameSamplePacking.ByteAligned,
+            BlackLevel = 0,
+            WhiteLevel = ushort.MaxValue,
+            ByteLength = frame.PixelData.Length,
+            StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+        };
 
     private static string Normalize(string path)
         => path.Replace(Path.DirectorySeparatorChar, '/');

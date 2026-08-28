@@ -587,7 +587,7 @@
       "classification": "fault",
       "executionClass": "component-automated",
       "source": "boundary:calibration:AfterPayloadPublished",
-      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterPayloadPublished",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.C208SyntheticAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterPayloadPublished",
       "workloads": [
         "W0"
       ],
@@ -611,11 +611,35 @@
       "classification": "fault",
       "executionClass": "component-automated",
       "source": "boundary:calibration:AfterManifestPublished",
-      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterManifestPublished",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.C208SyntheticAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterManifestPublished",
       "workloads": [
         "W0"
       ],
       "artifactPath": "acceptance-artifacts/calibration-manifest-publication.json"
+    },
+    {
+      "id": "calibration-before-bundle-write",
+      "title": "Calibration before canonical bundle write",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:BeforeBundleWrite",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing.SyntheticCalibrationReferenceStoreTests.GetOrCreateAsync_EnvelopeFaultConvergesByAdoptionOrQuarantine;case=BeforeBundleWrite",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-before-bundle-write.json"
+    },
+    {
+      "id": "calibration-bundle-publication",
+      "title": "Calibration canonical bundle publication",
+      "classification": "fault",
+      "executionClass": "component-automated",
+      "source": "boundary:calibration:AfterBundlePublished",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing.SyntheticCalibrationReferenceStoreTests.GetOrCreateAsync_EnvelopeFaultConvergesByAdoptionOrQuarantine;case=AfterBundlePublished",
+      "workloads": [
+        "W0"
+      ],
+      "artifactPath": "acceptance-artifacts/calibration-bundle-publication.json"
     },
     {
       "id": "calibration-before-profile-write",
@@ -635,7 +659,7 @@
       "classification": "fault",
       "executionClass": "component-automated",
       "source": "boundary:calibration:AfterProfilePublished",
-      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterProfilePublished",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.C208SyntheticAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterProfilePublished",
       "workloads": [
         "W0"
       ],
@@ -647,7 +671,7 @@
       "classification": "fault",
       "executionClass": "component-automated",
       "source": "boundary:calibration:DirectorySynced",
-      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=DirectorySynced",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.C208SyntheticAndW0Fault_RetainsCanonicalRestartEvidence;case=DirectorySynced",
       "workloads": [
         "W0"
       ],
@@ -659,7 +683,7 @@
       "classification": "fault",
       "executionClass": "component-automated",
       "source": "boundary:calibration:AfterSqlitePublication",
-      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterSqlitePublication",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.C208SyntheticAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterSqlitePublication",
       "workloads": [
         "W0"
       ],
@@ -671,7 +695,7 @@
       "classification": "fault",
       "executionClass": "component-automated",
       "source": "boundary:calibration:AfterActivationCommitted",
-      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208LegacyAndW0FaultRetainedEvidenceTests.C208LegacyAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterActivationCommitted",
+      "evidenceSource": "test:HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration.Issue208SyntheticAndW0FaultRetainedEvidenceTests.C208SyntheticAndW0Fault_RetainsCanonicalRestartEvidence;case=AfterActivationCommitted",
       "workloads": [
         "W0"
       ],

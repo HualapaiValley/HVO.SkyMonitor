@@ -8,9 +8,9 @@
   "inventory": {
     "relativePath": "deploy/split-host/acceptance/phase14-scenarios.json",
     "schemaVersion": 2,
-    "scenarioCount": 111,
-    "canonicalSha256": "b4050d01fc91b0a1833eeb89cb794f672981bbe52a624de2fd438dbcbd5ceb32",
-    "reconciliation": "The 111th row, raw-boundary-payload-partially-written, was added by a2e61a1bbff5decf454151ddae9eef72934d6113 and remains distinct from payload-written."
+    "scenarioCount": 113,
+    "canonicalSha256": "4f7dde2ac91448ac8c218329013af31fb3f91ce9ad8f6a9f3b43ae18a3fa6b93",
+    "reconciliation": "The raw-boundary-payload-partially-written row added by a2e61a1bbff5decf454151ddae9eef72934d6113 remains distinct from payload-written; calibration-before-bundle-write and calibration-bundle-publication cover the canonical envelope boundaries introduced by issue 470."
   },
   "gateDisposition": {
     "kind": "post-milestone-non-gating",
@@ -21,7 +21,7 @@
   },
   "dispositionSummary": {
     "accepted-current-head": 0,
-    "source-family-import": 103,
+    "source-family-import": 105,
     "real-campaign": 2,
     "deferred": 2,
     "excluded": 4
@@ -62,8 +62,8 @@
       "id": "cameraagent-tests",
       "evidenceSourcePrefix": "test:HVO.SkyMonitor.CameraAgent.Tests.",
       "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
-      "scenarioCount": 75,
-      "uniqueMethodCount": 18,
+      "scenarioCount": 77,
+      "uniqueMethodCount": 19,
       "commandTemplate": "test \"$(git rev-parse HEAD)\" = \"ee117c1e8cf3e04998825d366da663e16c2b95ed\" && test \"$(git rev-parse HEAD^{tree})\" = \"17a0ad69452d710c82847f9a515022de05ebfaa5\" && test -z \"$(git status --porcelain)\" && dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --no-restore -p:NoIncremental=true -p:PathMap=\"$(pwd)=hvo-source\" --filter \"FullyQualifiedName={fully-qualified-name}\" --results-directory TestResults/phase14-source/ee117c1e8cf3e04998825d366da663e16c2b95ed/cameraagent-tests/{method-id} --logger \"trx;LogFileName=result.trx\"",
       "input": "One clean-revision TRX and one strict scenario-evidence entry per mapped scenario; case selectors address source evidence, never a TRX data row.",
       "sanitizer": "phase14-trx-sanitizer-v1",
@@ -119,7 +119,8 @@
         "scripts/test:phase14-source-import",
         "src/HVO.SkyMonitor.TestSupport/Phase14ScenarioEvidence.cs",
         "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/StandaloneW6DockerAcceptanceTests.cs",
-        "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Calibration/Issue208LegacyAndW0FaultRetainedEvidenceTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Calibration/Issue208SyntheticAndW0FaultRetainedEvidenceTests.cs",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/SyntheticCalibrationReferenceStoreTests.cs",
         "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Calibration/VirtualCalibrationAcquisitionCoordinatorTests.cs",
         "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Distribution/DurableCaptureDistributionTests.cs",
         "tests/HVO.SkyMonitor.CameraAgent.Tests/RawIngress/RawCaptureIngressTests.cs",

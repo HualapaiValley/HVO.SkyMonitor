@@ -24,7 +24,7 @@ public sealed class RawCaptureIngressTests
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
-    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV11AndAcceptsEquivalentLegacyFormatting()
+    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV12AndAcceptsEquivalentLegacyFormatting()
     {
         var root = CreateRoot();
         try
@@ -50,7 +50,7 @@ public sealed class RawCaptureIngressTests
 
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
-                Assert.AreEqual(11L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+                Assert.AreEqual(12L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
                 Assert.AreEqual(63L, await ScalarLongAsync(connection, """
                 SELECT COUNT(*) FROM sqlite_master
                 WHERE name IN (
@@ -142,7 +142,7 @@ public sealed class RawCaptureIngressTests
             await new SqliteRawCaptureJournal(databasePath, 1)
                 .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var retried = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(11L, await ScalarLongAsync(retried, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(12L, await ScalarLongAsync(retried, "PRAGMA user_version;").ConfigureAwait(false));
         }
         finally
         {
@@ -164,6 +164,7 @@ public sealed class RawCaptureIngressTests
     [DataRow(8)]
     [DataRow(9)]
     [DataRow(10)]
+    [DataRow(11)]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The data rows provide only fixed schema-version integers.")]
     public async Task InitializeAsync_WhenPopulatedSchemaVersionIsUnsupported_FailsWithoutMutation(int version)
     {
@@ -390,7 +391,7 @@ public sealed class RawCaptureIngressTests
             Assert.AreEqual("wal", await ScalarStringAsync(connection, "PRAGMA journal_mode;").ConfigureAwait(false));
             Assert.AreEqual(2L, await ScalarLongAsync(connection, "PRAGMA synchronous;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "PRAGMA foreign_keys;").ConfigureAwait(false));
-            Assert.AreEqual(11L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(12L, await ScalarLongAsync(connection, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(connection, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
             var contextJson = await ScalarBytesAsync(
                 connection, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
@@ -1016,7 +1017,7 @@ public sealed class RawCaptureIngressTests
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 12;";
+                command.CommandText = "PRAGMA user_version = 13;";
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var state = new RawIngressState(TimeProvider.System);
@@ -1039,7 +1040,7 @@ public sealed class RawCaptureIngressTests
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(12L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(13L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
             Assert.AreEqual(0L, telemetry.CheckpointCount);
             Assert.AreEqual(0L, telemetry.CheckpointFailureCount);

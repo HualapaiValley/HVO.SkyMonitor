@@ -395,69 +395,20 @@ public sealed class C208W3MCalibrationLibraryRetainedPerformanceTests
                 EffectiveOffset = null,
                 TemperatureSetpointC = model.TemperatureC,
                 EffectiveTemperatureC = model.TemperatureC
+            },
+            Profiles = template.Descriptor.Profiles with
+            {
+                Calibration = new ProfileIdentityDescriptor(
+                    "synthetic-calibration-model",
+                    model.SchemaVersion,
+                    SyntheticCalibrationReferenceGenerator.ComputeModelIdentitySha256(model))
             }
         };
         var syntheticStore = new SyntheticCalibrationReferenceStore(
             options, new CameraAgentClearReferenceLoader(options));
         var synthetic = await syntheticStore.GetOrCreateAsync(
             light, model, CancellationToken.None).ConfigureAwait(false);
-        var modelIdentity = synthetic.ReferenceManifests.Values.First().RelativeArtifactPath.Split('/')[2];
-        var outputLayout = light.Layout with
-        {
-            SampleDepthBits = 16,
-            ContainerDepthBits = 16,
-            BlackLevel = 0,
-            WhiteLevel = ushort.MaxValue,
-            StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
-            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
-        };
-        var artifacts = CalibrationReferenceKinds.All.Select(kind =>
-        {
-            var reference = synthetic.Profile.References.Single(candidate => candidate.Kind == kind);
-            var manifestRelativePath = synthetic.EvidenceFiles.Single(file =>
-                file.RelativePath.EndsWith($"/{kind}.json", StringComparison.Ordinal)).RelativePath;
-            return new CalibrationLibraryArtifactV1(
-                kind,
-                CalibrationLibraryArtifactRoles.Master,
-                reference.ArtifactId,
-                manifestRelativePath,
-                reference.PayloadSha256,
-                reference.Exposure,
-                reference.Gain,
-                null,
-                reference.TemperatureC,
-                null,
-                [],
-                null);
-        }).ToArray();
-        var profilePath = synthetic.EvidenceFiles.Single(file =>
-            file.RelativePath.EndsWith("/calibration-profile.json", StringComparison.Ordinal)).RelativePath;
-        var bundle = new CalibrationLibraryBundleV1(
-            CalibrationLibraryBundleV1.CurrentSchemaVersion,
-            $"issue-208-compatible-{modelIdentity[..16]}",
-            CalibrationLibraryBundleSources.LegacySyntheticV1,
-            DateTimeOffset.UnixEpoch,
-            profilePath,
-            synthetic.ProfileIdentitySha256,
-            modelIdentity,
-            new CalibrationApplicabilityV1(
-                light.Capture.AgentId,
-                light.Capture.RigId,
-                light.Profiles.Rig.Sha256,
-                light.Profiles.Sensor.Sha256,
-                light.Layout,
-                outputLayout,
-                model.Gain,
-                model.Gain,
-                null,
-                null,
-                null,
-                null,
-                model.TemperatureC,
-                model.TemperatureC,
-                DateTimeOffset.UnixEpoch,
-                null),
-            artifacts);
+        var bundle = synthetic.LibraryBundle;
         Assert.IsTrue(CalibrationLibraryContract.Validate(bundle).IsValid);
         return new CompatibleFixture(bundle, light);
     }
@@ -497,7 +448,7 @@ public sealed class C208W3MCalibrationLibraryRetainedPerformanceTests
             {
                 BundleId = $"issue-208-incompatible-{index:D5}",
                 CreatedUtc = DateTimeOffset.UnixEpoch.AddSeconds(index),
-                ProfileRelativePath = $"{stem}/calibration-profile.json",
+                ProfileRelativePath = $"{stem}/reference-calibration-profile.json",
                 ProfileIdentitySha256 = Sha256($"profile-{index:D5}"),
                 AcquisitionModelIdentitySha256 = Sha256($"model-{index:D5}"),
                 Applicability = template.Applicability with
