@@ -531,6 +531,8 @@ public sealed class DurableCaptureDistributionPerformanceTests
         var walBytesBefore = FileBytes(string.Concat(databasePath, "-wal"));
         var insertion = await PopulateCanonicalDatabaseAsync(
             databasePath, input, configuration, policy.Definitions).ConfigureAwait(false);
+        var databaseBytesAfter = FileBytes(databasePath);
+        var walBytesAfter = FileBytes(string.Concat(databasePath, "-wal"));
         SqliteConnection.ClearAllPools();
 
         using var connection = await OpenDatabaseAsync(root).ConfigureAwait(false);
@@ -549,8 +551,9 @@ public sealed class DurableCaptureDistributionPerformanceTests
         await AssertAllLaneContextsRedactedAsync(connection, W3LegacyContextCount).ConfigureAwait(false);
 
         var queryPlan = await ReadStringsAsync(connection, "EXPLAIN QUERY PLAN SELECT w.work_id FROM capture_lane_work w JOIN raw_captures r ON r.raw_capture_row_id = w.raw_capture_row_id LEFT JOIN capture_lane_contexts c ON c.raw_capture_row_id = r.raw_capture_row_id WHERE w.lane_name = 'standard' AND w.state NOT IN ('completed', 'abandoned') ORDER BY w.agent_id, w.capture_sequence LIMIT 1;").ConfigureAwait(false);
-        Assert.IsTrue(queryPlan.Any(static detail =>
-            detail.Contains("ix_capture_lane_work_ordered", StringComparison.OrdinalIgnoreCase)));
+        var queryPlanUsesIndex = queryPlan.Any(static detail =>
+            detail.Contains("ix_capture_lane_work_ordered", StringComparison.OrdinalIgnoreCase));
+        Assert.IsTrue(queryPlanUsesIndex);
         var syntheticTraversalMilliseconds = await MeasureSyntheticIndexedTraversalAsync(connection).ConfigureAwait(false);
         var paginationStarted = Stopwatch.GetTimestamp();
         var pagedRows = await ReadAllLaneWorkPagesAsync(connection, "standard").ConfigureAwait(false);
@@ -558,14 +561,18 @@ public sealed class DurableCaptureDistributionPerformanceTests
         Assert.AreEqual(W3MetadataCount, pagedRows);
 
         await connection.CloseAsync().ConfigureAwait(false);
-        var databaseBytesAfter = FileBytes(databasePath);
-        var walBytesAfter = FileBytes(string.Concat(databasePath, "-wal"));
         var restartSamples = new double[5];
         var restartDiscoveredRows = new long[5];
-        var restartCpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
-        var restartAllocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+        var restartCpuMilliseconds = 0d;
+        var restartAllocatedBytes = 0L;
+        var restartRssBefore = 0L;
+        var restartRssAfter = 0L;
         for (var trial = 0; trial < restartSamples.Length; trial++)
         {
+            var restartCpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
+            var restartAllocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+            var trialRssBefore = Environment.WorkingSet;
+            var started = Stopwatch.GetTimestamp();
             var restarted = new SqliteRawCaptureJournal(
                 databasePath,
                 busyTimeoutSeconds: 5,
@@ -578,19 +585,20 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 policy,
                 TimeProvider.System,
                 new NullCaptureLaneFaultInjector());
-            var started = Stopwatch.GetTimestamp();
             await restarted.InitializeAsync(policy.Definitions, CancellationToken.None).ConfigureAwait(false);
             await store.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
             var backlogs = await store.ReadBacklogsAsync(CancellationToken.None).ConfigureAwait(false);
             restartSamples[trial] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            restartCpuMilliseconds += (Process.GetCurrentProcess().TotalProcessorTime - restartCpuBefore).TotalMilliseconds;
+            restartAllocatedBytes += GC.GetTotalAllocatedBytes(precise: false) - restartAllocatedBefore;
+            restartRssBefore = trial == 0 ? trialRssBefore : restartRssBefore;
+            restartRssAfter = Environment.WorkingSet;
             restartDiscoveredRows[trial] = backlogs.Sum(static backlog => backlog.PendingCount);
             Assert.AreEqual(W3MetadataCount * 3L, restartDiscoveredRows[trial]);
-            Assert.AreEqual(W3MetadataCount, await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
-            Assert.AreEqual(W3MetadataCount * 3L, await ScalarLongAtRootAsync(root, "SELECT COUNT(*) FROM capture_lane_work;").ConfigureAwait(false));
         }
-        Array.Sort(restartSamples);
-        var restartAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - restartAllocatedBefore;
         Assert.IsGreaterThanOrEqualTo(0L, restartAllocatedBytes);
+        Array.Sort(restartSamples);
+        var persistedPayloadCopies = Directory.EnumerateFiles(root, "*.bin", SearchOption.AllDirectories).Count();
 
         return new W3MetadataMeasurement(
             RawRows: rawRows,
@@ -620,7 +628,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
             DatabaseBytesAfterCanonicalInsertion: databaseBytesAfter,
             WalBytesAfterCanonicalInsertion: walBytesAfter,
             QueryPlan: queryPlan,
-            QueryPlanUsesIndex: true,
+            QueryPlanUsesIndex: queryPlanUsesIndex,
             SyntheticIndexedTraversalRows: W3MetadataCount,
             SyntheticIndexedTraversalMilliseconds: syntheticTraversalMilliseconds,
             SyntheticIndexedTraversalRowsPerSecond: W3MetadataCount / (syntheticTraversalMilliseconds / 1000d),
@@ -635,10 +643,12 @@ public sealed class DurableCaptureDistributionPerformanceTests
             RestartDiscoveryMinimumMilliseconds: restartSamples[0],
             RestartDiscoveryMaximumMilliseconds: restartSamples[^1],
             RestartDiscoveredRowsPerTrial: restartDiscoveredRows,
-            RestartCpuMilliseconds: (Process.GetCurrentProcess().TotalProcessorTime - restartCpuBefore).TotalMilliseconds,
+            RestartCpuMilliseconds: restartCpuMilliseconds,
             RestartAllocatedBytes: restartAllocatedBytes,
-            PayloadFiles: 0,
-            PersistedPayloadCopyCount: 0);
+            RssBeforeRestartBytes: restartRssBefore,
+            RssAfterRestartBytes: restartRssAfter,
+            PayloadFiles: persistedPayloadCopies,
+            PersistedPayloadCopyCount: persistedPayloadCopies);
     }
 
     private static async Task<CanonicalInsertionMeasurement> PopulateCanonicalDatabaseAsync(
@@ -2060,6 +2070,8 @@ public sealed class DurableCaptureDistributionPerformanceTests
         IReadOnlyList<long> RestartDiscoveredRowsPerTrial,
         double RestartCpuMilliseconds,
         long RestartAllocatedBytes,
+        long RssBeforeRestartBytes,
+        long RssAfterRestartBytes,
         int PayloadFiles,
         int PersistedPayloadCopyCount);
 

@@ -156,9 +156,34 @@ for trial in 1 2 3 4 5; do
           .w3M.initializationCpuMilliseconds, .w3M.initializationAllocatedBytes,
           .w3M.rssBeforeInitializationBytes, .w3M.rssAfterInitializationBytes,
           .w3M.canonicalInsertionMilliseconds, .w3M.canonicalInsertionRecordsPerSecond,
+          .w3M.canonicalInsertionReferenceRowsPerSecond,
           .w3M.canonicalInsertionCpuMilliseconds, .w3M.canonicalInsertionAllocatedBytes,
-          .w3M.rssBeforeCanonicalInsertionBytes, .w3M.rssAfterCanonicalInsertionBytes] |
+          .w3M.rssBeforeCanonicalInsertionBytes, .w3M.rssAfterCanonicalInsertionBytes,
+          .w3M.databaseBytesAfterInitialization, .w3M.walBytesAfterInitialization,
+          .w3M.databaseBytesAfterCanonicalInsertion, .w3M.walBytesAfterCanonicalInsertion,
+          .w3M.restartDiscoveryMedianMilliseconds, .w3M.restartCpuMilliseconds,
+          .w3M.restartAllocatedBytes, .w3M.rssBeforeRestartBytes, .w3M.rssAfterRestartBytes,
+          .w3M.syntheticIndexedTraversalMilliseconds, .w3M.syntheticIndexedTraversalRowsPerSecond,
+          .w3M.paginationMilliseconds] |
           all(type == "number" and . >= 0)) and
+        .w3M.rawRows == 10000 and .w3M.laneWorkRows == 30000 and
+        .w3M.referenceRowsPerCapture == 3 and .w3M.contextRows == 1000 and
+        .w3M.canonicalInsertionTransactions == 1 and .w3M.canonicalInsertionStatements == 51001 and
+        .w3M.canonicalInsertionRawRecordsPerSecond == .w3M.canonicalInsertionRecordsPerSecond and
+        .w3M.canonicalLaneStatements == 30000 and .w3M.canonicalLaneRows == 30000 and
+        .w3M.observedProductionTransactions == 1 and .w3M.queryPlanUsesIndex == true and
+        (.w3M.queryPlan | type) == "array" and
+        ([.w3M.queryPlan[] | contains("ix_capture_lane_work_ordered")] | any) and
+        .w3M.syntheticIndexedTraversalLabel == "Direct test-owned SQL traversal; not production SqliteCaptureLaneStore.ClaimAsync latency." and
+        .w3M.syntheticIndexedTraversalRows == 10000 and
+        .w3M.paginationPageSize == 257 and .w3M.paginationRows == 10000 and
+        .w3M.integrityCheck == "ok" and .w3M.payloadFiles == 0 and .w3M.persistedPayloadCopyCount == 0 and
+        (.w3M.restartTrialMilliseconds | length) == 5 and
+        ([.w3M.restartTrialMilliseconds[] | type == "number" and . >= 0] | all) and
+        .w3M.restartDiscoveryMinimumMilliseconds == (.w3M.restartTrialMilliseconds | min) and
+        .w3M.restartDiscoveryMedianMilliseconds == (.w3M.restartTrialMilliseconds | sort | .[2]) and
+        .w3M.restartDiscoveryMaximumMilliseconds == (.w3M.restartTrialMilliseconds | max) and
+        .w3M.restartDiscoveredRowsPerTrial == [30000, 30000, 30000, 30000, 30000] and
         .blockedComparison.executionOrder == (if $order == "UB" then ["unblocked", "blocked"] else ["blocked", "unblocked"] end) and
         .blockedComparison.unblocked.productionClaimWarmupSamples == 5 and
         .blockedComparison.unblocked.productionClaimMeasuredSamples == 30 and
@@ -210,9 +235,24 @@ jq --exit-status '
       .metrics.w3MInitializationRssDeltaBytes,
       .metrics.w3MCanonicalInsertionMilliseconds,
       .metrics.w3MCanonicalInsertionRecordsPerSecond,
+      .metrics.w3MCanonicalInsertionReferenceRowsPerSecond,
       .metrics.w3MCanonicalInsertionCpuMilliseconds,
       .metrics.w3MCanonicalInsertionAllocatedBytes,
-      .metrics.w3MCanonicalInsertionRssDeltaBytes] |
+      .metrics.w3MCanonicalInsertionRssDeltaBytes,
+      .metrics.w3MDatabaseBytesAfterInitialization,
+      .metrics.w3MWalBytesAfterInitialization,
+      .metrics.w3MDatabaseBytesAfterCanonicalInsertion,
+      .metrics.w3MWalBytesAfterCanonicalInsertion,
+      .metrics.w3MRestartDiscoveryMedianMilliseconds,
+      .metrics.w3MRestartDiscoveryMinimumMilliseconds,
+      .metrics.w3MRestartDiscoveryMaximumMilliseconds,
+      .metrics.w3MRestartCpuMilliseconds,
+      .metrics.w3MRestartAllocatedBytes,
+      .metrics.w3MRestartRssBeforeBytes,
+      .metrics.w3MRestartRssAfterBytes,
+      .metrics.syntheticIndexedTraversalMilliseconds,
+      .metrics.syntheticIndexedTraversalRowsPerSecond,
+      .metrics.paginationMilliseconds] |
       all((.minimum | type) == "number" and
           (.median | type) == "number" and
           (.maximum | type) == "number"))
