@@ -27,6 +27,19 @@ public sealed class ProtectedDeploymentLocationStoreTests
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse(
         "2026-07-23T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
     private static readonly int[] ExpectedLogEventIds = [7301, 7302];
+    private static readonly string[] ExpectedCanonicalHistoryProperties =
+    [
+        "schemaVersion",
+        "locationId",
+        "snapshots",
+        "supersededAtUtc",
+        "staged",
+        "centrallyActivatedCanonicalSha256",
+        "candidate",
+        "configurationSeed",
+        "activatedAtUtc",
+        "sourceKinds"
+    ];
 
     [TestInitialize]
     public void Initialize()
@@ -65,16 +78,27 @@ public sealed class ProtectedDeploymentLocationStoreTests
         }
 
         var statePath = Path.Combine(_options.Value.RawIngressRoot, ".location", "deployment-location.v1.protected");
-        var protectedText = Encoding.UTF8.GetString(
-            await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+        var protectedPayload = await File.ReadAllBytesAsync(statePath).ConfigureAwait(false);
+        var protectedText = Encoding.UTF8.GetString(protectedPayload);
         Assert.IsFalse(protectedText.Contains("35.347", StringComparison.Ordinal));
         Assert.IsFalse(protectedText.Contains("-113.878", StringComparison.Ordinal));
         Assert.IsFalse(protectedText.Contains("America/Phoenix", StringComparison.Ordinal));
+        var canonical = JsonNode.Parse(_protector.Unprotect(protectedPayload))!.AsObject();
+        CollectionAssert.AreEquivalent(
+            ExpectedCanonicalHistoryProperties,
+            canonical.Select(static pair => pair.Key).ToArray());
+        Assert.AreEqual("Unspecified", canonical["sourceKinds"]!["1"]!.GetValue<string>());
+        Assert.AreEqual("Unspecified", canonical["configurationSeed"]!["sourceKind"]!.GetValue<string>());
+        Assert.IsNotNull(canonical["activatedAtUtc"]!["1"]);
+        var markerPath = Path.Combine(_options.Value.RawIngressRoot, ".deployment-location.v1.identity");
+        var markerPayload = await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false);
 
         using var restarted = CreateStore();
         var same = await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(firstProvenance, same.ToProvenance());
         Assert.AreEqual(firstProvenance, restarted.Resolve(firstProvenance).ToProvenance());
+        CollectionAssert.AreEqual(protectedPayload, await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+        CollectionAssert.AreEqual(markerPayload, await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false));
 
         _timeProvider.UtcNow = Now.AddSeconds(1);
         var changed = await restarted.InitializeAsync(
@@ -88,7 +112,17 @@ public sealed class ProtectedDeploymentLocationStoreTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_PreservesLegacyProtectedHistoryWithoutInventingClassification()
+    [DataRow("sourceKinds", false)]
+    [DataRow("sourceKinds", true)]
+    [DataRow("configurationSeed", false)]
+    [DataRow("configurationSeed.sourceKind", false)]
+    [DataRow("activatedAtUtc", false)]
+    [DataRow("staged", false)]
+    [DataRow("centrallyActivatedCanonicalSha256", false)]
+    [DataRow("candidate", false)]
+    public async Task InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation(
+        string missingProperty,
+        bool centralIntegration)
     {
         var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix") with
         {
@@ -101,68 +135,136 @@ public sealed class ProtectedDeploymentLocationStoreTests
         }
         var statePath = Path.Combine(
             _options.Value.RawIngressRoot, ".location", "deployment-location.v1.protected");
+        var markerPath = Path.Combine(_options.Value.RawIngressRoot, ".deployment-location.v1.identity");
         var plaintext = _protector.Unprotect(await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
-        var legacy = JsonNode.Parse(plaintext)!.AsObject();
-        legacy["schemaVersion"] = 1;
-        legacy.Remove("sourceKinds");
-        legacy["configurationSeed"]?.AsObject().Remove("sourceKind");
+        var incomplete = JsonNode.Parse(plaintext)!.AsObject();
+        if (missingProperty == "configurationSeed.sourceKind")
+        {
+            incomplete["configurationSeed"]!.AsObject().Remove("sourceKind");
+        }
+        else
+        {
+            incomplete.Remove(missingProperty);
+        }
         await File.WriteAllBytesAsync(
             statePath,
-            _protector.Protect(Encoding.UTF8.GetBytes(legacy.ToJsonString()))).ConfigureAwait(false);
-        var legacyProtectedPayload = await File.ReadAllBytesAsync(statePath).ConfigureAwait(false);
+            _protector.Protect(Encoding.UTF8.GetBytes(incomplete.ToJsonString()))).ConfigureAwait(false);
+        var incompleteProtectedPayload = await File.ReadAllBytesAsync(statePath).ConfigureAwait(false);
+        var markerPayload = await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false);
+        if (centralIntegration)
+        {
+            _options = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = _options.Value.RawIngressRoot,
+                CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+            });
+        }
 
         using var restarted = CreateStore();
-        var active = await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
-        Assert.AreEqual(DeploymentLocationSourceKind.Unspecified, restarted.ResolveSourceKind(active));
+        Assert.IsNull(restarted.Active);
+        Assert.IsNull(restarted.Candidate);
         CollectionAssert.AreEqual(
-            legacyProtectedPayload,
+            incompleteProtectedPayload,
+            await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+        CollectionAssert.AreEqual(markerPayload, await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow("unsupported-schema")]
+    [DataRow("malformed-chronology")]
+    [DataRow("inconsistent-configuration-seed")]
+    [DataRow("inconsistent-configuration-end")]
+    [DataRow("unknown-field")]
+    public async Task InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation(string corruption)
+    {
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix") with
+        {
+            SourceKind = DeploymentLocationSourceKind.Gps,
+            EffectiveFromUtc = Now.AddMinutes(-1),
+            EffectiveUntilUtc = corruption == "inconsistent-configuration-end" ? Now.AddMinutes(1) : null
+        };
+        using (var initial = CreateStore())
+        {
+            _ = await initial.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        }
+        var statePath = Path.Combine(
+            _options.Value.RawIngressRoot, ".location", "deployment-location.v1.protected");
+        var plaintext = _protector.Unprotect(await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+        var noncanonical = JsonNode.Parse(plaintext)!.AsObject();
+        switch (corruption)
+        {
+            case "unsupported-schema":
+                noncanonical["schemaVersion"] = 2;
+                break;
+            case "malformed-chronology":
+                noncanonical["activatedAtUtc"]!.AsObject()["1"] = JsonValue.Create(Now.AddMinutes(-2));
+                break;
+            case "inconsistent-configuration-seed":
+                noncanonical["configurationSeed"]!["source"] = "different-source";
+                break;
+            case "inconsistent-configuration-end":
+                noncanonical["configurationSeed"]!["effectiveUntilUtc"] = null;
+                break;
+            case "unknown-field":
+                noncanonical["legacyClassification"] = "gps";
+                break;
+        }
+        await File.WriteAllBytesAsync(
+            statePath,
+            _protector.Protect(Encoding.UTF8.GetBytes(noncanonical.ToJsonString()))).ConfigureAwait(false);
+        var noncanonicalPayload = await File.ReadAllBytesAsync(statePath).ConfigureAwait(false);
+
+        using var restarted = CreateStore();
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(
+            noncanonicalPayload,
             await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
     }
 
     [TestMethod]
-    public async Task InitializeAsync_CentralUpgradeCreatesClassifiedSuccessorForLegacyHistory()
+    [DataRow("activation-boundary")]
+    [DataRow("missing-supersession")]
+    public async Task InitializeAsync_RejectsNoncanonicalChronologyWithoutMutation(string corruption)
     {
-        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix") with
+        var firstSeed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        var secondSeed = CreateSeed(-31.2733, 149.0700, 1165, "Australia/Sydney");
+        using (var store = CreateStore())
         {
-            SourceKind = DeploymentLocationSourceKind.Gps,
-            EffectiveFromUtc = Now.AddMinutes(-1)
-        };
-        using (var initial = CreateStore())
-        {
-            _ = await initial.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            _ = await store.InitializeAsync(firstSeed, CancellationToken.None).ConfigureAwait(false);
+            _timeProvider.UtcNow = Now.AddSeconds(1);
+            _ = await store.InitializeAsync(secondSeed, CancellationToken.None).ConfigureAwait(false);
         }
         var statePath = Path.Combine(
             _options.Value.RawIngressRoot, ".location", "deployment-location.v1.protected");
         var plaintext = _protector.Unprotect(await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
-        var legacy = JsonNode.Parse(plaintext)!.AsObject();
-        legacy.Remove("sourceKinds");
-        legacy["configurationSeed"]?.AsObject().Remove("sourceKind");
+        var noncanonical = JsonNode.Parse(plaintext)!.AsObject();
+        if (corruption == "missing-supersession")
+        {
+            noncanonical["supersededAtUtc"]!.AsObject().Remove("1");
+        }
+        else
+        {
+            noncanonical["activatedAtUtc"]!.AsObject()["2"] = JsonValue.Create(Now.AddMilliseconds(1500));
+        }
         await File.WriteAllBytesAsync(
             statePath,
-            _protector.Protect(Encoding.UTF8.GetBytes(legacy.ToJsonString()))).ConfigureAwait(false);
-        _options = Options.Create(new CameraAgentHostOptions
-        {
-            RawIngressRoot = _options.Value.RawIngressRoot,
-            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
-        });
+            _protector.Protect(Encoding.UTF8.GetBytes(noncanonical.ToJsonString()))).ConfigureAwait(false);
+        var noncanonicalPayload = await File.ReadAllBytesAsync(statePath).ConfigureAwait(false);
+        _timeProvider.UtcNow = Now.AddSeconds(2);
 
         using var restarted = CreateStore();
-        var active = await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await restarted.InitializeAsync(secondSeed, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
 
-        Assert.AreEqual(1L, active.Version);
-        Assert.AreEqual(DeploymentLocationSourceKind.Unspecified, restarted.ResolveSourceKind(active));
-        Assert.AreEqual(2L, restarted.Candidate!.Version);
-        Assert.AreEqual(DeploymentLocationSourceKind.Gps, restarted.ResolveSourceKind(restarted.Candidate));
-        Assert.IsTrue(restarted.Candidate.EffectiveFromUtc > active.EffectiveFromUtc);
-        Assert.AreEqual(seed.EffectiveUntilUtc, restarted.Candidate.EffectiveUntilUtc);
-        await restarted.StageAsync(restarted.Candidate, CancellationToken.None).ConfigureAwait(false);
-
-        _timeProvider.UtcNow = Now.AddSeconds(1);
-        using var activatedStore = CreateStore();
-        var activated = await activatedStore.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(2L, activated.Version);
-        Assert.AreEqual(DeploymentLocationSourceKind.Gps, activatedStore.ResolveSourceKind(activated));
+        CollectionAssert.AreEqual(
+            noncanonicalPayload,
+            await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -240,6 +342,41 @@ public sealed class ProtectedDeploymentLocationStoreTests
             sourceKindCorrection, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(4L, classificationActive.Version);
         Assert.AreEqual(DeploymentLocationSourceKind.Gps, classificationRestart.ResolveSourceKind(classificationActive));
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_RevertingCandidateRemovesItsClassificationAndRemainsRestartable()
+    {
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(_root, "data"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+        });
+        var activeSeed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        using (var running = CreateStore())
+        {
+            var active = await running.InitializeAsync(activeSeed, CancellationToken.None).ConfigureAwait(false);
+            _timeProvider.UtcNow = Now.AddSeconds(1);
+            _ = await running.InitializeAsync(
+                activeSeed with
+                {
+                    SourceKind = DeploymentLocationSourceKind.Gps,
+                    Coordinates = activeSeed.Coordinates with { LatitudeDegrees = 35.348 }
+                },
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(running.Candidate);
+
+            var reverted = await running.InitializeAsync(activeSeed, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(active, reverted);
+            Assert.IsNull(running.Candidate);
+        }
+
+        using var restarted = CreateStore();
+        var retained = await restarted.InitializeAsync(activeSeed, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1L, retained.Version);
+        Assert.IsNull(restarted.Candidate);
+        Assert.AreEqual(DeploymentLocationSourceKind.Unspecified, restarted.ResolveSourceKind(retained));
     }
 
     [TestMethod]
@@ -552,6 +689,92 @@ public sealed class ProtectedDeploymentLocationStoreTests
         var recoveredMissing = await missingMarkerStore.InitializeAsync(secondSeed, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(2L, recoveredMissing.Version);
         Assert.IsTrue(File.Exists(markerPath));
+    }
+
+    [TestMethod]
+    public async Task Initialize_MarkerMismatchFailsWithoutMutation()
+    {
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        using (var store = CreateStore())
+        {
+            _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        }
+        var statePath = Path.Combine(
+            _options.Value.RawIngressRoot, ".location", "deployment-location.v1.protected");
+        var markerPath = Path.Combine(_options.Value.RawIngressRoot, ".deployment-location.v1.identity");
+        var historyPayload = await File.ReadAllBytesAsync(statePath).ConfigureAwait(false);
+        var marker = JsonNode.Parse(await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false))!.AsObject();
+        marker["locationId"] = "different-deployment";
+        await File.WriteAllBytesAsync(
+            markerPath,
+            Encoding.UTF8.GetBytes(marker.ToJsonString())).ConfigureAwait(false);
+        var mismatchedMarkerPayload = await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false);
+
+        using var restarted = CreateStore();
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await restarted.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(historyPayload, await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+        CollectionAssert.AreEqual(
+            mismatchedMarkerPayload,
+            await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Initialize_SkippedVersionMarkerFailsWithoutMutation()
+    {
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(_root, "data"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Enabled }
+        });
+        var firstSeed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        var secondSeed = firstSeed with
+        {
+            Source = "second-candidate",
+            Coordinates = firstSeed.Coordinates with { LatitudeDegrees = 35.348 }
+        };
+        var thirdSeed = secondSeed with
+        {
+            Source = "third-candidate",
+            Coordinates = secondSeed.Coordinates with { LatitudeDegrees = 35.349 }
+        };
+        using (var running = CreateStore())
+        {
+            _ = await running.InitializeAsync(firstSeed, CancellationToken.None).ConfigureAwait(false);
+            _timeProvider.UtcNow = Now.AddSeconds(1);
+            _ = await running.InitializeAsync(secondSeed, CancellationToken.None).ConfigureAwait(false);
+            _timeProvider.UtcNow = Now.AddSeconds(2);
+            _ = await running.InitializeAsync(thirdSeed, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(3L, running.Candidate!.Version);
+            await running.StageAsync(running.Candidate, CancellationToken.None).ConfigureAwait(false);
+        }
+        _timeProvider.UtcNow = Now.AddSeconds(3);
+        using (var activating = CreateStore())
+        {
+            var active = await activating.InitializeAsync(thirdSeed, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(3L, active.Version);
+        }
+        var statePath = Path.Combine(
+            _options.Value.RawIngressRoot, ".location", "deployment-location.v1.protected");
+        var markerPath = Path.Combine(_options.Value.RawIngressRoot, ".deployment-location.v1.identity");
+        var historyPayload = await File.ReadAllBytesAsync(statePath).ConfigureAwait(false);
+        var marker = JsonNode.Parse(await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false))!.AsObject();
+        marker["version"] = 2;
+        await File.WriteAllBytesAsync(
+            markerPath,
+            Encoding.UTF8.GetBytes(marker.ToJsonString())).ConfigureAwait(false);
+        var skippedMarkerPayload = await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false);
+
+        using var restarted = CreateStore();
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await restarted.InitializeAsync(thirdSeed, CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(historyPayload, await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+        CollectionAssert.AreEqual(
+            skippedMarkerPayload,
+            await File.ReadAllBytesAsync(markerPath).ConfigureAwait(false));
     }
 
     [TestMethod]
