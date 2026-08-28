@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -18,13 +19,13 @@ public interface IDeploymentLocationProtector
 
 /// <summary>Initial values supplied by validated local configuration.</summary>
 public sealed record DeploymentLocationSeed(
-    string LocationId,
-    string Source,
-    double? HorizontalAccuracyMeters,
-    DateTimeOffset? EffectiveFromUtc,
-    DateTimeOffset? EffectiveUntilUtc,
-    ObservatoryLocation Coordinates,
-    DeploymentLocationSourceKind SourceKind = DeploymentLocationSourceKind.Unspecified);
+    [property: JsonRequired] string LocationId,
+    [property: JsonRequired] string Source,
+    [property: JsonRequired] double? HorizontalAccuracyMeters,
+    [property: JsonRequired] DateTimeOffset? EffectiveFromUtc,
+    [property: JsonRequired] DateTimeOffset? EffectiveUntilUtc,
+    [property: JsonRequired] ObservatoryLocation Coordinates,
+    [property: JsonRequired] DeploymentLocationSourceKind SourceKind = DeploymentLocationSourceKind.Unspecified);
 
 /// <summary>Initializes and resolves protected immutable deployment-location versions.</summary>
 public interface IDeploymentLocationStore
@@ -60,7 +61,11 @@ public sealed class ProtectedDeploymentLocationStore(
     DeploymentLocationTelemetry? telemetry = null) : IDeploymentLocationStore, IDisposable
 {
     private const int CurrentSchemaVersion = 1;
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        RespectRequiredConstructorParameters = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CameraAgentHostOptions _options = options.Value;
     private readonly IDeploymentLocationProtector _protector = protector;
@@ -86,9 +91,10 @@ public sealed class ProtectedDeploymentLocationStore(
         {
             throw new InvalidDataException("Deployment-location source classification is missing from protected history.");
         }
-        return history.SourceKinds?.GetValueOrDefault(
-            deployment.Version, DeploymentLocationSourceKind.Unspecified)
-            ?? DeploymentLocationSourceKind.Unspecified;
+        return history.SourceKinds.TryGetValue(deployment.Version, out var sourceKind)
+            ? sourceKind
+            : throw new InvalidDataException(
+                "Deployment-location source classification is missing from protected history.");
     }
 
     public async ValueTask<DeploymentLocationSnapshot> InitializeAsync(
@@ -145,11 +151,10 @@ public sealed class ProtectedDeploymentLocationStore(
             }
             else if (history is not null
                 && history.CentrallyActivatedCanonicalSha256 == history.Snapshots[^1].CanonicalSha256
-                && (history.ConfigurationSeed is null || history.ConfigurationSeed == seed))
+                && history.ConfigurationSeed == seed)
             {
                 EnsureEffectiveAtStartup(history.Snapshots[^1], startupUtc);
-                var updated = history.ConfigurationSeed is null ? history with { ConfigurationSeed = seed } : history;
-                snapshot = new ReconciledLocation(updated, updated.Snapshots[^1], Appended: false);
+                snapshot = new ReconciledLocation(history, history.Snapshots[^1], Appended: false);
             }
             else
             {
@@ -287,25 +292,28 @@ public sealed class ProtectedDeploymentLocationStore(
         if (latest is not null && SameConfiguredLocation(history!, latest, seed))
         {
             EnsureEffectiveAtStartup(latest, ToMilliseconds(_timeProvider.GetUtcNow()));
-            var currentHistory = (history!.SourceKinds is null || history.ConfigurationSeed == seed)
-                && history.Candidate is null
+            var currentHistory = history!.ConfigurationSeed == seed && history.Candidate is null
                 ? history
-                : history with { ConfigurationSeed = seed, Candidate = null };
+                : history with
+                {
+                    ConfigurationSeed = seed,
+                    Candidate = null,
+                    SourceKinds = history.SourceKinds
+                        .Where(pair => history.Snapshots.Any(item => item.Version == pair.Key))
+                        .ToDictionary(pair => pair.Key, pair => pair.Value)
+                };
+            ValidateHistory(currentHistory);
             return new ReconciledLocation(currentHistory, latest, Appended: false);
         }
 
         var now = ToMilliseconds(_timeProvider.GetUtcNow());
-        var classificationUpgrade = history?.SourceKinds is null
-            && _options.CentralIntegration.Mode == CentralIntegrationMode.Enabled
-            && latest is not null
-            && SameConfiguredLocationIgnoringSourceKind(latest, seed);
-        var effectiveFrom = seed.EffectiveFromUtc.HasValue && !classificationUpgrade
+        var effectiveFrom = seed.EffectiveFromUtc.HasValue
             ? ToMilliseconds(seed.EffectiveFromUtc.Value)
             : now;
         var latestProposedEffectiveFrom = history?.Candidate?.EffectiveFromUtc > latest?.EffectiveFromUtc
             ? history.Candidate.EffectiveFromUtc
             : latest?.EffectiveFromUtc;
-        if ((!seed.EffectiveFromUtc.HasValue || classificationUpgrade)
+        if (!seed.EffectiveFromUtc.HasValue
             && latestProposedEffectiveFrom.HasValue
             && effectiveFrom <= latestProposedEffectiveFrom.Value)
         {
@@ -344,8 +352,7 @@ public sealed class ProtectedDeploymentLocationStore(
                 Candidate = snapshot,
                 Staged = null,
                 ConfigurationSeed = seed,
-                SourceKinds = (history.SourceKinds ?? history.Snapshots.ToDictionary(
-                        item => item.Version, _ => DeploymentLocationSourceKind.Unspecified))
+                SourceKinds = history.SourceKinds
                     .Where(pair => history.Snapshots.Any(item => item.Version == pair.Key))
                     .ToDictionary(pair => pair.Key, pair => pair.Value)
                     .Append(new KeyValuePair<long, DeploymentLocationSourceKind>(snapshot.Version, seed.SourceKind))
@@ -368,19 +375,20 @@ public sealed class ProtectedDeploymentLocationStore(
                 },
             ActivatedAtUtc: history is null
                 ? new Dictionary<long, DateTimeOffset> { [snapshot.Version] = effectiveFrom }
-                : new Dictionary<long, DateTimeOffset>(history.ActivatedAtUtc ?? new Dictionary<long, DateTimeOffset>())
+                : new Dictionary<long, DateTimeOffset>(history.ActivatedAtUtc)
                 {
                     [snapshot.Version] = effectiveFrom
                 },
             ConfigurationSeed: seed,
             SourceKinds: history is null
                 ? new Dictionary<long, DeploymentLocationSourceKind> { [snapshot.Version] = seed.SourceKind }
-                : new Dictionary<long, DeploymentLocationSourceKind>(history.SourceKinds
-                    ?? history.Snapshots.ToDictionary(
-                        item => item.Version, _ => DeploymentLocationSourceKind.Unspecified))
+                : new Dictionary<long, DeploymentLocationSourceKind>(history.SourceKinds)
                 {
                     [snapshot.Version] = seed.SourceKind
-                });
+                },
+            Staged: null,
+            CentrallyActivatedCanonicalSha256: null,
+            Candidate: null);
         ValidateHistory(updated);
         return new ReconciledLocation(updated, snapshot, Appended: true);
     }
@@ -400,8 +408,7 @@ public sealed class ProtectedDeploymentLocationStore(
             {
                 [latest.Version] = activatedAtUtc
             },
-            ActivatedAtUtc = new Dictionary<long, DateTimeOffset>(
-                history.ActivatedAtUtc ?? new Dictionary<long, DateTimeOffset>())
+            ActivatedAtUtc = new Dictionary<long, DateTimeOffset>(history.ActivatedAtUtc)
             {
                 [staged.Version] = activatedAtUtc
             },
@@ -427,38 +434,23 @@ public sealed class ProtectedDeploymentLocationStore(
         }
     }
 
-    private bool SameConfiguredLocation(
+    private static bool SameConfiguredLocation(
         DeploymentLocationHistory history,
         DeploymentLocationSnapshot snapshot,
         DeploymentLocationSeed seed)
         => string.Equals(snapshot.LocationId, seed.LocationId, StringComparison.Ordinal) &&
            string.Equals(snapshot.Source, seed.Source, StringComparison.Ordinal) &&
-           (history.SourceKinds is null && _options.CentralIntegration.Mode == CentralIntegrationMode.Disabled
-                || history.SourceKinds is not null
-                && history.SourceKinds.TryGetValue(snapshot.Version, out var sourceKind)
-                && sourceKind == seed.SourceKind) &&
+           history.SourceKinds.TryGetValue(snapshot.Version, out var sourceKind) &&
+           sourceKind == seed.SourceKind &&
            snapshot.HorizontalAccuracyMeters == seed.HorizontalAccuracyMeters &&
            snapshot.LatitudeDegrees == seed.Coordinates.LatitudeDegrees &&
            snapshot.LongitudeDegrees == seed.Coordinates.LongitudeDegrees &&
            snapshot.ElevationMeters == seed.Coordinates.ElevationMeters &&
            string.Equals(snapshot.TimeZoneId, seed.Coordinates.TimeZoneId, StringComparison.Ordinal) &&
            (!seed.EffectiveFromUtc.HasValue || snapshot.EffectiveFromUtc == ToMilliseconds(seed.EffectiveFromUtc.Value)) &&
-           (!seed.EffectiveUntilUtc.HasValue || snapshot.EffectiveUntilUtc == ToMilliseconds(seed.EffectiveUntilUtc.Value));
-
-    private static bool SameConfiguredLocationIgnoringSourceKind(
-        DeploymentLocationSnapshot snapshot,
-        DeploymentLocationSeed seed)
-        => string.Equals(snapshot.LocationId, seed.LocationId, StringComparison.Ordinal)
-           && string.Equals(snapshot.Source, seed.Source, StringComparison.Ordinal)
-           && snapshot.HorizontalAccuracyMeters == seed.HorizontalAccuracyMeters
-           && snapshot.LatitudeDegrees == seed.Coordinates.LatitudeDegrees
-           && snapshot.LongitudeDegrees == seed.Coordinates.LongitudeDegrees
-           && snapshot.ElevationMeters == seed.Coordinates.ElevationMeters
-           && string.Equals(snapshot.TimeZoneId, seed.Coordinates.TimeZoneId, StringComparison.Ordinal)
-           && (!seed.EffectiveFromUtc.HasValue
-               || snapshot.EffectiveFromUtc == ToMilliseconds(seed.EffectiveFromUtc.Value))
-           && (!seed.EffectiveUntilUtc.HasValue
-               || snapshot.EffectiveUntilUtc == ToMilliseconds(seed.EffectiveUntilUtc.Value));
+           snapshot.EffectiveUntilUtc == (seed.EffectiveUntilUtc.HasValue
+               ? ToMilliseconds(seed.EffectiveUntilUtc.Value)
+               : null);
 
     private static DeploymentLocationSeed NormalizeSeed(DeploymentLocationSeed seed)
         => seed with
@@ -612,9 +604,17 @@ public sealed class ProtectedDeploymentLocationStore(
     private static void ValidateHistory(DeploymentLocationHistory history)
     {
         if (history.SchemaVersion != CurrentSchemaVersion || string.IsNullOrWhiteSpace(history.LocationId) ||
-            history.Snapshots is null || history.Snapshots.Count == 0 || history.SupersededAtUtc is null)
+            history.Snapshots is null || history.Snapshots.Count == 0 || history.SupersededAtUtc is null ||
+            history.ConfigurationSeed is null || history.ActivatedAtUtc is null || history.SourceKinds is null)
         {
             throw new InvalidDataException("Protected deployment-location history has an unsupported schema.");
+        }
+        if (!string.Equals(history.ConfigurationSeed.LocationId, history.LocationId, StringComparison.Ordinal)
+            || history.ConfigurationSeed.Coordinates is null
+            || history.ConfigurationSeed != NormalizeSeed(history.ConfigurationSeed)
+            || !Enum.IsDefined(history.ConfigurationSeed.SourceKind))
+        {
+            throw new InvalidDataException("Protected deployment-location configuration seed is invalid.");
         }
         if (history.Staged is { } staged)
         {
@@ -624,6 +624,11 @@ public sealed class ProtectedDeploymentLocationStore(
                 throw new InvalidDataException("Protected staged deployment location failed integrity validation.");
             }
             ValidateSuccessor(history.Snapshots[^1], staged);
+            if (history.Candidate is null)
+            {
+                throw new InvalidDataException(
+                    "Protected staged deployment location is missing its candidate.");
+            }
         }
         if (history.Candidate is { } candidate)
         {
@@ -670,20 +675,21 @@ public sealed class ProtectedDeploymentLocationStore(
             }
             previous = snapshot;
         }
-        if (history.ActivatedAtUtc is not null)
+        var snapshotVersions = history.Snapshots.Select(item => item.Version).ToHashSet();
+        if (history.ActivatedAtUtc.Count != snapshotVersions.Count
+            || history.ActivatedAtUtc.Keys.Any(version => !snapshotVersions.Contains(version)))
         {
-            foreach (var snapshot in history.Snapshots)
+            throw new InvalidDataException("Protected deployment-location activation history is invalid.");
+        }
+        foreach (var snapshot in history.Snapshots)
+        {
+            if (!history.ActivatedAtUtc.TryGetValue(snapshot.Version, out var activated)
+                || activated < snapshot.EffectiveFromUtc
+                || history.SupersededAtUtc.TryGetValue(snapshot.Version, out var superseded)
+                && activated >= superseded)
             {
-                if (history.ActivatedAtUtc.TryGetValue(snapshot.Version, out var activated)
-                    && activated < snapshot.EffectiveFromUtc)
-                {
-                    throw new InvalidDataException(
-                        "Protected deployment-location activation precedes its effective interval.");
-                }
-            }
-            if (history.ActivatedAtUtc.Keys.Any(version => history.Snapshots.All(item => item.Version != version)))
-            {
-                throw new InvalidDataException("Protected deployment-location activation history is invalid.");
+                throw new InvalidDataException(
+                    "Protected deployment-location activation chronology is invalid.");
             }
         }
         var supersededVersions = history.Snapshots.Take(history.Snapshots.Count - 1)
@@ -693,17 +699,29 @@ public sealed class ProtectedDeploymentLocationStore(
         {
             throw new InvalidDataException("Protected deployment-location supersession history is invalid.");
         }
-        if (history.SourceKinds is not null)
+        for (var index = 1; index < history.Snapshots.Count; index++)
         {
-            var knownVersions = history.Snapshots.Select(item => item.Version)
-                .Concat(history.Candidate is null ? [] : [history.Candidate.Version])
-                .Concat(history.Staged is null ? [] : [history.Staged.Version])
-                .ToHashSet();
-            if (history.SourceKinds.Count != knownVersions.Count
-                || history.SourceKinds.Any(pair => !knownVersions.Contains(pair.Key) || !Enum.IsDefined(pair.Value)))
+            if (history.SupersededAtUtc[history.Snapshots[index - 1].Version]
+                != history.ActivatedAtUtc[history.Snapshots[index].Version])
             {
-                throw new InvalidDataException("Protected deployment-location source classifications are invalid.");
+                throw new InvalidDataException(
+                    "Protected deployment-location activation does not match its supersession boundary.");
             }
+        }
+        var knownVersions = snapshotVersions
+            .Concat(history.Candidate is null ? [] : [history.Candidate.Version])
+            .Concat(history.Staged is null ? [] : [history.Staged.Version])
+            .ToHashSet();
+        if (history.SourceKinds.Count != knownVersions.Count
+            || history.SourceKinds.Any(pair => !knownVersions.Contains(pair.Key) || !Enum.IsDefined(pair.Value)))
+        {
+            throw new InvalidDataException("Protected deployment-location source classifications are invalid.");
+        }
+        var configuredSnapshot = history.Candidate ?? history.Snapshots[^1];
+        if (!SameConfiguredLocation(history, configuredSnapshot, history.ConfigurationSeed))
+        {
+            throw new InvalidDataException(
+                "Protected deployment-location configuration seed does not match protected history.");
         }
     }
 
@@ -719,8 +737,7 @@ public sealed class ProtectedDeploymentLocationStore(
             effectiveUntil = superseded;
         }
         var effectiveFrom = snapshot.EffectiveFromUtc;
-        if (history.ActivatedAtUtc?.TryGetValue(snapshot.Version, out var activated) == true
-            && activated > effectiveFrom)
+        if (history.ActivatedAtUtc.TryGetValue(snapshot.Version, out var activated) && activated > effectiveFrom)
         {
             effectiveFrom = activated;
         }
@@ -744,7 +761,7 @@ public sealed class ProtectedDeploymentLocationStore(
         }
         if (marker.SchemaVersion != CurrentSchemaVersion || history is null ||
             !string.Equals(marker.LocationId, history.LocationId, StringComparison.Ordinal) ||
-            marker.Version < 1 || marker.Version > history.Snapshots[^1].Version)
+            history.Snapshots.All(snapshot => snapshot.Version != marker.Version))
         {
             throw new InvalidDataException("Deployment-location identity marker does not match protected history.");
         }
@@ -918,16 +935,16 @@ public sealed class ProtectedDeploymentLocationStore(
     }
 
     private sealed record DeploymentLocationHistory(
-        int SchemaVersion,
-        string LocationId,
-        IReadOnlyList<DeploymentLocationSnapshot> Snapshots,
-        IReadOnlyDictionary<long, DateTimeOffset> SupersededAtUtc,
-        DeploymentLocationSnapshot? Staged = null,
-        string? CentrallyActivatedCanonicalSha256 = null,
-        DeploymentLocationSnapshot? Candidate = null,
-        DeploymentLocationSeed? ConfigurationSeed = null,
-        IReadOnlyDictionary<long, DateTimeOffset>? ActivatedAtUtc = null,
-        Dictionary<long, DeploymentLocationSourceKind>? SourceKinds = null);
+        [property: JsonRequired] int SchemaVersion,
+        [property: JsonRequired] string LocationId,
+        [property: JsonRequired] IReadOnlyList<DeploymentLocationSnapshot> Snapshots,
+        [property: JsonRequired] IReadOnlyDictionary<long, DateTimeOffset> SupersededAtUtc,
+        [property: JsonRequired] DeploymentLocationSnapshot? Staged = null,
+        [property: JsonRequired] string? CentrallyActivatedCanonicalSha256 = null,
+        [property: JsonRequired] DeploymentLocationSnapshot? Candidate = null,
+        [property: JsonRequired] DeploymentLocationSeed ConfigurationSeed = null!,
+        [property: JsonRequired] IReadOnlyDictionary<long, DateTimeOffset> ActivatedAtUtc = null!,
+        [property: JsonRequired] Dictionary<long, DeploymentLocationSourceKind> SourceKinds = null!);
 
     private sealed record DeploymentLocationMarker(int SchemaVersion, string LocationId, long Version);
 
