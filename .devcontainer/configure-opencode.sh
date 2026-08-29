@@ -264,9 +264,11 @@ run_initialization_failpoint() {
         if [[ -n "${HVO_OPENCODE_INIT_PAUSE_READY:-}" \
             && -n "${HVO_OPENCODE_INIT_PAUSE_RELEASE:-}" ]]; then
             : > "$HVO_OPENCODE_INIT_PAUSE_READY"
-            while [[ ! -e "$HVO_OPENCODE_INIT_PAUSE_RELEASE" ]]; do
+            for _ in {1..3000}; do
+                [[ -e "$HVO_OPENCODE_INIT_PAUSE_RELEASE" ]] && return 0
                 sleep 0.01
             done
+            fail "test pause release was not received at $1"
         else
             sleep "${HVO_OPENCODE_INIT_PAUSE_SECONDS:-1}"
         fi

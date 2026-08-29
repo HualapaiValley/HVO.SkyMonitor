@@ -64,18 +64,21 @@ state_directories=(
 )
 
 discard_empty_initialization_root() {
+    local staged_root="$1"
     local entry
     local -a entries
 
     for _ in {1..100}; do
-        [[ -e "$initialization_root" || -L "$initialization_root" ]] || return 0
-        if ! verify_secure_state_directory "$initialization_root"; then
-            [[ ! -e "$initialization_root" && ! -L "$initialization_root" ]] && return 0
+        [[ -e "$staged_root" || -L "$staged_root" ]] || return 0
+        if ! verify_secure_state_directory "$staged_root"; then
+            [[ ! -e "$staged_root" && ! -L "$staged_root" ]] && return 0
             return 1
         fi
         shopt -s dotglob nullglob
-        entries=("$initialization_root"/*)
+        entries=("$staged_root"/*)
         shopt -u dotglob nullglob
+
+        # Validate the complete staged tree before removing any part of it.
         for entry in "${entries[@]}"; do
             case "${entry##*/}" in
                 agent-scratch | opencode-config | opencode-data | opencode-worktrees) ;;
@@ -93,22 +96,44 @@ discard_empty_initialization_root() {
                     echo "Concurrent developer-state initialization directory must be empty: $entry" >&2
                     return 1
                 fi
-                rmdir -- "$entry" 2>/dev/null || true
             fi
         done
-        rmdir -- "$initialization_root" 2>/dev/null || true
-        [[ ! -e "$initialization_root" && ! -L "$initialization_root" ]] && return 0
+
+        for entry in "${entries[@]}"; do
+            rmdir -- "$entry" 2>/dev/null || true
+        done
+        rmdir -- "$staged_root" 2>/dev/null || true
+        [[ ! -e "$staged_root" && ! -L "$staged_root" ]] && return 0
         sleep 0.01
     done
-    echo "Concurrent developer-state initialization did not quiesce: $initialization_root" >&2
+    echo "Concurrent developer-state initialization did not quiesce: $staged_root" >&2
     return 1
 }
 
 verify_installed_state() {
+    local entry
+    local nested_initialization_root="$state_root/.state-initialization-v1"
+    local -a entries
+
     if [[ -e "$initialization_root" || -L "$initialization_root" ]]; then
-        discard_empty_initialization_root
+        discard_empty_initialization_root "$initialization_root"
     fi
     verify_secure_state_directory "$state_root"
+    if [[ -e "$nested_initialization_root" || -L "$nested_initialization_root" ]]; then
+        discard_empty_initialization_root "$nested_initialization_root"
+    fi
+    shopt -s dotglob nullglob
+    entries=("$state_root"/*)
+    shopt -u dotglob nullglob
+    for entry in "${entries[@]}"; do
+        case "${entry##*/}" in
+            agent-scratch | opencode-config | opencode-data | opencode-worktrees) ;;
+            *)
+                echo "Persistent developer state contains an unexpected entry: $entry" >&2
+                return 1
+                ;;
+        esac
+    done
     for state_directory in "${state_directories[@]}"; do
         if [[ ! -e "$state_directory" && ! -L "$state_directory" ]]; then
             echo "Existing persistent developer state is incomplete; missing directory: $state_directory" >&2

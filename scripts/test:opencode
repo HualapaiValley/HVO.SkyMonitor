@@ -20,8 +20,17 @@ readonly DEVCONTAINER_FILE="$REPO_ROOT/.devcontainer/devcontainer.json"
 TEMP_DIR="$(mktemp -d -t hvo-opencode-test.XXXXXX)"
 readonly TEMP_DIR
 LIFECYCLE_SESSION=""
+CONCURRENT_RELEASE=""
+TEST_BACKGROUND_PIDS=()
 
 cleanup() {
+    if [[ -n "$CONCURRENT_RELEASE" ]]; then
+        : > "$CONCURRENT_RELEASE" 2>/dev/null || true
+    fi
+    for background_pid in "${TEST_BACKGROUND_PIDS[@]}"; do
+        kill "$background_pid" 2>/dev/null || true
+        wait "$background_pid" 2>/dev/null || true
+    done
     if [[ -n "$LIFECYCLE_SESSION" ]] && command -v tmux >/dev/null 2>&1; then
         tmux kill-session -t "$LIFECYCLE_SESSION" 2>/dev/null || true
     fi
@@ -270,6 +279,7 @@ concurrent_config="$TEMP_DIR/concurrent/opencode-config"
 concurrent_data="$TEMP_DIR/concurrent/opencode-data"
 concurrent_ready="$TEMP_DIR/concurrent/first-ready"
 concurrent_release="$TEMP_DIR/concurrent/release-first"
+CONCURRENT_RELEASE="$concurrent_release"
 mkdir -p "$concurrent_config" "$concurrent_data"
 chmod 700 "$concurrent_config" "$concurrent_data"
 env -i HOME="$TEMP_DIR/home" PATH="/usr/bin:/bin" \
@@ -280,6 +290,7 @@ env -i HOME="$TEMP_DIR/home" PATH="/usr/bin:/bin" \
     HVO_OPENCODE_INIT_PAUSE_RELEASE="$concurrent_release" \
     bash "$CONFIGURE_SCRIPT" > "$TEMP_DIR/concurrent-first.out" 2>&1 &
 concurrent_first_pid=$!
+TEST_BACKGROUND_PIDS+=("$concurrent_first_pid")
 for _ in {1..100}; do
     if [[ -e "$concurrent_ready" ]]; then
         break
@@ -289,11 +300,14 @@ done
 test -e "$concurrent_ready"
 run_configure "$concurrent_config" "$concurrent_data" > "$TEMP_DIR/concurrent-second.out" 2>&1 &
 concurrent_second_pid=$!
+TEST_BACKGROUND_PIDS+=("$concurrent_second_pid")
 sleep 0.1
 kill -0 "$concurrent_second_pid"
 : > "$concurrent_release"
 wait "$concurrent_first_pid"
 wait "$concurrent_second_pid"
+TEST_BACKGROUND_PIDS=()
+CONCURRENT_RELEASE=""
 test -s "$concurrent_config/opencode.jsonc"
 test -s "$concurrent_data/server-password"
 if compgen -G "$concurrent_config/.hvo-opencode-initialization-v1-*" >/dev/null \
@@ -507,13 +521,49 @@ for index in {1..8}; do
     HOME="$concurrent_initialize_home" \
         bash "$concurrent_initialize_fixture/.devcontainer/initialize.sh" \
         > "$TEMP_DIR/concurrent-initialize-$index.out" 2>&1 &
-    concurrent_initialize_pids+=("$!")
+    concurrent_initialize_pid=$!
+    concurrent_initialize_pids+=("$concurrent_initialize_pid")
+    TEST_BACKGROUND_PIDS+=("$concurrent_initialize_pid")
 done
 for concurrent_initialize_pid in "${concurrent_initialize_pids[@]}"; do
     wait "$concurrent_initialize_pid"
 done
+TEST_BACKGROUND_PIDS=()
 test -d "$concurrent_initialize_fixture/.devcontainer/state/opencode-worktrees"
 test ! -e "$concurrent_initialize_fixture/.devcontainer/.state-initialization-v1"
+test ! -e "$concurrent_initialize_fixture/.devcontainer/state/.state-initialization-v1"
+
+mkdir -p \
+    "$concurrent_initialize_fixture/.devcontainer/state/.state-initialization-v1/agent-scratch" \
+    "$concurrent_initialize_fixture/.devcontainer/state/.state-initialization-v1/opencode-config" \
+    "$concurrent_initialize_fixture/.devcontainer/state/.state-initialization-v1/opencode-data" \
+    "$concurrent_initialize_fixture/.devcontainer/state/.state-initialization-v1/opencode-worktrees"
+chmod 700 \
+    "$concurrent_initialize_fixture/.devcontainer/state/.state-initialization-v1" \
+    "$concurrent_initialize_fixture/.devcontainer/state/.state-initialization-v1"/*
+HOME="$concurrent_initialize_home" \
+    bash "$concurrent_initialize_fixture/.devcontainer/initialize.sh"
+test ! -e "$concurrent_initialize_fixture/.devcontainer/state/.state-initialization-v1"
+
+coexisting_stage="$concurrent_initialize_fixture/.devcontainer/.state-initialization-v1"
+mkdir -p \
+    "$coexisting_stage/agent-scratch" \
+    "$coexisting_stage/opencode-config" \
+    "$coexisting_stage/opencode-data" \
+    "$coexisting_stage/opencode-worktrees"
+chmod 700 "$coexisting_stage" "$coexisting_stage"/*
+printf 'preserve staged payload\n' > "$coexisting_stage/opencode-data/server-password"
+if HOME="$concurrent_initialize_home" \
+    bash "$concurrent_initialize_fixture/.devcontainer/initialize.sh" \
+    > "$TEMP_DIR/coexisting-initialize.out" 2>&1; then
+    echo "Host initialization accepted staged payload beside installed state." >&2
+    exit 1
+fi
+grep -Fq 'initialization directory must be empty' "$TEMP_DIR/coexisting-initialize.out"
+for staged_directory in agent-scratch opencode-config opencode-data opencode-worktrees; do
+    test -d "$coexisting_stage/$staged_directory"
+done
+grep -Fqx 'preserve staged payload' "$coexisting_stage/opencode-data/server-password"
 
 nested_initialize_fixture="$TEMP_DIR/nested-initialize-repo"
 nested_initialize_home="$TEMP_DIR/nested-initialize-home"
