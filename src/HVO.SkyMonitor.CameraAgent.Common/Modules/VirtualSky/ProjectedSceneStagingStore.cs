@@ -736,7 +736,7 @@ internal sealed class ProjectedSceneStagingStore :
 
     private static SafeFileHandle LinuxOpenDirectory(string path)
         => LinuxOpen(path, LinuxOpenFlags.ReadOnly | LinuxDirectoryFlag() |
-            LinuxOpenFlags.NoFollow | LinuxOpenFlags.CloseOnExec, directory: true);
+            LinuxNoFollowFlag() | LinuxOpenFlags.CloseOnExec, directory: true);
 
     private static SafeFileHandle LinuxOpenAbsoluteDirectoryComponents(string path)
     {
@@ -763,13 +763,16 @@ internal sealed class ProjectedSceneStagingStore :
 
     private static SafeFileHandle LinuxOpenAtDirectory(SafeFileHandle parent, string name)
         => LinuxOpenAt(parent, name, LinuxOpenFlags.ReadOnly | LinuxDirectoryFlag() |
-            LinuxOpenFlags.NoFollow | LinuxOpenFlags.CloseOnExec, directory: true)!;
+            LinuxNoFollowFlag() | LinuxOpenFlags.CloseOnExec, directory: true)!;
 
     private static LinuxOpenFlags LinuxDirectoryFlag()
         => (LinuxOpenFlags)RawIngressFileStore.GetLinuxDirectoryOnlyFlag(RuntimeInformation.ProcessArchitecture);
 
+    private static LinuxOpenFlags LinuxNoFollowFlag()
+        => (LinuxOpenFlags)RawIngressFileStore.GetLinuxNoFollowFlag(RuntimeInformation.ProcessArchitecture);
+
     private static SafeFileHandle? LinuxOpenAtFile(SafeFileHandle parent, string name)
-        => LinuxOpenAt(parent, name, LinuxOpenFlags.ReadOnly | LinuxOpenFlags.NoFollow |
+        => LinuxOpenAt(parent, name, LinuxOpenFlags.ReadOnly | LinuxNoFollowFlag() |
             LinuxOpenFlags.CloseOnExec, directory: false);
 
     private async ValueTask PublishLinuxAsync(
@@ -784,7 +787,7 @@ internal sealed class ProjectedSceneStagingStore :
             directory,
             temporaryName,
             LinuxOpenFlags.WriteOnly | LinuxOpenFlags.Create | LinuxOpenFlags.Exclusive |
-                LinuxOpenFlags.NoFollow | LinuxOpenFlags.CloseOnExec,
+                LinuxNoFollowFlag() | LinuxOpenFlags.CloseOnExec,
             directory: false,
             mode: 0x180)
             ?? throw new IOException("Projected-scene temporary stage could not be created.");
@@ -937,8 +940,7 @@ internal sealed class ProjectedSceneStagingStore :
         WriteOnly = 1,
         Create = 0x40,
         Exclusive = 0x80,
-        CloseOnExec = 0x80000,
-        NoFollow = 0x20000
+        CloseOnExec = 0x80000
     }
 
     [StructLayout(LayoutKind.Sequential, Size = 256)]
