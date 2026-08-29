@@ -58,11 +58,11 @@ visual and accessibility foundation.
 
 ## Prior Study Audit
 
-The retained `origin/design/cameraagent-ui-mockups` branch was reviewed as
-historical research, not current implementation authority. This checkpoint
+The historical study now preserved by the `cameraagent-ui-mockups-archive` tag
+was reviewed as research, not current implementation authority. This checkpoint
 recovers the **Observatory Window** image-first hierarchy, separately aged image
 and environmental facts, last-valid-image behavior, bounded frame browsing, and
-the synthetic day/night imagery. It rejects that branch's anonymous-public
+the synthetic day/night imagery. It rejects that study's anonymous-public
 assumption and does not adopt its calendar, events, time-lapse, keogram,
 dewarping, product scheduling, configuration, or runtime-supervisor proposals.
 Those broader concepts have no authority in #440.

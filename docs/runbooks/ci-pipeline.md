@@ -181,8 +181,8 @@ The aggregate is fail-closed for classification inputs and job results, but a wo
 ## Pull Request Selection
 
 The workflow runs the classifier-selected CI plan only for non-draft pull
-requests targeting `main` or `release/**`, including the `release/deploy-331`
-strategy. Draft events run only the fail-closed `Required CI` result. The
+requests targeting `main` or `release/**`. Draft events run only the fail-closed
+`Required CI` result. The
 workflow responds to the `ready_for_review` transition so a reviewed draft
 receives current-head CI. A lightweight classifier uses the
 pull request's base and head commits and selects reduced mode only when every
