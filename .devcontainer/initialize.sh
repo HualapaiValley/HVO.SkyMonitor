@@ -3,8 +3,9 @@
 
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -L)"
-physical_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+workspace_path="${1:-$(dirname "${BASH_SOURCE[0]}")/..}"
+repo_root="$(cd "$workspace_path" && pwd -L)"
+physical_repo_root="$(cd "$workspace_path" && pwd -P)"
 state_root="$repo_root/.devcontainer/state"
 initialization_root="$repo_root/.devcontainer/.state-initialization-v1"
 expected_owner="$(id -u):$(id -g)"

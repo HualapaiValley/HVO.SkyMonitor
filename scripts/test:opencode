@@ -113,6 +113,8 @@ grep -Fq '"HVO_AGENT_WORKTREE_ROOT": "/tmp/opencode"' "$DEVCONTAINER_FILE"
 grep -Fq '"HVO_AGENT_STATE_ROOT": "/var/lib/hvo-agent-state"' "$DEVCONTAINER_FILE"
 grep -Fq '"HVO_DEVCONTAINER_STATE_SOURCE": "${localWorkspaceFolder}/.devcontainer/state"' \
     "$DEVCONTAINER_FILE"
+grep -Fq '"initializeCommand": "bash .devcontainer/initialize.sh \"${localWorkspaceFolder}\""' \
+    "$DEVCONTAINER_FILE"
 grep -Fq '"source": "${localWorkspaceFolder}/.devcontainer/state/opencode-worktrees"' "$DEVCONTAINER_FILE"
 grep -Fq '"target": "/tmp/opencode"' "$DEVCONTAINER_FILE"
 grep -Fq '"source": "${localWorkspaceFolder}/.devcontainer/state/agent-scratch"' "$DEVCONTAINER_FILE"
@@ -448,8 +450,9 @@ symlink_initialize_alias="$TEMP_DIR/symlink-initialize-alias"
 mkdir -p "$symlink_initialize_fixture/.devcontainer" "$TEMP_DIR/symlink-initialize-home"
 cp "$INITIALIZE_SCRIPT" "$symlink_initialize_fixture/.devcontainer/initialize.sh"
 ln -s "$symlink_initialize_fixture" "$symlink_initialize_alias"
-if HOME="$TEMP_DIR/symlink-initialize-home" \
-    bash "$symlink_initialize_alias/.devcontainer/initialize.sh" \
+if (cd -P "$symlink_initialize_alias" \
+    && env -u PWD HOME="$TEMP_DIR/symlink-initialize-home" \
+        bash .devcontainer/initialize.sh "$symlink_initialize_alias") \
     > "$TEMP_DIR/symlink-initialize.out" 2>&1; then
     echo "Host initialization unexpectedly accepted a symlinked checkout." >&2
     exit 1
