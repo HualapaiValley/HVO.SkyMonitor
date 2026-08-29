@@ -584,20 +584,27 @@ assert_current "$INSTALL_ROOT" 1
 "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$INSTALL_ROOT" >/dev/null
 assert_current "$INSTALL_ROOT" 1
 
-if [[ -n "${HVO_LEGACY_CATALOG_BUNDLE:-}" ]]; then
-    legacy_root="$TEMPORARY_DIRECTORY/legacy-v1-install"
-    legacy_target="$legacy_root/versions/hyg-v4.2-p3-s2-r1"
-    mkdir -p "$legacy_root/versions"
-    cp -a "$HVO_LEGACY_CATALOG_BUNDLE" "$legacy_target"
-    ln -s versions/hyg-v4.2-p3-s2-r1 "$legacy_root/current"
-    legacy_manifest_sha="$(hyg_sha256 "$legacy_target/manifest.json")"
-    legacy_database_sha="$(hyg_sha256 "$legacy_target/hyg_v42.sqlite")"
-    "$SCRIPT_DIR/install-hyg-v42.sh" install "$SOURCE_BUNDLE" "$legacy_root" >/dev/null
-    assert_current "$legacy_root" 1
-    [[ "$(hyg_sha256 "$legacy_target/manifest.json")" == "$legacy_manifest_sha" ]]
-    [[ "$(hyg_sha256 "$legacy_target/hyg_v42.sqlite")" == "$legacy_database_sha" ]]
-    [[ "$(hyg_json_value "$legacy_target/manifest.json" '$.manifestVersion')" == 1 ]]
-    [[ "$(hyg_json_type "$legacy_target/manifest.json" '$.catalog.id')" == "" ]]
-fi
+active_manifest_sha="$(hyg_sha256 "$INSTALL_ROOT/versions/$HYG_PACKAGE_VERSION/$HYG_MANIFEST_FILE")"
+active_database_sha="$(hyg_sha256 "$INSTALL_ROOT/versions/$HYG_PACKAGE_VERSION/$HYG_DATABASE_FILE")"
+for invalid_version in v1 unknown malformed; do
+    invalid_bundle="$TEMPORARY_DIRECTORY/invalid-$invalid_version.bundle"
+    cp -a "$SOURCE_BUNDLE" "$invalid_bundle"
+    chmod u+w "$invalid_bundle" "$invalid_bundle/$HYG_MANIFEST_FILE"
+    case "$invalid_version" in
+        v1) jq '.manifestVersion=1 | del(.catalog.id)' "$invalid_bundle/$HYG_MANIFEST_FILE" > "$invalid_bundle/$HYG_MANIFEST_FILE.changed" ;;
+        unknown) jq '.manifestVersion=3' "$invalid_bundle/$HYG_MANIFEST_FILE" > "$invalid_bundle/$HYG_MANIFEST_FILE.changed" ;;
+        malformed) printf '{"manifestVersion":2\n' > "$invalid_bundle/$HYG_MANIFEST_FILE.changed" ;;
+    esac
+    mv -T "$invalid_bundle/$HYG_MANIFEST_FILE.changed" "$invalid_bundle/$HYG_MANIFEST_FILE"
+    chmod 0444 "$invalid_bundle"/*; chmod 0555 "$invalid_bundle"
+    if "$SCRIPT_DIR/install-hyg-v42.sh" install "$invalid_bundle" "$INSTALL_ROOT" >/dev/null 2>&1; then
+        printf 'production installer accepted %s catalog manifest\n' "$invalid_version" >&2
+        exit 1
+    fi
+    assert_current "$INSTALL_ROOT" 1
+    [[ "$(readlink "$INSTALL_ROOT/previous")" == "versions/hyg-v4.2-p3-s2-r14" ]]
+    [[ "$(hyg_sha256 "$INSTALL_ROOT/versions/$HYG_PACKAGE_VERSION/$HYG_MANIFEST_FILE")" == "$active_manifest_sha" ]]
+    [[ "$(hyg_sha256 "$INSTALL_ROOT/versions/$HYG_PACKAGE_VERSION/$HYG_DATABASE_FILE")" == "$active_database_sha" ]]
+done
 
 printf 'Catalog production install, fault, restart, upgrade, and rollback checks passed.\n'

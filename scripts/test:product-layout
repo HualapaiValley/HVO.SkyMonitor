@@ -1119,7 +1119,7 @@ test "$(<"$provisioned_product/cameraagents/$provisioned_instance/config/secrets
 test "$(<"$provisioned_product/cameraagents/$provisioned_instance/config/secrets/CameraAgent__CaptureDistribution__UploadEnabled")" = true
 test "$(<"$provisioned_product/cameraagents/$provisioned_instance/config/password-state")" = preserved-password-state
 
-# Exact legacy fixture facts derive and record the canonical fixture identity without changing manifest v1.
+# Manifest v1 fails before publication; the same fixture migrates with an explicit v2 identity.
 fixture_legacy="$TEMP_DIR/fixture-legacy"; fixture_product="$TEMP_DIR/fixture-product"; fixture_evidence="$TEMP_DIR/fixture-migration.json"
 fixture_version="$fixture_legacy/data/catalog/versions/hyg-v42-fixture-1"
 mkdir -p "$fixture_legacy/config/cameraagent" "$fixture_legacy/data/agent" "$fixture_version"
@@ -1132,11 +1132,23 @@ jq -n --arg sha "$fixture_sha" '{manifestVersion:1,package:{kind:"fixture",versi
 ln -s versions/hyg-v42-fixture-1 "$fixture_legacy/data/catalog/current"
 fixture_instance=77777777-7777-4777-8777-777777777777
 fixture_args=(--legacy-root "$fixture_legacy" --product-root "$fixture_product" --instance-id "$fixture_instance" --application-id fixture-agent --catalog-id hyg-v42-fixture --evidence "$fixture_evidence")
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${fixture_args[@]}" >/dev/null 2>&1; then
+  printf 'Migration accepted a manifest-v1 fixture catalog.\n' >&2; exit 99
+fi
+test ! -e "$fixture_product/cameraagents/$fixture_instance"; test ! -e "$fixture_product/catalogs/hyg-v42-fixture"; test ! -e "$fixture_evidence"
+jq '.manifestVersion=3' "$fixture_version/manifest.json" > "$fixture_version/manifest.json.changed"
+mv -T "$fixture_version/manifest.json.changed" "$fixture_version/manifest.json"
+if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${fixture_args[@]}" >/dev/null 2>&1; then
+  printf 'Migration accepted an unknown catalog manifest version.\n' >&2; exit 103
+fi
+test ! -e "$fixture_product/cameraagents/$fixture_instance"; test ! -e "$fixture_product/catalogs/hyg-v42-fixture"; test ! -e "$fixture_evidence"
+jq '.manifestVersion=2 | .catalog.id="hyg-v42-fixture"' "$fixture_version/manifest.json" > "$fixture_version/manifest.json.changed"
+mv -T "$fixture_version/manifest.json.changed" "$fixture_version/manifest.json"
 fixture_wrong_product="$TEMP_DIR/fixture-wrong-product"
 if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply --legacy-root "$fixture_legacy" --product-root "$fixture_wrong_product" \
   --instance-id "$fixture_instance" --application-id fixture-agent --catalog-id hyg-v42-production --evidence "$TEMP_DIR/fixture-wrong.json" >/dev/null 2>&1; then exit 100; fi
 test ! -e "$fixture_wrong_product/cameraagents/$fixture_instance"; test ! -e "$fixture_wrong_product/catalogs/hyg-v42-production"
-# Matching legacy manifest claims cannot derive identity from arbitrary database bytes.
+# Matching manifest claims cannot derive identity from arbitrary database bytes.
 hostile_fixture="$TEMP_DIR/fixture-hostile"; hostile_product="$TEMP_DIR/fixture-hostile-product"
 mkdir -p "$hostile_fixture/config/cameraagent" "$hostile_fixture/data/agent" "$hostile_fixture/data/catalog/versions/hyg-v42-fixture-1"
 printf '{}\n' > "$hostile_fixture/config/cameraagent/config.json"; printf 'state\n' > "$hostile_fixture/data/agent/state"
@@ -1169,23 +1181,31 @@ rm "$fixture_catalog/unknown"
 "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${fixture_args[@]}"
 test "$(sha256sum "$fixture_catalog/versions/hyg-v42-fixture-1/hyg_v42.sqlite")" = "$fixture_catalog_sha"
 test "$(readlink "$fixture_catalog/current")" = "$fixture_pointer"
-jq -e '.catalogId == "hyg-v42-fixture" and .catalogIdentitySource == "derived-manifest-v1"' "$fixture_evidence" >/dev/null
-jq -e '.manifestVersion == 1 and (.catalog | has("id") | not)' "$fixture_product/catalogs/hyg-v42-fixture/current/manifest.json" >/dev/null
+jq -e '.catalogId == "hyg-v42-fixture" and .catalogIdentitySource == "explicit-manifest-v2"' "$fixture_evidence" >/dev/null
+jq -e '.manifestVersion == 2 and .catalog.id == "hyg-v42-fixture"' "$fixture_product/catalogs/hyg-v42-fixture/current/manifest.json" >/dev/null
 
-# The operator-supplied real production bundle exercises the same immutable v1 compatibility path when available.
-if [[ -n "${HVO_LEGACY_CATALOG_BUNDLE:-}" ]]; then
+# A test-local v1 copy of the production bundle must fail without publishing or mutating source bytes.
+if [[ -n "${HVO_PRODUCTION_CATALOG_BUNDLE:-}" ]]; then
   production_legacy="$TEMP_DIR/production-legacy"; production_product="$TEMP_DIR/production-product"; production_evidence="$TEMP_DIR/production-migration.json"
   production_version="$production_legacy/data/catalog/versions/hyg-v4.2-p3-s2-r1"
   mkdir -p "$production_legacy/config/cameraagent" "$production_legacy/data/agent" "$production_legacy/data/catalog/versions"
   printf '{}\n' > "$production_legacy/config/cameraagent/config.json"; printf 'production-state\n' > "$production_legacy/data/agent/state"
-  cp -a "$HVO_LEGACY_CATALOG_BUNDLE" "$production_version"
+  cp -a "$HVO_PRODUCTION_CATALOG_BUNDLE" "$production_version"
+  chmod u+w "$production_version" "$production_version/manifest.json"
+  jq '.manifestVersion=1 | del(.catalog.id)' "$production_version/manifest.json" > "$production_version/manifest.json.changed"
+  mv -T "$production_version/manifest.json.changed" "$production_version/manifest.json"
+  chmod 0444 "$production_version"/*; chmod 0555 "$production_version"
   ln -s versions/hyg-v4.2-p3-s2-r1 "$production_legacy/data/catalog/current"
+  production_manifest_before="$(sha256sum "$production_version/manifest.json")"
+  production_database_before="$(sha256sum "$production_version/hyg_v42.sqlite")"
   production_instance=88888888-8888-4888-8888-888888888888
   production_args=(--legacy-root "$production_legacy" --product-root "$production_product" --instance-id "$production_instance" --application-id production-agent --catalog-id hyg-v42-production --evidence "$production_evidence")
-  "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${production_args[@]}"
-  "$REPO_ROOT/scripts/deploy:migrate-product-layout" verify "${production_args[@]}"
-  jq -e '.catalogId == "hyg-v42-production" and .catalogIdentitySource == "derived-manifest-v1"' "$production_evidence" >/dev/null
-  jq -e '.manifestVersion == 1 and (.catalog | has("id") | not)' "$production_product/catalogs/hyg-v42-production/current/manifest.json" >/dev/null
+  if "$REPO_ROOT/scripts/deploy:migrate-product-layout" apply "${production_args[@]}" >/dev/null 2>&1; then
+    printf 'Migration accepted a manifest-v1 production catalog.\n' >&2; exit 102
+  fi
+  test ! -e "$production_product/cameraagents/$production_instance"; test ! -e "$production_product/catalogs/hyg-v42-production"; test ! -e "$production_evidence"
+  test "$(sha256sum "$production_version/manifest.json")" = "$production_manifest_before"
+  test "$(sha256sum "$production_version/hyg_v42.sqlite")" = "$production_database_before"
 fi
 
 # Hostile legacy trees fail before destination publication.

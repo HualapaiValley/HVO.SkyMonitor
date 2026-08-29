@@ -32,9 +32,7 @@ public sealed class CatalogSnapshotHealthCheck : IHealthCheck
         {
             ["Kind"] = snapshot.PackageKind.ToString(),
             ["CatalogId"] = snapshot.CatalogId,
-            ["CatalogIdentitySource"] = snapshot.CatalogIdDerivedFromLegacyManifest
-                ? "derived-manifest-v1"
-                : "explicit-manifest-v2",
+            ["CatalogIdentitySource"] = "explicit-manifest-v2",
             ["CatalogVersion"] = snapshot.CatalogVersion,
             ["SchemaVersion"] = snapshot.SchemaVersion,
             ["PreprocessingVersion"] = snapshot.PreprocessingVersion,

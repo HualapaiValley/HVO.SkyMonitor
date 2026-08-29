@@ -37,7 +37,6 @@ internal sealed class CatalogSnapshotResolverTests
         Assert.AreEqual(CatalogSnapshotPackageKind.Fixture, result.PackageKind);
         Assert.AreEqual(2, result.ManifestVersion);
         Assert.AreEqual("hyg-v42-fixture", result.CatalogId);
-        Assert.IsFalse(result.CatalogIdDerivedFromLegacyManifest);
         Assert.AreEqual("4.2-fixture.1", result.CatalogVersion);
         Assert.AreEqual("2", result.SchemaVersion);
         Assert.AreEqual("3", result.PreprocessingVersion);
@@ -48,15 +47,13 @@ internal sealed class CatalogSnapshotResolverTests
     }
 
     [TestMethod]
-    public void ResolveDerivesCanonicalIdentityForExactLegacyFixture()
+    public void ResolveRejectsLegacyManifestBeforeAttemptingIdentityDerivation()
     {
         using var installation = CreateLegacyFixtureInstallation();
 
-        var result = ResolveFixture(installation.Root);
+        var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
-        Assert.AreEqual(1, result.ManifestVersion);
-        Assert.AreEqual("hyg-v42-fixture", result.CatalogId);
-        Assert.IsTrue(result.CatalogIdDerivedFromLegacyManifest);
+        StringAssert.Contains(exception.Message, "Expected 2, got 1", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -89,19 +86,18 @@ internal sealed class CatalogSnapshotResolverTests
     }
 
     [TestMethod]
-    public void ResolveRejectsLegacyFixtureWhosePinnedFactsDoNotMatch()
+    public void ResolveRejectsUnknownManifestVersionExplicitly()
     {
-        using var installation = CreateLegacyFixtureInstallation();
-        File.WriteAllText(installation.ManifestPath, File.ReadAllText(installation.ManifestPath)
-            .Replace("\"rowCount\": 9", "\"rowCount\": 10", StringComparison.Ordinal));
+        using var installation = CreateInstallation();
+        File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, manifestVersion: 3));
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
-        StringAssert.Contains(exception.Message, "canonical legacy catalog identity", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "Expected 2, got 3", StringComparison.Ordinal);
     }
 
     [TestMethod]
-    public void ResolveRejectsExplicitAndDerivedCatalogIdentityMismatch()
+    public void ResolveRejectsExplicitCatalogIdentityMismatch()
     {
         using var explicitInstallation = CreateInstallation();
         File.WriteAllText(explicitInstallation.ManifestPath, File.ReadAllText(explicitInstallation.ManifestPath)
@@ -111,30 +107,6 @@ internal sealed class CatalogSnapshotResolverTests
         var explicitMismatch = Assert.ThrowsExactly<InvalidDataException>(() =>
             ResolveFixture(explicitInstallation.Root));
         StringAssert.Contains(explicitMismatch.Message, "Catalog identity mismatch", StringComparison.Ordinal);
-
-        using var legacyInstallation = CreateLegacyFixtureInstallation();
-        var derivedMismatch = Assert.ThrowsExactly<InvalidDataException>(() =>
-            ResolveFixture(legacyInstallation.Root, "alternate-fixture"));
-        StringAssert.Contains(derivedMismatch.Message, "Catalog identity mismatch", StringComparison.Ordinal);
-    }
-
-    [TestMethod]
-    public void ResolveLoadsActualLegacyProductionBundleWhenProvided()
-    {
-        var bundle = Environment.GetEnvironmentVariable("HVO_LEGACY_CATALOG_BUNDLE");
-        if (string.IsNullOrWhiteSpace(bundle))
-        {
-            Assert.Inconclusive("HVO_LEGACY_CATALOG_BUNDLE was not provided.");
-        }
-        using var installation = CreateProductionInstallationFromBundle(bundle!);
-
-        var result = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
-            installation.Root, ProductionCatalogId));
-
-        Assert.AreEqual(1, result.ManifestVersion);
-        Assert.AreEqual("hyg-v42-production", result.CatalogId);
-        Assert.IsTrue(result.CatalogIdDerivedFromLegacyManifest);
-        Assert.AreEqual(119_625, result.RowCount);
     }
 
     [TestMethod]
@@ -585,9 +557,6 @@ internal sealed class CatalogSnapshotResolverTests
     public void ResolveRejectsManifestAndPackageVersionMismatch()
     {
         using var installation = CreateInstallation();
-        File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, manifestVersion: 1));
-        Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
-
         File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, packageVersion: "other"));
         Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
     }
@@ -661,11 +630,6 @@ internal sealed class CatalogSnapshotResolverTests
             new CatalogSnapshotResolverOptions("missing", " ")));
         Assert.ThrowsExactly<InvalidDataException>(() => CatalogSnapshotResolver.Resolve(
             new CatalogSnapshotResolverOptions("missing", "Invalid")));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => CatalogSnapshotResolver.Resolve(
-            new CatalogSnapshotResolverOptions("missing", FixtureCatalogId)
-            {
-                ExpectedManifestVersion = 0
-            }));
     }
 
     private static CatalogSnapshotResult ResolveFixture(string root, string expectedCatalogId = FixtureCatalogId)
@@ -704,25 +668,6 @@ internal sealed class CatalogSnapshotResolverTests
             relativePath: "hyg_v42.sqlite",
             includeCatalogId: false));
         return new Installation(root, pointerPath, manifestPath, databasePath);
-    }
-
-    private static Installation CreateProductionInstallationFromBundle(string bundle)
-    {
-        const string version = "hyg-v4.2-p3-s2-r1";
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-catalog-install-{Guid.NewGuid():N}");
-        var versionDirectory = Path.Combine(root, "versions", version);
-        Directory.CreateDirectory(versionDirectory);
-        foreach (var name in new[] { "manifest.json", "hyg_v42.sqlite", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md" })
-        {
-            File.Copy(Path.Combine(bundle, name), Path.Combine(versionDirectory, name));
-        }
-        var pointerPath = Path.Combine(root, "current");
-        Directory.CreateSymbolicLink(pointerPath, $"versions/{version}");
-        return new Installation(
-            root,
-            pointerPath,
-            Path.Combine(versionDirectory, "manifest.json"),
-            Path.Combine(versionDirectory, "hyg_v42.sqlite"));
     }
 
     private static Installation CreateProductionInstallation()

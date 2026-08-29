@@ -24,16 +24,13 @@ public sealed record CatalogSnapshotResolverOptions(string InstallRoot, string E
     /// <summary>Gets the only package kind accepted by the resolver.</summary>
     public CatalogSnapshotPackageKind ExpectedPackageKind { get; init; } = CatalogSnapshotPackageKind.Production;
 
-    /// <summary>Gets the supported snapshot manifest format version.</summary>
-    public int ExpectedManifestVersion { get; init; } = 2;
-
     /// <summary>Gets the required catalog SQLite schema version.</summary>
     public string ExpectedSchemaVersion { get; init; } = "2";
 
     /// <summary>Gets the required deterministic preprocessing version.</summary>
     public string ExpectedPreprocessingVersion { get; init; } = "3";
 
-    /// <summary>Gets the exact immutable package version to resolve instead of the legacy current pointer.</summary>
+    /// <summary>Gets the exact immutable package version to resolve instead of the shared current pointer.</summary>
     public string? ExpectedPackageVersion { get; init; }
 }
 
@@ -43,7 +40,6 @@ public sealed record CatalogSnapshotResult(
     CatalogSnapshotPackageKind PackageKind,
     int ManifestVersion,
     string CatalogId,
-    bool CatalogIdDerivedFromLegacyManifest,
     string CatalogVersion,
     string SchemaVersion,
     string PreprocessingVersion,
@@ -57,16 +53,12 @@ public sealed record CatalogSnapshotResult(
 /// <summary>Resolves and validates the active immutable catalog snapshot below an installation root.</summary>
 public static class CatalogSnapshotResolver
 {
+    private const int SupportedManifestVersion = 2;
     private const int Sha256HexLength = 64;
     private const int MaximumManifestLength = 65_536;
     private const int MaximumCatalogIdLength = 32;
     private const int MaximumCatalogVersionLength = 64;
     private const string ProductionCatalogId = "hyg-v42-production";
-    private const string FixtureCatalogId = "hyg-v42-fixture";
-    private const string FixturePackageVersion = "hyg-v42-fixture-1";
-    private const string FixtureCatalogVersion = "4.2-fixture.1";
-    private const string FixtureDatabaseSha256 =
-        "f80689217769a6b13c1b9bfb9711485d3cb1ad8de009d3d6b0f0b0a4f1fa9840";
     private const string ProductionCatalogName = "HYG 4.2";
     private const string ProductionCatalogVersion = "4.2";
     private const string ProductionSourceProjectUrl = "https://codeberg.org/astronexus/hyg";
@@ -126,13 +118,6 @@ public static class CatalogSnapshotResolver
         {
             throw new InvalidDataException(
                 $"Catalog identity mismatch. Expected '{options.ExpectedCatalogId}', got '{manifest.Catalog.Id}'.");
-        }
-
-        if (manifest.ManifestVersion != options.ExpectedManifestVersion &&
-            !(options.ExpectedManifestVersion == 2 && manifest.ManifestVersion == 1))
-        {
-            throw new InvalidDataException(
-                $"Catalog manifest version mismatch. Expected {options.ExpectedManifestVersion}, got {manifest.ManifestVersion}.");
         }
 
         var expectedKind = PackageKindValue(options.ExpectedPackageKind);
@@ -211,7 +196,6 @@ public static class CatalogSnapshotResolver
             options.ExpectedPackageKind,
             manifest.ManifestVersion,
             manifest.Catalog.Id,
-            manifest.CatalogIdDerivedFromLegacyManifest,
             manifest.Catalog.Version,
             manifest.SchemaVersion,
             manifest.PreprocessingVersion,
@@ -261,10 +245,6 @@ public static class CatalogSnapshotResolver
             throw new InvalidDataException("Catalog production package version is invalid.");
         }
 
-        if (manifest.ManifestVersion is not (1 or 2))
-        {
-            throw new InvalidDataException($"Catalog production manifest version '{manifest.ManifestVersion}' is unsupported.");
-        }
         ValidateConstant("catalog.id", ProductionCatalogId, manifest.Catalog.Id);
         ValidateConstant("catalog.name", ProductionCatalogName, manifest.Catalog.Name);
         ValidateConstant("catalog.version", ProductionCatalogVersion, manifest.Catalog.Version);
@@ -352,7 +332,7 @@ public static class CatalogSnapshotResolver
         {
             throw new ArgumentException("Expected package version is invalid.", nameof(options));
         }
-        if (options.ExpectedManifestVersion <= 0 || !Enum.IsDefined(options.ExpectedPackageKind))
+        if (!Enum.IsDefined(options.ExpectedPackageKind))
         {
             throw new ArgumentOutOfRangeException(nameof(options));
         }
@@ -415,6 +395,11 @@ public static class CatalogSnapshotResolver
             RejectDuplicateProperties(document.RootElement);
             var root = RequireObject(document.RootElement, "manifest");
             var manifestVersion = RequireInt32(root, "manifestVersion");
+            if (manifestVersion != SupportedManifestVersion)
+            {
+                throw new InvalidDataException(
+                    $"Catalog manifest version mismatch. Expected {SupportedManifestVersion}, got {manifestVersion}.");
+            }
             var package = RequireObject(RequireProperty(root, "package"), "package");
             RequireExactProperties(package, "package", "kind", "version");
             var packageKind = RequireString(package, "kind");
@@ -447,7 +432,7 @@ public static class CatalogSnapshotResolver
         var attribution = RequireObject(RequireProperty(license, "attribution"), "license.attribution");
         var topology = RequireObject(RequireProperty(root, "topology"), "topology");
 
-        RequireCatalogProperties(catalog, manifestVersion);
+        RequireExactProperties(catalog, "catalog", "id", "name", "version");
         RequireExactProperties(source, "source", "projectUrl", "downloadUrl", "oid", "compressed", "decompressed");
         RequireExactProperties(compressed, "source.compressed", "sha256", "length");
         RequireExactProperties(decompressed, "source.decompressed", "sha256", "length");
@@ -462,7 +447,7 @@ public static class CatalogSnapshotResolver
         var manifest = new SnapshotManifest(
             manifestVersion,
             new SnapshotPackage(RequireString(package, "kind"), RequireString(package, "version")),
-            new SnapshotCatalog(ReadCatalogId(catalog, manifestVersion), RequireString(catalog, "name"), RequireString(catalog, "version")),
+            new SnapshotCatalog(RequireString(catalog, "id"), RequireString(catalog, "name"), RequireString(catalog, "version")),
             RequireString(root, "schemaVersion"),
             RequireString(root, "preprocessingVersion"),
             new SnapshotDatabase(
@@ -488,9 +473,8 @@ public static class CatalogSnapshotResolver
                 RequireString(topology, "identity"),
                 RequireString(topology, "sha256"),
                 RequireInt64(topology, "constellationCount"),
-                RequireInt64(topology, "segmentCount")),
-            false);
-        return DeriveLegacyCatalogIdentity(manifest);
+                RequireInt64(topology, "segmentCount")));
+        return manifest;
     }
 
     private static SnapshotManifest ReadFixtureManifest(JsonElement root, JsonElement package, int manifestVersion)
@@ -499,13 +483,13 @@ public static class CatalogSnapshotResolver
             "preprocessingVersion", "database");
         var catalog = RequireObject(RequireProperty(root, "catalog"), "catalog");
         var database = RequireObject(RequireProperty(root, "database"), "database");
-        RequireCatalogProperties(catalog, manifestVersion);
+        RequireExactProperties(catalog, "catalog", "id", "name", "version");
         RequireExactProperties(database, "database", "relativePath", "sha256", "length", "rowCount");
 
         var manifest = new SnapshotManifest(
             manifestVersion,
             new SnapshotPackage(RequireString(package, "kind"), RequireString(package, "version")),
-            new SnapshotCatalog(ReadCatalogId(catalog, manifestVersion), RequireString(catalog, "name"), RequireString(catalog, "version")),
+            new SnapshotCatalog(RequireString(catalog, "id"), RequireString(catalog, "name"), RequireString(catalog, "version")),
             RequireString(root, "schemaVersion"),
             RequireString(root, "preprocessingVersion"),
             new SnapshotDatabase(
@@ -518,68 +502,9 @@ public static class CatalogSnapshotResolver
             null,
             null,
             null,
-            null,
-            false);
-        return DeriveLegacyCatalogIdentity(manifest);
+            null);
+        return manifest;
     }
-
-    private static void RequireCatalogProperties(JsonElement catalog, int manifestVersion)
-    {
-        if (manifestVersion == 1)
-        {
-            RequireExactProperties(catalog, "catalog", "name", "version");
-            return;
-        }
-        if (manifestVersion == 2)
-        {
-            RequireExactProperties(catalog, "catalog", "id", "name", "version");
-            return;
-        }
-        throw new InvalidDataException($"Catalog manifest version '{manifestVersion}' is unsupported.");
-    }
-
-    private static string ReadCatalogId(JsonElement catalog, int manifestVersion)
-        => manifestVersion == 2 ? RequireString(catalog, "id") : string.Empty;
-
-    private static SnapshotManifest DeriveLegacyCatalogIdentity(SnapshotManifest manifest)
-    {
-        if (manifest.ManifestVersion != 1)
-        {
-            return manifest;
-        }
-
-        var catalogId = manifest.Package.Kind switch
-        {
-            "production" when LegacyFactsMatch(manifest, "hyg-v4.2-p3-s2-r1", ProductionCatalogName,
-                ProductionCatalogVersion, ProductionDatabaseSha256, 9_302_016, 119_625) => ProductionCatalogId,
-            "fixture" when LegacyFactsMatch(manifest, FixturePackageVersion, "HYG bright-star test fixture",
-                FixtureCatalogVersion, FixtureDatabaseSha256, 16_384, 9) => FixtureCatalogId,
-            _ => throw new InvalidDataException(
-                "Catalog manifest v1 does not match a canonical legacy catalog identity.")
-        };
-        return manifest with
-        {
-            Catalog = manifest.Catalog with { Id = catalogId },
-            CatalogIdDerivedFromLegacyManifest = true
-        };
-    }
-
-    private static bool LegacyFactsMatch(
-        SnapshotManifest manifest,
-        string packageVersion,
-        string catalogName,
-        string catalogVersion,
-        string databaseSha256,
-        long databaseLength,
-        long rowCount)
-        => string.Equals(manifest.Package.Version, packageVersion, StringComparison.Ordinal) &&
-           string.Equals(manifest.Catalog.Name, catalogName, StringComparison.Ordinal) &&
-           string.Equals(manifest.Catalog.Version, catalogVersion, StringComparison.Ordinal) &&
-           string.Equals(manifest.SchemaVersion, "2", StringComparison.Ordinal) &&
-           string.Equals(manifest.PreprocessingVersion, "3", StringComparison.Ordinal) &&
-           string.Equals(manifest.Database.RelativePath, "hyg_v42.sqlite", StringComparison.Ordinal) &&
-           string.Equals(manifest.Database.Sha256, databaseSha256, StringComparison.OrdinalIgnoreCase) &&
-           manifest.Database.Length == databaseLength && manifest.Database.RowCount == rowCount;
 
     private static SnapshotFile ReadFileEvidence(JsonElement value)
         => new(
@@ -1092,8 +1017,7 @@ public static class CatalogSnapshotResolver
         SnapshotSource? Source,
         SnapshotSerializer? Serializer,
         SnapshotLicense? License,
-        SnapshotTopology? Topology,
-        bool CatalogIdDerivedFromLegacyManifest);
+        SnapshotTopology? Topology);
 
     private sealed record SnapshotPackage(string Kind, string Version);
 

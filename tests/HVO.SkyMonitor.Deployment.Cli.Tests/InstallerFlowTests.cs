@@ -13,10 +13,10 @@ public sealed class InstallerFlowTests
     [TestMethod]
     public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity()
     {
-        var bundle = Environment.GetEnvironmentVariable("HVO_LEGACY_CATALOG_BUNDLE");
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
         if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
         {
-            Assert.Inconclusive("HVO_LEGACY_CATALOG_BUNDLE is required for the installer flow contract.");
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
         }
 
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-flow-{Guid.NewGuid():N}");
@@ -143,10 +143,10 @@ public sealed class InstallerFlowTests
     [TestMethod]
     public async Task InstallAsync_OwnerAuthenticationFailureThenResume_PreservesPasswordAuthorityUntilSeeded()
     {
-        var bundle = Environment.GetEnvironmentVariable("HVO_LEGACY_CATALOG_BUNDLE");
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
         if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
         {
-            Assert.Inconclusive("HVO_LEGACY_CATALOG_BUNDLE is required for the installer flow contract.");
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
         }
 
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-resume-{Guid.NewGuid():N}");

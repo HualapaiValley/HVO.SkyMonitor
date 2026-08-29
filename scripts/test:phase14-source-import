@@ -183,48 +183,42 @@ install_catalog_bundle() {
     ln -s "versions/$version" "$root/current"
 }
 
-if [[ -n "${HVO_PHASE14_PRODUCTION_CATALOG_BUNDLE:-}" ]]; then
-    exact_v2="$(readlink -e -- "$HVO_PHASE14_PRODUCTION_CATALOG_BUNDLE")" || fail 'Exact v2 production bundle is unavailable.'
-    exact_v1="$(readlink -e -- "${HVO_PHASE14_LEGACY_PRODUCTION_CATALOG_BUNDLE:-}")" || fail 'Exact v1 production bundle is unavailable.'
-    for exact_spec in "v2|$exact_v2" "v1|$exact_v1"; do
-        IFS='|' read -r exact_label exact_bundle <<< "$exact_spec"
-        exact_root="$TEMP_DIR/exact-$exact_label"
-        install_catalog_bundle "$exact_root" "$exact_bundle"
-        phase14_source_catalog_identity "$exact_root" >/dev/null || fail "The canonical production $exact_label bundle was rejected."
-        external="$TEMP_DIR/external-$exact_label"; cp "$exact_bundle/hyg_v42.sqlite" "$external"; chmod 400 "$external"
-        hardlink_root="$TEMP_DIR/exact-$exact_label-hardlink"; install_catalog_bundle "$hardlink_root" "$exact_bundle"
-        hardlink_database="$(readlink -e -- "$hardlink_root/current")/hyg_v42.sqlite"; chmod 755 "$(dirname "$hardlink_database")"; rm "$hardlink_database"; ln "$external" "$hardlink_database"; chmod 555 "$(dirname "$hardlink_database")"
-        external_before="$(stat -c '%d:%i:%u:%h:%a:%s' "$external")|$(phase14_source_hash "$external")"
-        if phase14_source_catalog_identity "$hardlink_root" >/dev/null 2>&1; then fail "A hardlinked production $exact_label database was accepted."; fi
-        [[ "$(stat -c '%d:%i:%u:%h:%a:%s' "$external")|$(phase14_source_hash "$external")" == "$external_before" ]] ||
-          fail "Production $exact_label validation mutated external bytes."
-        for mutation in source serializer license attribution topology database-bytes database-schema database-rows package catalog duplicate; do
-            mutation_root="$TEMP_DIR/exact-$exact_label-$mutation"; install_catalog_bundle "$mutation_root" "$exact_bundle"
-            mutation_bundle="$(readlink -e -- "$mutation_root/current")"; mutation_manifest="$mutation_bundle/manifest.json"
-            chmod 755 "$mutation_bundle"; chmod 644 "$mutation_manifest"
-            case "$mutation" in
-              source) jq '.source.oid=("0" * 64)' "$mutation_manifest" > "$mutation_manifest.changed" ;;
-              serializer) jq '.serializer.version="0.0.0"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
-              license) jq '.license.identifier="invalid"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
-              attribution) chmod 644 "$mutation_bundle/ATTRIBUTION-HYG.md"; printf 'changed\n' >> "$mutation_bundle/ATTRIBUTION-HYG.md"; cp "$mutation_manifest" "$mutation_manifest.changed" ;;
-              topology) jq '.topology.sha256=("0" * 64)' "$mutation_manifest" > "$mutation_manifest.changed" ;;
-              database-bytes) chmod 644 "$mutation_bundle/hyg_v42.sqlite"; printf 'changed\n' >> "$mutation_bundle/hyg_v42.sqlite"; cp "$mutation_manifest" "$mutation_manifest.changed" ;;
-              database-schema) chmod 644 "$mutation_bundle/hyg_v42.sqlite"; sqlite3 "$mutation_bundle/hyg_v42.sqlite" 'CREATE TABLE phase14_invalid(value TEXT);'; cp "$mutation_manifest" "$mutation_manifest.changed" ;;
-              database-rows) jq '.database.rowCount += 1' "$mutation_manifest" > "$mutation_manifest.changed" ;;
-              package) jq '.package.version="hyg-v4.2-p3-s2-r2"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
-              catalog) jq '.catalog.id="different-production"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
-              duplicate) compact="$(jq -c . "$mutation_manifest")"; printf '{"manifestVersion":1,%s\n' "${compact#\{}" > "$mutation_manifest.changed" ;;
-            esac
-            mv -T -- "$mutation_manifest.changed" "$mutation_manifest"; chmod 400 "$mutation_bundle"/*; chmod 555 "$mutation_bundle"
-            if phase14_source_catalog_identity "$mutation_root" >/dev/null 2>&1; then fail "Production $exact_label validation accepted $mutation mutation."; fi
-        done
+if [[ -n "${HVO_PRODUCTION_CATALOG_BUNDLE:-}" ]]; then
+    exact_bundle="$(readlink -e -- "$HVO_PRODUCTION_CATALOG_BUNDLE")" || fail 'Exact production bundle is unavailable.'
+    exact_root="$TEMP_DIR/exact-v2"
+    install_catalog_bundle "$exact_root" "$exact_bundle"
+    phase14_source_catalog_identity "$exact_root" >/dev/null || fail 'The canonical production bundle was rejected.'
+    external="$TEMP_DIR/external-v2"; cp "$exact_bundle/hyg_v42.sqlite" "$external"; chmod 400 "$external"
+    hardlink_root="$TEMP_DIR/exact-v2-hardlink"; install_catalog_bundle "$hardlink_root" "$exact_bundle"
+    hardlink_database="$(readlink -e -- "$hardlink_root/current")/hyg_v42.sqlite"; chmod 755 "$(dirname "$hardlink_database")"; rm "$hardlink_database"; ln "$external" "$hardlink_database"; chmod 555 "$(dirname "$hardlink_database")"
+    external_before="$(stat -c '%d:%i:%u:%h:%a:%s' "$external")|$(phase14_source_hash "$external")"
+    if phase14_source_catalog_identity "$hardlink_root" >/dev/null 2>&1; then fail 'A hardlinked production database was accepted.'; fi
+    [[ "$(stat -c '%d:%i:%u:%h:%a:%s' "$external")|$(phase14_source_hash "$external")" == "$external_before" ]] ||
+      fail 'Production validation mutated external bytes.'
+    for mutation in source serializer license attribution topology database-bytes database-schema database-rows package catalog v1 unknown malformed duplicate; do
+        mutation_root="$TEMP_DIR/exact-v2-$mutation"; install_catalog_bundle "$mutation_root" "$exact_bundle"
+        mutation_bundle="$(readlink -e -- "$mutation_root/current")"; mutation_manifest="$mutation_bundle/manifest.json"
+        chmod 755 "$mutation_bundle"; chmod 644 "$mutation_manifest"
+        case "$mutation" in
+          source) jq '.source.oid=("0" * 64)' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+          serializer) jq '.serializer.version="0.0.0"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+          license) jq '.license.identifier="invalid"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+          attribution) chmod 644 "$mutation_bundle/ATTRIBUTION-HYG.md"; printf 'changed\n' >> "$mutation_bundle/ATTRIBUTION-HYG.md"; cp "$mutation_manifest" "$mutation_manifest.changed" ;;
+          topology) jq '.topology.sha256=("0" * 64)' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+          database-bytes) chmod 644 "$mutation_bundle/hyg_v42.sqlite"; printf 'changed\n' >> "$mutation_bundle/hyg_v42.sqlite"; cp "$mutation_manifest" "$mutation_manifest.changed" ;;
+          database-schema) chmod 644 "$mutation_bundle/hyg_v42.sqlite"; sqlite3 "$mutation_bundle/hyg_v42.sqlite" 'CREATE TABLE phase14_invalid(value TEXT);'; cp "$mutation_manifest" "$mutation_manifest.changed" ;;
+          database-rows) jq '.database.rowCount += 1' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+          package) jq '.package.version="hyg-v4.2-p3-s2-r2"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+          catalog) jq '.catalog.id="different-production"' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+          v1) jq '.manifestVersion=1 | del(.catalog.id)' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+          unknown) jq '.manifestVersion=3' "$mutation_manifest" > "$mutation_manifest.changed" ;;
+          malformed) printf '{"manifestVersion":2\n' > "$mutation_manifest.changed" ;;
+          duplicate) compact="$(jq -c . "$mutation_manifest")"; printf '{"manifestVersion":2,%s\n' "${compact#\{}" > "$mutation_manifest.changed" ;;
+        esac
+        mv -T -- "$mutation_manifest.changed" "$mutation_manifest"; chmod 400 "$mutation_bundle"/*; chmod 555 "$mutation_bundle"
+        if phase14_source_catalog_identity "$mutation_root" >/dev/null 2>&1; then fail "Production validation accepted $mutation mutation."; fi
     done
-    case "${HVO_PHASE14_CATALOG_MANIFEST_VERSION:-2}" in
-      1) selected_bundle="$exact_v1" ;;
-      2) selected_bundle="$exact_v2" ;;
-      *) fail 'HVO_PHASE14_CATALOG_MANIFEST_VERSION must be 1 or 2.' ;;
-    esac
-    install_catalog_bundle "$CATALOG" "$selected_bundle"
+    install_catalog_bundle "$CATALOG" "$exact_bundle"
 else
     CATALOG_VERSION="$HYG_FIXTURE_PACKAGE_VERSION"
     install -d -m 700 "$COLLECT_OUTPUT" "$CATALOG" "$CATALOG/versions" "$CATALOG/versions/$CATALOG_VERSION"

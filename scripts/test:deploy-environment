@@ -2926,10 +2926,11 @@ rm -f "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" "$TEMP_DIR/outpu
 
 # Fixture manifest identity and shape mismatches fail before SSH, SCP, or installation.
 cp "$bundle/manifest.json" "$TEMP_DIR/fixture-manifest.valid"
-for fixture_mismatch in id manifest-version schema preprocessing kind version sha length rows shape; do
+for fixture_mismatch in id manifest-v1 manifest-unknown schema preprocessing kind version sha length rows shape; do
     case "$fixture_mismatch" in
       id) jq '.catalog.id="arbitrary-alias"' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
-      manifest-version) jq '.manifestVersion=1' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      manifest-v1) jq '.manifestVersion=1 | del(.catalog.id)' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
+      manifest-unknown) jq '.manifestVersion=3' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
       schema) jq '.schemaVersion="different"' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
       preprocessing) jq '.preprocessingVersion="different"' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
       kind) jq '.package.kind="production"' "$TEMP_DIR/fixture-manifest.valid" > "$bundle/manifest.json" ;;
@@ -3756,17 +3757,13 @@ cp "$east_config/camera-module.json" "$FAKE_HTTP_STATE/east.active-profile.json"
 jq -S -c . "$east_config/camera-module.json" | sha256sum | cut -d' ' -f1 > "$FAKE_HTTP_STATE/east.active-config-sha"
 fi
 
-# An operator-supplied immutable v1 production catalog survives migration and is accepted by catalog resume and up.
-if [[ "$SELECTED_SHARD" == existing-catalog-up && -n "${HVO_LEGACY_CATALOG_BUNDLE:-}" ]]; then
+# An operator-supplied immutable v2 production catalog survives migration and is accepted by catalog resume and up.
+if [[ "$SELECTED_SHARD" == existing-catalog-up && -n "${HVO_PRODUCTION_CATALOG_BUNDLE:-}" ]]; then
 legacy_path_inventory="$TEMP_DIR/legacy-v1-path.inventory"; cp "$INVENTORY" "$legacy_path_inventory"
 legacy_path_case=legacy-v1-path; legacy_path_root="$TEMP_DIR/legacy-v1-root"; legacy_path_product="$TEMP_DIR/remote/$legacy_path_case-skymonitor"
 legacy_path_source="$TEMP_DIR/legacy-v1-source-v2"; legacy_path_evidence="$TEMP_DIR/legacy-v1-migration.json"
 legacy_path_version="$legacy_path_root/data/catalog/versions/hyg-v4.2-p3-s2-r1"
-cp -a "$HVO_LEGACY_CATALOG_BUNDLE" "$legacy_path_source"
-chmod u+w "$legacy_path_source" "$legacy_path_source/manifest.json"
-jq '.manifestVersion=2 | .catalog.id="hyg-v42-production"' "$legacy_path_source/manifest.json" > "$legacy_path_source/manifest.json.changed"
-mv "$legacy_path_source/manifest.json.changed" "$legacy_path_source/manifest.json"
-chmod 444 "$legacy_path_source/manifest.json"; chmod 755 "$legacy_path_source"
+cp -a "$HVO_PRODUCTION_CATALOG_BUNDLE" "$legacy_path_source"
 legacy_path_sha="$(sha256sum "$legacy_path_source/hyg_v42.sqlite" | cut -d' ' -f1)"; legacy_path_length="$(wc -c < "$legacy_path_source/hyg_v42.sqlite")"
 jq --arg product "$legacy_path_product" --arg bundle "$legacy_path_source" --arg sha "$legacy_path_sha" --argjson length "$legacy_path_length" \
   --arg run "$legacy_path_case" '
@@ -3790,7 +3787,7 @@ FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode images "$deploy_case" isolated >/d
 mkdir -p "$legacy_path_root/config/cameraagent" "$legacy_path_root/data/agent" "$legacy_path_root/data/catalog/versions"
 cp "$TEMP_DIR/east-module.json" "$legacy_path_root/config/cameraagent/camera-module.json"
 printf 'legacy-v1-state\n' > "$legacy_path_root/data/agent/state"
-cp -a "$HVO_LEGACY_CATALOG_BUNDLE" "$legacy_path_version"
+cp -a "$HVO_PRODUCTION_CATALOG_BUNDLE" "$legacy_path_version"
 ln -s versions/hyg-v4.2-p3-s2-r1 "$legacy_path_root/data/catalog/current"
 legacy_manifest_sha_before="$(sha256sum "$legacy_path_version/manifest.json" | cut -d' ' -f1)"
 legacy_database_sha_before="$(sha256sum "$legacy_path_version/hyg_v42.sqlite" | cut -d' ' -f1)"
@@ -3851,7 +3848,7 @@ done
 FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode up "$deploy_case" isolated >/dev/null
 test "$(sha256sum "$legacy_installed/manifest.json" | cut -d' ' -f1)" = "$legacy_manifest_sha_before"
 test "$(sha256sum "$legacy_installed/hyg_v42.sqlite" | cut -d' ' -f1)" = "$legacy_database_sha_before"
-jq -e '.manifestVersion == 1 and (.catalog | has("id") | not)' "$legacy_installed/manifest.json" >/dev/null
+jq -e '.manifestVersion == 2 and .catalog.id == "hyg-v42-production"' "$legacy_installed/manifest.json" >/dev/null
 jq -e '.phaseStatus == "passed" and (.targets | length) == 3' "$TEMP_DIR/output/$deploy_case-state/catalog-ledger.json" >/dev/null
 jq -e '.phaseStatus == "passed" and (.targets | length) == 3' "$TEMP_DIR/output/$deploy_case-state/up-ledger.json" >/dev/null
 cp "$legacy_path_inventory" "$INVENTORY"; deploy_case=deploy-up; set_lifecycle_paths

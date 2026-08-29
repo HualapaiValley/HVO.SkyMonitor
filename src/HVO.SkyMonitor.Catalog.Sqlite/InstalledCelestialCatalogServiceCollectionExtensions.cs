@@ -46,7 +46,7 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
                 serviceProvider.GetRequiredService<ILogger<SqliteCelestialCatalog>>(),
                 result.PackageKind,
                 result.CatalogId,
-                result.CatalogIdDerivedFromLegacyManifest ? "derived-manifest-v1" : "explicit-manifest-v2",
+                "explicit-manifest-v2",
                 result.CatalogVersion,
                 result.SchemaVersion,
                 result.PreprocessingVersion,

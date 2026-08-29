@@ -423,19 +423,12 @@ pin_cutover_evidence() {
 }
 failpoint() { [[ "${DEPLOY_MIGRATION_FAILPOINT:-}" != "$1" ]] || exit 75; }
 catalog_manifest_identity() {
-  local manifest="$1" bundle="$2" manifest_version identity package_version
-  manifest_version="$(jq -er '.manifestVersion' "$manifest")" || return 1
+  local manifest="$1" bundle="$2" identity package_version
+  [[ "$(jq -er '.manifestVersion' "$manifest")" == 2 ]] || return 1
   package_version="$(jq -er '.package.version | select(type == "string")' "$manifest")" || return 1
   [[ "${bundle##*/}" == "$package_version" ]] || return 1
-  if [[ "$manifest_version" == 2 ]]; then
-    identity="$(hyg_resolve_catalog_identity "$bundle")" || return 1
-    printf '%s\texplicit-manifest-v2\n' "$identity"
-  elif [[ "$manifest_version" == 1 ]]; then
-    identity="$(hyg_resolve_legacy_catalog_identity "$bundle")" || return 1
-    printf '%s\tderived-manifest-v1\n' "$identity"
-  else
-    return 1
-  fi
+  identity="$(hyg_resolve_catalog_identity "$bundle")" || return 1
+  printf '%s\texplicit-manifest-v2\n' "$identity"
 }
 validate_catalog_control_files() {
   local root="$1" expected_id="$2" expected_kind="$3" expected_schema="$4" expected_preprocessing="$5"
@@ -622,7 +615,7 @@ validate_finalize_evidence() {
   validate_metadata_file "$evidence" && jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg legacy "$legacy_root" --arg product "$product_root" --arg cutover "$cutover_sha" '
     .schemaVersion == 2 and .instanceId == $instance and .applicationIdentity == $application and
     .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and
-    (.catalogIdentitySource | IN("explicit-manifest-v2","derived-manifest-v1")) and
+    .catalogIdentitySource == "explicit-manifest-v2" and
     .legacyRoot == $legacy and .productRoot == $product and
     if .status == "copied-and-verified" then
       (keys | sort) == (["applicationIdentity","boundDeviceIdentity","catalogId","catalogIdentitySource","instanceId","legacyCatalogRetained","legacyRetained","legacyRoot","productRoot","schemaVersion","status"] | sort) and .legacyRetained == true and .legacyCatalogRetained == true
@@ -640,7 +633,7 @@ validate_migration_evidence() {
   validate_metadata_file "$evidence" && jq -e --arg instance "$instance_id" --arg application "$application_id" --arg bound "$bound_device_id" --arg catalog "$catalog_id" --arg legacy "$legacy_root" --arg product "$product_root" '
     .schemaVersion == 2 and .instanceId == $instance and .applicationIdentity == $application and
     .boundDeviceIdentity == (if $bound == "" then null else $bound end) and .catalogId == $catalog and
-    (.catalogIdentitySource | IN("explicit-manifest-v2","derived-manifest-v1")) and
+    .catalogIdentitySource == "explicit-manifest-v2" and
     .legacyRoot == $legacy and .productRoot == $product and
     if .status == "copied-and-verified" then
       (keys | sort) == (["applicationIdentity","boundDeviceIdentity","catalogId","catalogIdentitySource","instanceId","legacyCatalogRetained","legacyRetained","legacyRoot","productRoot","schemaVersion","status"] | sort) and
@@ -973,7 +966,7 @@ rollback)
        ! -e "$final_config_snapshot" && ! -L "$final_config_snapshot" && ! -e "$final_state_snapshot" && ! -L "$final_state_snapshot" &&
        ! -e "$cutover_snapshot" && ! -L "$cutover_snapshot" ]]; then
     metadata_identity_source="$(jq -r '.catalogIdentitySource' "$apply_intent" 2>/dev/null)"
-    [[ "$metadata_identity_source" == explicit-manifest-v2 || "$metadata_identity_source" == derived-manifest-v1 ]] || exit 1
+    [[ "$metadata_identity_source" == explicit-manifest-v2 ]] || exit 1
     validate_apply_intent "$metadata_identity_source" || exit 1
     catalog_preexisting="$(jq -r '.catalogPreexisting' "$apply_intent")"
     if [[ "$catalog_preexisting" == true ]]; then acquire_published_catalog_lock || exit 1
