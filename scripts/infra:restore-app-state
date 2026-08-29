@@ -49,6 +49,19 @@ hvo_acquire_application_state_lock "$RUNTIME_DATA_ROOT"
 hvo_require_restore_marker_access restore
 readonly RUNTIME_PARENT="$HVO_RUNTIME_PARENT"
 readonly TRANSACTION_MARKER="$HVO_RESTORE_MARKER_PATH"
+marker_temporary=""
+
+trigger_failpoint() {
+    local point="$1"
+    if [[ "${HVO_RESTORE_FAILPOINT:-}" == "$point" ]]; then
+        printf 'Restore test failpoint triggered: %s.\n' "$point" >&2
+        if [[ "${HVO_ENABLE_TEST_FAILPOINTS:-false}" == true &&
+              "${HVO_RESTORE_TEST_INTERRUPT:-false}" == true ]]; then
+            kill -KILL "$BASHPID"
+        fi
+        return 97
+    fi
+}
 
 safe_exact_rename() {
     local source="$1"
@@ -60,29 +73,131 @@ safe_exact_rename() {
 
 remove_marker() {
     [[ -f "$TRANSACTION_MARKER" && ! -L "$TRANSACTION_MARKER" ]] || return 1
-    rm -f -- "$TRANSACTION_MARKER"
-    sync -f "$RUNTIME_PARENT"
+    rm -f -- "$TRANSACTION_MARKER" || return 1
+    sync -f "$RUNTIME_PARENT" || return 1
 }
 
 read_marker() {
     local marker="$1"
-    local header version transaction_key phase_key rollback_key old_state_key
-    local header_extra transaction_extra phase_extra rollback_extra old_state_extra
+    local header version transaction_key phase_key rollback_key old_state_key staging_key
+    local header_extra transaction_extra phase_extra rollback_extra old_state_extra staging_extra
     local -a marker_lines
-    mapfile -t marker_lines < "$marker"
-    [[ ${#marker_lines[@]} -eq 5 ]] || return 1
+    mapfile -t marker_lines < "$marker" || return 1
+    [[ ${#marker_lines[@]} -ge 5 ]] || return 1
     IFS=$'\t' read -r header version header_extra <<< "${marker_lines[0]}"
     IFS=$'\t' read -r transaction_key MARKER_TRANSACTION transaction_extra <<< "${marker_lines[1]}"
     IFS=$'\t' read -r phase_key MARKER_PHASE phase_extra <<< "${marker_lines[2]}"
     IFS=$'\t' read -r rollback_key MARKER_ROLLBACK rollback_extra <<< "${marker_lines[3]}"
     IFS=$'\t' read -r old_state_key MARKER_OLD_STATE old_state_extra <<< "${marker_lines[4]}"
-    [[ "$header" == HVO-APPLICATION-STATE-RESTORE && "$version" == 1 &&
+    [[ "$header" == HVO-APPLICATION-STATE-RESTORE &&
        -z "$header_extra$transaction_extra$phase_extra$rollback_extra$old_state_extra" &&
        "$transaction_key" == transaction && "$MARKER_TRANSACTION" =~ ^[[:xdigit:]]{32}$ &&
-       "$phase_key" == phase && "$MARKER_PHASE" =~ ^(prepared|old-moved|new-installed|logichost-started|cameraagent-started)$ &&
        "$rollback_key" == rollback && "$MARKER_ROLLBACK" != */* &&
        "$MARKER_ROLLBACK" == "$(basename "$RUNTIME_DATA_ROOT").rollback.${MARKER_TRANSACTION,,}" &&
-       "$old_state_key" == old-state && "$MARKER_OLD_STATE" =~ ^(true|false)$ ]]
+       "$old_state_key" == old-state && "$MARKER_OLD_STATE" =~ ^(true|false)$ ]] || return 1
+    MARKER_TRANSACTION="${MARKER_TRANSACTION,,}"
+    if [[ "$version" == 1 && ${#marker_lines[@]} -eq 5 &&
+          "$phase_key" == phase &&
+          "$MARKER_PHASE" =~ ^(prepared|old-moved|new-installed|logichost-started|cameraagent-started)$ ]]; then
+        MARKER_STAGING=".hvo-restore.$MARKER_TRANSACTION"
+        return 0
+    fi
+    [[ "$version" == 2 && ${#marker_lines[@]} -eq 6 ]] || return 1
+    IFS=$'\t' read -r staging_key MARKER_STAGING staging_extra <<< "${marker_lines[5]}"
+    [[ "$phase_key" == phase &&
+       "$MARKER_PHASE" =~ ^(prepared|old-moved|new-installed|logichost-started|cameraagent-started|commit-removing-staging|commit-staging-removed|commit-removing-marker|recovery-displacing|recovery-displaced|recovery-restoring|recovery-restored|recovery-removing-displaced|recovery-displaced-removed|recovery-removing-staging|recovery-staging-removed|recovery-removing-marker)$ &&
+       "$staging_key" == staging && -z "$staging_extra" &&
+       "$MARKER_STAGING" == ".hvo-restore.$MARKER_TRANSACTION" ]]
+}
+
+write_marker() {
+    local phase="$1"
+    marker_temporary="$(mktemp "$RUNTIME_PARENT/.hvo-restore-marker.XXXXXX")" || return 1
+    if ! printf 'HVO-APPLICATION-STATE-RESTORE\t2\ntransaction\t%s\nphase\t%s\nrollback\t%s\nold-state\t%s\nstaging\t%s\n' \
+        "$HVO_RESTORE_TRANSACTION_ID" "$phase" "$(basename "$ROLLBACK_DIRECTORY")" \
+        "$old_state_existed" "$(basename "$STAGING_DIRECTORY")" > "$marker_temporary"; then
+        return 1
+    fi
+    sync -f "$marker_temporary" || return 1
+    if [[ -e "$TRANSACTION_MARKER" || -L "$TRANSACTION_MARKER" ]]; then
+        hvo_validate_regular_control_file "$TRANSACTION_MARKER" 'Restore transaction marker' || return 1
+        mv -Tf -- "$marker_temporary" "$TRANSACTION_MARKER" 2>/dev/null || return 1
+    else
+        mv -T --no-clobber -- "$marker_temporary" "$TRANSACTION_MARKER" 2>/dev/null || return 1
+    fi
+    marker_temporary=""
+    hvo_validate_regular_control_file "$TRANSACTION_MARKER" 'Restore transaction marker' || return 1
+    sync -f "$RUNTIME_PARENT" || return 1
+}
+
+validate_staging_control() {
+    local control="$1"
+    local transaction="$2"
+    local -a lines
+
+    hvo_validate_regular_control_file "$control" 'Restore staging transaction control' || return 1
+    mapfile -t lines < "$control" || return 1
+    [[ ${#lines[@]} -eq 2 && "${lines[0]}" == $'HVO-APPLICATION-STATE-RESTORE-STAGING\t1' &&
+       "${lines[1]}" == $'transaction\t'"$transaction" ]]
+}
+
+remove_authenticated_staging() {
+    local transaction="$1"
+    local boundary="$2"
+    local staging="$RUNTIME_PARENT/.hvo-restore.$transaction"
+    local control="$staging.transaction"
+
+    if [[ ! -e "$staging" && ! -L "$staging" && ! -e "$control" && ! -L "$control" ]]; then
+        return 0
+    fi
+    validate_staging_control "$control" "$transaction" || return 1
+    if [[ -e "$staging" || -L "$staging" ]]; then
+        hvo_validate_existing_private_directory "$staging" 'Restore staging directory' "$(id -u)" || return 1
+        rm -rf --one-file-system -- "$staging" || return 1
+        [[ ! -e "$staging" && ! -L "$staging" ]] || return 1
+        sync -f "$RUNTIME_PARENT" || return 1
+    fi
+    trigger_failpoint "after-$boundary-staging-tree-removal" || return $?
+    validate_staging_control "$control" "$transaction" || return 1
+    rm -f -- "$control" || return 1
+    sync -f "$RUNTIME_PARENT" || return 1
+    trigger_failpoint "after-$boundary-staging-control-removal" || return $?
+}
+
+cleanup_abandoned_staging() {
+    local control staging transaction
+    local -a controls staging_paths
+
+    shopt -s nullglob
+    controls=("$RUNTIME_PARENT"/.hvo-restore.*.transaction)
+    staging_paths=("$RUNTIME_PARENT"/.hvo-restore.*)
+    shopt -u nullglob
+    for control in "${controls[@]}"; do
+        [[ "$(basename "$control")" =~ ^\.hvo-restore\.([[:xdigit:]]{32})\.transaction$ ]] || continue
+        transaction="${BASH_REMATCH[1],,}"
+        trigger_failpoint before-abandoned-staging-removal || return $?
+        remove_authenticated_staging "$transaction" abandoned || return 1
+    done
+    for staging in "${staging_paths[@]}"; do
+        [[ -d "$staging" || -L "$staging" ]] || continue
+        [[ "$(basename "$staging")" =~ ^\.hvo-restore\.([[:xdigit:]]{32})$ ]] || continue
+        transaction="${BASH_REMATCH[1],,}"
+        [[ -e "$staging.transaction" || -L "$staging.transaction" ]] || {
+            printf 'An unauthenticated restore staging directory requires operator review.\n' >&2
+            return 1
+        }
+    done
+}
+
+remove_displaced_tree() {
+    local displaced="$1"
+    if [[ ! -e "$displaced" && ! -L "$displaced" ]]; then
+        return 0
+    fi
+    hvo_validate_existing_private_directory "$displaced" 'Displaced restore state' "$(id -u)" || return 1
+    rm -rf --one-file-system -- "$displaced" || return 1
+    [[ ! -e "$displaced" && ! -L "$displaced" ]] || return 1
+    sync -f "$RUNTIME_PARENT" || return 1
 }
 
 recover_old_state() {
@@ -92,31 +207,111 @@ recover_old_state() {
     local transaction="$4"
     local displaced="$RUNTIME_PARENT/.hvo-restore-displaced.$transaction"
 
-    [[ ! -e "$displaced" && ! -L "$displaced" ]] || return 1
-    if [[ "$old_state" == true ]]; then
-        if [[ -e "$rollback_path" || -L "$rollback_path" ]]; then
-            [[ -d "$rollback_path" && ! -L "$rollback_path" ]] || return 1
+    if [[ "$phase" =~ ^(prepared|old-moved|new-installed|logichost-started|cameraagent-started|commit-removing-staging|commit-staging-removed|commit-removing-marker)$ ]]; then
+        [[ ! -e "$displaced" && ! -L "$displaced" ]] || return 1
+        if [[ "$old_state" == true && ! -e "$rollback_path" && ! -L "$rollback_path" ]]; then
+            [[ "$phase" == prepared && -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+            write_marker recovery-restored || return 1
+            phase=recovery-restored
+        else
+            [[ "$old_state" == false || ( -d "$rollback_path" && ! -L "$rollback_path" ) ]] || return 1
             if [[ -e "$RUNTIME_DATA_ROOT" || -L "$RUNTIME_DATA_ROOT" ]]; then
                 [[ "$phase" != prepared && -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
-                safe_exact_rename "$RUNTIME_DATA_ROOT" "$displaced" || return 1
+                write_marker recovery-displacing || return 1
+                phase=recovery-displacing
+            else
+                write_marker recovery-displaced || return 1
+                phase=recovery-displaced
             fi
-            if ! safe_exact_rename "$rollback_path" "$RUNTIME_DATA_ROOT"; then
-                if [[ -e "$displaced" && ! -e "$RUNTIME_DATA_ROOT" ]]; then
-                    safe_exact_rename "$displaced" "$RUNTIME_DATA_ROOT" || true
-                fi
-                return 1
-            fi
-            rm -rf -- "$displaced"
-        else
-            [[ "$phase" == prepared && -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
         fi
-    else
-        [[ ! -e "$rollback_path" && ! -L "$rollback_path" ]] || return 1
+    fi
+
+    if [[ "$phase" == recovery-displacing ]]; then
+        trigger_failpoint before-recovery-displacement || return $?
         if [[ -e "$RUNTIME_DATA_ROOT" || -L "$RUNTIME_DATA_ROOT" ]]; then
-            [[ "$phase" != prepared && -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+            [[ ! -e "$displaced" && ! -L "$displaced" && -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
             safe_exact_rename "$RUNTIME_DATA_ROOT" "$displaced" || return 1
-            rm -rf -- "$displaced"
+            sync -f "$RUNTIME_PARENT" || return 1
+        else
+            hvo_validate_existing_private_directory "$displaced" 'Displaced restore state' "$(id -u)" || return 1
         fi
+        trigger_failpoint after-recovery-displacement-before-journal || return $?
+        write_marker recovery-displaced || return 1
+        phase=recovery-displaced
+        trigger_failpoint after-recovery-displacement || return $?
+    fi
+
+    if [[ "$phase" == recovery-displaced ]]; then
+        if [[ "$old_state" == true ]]; then
+            [[ -d "$rollback_path" && ! -L "$rollback_path" && ! -e "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+            hvo_validate_existing_private_directory "$rollback_path" 'Restore rollback state' "$(id -u)" || return 1
+        else
+            [[ ! -e "$rollback_path" && ! -L "$rollback_path" && ! -e "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+        fi
+        write_marker recovery-restoring || return 1
+        phase=recovery-restoring
+    fi
+
+    if [[ "$phase" == recovery-restoring ]]; then
+        trigger_failpoint before-recovery-restoration || return $?
+        if [[ "$old_state" == true ]]; then
+            if [[ -e "$rollback_path" || -L "$rollback_path" ]]; then
+                [[ -d "$rollback_path" && ! -L "$rollback_path" && ! -e "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+                hvo_validate_existing_private_directory "$rollback_path" 'Restore rollback state' "$(id -u)" || return 1
+                safe_exact_rename "$rollback_path" "$RUNTIME_DATA_ROOT" || return 1
+                sync -f "$RUNTIME_PARENT" || return 1
+            else
+                [[ -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+            fi
+        else
+            [[ ! -e "$rollback_path" && ! -L "$rollback_path" && ! -e "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ]] || return 1
+        fi
+        trigger_failpoint after-recovery-restoration-before-journal || return $?
+        write_marker recovery-restored || return 1
+        phase=recovery-restored
+        trigger_failpoint after-recovery-restoration || return $?
+    fi
+
+    if [[ "$phase" == recovery-restored ]]; then
+        [[ "$old_state" == false || ( -d "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ) ]] || return 1
+        [[ "$old_state" == true || ( ! -e "$RUNTIME_DATA_ROOT" && ! -L "$RUNTIME_DATA_ROOT" ) ]] || return 1
+        [[ ! -e "$rollback_path" && ! -L "$rollback_path" ]] || return 1
+        write_marker recovery-removing-displaced || return 1
+        phase=recovery-removing-displaced
+    fi
+
+    if [[ "$phase" == recovery-removing-displaced ]]; then
+        trigger_failpoint before-recovery-displaced-removal || return $?
+        remove_displaced_tree "$displaced" || return 1
+        trigger_failpoint after-recovery-displaced-removal-before-journal || return $?
+        write_marker recovery-displaced-removed || return 1
+        phase=recovery-displaced-removed
+        trigger_failpoint after-recovery-displaced-removal || return $?
+    fi
+
+    if [[ "$phase" == recovery-displaced-removed ]]; then
+        write_marker recovery-removing-staging || return 1
+        phase=recovery-removing-staging
+    fi
+
+    if [[ "$phase" == recovery-removing-staging ]]; then
+        trigger_failpoint before-recovery-staging-removal || return $?
+        remove_authenticated_staging "$transaction" recovery || return 1
+        trigger_failpoint after-recovery-staging-removal-before-journal || return $?
+        write_marker recovery-staging-removed || return 1
+        phase=recovery-staging-removed
+        trigger_failpoint after-recovery-staging-removal || return $?
+    fi
+
+    if [[ "$phase" == recovery-staging-removed ]]; then
+        write_marker recovery-removing-marker || return 1
+        phase=recovery-removing-marker
+    fi
+
+    if [[ "$phase" == recovery-removing-marker ]]; then
+        trigger_failpoint before-recovery-marker-removal || return $?
+        remove_marker || return 1
+        trigger_failpoint after-recovery-marker-removal || return $?
     fi
 }
 
@@ -132,18 +327,19 @@ recover_interrupted_transaction() {
         printf 'Recovery could not stop both applications; no state was changed and the marker was preserved. Stop both applications and rerun restore recovery.\n' >&2
         return 1
     fi
-    if ! recover_old_state "$rollback_path" "$MARKER_OLD_STATE" "$MARKER_PHASE" "$MARKER_TRANSACTION"; then
+    HVO_RESTORE_TRANSACTION_ID="$MARKER_TRANSACTION"
+    ROLLBACK_DIRECTORY="$rollback_path"
+    old_state_existed="$MARKER_OLD_STATE"
+    STAGING_DIRECTORY="$RUNTIME_PARENT/$MARKER_STAGING"
+    if ! recover_old_state "$ROLLBACK_DIRECTORY" "$old_state_existed" "$MARKER_PHASE" "$HVO_RESTORE_TRANSACTION_ID"; then
         printf 'An interrupted restore cannot be rolled back exactly; the durable marker was preserved.\n' >&2
         return 1
     fi
-    remove_marker || {
-        printf 'Recovered state but could not durably clear the restore marker.\n' >&2
-        return 1
-    }
     printf 'Recovered an interrupted application-state restore; applications remain stopped.\n' >&2
 }
 
 recover_interrupted_transaction
+cleanup_abandoned_staging
 
 [[ -f "$SELECTED_ARCHIVE" && ! -L "$SELECTED_ARCHIVE" &&
    -f "$SELECTED_CHECKSUM" && ! -L "$SELECTED_CHECKSUM" ]] || {
@@ -163,13 +359,39 @@ if [[ ! "$expected_digest" =~ ^[[:xdigit:]]{64}$ || -n "${extra:-}" ||
     exit 1
 fi
 
-STAGING_DIRECTORY="$(mktemp -d "$RUNTIME_PARENT/.hvo-restore.XXXXXX")"
+if [[ "${HVO_ENABLE_TEST_FAILPOINTS:-false}" == true &&
+      "${HVO_RESTORE_TEST_TRANSACTION_ID:-}" =~ ^[[:xdigit:]]{32}$ ]]; then
+    HVO_RESTORE_TRANSACTION_ID="${HVO_RESTORE_TEST_TRANSACTION_ID,,}"
+else
+    HVO_RESTORE_TRANSACTION_ID="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+fi
+export HVO_RESTORE_TRANSACTION_ID
+STAGING_DIRECTORY="$RUNTIME_PARENT/.hvo-restore.$HVO_RESTORE_TRANSACTION_ID"
+STAGING_CONTROL="$STAGING_DIRECTORY.transaction"
+[[ ! -e "$STAGING_DIRECTORY" && ! -L "$STAGING_DIRECTORY" &&
+   ! -e "$STAGING_CONTROL" && ! -L "$STAGING_CONTROL" ]] || {
+    printf 'Restore staging destination collision; no state was changed.\n' >&2
+    exit 1
+}
+if ! (set -o noclobber; printf 'HVO-APPLICATION-STATE-RESTORE-STAGING\t1\ntransaction\t%s\n' \
+    "$HVO_RESTORE_TRANSACTION_ID" > "$STAGING_CONTROL"); then
+    printf 'Restore staging control could not be created safely.\n' >&2
+    exit 1
+fi
+sync -f "$STAGING_CONTROL"
+sync -f "$RUNTIME_PARENT"
+if ! install -d -m 700 "$STAGING_DIRECTORY"; then
+    rm -f -- "$STAGING_CONTROL"
+    sync -f "$RUNTIME_PARENT"
+    printf 'Restore staging directory could not be created safely.\n' >&2
+    exit 1
+fi
 EXTRACT_DIRECTORY="$STAGING_DIRECTORY/extracted"
 INSTALL_DIRECTORY="$STAGING_DIRECTORY/install"
 PRIVATE_ARCHIVE="$STAGING_DIRECTORY/verified-archive.tgz"
 install -d -m 700 "$EXTRACT_DIRECTORY" "$INSTALL_DIRECTORY"
 cleanup_staging() {
-    rm -rf -- "$STAGING_DIRECTORY"
+    remove_authenticated_staging "$HVO_RESTORE_TRANSACTION_ID" exit
 }
 trap cleanup_staging EXIT
 
@@ -274,25 +496,6 @@ wait_for_service() {
     return 1
 }
 
-trigger_failpoint() {
-    local point="$1"
-    if [[ "${HVO_RESTORE_FAILPOINT:-}" == "$point" ]]; then
-        printf 'Restore test failpoint triggered: %s.\n' "$point" >&2
-        if [[ "${HVO_ENABLE_TEST_FAILPOINTS:-false}" == true &&
-              "${HVO_RESTORE_TEST_INTERRUPT:-false}" == true ]]; then
-            kill -KILL "$BASHPID"
-        fi
-        return 97
-    fi
-}
-
-if [[ "${HVO_ENABLE_TEST_FAILPOINTS:-false}" == true &&
-      "${HVO_RESTORE_TEST_TRANSACTION_ID:-}" =~ ^[[:xdigit:]]{32}$ ]]; then
-    HVO_RESTORE_TRANSACTION_ID="${HVO_RESTORE_TEST_TRANSACTION_ID,,}"
-else
-    HVO_RESTORE_TRANSACTION_ID="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
-fi
-export HVO_RESTORE_TRANSACTION_ID
 ROLLBACK_DIRECTORY="$RUNTIME_DATA_ROOT.rollback.$HVO_RESTORE_TRANSACTION_ID"
 [[ ! -e "$ROLLBACK_DIRECTORY" && ! -L "$ROLLBACK_DIRECTORY" ]] || {
     printf 'Restore rollback destination collision; no state was changed.\n' >&2
@@ -302,25 +505,6 @@ old_state_existed=false
 old_state_moved=false
 new_state_installed=false
 transaction_started=false
-marker_temporary=""
-
-write_marker() {
-    local phase="$1"
-    marker_temporary="$(mktemp "$RUNTIME_PARENT/.hvo-restore-marker.XXXXXX")"
-    printf 'HVO-APPLICATION-STATE-RESTORE\t1\ntransaction\t%s\nphase\t%s\nrollback\t%s\nold-state\t%s\n' \
-        "$HVO_RESTORE_TRANSACTION_ID" "$phase" "$(basename "$ROLLBACK_DIRECTORY")" "$old_state_existed" > "$marker_temporary"
-    sync -f "$marker_temporary"
-    if [[ -e "$TRANSACTION_MARKER" || -L "$TRANSACTION_MARKER" ]]; then
-        hvo_validate_regular_control_file "$TRANSACTION_MARKER" 'Restore transaction marker' || return 1
-        mv -Tf -- "$marker_temporary" "$TRANSACTION_MARKER" 2>/dev/null || return 1
-    else
-        mv -T --no-clobber -- "$marker_temporary" "$TRANSACTION_MARKER" 2>/dev/null || return 1
-    fi
-    marker_temporary=""
-    hvo_validate_regular_control_file "$TRANSACTION_MARKER" 'Restore transaction marker'
-    sync -f "$RUNTIME_PARENT"
-}
-
 rollback_on_error() {
     local status=$?
     local rollback_complete=false
@@ -341,13 +525,15 @@ rollback_on_error() {
         else
             printf 'Rollback could not stop both applications; no state tree was renamed or deleted. Stop both applications and rerun restore recovery.\n' >&2
         fi
-        if [[ "$rollback_complete" == true ]] && remove_marker; then
+        if [[ "$rollback_complete" == true ]]; then
             printf 'Application-state restore rolled back; applications remain stopped.\n' >&2
         else
             printf 'Restore rollback could not complete exactly; applications remain stopped and the durable marker was preserved.\n' >&2
         fi
     fi
-    cleanup_staging
+    if [[ "$transaction_started" == false || "$rollback_complete" == true ]]; then
+        cleanup_staging
+    fi
     exit "$status"
 }
 trap rollback_on_error EXIT
@@ -392,7 +578,16 @@ write_marker cameraagent-started
 trigger_failpoint after-cameraagent-start
 wait_for_service CameraAgent "${CAMERA_AGENT_URL:-http://localhost:${CAMERA_AGENT_HTTP_PORT:-5130}}"
 
+write_marker commit-removing-staging
+trigger_failpoint before-commit-staging-removal
+remove_authenticated_staging "$HVO_RESTORE_TRANSACTION_ID" commit
+trigger_failpoint after-commit-staging-removal-before-journal
+write_marker commit-staging-removed
+trigger_failpoint after-commit-staging-removal
+write_marker commit-removing-marker
+trigger_failpoint before-commit-marker-removal
 remove_marker
+trigger_failpoint after-commit-marker-removal
 transaction_started=false
 trap - EXIT
 cleanup_staging

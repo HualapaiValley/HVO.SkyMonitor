@@ -452,7 +452,11 @@ recovery. Delete the rollback directory only after all post-restore checks pass.
 Recovery and rollback never rename or delete a state tree unless both
 applications stop successfully. If stop fails, stop both applications manually
 and rerun the same restore command; do not delete or edit the marker or rollback
-directory.
+directory. Recovery journals each rename and cleanup substep, so rerunning the
+same command after another interruption resumes from the durable marker. It
+also removes abandoned private staging only when the staging transaction name
+and owned control file agree. If restore reports unauthenticated or unsafe
+staging, preserve it for operator review rather than renaming or deleting it.
 
 Restore order is:
 

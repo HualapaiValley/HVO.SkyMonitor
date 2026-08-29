@@ -42,8 +42,47 @@ write_restore_marker() {
     local phase="$2"
     local rollback_name="$3"
     local old_state="$4"
+    printf 'HVO-APPLICATION-STATE-RESTORE\t2\ntransaction\t%s\nphase\t%s\nrollback\t%s\nold-state\t%s\nstaging\t.hvo-restore.%s\n' \
+        "$transaction" "$phase" "$rollback_name" "$old_state" "$transaction" \
+        > "$TEMP_DIR/.hvo-application-state-restore.transaction"
+}
+
+write_restore_marker_v1() {
+    local transaction="$1"
+    local phase="$2"
+    local rollback_name="$3"
+    local old_state="$4"
     printf 'HVO-APPLICATION-STATE-RESTORE\t1\ntransaction\t%s\nphase\t%s\nrollback\t%s\nold-state\t%s\n' \
-        "$transaction" "$phase" "$rollback_name" "$old_state" > "$TEMP_DIR/.hvo-application-state-restore.transaction"
+        "$transaction" "$phase" "$rollback_name" "$old_state" \
+        > "$TEMP_DIR/.hvo-application-state-restore.transaction"
+}
+
+create_restore_staging() {
+    local transaction="$1"
+    local staging="$TEMP_DIR/.hvo-restore.$transaction"
+    mkdir -m 700 "$staging"
+    mkdir -m 700 "$staging/extracted"
+    printf 'staged\n' > "$staging/extracted/payload"
+    printf 'HVO-APPLICATION-STATE-RESTORE-STAGING\t1\ntransaction\t%s\n' \
+        "$transaction" > "$staging.transaction"
+}
+
+expect_restore_sigkill() {
+    local archive="$1"
+    local transaction="$2"
+    local failpoint="$3"
+    local status
+
+    set +e
+    restore_archive "$archive" env HVO_SKIP_RUNTIME_HEALTHCHECK=true HVO_ENABLE_TEST_FAILPOINTS=true \
+        HVO_RESTORE_TEST_INTERRUPT=true HVO_RESTORE_TEST_TRANSACTION_ID="$transaction" \
+        HVO_RESTORE_FAILPOINT="$failpoint" >"$TEMP_DIR/sigkill-$failpoint.log" 2>&1
+    status=$?
+    set -e
+    (( status == 137 )) || {
+        printf 'Expected SIGKILL status 137 at %s; got %s.\n' "$failpoint" "$status" >&2
+        return 1
+    }
 }
 
 snapshot_tree() {
@@ -738,11 +777,8 @@ for interruption in after-old-move after-new-install after-logichost-start after
     printf 'pre-%s\n' "$interruption" > "$RUNTIME_ROOT/agent/frame.bin"
     snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-$interruption.snapshot"
     : > "$TEMP_DIR/docker.log"
-    if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true HVO_ENABLE_TEST_FAILPOINTS=true \
-        HVO_RESTORE_TEST_INTERRUPT=true HVO_RESTORE_TEST_TRANSACTION_ID="$transaction" \
-        HVO_RESTORE_FAILPOINT="$interruption" >/dev/null 2>&1; then
-        fail "$interruption interruption unexpectedly succeeded."
-    fi
+    expect_restore_sigkill "$VALID_ARCHIVE" "$transaction" "$interruption" || \
+        fail "$interruption interruption did not terminate with SIGKILL."
     test -f "$TEMP_DIR/.hvo-application-state-restore.transaction"
     case "$interruption" in
         after-old-move) expected_phase=old-moved; test ! -e "$RUNTIME_ROOT" ;;
@@ -763,6 +799,244 @@ for interruption in after-old-move after-new-install after-logichost-start after
     test "$(<"$RUNTIME_ROOT/agent/frame.bin")" = payload-v1
     rm -rf -- "$rollback"
 done
+
+# Recovery is itself journaled, and every destructive boundary resumes without losing either tree.
+recovery_transaction=77777777777777777777777777777777
+recovery_rollback="$RUNTIME_ROOT.rollback.$recovery_transaction"
+recovery_displaced="$TEMP_DIR/.hvo-restore-displaced.$recovery_transaction"
+recovery_staging="$TEMP_DIR/.hvo-restore.$recovery_transaction"
+printf 'pre-recovery-journal\n' > "$RUNTIME_ROOT/agent/frame.bin"
+ln -s unmanaged.sentinel "$RUNTIME_ROOT/preserved-link"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-recovery-journal.snapshot"
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-new-install || \
+    fail 'Recovery journal setup did not terminate with SIGKILL.'
+test -d "$RUNTIME_ROOT"
+test -d "$recovery_rollback"
+test -d "$recovery_staging"
+test -f "$recovery_staging.transaction"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" before-recovery-displacement
+grep -Fqx $'phase\trecovery-displacing' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test -d "$RUNTIME_ROOT"
+test ! -e "$recovery_displaced"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-displacement-before-journal
+grep -Fqx $'phase\trecovery-displacing' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$RUNTIME_ROOT"
+test -d "$recovery_displaced"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-displacement
+grep -Fqx $'phase\trecovery-displaced' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$RUNTIME_ROOT"
+test -d "$recovery_rollback"
+test -d "$recovery_displaced"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" before-recovery-restoration
+grep -Fqx $'phase\trecovery-restoring' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$RUNTIME_ROOT"
+test -d "$recovery_rollback"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-restoration-before-journal
+grep -Fqx $'phase\trecovery-restoring' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test -d "$RUNTIME_ROOT"
+test ! -e "$recovery_rollback"
+test -d "$recovery_displaced"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-restoration
+grep -Fqx $'phase\trecovery-restored' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test -d "$RUNTIME_ROOT"
+test ! -e "$recovery_rollback"
+test -d "$recovery_displaced"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/restored-recovery-journal.snapshot"
+cmp -s "$TEMP_DIR/pre-recovery-journal.snapshot" "$TEMP_DIR/restored-recovery-journal.snapshot" || \
+    fail 'Journaled recovery did not restore the exact old tree.'
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" before-recovery-displaced-removal
+grep -Fqx $'phase\trecovery-removing-displaced' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test -d "$recovery_displaced"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-displaced-removal-before-journal
+grep -Fqx $'phase\trecovery-removing-displaced' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$recovery_displaced"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-displaced-removal
+grep -Fqx $'phase\trecovery-displaced-removed' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$recovery_displaced"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" before-recovery-staging-removal
+grep -Fqx $'phase\trecovery-removing-staging' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test -d "$recovery_staging"
+test -f "$recovery_staging.transaction"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-staging-tree-removal
+grep -Fqx $'phase\trecovery-removing-staging' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$recovery_staging"
+test -f "$recovery_staging.transaction"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-staging-control-removal
+grep -Fqx $'phase\trecovery-removing-staging' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$recovery_staging"
+test ! -e "$recovery_staging.transaction"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-staging-removal-before-journal
+grep -Fqx $'phase\trecovery-removing-staging' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$recovery_staging"
+test ! -e "$recovery_staging.transaction"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-staging-removal
+grep -Fqx $'phase\trecovery-staging-removed' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" before-recovery-marker-removal
+grep -Fqx $'phase\trecovery-removing-marker' "$TEMP_DIR/.hvo-application-state-restore.transaction"
+
+expect_restore_sigkill "$VALID_ARCHIVE" "$recovery_transaction" after-recovery-marker-removal
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-recovery-marker-removal.snapshot"
+cmp -s "$TEMP_DIR/pre-recovery-journal.snapshot" "$TEMP_DIR/post-recovery-marker-removal.snapshot" || \
+    fail 'Recovery marker removal did not retain the exact old tree.'
+
+restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true HVO_ENABLE_TEST_FAILPOINTS=true \
+    HVO_RESTORE_TEST_TRANSACTION_ID="$recovery_transaction" >/dev/null
+test "$(<"$RUNTIME_ROOT/agent/frame.bin")" = payload-v1
+rm -rf -- "$recovery_rollback"
+
+# Authenticated staging cleanup accepts preserved target-only filesystem content.
+preserved_staging_transaction=77777777777777777777777777777778
+mkdir -m 0777 "$RUNTIME_ROOT/writable-preserved"
+printf 'preserved-content\n' > "$RUNTIME_ROOT/writable-preserved/payload"
+ln "$RUNTIME_ROOT/unmanaged.sentinel" "$RUNTIME_ROOT/preserved-hardlink"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-preserved-staging.snapshot"
+expect_restore_sigkill "$VALID_ARCHIVE" "$preserved_staging_transaction" after-old-move
+test -L "$TEMP_DIR/.hvo-restore.$preserved_staging_transaction/install/preserved-link"
+test -d "$TEMP_DIR/.hvo-restore.$preserved_staging_transaction/install/writable-preserved"
+test -f "$TEMP_DIR/.hvo-restore.$preserved_staging_transaction/install/preserved-hardlink"
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Preserved-content staging recovery'
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-preserved-staging.snapshot"
+cmp -s "$TEMP_DIR/pre-preserved-staging.snapshot" "$TEMP_DIR/post-preserved-staging.snapshot" || \
+    fail 'Preserved-content staging recovery changed the exact old tree.'
+test ! -e "$TEMP_DIR/.hvo-restore.$preserved_staging_transaction"
+test ! -e "$TEMP_DIR/.hvo-restore.$preserved_staging_transaction.transaction"
+
+# Commit-side staging cleanup is also resumable; marker removal remains the commit point.
+commit_index=0
+for commit_interruption in before-commit-staging-removal after-commit-staging-tree-removal \
+    after-commit-staging-control-removal after-commit-staging-removal-before-journal \
+    after-commit-staging-removal before-commit-marker-removal; do
+    ((commit_index += 1))
+    commit_transaction="$(printf '3%.0s' {1..31})$commit_index"
+    printf 'pre-%s\n' "$commit_interruption" > "$RUNTIME_ROOT/agent/frame.bin"
+    snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-$commit_interruption.snapshot"
+    expect_restore_sigkill "$VALID_ARCHIVE" "$commit_transaction" "$commit_interruption"
+    test -f "$TEMP_DIR/.hvo-application-state-restore.transaction"
+    expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" "Post-$commit_interruption recovery"
+    snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-$commit_interruption.snapshot"
+    cmp -s "$TEMP_DIR/pre-$commit_interruption.snapshot" "$TEMP_DIR/post-$commit_interruption.snapshot" || \
+        fail "$commit_interruption did not recover the exact old tree."
+    test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+    test ! -e "$TEMP_DIR/.hvo-restore.$commit_transaction"
+    test ! -e "$TEMP_DIR/.hvo-restore.$commit_transaction.transaction"
+    test ! -e "$RUNTIME_ROOT.rollback.$commit_transaction"
+done
+
+committed_transaction=22222222222222222222222222222221
+printf 'pre-committed-marker-removal\n' > "$RUNTIME_ROOT/agent/frame.bin"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-committed-marker-removal.snapshot"
+expect_restore_sigkill "$VALID_ARCHIVE" "$committed_transaction" after-commit-marker-removal
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+test ! -e "$TEMP_DIR/.hvo-restore.$committed_transaction"
+test ! -e "$TEMP_DIR/.hvo-restore.$committed_transaction.transaction"
+test "$(<"$RUNTIME_ROOT/agent/frame.bin")" = payload-v1
+snapshot_tree "$RUNTIME_ROOT.rollback.$committed_transaction" "$TEMP_DIR/committed-marker-rollback.snapshot"
+cmp -s "$TEMP_DIR/pre-committed-marker-removal.snapshot" "$TEMP_DIR/committed-marker-rollback.snapshot" || \
+    fail 'Post-commit marker interruption changed retained rollback state.'
+rm -rf -- "$RUNTIME_ROOT.rollback.$committed_transaction"
+
+# Handled pre-transaction failures use the same interruption-safe authenticated cleanup.
+exit_cleanup_transaction=11111111111111111111111111111112
+expect_restore_sigkill "$TEMP_DIR/outer-corrupt.tgz" "$exit_cleanup_transaction" after-exit-staging-tree-removal
+test ! -e "$TEMP_DIR/.hvo-restore.$exit_cleanup_transaction"
+test -f "$TEMP_DIR/.hvo-restore.$exit_cleanup_transaction.transaction"
+expect_restore_sigkill "$TEMP_DIR/outer-corrupt.tgz" "$exit_cleanup_transaction" after-exit-staging-control-removal
+test ! -e "$TEMP_DIR/.hvo-restore.$exit_cleanup_transaction"
+test ! -e "$TEMP_DIR/.hvo-restore.$exit_cleanup_transaction.transaction"
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Post-exit-staging cleanup'
+
+# Recovery also converges when the interrupted transaction began without an old runtime tree.
+no_old_transaction=66666666666666666666666666666666
+no_old_rollback="$(basename "$RUNTIME_ROOT").rollback.$no_old_transaction"
+mv -T "$RUNTIME_ROOT" "$TEMP_DIR/saved-runtime-before-no-old-recovery"
+mkdir -m 700 "$RUNTIME_ROOT"
+printf 'new-without-old\n' > "$RUNTIME_ROOT/new-state"
+write_restore_marker "$no_old_transaction" new-installed "$no_old_rollback" false
+expect_restore_sigkill "$TEMP_DIR/outer-corrupt.tgz" "$no_old_transaction" after-recovery-displacement
+test ! -e "$RUNTIME_ROOT"
+test -d "$TEMP_DIR/.hvo-restore-displaced.$no_old_transaction"
+expect_restore_sigkill "$TEMP_DIR/outer-corrupt.tgz" "$no_old_transaction" after-recovery-restoration
+test ! -e "$RUNTIME_ROOT"
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'No-old-state recovery'
+test ! -e "$RUNTIME_ROOT"
+test ! -e "$TEMP_DIR/.hvo-restore-displaced.$no_old_transaction"
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+mv -T "$TEMP_DIR/saved-runtime-before-no-old-recovery" "$RUNTIME_ROOT"
+
+# Abandoned staging cleanup remains authenticated and resumable independently of a restore marker.
+abandoned_transaction=55555555555555555555555555555555
+create_restore_staging "$abandoned_transaction"
+mkdir -m 700 "$TEMP_DIR/.hvo-restore.unrelated"
+printf 'unrelated\n' > "$TEMP_DIR/.hvo-restore.unrelated/sentinel"
+expect_restore_sigkill "$TEMP_DIR/outer-corrupt.tgz" "$abandoned_transaction" before-abandoned-staging-removal
+test -d "$TEMP_DIR/.hvo-restore.$abandoned_transaction"
+test -f "$TEMP_DIR/.hvo-restore.$abandoned_transaction.transaction"
+expect_restore_sigkill "$TEMP_DIR/outer-corrupt.tgz" "$abandoned_transaction" after-abandoned-staging-tree-removal
+test ! -e "$TEMP_DIR/.hvo-restore.$abandoned_transaction"
+test -f "$TEMP_DIR/.hvo-restore.$abandoned_transaction.transaction"
+expect_restore_sigkill "$TEMP_DIR/outer-corrupt.tgz" "$abandoned_transaction" after-abandoned-staging-control-removal
+test ! -e "$TEMP_DIR/.hvo-restore.$abandoned_transaction"
+test ! -e "$TEMP_DIR/.hvo-restore.$abandoned_transaction.transaction"
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Post-abandoned-staging cleanup'
+test "$(<"$TEMP_DIR/.hvo-restore.unrelated/sentinel")" = unrelated
+
+# Matching but unauthenticated, unsafe, or foreign staging is preserved for operator review.
+malicious_transaction=44444444444444444444444444444441
+mkdir -m 700 "$TEMP_DIR/.hvo-restore.$malicious_transaction"
+printf 'preserve\n' > "$TEMP_DIR/.hvo-restore.$malicious_transaction/payload"
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Unauthenticated staging'
+test -f "$TEMP_DIR/.hvo-restore.$malicious_transaction/payload"
+rm -rf "$TEMP_DIR/.hvo-restore.$malicious_transaction"
+
+malicious_transaction=44444444444444444444444444444442
+mkdir -m 700 "$TEMP_DIR/staging-symlink-target"
+printf 'outside\n' > "$TEMP_DIR/staging-symlink-target/payload"
+ln -s "$TEMP_DIR/staging-symlink-target" "$TEMP_DIR/.hvo-restore.$malicious_transaction"
+printf 'HVO-APPLICATION-STATE-RESTORE-STAGING\t1\ntransaction\t%s\n' "$malicious_transaction" \
+    > "$TEMP_DIR/.hvo-restore.$malicious_transaction.transaction"
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Symlinked staging'
+test "$(<"$TEMP_DIR/staging-symlink-target/payload")" = outside
+rm -rf "$TEMP_DIR/.hvo-restore.$malicious_transaction" "$TEMP_DIR/.hvo-restore.$malicious_transaction.transaction"
+
+malicious_transaction=44444444444444444444444444444443
+create_restore_staging "$malicious_transaction"
+chmod 0777 "$TEMP_DIR/.hvo-restore.$malicious_transaction"
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Writable staging'
+test -f "$TEMP_DIR/.hvo-restore.$malicious_transaction/extracted/payload"
+rm -rf "$TEMP_DIR/.hvo-restore.$malicious_transaction" "$TEMP_DIR/.hvo-restore.$malicious_transaction.transaction"
+
+malicious_transaction=44444444444444444444444444444444
+create_restore_staging "$malicious_transaction"
+if restore_archive "$TEMP_DIR/outer-corrupt.tgz" env HVO_SKIP_RUNTIME_HEALTHCHECK=true \
+    HVO_TEST_NONOWNED_PATH="$TEMP_DIR/.hvo-restore.$malicious_transaction" >/dev/null 2>&1; then
+    fail 'Foreign-owned staging unexpectedly restored.'
+fi
+test -f "$TEMP_DIR/.hvo-restore.$malicious_transaction/extracted/payload"
+rm -rf "$TEMP_DIR/.hvo-restore.$malicious_transaction" "$TEMP_DIR/.hvo-restore.$malicious_transaction.transaction"
+
+malicious_transaction=44444444444444444444444444444445
+create_restore_staging "$malicious_transaction"
+printf 'HVO-APPLICATION-STATE-RESTORE-STAGING\t1\ntransaction\t%s\n' \
+    44444444444444444444444444444446 > "$TEMP_DIR/.hvo-restore.$malicious_transaction.transaction"
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Wrong-transaction staging'
+test -f "$TEMP_DIR/.hvo-restore.$malicious_transaction/extracted/payload"
+rm -rf "$TEMP_DIR/.hvo-restore.$malicious_transaction" "$TEMP_DIR/.hvo-restore.$malicious_transaction.transaction"
 
 # LogicHost readiness and container-start failures both restore exact old state and leave apps stopped.
 printf 'before-health-failure\n' > "$RUNTIME_ROOT/agent/frame.bin"
@@ -951,6 +1225,24 @@ expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Post-recovery corrupt'
 test "$(<"$RUNTIME_ROOT/unmanaged.sentinel")" = marker-recovery-old-state
 test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
 test ! -e "$TEMP_DIR/$recovery_rollback"
+
+# Existing version-1 markers remain recoverable and are upgraded before mutation.
+legacy_recovery_transaction=11111111111111111111111111111113
+legacy_recovery_rollback="$(basename "$RUNTIME_ROOT").rollback.$legacy_recovery_transaction"
+mkdir -m 700 "$TEMP_DIR/.hvo-restore.ABC123"
+printf 'legacy-random-staging\n' > "$TEMP_DIR/.hvo-restore.ABC123/payload"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-version-1-recovery.snapshot"
+mv -T "$RUNTIME_ROOT" "$TEMP_DIR/$legacy_recovery_rollback"
+write_restore_marker_v1 "$legacy_recovery_transaction" old-moved "$legacy_recovery_rollback" true
+expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Version-1 marker recovery'
+test -d "$RUNTIME_ROOT"
+test ! -e "$TEMP_DIR/$legacy_recovery_rollback"
+test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-version-1-recovery.snapshot"
+cmp -s "$TEMP_DIR/pre-version-1-recovery.snapshot" "$TEMP_DIR/post-version-1-recovery.snapshot" || \
+    fail 'Version-1 marker recovery changed the exact old tree.'
+test "$(<"$TEMP_DIR/.hvo-restore.ABC123/payload")" = legacy-random-staging
+rm -rf "$TEMP_DIR/.hvo-restore.ABC123"
 
 # A rollback destination collision is refused before the transaction marker is created.
 collision_transaction=22222222222222222222222222222222

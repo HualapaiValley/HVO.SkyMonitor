@@ -270,6 +270,16 @@ long paths without accepting GNU long-link, sparse, or PAX override records.
 Staged filesystem swaps are individual same-filesystem
 renames coordinated by a durable phase marker; they are not a transaction that
 is atomic with SQL Server, MinIO, container startup, or health checks.
+Recovery marker version 2 journals displacement, rollback restoration,
+displaced-tree removal, authenticated staging removal, and marker removal.
+Every destructive substep records intent before mutation and accepts either the
+pre-mutation or completed filesystem state on retry. Private staging uses a
+32-hex transaction name plus an owned regular transaction control file. While
+holding the application-state operation lock, restore removes only staging with
+an exact matching control; malformed, symlinked, foreign-owned, or writable
+staging is preserved for operator review. Version-1 forward markers remain
+recoverable, but their historical random staging names are not inferred or
+deleted.
 
 ## Cross-Store Recovery Inventory
 
