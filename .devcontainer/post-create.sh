@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+bash "$SCRIPT_DIR/verify-persistent-agent-state.sh"
+bash "$SCRIPT_DIR/configure-opencode.sh"
 cd "$REPO_ROOT"
 
 LOG_ROOT="${POST_CREATE_LOG_ROOT:-$SCRIPT_DIR/logs}"
@@ -79,8 +81,6 @@ echo "Fixing .dotnet directory ownership..."
 sudo chown -R vscode:vscode /home/vscode/.dotnet || true
 sudo mkdir -p /home/vscode/.cache
 sudo chown -R vscode:vscode /home/vscode/.cache
-bash "$SCRIPT_DIR/verify-persistent-agent-state.sh"
-bash "$SCRIPT_DIR/configure-opencode.sh"
 
 # Display .NET version and runtime details
 echo "Checking .NET installation..."

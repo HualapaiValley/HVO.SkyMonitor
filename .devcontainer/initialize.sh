@@ -63,53 +63,147 @@ state_directories=(
     "$state_root/opencode-worktrees"
 )
 
-if [[ -e "$state_root" || -L "$state_root" ]]; then
+discard_empty_initialization_root() {
+    local entry
+    local -a entries
+
+    for _ in {1..100}; do
+        [[ -e "$initialization_root" || -L "$initialization_root" ]] || return 0
+        if ! verify_secure_state_directory "$initialization_root"; then
+            [[ ! -e "$initialization_root" && ! -L "$initialization_root" ]] && return 0
+            return 1
+        fi
+        shopt -s dotglob nullglob
+        entries=("$initialization_root"/*)
+        shopt -u dotglob nullglob
+        for entry in "${entries[@]}"; do
+            case "${entry##*/}" in
+                agent-scratch | opencode-config | opencode-data | opencode-worktrees) ;;
+                *)
+                    echo "Concurrent developer-state initialization contains an unexpected entry: $entry" >&2
+                    return 1
+                    ;;
+            esac
+            if [[ -e "$entry" || -L "$entry" ]]; then
+                if ! verify_secure_state_directory "$entry"; then
+                    [[ ! -e "$entry" && ! -L "$entry" ]] && continue
+                    return 1
+                fi
+                if ! directory_is_empty "$entry"; then
+                    echo "Concurrent developer-state initialization directory must be empty: $entry" >&2
+                    return 1
+                fi
+                rmdir -- "$entry" 2>/dev/null || true
+            fi
+        done
+        rmdir -- "$initialization_root" 2>/dev/null || true
+        [[ ! -e "$initialization_root" && ! -L "$initialization_root" ]] && return 0
+        sleep 0.01
+    done
+    echo "Concurrent developer-state initialization did not quiesce: $initialization_root" >&2
+    return 1
+}
+
+verify_installed_state() {
     if [[ -e "$initialization_root" || -L "$initialization_root" ]]; then
-        echo "Persistent developer state has both current and initialization roots; inspect without merging: $initialization_root" >&2
-        exit 1
+        discard_empty_initialization_root
     fi
     verify_secure_state_directory "$state_root"
     for state_directory in "${state_directories[@]}"; do
         if [[ ! -e "$state_directory" && ! -L "$state_directory" ]]; then
             echo "Existing persistent developer state is incomplete; missing directory: $state_directory" >&2
-            exit 1
+            return 1
         fi
         verify_secure_state_directory "$state_directory"
     done
+}
+
+if [[ -e "$state_root" || -L "$state_root" ]]; then
+    verify_installed_state
 else
     if [[ ! -e "$initialization_root" && ! -L "$initialization_root" ]]; then
-        mkdir -m 0700 -- "$initialization_root"
-    fi
-    verify_secure_state_directory "$initialization_root"
-    run_initialization_failpoint after-root
-
-    shopt -s dotglob nullglob
-    initialization_entries=("$initialization_root"/*)
-    shopt -u dotglob nullglob
-    for initialization_entry in "${initialization_entries[@]}"; do
-        case "${initialization_entry##*/}" in
-            agent-scratch | opencode-config | opencode-data | opencode-worktrees) ;;
-            *)
-                echo "Persistent developer-state initialization contains an unexpected entry: $initialization_entry" >&2
+        if ! mkdir -m 0700 -- "$initialization_root" 2>/dev/null \
+            && [[ ! -d "$initialization_root" ]]; then
+            if [[ -d "$state_root" ]]; then
+                verify_installed_state
+            else
+                echo "Persistent developer-state initialization root could not be created: $initialization_root" >&2
                 exit 1
-                ;;
-        esac
-    done
+            fi
+        fi
+    fi
+    if [[ ! -d "$state_root" ]]; then
+        if ! verify_secure_state_directory "$initialization_root"; then
+            if [[ -d "$state_root" ]]; then
+                verify_installed_state
+            else
+                exit 1
+            fi
+        fi
+    fi
+    if [[ ! -d "$state_root" ]]; then
+        run_initialization_failpoint after-root
 
-    for state_directory in "${state_directories[@]}"; do
-        initialization_directory="$initialization_root/${state_directory##*/}"
-        if [[ ! -e "$initialization_directory" && ! -L "$initialization_directory" ]]; then
-            mkdir -m 0700 -- "$initialization_directory"
+        shopt -s dotglob nullglob
+        initialization_entries=("$initialization_root"/*)
+        shopt -u dotglob nullglob
+        for initialization_entry in "${initialization_entries[@]}"; do
+            case "${initialization_entry##*/}" in
+                agent-scratch | opencode-config | opencode-data | opencode-worktrees) ;;
+                *)
+                    echo "Persistent developer-state initialization contains an unexpected entry: $initialization_entry" >&2
+                    exit 1
+                    ;;
+            esac
+        done
+
+        peer_installed=false
+        for state_directory in "${state_directories[@]}"; do
+            if [[ -d "$state_root" ]]; then
+                peer_installed=true
+                break
+            fi
+            initialization_directory="$initialization_root/${state_directory##*/}"
+            if [[ ! -e "$initialization_directory" && ! -L "$initialization_directory" ]]; then
+                if ! mkdir -m 0700 -- "$initialization_directory" 2>/dev/null \
+                    && [[ ! -d "$initialization_directory" ]]; then
+                    if [[ -d "$state_root" ]]; then
+                        peer_installed=true
+                        break
+                    fi
+                    echo "Persistent developer-state initialization directory could not be created: $initialization_directory" >&2
+                    exit 1
+                fi
+            fi
+            if [[ -d "$state_root" ]]; then
+                peer_installed=true
+                break
+            fi
+            if ! verify_secure_state_directory "$initialization_directory"; then
+                if [[ -d "$state_root" ]]; then
+                    peer_installed=true
+                    break
+                fi
+                exit 1
+            fi
+            if ! directory_is_empty "$initialization_directory"; then
+                echo "Persistent developer-state initialization directory must be empty: $initialization_directory" >&2
+                exit 1
+            fi
+            run_initialization_failpoint "after-${state_directory##*/}"
+        done
+
+        if [[ "$peer_installed" == false ]]; then
+            run_initialization_failpoint before-install
+            if ! mv -- "$initialization_root" "$state_root" 2>/dev/null; then
+                if [[ ! -d "$state_root" || -e "$initialization_root" || -L "$initialization_root" ]]; then
+                    echo "Persistent developer-state initialization could not install the staged tree." >&2
+                    exit 1
+                fi
+            fi
         fi
-        verify_secure_state_directory "$initialization_directory"
-        if ! directory_is_empty "$initialization_directory"; then
-            echo "Persistent developer-state initialization directory must be empty: $initialization_directory" >&2
-            exit 1
-        fi
-        run_initialization_failpoint "after-${state_directory##*/}"
-    done
-    run_initialization_failpoint before-install
-    mv -- "$initialization_root" "$state_root"
+    fi
+    verify_installed_state
 fi
 
 mkdir -p "$HOME/.microsoft/usersecrets"

@@ -94,7 +94,15 @@ directory_contains_only() (
 
 recover_committed_initialization() {
     local committed_dir
+    local transaction_id
     local inventory_file
+    local inventory_contents
+    local inventory_identity
+    local inventory_version
+    local inventory_transaction_id
+    local expected_config_hash
+    local expected_password_hash
+    local inventory_extra
     local -a committed_dirs
 
     shopt -s nullglob
@@ -105,13 +113,41 @@ recover_committed_initialization() {
         || fail "multiple committed initialization markers require manual inspection"
 
     committed_dir="${committed_dirs[0]}"
+    transaction_id="${committed_dir##*-v1-}"
+    [[ "$transaction_id" =~ ^[0-9a-f]{32}$ ]] \
+        || fail "invalid committed initialization marker: $committed_dir"
     require_secure_directory "$committed_dir" "Committed OpenCode initialization marker"
     inventory_file="$committed_dir/inventory"
     directory_contains_only "$committed_dir" "$inventory_file" \
         || fail "committed initialization marker contains unrelated state"
     if [[ -e "$inventory_file" || -L "$inventory_file" ]]; then
         require_owned_private_entry "$inventory_file" "OpenCode initialization inventory"
+        inventory_contents="$(<"$inventory_file")"
+        IFS=$'\t' read -r \
+            inventory_identity \
+            inventory_version \
+            inventory_transaction_id \
+            expected_config_hash \
+            expected_password_hash \
+            inventory_extra <<< "$inventory_contents"
+        [[ "$inventory_identity" == HVO-OPENCODE-INITIALIZATION \
+            && "$inventory_version" == 1 \
+            && "$inventory_transaction_id" == "$transaction_id" \
+            && "$expected_config_hash" =~ ^[0-9a-f]{64}$ \
+            && "$expected_password_hash" =~ ^[0-9a-f]{64}$ \
+            && -z "$inventory_extra" ]] \
+            || fail "committed initialization inventory is invalid: $inventory_file"
+
+        require_private_file "$OPENCODE_CONFIG_FILE" "Committed OpenCode configuration"
+        require_private_file "$OPENCODE_SERVER_PASSWORD_FILE" "Committed OpenCode server password"
+        [[ "$(sha256sum "$OPENCODE_CONFIG_FILE" | cut -d ' ' -f 1)" == "$expected_config_hash" ]] \
+            || fail "committed initialization does not own configuration artifact: $OPENCODE_CONFIG_FILE"
+        [[ "$(sha256sum "$OPENCODE_SERVER_PASSWORD_FILE" | cut -d ' ' -f 1)" == "$expected_password_hash" ]] \
+            || fail "committed initialization does not own password artifact: $OPENCODE_SERVER_PASSWORD_FILE"
         rm -f -- "$inventory_file"
+    else
+        require_private_file "$OPENCODE_CONFIG_FILE" "Committed OpenCode configuration"
+        require_private_file "$OPENCODE_SERVER_PASSWORD_FILE" "Committed OpenCode server password"
     fi
     rmdir -- "$committed_dir"
 }
@@ -225,7 +261,15 @@ recover_interrupted_initialization() {
 
 run_initialization_failpoint() {
     if [[ "${HVO_OPENCODE_INIT_PAUSEPOINT:-}" == "$1" ]]; then
-        sleep "${HVO_OPENCODE_INIT_PAUSE_SECONDS:-1}"
+        if [[ -n "${HVO_OPENCODE_INIT_PAUSE_READY:-}" \
+            && -n "${HVO_OPENCODE_INIT_PAUSE_RELEASE:-}" ]]; then
+            : > "$HVO_OPENCODE_INIT_PAUSE_READY"
+            while [[ ! -e "$HVO_OPENCODE_INIT_PAUSE_RELEASE" ]]; do
+                sleep 0.01
+            done
+        else
+            sleep "${HVO_OPENCODE_INIT_PAUSE_SECONDS:-1}"
+        fi
     fi
     if [[ "${HVO_OPENCODE_INIT_FAILPOINT:-}" == "$1" ]]; then
         kill -KILL "$$"

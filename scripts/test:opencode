@@ -68,6 +68,10 @@ grep -Fq 'bash "$PERSISTENCE_SCRIPT"' "$ENABLE_SCRIPT"
 grep -Fq 'bash "$CONFIGURE_SCRIPT"' "$ENABLE_SCRIPT"
 grep -Fq 'verify-persistent-agent-state.sh' "$REPO_ROOT/.devcontainer/post-create.sh"
 grep -Fq 'verify-persistent-agent-state.sh' "$REPO_ROOT/.devcontainer/post-start.sh"
+post_create_validation_line="$(grep -nF 'verify-persistent-agent-state.sh' \
+    "$REPO_ROOT/.devcontainer/post-create.sh" | cut -d : -f 1)"
+post_create_log_line="$(grep -nF 'LOG_ROOT=' "$REPO_ROOT/.devcontainer/post-create.sh" | cut -d : -f 1)"
+((post_create_validation_line < post_create_log_line))
 grep -Fq 'findmnt --noheadings --raw --output TARGET --target "$path"' "$PERSISTENCE_SCRIPT"
 grep -Fq 'filesystem_type" == "tmpfs"' "$PERSISTENCE_SCRIPT"
 grep -Fq 'HVO_DEVCONTAINER_STATE_SOURCE' "$PERSISTENCE_SCRIPT"
@@ -136,6 +140,16 @@ expect_configure_failure() {
     grep -Fq "$expected_message" "$output_file"
 }
 
+require_sigkill_status() {
+    local status="$1"
+    local boundary="$2"
+
+    if [[ "$status" != 137 ]]; then
+        echo "Expected SIGKILL status 137 at $boundary, received $status." >&2
+        exit 1
+    fi
+}
+
 fresh_config="$TEMP_DIR/fresh/opencode-config"
 fresh_data="$TEMP_DIR/fresh/opencode-data"
 mkdir -p "$fresh_config" "$fresh_data"
@@ -165,12 +179,13 @@ for failpoint in \
     interrupted_data="$TEMP_DIR/interrupted-$failpoint/opencode-data"
     mkdir -p "$interrupted_config" "$interrupted_data"
     chmod 700 "$interrupted_config" "$interrupted_data"
-    if bash -c 'env -i HOME="$1" PATH="/usr/bin:/bin" OPENCODE_CONFIG_DIR="$2" OPENCODE_DATA_DIR="$3" HVO_OPENCODE_INIT_FAILPOINT="$4" bash "$5"; status=$?; :; exit "$status"' \
+    set +e
+    bash -c 'env -i HOME="$1" PATH="/usr/bin:/bin" OPENCODE_CONFIG_DIR="$2" OPENCODE_DATA_DIR="$3" HVO_OPENCODE_INIT_FAILPOINT="$4" bash "$5"; status=$?; :; exit "$status"' \
         _ "$TEMP_DIR/home" "$interrupted_config" "$interrupted_data" "$failpoint" "$CONFIGURE_SCRIPT" \
-        > "$TEMP_DIR/interrupted-$failpoint.out" 2>&1; then
-        echo "OpenCode initialization failpoint did not interrupt at $failpoint." >&2
-        exit 1
-    fi
+        > "$TEMP_DIR/interrupted-$failpoint.out" 2>&1
+    interrupted_status=$?
+    set -e
+    require_sigkill_status "$interrupted_status" "OpenCode initialization $failpoint"
     run_configure "$interrupted_config" "$interrupted_data"
     test -s "$interrupted_config/opencode.jsonc"
     test -s "$interrupted_data/server-password"
@@ -193,18 +208,20 @@ for recovery_failpoint in \
     recovery_data="$TEMP_DIR/recovery-$recovery_failpoint/opencode-data"
     mkdir -p "$recovery_config" "$recovery_data"
     chmod 700 "$recovery_config" "$recovery_data"
-    if bash -c 'env -i HOME="$1" PATH="/usr/bin:/bin" OPENCODE_CONFIG_DIR="$2" OPENCODE_DATA_DIR="$3" HVO_OPENCODE_INIT_FAILPOINT=after-config-install bash "$4"; status=$?; :; exit "$status"' \
+    set +e
+    bash -c 'env -i HOME="$1" PATH="/usr/bin:/bin" OPENCODE_CONFIG_DIR="$2" OPENCODE_DATA_DIR="$3" HVO_OPENCODE_INIT_FAILPOINT=after-config-install bash "$4"; status=$?; :; exit "$status"' \
         _ "$TEMP_DIR/home" "$recovery_config" "$recovery_data" "$CONFIGURE_SCRIPT" \
-        > "$TEMP_DIR/recovery-seed-$recovery_failpoint.out" 2>&1; then
-        echo "OpenCode recovery fixture did not interrupt after config installation." >&2
-        exit 1
-    fi
-    if bash -c 'env -i HOME="$1" PATH="/usr/bin:/bin" OPENCODE_CONFIG_DIR="$2" OPENCODE_DATA_DIR="$3" HVO_OPENCODE_INIT_FAILPOINT="$4" bash "$5"; status=$?; :; exit "$status"' \
+        > "$TEMP_DIR/recovery-seed-$recovery_failpoint.out" 2>&1
+    recovery_seed_status=$?
+    set -e
+    require_sigkill_status "$recovery_seed_status" "OpenCode recovery seed $recovery_failpoint"
+    set +e
+    bash -c 'env -i HOME="$1" PATH="/usr/bin:/bin" OPENCODE_CONFIG_DIR="$2" OPENCODE_DATA_DIR="$3" HVO_OPENCODE_INIT_FAILPOINT="$4" bash "$5"; status=$?; :; exit "$status"' \
         _ "$TEMP_DIR/home" "$recovery_config" "$recovery_data" "$recovery_failpoint" "$CONFIGURE_SCRIPT" \
-        > "$TEMP_DIR/recovery-kill-$recovery_failpoint.out" 2>&1; then
-        echo "OpenCode recovery failpoint did not interrupt at $recovery_failpoint." >&2
-        exit 1
-    fi
+        > "$TEMP_DIR/recovery-kill-$recovery_failpoint.out" 2>&1
+    recovery_status=$?
+    set -e
+    require_sigkill_status "$recovery_status" "OpenCode recovery $recovery_failpoint"
     run_configure "$recovery_config" "$recovery_data"
     test -s "$recovery_config/opencode.jsonc"
     test -s "$recovery_data/server-password"
@@ -214,12 +231,13 @@ stale_config="$TEMP_DIR/stale-marker/opencode-config"
 stale_data="$TEMP_DIR/stale-marker/opencode-data"
 mkdir -p "$stale_config" "$stale_data"
 chmod 700 "$stale_config" "$stale_data"
-if bash -c 'env -i HOME="$1" PATH="/usr/bin:/bin" OPENCODE_CONFIG_DIR="$2" OPENCODE_DATA_DIR="$3" HVO_OPENCODE_INIT_FAILPOINT=after-password-install bash "$4"; status=$?; :; exit "$status"' \
+set +e
+bash -c 'env -i HOME="$1" PATH="/usr/bin:/bin" OPENCODE_CONFIG_DIR="$2" OPENCODE_DATA_DIR="$3" HVO_OPENCODE_INIT_FAILPOINT=after-password-install bash "$4"; status=$?; :; exit "$status"' \
     _ "$TEMP_DIR/home" "$stale_config" "$stale_data" "$CONFIGURE_SCRIPT" \
-    > "$TEMP_DIR/stale-marker-kill.out" 2>&1; then
-    echo "OpenCode stale-marker fixture did not interrupt after installation." >&2
-    exit 1
-fi
+    > "$TEMP_DIR/stale-marker-kill.out" 2>&1
+stale_status=$?
+set -e
+require_sigkill_status "$stale_status" "OpenCode stale marker seed"
 printf '{"permission":"ask"}\n' > "$stale_config/opencode.jsonc"
 chmod 600 "$stale_config/opencode.jsonc"
 stale_password_hash="$(sha256sum "$stale_data/server-password")"
@@ -228,26 +246,52 @@ expect_configure_failure "$stale_config" "$stale_data" \
 grep -Fqx '{"permission":"ask"}' "$stale_config/opencode.jsonc"
 test "$(sha256sum "$stale_data/server-password")" = "$stale_password_hash"
 
+committed_config="$TEMP_DIR/committed-marker/opencode-config"
+committed_data="$TEMP_DIR/committed-marker/opencode-data"
+mkdir -p "$committed_config" "$committed_data"
+chmod 700 "$committed_config" "$committed_data"
+set +e
+bash -c 'env -i HOME="$1" PATH="/usr/bin:/bin" OPENCODE_CONFIG_DIR="$2" OPENCODE_DATA_DIR="$3" HVO_OPENCODE_INIT_FAILPOINT=after-commit bash "$4"; status=$?; :; exit "$status"' \
+    _ "$TEMP_DIR/home" "$committed_config" "$committed_data" "$CONFIGURE_SCRIPT" \
+    > "$TEMP_DIR/committed-marker-kill.out" 2>&1
+committed_status=$?
+set -e
+require_sigkill_status "$committed_status" "OpenCode committed marker seed"
+printf '{"permission":"ask"}\n' > "$committed_config/opencode.jsonc"
+chmod 600 "$committed_config/opencode.jsonc"
+committed_password_hash="$(sha256sum "$committed_data/server-password")"
+expect_configure_failure "$committed_config" "$committed_data" \
+    'committed initialization does not own configuration artifact' "$TEMP_DIR/committed-marker.out"
+grep -Fqx '{"permission":"ask"}' "$committed_config/opencode.jsonc"
+test "$(sha256sum "$committed_data/server-password")" = "$committed_password_hash"
+compgen -G "$committed_config/.hvo-opencode-initialized-v1-*/inventory" >/dev/null
+
 concurrent_config="$TEMP_DIR/concurrent/opencode-config"
 concurrent_data="$TEMP_DIR/concurrent/opencode-data"
+concurrent_ready="$TEMP_DIR/concurrent/first-ready"
+concurrent_release="$TEMP_DIR/concurrent/release-first"
 mkdir -p "$concurrent_config" "$concurrent_data"
 chmod 700 "$concurrent_config" "$concurrent_data"
 env -i HOME="$TEMP_DIR/home" PATH="/usr/bin:/bin" \
     OPENCODE_CONFIG_DIR="$concurrent_config" \
     OPENCODE_DATA_DIR="$concurrent_data" \
     HVO_OPENCODE_INIT_PAUSEPOINT=after-marker \
-    HVO_OPENCODE_INIT_PAUSE_SECONDS=1 \
+    HVO_OPENCODE_INIT_PAUSE_READY="$concurrent_ready" \
+    HVO_OPENCODE_INIT_PAUSE_RELEASE="$concurrent_release" \
     bash "$CONFIGURE_SCRIPT" > "$TEMP_DIR/concurrent-first.out" 2>&1 &
 concurrent_first_pid=$!
 for _ in {1..100}; do
-    if compgen -G "$concurrent_config/.hvo-opencode-initialization-v1-*" >/dev/null; then
+    if [[ -e "$concurrent_ready" ]]; then
         break
     fi
     sleep 0.01
 done
-compgen -G "$concurrent_config/.hvo-opencode-initialization-v1-*" >/dev/null
+test -e "$concurrent_ready"
 run_configure "$concurrent_config" "$concurrent_data" > "$TEMP_DIR/concurrent-second.out" 2>&1 &
 concurrent_second_pid=$!
+sleep 0.1
+kill -0 "$concurrent_second_pid"
+: > "$concurrent_release"
 wait "$concurrent_first_pid"
 wait "$concurrent_second_pid"
 test -s "$concurrent_config/opencode.jsonc"
@@ -440,18 +484,36 @@ for failpoint in \
     interrupted_initialize_home="$TEMP_DIR/interrupted-initialize-home-$failpoint"
     mkdir -p "$interrupted_initialize_fixture/.devcontainer" "$interrupted_initialize_home"
     cp "$INITIALIZE_SCRIPT" "$interrupted_initialize_fixture/.devcontainer/initialize.sh"
-    if bash -c 'HOME="$1" HVO_DEVCONTAINER_INIT_FAILPOINT="$2" bash "$3"; status=$?; :; exit "$status"' \
+    set +e
+    bash -c 'HOME="$1" HVO_DEVCONTAINER_INIT_FAILPOINT="$2" bash "$3"; status=$?; :; exit "$status"' \
         _ "$interrupted_initialize_home" "$failpoint" \
         "$interrupted_initialize_fixture/.devcontainer/initialize.sh" \
-        > "$TEMP_DIR/interrupted-initialize-$failpoint.out" 2>&1; then
-        echo "Host initialization failpoint did not interrupt at $failpoint." >&2
-        exit 1
-    fi
+        > "$TEMP_DIR/interrupted-initialize-$failpoint.out" 2>&1
+    initialize_status=$?
+    set -e
+    require_sigkill_status "$initialize_status" "host initialization $failpoint"
     HOME="$interrupted_initialize_home" \
         bash "$interrupted_initialize_fixture/.devcontainer/initialize.sh"
     test -d "$interrupted_initialize_fixture/.devcontainer/state/opencode-worktrees"
     test ! -e "$interrupted_initialize_fixture/.devcontainer/.state-initialization-v1"
 done
+
+concurrent_initialize_fixture="$TEMP_DIR/concurrent-initialize-repo"
+concurrent_initialize_home="$TEMP_DIR/concurrent-initialize-home"
+mkdir -p "$concurrent_initialize_fixture/.devcontainer" "$concurrent_initialize_home"
+cp "$INITIALIZE_SCRIPT" "$concurrent_initialize_fixture/.devcontainer/initialize.sh"
+concurrent_initialize_pids=()
+for index in {1..8}; do
+    HOME="$concurrent_initialize_home" \
+        bash "$concurrent_initialize_fixture/.devcontainer/initialize.sh" \
+        > "$TEMP_DIR/concurrent-initialize-$index.out" 2>&1 &
+    concurrent_initialize_pids+=("$!")
+done
+for concurrent_initialize_pid in "${concurrent_initialize_pids[@]}"; do
+    wait "$concurrent_initialize_pid"
+done
+test -d "$concurrent_initialize_fixture/.devcontainer/state/opencode-worktrees"
+test ! -e "$concurrent_initialize_fixture/.devcontainer/.state-initialization-v1"
 
 nested_initialize_fixture="$TEMP_DIR/nested-initialize-repo"
 nested_initialize_home="$TEMP_DIR/nested-initialize-home"
