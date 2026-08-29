@@ -1,6 +1,14 @@
 using System.Net;
 using FluentAssertions;
+using HVO.SkyMonitor.Common.Security;
+using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -52,9 +60,7 @@ public sealed class PublicNetworkPageIntegrationTests
     [TestMethod]
     public async Task AuthenticatedPublicAndProtectedPagesAreNotCacheable()
     {
-        using var client = await ArtifactRetrievalTests.CreateUserClientAsync(
-            TestUsers.Operator.Username,
-            TestUsers.Operator.Password).ConfigureAwait(false);
+        using var client = await CreateCookieClientAsync().ConfigureAwait(false);
 
         using var publicResponse = await client.GetAsync(new Uri("/", UriKind.Relative)).ConfigureAwait(false);
         using var protectedResponse = await client.GetAsync(new Uri("/app", UriKind.Relative)).ConfigureAwait(false);
@@ -68,5 +74,38 @@ public sealed class PublicNetworkPageIntegrationTests
             string.Join(", ", response.Headers.Vary)
                 .Should().Be("Cookie, Authorization, X-API-Key");
         }
+    }
+
+    [TestMethod]
+    public async Task CookieAndApiKeyOnProtectedPageAreForbidden()
+    {
+        using var client = await CreateCookieClientAsync().ConfigureAwait(false);
+        client.DefaultRequestHeaders.Add(
+            ApiKeyAuthenticationOptions.HeaderName,
+            TestApiKeys.InternalService.Key);
+
+        using var response = await client.GetAsync(new Uri("/app", UriKind.Relative)).ConfigureAwait(false);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    private static async Task<HttpClient> CreateCookieClientAsync()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var user = await services.GetRequiredService<ApplicationDbContext>().Users
+            .SingleAsync(item => item.Email == TestUsers.Operator.Email)
+            .ConfigureAwait(false);
+        var principal = await services.GetRequiredService<IUserClaimsPrincipalFactory<ApplicationUser>>()
+            .CreateAsync(user)
+            .ConfigureAwait(false);
+        var cookieOptions = services.GetRequiredService<IOptionsMonitor<CookieAuthenticationOptions>>()
+            .Get(IdentityConstants.ApplicationScheme);
+        var cookie = cookieOptions.TicketDataFormat.Protect(new AuthenticationTicket(
+            principal,
+            IdentityConstants.ApplicationScheme));
+        var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        client.DefaultRequestHeaders.Add("Cookie", $"{cookieOptions.Cookie.Name}={cookie}");
+        return client;
     }
 }

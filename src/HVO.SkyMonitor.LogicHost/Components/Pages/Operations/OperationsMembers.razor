@@ -1,5 +1,5 @@
 @page "/app/observatories/{ObservatoryId:guid}/members"
-@attribute [Authorize]
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
 
 <PageTitle>Members | Network Operations</PageTitle>
 <header class="mb-4"><p class="text-uppercase text-info small fw-bold mb-1">Observatory authority</p><h1>Members and invitations</h1><p class="text-muted">Roles apply to the whole observatory. The final Owner cannot be removed.</p></header>

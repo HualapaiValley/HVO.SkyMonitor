@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -32,10 +33,13 @@ public sealed class DeviceBootstrapWorkflowTests
     {
         var deviceId = "device-123";
         var identity = new DeviceIdentity(deviceId, "ABCDEF1234", DateTimeOffset.UtcNow);
+        var locationStore = CreateLocationStore();
+        var deployment = locationStore.Object.Active!;
+        var observatoryId = Guid.NewGuid();
 
         var secretsPayload = new DeviceBootstrapSecretsPayload(
             DevicePublicId: Guid.NewGuid(),
-            ObservatoryId: Guid.NewGuid(),
+            ObservatoryId: observatoryId,
             FriendlyName: "Rig A",
             RegistrationToken: "reg-token",
             HeartbeatEndpoint: "/api/device/heartbeat",
@@ -46,7 +50,8 @@ public sealed class DeviceBootstrapWorkflowTests
             {
                 ServiceUrl = new Uri("https://identity.example", UriKind.Absolute)
             },
-            RigProfileEndpoint: "/api/device/profile/rig");
+            RigProfileEndpoint: "/api/device/profile/rig",
+            DeploymentLocationAcknowledgment: CreateAcknowledgment(observatoryId, deployment));
 
         var deviceKey = CreateDeviceKeyBase64();
         var responseDto = CreateBootstrapResponse(deviceKey, secretsPayload);
@@ -104,8 +109,9 @@ public sealed class DeviceBootstrapWorkflowTests
             mockIdentityStore.Object,
             mockSecretStore.Object,
             mockSeeder.Object,
-            CreateLocationStore().Object,
+            locationStore.Object,
             Options.Create(new CameraAgentHostOptions()),
+            TimeProvider.System,
             NullLogger<DeviceBootstrapWorkflow>.Instance);
 
         var result = await workflow.BootstrapAsync(" envelope ", CancellationToken.None).ConfigureAwait(false);
@@ -159,6 +165,7 @@ public sealed class DeviceBootstrapWorkflowTests
             Mock.Of<IDeviceRigProfileSeeder>(),
             CreateLocationStore().Object,
             Options.Create(new CameraAgentHostOptions()),
+            TimeProvider.System,
             logger.Object);
 
         await Assert.ThrowsAsync<HttpRequestException>(
@@ -182,6 +189,7 @@ public sealed class DeviceBootstrapWorkflowTests
             {
                 CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
             }),
+            TimeProvider.System,
             NullLogger<DeviceBootstrapWorkflow>.Instance);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -195,12 +203,42 @@ public sealed class DeviceBootstrapWorkflowTests
     [DataRow("foreign-observatory")]
     [DataRow("wrong-deployment")]
     [DataRow("wrong-source")]
+    [DataRow("unspecified-source")]
+    [DataRow("unspecified-request-source")]
     [DataRow("invalid-contract")]
-    public async Task BootstrapAsync_InvalidV2AcknowledgmentDoesNotPersistOrSeed(string scenario)
+    [DataRow("v1")]
+    [DataRow("unknown-response-field")]
+    [DataRow("missing-secret")]
+    [DataRow("unknown-secret")]
+    [DataRow("wrong-response-device")]
+    [DataRow("expired")]
+    [DataRow("oversized-response")]
+    [DataRow("save-failure")]
+    public async Task BootstrapAsync_InvalidCanonicalResponseDoesNotLeavePartialState(string scenario)
     {
         var now = new DateTimeOffset(2026, 7, 24, 12, 0, 0, TimeSpan.Zero);
         var locationStore = CreateLocationStore();
+        if (scenario == "unspecified-request-source")
+        {
+            locationStore.Setup(item => item.ResolveSourceKind(It.IsAny<DeploymentLocationSnapshot>()))
+                .Returns(DeploymentLocationSourceKind.Unspecified);
+        }
         var deployment = locationStore.Object.Active!;
+        if (scenario is "save-failure" or "expired")
+        {
+            deployment = DeploymentLocationSnapshot.Create(
+                "bootstrap-test-successor",
+                2,
+                "manual test",
+                5,
+                scenario == "expired" ? now.AddHours(-2) : DateTimeOffset.UnixEpoch.AddDays(1),
+                scenario == "expired" ? now.AddHours(-1) : null,
+                35.348,
+                -113.878,
+                520,
+                "America/Phoenix");
+            locationStore.SetupGet(item => item.Candidate).Returns(deployment);
+        }
         var observatoryId = Guid.NewGuid();
         var observatory = ObservatoryLocationSnapshot.Create(
             observatoryId, 1, DateTimeOffset.UnixEpoch,
@@ -210,10 +248,12 @@ public sealed class DeviceBootstrapWorkflowTests
             observatory,
             deployment,
             DeploymentLocationSourceKind.Manual,
-            DeploymentLocationResolutionStatus.Pending,
+            scenario is "save-failure" or "expired"
+                ? DeploymentLocationResolutionStatus.Acknowledged
+                : DeploymentLocationResolutionStatus.Pending,
             "boundary-unconfigured",
             now,
-            null);
+            scenario is "save-failure" or "expired" ? now : null);
         acknowledgment = scenario switch
         {
             "foreign-observatory" => acknowledgment with
@@ -232,6 +272,7 @@ public sealed class DeviceBootstrapWorkflowTests
                     deployment.TimeZoneId)
             },
             "wrong-source" => acknowledgment with { SourceKind = DeploymentLocationSourceKind.Gps },
+            "unspecified-source" => acknowledgment with { SourceKind = DeploymentLocationSourceKind.Unspecified },
             "invalid-contract" => acknowledgment with { Status = (DeploymentLocationResolutionStatus)99 },
             _ => acknowledgment
         };
@@ -246,14 +287,48 @@ public sealed class DeviceBootstrapWorkflowTests
             now.AddHours(1),
             new CentralIdentityOptions(),
             DeploymentLocationAcknowledgment: scenario == "missing" ? null : acknowledgment);
-        var response = CreateBootstrapResponse(CreateDeviceKeyBase64(), secretsPayload, "v2");
+        var response = CreateBootstrapResponse(
+            CreateDeviceKeyBase64(),
+            secretsPayload,
+            scenario == "v1" ? "v1" : "v2",
+            scenario switch
+            {
+                "missing-secret" => payload => payload.Remove("registrationToken"),
+                "unknown-secret" => payload => payload["unexpected"] = true,
+                _ => null
+            });
+        if (scenario == "wrong-response-device")
+        {
+            response = response with { DevicePublicId = Guid.NewGuid() };
+        }
+        HttpContent responseContent;
+        if (scenario == "oversized-response")
+        {
+            responseContent = new StringContent(
+                new string('x', DeviceBootstrapCrypto.MaximumResponseBytes + 1),
+                Encoding.UTF8,
+                "application/json");
+        }
+        else if (scenario == "unknown-response-field")
+        {
+            var responseJson = JsonNode.Parse(JsonSerializer.Serialize(response, SerializerOptions))!.AsObject();
+            responseJson["unexpected"] = true;
+            responseContent = new StringContent(
+                responseJson.ToJsonString(SerializerOptions),
+                Encoding.UTF8,
+                "application/json");
+        }
+        else
+        {
+            responseContent = JsonContent.Create(response);
+        }
         var handler = new Mock<HttpMessageHandler>();
         handler.Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
                 ItExpr.IsAny<HttpRequestMessage>(),
                 ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(response) });
+            .ReturnsAsync(new HttpResponseMessage(HttpStatusCode.OK) { Content = responseContent });
         using var client = new HttpClient(handler.Object) { BaseAddress = new Uri("https://logic.example/") };
         var clientFactory = new Mock<IHttpClientFactory>();
         clientFactory.Setup(item => item.CreateClient(It.IsAny<string>())).Returns(client);
@@ -261,6 +336,11 @@ public sealed class DeviceBootstrapWorkflowTests
         identityStore.Setup(item => item.GetOrCreateAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DeviceIdentity("camera", "code", now));
         var secretStore = new Mock<IDeviceSecretStore>();
+        if (scenario == "save-failure")
+        {
+            secretStore.Setup(item => item.SaveAsync(It.IsAny<DeviceSecrets>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new IOException("simulated persistence failure"));
+        }
         var seeder = new Mock<IDeviceRigProfileSeeder>();
         var workflow = new DeviceBootstrapWorkflow(
             clientFactory.Object,
@@ -269,14 +349,28 @@ public sealed class DeviceBootstrapWorkflowTests
             seeder.Object,
             locationStore.Object,
             Options.Create(new CameraAgentHostOptions()),
+            new FixedTimeProvider(now),
             NullLogger<DeviceBootstrapWorkflow>.Instance);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => workflow.BootstrapAsync("envelope", CancellationToken.None)).ConfigureAwait(false);
+        if (scenario == "oversized-response")
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => workflow.BootstrapAsync("envelope", CancellationToken.None)).ConfigureAwait(false);
+        }
+        else if (scenario == "save-failure")
+        {
+            await Assert.ThrowsAsync<IOException>(
+                () => workflow.BootstrapAsync("envelope", CancellationToken.None)).ConfigureAwait(false);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => workflow.BootstrapAsync("envelope", CancellationToken.None)).ConfigureAwait(false);
+        }
 
         secretStore.Verify(
             item => item.SaveAsync(It.IsAny<DeviceSecrets>(), It.IsAny<CancellationToken>()),
-            Times.Never);
+            scenario == "save-failure" ? Times.Once() : Times.Never());
         seeder.Verify(
             item => item.SeedAsync(
                 It.IsAny<DeviceIdentity>(), It.IsAny<DeviceSecrets>(), It.IsAny<CancellationToken>()),
@@ -312,12 +406,35 @@ public sealed class DeviceBootstrapWorkflowTests
         return store;
     }
 
+    private static DeploymentLocationAcknowledgment CreateAcknowledgment(
+        Guid observatoryId,
+        DeploymentLocationSnapshot deployment)
+        => new(
+            ObservatoryLocationSnapshot.Create(
+                observatoryId,
+                1,
+                DateTimeOffset.UnixEpoch,
+                deployment.LatitudeDegrees,
+                deployment.LongitudeDegrees,
+                deployment.ElevationMeters,
+                deployment.TimeZoneId,
+                null),
+            deployment,
+            DeploymentLocationSourceKind.Manual,
+            DeploymentLocationResolutionStatus.Pending,
+            "boundary-unconfigured",
+            DateTimeOffset.UtcNow,
+            null);
+
     private static DeviceBootstrapResponseDto CreateBootstrapResponse(
         string deviceKeyBase64,
         DeviceBootstrapSecretsPayload secrets,
-        string envelopeVersion = "v1")
+        string envelopeVersion = "v2",
+        Action<JsonObject>? mutateSecrets = null)
     {
-        var plaintext = JsonSerializer.SerializeToUtf8Bytes(secrets, SerializerOptions);
+        var secretsJson = JsonNode.Parse(JsonSerializer.Serialize(secrets, SerializerOptions))!.AsObject();
+        mutateSecrets?.Invoke(secretsJson);
+        var plaintext = JsonSerializer.SerializeToUtf8Bytes(secretsJson, SerializerOptions);
 
         var keyBytes = Convert.FromBase64String(deviceKeyBase64);
         Span<byte> nonce = stackalloc byte[12];
@@ -343,5 +460,10 @@ public sealed class DeviceBootstrapWorkflowTests
             EnvelopeVersion: envelopeVersion,
             DeviceKey: deviceKeyBase64,
             Payload: payload);
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

@@ -18,7 +18,7 @@ public partial class OperationsCaptures : ComponentBase
     internal bool IsLoading { get; private set; } = true;
     protected override async Task OnParametersSetAsync()
     {
-        userId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        userId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         items.Clear();
         if (userId is not null) await LoadAsync(null);
         IsLoading = false;

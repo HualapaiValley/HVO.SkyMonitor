@@ -17,7 +17,7 @@ public partial class OperationsObservatory : ComponentBase
     internal bool IsLoadingMoreRegistrations { get; private set; }
     protected override async Task OnParametersSetAsync()
     {
-        userId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        userId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         if (userId is not null) Detail = await Operations.GetObservatoryDetailAsync(userId, ObservatoryId);
     }
 

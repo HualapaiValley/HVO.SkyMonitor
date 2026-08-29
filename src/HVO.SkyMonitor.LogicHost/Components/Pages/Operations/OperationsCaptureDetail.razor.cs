@@ -54,7 +54,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
         StatusMessage = null;
         MaterializationMessage = null;
         principal = (await AuthenticationStateTask).User;
-        var id = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+        var id = CentralArtifactCredentialAccess.GetOwnerId(principal);
         var requestedCaptureId = CaptureId;
         try
         {
@@ -170,7 +170,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
 
     internal async Task LoadTraceAsync()
     {
-        var userId = principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+        var userId = principal is null ? null : CentralArtifactCredentialAccess.GetOwnerId(principal);
         if (Detail is null || Trace is not null || userId is null || IsLoadingTrace) return;
         var requestedCaptureId = CaptureId;
         IsLoadingTrace = true;
@@ -212,7 +212,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
 
     internal async Task SetArtifactReleaseAsync(OperationsArtifactSummary artifact, bool release)
     {
-        var actorUserId = principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actorUserId = principal is null ? null : CentralArtifactCredentialAccess.GetOwnerId(principal);
         if (Detail is null || actorUserId is null) return;
         IsBusy = true;
         try
@@ -247,7 +247,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
 
     internal async Task LoadMoreArtifactsAsync()
     {
-        var userId = principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+        var userId = principal is null ? null : CentralArtifactCredentialAccess.GetOwnerId(principal);
         var detail = Detail;
         if (userId is null || detail?.ArtifactsNextCursor is not { } cursor || IsLoadingMoreArtifacts) return;
         var requestedCaptureId = CaptureId;
@@ -282,7 +282,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
 
     private async Task LoadAsync(Guid requestedCaptureId)
     {
-        var id = principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+        var id = principal is null ? null : CentralArtifactCredentialAccess.GetOwnerId(principal);
         var detail = id is null ? null : await Operations.GetCaptureAsync(id, requestedCaptureId);
         if (CaptureId == requestedCaptureId)
         {

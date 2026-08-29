@@ -1,5 +1,5 @@
 @page "/app/observatories/manage"
-@attribute [Authorize]
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
 
 <div class="container py-4">
     <div class="d-flex align-items-center justify-content-between mb-3">

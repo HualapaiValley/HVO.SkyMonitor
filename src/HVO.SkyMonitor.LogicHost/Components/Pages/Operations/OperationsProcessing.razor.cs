@@ -25,7 +25,7 @@ public partial class OperationsProcessing : ComponentBase
     internal string? StatusMessage { get; private set; }
     protected override async Task OnInitializedAsync()
     {
-        userId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        userId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         if (userId is not null)
         {
             string? cursor = null;

@@ -12,6 +12,7 @@ using System.Security.Claims;
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
@@ -1065,9 +1066,17 @@ public sealed class ArtifactIngestTests
         });
         await materializationDb.SaveChangesAsync().ConfigureAwait(false);
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, user.Id)], IdentityConstants.ApplicationScheme));
+            [
+                new Claim(ClaimTypes.NameIdentifier, user.Id),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ],
+            IdentityConstants.ApplicationScheme));
         var viewerPrincipal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, viewer.Id)], IdentityConstants.ApplicationScheme));
+            [
+                new Claim(ClaimTypes.NameIdentifier, viewer.Id),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ],
+            IdentityConstants.ApplicationScheme));
         var materializer = materializationScope.ServiceProvider.GetRequiredService<ICentralPresentationMaterializer>();
         using (var redisOutageFactory = fixture.Factory.WithWebHostBuilder(builder =>
                    builder.ConfigureTestServices(services =>

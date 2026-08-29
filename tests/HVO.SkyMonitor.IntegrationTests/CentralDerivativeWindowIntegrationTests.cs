@@ -1,5 +1,6 @@
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
@@ -476,9 +477,10 @@ public sealed class CentralDerivativeWindowIntegrationTests
                     .Where(item => item.CentralDerivativeJobId == derivativeLease.JobId)
                     .Select(item => item.CentralTransientEventId).SingleAsync().ConfigureAwait(false);
                 var principal = new ClaimsPrincipal(new ClaimsIdentity([
-                    new Claim(ClaimTypes.NameIdentifier, "derivative-test-admin"),
+                    new Claim("sub", "derivative-test-admin"),
+                    new Claim("account_type", "User"),
                     new Claim("scope", "api.admin")
-                ], "test"));
+                ], CanonicalCredentialClaims.BearerAuthenticationType));
                 var retrieval = scope.ServiceProvider.GetRequiredService<ICentralTransientDerivativeRetrievalService>();
                 foreach (var intent in intents)
                 {
@@ -799,11 +801,10 @@ public sealed class CentralDerivativeWindowIntegrationTests
         var current = await derivativeDb.CentralTransientEventCurrent.AsNoTracking()
             .SingleAsync(item => item.CentralTransientEventId == transientEvent.Id).ConfigureAwait(false);
         var admin = new ClaimsPrincipal(new ClaimsIdentity([
-            new Claim(ClaimTypes.NameIdentifier, "boundary-release-admin"),
             new Claim("sub", "boundary-release-admin"),
             new Claim("scope", "api.admin"),
             new Claim("account_type", "User")
-        ], "test"));
+        ], CanonicalCredentialClaims.BearerAuthenticationType));
         var review = await new CentralTransientReviewService(
                 derivativeDb,
                 new CentralTransientEventVersionAppender(derivativeDb),

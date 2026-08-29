@@ -43,7 +43,7 @@ public partial class OperationsEvents : ComponentBase
         CentralTransientPublicationAuthority authority,
         bool release)
     {
-        var actorUserId = principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actorUserId = principal is null ? null : CentralArtifactCredentialAccess.GetOwnerId(principal);
         if (actorUserId is null || IsBusy) return;
         IsBusy = true;
         try

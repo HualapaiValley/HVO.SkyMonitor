@@ -23,6 +23,7 @@ using HVO.SkyMonitor.Common.Configuration;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
 using HVO.SkyMonitor.LogicHost.Hosting;
 using HVO.SkyMonitor.LogicHost.Middleware;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -487,6 +488,7 @@ public sealed partial class Program
         .AddRoles<IdentityRole>()
         .AddEntityFrameworkStores<ApplicationDbContext>()
         .AddSignInManager()
+        .AddClaimsPrincipalFactory<CanonicalUserClaimsPrincipalFactory>()
         .AddDefaultTokenProviders();
 
         builder.Services.AddSingleton<IEmailSender<ApplicationUser>, SmtpIdentityEmailSender>();
@@ -621,66 +623,59 @@ public sealed partial class Program
         {
             options.AddPolicy(AuthorizationPolicyNames.ApiKeyOrCookie, policy =>
             {
-                policy.AddAuthenticationSchemes(
-                    IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme,
-                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context => HasCookieOrApiKeyCredential(context.User));
             });
 
             options.AddPolicy(AuthorizationPolicyNames.ApiKeyRead, policy =>
             {
-                policy.AddAuthenticationSchemes(
-                    IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme,
-                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
-                policy.RequireAssertion(context =>
-                {
-                    var authScheme = context.User.FindFirst(ApiKeyClaims.AuthenticationType);
-                    if (authScheme is null)
-                    {
-                        return true; // Cookie auth - allow
-                    }
-                    var accessLevel = context.User.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
-                    return accessLevel is not null &&
-                        (accessLevel == ApiKeyAccessLevel.Read.ToString() ||
-                         accessLevel == ApiKeyAccessLevel.ReadWrite.ToString());
-                });
+                policy.RequireAssertion(context => HasReadCredential(context.User));
             });
 
             options.AddPolicy(AuthorizationPolicyNames.ApiKeyReadWrite, policy =>
             {
-                policy.AddAuthenticationSchemes(
-                    IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme,
-                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                AddCredentialAuthenticationSchemes(policy);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context => HasWriteCredential(context.User));
+            });
+
+            options.AddPolicy(AuthorizationPolicyNames.CanonicalBearer, policy =>
+            {
+                AddCredentialAuthenticationSchemes(policy);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context => HasCanonicalBearerCredential(context.User));
+            });
+
+            options.AddPolicy(AuthorizationPolicyNames.BearerAdmin, policy =>
+            {
+                AddCredentialAuthenticationSchemes(policy);
+                policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context => HasBearerAdminCredential(context.User));
+            });
+
+            options.AddPolicy(AuthorizationPolicyNames.InteractiveUser, policy =>
+            {
+                policy.AddAuthenticationSchemes(IdentityConstants.ApplicationScheme);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
-                {
-                    var authScheme = context.User.FindFirst(ApiKeyClaims.AuthenticationType);
-                    if (authScheme is null)
-                    {
-                        return true; // Cookie auth - allow
-                    }
-                    var accessLevel = context.User.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
-                    return accessLevel == ApiKeyAccessLevel.ReadWrite.ToString();
-                });
+                    CentralArtifactCredentialAccess.GetOwnerId(context.User) is not null);
             });
 
             options.AddPolicy(AuthorizationPolicyNames.PlatformEditorialWrite, policy =>
             {
                 policy.AddAuthenticationSchemes(IdentityConstants.ApplicationScheme);
                 policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context =>
+                    CentralArtifactCredentialAccess.HasSingleCredentialIdentity(context.User));
                 policy.RequireRole(AuthorizationRoleNames.PlatformEditor);
             });
 
             options.AddPolicy("OwnerLocationWrite", policy =>
             {
-                policy.AddAuthenticationSchemes(
-                    IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme,
-                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
                 {
@@ -689,69 +684,63 @@ public sealed partial class Program
                     {
                         return false;
                     }
-                    if (identity.FindFirst(ApiKeyClaims.AuthenticationType) is not null)
+                    if (CentralArtifactCredentialAccess.IsApiKey(identity))
                     {
-                        return identity.FindFirst(ApiKeyClaims.AccessLevel)?.Value == nameof(ApiKeyAccessLevel.ReadWrite);
+                        return CentralArtifactCredentialAccess.GetApiKeyAccessLevel(context.User)
+                            == nameof(ApiKeyAccessLevel.ReadWrite);
                     }
-                    return !identity.Claims.Any(claim => claim.Type == "scope")
-                        || CentralArtifactCredentialAccess.HasScope(context.User, "api.owner.write")
-                        || CentralArtifactCredentialAccess.HasScope(context.User, "api.admin");
+                    return CanonicalCredentialClaims.IsCookie(identity)
+                        || HasBearerWriteScope(context.User);
                 });
             });
 
             // Phase 3: Account type-based policies
             options.AddPolicy("RequireSystemAccount", policy =>
             {
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
                 {
-                    var accountType = context.User.FindFirst("account_type")?.Value;
-                    return accountType == "System";
+                    return CentralArtifactCredentialAccess.IsSystem(context.User);
                 });
             });
 
             options.AddPolicy("RequireUserAccount", policy =>
             {
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
                 {
-                    var accountType = context.User.FindFirst("account_type")?.Value;
-                    return accountType == "User" || accountType == null; // null for backward compatibility
+                    var identity = CentralArtifactCredentialAccess.GetSingleCredentialIdentity(context.User);
+                    return identity is not null && !CentralArtifactCredentialAccess.IsSystem(context.User);
                 });
             });
 
             options.AddPolicy("DerivativeJobsRead", policy =>
             {
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
-                policy.RequireAssertion(context => context.User.Claims
-                    .Where(claim => claim.Type == "scope")
-                    .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-                    .Contains("api.admin", StringComparer.Ordinal));
+                policy.RequireAssertion(context =>
+                    CentralArtifactCredentialAccess.HasSingleCredentialIdentity(context.User)
+                    && CentralArtifactCredentialAccess.HasScope(context.User, "api.admin"));
             });
             options.AddPolicy("ArtifactIngest", policy =>
             {
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
-                    string.Equals(context.User.FindFirst("account_type")?.Value, "System", StringComparison.Ordinal)
-                    && context.User.Claims
-                        .Where(claim => claim.Type == "scope")
-                        .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-                        .Contains("api.frames", StringComparer.Ordinal));
+                    CentralArtifactCredentialAccess.IsSystem(context.User)
+                    && CentralArtifactCredentialAccess.HasScope(context.User, "api.frames"));
             });
             options.AddPolicy("ArtifactRetrieval", policy =>
             {
-                policy.AddAuthenticationSchemes(
-                    IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme,
-                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
+                policy.RequireAssertion(context => HasArtifactRetrievalCredential(context.User));
             });
             options.AddPolicy("TransientEventsRead", policy =>
             {
-                policy.AddAuthenticationSchemes(
-                    IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme,
-                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
                     CentralArtifactCredentialAccess.HasSingleCredentialIdentity(context.User) &&
@@ -760,29 +749,26 @@ public sealed partial class Program
             });
             options.AddPolicy("TransientReview", policy =>
             {
-                policy.AddAuthenticationSchemes(
-                    IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme,
-                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
                 {
                     var identity = CentralArtifactCredentialAccess.GetSingleCredentialIdentity(context.User);
-                    if (identity is null ||
-                        string.Equals(identity.FindFirst("account_type")?.Value, "System", StringComparison.Ordinal))
+                    if (identity is null || CentralArtifactCredentialAccess.IsSystem(context.User))
                     {
                         return false;
                     }
-                    var apiKeyAccess = identity.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
-                    return apiKeyAccess is null || apiKeyAccess == nameof(ApiKeyAccessLevel.ReadWrite);
+                    return CanonicalCredentialClaims.IsCookie(identity)
+                        || CentralArtifactCredentialAccess.IsApiKey(identity)
+                            && CentralArtifactCredentialAccess.GetApiKeyAccessLevel(context.User)
+                                == nameof(ApiKeyAccessLevel.ReadWrite)
+                        || CanonicalCredentialClaims.IsBearer(identity)
+                            && HasBearerWriteScope(context.User);
                 });
             });
             options.AddPolicy("TransientAdmin", policy =>
             {
-                policy.AddAuthenticationSchemes(
-                    IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationOptions.AuthenticationScheme,
-                    OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+                AddCredentialAuthenticationSchemes(policy);
                 policy.RequireAuthenticatedUser();
                 policy.RequireAssertion(context =>
                     CentralArtifactCredentialAccess.HasSingleCredentialIdentity(context.User) &&
@@ -996,6 +982,16 @@ public sealed partial class Program
         app.UseRateLimiter();
 
         app.UseAuthentication();
+        app.Use(async (context, next) =>
+        {
+            if (HasCookieWithCompetingCredential(context))
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
+
+            await next(context).ConfigureAwait(false);
+        });
         app.UseMiddleware<DynamicPageCachePolicyMiddleware>();
         app.UseAuthorization();
         app.UseMiddleware<OperatorUiResponseMetricsMiddleware>();
@@ -1041,6 +1037,85 @@ public sealed partial class Program
         credentials.Scopes.Count > 0 &&
         credentials.Scopes.All(static scope => !string.IsNullOrWhiteSpace(scope));
     }
+
+    private static bool HasCookieOrApiKeyCredential(System.Security.Claims.ClaimsPrincipal principal)
+        => CentralArtifactCredentialAccess.GetSingleCredentialIdentity(principal) is { } identity
+            && (CanonicalCredentialClaims.IsCookie(identity) || CanonicalCredentialClaims.IsApiKey(identity));
+
+    private static void AddCredentialAuthenticationSchemes(AuthorizationPolicyBuilder policy)
+        => policy.AddAuthenticationSchemes(
+            IdentityConstants.ApplicationScheme,
+            ApiKeyAuthenticationOptions.AuthenticationScheme,
+            OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
+
+    private static bool HasCookieWithCompetingCredential(HttpContext context)
+        => context.User.Identities.Any(CanonicalCredentialClaims.IsCookie)
+            && (context.Request.Headers.ContainsKey(ApiKeyAuthenticationOptions.HeaderName)
+                || context.Request.Headers.Authorization.Any(static value =>
+                    value is not null && value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)));
+
+    private static bool HasReadCredential(System.Security.Claims.ClaimsPrincipal principal)
+    {
+        var identity = CentralArtifactCredentialAccess.GetSingleCredentialIdentity(principal);
+        if (identity is null)
+        {
+            return false;
+        }
+
+        if (CanonicalCredentialClaims.IsCookie(identity))
+        {
+            return true;
+        }
+        if (CanonicalCredentialClaims.IsApiKey(identity))
+        {
+            return CentralArtifactCredentialAccess.GetApiKeyAccessLevel(principal) is
+                nameof(ApiKeyAccessLevel.Read) or nameof(ApiKeyAccessLevel.ReadWrite);
+        }
+        return HasBearerReadScope(principal);
+    }
+
+    private static bool HasWriteCredential(System.Security.Claims.ClaimsPrincipal principal)
+    {
+        var identity = CentralArtifactCredentialAccess.GetSingleCredentialIdentity(principal);
+        if (identity is null || CentralArtifactCredentialAccess.IsSystem(principal))
+        {
+            return false;
+        }
+
+        return CanonicalCredentialClaims.IsCookie(identity)
+            || CanonicalCredentialClaims.IsApiKey(identity)
+                && CentralArtifactCredentialAccess.GetApiKeyAccessLevel(principal)
+                    == nameof(ApiKeyAccessLevel.ReadWrite)
+            || CanonicalCredentialClaims.IsBearer(identity) && HasBearerWriteScope(principal);
+    }
+
+    private static bool HasCanonicalBearerCredential(System.Security.Claims.ClaimsPrincipal principal)
+        => CentralArtifactCredentialAccess.GetSingleCredentialIdentity(principal) is { } identity
+            && CanonicalCredentialClaims.IsBearer(identity);
+
+    private static bool HasBearerAdminCredential(System.Security.Claims.ClaimsPrincipal principal)
+        => CentralArtifactCredentialAccess.GetSingleCredentialIdentity(principal) is { } identity
+            && CanonicalCredentialClaims.IsBearer(identity)
+            && CentralArtifactCredentialAccess.HasScope(principal, "api.admin");
+
+    private static bool HasArtifactRetrievalCredential(System.Security.Claims.ClaimsPrincipal principal)
+    {
+        var identity = CentralArtifactCredentialAccess.GetSingleCredentialIdentity(principal);
+        return identity is not null
+            && (CanonicalCredentialClaims.IsCookie(identity)
+                || CanonicalCredentialClaims.IsApiKey(identity)
+                || CanonicalCredentialClaims.IsBearer(identity)
+                    && (HasBearerReadScope(principal)
+                        || CentralArtifactCredentialAccess.HasScope(principal, "api.artifacts.read")));
+    }
+
+    private static bool HasBearerReadScope(System.Security.Claims.ClaimsPrincipal principal)
+        => CentralArtifactCredentialAccess.HasScope(principal, "api.viewer")
+            || CentralArtifactCredentialAccess.HasScope(principal, "api.admin");
+
+    private static bool HasBearerWriteScope(System.Security.Claims.ClaimsPrincipal principal)
+        => CentralArtifactCredentialAccess.HasScope(principal, "api.owner.write")
+            || CentralArtifactCredentialAccess.HasScope(principal, "api.admin");
 
     private static partial class Log
     {

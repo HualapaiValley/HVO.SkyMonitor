@@ -254,9 +254,7 @@ public partial class RegisterDeviceWizard : ComponentBase
 
         var authState = await AuthenticationStateTask;
         var user = authState.User;
-        var userId = user.FindFirstValue(ClaimTypes.NameIdentifier)
-            ?? user.FindFirstValue("sub")
-            ?? user.Identity?.Name
+        var userId = CentralArtifactCredentialAccess.GetOwnerId(user)
             ?? throw new InvalidOperationException("User identifier is missing required claims.");
 
         var displayName = user.FindFirstValue("name")
@@ -264,8 +262,7 @@ public partial class RegisterDeviceWizard : ComponentBase
             ?? user.FindFirstValue(ClaimTypes.Email)
             ?? userId;
 
-        var email = user.FindFirstValue(ClaimTypes.Email)
-            ?? user.FindFirstValue("preferred_username");
+        var email = user.FindFirstValue(ClaimTypes.Email);
 
         ownerContext = new OwnerContext(userId, displayName, email);
         return ownerContext;

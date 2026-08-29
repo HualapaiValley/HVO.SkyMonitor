@@ -30,16 +30,21 @@ public sealed class DefaultApiKeyAuthenticationHandler : AuthenticationHandler<A
             return AuthenticateResult.NoResult();
         }
 
-        var providedApiKey = apiKeyHeaderValues.FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(providedApiKey))
+        if (apiKeyHeaderValues.Count != 1 || string.IsNullOrWhiteSpace(apiKeyHeaderValues[0]))
         {
-            return AuthenticateResult.NoResult();
+            return AuthenticateResult.Fail("Exactly one API key is required");
         }
+        var providedApiKey = apiKeyHeaderValues[0]!;
 
         var validationResult = await _apiKeyValidator.ValidateAsync(providedApiKey).ConfigureAwait(false);
         if (!validationResult.IsValid)
         {
             return AuthenticateResult.Fail("Invalid API key");
+        }
+        if (string.IsNullOrWhiteSpace(validationResult.NameIdentifier)
+            || validationResult.AccountType is not ("User" or "System"))
+        {
+            return AuthenticateResult.Fail("API key identity is incomplete");
         }
 
         var claims = new List<Claim>
@@ -48,13 +53,9 @@ public sealed class DefaultApiKeyAuthenticationHandler : AuthenticationHandler<A
             new(ApiKeyClaims.ApiKeyId, validationResult.KeyId ?? string.Empty),
             new(ApiKeyClaims.AccessLevel, validationResult.AccessLevel.ToString()),
             new(ApiKeyClaims.AuthenticationType, ApiKeyAuthenticationOptions.AuthenticationScheme),
-            new("account_type", validationResult.AccountType) // Add account type claim
+            new("account_type", validationResult.AccountType)
         };
-
-        if (!string.IsNullOrWhiteSpace(validationResult.NameIdentifier))
-        {
-            claims.Add(new Claim(ClaimTypes.NameIdentifier, validationResult.NameIdentifier));
-        }
+        claims.Add(new Claim(ClaimTypes.NameIdentifier, validationResult.NameIdentifier));
 
         if (!string.IsNullOrWhiteSpace(validationResult.Email))
         {
@@ -84,7 +85,7 @@ public sealed class ApiKeyValidationResult
     public string? Email { get; init; }
     public ApiKeyAccessLevel AccessLevel { get; init; } = ApiKeyAccessLevel.Read;
     public Guid? ObservatoryId { get; init; }
-    public string AccountType { get; init; } = "User"; // Default to User for backward compatibility
+    public string? AccountType { get; init; }
 }
 
 public interface IApiKeyValidator

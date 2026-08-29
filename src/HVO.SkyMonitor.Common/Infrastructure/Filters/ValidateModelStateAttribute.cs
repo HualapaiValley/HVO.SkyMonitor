@@ -16,7 +16,10 @@ public sealed class ValidateModelStateAttribute : ActionFilterAttribute
             return;
         }
 
-        var problemDetails = new ValidationProblemDetails(context.ModelState)
+        var problemDetails = new ValidationProblemDetails(new Dictionary<string, string[]>
+        {
+            ["request"] = ["The request is invalid."]
+        })
         {
             Status = StatusCodes.Status400BadRequest,
             Title = "The request could not be processed due to validation errors.",

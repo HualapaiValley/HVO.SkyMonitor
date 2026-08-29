@@ -1,5 +1,5 @@
 @page "/app/cameras/{CameraId:guid}"
-@attribute [Authorize]
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
 
 <PageTitle>@(Camera?.Name ?? "Logical Camera") | Network Operations</PageTitle>
 <header class="mb-4"><p class="text-uppercase text-info small fw-bold mb-1">Stable logical camera</p><h1>@(Camera?.Name ?? "Camera timeline")</h1><p class="text-muted">Captures remain attached across immutable CameraAgent installation replacements.</p></header>

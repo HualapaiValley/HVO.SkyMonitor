@@ -14,6 +14,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Exposure;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
@@ -5081,11 +5082,10 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private static ClaimsPrincipal CreatePrincipal(string actor)
         => new(new ClaimsIdentity(
         [
-            new Claim(ClaimTypes.NameIdentifier, actor),
             new Claim("sub", actor),
             new Claim("account_type", "User"),
             new Claim("scope", "api.viewer api.admin")
-        ], "Issue250Evidence"));
+        ], CanonicalCredentialClaims.BearerAuthenticationType));
 
     private static Issue250Database CreateDatabase(IntegrationTestFixture fixture, string scenario)
     {

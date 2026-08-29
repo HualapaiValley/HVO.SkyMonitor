@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
@@ -529,11 +530,10 @@ public sealed class CentralTransientReviewPerformanceTests
 
     private static ClaimsPrincipal AdminPrincipal()
         => new(new ClaimsIdentity([
-            new Claim(ClaimTypes.NameIdentifier, "issue-118-performance-admin"),
             new Claim("sub", "issue-118-performance-admin"),
             new Claim("account_type", "User"),
             new Claim("scope", "api.viewer api.admin")
-        ], "Performance"));
+        ], CanonicalCredentialClaims.BearerAuthenticationType));
 
     private static double Percentile(double[] sorted, double percentile)
         => sorted[Math.Clamp((int)Math.Ceiling(sorted.Length * percentile) - 1, 0, sorted.Length - 1)];

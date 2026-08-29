@@ -38,7 +38,7 @@ public partial class OperationsPublication : ComponentBase
 
     protected override async Task OnParametersSetAsync()
     {
-        actorUserId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        actorUserId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         await LoadAsync();
         IsLoading = false;
     }

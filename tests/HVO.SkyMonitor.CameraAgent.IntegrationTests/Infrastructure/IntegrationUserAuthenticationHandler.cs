@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using HVO.SkyMonitor.CameraAgent.Data;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
@@ -27,7 +28,11 @@ internal sealed class IntegrationUserAuthenticationHandler(
         {
             return AuthenticateResult.NoResult();
         }
-        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, userId) };
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, userId),
+            new(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+        };
         var user = await userManager.FindByIdAsync(userId).ConfigureAwait(false);
         if (user is not null)
         {
@@ -41,7 +46,7 @@ internal sealed class IntegrationUserAuthenticationHandler(
         }
         var identity = new ClaimsIdentity(
             claims,
-            SchemeName);
+            IdentityConstants.ApplicationScheme);
         return AuthenticateResult.Success(
             new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName));
     }

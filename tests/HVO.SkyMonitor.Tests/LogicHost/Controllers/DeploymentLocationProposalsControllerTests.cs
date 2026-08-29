@@ -5,6 +5,7 @@ using HVO.SkyMonitor.LogicHost.Controllers;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Controllers;
@@ -107,7 +108,9 @@ public sealed class DeploymentLocationProposalsControllerTests
         IDeploymentLocationAuthorityService service,
         string ownerUserId)
     {
-        var identity = new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, ownerUserId)], "test");
+        var identity = new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, ownerUserId), new Claim("account_type", "User")],
+            IdentityConstants.ApplicationScheme);
         return new DeploymentLocationProposalsController(service)
         {
             ControllerContext = new ControllerContext

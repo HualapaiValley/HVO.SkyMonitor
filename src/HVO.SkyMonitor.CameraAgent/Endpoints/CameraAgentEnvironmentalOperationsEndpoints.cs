@@ -185,7 +185,7 @@ internal static class CameraAgentEnvironmentalOperationsEndpoints
         EnvironmentalOnDemandAcquisitionService service,
         CancellationToken cancellationToken)
     {
-        var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actor = CameraAgentCredentialAccess.GetOwnerId(context.User);
         var key = context.Request.Headers["Idempotency-Key"].ToString();
         if (string.IsNullOrWhiteSpace(actor))
         {

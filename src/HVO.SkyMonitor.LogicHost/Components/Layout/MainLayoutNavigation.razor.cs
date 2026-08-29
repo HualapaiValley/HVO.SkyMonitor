@@ -99,8 +99,6 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
     private static string GetUserEmail(ClaimsPrincipal principal)
     {
         return principal.FindFirstValue(ClaimTypes.Email)
-            ?? principal.FindFirstValue("preferred_username")
-            ?? principal.Identity?.Name
             ?? "unknown";
     }
 

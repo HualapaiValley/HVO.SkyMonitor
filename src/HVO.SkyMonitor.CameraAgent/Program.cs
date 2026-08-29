@@ -171,6 +171,7 @@ public class Program
             options.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
         })
         .AddEntityFrameworkStores<ApplicationDbContext>()
+        .AddClaimsPrincipalFactory<CanonicalLocalUserClaimsPrincipalFactory>()
         .AddSignInManager()
         .AddDefaultTokenProviders();
 

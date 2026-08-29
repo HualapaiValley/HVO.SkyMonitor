@@ -5,6 +5,9 @@ public static class AuthorizationPolicyNames
     public const string ApiKeyOrCookie = "ApiKeyOrCookie";
     public const string ApiKeyRead = "ApiKeyRead";
     public const string ApiKeyReadWrite = "ApiKeyReadWrite";
+    public const string CanonicalBearer = "CanonicalBearer";
+    public const string BearerAdmin = "BearerAdmin";
+    public const string InteractiveUser = "InteractiveUser";
     public const string PlatformEditorialWrite = "PlatformEditorialWrite";
 }
 

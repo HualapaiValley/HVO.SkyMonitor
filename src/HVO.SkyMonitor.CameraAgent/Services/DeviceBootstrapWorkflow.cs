@@ -24,6 +24,7 @@ internal sealed class DeviceBootstrapWorkflow(
     IDeviceRigProfileSeeder rigProfileSeeder,
     IDeploymentLocationStore deploymentLocationStore,
     IOptions<CameraAgentHostOptions> options,
+    TimeProvider timeProvider,
     ILogger<DeviceBootstrapWorkflow> logger) : IDeviceBootstrapWorkflow
 {
     public async Task<DeviceSecrets> BootstrapAsync(string envelope, CancellationToken cancellationToken = default)
@@ -45,6 +46,10 @@ internal sealed class DeviceBootstrapWorkflow(
             ?? throw new InvalidOperationException("Deployment location is not initialized.");
         var deploymentLocation = deploymentLocationStore.Candidate ?? activeDeploymentLocation;
         var deploymentLocationSourceKind = deploymentLocationStore.ResolveSourceKind(deploymentLocation);
+        if (deploymentLocationSourceKind == DeploymentLocationSourceKind.Unspecified)
+        {
+            throw new InvalidOperationException("Deployment location source evidence is required.");
+        }
         var request = new DeviceBootstrapRequestDto(
             identity.DeviceId,
             envelope.Trim(),
@@ -64,25 +69,48 @@ internal sealed class DeviceBootstrapWorkflow(
             response.EnsureSuccessStatusCode();
         }
 
-        var payload = await response.Content.ReadFromJsonAsync<DeviceBootstrapResponseDto>(cancellationToken: cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("Bootstrap response could not be parsed.");
+        await response.Content.LoadIntoBufferAsync(DeviceBootstrapCrypto.MaximumResponseBytes, cancellationToken)
+            .ConfigureAwait(false);
+        DeviceBootstrapResponseDto payload;
+        try
+        {
+            payload = await response.Content.ReadFromJsonAsync<DeviceBootstrapResponseDto>(
+                DeviceBootstrapCrypto.SerializerOptions,
+                cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Bootstrap response could not be parsed.");
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or NotSupportedException)
+        {
+            throw new InvalidOperationException("Bootstrap response could not be parsed.");
+        }
+        if (!string.Equals(payload.EnvelopeVersion, "v2", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The bootstrap response envelope version is not supported.");
+        }
 
         var secretsPayload = DeviceBootstrapCrypto.Decrypt(payload.Payload, payload.DeviceKey);
         var acknowledgment = secretsPayload.DeploymentLocationAcknowledgment;
-        if (string.Equals(payload.EnvelopeVersion, "v2", StringComparison.Ordinal) && acknowledgment is null)
+        if (acknowledgment is null)
         {
             throw new InvalidOperationException("The v2 bootstrap response omitted its deployment-location acknowledgment.");
         }
-        if (acknowledgment is not null
-            && (!acknowledgment.Validate().IsValid
+        if (!acknowledgment.Validate().IsValid
+                || payload.DevicePublicId != secretsPayload.DevicePublicId
                 || acknowledgment.Observatory.ObservatoryId != secretsPayload.ObservatoryId
+                || acknowledgment.SourceKind == DeploymentLocationSourceKind.Unspecified
                 || !string.Equals(
                     acknowledgment.Deployment.CanonicalSha256,
                     deploymentLocation.CanonicalSha256,
                     StringComparison.OrdinalIgnoreCase)
-                || acknowledgment.SourceKind != request.DeploymentLocationSourceKind))
+                || acknowledgment.SourceKind != request.DeploymentLocationSourceKind)
         {
             throw new InvalidOperationException("The bootstrap deployment-location acknowledgment is invalid.");
+        }
+        if (acknowledgment.Status == DeploymentLocationResolutionStatus.Acknowledged
+            && acknowledgment.Deployment.EffectiveUntilUtc is { } until
+            && until <= timeProvider.GetUtcNow())
+        {
+            throw new InvalidOperationException("The bootstrap deployment-location acknowledgment has expired.");
         }
 
         var secrets = new DeviceSecrets(
@@ -99,20 +127,17 @@ internal sealed class DeviceBootstrapWorkflow(
             secretsPayload.RigProfileEndpoint,
             acknowledgment);
 
-        if (acknowledgment is
-            {
-                Status: DeploymentLocationResolutionStatus.Acknowledged
-            } acknowledged
+        await secretStore.SaveAsync(secrets, cancellationToken).ConfigureAwait(false);
+
+        if (acknowledgment.Status == DeploymentLocationResolutionStatus.Acknowledged
             && !string.Equals(
-                acknowledged.Deployment.CanonicalSha256,
+                acknowledgment.Deployment.CanonicalSha256,
                 activeDeploymentLocation.CanonicalSha256,
                 StringComparison.OrdinalIgnoreCase))
         {
-            await deploymentLocationStore.StageAsync(acknowledged.Deployment, cancellationToken)
+            await deploymentLocationStore.StageAsync(acknowledgment.Deployment, cancellationToken)
                 .ConfigureAwait(false);
         }
-
-        await secretStore.SaveAsync(secrets, cancellationToken).ConfigureAwait(false);
 
         await rigProfileSeeder.SeedAsync(identity, secrets, cancellationToken).ConfigureAwait(false);
         return secrets;

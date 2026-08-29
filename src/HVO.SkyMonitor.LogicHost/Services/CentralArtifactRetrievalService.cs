@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 
@@ -445,70 +446,55 @@ internal enum CentralArtifactLookupStatus
 
 internal static class CentralArtifactCredentialAccess
 {
+    internal const string BearerAuthenticationType = CanonicalCredentialClaims.BearerAuthenticationType;
+
     public static bool HasSingleCredentialIdentity(ClaimsPrincipal principal)
-        => GetSingleCredentialIdentity(principal) is not null;
+        => CanonicalCredentialClaims.HasSingleIdentity(principal);
 
     public static bool HasOwnerCredential(ClaimsPrincipal principal)
     {
-        ArgumentNullException.ThrowIfNull(principal);
-        if (IsSystem(principal))
-        {
-            return false;
-        }
         var identity = GetSingleCredentialIdentity(principal);
-        if (identity is null)
+        if (identity is null || IsSystem(principal))
         {
             return false;
         }
-        if (identity.FindFirst(ApiKeyClaims.AuthenticationType) is not null)
+        if (IsApiKey(identity))
         {
-            var access = identity.FindFirst(ApiKeyClaims.AccessLevel)?.Value;
+            var access = CanonicalCredentialClaims.GetApiKeyAccessLevel(principal);
             return access is nameof(ApiKeyAccessLevel.Read) or nameof(ApiKeyAccessLevel.ReadWrite);
         }
-        return !identity.Claims.Any(claim => claim.Type == "scope")
+        return CanonicalCredentialClaims.IsCookie(identity)
             || HasScope(principal, "api.viewer")
             || HasScope(principal, "api.admin");
     }
 
     public static string? GetOwnerId(ClaimsPrincipal principal)
-    {
-        var identity = GetSingleCredentialIdentity(principal);
-        return identity?.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? identity?.FindFirst("sub")?.Value
-            ?? identity?.Name;
-    }
+        => CanonicalCredentialClaims.GetOwnerId(principal);
 
     public static string? GetSubject(ClaimsPrincipal principal)
-    {
-        var identity = GetSingleCredentialIdentity(principal);
-        return identity?.FindFirst("sub")?.Value ?? identity?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-    }
+        => CanonicalCredentialClaims.GetSubject(principal);
 
     public static bool IsSystem(ClaimsPrincipal principal)
-        => string.Equals(GetSingleCredentialIdentity(principal)?.FindFirst("account_type")?.Value,
-            "System", StringComparison.Ordinal);
+        => CanonicalCredentialClaims.IsSystem(principal);
+
+    public static string? GetAccountType(ClaimsPrincipal principal)
+        => CanonicalCredentialClaims.GetAccountType(principal);
 
     public static bool HasScope(ClaimsPrincipal principal, string scope)
-        => GetSingleCredentialIdentity(principal)?.Claims.Where(claim => claim.Type == "scope")
-            .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-            .Contains(scope, StringComparer.Ordinal) == true;
+        => CanonicalCredentialClaims.HasScope(principal, scope);
 
     public static Guid? GetObservatoryScope(ClaimsPrincipal principal)
-    {
-        var identity = GetSingleCredentialIdentity(principal);
-        return identity?.FindFirst(ApiKeyClaims.AuthenticationType) is not null
-            && Guid.TryParse(identity.FindFirst(ApiKeyClaims.ObservatoryId)?.Value, out var observatoryId)
-                ? observatoryId
-                : null;
-    }
+        => CanonicalCredentialClaims.GetObservatoryScope(principal);
 
     public static bool IsObservatoryAllowed(ClaimsPrincipal principal, Guid observatoryId)
         => GetObservatoryScope(principal) is not { } scope || scope == observatoryId;
 
     public static ClaimsIdentity? GetSingleCredentialIdentity(ClaimsPrincipal principal)
-    {
-        ArgumentNullException.ThrowIfNull(principal);
-        var identities = principal.Identities.Where(identity => identity.IsAuthenticated).Take(2).ToArray();
-        return identities.Length == 1 ? identities[0] : null;
-    }
+        => CanonicalCredentialClaims.GetSingleIdentity(principal);
+
+    public static bool IsApiKey(ClaimsIdentity identity)
+        => CanonicalCredentialClaims.IsApiKey(identity);
+
+    public static string? GetApiKeyAccessLevel(ClaimsPrincipal principal)
+        => CanonicalCredentialClaims.GetApiKeyAccessLevel(principal);
 }

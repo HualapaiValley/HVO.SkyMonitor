@@ -1,13 +1,20 @@
 using System;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.CameraAgent.Services.Models;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
 internal static class DeviceBootstrapCrypto
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    internal const int MaximumResponseBytes = 64 * 1024;
+
+    internal static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        RespectRequiredConstructorParameters = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
 
     public static DeviceBootstrapSecretsPayload Decrypt(DeviceBootstrapPayloadDto payload, string deviceKey)
     {
@@ -39,8 +46,14 @@ internal static class DeviceBootstrapCrypto
             aes.Decrypt(nonce, ciphertext, tag, plaintext);
         }
 
-        var secrets = JsonSerializer.Deserialize<DeviceBootstrapSecretsPayload>(plaintext, SerializerOptions)
-            ?? throw new InvalidOperationException("Bootstrap payload could not be parsed.");
-        return secrets;
+        try
+        {
+            return JsonSerializer.Deserialize<DeviceBootstrapSecretsPayload>(plaintext, SerializerOptions)
+                ?? throw new InvalidOperationException("Bootstrap payload could not be parsed.");
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException("Bootstrap payload could not be parsed.");
+        }
     }
 }

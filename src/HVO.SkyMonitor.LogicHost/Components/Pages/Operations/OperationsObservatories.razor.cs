@@ -16,7 +16,7 @@ public partial class OperationsObservatories : ComponentBase
     private string? userId;
     protected override async Task OnInitializedAsync()
     {
-        userId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        userId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         if (userId is not null) await LoadAsync(null);
     }
 

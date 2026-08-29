@@ -6,6 +6,7 @@ using Asp.Versioning;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Models.Diagnostics;
 using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Distributed;
@@ -22,7 +23,7 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 [ApiController]
 [ApiVersion("1.0")]
 [Route("api/v{version:apiVersion}/diagnostics")]
-[Authorize(AuthenticationSchemes = "Bearer")]
+[Authorize(Policy = AuthorizationPolicyNames.BearerAdmin)]
 public sealed class DiagnosticsController : ControllerBase
 {
     private readonly IDistributedCache _cache;

@@ -134,26 +134,27 @@ internal sealed partial class DeploymentLocationReconciliationWorker(
             var restartRequired = acknowledgment.Status == DeploymentLocationResolutionStatus.Acknowledged
                 && activeDeployment is not null
                 && acknowledgment.Deployment.CanonicalSha256 != activeDeployment.CanonicalSha256;
+            if (acknowledgment.Status == DeploymentLocationResolutionStatus.Acknowledged
+                && acknowledgment.Deployment.EffectiveUntilUtc is { } acknowledgmentUntil
+                && acknowledgmentUntil <= timeProvider.GetUtcNow())
+            {
+                Record("acknowledgment-expired", restartRequired ? "successor" : "exact");
+                return;
+            }
+            if (secrets.DeploymentLocationAcknowledgment != acknowledgment)
+            {
+                await secretStore.SaveAsync(
+                    secrets with { DeploymentLocationAcknowledgment = acknowledgment }, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             if (restartRequired)
             {
-                if (acknowledgment.Deployment.EffectiveUntilUtc is { } until
-                    && until <= timeProvider.GetUtcNow())
-                {
-                    Record("acknowledgment-expired", "successor");
-                    return;
-                }
                 if (acknowledgment.Deployment.CanonicalSha256 != deployment.CanonicalSha256)
                 {
                     Record("invalid-acknowledgment");
                     return;
                 }
                 await deploymentLocationStore.StageAsync(acknowledgment.Deployment, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            if (secrets.DeploymentLocationAcknowledgment != acknowledgment)
-            {
-                await secretStore.SaveAsync(
-                    secrets with { DeploymentLocationAcknowledgment = acknowledgment }, cancellationToken)
                     .ConfigureAwait(false);
             }
             state.Status = acknowledgment.Status;

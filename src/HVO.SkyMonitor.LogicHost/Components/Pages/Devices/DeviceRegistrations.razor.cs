@@ -384,9 +384,7 @@ public partial class DeviceRegistrations : ComponentBase
 
         var authState = await AuthenticationStateTask.ConfigureAwait(false);
         var user = authState.User;
-        var userId = user.FindFirstValue(ClaimTypes.NameIdentifier)
-            ?? user.FindFirstValue("sub")
-            ?? user.Identity?.Name
+        var userId = CentralArtifactCredentialAccess.GetOwnerId(user)
             ?? throw new InvalidOperationException("User identifier is missing required claims.");
 
         var displayName = user.FindFirstValue("name")

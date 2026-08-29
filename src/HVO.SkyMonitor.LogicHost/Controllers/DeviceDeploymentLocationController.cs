@@ -16,6 +16,7 @@ internal sealed class DeviceDeploymentLocationController(
     ApplicationDbContext dbContext) : ControllerBase
 {
     [HttpPost]
+    [RequestSizeLimit(32 * 1024)]
     public async Task<ActionResult<DeploymentLocationAcknowledgment>> ProposeAsync(
         DeviceDeploymentLocationRequest request,
         CancellationToken cancellationToken)

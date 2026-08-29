@@ -183,7 +183,7 @@ internal static class CameraAgentGalleryEndpoints
         ICameraAgentPresentationMaterializer materializer,
         CancellationToken cancellationToken)
     {
-        var actor = user.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actor = CameraAgentCredentialAccess.GetOwnerId(user);
         if (actor is not { Length: > 0 and <= 128 })
         {
             return Results.Forbid();

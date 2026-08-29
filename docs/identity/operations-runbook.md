@@ -148,6 +148,12 @@ path.
    `fleet-heartbeat` CameraAgent health check reaches Healthy after the first
    acknowledged status report.
 
+Only current v2 envelopes are accepted. Bootstrap requires the protected local
+deployment snapshot, an explicit non-`Unspecified` source kind, and a matching
+central deployment-location acknowledgment. A v1 or incomplete envelope fails
+while the registration remains Pending; an invalid or missing acknowledgment is
+not staged or written to CameraAgent secrets.
+
 The verification code is not checked against an independent device channel;
 current registration is operator self-attestation, not proof of device
 possession. Successful sequential bootstrap changes the central registration

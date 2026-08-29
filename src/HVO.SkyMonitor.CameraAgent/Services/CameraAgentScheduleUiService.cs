@@ -344,7 +344,7 @@ internal sealed class CameraAgentScheduleUiService(
         {
             return Denied<CaptureScheduleStoreSnapshot>();
         }
-        var actor = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actor = CameraAgentCredentialAccess.GetOwnerId(principal);
         if (string.IsNullOrWhiteSpace(actor))
         {
             return Denied<CaptureScheduleStoreSnapshot>();

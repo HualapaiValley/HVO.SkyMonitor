@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Threading.Tasks;
 using FluentAssertions;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Controllers;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,6 +13,7 @@ using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.DataProtection;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.IntegrationTests;
@@ -331,9 +333,72 @@ public sealed class DeviceApiControllerTests
             observatory.LongitudeDegrees,
             observatory.ElevationMeters,
             observatory.TimeZoneId);
+
+        var canonicalRequest = JsonSerializer.SerializeToNode(new DeviceBootstrapRequestDto(
+            deviceId,
+            envelope.Envelope,
+            Nonce: null,
+            DeploymentLocation: deployment,
+            DeploymentLocationSourceKind: DeploymentLocationSourceKind.Inherited))!.AsObject();
+        var unknownTopLevel = JsonNode.Parse(canonicalRequest.ToJsonString())!.AsObject();
+        const string untrustedPropertyName = "sensitive-client-controlled-property";
+        unknownTopLevel[untrustedPropertyName] = true;
+        using (var response = await _client!.PostAsync(
+            new Uri("/api/device/bootstrap", UriKind.Relative),
+            new StringContent(unknownTopLevel.ToJsonString(), System.Text.Encoding.UTF8, "application/json"))
+            .ConfigureAwait(false))
+        {
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            (await response.Content.ReadAsStringAsync().ConfigureAwait(false))
+                .Should().NotContain(untrustedPropertyName);
+        }
+        var unknownNested = JsonNode.Parse(canonicalRequest.ToJsonString())!.AsObject();
+        unknownNested["DeploymentLocation"]!.AsObject()["Unexpected"] = true;
+        using (var response = await _client!.PostAsync(
+            new Uri("/api/device/bootstrap", UriKind.Relative),
+            new StringContent(unknownNested.ToJsonString(), System.Text.Encoding.UTF8, "application/json"))
+            .ConfigureAwait(false))
+        {
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        }
+
+        var protector = services.GetRequiredService<IDataProtectionProvider>()
+            .CreateProtector("LogicHost", "DeviceRegistration", "Envelope", "v1");
+        var envelopeJson = JsonNode.Parse(protector.Unprotect(envelope.Envelope))!.AsObject();
+        envelopeJson.Remove("observatoryLocationVersion");
+        envelopeJson.Remove("observatoryLocationCanonicalSha256");
+        var incompleteEnvelope = protector.Protect(envelopeJson.ToJsonString(DeviceRegistrationJson.Options));
+        Func<Task> missingLocation = () => bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
+            deviceId,
+            incompleteEnvelope,
+            Nonce: null,
+            DeploymentLocation: deployment,
+            DeploymentLocationSourceKind: DeploymentLocationSourceKind.Inherited));
+        await missingLocation.Should().ThrowAsync<DeviceRegistrationException>()
+            .WithMessage("*malformed*").ConfigureAwait(false);
+
+        Func<Task> missingSource = () => bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
+            deviceId,
+            envelope.Envelope,
+            Nonce: null,
+            DeploymentLocation: deployment,
+            DeploymentLocationSourceKind: DeploymentLocationSourceKind.Unspecified));
+        await missingSource.Should().ThrowAsync<DeviceRegistrationException>()
+            .WithMessage("*source kind*invalid*").ConfigureAwait(false);
+
+        db.ChangeTracker.Clear();
+        var stillPending = await db.DeviceRegistrations.SingleAsync(item => item.Id == registration.Id)
+            .ConfigureAwait(false);
+        stillPending.Status.Should().Be(DeviceRegistrationStatus.Pending);
+        (await db.DeviceDeploymentLocationVersions.AnyAsync(item => item.RegistrationId == registration.Id)
+            .ConfigureAwait(false)).Should().BeFalse();
+        (await db.DeploymentLocationResolutionAudits.AnyAsync(item => item.RegistrationId == registration.Id)
+            .ConfigureAwait(false)).Should().BeFalse();
+
         var bootstrap = await bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
             deviceId,
             envelope.Envelope,
+            Nonce: null,
             DeploymentLocation: deployment,
             DeploymentLocationSourceKind: HVO.SkyMonitor.AgentCore.DeploymentLocationSourceKind.Inherited))
             .ConfigureAwait(false);
@@ -359,6 +424,7 @@ public sealed class DeviceApiControllerTests
         Func<Task> replay = () => bootstrapService.BootstrapAsync(new DeviceBootstrapRequest(
             deviceId,
             envelope.Envelope,
+            Nonce: null,
             DeploymentLocation: deployment,
             DeploymentLocationSourceKind: HVO.SkyMonitor.AgentCore.DeploymentLocationSourceKind.Inherited));
         await replay.Should().ThrowAsync<DeviceRegistrationException>().ConfigureAwait(false);
@@ -420,17 +486,21 @@ public sealed class DeviceApiControllerTests
         };
         db.AddRange(observatory, registration);
         await db.SaveChangesAsync().ConfigureAwait(false);
-        var legacyPayload = new DeviceRegistrationEnvelopePayload(
-            registration.Id,
-            registration.DeviceId,
-            registration.DevicePublicId!.Value,
-            observatory.Id,
-            registration.FriendlyName,
-            "v1",
+        var legacyPayload = new
+        {
+            registrationId = registration.Id,
+            deviceId = registration.DeviceId,
+            devicePublicId = registration.DevicePublicId!.Value,
+            observatoryId = observatory.Id,
+            friendlyName = registration.FriendlyName,
+            envelopeVersion = "v1",
             deviceKey,
             registrationToken,
-            now,
-            now.AddMinutes(10));
+            observatoryLocationVersion = 1,
+            observatoryLocationCanonicalSha256 = new string('A', 64),
+            issuedAtUtc = now,
+            expiresAtUtc = now.AddMinutes(10)
+        };
         var protector = services.GetRequiredService<IDataProtectionProvider>()
             .CreateProtector("LogicHost", "DeviceRegistration", "Envelope", "v1");
         var protectedEnvelope = protector.Protect(
@@ -451,6 +521,7 @@ public sealed class DeviceApiControllerTests
             new DeviceBootstrapRequest(
                 registration.DeviceId,
                 protectedEnvelope,
+                Nonce: null,
                 DeploymentLocation: clientShapedDeployment,
                 DeploymentLocationSourceKind: HVO.SkyMonitor.AgentCore.DeploymentLocationSourceKind.Manual));
 

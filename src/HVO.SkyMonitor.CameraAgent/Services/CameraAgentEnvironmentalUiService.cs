@@ -258,7 +258,7 @@ internal sealed class CameraAgentEnvironmentalUiService(
         {
             return null;
         }
-        return state.User.FindFirstValue(ClaimTypes.NameIdentifier) is { Length: > 0 and <= 128 } actor
+        return CameraAgentCredentialAccess.GetOwnerId(state.User) is { Length: > 0 and <= 128 } actor
             ? actor
             : null;
     }
