@@ -22,6 +22,9 @@ readonly TEMP_DIR
 LIFECYCLE_SESSION=""
 CONCURRENT_RELEASE=""
 TEST_BACKGROUND_PIDS=()
+if [[ "$(id -u)" == 0 ]]; then
+    export HVO_DEVCONTAINER_TEST_ALLOW_ROOT_INITIALIZATION=true
+fi
 
 cleanup() {
     if [[ -n "$CONCURRENT_RELEASE" ]]; then
@@ -89,6 +92,9 @@ grep -Fq 'OpenCode configuration root' "$PERSISTENCE_SCRIPT"
 grep -Fq 'OpenCode data root' "$PERSISTENCE_SCRIPT"
 grep -Fq 'must have mode 0700' "$PERSISTENCE_SCRIPT"
 grep -Fq 'verify_secure_state_directory' "$INITIALIZE_SCRIPT"
+grep -Fq 'must run as the non-root host user' "$INITIALIZE_SCRIPT"
+grep -Fq 'physical checkout path instead of a symlink' "$INITIALIZE_SCRIPT"
+grep -Fq 'Windows hosts must clone under WSL2 rather than NTFS' "$INITIALIZE_SCRIPT"
 if grep -Eq 'chown -R vscode:vscode .*(opencode|/tmp/opencode|hvo-agent-state)' \
     "$REPO_ROOT/.devcontainer/post-create.sh"; then
     echo "Post-create must not silently repair persistent OpenCode state ownership." >&2
@@ -417,6 +423,40 @@ grep -Fq '`opencode-worktrees` is mounted at `/tmp/opencode`' "$REPO_ROOT/README
 grep -Fq 'Normal `/tmp` remains disposable' "$REPO_ROOT/README.md"
 grep -Fq 'all four developer-state paths' "$REPO_ROOT/README.md"
 grep -Fq 'fail without rewriting or relocating it' "$REPO_ROOT/README.md"
+grep -Fq 'WSL2 Linux filesystem' "$REPO_ROOT/README.md"
+grep -Fq 'physical, non-symlinked checkout path' "$REPO_ROOT/README.md"
+grep -Fq 'normal non-root host account' "$REPO_ROOT/README.md"
+
+root_initialize_fixture="$TEMP_DIR/root-initialize-repo"
+mkdir -p "$root_initialize_fixture/.devcontainer" "$TEMP_DIR/root-initialize-home"
+cp "$INITIALIZE_SCRIPT" "$root_initialize_fixture/.devcontainer/initialize.sh"
+if sudo -n true >/dev/null 2>&1; then
+    if { sudo -n env -u HVO_DEVCONTAINER_TEST_ALLOW_ROOT_INITIALIZATION \
+        HOME="$TEMP_DIR/root-initialize-home" \
+        bash "$root_initialize_fixture/.devcontainer/initialize.sh"; } \
+        > "$TEMP_DIR/root-initialize.out" 2>&1; then
+        echo "Host initialization unexpectedly accepted root invocation." >&2
+        exit 1
+    fi
+    grep -Fq 'must run as the non-root host user' "$TEMP_DIR/root-initialize.out"
+    test ! -e "$root_initialize_fixture/.devcontainer/state"
+    test ! -e "$root_initialize_fixture/.devcontainer/.state-initialization-v1"
+fi
+
+symlink_initialize_fixture="$TEMP_DIR/symlink-initialize-physical"
+symlink_initialize_alias="$TEMP_DIR/symlink-initialize-alias"
+mkdir -p "$symlink_initialize_fixture/.devcontainer" "$TEMP_DIR/symlink-initialize-home"
+cp "$INITIALIZE_SCRIPT" "$symlink_initialize_fixture/.devcontainer/initialize.sh"
+ln -s "$symlink_initialize_fixture" "$symlink_initialize_alias"
+if HOME="$TEMP_DIR/symlink-initialize-home" \
+    bash "$symlink_initialize_alias/.devcontainer/initialize.sh" \
+    > "$TEMP_DIR/symlink-initialize.out" 2>&1; then
+    echo "Host initialization unexpectedly accepted a symlinked checkout." >&2
+    exit 1
+fi
+grep -Fq 'physical checkout path instead of a symlink' "$TEMP_DIR/symlink-initialize.out"
+test ! -e "$symlink_initialize_fixture/.devcontainer/state"
+test ! -e "$symlink_initialize_fixture/.devcontainer/.state-initialization-v1"
 
 initialize_fixture="$TEMP_DIR/initialize-repo"
 mkdir -p "$initialize_fixture/.devcontainer" "$TEMP_DIR/initialize-home"

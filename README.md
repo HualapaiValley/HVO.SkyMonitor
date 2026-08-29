@@ -24,6 +24,13 @@ This repository is configured to work with Visual Studio Code Dev Containers and
 - [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop) (for local development)
 
+On Windows, clone and open the repository from a WSL2 Linux filesystem, not an
+NTFS-mounted path, so owner-only persistent developer state can be enforced.
+Open the physical, non-symlinked checkout path and start Dev Containers from a
+normal non-root host account; initialization fails before state mutation when
+the account or checkout-source prerequisite is not met, and rejects filesystems
+that cannot enforce the required owner-only state.
+
 ### Getting Started
 
 #### Using Dev Containers (Local)

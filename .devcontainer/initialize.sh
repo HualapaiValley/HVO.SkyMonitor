@@ -3,12 +3,23 @@
 
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -L)"
+physical_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 state_root="$repo_root/.devcontainer/state"
 initialization_root="$repo_root/.devcontainer/.state-initialization-v1"
 expected_owner="$(id -u):$(id -g)"
 
 umask 077
+
+if [[ "$(id -u)" == 0 \
+    && "${HVO_DEVCONTAINER_TEST_ALLOW_ROOT_INITIALIZATION:-}" != true ]]; then
+    echo "Devcontainer initialization must run as the non-root host user who will own persistent developer state." >&2
+    exit 1
+fi
+if [[ "$repo_root" != "$physical_repo_root" ]]; then
+    echo "Open the physical checkout path instead of a symlink before creating the devcontainer: $repo_root -> $physical_repo_root" >&2
+    exit 1
+fi
 
 stat_owner() {
     if stat -c '%u:%g' -- "$1" >/dev/null 2>&1; then
@@ -38,7 +49,7 @@ verify_secure_state_directory() {
     actual_owner="$(stat_owner "$path")"
     actual_mode="$(stat_mode "$path")"
     if [[ "$actual_owner" != "$expected_owner" || "$actual_mode" != 700 ]]; then
-        echo "Persistent developer-state path must be owned by $expected_owner with mode 0700; found $actual_owner mode $actual_mode: $path" >&2
+        echo "Persistent developer-state path must be owned by $expected_owner with mode 0700; found $actual_owner mode $actual_mode: $path. Use a POSIX-permission filesystem; Windows hosts must clone under WSL2 rather than NTFS." >&2
         return 1
     fi
 }
