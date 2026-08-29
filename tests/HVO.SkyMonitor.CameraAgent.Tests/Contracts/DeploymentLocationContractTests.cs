@@ -22,6 +22,27 @@ public sealed class DeploymentLocationContractTests
     }
 
     [TestMethod]
+    public void Snapshot_Arm64SmokeVectorHasExpectedCanonicalIdentity()
+    {
+        var snapshot = DeploymentLocationSnapshot.Create(
+            "hualapai-cameraagent",
+            1,
+            "operator-local-configuration",
+            null,
+            DateTimeOffset.Parse("2025-01-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            null,
+            35.5599378,
+            -113.9119818,
+            520,
+            "America/Phoenix");
+
+        Assert.AreEqual(
+            "804A0DBBD7E53FE2D1845BE9BE0D677C5D2C0BE925741814D856CF9A44F8E467",
+            snapshot.CanonicalSha256);
+        Assert.IsTrue(snapshot.Validate().IsValid);
+    }
+
+    [TestMethod]
     public void Snapshot_ChangedCoordinateChangesCanonicalIdentity()
     {
         var original = CreateHualapai();
