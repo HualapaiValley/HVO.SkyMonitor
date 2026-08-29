@@ -49,6 +49,25 @@ public sealed class InstallerFlowTests
             var statePath = Path.Combine(first.InstanceRoot, "state", "deployment", "installation-state.json");
             var retainedManifest = await File.ReadAllTextAsync(manifestPath);
             var retainedState = await File.ReadAllTextAsync(statePath);
+            var legacyManifest = JsonNode.Parse(retainedManifest)?.AsObject()
+                ?? throw new AssertFailedException("The retained manifest was not valid JSON.");
+            legacyManifest["composeTemplateVersion"] = "cameraagent-compose-v1";
+            await File.WriteAllTextAsync(manifestPath, legacyManifest.ToJsonString());
+            var composeUpCount = runner.ComposeUpCount;
+
+            var legacy = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                request,
+                runner,
+                _ => owner,
+                1000,
+                1000,
+                CancellationToken.None));
+
+            StringAssert.Contains(legacy.Message, "invalid or unsupported", StringComparison.Ordinal);
+            Assert.AreEqual(composeUpCount, runner.ComposeUpCount);
+            Assert.AreEqual(retainedState, await File.ReadAllTextAsync(statePath));
+            await File.WriteAllTextAsync(manifestPath, retainedManifest);
+
             var driftedManifest = JsonNode.Parse(retainedManifest)?.AsObject()
                 ?? throw new AssertFailedException("The retained manifest was not valid JSON.");
             driftedManifest["composeModelSha256"] = new string('0', 64);
@@ -268,7 +287,26 @@ public sealed class InstallerFlowTests
             }
             if (arguments.Count == 3 && arguments[0] == "image" && arguments[1] == "inspect")
             {
-                return Success($"[{{\"Id\":\"{imageId}\",\"Architecture\":\"amd64\",\"Os\":\"linux\",\"RepoDigests\":[]}}]");
+                return Success(JsonSerializer.Serialize(new[]
+                {
+                    new
+                    {
+                        Id = imageId,
+                        Architecture = "amd64",
+                        Os = "linux",
+                        RepoDigests = Array.Empty<string>(),
+                        Config = new
+                        {
+                            Labels = new Dictionary<string, string>
+                            {
+                                ["org.opencontainers.image.revision"] = new string('a', 40),
+                                ["io.hvo.skymonitor.component"] = "CameraAgent",
+                                ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
+                                ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2"
+                            }
+                        }
+                    }
+                }));
             }
             if (arguments.Count == 3 && arguments[0] == "container" && arguments[1] == "inspect")
             {

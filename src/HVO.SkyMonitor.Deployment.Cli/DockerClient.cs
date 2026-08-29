@@ -165,14 +165,50 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         return RunDockerAsync(arguments, cancellationToken);
     }
 
+    public async Task VerifyContainerOwnershipAsync(
+        ComposeFiles compose,
+        InstallationPaths paths,
+        ImageInstallationIdentity imageIdentity,
+        uint uid,
+        uint gid,
+        CancellationToken cancellationToken)
+    {
+        var result = await RunDockerAsync(["container", "inspect", compose.ContainerName], cancellationToken).ConfigureAwait(false);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var container = document.RootElement[0];
+        var config = container.GetProperty("Config");
+        var host = container.GetProperty("HostConfig");
+        var mounts = container.GetProperty("Mounts").EnumerateArray().ToArray();
+        var labels = config.GetProperty("Labels");
+        var expectedInstance = paths.InstanceRoot.Split(Path.DirectorySeparatorChar).Last();
+        var checks = new Dictionary<string, bool>(StringComparer.Ordinal)
+        {
+            ["image"] = container.GetProperty("Image").GetString() == imageIdentity.ImageId,
+            ["user"] = config.GetProperty("User").GetString() == $"{uid}:{gid}",
+            ["project"] = labels.GetProperty("com.docker.compose.project").GetString() == compose.ProjectName,
+            ["ownership"] = labels.TryGetProperty("io.hvo.skymonitor.instance-id", out var instanceLabel) &&
+                            instanceLabel.GetString() == expectedInstance,
+            ["read-only-root"] = host.GetProperty("ReadonlyRootfs").GetBoolean(),
+            ["unprivileged"] = !host.GetProperty("Privileged").GetBoolean(),
+            ["configuration-mount"] = mounts.Any(mount => MountMatches(
+                mount, Path.Combine(paths.ConfigRoot, "camera-module.json"), "/app/cameraagent.deploy.json", writable: false)),
+            ["catalog-mount"] = mounts.Any(mount => MountMatches(mount, paths.CatalogRoot, "/app/catalog", writable: false)),
+            ["identity-mount"] = mounts.Any(mount => MountMatches(
+                mount, Path.Combine(paths.StateRoot, "identity"), "/app/App_Data", writable: true))
+        };
+        var failed = checks.Where(static check => !check.Value).Select(static check => check.Key).ToArray();
+        if (failed.Length > 0)
+            throw new InstallerException(
+                $"The selected CameraAgent container does not match the installation manifest: {string.Join(", ", failed)}.");
+    }
+
     public async Task VerifyContainerAsync(
         ComposeFiles compose,
         InstallationPaths paths,
         ImageInstallationIdentity imageIdentity,
         uint uid,
         uint gid,
-        CancellationToken cancellationToken,
-        bool requireOwnershipLabel = true)
+        CancellationToken cancellationToken)
     {
         var expectedCatalog = paths.CatalogRoot;
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
@@ -193,8 +229,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                 ["image"] = container.GetProperty("Image").GetString() == imageIdentity.ImageId,
                 ["user"] = config.GetProperty("User").GetString() == $"{uid}:{gid}",
                 ["project"] = config.GetProperty("Labels").GetProperty("com.docker.compose.project").GetString() == compose.ProjectName,
-                ["ownership"] = !requireOwnershipLabel ||
-                                config.GetProperty("Labels").TryGetProperty("io.hvo.skymonitor.instance-id", out var instanceLabel) &&
+                ["ownership"] = config.GetProperty("Labels").TryGetProperty("io.hvo.skymonitor.instance-id", out var instanceLabel) &&
                                 instanceLabel.GetString() == paths.InstanceRoot.Split(Path.DirectorySeparatorChar).Last(),
                 ["read-only-root"] = host.GetProperty("ReadonlyRootfs").GetBoolean(),
                 ["unprivileged"] = !host.GetProperty("Privileged").GetBoolean(),

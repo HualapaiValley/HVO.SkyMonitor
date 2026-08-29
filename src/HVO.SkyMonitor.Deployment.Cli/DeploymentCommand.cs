@@ -37,7 +37,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string? ImageArchiveSha256 { get; init; }
     public bool NoDownload { get; init; }
     public bool MigrationBackwardCompatible { get; init; }
-    public string? OwnerPasswordFile { get; init; }
     public Guid? ConfirmationInstanceId { get; init; }
     public string? CatalogBundle { get; init; }
     public string? CatalogManifest { get; init; }
@@ -63,7 +62,6 @@ internal sealed record LifecycleRequest : DeploymentCommand
         {
             ValidateImage();
         }
-        if (OwnerPasswordFile is not null) ValidateAbsolutePath(OwnerPasswordFile, "--owner-password-file");
         if (Operation == LifecycleOperationKind.Purge && ConfirmationInstanceId != InstanceId)
         {
             throw new InstallUsageException("purge requires --confirm-instance-id matching --instance-id.");
@@ -96,7 +94,8 @@ internal sealed record LifecycleRequest : DeploymentCommand
             ImageArchiveSha256,
             NoDownload,
             MigrationBackwardCompatible,
-            OwnerPasswordFile,
+            // Keep the null slot stable so current password-free operation receipts survive executable replacement.
+            OwnerPasswordFile = (string?)null,
             CatalogBundle,
             CatalogManifest,
             CatalogIndex,
@@ -141,7 +140,7 @@ internal sealed record LifecycleRequest : DeploymentCommand
                     "Image upgrade does not accept catalog or purge options.");
                 break;
             case LifecycleOperationKind.CatalogInstall:
-                Reject(hasImage || InstanceId is not null || ConfirmationInstanceId is not null || OwnerPasswordFile is not null,
+                Reject(hasImage || InstanceId is not null || ConfirmationInstanceId is not null,
                     "Catalog install accepts only catalog acquisition and common options.");
                 break;
             case LifecycleOperationKind.CatalogSelect:
@@ -149,16 +148,16 @@ internal sealed record LifecycleRequest : DeploymentCommand
                     "Catalog select accepts only --catalog-version and instance/common options.");
                 break;
             case LifecycleOperationKind.CatalogGarbageCollect:
-                Reject(hasImage || hasCatalogSource || InstanceId is not null || ConfirmationInstanceId is not null || OwnerPasswordFile is not null,
+                Reject(hasImage || hasCatalogSource || InstanceId is not null || ConfirmationInstanceId is not null,
                     "Catalog garbage collection accepts only an optional --catalog-version and common options.");
                 break;
             case LifecycleOperationKind.Purge:
-                Reject(hasImage || hasCatalogSource || CatalogVersion is not null || OwnerPasswordFile is not null,
+                Reject(hasImage || hasCatalogSource || CatalogVersion is not null,
                     "Purge accepts only instance confirmation and common options.");
                 break;
             case null:
                 Reject(hasImage || hasCatalogSource || CatalogVersion is not null || ConfirmationInstanceId is not null ||
-                       OwnerPasswordFile is not null || DryRun || Resume,
+                       DryRun || Resume,
                     "Status accepts only instance, product-root, and JSON options.");
                 break;
             default:

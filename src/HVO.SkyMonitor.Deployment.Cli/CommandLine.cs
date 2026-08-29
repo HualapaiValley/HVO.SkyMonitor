@@ -212,7 +212,6 @@ internal static class CommandLine
             "--instance-id", "--confirm-instance-id", "--product-root", "--image-ref", "--image-archive",
             "--image-archive-sha256", "--catalog-bundle", "--catalog-manifest", "--catalog-index",
             "--catalog-version", "--asset-base-url", "--channel"
-            , "--owner-password-file"
         };
         var unknown = values.Keys.FirstOrDefault(option => !known.Contains(option));
         if (unknown is not null) throw new InstallUsageException($"Unknown option '{unknown}'.");
@@ -229,7 +228,6 @@ internal static class CommandLine
             ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
             NoDownload = flags.Contains("--no-download"),
             MigrationBackwardCompatible = flags.Contains("--migration-backward-compatible"),
-            OwnerPasswordFile = Get(values, "--owner-password-file"),
             ConfirmationInstanceId = ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
             CatalogBundle = Get(values, "--catalog-bundle"),
             CatalogManifest = Get(values, "--catalog-manifest"),

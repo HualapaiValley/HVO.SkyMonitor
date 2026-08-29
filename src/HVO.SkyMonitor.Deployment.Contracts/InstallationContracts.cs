@@ -168,7 +168,6 @@ public sealed record InstanceManifest(
     Guid? LastLifecycleOperationId = null,
     DateTimeOffset? UpdatedUtc = null,
     string? LifecycleControlTokenSha256 = null,
-    string? PreviousComposeTemplateVersion = null,
     string? PreviousComposeModelSha256 = null);
 
 public sealed record LifecycleOperationState(
