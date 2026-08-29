@@ -15,8 +15,9 @@ Required CI. Deployment selection is independent: ordinary full-mode application
 pull requests skip Deployment Contracts, deployment-relevant pull requests run
 the lightweight deployment contracts, and main/release/manual runs execute the
 complete matrix including exhaustive deployment rehearsal.
-The workflow applies to pull requests targeting `main` or `release/**`, including
-the `release/deploy-331` release strategy.
+The workflow applies to pull requests targeting `main` or `release/**`; the
+historical `release/deploy-331` strategy is preserved by the
+`release-deploy-331-archive` tag.
 
 The exact allowlist, exclusions, trust boundary, and local contract-test command
 are maintained in [`docs/runbooks/ci-pipeline.md`](../runbooks/ci-pipeline.md).
