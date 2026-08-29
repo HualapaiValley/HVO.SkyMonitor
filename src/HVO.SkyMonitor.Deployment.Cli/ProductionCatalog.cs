@@ -13,7 +13,6 @@ internal static class ProductionCatalog
 
     public static CatalogSnapshotResolverOptions ResolverOptions(string root, string? packageVersion = null) => new(root, CatalogId)
     {
-        ExpectedManifestVersion = 2,
         ExpectedPackageKind = CatalogSnapshotPackageKind.Production,
         ExpectedSchemaVersion = "2",
         ExpectedPreprocessingVersion = "3",

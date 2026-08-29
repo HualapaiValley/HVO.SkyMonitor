@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z "${HVO_LEGACY_CATALOG_BUNDLE:-}" || ! -d "$HVO_LEGACY_CATALOG_BUNDLE" ]]; then
-  printf 'HVO_LEGACY_CATALOG_BUNDLE must identify the exact production catalog bundle.\n' >&2
+if [[ -z "${HVO_PRODUCTION_CATALOG_BUNDLE:-}" || ! -d "$HVO_PRODUCTION_CATALOG_BUNDLE" ]]; then
+  printf 'HVO_PRODUCTION_CATALOG_BUNDLE must identify the exact production catalog bundle.\n' >&2
   exit 2
 fi
 
@@ -40,7 +40,7 @@ common_arguments=(
   --bind-address 127.0.0.1
   --port "$port"
   --product-root "$root/product"
-  --catalog-bundle "$HVO_LEGACY_CATALOG_BUNDLE"
+  --catalog-bundle "$HVO_PRODUCTION_CATALOG_BUNDLE"
   --image-ref "$image_id"
   --image-archive "$archive"
   --image-archive-sha256 "$archive_sha256"

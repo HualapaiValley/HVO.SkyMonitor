@@ -244,20 +244,15 @@ hyg_validate_manifest_document() {
     [[ "$duplicate_count" == "0" ]] || { hyg_fail "bundle manifest contains duplicate properties"; return 1; }
 }
 
-hyg_validate_manifest_version() {
+hyg_validate_manifest() {
     local bundle="$1"
-    local expected_manifest_version="$2"
     local manifest="$bundle/$HYG_MANIFEST_FILE"
     hyg_validate_manifest_document "$manifest" || return 1
 
     hyg_json_exact "$manifest" '$.package.kind' text production
     hyg_json_exact_keys "$manifest" '$' 'catalog,database,license,manifestVersion,package,preprocessingVersion,schemaVersion,serializer,source,topology'
     hyg_json_exact_keys "$manifest" '$.package' 'kind,version'
-    if [[ "$expected_manifest_version" == 1 ]]; then
-        hyg_json_exact_keys "$manifest" '$.catalog' 'name,version'
-    else
-        hyg_json_exact_keys "$manifest" '$.catalog' 'id,name,version'
-    fi
+    hyg_json_exact_keys "$manifest" '$.catalog' 'id,name,version'
     hyg_json_exact_keys "$manifest" '$.source' 'compressed,decompressed,downloadUrl,oid,projectUrl'
     hyg_json_exact_keys "$manifest" '$.source.compressed' 'length,sha256'
     hyg_json_exact_keys "$manifest" '$.source.decompressed' 'length,sha256'
@@ -268,18 +263,13 @@ hyg_validate_manifest_version() {
     hyg_json_exact_keys "$manifest" '$.license.attribution' 'length,relativePath,sha256'
     hyg_json_exact_keys "$manifest" '$.topology' 'constellationCount,identity,segmentCount,sha256'
 
-    hyg_json_exact "$manifest" '$.manifestVersion' integer "$expected_manifest_version"
+    hyg_json_exact "$manifest" '$.manifestVersion' integer 2
     HYG_MANIFEST_PACKAGE_VERSION="$(hyg_json_value "$manifest" '$.package.version')"
-    if [[ "$expected_manifest_version" == 1 ]]; then
-        [[ "$(hyg_json_type "$manifest" '$.package.version')" == text && "$HYG_MANIFEST_PACKAGE_VERSION" == "$HYG_PACKAGE_VERSION" ]] || \
-            hyg_fail "legacy bundle manifest has an incompatible package version"
-    else
-        [[ "$(hyg_json_type "$manifest" '$.package.version')" == "text" ]] &&
-            hyg_is_supported_package_version "$HYG_MANIFEST_PACKAGE_VERSION" || \
-            hyg_fail "bundle manifest has an invalid package version"
-    fi
+    [[ "$(hyg_json_type "$manifest" '$.package.version')" == "text" ]] &&
+        hyg_is_supported_package_version "$HYG_MANIFEST_PACKAGE_VERSION" || \
+        hyg_fail "bundle manifest has an invalid package version"
     hyg_json_exact "$manifest" '$.catalog.name' text "$HYG_CATALOG_NAME"
-    [[ "$expected_manifest_version" == 1 ]] || hyg_json_exact "$manifest" '$.catalog.id' text "$HYG_CATALOG_ID"
+    hyg_json_exact "$manifest" '$.catalog.id' text "$HYG_CATALOG_ID"
     hyg_json_exact "$manifest" '$.catalog.version' text "$HYG_CATALOG_VERSION"
     hyg_json_exact "$manifest" '$.source.projectUrl' text "$HYG_SOURCE_PROJECT_URL"
     hyg_json_exact "$manifest" '$.source.downloadUrl' text "$HYG_SOURCE_URL"
@@ -310,74 +300,6 @@ hyg_validate_manifest_version() {
     hyg_json_exact "$manifest" '$.topology.sha256' text "$HYG_TOPOLOGY_SHA256"
     hyg_json_exact "$manifest" '$.topology.constellationCount' integer 88
     hyg_json_exact "$manifest" '$.topology.segmentCount' integer 743
-}
-
-hyg_validate_manifest() {
-    hyg_validate_manifest_version "$1" 2
-}
-
-hyg_validate_legacy_fixture_bundle() {
-    local bundle="$1"
-    local manifest="$bundle/$HYG_MANIFEST_FILE"
-    local -a entries
-    HYG_VALIDATION_FAILED=0
-
-    [[ -d "$bundle" && ! -L "$bundle" && -f "$manifest" && ! -L "$manifest" ]] || hyg_fail "legacy fixture bundle is missing or unsafe"
-    shopt -s nullglob dotglob
-    entries=("$bundle"/*)
-    shopt -u nullglob dotglob
-    [[ ${#entries[@]} -eq 2 ]] || hyg_fail "legacy fixture bundle must contain exactly its manifest and database"
-    hyg_validate_manifest_document "$manifest" || return 1
-    hyg_json_exact_keys "$manifest" '$' 'catalog,database,manifestVersion,package,preprocessingVersion,schemaVersion'
-    hyg_json_exact_keys "$manifest" '$.package' 'kind,version'
-    hyg_json_exact_keys "$manifest" '$.catalog' 'name,version'
-    hyg_json_exact_keys "$manifest" '$.database' 'length,relativePath,rowCount,sha256'
-    hyg_json_exact "$manifest" '$.manifestVersion' integer 1
-    hyg_json_exact "$manifest" '$.package.kind' text fixture
-    hyg_json_exact "$manifest" '$.package.version' text "$HYG_FIXTURE_PACKAGE_VERSION"
-    hyg_json_exact "$manifest" '$.catalog.name' text "$HYG_FIXTURE_CATALOG_NAME"
-    hyg_json_exact "$manifest" '$.catalog.version' text "$HYG_FIXTURE_CATALOG_VERSION"
-    hyg_json_exact "$manifest" '$.schemaVersion' text "$HYG_SCHEMA_VERSION"
-    hyg_json_exact "$manifest" '$.preprocessingVersion' text "$HYG_PREPROCESSING_VERSION"
-    hyg_json_exact "$manifest" '$.database.relativePath' text "$HYG_DATABASE_FILE"
-    hyg_json_exact "$manifest" '$.database.sha256' text "$HYG_FIXTURE_DATABASE_SHA256"
-    hyg_json_exact "$manifest" '$.database.length' integer "$HYG_FIXTURE_DATABASE_LENGTH"
-    hyg_json_exact "$manifest" '$.database.rowCount' integer "$HYG_FIXTURE_EXPECTED_ROWS"
-    hyg_validate_database_contract "$bundle/$HYG_DATABASE_FILE" "$HYG_FIXTURE_DATABASE_LENGTH" \
-        "$HYG_FIXTURE_DATABASE_SHA256" "$HYG_SCHEMA_VERSION" "$HYG_PREPROCESSING_VERSION" "$HYG_FIXTURE_EXPECTED_ROWS" \
-        "$HYG_FIXTURE_CATALOG_NAME" "$HYG_FIXTURE_CATALOG_VERSION"
-    [[ "$HYG_VALIDATION_FAILED" == 0 ]]
-}
-
-hyg_validate_legacy_production_bundle() {
-    local bundle="$1"
-    local -a entries
-    HYG_VALIDATION_FAILED=0
-    [[ -d "$bundle" && ! -L "$bundle" ]] || hyg_fail "legacy production bundle is missing or unsafe"
-    shopt -s nullglob dotglob
-    entries=("$bundle"/*)
-    shopt -u nullglob dotglob
-    [[ ${#entries[@]} -eq 4 ]] || hyg_fail "legacy production bundle must contain exactly the manifest and three retained payload files"
-    hyg_validate_manifest_version "$bundle" 1
-    hyg_verify_file "$bundle/$HYG_LICENSE_FILE" "$HYG_LICENSE_LENGTH" "$HYG_LICENSE_SHA256" "HYG license"
-    hyg_verify_file "$bundle/$HYG_ATTRIBUTION_FILE" "$HYG_ATTRIBUTION_LENGTH" "$HYG_ATTRIBUTION_SHA256" "HYG attribution"
-    hyg_validate_database "$bundle/$HYG_DATABASE_FILE"
-    [[ "$HYG_VALIDATION_FAILED" == 0 ]]
-}
-
-hyg_resolve_legacy_catalog_identity() {
-    local bundle="$1"
-    local manifest="$bundle/$HYG_MANIFEST_FILE"
-    local kind
-    [[ -f "$manifest" && ! -L "$manifest" ]] || hyg_fail "legacy catalog manifest is missing or unsafe"
-    [[ "$(hyg_json_type "$manifest" '$.manifestVersion')" == integer && "$(hyg_json_value "$manifest" '$.manifestVersion')" == 1 ]] || \
-        hyg_fail "catalog manifest is not legacy version 1"
-    kind="$(hyg_json_value "$manifest" '$.package.kind')"
-    case "$kind" in
-        production) hyg_validate_legacy_production_bundle "$bundle" && printf '%s\n' "$HYG_CATALOG_ID" ;;
-        fixture) hyg_validate_legacy_fixture_bundle "$bundle" && printf '%s\n' "$HYG_FIXTURE_CATALOG_ID" ;;
-        *) hyg_fail "legacy catalog package kind is unsupported" ;;
-    esac
 }
 
 hyg_catalog_safe_mutable_directory() {
@@ -947,10 +869,6 @@ hyg_resolve_catalog_identity() {
     hyg_validate_manifest_document "$manifest" || return 1
     [[ "$(hyg_json_type "$manifest" '$.manifestVersion')" == integer ]] || { hyg_fail "catalog manifest version has an invalid type"; return 1; }
     manifest_version="$(hyg_json_value "$manifest" '$.manifestVersion')"
-    if [[ "$manifest_version" == 1 ]]; then
-        hyg_resolve_legacy_catalog_identity "$bundle"
-        return
-    fi
     [[ "$manifest_version" == 2 ]] || { hyg_fail "catalog manifest version is unsupported"; return 1; }
     kind="$(hyg_json_value "$manifest" '$.package.kind')"
     case "$kind" in
@@ -977,23 +895,17 @@ hyg_resolve_catalog_identity() {
 hyg_validate_catalog_contract() {
     local bundle="$1" expected_id="$2" expected_kind="$3" expected_version="$4"
     local expected_schema="$5" expected_preprocessing="$6" expected_sha="$7" expected_length="$8" expected_rows="$9"
-    local manifest="$bundle/$HYG_MANIFEST_FILE" manifest_version resolved_id
+    local manifest="$bundle/$HYG_MANIFEST_FILE" manifest_version
     HYG_VALIDATION_FAILED=0
     hyg_validate_manifest_document "$manifest" || return 1
     manifest_version="$(hyg_json_value "$manifest" '$.manifestVersion')"
-    if [[ "$manifest_version" == 1 ]]; then
-        resolved_id="$(hyg_resolve_legacy_catalog_identity "$bundle")" || return 1
-        [[ "$resolved_id" == "$expected_id" ]] || hyg_fail "legacy catalog identity does not match inventory"
-    elif [[ "$manifest_version" == 2 ]]; then
-        case "$expected_kind" in
-            production) hyg_validate_bundle "$bundle" || return 1 ;;
-            fixture) hyg_validate_fixture_manifest_v2 "$bundle" "$expected_id" "$expected_version" "$expected_schema" \
-                "$expected_preprocessing" "$expected_sha" "$expected_length" "$expected_rows" || return 1 ;;
-            *) hyg_fail "catalog package kind is unsupported"; return 1 ;;
-        esac
-    else
-        hyg_fail "catalog manifest version is unsupported"
-    fi
+    [[ "$manifest_version" == 2 ]] || { hyg_fail "catalog manifest version is unsupported"; return 1; }
+    case "$expected_kind" in
+        production) hyg_validate_bundle "$bundle" || return 1 ;;
+        fixture) hyg_validate_fixture_manifest_v2 "$bundle" "$expected_id" "$expected_version" "$expected_schema" \
+            "$expected_preprocessing" "$expected_sha" "$expected_length" "$expected_rows" || return 1 ;;
+        *) hyg_fail "catalog package kind is unsupported"; return 1 ;;
+    esac
     hyg_json_exact "$manifest" '$.package.kind' text "$expected_kind"
     hyg_json_exact "$manifest" '$.package.version' text "$expected_version"
     hyg_json_exact "$manifest" '$.schemaVersion' text "$expected_schema"

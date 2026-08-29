@@ -166,6 +166,21 @@ public sealed class DistributionVerifierTests
     }
 
     [TestMethod]
+    [DataRow(1)]
+    [DataRow(3)]
+    public void VerifyManifest_NoncanonicalCatalogManifestVersion_IsRejected(int manifestVersion)
+    {
+        using var fixture = SigningFixture.Create();
+        var manifest = fixture.CatalogManifest("hyg-v4.2-p3-s2-r1");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(
+            manifest with { Catalog = manifest.Catalog! with { ManifestVersion = manifestVersion } },
+            DistributionJsonContext.Default.DistributionReleaseManifest);
+
+        Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+    }
+
+    [TestMethod]
     [DataRow("hyg-v4.2-p3-s2-r0")]
     [DataRow("other-v1")]
     public void VerifyManifest_InvalidProductionCatalogVersion_IsRejected(string version)

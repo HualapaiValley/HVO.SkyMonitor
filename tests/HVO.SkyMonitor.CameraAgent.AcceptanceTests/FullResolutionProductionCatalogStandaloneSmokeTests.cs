@@ -455,7 +455,7 @@ public sealed class FullResolutionProductionCatalogStandaloneSmokeTests
         });
         Assert.AreEqual(ProductionSnapshotVersion, snapshot.SnapshotVersion);
         Assert.AreEqual(CatalogSnapshotPackageKind.Production, snapshot.PackageKind);
-        Assert.AreEqual(1, snapshot.ManifestVersion);
+        Assert.AreEqual(2, snapshot.ManifestVersion);
         Assert.AreEqual("4.2", snapshot.CatalogVersion);
         Assert.AreEqual("2", snapshot.SchemaVersion);
         Assert.AreEqual("3", snapshot.PreprocessingVersion);

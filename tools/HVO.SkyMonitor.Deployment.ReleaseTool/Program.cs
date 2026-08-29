@@ -475,7 +475,6 @@ internal static class Program
             Directory.CreateSymbolicLink(Path.Combine(root, "current"), $"versions/{catalog.PackageVersion}");
             var resolved = CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(root, catalog.CatalogId)
             {
-                ExpectedManifestVersion = catalog.ManifestVersion,
                 ExpectedSchemaVersion = catalog.SchemaVersion,
                 ExpectedPreprocessingVersion = catalog.PreprocessingVersion
             });

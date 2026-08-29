@@ -326,10 +326,8 @@ install_bundle() {
     if [[ -e "$target_path" || -L "$target_path" ]]; then
         [[ -d "$target_path" && ! -L "$target_path" ]] || { hyg_fail "immutable version path is not a safe directory: $target_path"; return 1; }
         validate_installed_target "$target"
-        if [[ "$(hyg_json_value "$target_path/$HYG_MANIFEST_FILE" '$.manifestVersion')" == 2 ]]; then
-            [[ "$(hyg_sha256 "$target_path/$HYG_MANIFEST_FILE")" == "$bundle_manifest_sha256" ]] || \
-                { hyg_fail "installed package version has different immutable bundle contents"; return 1; }
-        fi
+        [[ "$(hyg_sha256 "$target_path/$HYG_MANIFEST_FILE")" == "$bundle_manifest_sha256" ]] || \
+            { hyg_fail "installed package version has different immutable bundle contents"; return 1; }
     else
         catalog_lock_barrier || return 1
         INSTALL_STAGING="$(mktemp -d "$INSTALL_ROOT/versions/.staging.XXXXXX")"
