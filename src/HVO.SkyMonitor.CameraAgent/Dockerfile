@@ -3,7 +3,9 @@
 # Build from repo root with a source-revision tag; deployment rejects mutable tags.
 
 # Stage 1: Build
-FROM mcr.microsoft.com/dotnet/sdk:10.0.100 AS build
+ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.100
+ARG DOTNET_ASPNET_IMAGE=mcr.microsoft.com/dotnet/aspnet:10.0
+FROM ${DOTNET_SDK_IMAGE} AS build
 WORKDIR /src
 
 # Copy solution and project files needed for restore
@@ -40,7 +42,7 @@ RUN dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o 
     && grep -q 'window.Blazor' /app/publish/wwwroot/_framework/blazor.web.js
 
 # Stage 2: Runtime
-FROM mcr.microsoft.com/dotnet/aspnet:10.0
+FROM ${DOTNET_ASPNET_IMAGE}
 ARG HVO_SOURCE_REVISION=unknown
 WORKDIR /app
 

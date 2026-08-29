@@ -2,3 +2,4 @@ self-hosted-runner:
   labels:
     - skymonitor-soak
     - hvo-skymonitor
+    - hvo-skymonitor-arm64

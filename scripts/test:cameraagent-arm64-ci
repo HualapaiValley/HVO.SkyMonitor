@@ -1,0 +1,737 @@
+#!/usr/bin/env bash
+# Produce bounded native Linux ARM64 CameraAgent CI evidence.
+
+set -euo pipefail
+export LC_ALL=C
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
+readonly BUNDLE="${1:-}"
+readonly RUN_ID="${GITHUB_RUN_ID:-local}"
+readonly RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-$(date -u '+%Y%m%d%H%M%S')-$$}"
+readonly RUN_KEY="${RUN_ID}-${RUN_ATTEMPT}"
+readonly TEMP_BASE="${RUNNER_TEMP:-/tmp}"
+readonly TEMP_ROOT="$TEMP_BASE/hvo-arm64-$RUN_KEY"
+readonly RESULTS="$TEMP_ROOT/evidence"
+readonly UPLOAD_RESULTS="${HVO_ARM64_RESULTS_ROOT:-$REPO_ROOT/TestResults/issue-381/$RUN_KEY}"
+readonly UPLOAD_STAGING="${UPLOAD_RESULTS}.staging-$$"
+readonly STATE_ROOT="$TEMP_ROOT/state"
+readonly AGENT_ROOT="$STATE_ROOT/agent"
+readonly CATALOG_ROOT="$STATE_ROOT/catalog"
+readonly DATA_PROTECTION_ROOT="$TEMP_ROOT/data-protection"
+readonly CONFIG_PATH="$TEMP_ROOT/cameraagent.json"
+readonly PASSWORD_PATH="$TEMP_ROOT/owner-password"
+readonly PUBLISH_SMOKE_ROOT="$STATE_ROOT/publish-smoke"
+readonly PUBLISH_SMOKE_CONFIG="$TEMP_ROOT/publish-smoke-cameraagent.json"
+readonly IMAGE_TAG="hvo-cameraagent-arm64-ci:$RUN_KEY"
+readonly CONTAINER="hvo-arm64-$RUN_KEY"
+readonly OWNERSHIP_LABEL_KEY="io.hvo.skymonitor.arm64-ci-run"
+readonly OWNERSHIP_LABEL="$OWNERSHIP_LABEL_KEY=$RUN_KEY"
+
+SAMPLER_PID=""
+CONTAINER_SAMPLER_PID=""
+PUBLISH_PID=""
+
+fail() {
+    printf 'ARM64 CI failure: %s\n' "$*" >&2
+    exit 1
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable: $1"
+}
+
+stop_process() {
+    local pid="$1" deadline exit_code process_state
+    kill -TERM "$pid" >/dev/null 2>&1 || return 1
+    deadline=$((SECONDS + 45))
+    while kill -0 "$pid" >/dev/null 2>&1 && (( SECONDS < deadline )); do
+        process_state="$(awk '{ print $3 }' "/proc/$pid/stat" 2>/dev/null)"
+        [[ "$process_state" != Z ]] || break
+        sleep 1
+    done
+    if kill -0 "$pid" >/dev/null 2>&1; then
+        process_state="$(awk '{ print $3 }' "/proc/$pid/stat" 2>/dev/null)"
+        if [[ "$process_state" != Z ]]; then
+            kill -KILL "$pid" >/dev/null 2>&1 || true
+            wait "$pid" >/dev/null 2>&1 || true
+            return 124
+        fi
+    fi
+    wait "$pid"
+    exit_code=$?
+    return "$exit_code"
+}
+
+read_throttle() {
+    if command -v vcgencmd >/dev/null 2>&1; then
+        vcgencmd get_throttled 2>/dev/null | tr -d '\r\n'
+    else
+        printf 'unavailable'
+    fi
+}
+
+read_temperature_millic() {
+    local path value maximum=""
+    for path in /sys/class/thermal/thermal_zone*/temp; do
+        [[ -r "$path" ]] || continue
+        value="$(<"$path")"
+        [[ "$value" =~ ^[0-9]+$ ]] || continue
+        if [[ -z "$maximum" || "$value" -gt "$maximum" ]]; then
+            maximum="$value"
+        fi
+    done
+    printf '%s' "${maximum:-unavailable}"
+}
+
+capture_docker_logs() {
+    local resource_label
+    timeout 30 docker container inspect "$CONTAINER" >/dev/null 2>&1 || return 0
+    resource_label="$(timeout 30 docker container inspect --format "{{index .Config.Labels \"$OWNERSHIP_LABEL_KEY\"}}" "$CONTAINER")" || return 1
+    if [[ "$resource_label" != "$RUN_KEY" ]]; then
+        printf 'Refused to collect evidence from a container not owned by this run.\n' > "$RESULTS/container-ownership-error.txt"
+        return 1
+    fi
+    timeout 30 docker container inspect "$CONTAINER" 2>/dev/null |
+        jq '.[0].Config.Env |= map(select(startswith("InstallationVerification__Token=") | not))' \
+            > "$RESULTS/container-inspect.json" || true
+    timeout 30 docker logs "$CONTAINER" > "$RESULTS/cameraagent.log" 2>&1 || true
+}
+
+cleanup() {
+    local status=$? cleanup_failed=0 evidence_safe=1 remaining_containers=-1 remaining_images=-1
+    local resource_label secret file scan_status final_throttle sample_count container_inventory image_inventory
+    trap - EXIT INT TERM
+    set +e
+    rm -rf -- "$UPLOAD_STAGING" || cleanup_failed=1
+    mkdir -p "$UPLOAD_STAGING" || cleanup_failed=1
+    if [[ -n "$SAMPLER_PID" ]]; then
+        kill "$SAMPLER_PID" >/dev/null 2>&1 || true
+        wait "$SAMPLER_PID" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$CONTAINER_SAMPLER_PID" ]]; then
+        kill "$CONTAINER_SAMPLER_PID" >/dev/null 2>&1 || true
+        wait "$CONTAINER_SAMPLER_PID" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$PUBLISH_PID" ]]; then
+        stop_process "$PUBLISH_PID" >/dev/null 2>&1 || {
+            printf 'published-process-cleanup-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+            cleanup_failed=1
+        }
+    fi
+    final_throttle="$(read_throttle)"
+    jq -n \
+        --arg finalThrottle "$final_throttle" \
+        --arg finalTemperatureMillic "$(read_temperature_millic)" \
+        --arg completedUtc "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        '{schemaVersion:"hvo-arm64-runner-postflight-v1",finalThrottle:$finalThrottle,finalTemperatureMillic:$finalTemperatureMillic,completedUtc:$completedUtc}' \
+        > "$RESULTS/postflight.json" || cleanup_failed=1
+    if [[ "${PI_MODEL:-}" == *Raspberry\ Pi* && "$final_throttle" != "throttled=0x0" ]]; then
+        printf 'postflight-throttle-state-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+        cleanup_failed=1
+    fi
+    if [[ -n "$SAMPLER_PID" ]]; then
+        sample_count="$(awk -F, 'NR > 1 && NF == 9 { count++ } END { print count + 0 }' "$RESULTS/host-samples.csv" 2>/dev/null)"
+        if (( sample_count < 1 )) || ! awk -F, 'NR == 1 { next } NF != 9 { exit 1 }' "$RESULTS/host-samples.csv"; then
+            printf 'host-sample-validation-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+            cleanup_failed=1
+        fi
+    elif (( status == 0 )); then
+        printf 'host-sampler-not-started\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+        cleanup_failed=1
+    fi
+    capture_docker_logs || {
+        printf 'container-evidence-ownership-check-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+        cleanup_failed=1
+    }
+    if timeout 30 docker container inspect "$CONTAINER" >/dev/null 2>&1; then
+        resource_label="$(timeout 30 docker container inspect --format "{{index .Config.Labels \"$OWNERSHIP_LABEL_KEY\"}}" "$CONTAINER")"
+        if [[ "$resource_label" == "$RUN_KEY" ]]; then
+            timeout 30 docker rm -f "$CONTAINER" >/dev/null 2>&1 || {
+                printf 'container-removal-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+                cleanup_failed=1
+            }
+        else
+            printf 'container-ownership-mismatch\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+            cleanup_failed=1
+        fi
+    fi
+    if timeout 30 docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+        resource_label="$(timeout 30 docker image inspect --format "{{index .Config.Labels \"$OWNERSHIP_LABEL_KEY\"}}" "$IMAGE_TAG")"
+        if [[ "$resource_label" == "$RUN_KEY" ]]; then
+            timeout 30 docker image rm "$IMAGE_TAG" >/dev/null 2>&1 || {
+                printf 'image-removal-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+                cleanup_failed=1
+            }
+        else
+            printf 'image-ownership-mismatch\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+            cleanup_failed=1
+        fi
+    fi
+    if container_inventory="$(timeout 30 docker ps -a --filter "label=$OWNERSHIP_LABEL_KEY" --format '{{.ID}}')"; then
+        printf '%s\n' "$container_inventory" | grep . > "$UPLOAD_STAGING/remaining-container-ids.txt" || true
+        remaining_containers="$(printf '%s\n' "$container_inventory" | grep -c . || true)"
+    else
+        printf 'container-inventory-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+        cleanup_failed=1
+    fi
+    if image_inventory="$(timeout 30 docker image ls --filter "label=$OWNERSHIP_LABEL_KEY" --format '{{.ID}}')"; then
+        printf '%s\n' "$image_inventory" | grep . > "$UPLOAD_STAGING/remaining-image-ids.txt" || true
+        remaining_images="$(printf '%s\n' "$image_inventory" | grep -c . || true)"
+    else
+        printf 'image-inventory-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+        cleanup_failed=1
+    fi
+    if (( remaining_containers != 0 || remaining_images != 0 )); then
+        cleanup_failed=1
+    fi
+    cp -a "$RESULTS/." "$UPLOAD_STAGING/" || cleanup_failed=1
+    for secret in "${INSTALL_TOKEN:-}" "${OWNER_PASSWORD:-}"; do
+        [[ -n "$secret" ]] || continue
+        secret_matches="$TEMP_ROOT/secret-matches"
+        grep -R -l -F -- "$secret" "$UPLOAD_STAGING" > "$secret_matches" 2>/dev/null
+        scan_status=$?
+        if (( scan_status == 0 )); then
+            while IFS= read -r file; do
+                [[ -n "$file" ]] || continue
+                rm -f -- "$file" || cleanup_failed=1
+            done < "$secret_matches"
+            cleanup_failed=1
+        elif (( scan_status != 1 )); then
+            cleanup_failed=1
+            evidence_safe=0
+        fi
+    done
+    chmod -R u+w "$TEMP_ROOT" >/dev/null 2>&1 || {
+        printf 'temp-root-permission-reset-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+        cleanup_failed=1
+    }
+    rm -rf -- "$TEMP_ROOT" || {
+        printf 'temp-root-removal-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+        cleanup_failed=1
+    }
+    if [[ -e "$TEMP_ROOT" || -L "$TEMP_ROOT" ]]; then
+        printf 'temp-root-remains\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+        cleanup_failed=1
+    fi
+    rm -rf -- "$UPLOAD_RESULTS" || {
+        printf 'prior-upload-destination-removal-failed\n' >> "$UPLOAD_STAGING/cleanup-errors.txt"
+        cleanup_failed=1
+    }
+    if (( evidence_safe != 0 )); then
+        if ! mv "$UPLOAD_STAGING" "$UPLOAD_RESULTS"; then
+            cleanup_failed=1
+        fi
+    else
+        rm -rf -- "$UPLOAD_STAGING" || cleanup_failed=1
+    fi
+    if (( status == 0 && cleanup_failed != 0 )); then
+        status=1
+    fi
+    if (( evidence_safe != 0 )) && [[ -d "$UPLOAD_RESULTS" ]]; then
+        jq -n \
+            --argjson exitCode "$status" \
+            --argjson cleanupFailed "$cleanup_failed" \
+            --argjson remainingContainers "$remaining_containers" \
+            --argjson remainingImages "$remaining_images" \
+            '{exitCode:$exitCode,cleanupFailed:($cleanupFailed != 0),remainingContainers:$remainingContainers,remainingImages:$remainingImages}' \
+            > "$UPLOAD_RESULTS/cleanup.json" || status=1
+    fi
+    exit "$status"
+}
+
+if [[ $# -ne 1 || ! -d "$BUNDLE" || -L "$BUNDLE" ]]; then
+    printf 'Usage: %s PRODUCTION_CATALOG_BUNDLE\n' "${0##*/}" >&2
+    exit 2
+fi
+
+for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc readelf readlink realpath sha256sum sqlite3 stat timeout wc; do
+    require_command "$command"
+done
+
+rm -rf -- "$RESULTS" "$UPLOAD_RESULTS" "$UPLOAD_STAGING"
+mkdir -p "$RESULTS" "$AGENT_ROOT/home" "$AGENT_ROOT/identity" "$AGENT_ROOT/provisioning" \
+    "$DATA_PROTECTION_ROOT" "$TEMP_ROOT/publish" "$PUBLISH_SMOKE_ROOT/home" \
+    "$PUBLISH_SMOKE_ROOT/identity" "$PUBLISH_SMOKE_ROOT/provisioning" "$PUBLISH_SMOKE_ROOT/data-protection"
+chmod 700 "$TEMP_ROOT" "$STATE_ROOT" "$AGENT_ROOT" "$DATA_PROTECTION_ROOT" "$PUBLISH_SMOKE_ROOT"
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+HOST_ARCH="$(uname -m)"
+readonly HOST_ARCH
+[[ "$HOST_ARCH" == aarch64 || "$HOST_ARCH" == arm64 ]] || fail "host architecture is $HOST_ARCH, expected native ARM64"
+DOCKER_ARCH="$(docker version --format '{{.Server.Arch}}')"
+readonly DOCKER_ARCH
+[[ "$DOCKER_ARCH" == aarch64 || "$DOCKER_ARCH" == arm64 ]] || fail "Docker architecture is $DOCKER_ARCH, expected ARM64"
+[[ "$(docker version --format '{{.Server.Os}}')" == linux ]] || fail "Docker server is not Linux"
+(( EUID != 0 )) || fail "runner service account must not be root"
+grep -Eq '^NoNewPrivs:[[:space:]]+1$' /proc/self/status || fail "runner service does not enforce NoNewPrivileges"
+if [[ -n "$(docker ps -aq --filter "label=$OWNERSHIP_LABEL_KEY")" || -n "$(docker image ls -q --filter "label=$OWNERSHIP_LABEL_KEY")" ]]; then
+    fail "stale ARM64 CI resources require runner quarantine and operator recovery"
+fi
+
+SQLITE_VERSION="$(sqlite3 --version | awk '{ print $1 }')"
+readonly SQLITE_VERSION
+[[ "$SQLITE_VERSION" == 3.45.1 ]] || fail "SQLite CLI version is $SQLITE_VERSION, expected 3.45.1"
+
+MEMORY_KIB="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
+readonly MEMORY_KIB
+readonly MEMORY_BYTES="$((MEMORY_KIB * 1024))"
+(( MEMORY_BYTES >= 7500000000 )) || fail "runner reports less than 7.5 GB usable memory for an 8 GB host"
+(( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )) || fail "Bash 5.1 or newer is required"
+DEFAULT_INTERFACE="$(ip route show default | awk 'NR == 1 { print $5 }')"
+readonly DEFAULT_INTERFACE
+[[ -n "$DEFAULT_INTERFACE" ]] || fail "default network interface is unavailable"
+[[ ! -d "/sys/class/net/$DEFAULT_INTERFACE/wireless" ]] || fail "runner default route uses a wireless interface"
+[[ "$(<"/sys/class/net/$DEFAULT_INTERFACE/carrier")" == 1 ]] || fail "runner default network interface has no carrier"
+INTERFACE_PATH="$(readlink -f "/sys/class/net/$DEFAULT_INTERFACE")"
+readonly INTERFACE_PATH
+[[ -n "$INTERFACE_PATH" && "$INTERFACE_PATH" != *'/virtual/'* ]] || fail "runner default route does not use a physical interface"
+
+DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
+readonly DOCKER_ROOT
+[[ -n "$DOCKER_ROOT" && -d "$DOCKER_ROOT" ]] || fail "Docker root is unavailable"
+DOCKER_SOURCE="$(findmnt -no SOURCE --target "$DOCKER_ROOT")"
+TEMP_SOURCE="$(findmnt -no SOURCE --target "$TEMP_BASE")"
+WORKSPACE_SOURCE="$(findmnt -no SOURCE --target "$REPO_ROOT")"
+readonly DOCKER_SOURCE TEMP_SOURCE WORKSPACE_SOURCE
+for source in "$DOCKER_SOURCE" "$TEMP_SOURCE" "$WORKSPACE_SOURCE"; do
+    [[ -n "$source" ]] || fail "a runner storage source could not be resolved"
+    [[ "$source" == /dev/* ]] || fail "runner storage is not backed by a qualified local block device: $source"
+    ancestry="$(lsblk -s -n -o NAME,TYPE,ROTA "$source")" || fail "runner storage ancestry could not be resolved: $source"
+    [[ -n "$ancestry" && "$ancestry" != *mmcblk* ]] || fail "runner storage resolves to microSD or unknown storage"
+    printf '%s\n' "$ancestry" | awk '$2 == "disk" && $3 == 0 { found=1 } END { exit !found }' || \
+        fail "runner storage is not backed by a non-rotational SSD/NVMe disk"
+done
+for storage_path in "$DOCKER_ROOT" "$TEMP_BASE" "$REPO_ROOT"; do
+    available_kib="$(df -Pk -- "$storage_path" | awk 'NR == 2 { print $4 }')"
+    available_inodes="$(df -Pi -- "$storage_path" | awk 'NR == 2 { print $4 }')"
+    (( available_kib >= 20971520 )) || fail "runner storage has less than 20 GiB available: $storage_path"
+    (( available_inodes >= 100000 )) || fail "runner storage has fewer than 100000 inodes available: $storage_path"
+done
+if command -v sudo >/dev/null 2>&1 && sudo -n -l >/dev/null 2>&1; then
+    fail "runner service account has a noninteractive sudo policy"
+fi
+for account_group in $(id -Gn); do
+    case "$account_group" in
+        sudo|wheel|admin)
+            fail "runner service account belongs to privileged group: $account_group"
+            ;;
+    esac
+done
+
+PI_MODEL=""
+if [[ -r /proc/device-tree/model ]]; then
+    PI_MODEL="$(tr -d '\0' </proc/device-tree/model)"
+fi
+readonly PI_MODEL
+INITIAL_THROTTLE="$(read_throttle)"
+readonly INITIAL_THROTTLE
+if [[ "$PI_MODEL" == *Raspberry\ Pi* ]]; then
+    [[ "$INITIAL_THROTTLE" == "throttled=0x0" ]] || fail "Raspberry Pi throttle state is $INITIAL_THROTTLE"
+fi
+
+jq -n \
+    --arg architecture "$HOST_ARCH" \
+    --arg dockerArchitecture "$DOCKER_ARCH" \
+    --arg os "$(docker version --format '{{.Server.Os}}')" \
+    --arg kernel "$(uname -r)" \
+    --arg sdk "$(dotnet --version)" \
+    --arg sqliteVersion "$SQLITE_VERSION" \
+    --arg dockerVersion "$(docker version --format '{{.Server.Version}}')" \
+    --arg dockerStorageSource "$DOCKER_SOURCE" \
+    --arg runnerStorageSource "$TEMP_SOURCE" \
+    --arg workspaceStorageSource "$WORKSPACE_SOURCE" \
+    --arg networkInterface "$DEFAULT_INTERFACE" \
+    --arg piModel "$PI_MODEL" \
+    --arg initialThrottle "$INITIAL_THROTTLE" \
+    --argjson processorCount "$(nproc)" \
+    --argjson memoryBytes "$MEMORY_BYTES" \
+    '{schemaVersion:"hvo-arm64-runner-preflight-v1",architecture:$architecture,docker:{os:$os,architecture:$dockerArchitecture,version:$dockerVersion,storageSource:$dockerStorageSource},kernel:$kernel,dotnetSdk:$sdk,sqliteVersion:$sqliteVersion,processorCount:$processorCount,memoryBytes:$memoryBytes,runnerStorageSource:$runnerStorageSource,workspaceStorageSource:$workspaceStorageSource,networkInterface:$networkInterface,piModel:$piModel,initialThrottle:$initialThrottle}' \
+    > "$RESULTS/preflight.json"
+
+printf 'timestamp_utc,temperature_millic,throttle,mem_available_kib,load_1m,temp_available_kib,docker_available_kib,disk_read_sectors,disk_write_sectors\n' > "$RESULTS/host-samples.csv"
+(
+    while true; do
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+            "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            "$(read_temperature_millic)" \
+            "$(read_throttle)" \
+            "$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)" \
+            "$(awk '{ print $1 }' /proc/loadavg)" \
+            "$(df -Pk "$TEMP_BASE" | awk 'NR == 2 { print $4 }')" \
+            "$(df -Pk "$DOCKER_ROOT" | awk 'NR == 2 { print $4 }')" \
+            "$(awk '$3 !~ /^(loop|ram|dm-)/ { total += $6 } END { print total + 0 }' /proc/diskstats)" \
+            "$(awk '$3 !~ /^(loop|ram|dm-)/ { total += $10 } END { print total + 0 }' /proc/diskstats)"
+        sleep 5
+    done
+) >> "$RESULTS/host-samples.csv" &
+SAMPLER_PID=$!
+
+readonly CAMERA_PROJECT="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj"
+readonly CAMERA_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
+readonly ACCEPTANCE_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
+readonly CATALOG_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
+readonly UNIT_FILTER='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware'
+DOCKER_SERVER_ID="$(docker info --format '{{.ID}}')"
+readonly DOCKER_SERVER_ID
+
+[[ -z "$(git -C "$REPO_ROOT" status --porcelain=v1)" ]] || fail "source tree is dirty"
+
+printf 'phase,elapsed_seconds\n' > "$RESULTS/phase-durations.csv"
+phase_started=$SECONDS
+
+dotnet tool restore
+for project in "$CAMERA_PROJECT" "$CAMERA_TESTS" "$ACCEPTANCE_TESTS" "$CATALOG_TESTS"; do
+    dotnet restore "$project"
+    dotnet build "$project" --no-restore --configuration Release -warnaserror
+done
+printf 'build,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
+
+phase_started=$SECONDS
+for entry in \
+    "$CAMERA_TESTS:cameraagent" \
+    "$ACCEPTANCE_TESTS:cameraagent-acceptance" \
+    "$CATALOG_TESTS:catalog-sqlite"; do
+    project="${entry%%:*}"
+    name="${entry##*:}"
+    mkdir -p "$RESULTS/unit-$name"
+    DOCKER_HOST="unix://$TEMP_ROOT/unit-docker-must-not-exist.sock" \
+        dotnet test "$project" --no-build --configuration Release --filter "$UNIT_FILTER" \
+        --results-directory "$RESULTS/unit-$name" --logger "trx;LogFileName=unit-$name-arm64.trx"
+    trx="$RESULTS/unit-$name/unit-$name-arm64.trx"
+    executed="$(grep -c '<UnitTestResult ' "$trx")"
+    (( executed > 0 )) || fail "$name Unit filter selected no tests"
+    if grep '<UnitTestResult ' "$trx" | grep -vq 'outcome="Passed"'; then
+        fail "$name Unit evidence contains a result that is not Passed"
+    fi
+done
+printf 'unit-tests,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
+[[ "$(docker info --format '{{.ID}}')" == "$DOCKER_SERVER_ID" ]] || fail "Docker daemon changed after Unit tests"
+
+phase_started=$SECONDS
+dotnet restore "$CAMERA_PROJECT" --runtime linux-arm64
+dotnet publish "$CAMERA_PROJECT" --no-restore --configuration Release --runtime linux-arm64 \
+    --self-contained false -p:UseAppHost=true --output "$TEMP_ROOT/publish"
+file "$TEMP_ROOT/publish/HVO.SkyMonitor.CameraAgent" | tee "$RESULTS/publish-elf.txt"
+readelf -h "$TEMP_ROOT/publish/HVO.SkyMonitor.CameraAgent" >> "$RESULTS/publish-elf.txt"
+grep -q 'AArch64' "$RESULTS/publish-elf.txt" || fail "published apphost is not AArch64"
+for library in libSkiaSharp.so libe_sqlite3.so; do
+    path="$(find "$TEMP_ROOT/publish" -name "$library" -print -quit)"
+    [[ -n "$path" ]] || fail "published native library is missing: $library"
+    library_evidence="$RESULTS/${library}.elf.txt"
+    file "$path" | tee "$library_evidence" | tee -a "$RESULTS/publish-elf.txt"
+    readelf -h "$path" | tee -a "$library_evidence" >> "$RESULTS/publish-elf.txt"
+    grep -q 'AArch64' "$library_evidence" || fail "$library is not AArch64"
+done
+if find "$TEMP_ROOT/publish" -name '*Tests.dll' -print -quit | grep -q .; then
+    fail "publish output contains test assemblies"
+fi
+(
+    cd "$TEMP_ROOT/publish"
+    find . -type f -print0 | sort -z | xargs -0 sha256sum > "$RESULTS/cameraagent-linux-arm64.sha256"
+)
+printf 'publish,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
+
+phase_started=$SECONDS
+HVO_RUNTIME_DATA_ROOT="$STATE_ROOT" "$REPO_ROOT/scripts/catalog:install" install "$BUNDLE" "$CATALOG_ROOT" \
+    > "$RESULTS/catalog-install.log"
+readonly CATALOG_DATABASE="$CATALOG_ROOT/current/hyg_v42.sqlite"
+[[ "$(sqlite3 "$CATALOG_DATABASE" 'PRAGMA quick_check;')" == ok ]] || fail "installed catalog quick_check failed"
+sha256sum "$CATALOG_DATABASE" > "$RESULTS/catalog-database.sha256"
+printf 'catalog-install,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
+
+git -C "$REPO_ROOT" rev-parse HEAD > "$RESULTS/source-revision.txt"
+phase_started=$SECONDS
+mapfile -t base_images < <(awk -F= '/^ARG DOTNET_.*_IMAGE=/ { print $2 }' "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" | sort -u)
+printf '[]\n' > "$RESULTS/base-images.json"
+SDK_IMAGE_DIGEST=""
+ASPNET_IMAGE_DIGEST=""
+for base_image in "${base_images[@]}"; do
+    docker pull --platform linux/arm64 "$base_image" >/dev/null
+    docker image inspect "$base_image" > "$TEMP_ROOT/base-image.json"
+    jq -e '.[0].Architecture == "arm64" and .[0].Os == "linux" and (.[0].RepoDigests | length > 0)' \
+        "$TEMP_ROOT/base-image.json" >/dev/null || fail "base image is not immutable native Linux ARM64: $base_image"
+    repository="${base_image%:*}@"
+    base_digest="$(jq -er --arg repository "$repository" '[.[0].RepoDigests[] | select(startswith($repository))][0]' "$TEMP_ROOT/base-image.json")"
+    if [[ "$base_image" == */sdk:* ]]; then
+        SDK_IMAGE_DIGEST="$base_digest"
+    elif [[ "$base_image" == */aspnet:* ]]; then
+        ASPNET_IMAGE_DIGEST="$base_digest"
+    fi
+    jq --arg image "$base_image" --slurpfile inspect "$TEMP_ROOT/base-image.json" \
+        '. + [{image:$image,id:$inspect[0][0].Id,repoDigests:$inspect[0][0].RepoDigests,architecture:$inspect[0][0].Architecture,os:$inspect[0][0].Os}]' \
+        "$RESULTS/base-images.json" > "$RESULTS/base-images.next.json"
+    mv "$RESULTS/base-images.next.json" "$RESULTS/base-images.json"
+done
+readonly SDK_IMAGE_DIGEST ASPNET_IMAGE_DIGEST
+[[ -n "$SDK_IMAGE_DIGEST" && -n "$ASPNET_IMAGE_DIGEST" ]] || fail "resolved base-image digests are incomplete"
+docker build --pull --platform linux/arm64 --build-arg "HVO_SOURCE_REVISION=$(<"$RESULTS/source-revision.txt")" \
+    --build-arg "DOTNET_SDK_IMAGE=$SDK_IMAGE_DIGEST" \
+    --build-arg "DOTNET_ASPNET_IMAGE=$ASPNET_IMAGE_DIGEST" \
+    --label "$OWNERSHIP_LABEL" --tag "$IMAGE_TAG" \
+    --iidfile "$RESULTS/image-id.txt" \
+    --file "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" "$REPO_ROOT" \
+    > "$RESULTS/docker-build.log"
+IMAGE_ID="$(<"$RESULTS/image-id.txt")"
+readonly IMAGE_ID
+[[ "$IMAGE_ID" == sha256:* ]] || fail "Docker did not produce a content-addressed image ID"
+docker image inspect "$IMAGE_ID" > "$RESULTS/image-inspect.json"
+jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
+    '.[0].Id | startswith("sha256:")' \
+    "$RESULTS/image-inspect.json" >/dev/null || fail "native image is not content addressed"
+jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
+    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-compatibility"] == "backward-compatible" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hyg-v42-production-p3-s2"' \
+    "$RESULTS/image-inspect.json" >/dev/null || fail "native image identity or revision is incorrect"
+docker history --no-trunc "$IMAGE_ID" > "$RESULTS/image-history.txt"
+printf 'image-build,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
+
+jq --arg agentId "cameraagent-arm64-$RUN_KEY" '.agentId = $agentId' \
+    "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/cameraagent.standalone-w6-mono8.json" > "$CONFIG_PATH"
+OWNER_PASSWORD="Arm64-$(tr -d '-' </proc/sys/kernel/random/uuid)-Aa1!"
+readonly OWNER_PASSWORD
+INSTALL_TOKEN="$(tr -d '-' </proc/sys/kernel/random/uuid)$(tr -d '-' </proc/sys/kernel/random/uuid)"
+readonly INSTALL_TOKEN
+printf '%s' "$OWNER_PASSWORD" > "$PASSWORD_PATH"
+chmod 600 "$PASSWORD_PATH" "$CONFIG_PATH"
+jq --arg agentId "cameraagent-arm64-publish-$RUN_KEY" --arg storageRoot "$PUBLISH_SMOKE_ROOT" \
+    '.agentId = $agentId | (.pipeline.steps[] | select(.type == "Storage").options.storageRoot) = $storageRoot' \
+    "$CONFIG_PATH" > "$PUBLISH_SMOKE_CONFIG"
+chmod 600 "$PUBLISH_SMOKE_CONFIG"
+
+(
+    cd "$TEMP_ROOT/publish"
+    exec env \
+        ASPNETCORE_ENVIRONMENT=Production \
+        ASPNETCORE_URLS=http://127.0.0.1:0 \
+        HOME="$PUBLISH_SMOKE_ROOT/home" \
+        CameraAgent__AgentId="cameraagent-arm64-publish-$RUN_KEY" \
+        CameraAgent__ConfigFilePath="$PUBLISH_SMOKE_CONFIG" \
+        CameraAgent__RawIngressRoot="$PUBLISH_SMOKE_ROOT" \
+        CameraAgent__CentralIntegration__Mode=Disabled \
+        CameraAgent__CaptureDistribution__UploadEnabled=false \
+        CameraAgent__EnvironmentalDelivery__Enabled=false \
+        CameraAgent__TransientDetection__Mode=Off \
+        Catalog__Root="$CATALOG_ROOT" \
+        Catalog__RequiredCatalogId=hyg-v42-production \
+        Catalog__RequiredPackageKind=Production \
+        LocalIdentity__AdminEmail=owner@arm64-ci.invalid \
+        LocalIdentity__DatabasePath="$PUBLISH_SMOKE_ROOT/identity/cameraagent_identity.db" \
+        LocalIdentity__AdminPasswordFile="$PASSWORD_PATH" \
+        DeviceProvisioning__StateDirectory="$PUBLISH_SMOKE_ROOT/provisioning" \
+        InstallationVerification__Token="$INSTALL_TOKEN" \
+        CentralIdentity__ServiceUrl=http://central-unavailable.invalid/ \
+        SkyMonitor__BaseUrl=http://central-unavailable.invalid \
+        ./HVO.SkyMonitor.CameraAgent
+) > "$RESULTS/publish-smoke.log" 2>&1 &
+PUBLISH_PID=$!
+deadline=$((SECONDS + 120))
+while (( SECONDS < deadline )); do
+    kill -0 "$PUBLISH_PID" >/dev/null 2>&1 || fail "published CameraAgent exited before startup completed"
+    grep -Fq 'Now listening on:' "$RESULTS/publish-smoke.log" && break
+    sleep 2
+done
+grep -Fq 'Now listening on:' "$RESULTS/publish-smoke.log" || fail "published CameraAgent did not complete startup"
+set +e
+stop_process "$PUBLISH_PID"
+publish_exit=$?
+set -e
+PUBLISH_PID=""
+(( publish_exit == 0 )) || fail "published CameraAgent did not stop cleanly"
+if grep -Eq '\[[^]]+ (ERR|FTL)\]|Unhandled exception' "$RESULTS/publish-smoke.log"; then
+    fail "published CameraAgent logged a runtime error"
+fi
+
+phase_started=$SECONDS
+docker run --detach \
+    --name "$CONTAINER" \
+    --label "$OWNERSHIP_LABEL" \
+    --network none \
+    --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --memory 6g \
+    --pids-limit 512 \
+    --user "$(id -u):$(id -g)" \
+    --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,noexec,mode=1777 \
+    --mount "type=bind,source=$CONFIG_PATH,target=/run/hvo/cameraagent.json,readonly" \
+    --mount "type=bind,source=$AGENT_ROOT,target=/var/lib/hvo/data/agent" \
+    --mount "type=bind,source=$DATA_PROTECTION_ROOT,target=/app/DataProtection-Keys" \
+    --mount "type=bind,source=$CATALOG_ROOT,target=/var/lib/hvo/data/catalog,readonly" \
+    --mount "type=bind,source=$PASSWORD_PATH,target=/run/secrets/owner_password,readonly" \
+    --env ASPNETCORE_ENVIRONMENT=Production \
+    --env ASPNETCORE_URLS=http://+:8080 \
+    --env HOME=/var/lib/hvo/data/agent/home \
+    --env CameraAgent__AgentId="cameraagent-arm64-$RUN_KEY" \
+    --env CameraAgent__ConfigFilePath=/run/hvo/cameraagent.json \
+    --env CameraAgent__RawIngressRoot=/var/lib/hvo/data/agent \
+    --env CameraAgent__CentralIntegration__Mode=Disabled \
+    --env CameraAgent__CaptureDistribution__UploadEnabled=false \
+    --env CameraAgent__EnvironmentalDelivery__Enabled=false \
+    --env CameraAgent__TransientDetection__Mode=Off \
+    --env Catalog__Root=/var/lib/hvo/data/catalog \
+    --env Catalog__RequiredCatalogId=hyg-v42-production \
+    --env Catalog__RequiredPackageKind=Production \
+    --env LocalIdentity__AdminEmail=owner@arm64-ci.invalid \
+    --env LocalIdentity__DatabasePath=/var/lib/hvo/data/agent/identity/cameraagent_identity.db \
+    --env LocalIdentity__AdminPasswordFile=/run/secrets/owner_password \
+    --env DeviceProvisioning__StateDirectory=/var/lib/hvo/data/agent/provisioning \
+    --env InstallationVerification__Token="$INSTALL_TOKEN" \
+    --env CentralIdentity__ServiceUrl=http://central-unavailable.invalid/ \
+    --env SkyMonitor__BaseUrl=http://central-unavailable.invalid \
+    "$IMAGE_ID" > "$RESULTS/container-id.txt"
+
+deadline=$((SECONDS + 180))
+while (( SECONDS < deadline )); do
+    health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$CONTAINER")"
+    [[ "$health" != unhealthy ]] || fail "CameraAgent container became unhealthy"
+    [[ "$health" == healthy ]] && break
+    sleep 3
+done
+[[ "${health:-missing}" == healthy ]] || fail "CameraAgent container did not become healthy"
+[[ "$(docker exec "$CONTAINER" uname -m)" == aarch64 ]] || fail "container process is not native AArch64"
+[[ "$(docker inspect --format '{{.Image}}' "$CONTAINER")" == "$IMAGE_ID" ]] || fail "container did not start from the retained image ID"
+docker stats --no-stream --format '{{json .}}' "$CONTAINER" > "$RESULTS/container-stats.json"
+(
+    while timeout 30 docker container inspect "$CONTAINER" >/dev/null 2>&1; do
+        timeout 30 docker stats --no-stream --format '{{json .}}' "$CONTAINER" |
+            jq -c --arg sampledUtc "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '. + {sampledUtc:$sampledUtc}' || true
+        sleep 5
+    done
+) > "$RESULTS/container-samples.jsonl" &
+CONTAINER_SAMPLER_PID=$!
+
+timeout 45 docker exec "$CONTAINER" curl -fsS --connect-timeout 5 --max-time 30 \
+    -H "X-HVO-Installation-Token: $INSTALL_TOKEN" \
+    http://127.0.0.1:8080/api/internal/owner-bootstrap/installation-verification \
+    > "$RESULTS/installation-verification.json"
+readonly CATALOG_MANIFEST="$CATALOG_ROOT/current/manifest.json"
+EXPECTED_CATALOG_SHA="$(jq -r '.database.sha256 | ascii_downcase' "$CATALOG_MANIFEST")"
+readonly EXPECTED_CATALOG_SHA
+EXPECTED_CATALOG_LENGTH="$(jq -r '.database.length' "$CATALOG_MANIFEST")"
+readonly EXPECTED_CATALOG_LENGTH
+EXPECTED_CATALOG_SCHEMA="$(jq -r '.schemaVersion' "$CATALOG_MANIFEST")"
+readonly EXPECTED_CATALOG_SCHEMA
+EXPECTED_CATALOG_PREPROCESSING="$(jq -r '.preprocessingVersion' "$CATALOG_MANIFEST")"
+readonly EXPECTED_CATALOG_PREPROCESSING
+EXPECTED_CONFIG_SHA="$(jq -cS -j . "$CONFIG_PATH" | sha256sum | awk '{ print $1 }')"
+readonly EXPECTED_CONFIG_SHA
+jq -e --arg sha "$EXPECTED_CATALOG_SHA" --argjson length "$EXPECTED_CATALOG_LENGTH" --arg schema "$EXPECTED_CATALOG_SCHEMA" --arg preprocessing "$EXPECTED_CATALOG_PREPROCESSING" --arg configurationSha "$EXPECTED_CONFIG_SHA" --arg agentId "cameraagent-arm64-$RUN_KEY" \
+    '.agentId == $agentId and .ownerEmail == "owner@arm64-ci.invalid" and .ownerBootstrapState == "owner-temporary-password" and .rawIngressRoot == "/var/lib/hvo/data/agent" and .deploymentLocationId == null and .deploymentLocationVersion == null and .deploymentLocationSha256 == null and .catalogId == "hyg-v42-production" and .packageVersion == "hyg-v4.2-p3-s2-r1" and .rowCount == 119625 and (.databaseSha256 | ascii_downcase) == $sha and .databaseLength == $length and .schemaVersion == $schema and .preprocessingVersion == $preprocessing and (.configurationSha256 | ascii_downcase) == $configurationSha and (.rigProfileSha256 | length == 64) and (.scheduleSha256 | length == 64)' \
+    "$RESULTS/installation-verification.json" >/dev/null || fail "installation verification did not report the canonical catalog and configuration"
+
+deadline=$((SECONDS + 120))
+raw_manifest=""
+while (( SECONDS < deadline )); do
+    mapfile -t raw_manifests < <(find "$AGENT_ROOT" -path '*/frames/*/Raw/*.json' -print | sort)
+    container_sample_count="$(wc -l < "$RESULTS/container-samples.jsonl")"
+    if (( ${#raw_manifests[@]} >= 3 && container_sample_count >= 3 )); then
+        raw_manifest="${raw_manifests[0]}"
+        break
+    fi
+    sleep 2
+done
+[[ -n "$raw_manifest" ]] || fail "bounded VirtualSky smoke produced fewer than three durable raw manifests"
+RAW_RELATIVE_PATH="$(jq -er 'select(.schemaVersion == "v2" and .descriptor.artifact.role == "Raw") | .relativeArtifactPath' "$raw_manifest")"
+readonly RAW_RELATIVE_PATH
+readonly RAW_PAYLOAD="$AGENT_ROOT/$RAW_RELATIVE_PATH"
+[[ "$(realpath -m "$RAW_PAYLOAD")" == "$AGENT_ROOT"/* ]] || fail "raw payload path escapes the storage root"
+[[ -s "$RAW_PAYLOAD" ]] || fail "raw manifest payload is missing"
+EXPECTED_RAW_SHA="$(jq -er '.descriptor.artifact.checksumSha256' "$raw_manifest")"
+readonly EXPECTED_RAW_SHA
+ACTUAL_RAW_SHA="$(sha256sum "$RAW_PAYLOAD" | awk '{ print toupper($1) }')"
+readonly ACTUAL_RAW_SHA
+[[ "$EXPECTED_RAW_SHA" == "$ACTUAL_RAW_SHA" ]] || fail "raw payload checksum differs from its manifest"
+jq -n \
+    --arg manifest "$(realpath --relative-to="$AGENT_ROOT" "$raw_manifest")" \
+    --arg payload "$(realpath --relative-to="$AGENT_ROOT" "$RAW_PAYLOAD")" \
+    --arg sha256 "$ACTUAL_RAW_SHA" \
+    --argjson captureSequence "$(jq -er '.descriptor.capture.captureSequence' "$raw_manifest")" \
+    --arg exposureStartUtc "$(jq -er '.descriptor.timing.exposureStartedUtc' "$raw_manifest")" \
+    --arg exposureEndUtc "$(jq -er '.descriptor.timing.exposureEndedUtc' "$raw_manifest")" \
+    '{manifest:$manifest,payload:$payload,sha256:$sha256,captureSequence:$captureSequence,exposureStartUtc:$exposureStartUtc,exposureEndUtc:$exposureEndUtc}' > "$RESULTS/capture-evidence.json"
+jq -s '{captureCount:length,captureSequences:map(.descriptor.capture.captureSequence),exposureStartedUtc:map(.descriptor.timing.exposureStartedUtc),exposureEndedUtc:map(.descriptor.timing.exposureEndedUtc)}' \
+    "${raw_manifests[@]:0:3}" > "$RESULTS/capture-cadence.json"
+mapfile -t capture_sequences < <(jq -r '.descriptor.capture.captureSequence' "${raw_manifests[@]:0:3}")
+(( capture_sequences[1] == capture_sequences[0] + 1 && capture_sequences[2] == capture_sequences[1] + 1 )) || \
+    fail "bounded VirtualSky captures are not consecutive"
+mapfile -t exposure_started < <(jq -r '.descriptor.timing.exposureStartedUtc' "${raw_manifests[@]:0:3}")
+first_interval_ms=$(( $(date -u -d "${exposure_started[1]}" '+%s%3N') - $(date -u -d "${exposure_started[0]}" '+%s%3N') ))
+second_interval_ms=$(( $(date -u -d "${exposure_started[2]}" '+%s%3N') - $(date -u -d "${exposure_started[1]}" '+%s%3N') ))
+(( first_interval_ms >= 1500 && first_interval_ms <= 5000 && second_interval_ms >= 1500 && second_interval_ms <= 5000 )) || \
+    fail "bounded VirtualSky capture intervals are outside 1.5-5 seconds"
+jq --argjson firstIntervalMilliseconds "$first_interval_ms" --argjson secondIntervalMilliseconds "$second_interval_ms" \
+    '. + {intervalMilliseconds:[$firstIntervalMilliseconds,$secondIntervalMilliseconds]}' \
+    "$RESULTS/capture-cadence.json" > "$RESULTS/capture-cadence.next.json"
+mv "$RESULTS/capture-cadence.next.json" "$RESULTS/capture-cadence.json"
+
+capture_docker_logs
+grep -Fq 'Created camera module VirtualSky' "$RESULTS/cameraagent.log" || fail "VirtualSky module creation was not logged"
+grep -Fq 'Camera module Virtual Sky Camera initialized' "$RESULTS/cameraagent.log" || fail "VirtualSky module initialization was not logged"
+if grep -Fq 'Created camera module ZwoAsi' "$RESULTS/cameraagent.log"; then
+    fail "ZWO module was created during VirtualSky smoke"
+fi
+[[ "$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")" == healthy ]] || fail "CameraAgent was not healthy before shutdown"
+timeout 45 docker exec "$CONTAINER" curl -fsS --connect-timeout 5 --max-time 30 \
+    http://127.0.0.1:8080/health > "$RESULTS/health.json"
+jq -e '
+    ([.checks[] | select(.status == "Unhealthy")] | length) == 0 and
+    (. as $health | ["catalog", "camera-configuration", "raw-ingress", "capture-lanes", "capture-processing", "owner-bootstrap"] |
+        all(.[]; . as $required | any($health.checks[]; .name == $required and .status == "Healthy")))
+' "$RESULTS/health.json" >/dev/null || fail "CameraAgent detailed health contains an unhealthy or missing required check"
+
+docker stop --time 45 "$CONTAINER" >/dev/null
+capture_docker_logs
+[[ "$(docker inspect --format '{{.State.ExitCode}}' "$CONTAINER")" == 0 ]] || fail "CameraAgent did not exit cleanly"
+grep -Fq 'Capture lane workers drained before shutdown' "$RESULTS/cameraagent.log" || fail "CameraAgent did not report drained capture lanes"
+if grep -Eq '\[[^]]+ (ERR|FTL)\]|Unhandled exception' "$RESULTS/cameraagent.log"; then
+    fail "CameraAgent logged a runtime error during the bounded smoke"
+fi
+
+database_count="$(find "$AGENT_ROOT" -type f -name '*.db' | wc -l)"
+(( database_count > 0 )) || fail "CameraAgent produced no durable SQLite databases"
+while IFS= read -r -d '' database; do
+    result="$(sqlite3 "$database" 'PRAGMA quick_check;')"
+    [[ "$result" == ok ]] || fail "SQLite quick_check failed for $(basename "$database")"
+    printf '%s ok\n' "$(basename "$database")"
+done < <(find "$AGENT_ROOT" -type f -name '*.db' -print0) > "$RESULTS/sqlite-quick-check.txt"
+readonly RAW_INGRESS_DATABASE="$AGENT_ROOT/journal/raw-ingress.db"
+[[ -f "$RAW_INGRESS_DATABASE" ]] || fail "raw-ingress database is missing"
+[[ "$(sqlite3 "$RAW_INGRESS_DATABASE" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='capture_lane_work';")" == 1 ]] || \
+    fail "raw-ingress database has no capture_lane_work table"
+sqlite3 -json "$RAW_INGRESS_DATABASE" "SELECT state, count(*) AS count FROM capture_lane_work GROUP BY state ORDER BY state;" \
+    > "$RESULTS/capture-lane-backlog.json"
+jq -e 'length > 0' "$RESULTS/capture-lane-backlog.json" >/dev/null || fail "capture-lane backlog evidence is empty"
+pending_count="$(sqlite3 "$RAW_INGRESS_DATABASE" "SELECT count(*) FROM capture_lane_work WHERE state NOT IN ('completed','abandoned');")"
+(( pending_count == 0 )) || fail "capture lanes retained non-completed work after shutdown"
+abandoned_count="$(sqlite3 "$RAW_INGRESS_DATABASE" "SELECT count(*) FROM capture_lane_work WHERE state = 'abandoned';")"
+(( abandoned_count == 0 )) || fail "capture lanes abandoned work during the bounded smoke"
+find "$AGENT_ROOT" -path '*/frames/*/*/*.json' -print0 | xargs -0 -r jq -r '.descriptor.artifact.role // empty' | \
+    sort | uniq -c | awk '{ print $2 " " $1 }' | jq -Rn '[inputs | split(" ") | {role:.[0],count:(.[1] | tonumber)}]' \
+    > "$RESULTS/artifact-role-counts.json"
+for expected_role in Raw Preview AnnotatedPreview; do
+    jq -e --arg role "$expected_role" 'any(.[]; .role == $role and .count > 0)' "$RESULTS/artifact-role-counts.json" >/dev/null || \
+        fail "bounded smoke produced no $expected_role artifacts"
+done
+for derivative_role in Preview AnnotatedPreview; do
+    mapfile -t derivative_manifests < <(find "$AGENT_ROOT" -path "*/frames/*/$derivative_role/*.json" -print | sort)
+    (( ${#derivative_manifests[@]} > 0 )) || fail "bounded smoke produced no $derivative_role manifest"
+    for derivative_manifest in "${derivative_manifests[@]}"; do
+        derivative_relative_path="$(jq -er --arg role "$derivative_role" 'select(.schemaVersion == "v2" and .descriptor.artifact.role == $role) | .relativeArtifactPath' "$derivative_manifest")"
+        derivative_payload="$AGENT_ROOT/$derivative_relative_path"
+        [[ "$(realpath -m "$derivative_payload")" == "$AGENT_ROOT"/* ]] || fail "$derivative_role payload path escapes the storage root"
+        [[ -f "$derivative_payload" && ! -L "$derivative_payload" ]] || fail "$derivative_role payload is missing or symbolic"
+        derivative_length="$(jq -er '.descriptor.layout.byteLength' "$derivative_manifest")"
+        [[ "$(stat -c '%s' "$derivative_payload")" == "$derivative_length" ]] || fail "$derivative_role payload length differs from its manifest"
+        derivative_expected_sha="$(jq -er '.descriptor.artifact.checksumSha256 | ascii_downcase' "$derivative_manifest")"
+        derivative_actual_sha="$(sha256sum "$derivative_payload" | awk '{ print $1 }')"
+        [[ "$derivative_actual_sha" == "$derivative_expected_sha" ]] || fail "$derivative_role payload checksum differs from its manifest"
+    done
+done
+printf 'container-smoke,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
+du -sb "$AGENT_ROOT" > "$RESULTS/retained-storage-bytes.txt"
+
+printf 'Native ARM64 CameraAgent evidence completed: %s\n' "$RESULTS"

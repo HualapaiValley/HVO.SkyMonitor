@@ -27,6 +27,24 @@ Badges remain on the labeled self-hosted runners. This allocation keeps the long
 deployment harness off hosted minutes. Quality performs .NET setup, restore,
 formatting, and package audit only for full-mode changes.
 
+## ARM64 Advisory
+
+`.github/workflows/cameraagent-arm64.yml` supplies native Linux ARM64 evidence
+on a dedicated runner selected by
+`[self-hosted, linux, ARM64, hvo-skymonitor-arm64]`. It runs from protected
+`main`, by daily schedule, or by default-branch `repository_dispatch`; it does
+not execute pull-request or branch-selectable manual-dispatch code and is not
+aggregated by `Required CI`.
+
+The workflow builds the canonical production catalog contract on hosted x64,
+then performs a native CameraAgent Release build, Docker-disabled Unit subset,
+`linux-arm64` publish/ELF validation, native container build, catalog install,
+and bounded VirtualSky smoke on ARM64. It retains checksums, image identity,
+host resource/thermal samples, installation verification, capture evidence,
+SQLite checks, logs, and cleanup state for 30 days. Provisioning, isolation,
+updates, recovery, decommissioning, and promotion criteria are maintained in
+[`cameraagent-arm64-ci.md`](cameraagent-arm64-ci.md).
+
 ## Categories
 
 The category audit requires every discovered case to belong to exactly one primary behavioral category. Current discovery is `Unit=2337`, `Integration=560`, `Manual=80`, `Soak=1`, `External=0`, and `Hardware=1`.
