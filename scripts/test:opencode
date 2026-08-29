@@ -113,8 +113,9 @@ grep -Fq '"HVO_AGENT_WORKTREE_ROOT": "/tmp/opencode"' "$DEVCONTAINER_FILE"
 grep -Fq '"HVO_AGENT_STATE_ROOT": "/var/lib/hvo-agent-state"' "$DEVCONTAINER_FILE"
 grep -Fq '"HVO_DEVCONTAINER_STATE_SOURCE": "${localWorkspaceFolder}/.devcontainer/state"' \
     "$DEVCONTAINER_FILE"
-grep -Fq '"initializeCommand": "bash .devcontainer/initialize.sh \"${localWorkspaceFolder}\""' \
-    "$DEVCONTAINER_FILE"
+grep -Fq '"initializeCommand": [' "$DEVCONTAINER_FILE"
+grep -Fq '".devcontainer/initialize.sh"' "$DEVCONTAINER_FILE"
+grep -Fq '"${localWorkspaceFolder}"' "$DEVCONTAINER_FILE"
 grep -Fq '"source": "${localWorkspaceFolder}/.devcontainer/state/opencode-worktrees"' "$DEVCONTAINER_FILE"
 grep -Fq '"target": "/tmp/opencode"' "$DEVCONTAINER_FILE"
 grep -Fq '"source": "${localWorkspaceFolder}/.devcontainer/state/agent-scratch"' "$DEVCONTAINER_FILE"

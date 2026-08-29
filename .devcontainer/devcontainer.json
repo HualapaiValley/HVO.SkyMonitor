@@ -145,7 +145,11 @@
     "onAutoForward": "silent"
   },
   // Ensure host-side secret and durable-state directories exist before mounting.
-  "initializeCommand": "bash .devcontainer/initialize.sh \"${localWorkspaceFolder}\"",
+  "initializeCommand": [
+    "bash",
+    ".devcontainer/initialize.sh",
+    "${localWorkspaceFolder}"
+  ],
   // Mount the host user-secrets store and ignored developer-tool state.
   "mounts": [
     {
