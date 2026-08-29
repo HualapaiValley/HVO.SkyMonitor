@@ -137,20 +137,18 @@ to healthy without regenerating identity or credentials.
 ## CameraAgent Lifecycle
 
 Run lifecycle commands as the Docker-capable deployment user, never as root.
-Image and catalog transitions require the current owner password in an owner-only
-file so candidate owner login is verified in addition to health and installation
-identity. Image references must be immutable digests:
+Image and catalog transitions authenticate through the lifecycle-control credential
+provisioned during installation and bound to the instance manifest. Candidate
+health, installation identity, owner identity, and runtime ownership are verified
+without accepting an operator password file. Image references must be immutable digests:
 
 ```bash
 hvo-skymonitor status --instance-id <uuid> --json
 hvo-skymonitor cameraagent upgrade --instance-id <uuid> \
-  --image-ref <repository@sha256:digest> --migration-backward-compatible \
-  --owner-password-file /owner-private/password
-hvo-skymonitor cameraagent rollback --instance-id <uuid> \
-  --owner-password-file /owner-private/password
+  --image-ref <repository@sha256:digest> --migration-backward-compatible
+hvo-skymonitor cameraagent rollback --instance-id <uuid>
 hvo-skymonitor cameraagent uninstall --instance-id <uuid>
-hvo-skymonitor cameraagent reinstall --instance-id <uuid> \
-  --owner-password-file /owner-private/password
+hvo-skymonitor cameraagent reinstall --instance-id <uuid>
 ```
 
 Each transition pins the Docker endpoint and daemon identity, validates the
@@ -159,9 +157,9 @@ consistent backup, and journals mutation intent before pause or stop. Candidate
 Compose, manifest, and result identities commit while capture remains paused;
 resume is the final idempotent action. If final acknowledgement is lost, rerun
 the exact command with `--resume`. A failed candidate restores the exact prior
-Compose, image, and identity records before capture resumes. A v1 instance or
-rollback target additionally requires owner authentication and retains its exact
-v1 Compose files rather than inferring capabilities from a rewritten template.
+Compose, image, and identity records before capture resumes. Noncurrent manifests
+and results are rejected before lifecycle state mutation; invalid candidate images
+or rollback models are rejected before runtime mutation.
 
 Uninstall removes only the selected Compose runtime and preserves config,
 secrets, state, evidence, rollback identities, and shared catalogs. Purge is a
@@ -174,10 +172,8 @@ Catalog versions are explicit per instance:
 
 ```bash
 hvo-skymonitor catalog install --catalog-bundle /owner-private/catalog.bundle
-hvo-skymonitor catalog select --instance-id <uuid> --catalog-version <version> \
-  --owner-password-file /owner-private/password
-hvo-skymonitor catalog rollback --instance-id <uuid> \
-  --owner-password-file /owner-private/password
+hvo-skymonitor catalog select --instance-id <uuid> --catalog-version <version>
+hvo-skymonitor catalog rollback --instance-id <uuid>
 hvo-skymonitor catalog gc --catalog-version <version>
 ```
 

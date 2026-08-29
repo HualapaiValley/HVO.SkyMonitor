@@ -216,6 +216,17 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void ParseCommand_OwnerPasswordFile_IsRejected()
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "rollback", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--owner-password-file", "/owner-private/password"
+        ]));
+
+        StringAssert.Contains(exception.Message, "Unknown option", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void ParseCommand_PurgeRequiresMatchingConfirmation()
     {
         var instanceId = Guid.NewGuid();

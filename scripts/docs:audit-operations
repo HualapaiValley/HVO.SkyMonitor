@@ -122,7 +122,8 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_source_reference 'Unit=2276' docs/runbooks/ci-pipeline.md
+require_source_reference 'Unit=2316' docs/runbooks/ci-pipeline.md
+require_source_reference 'Integration=556' docs/runbooks/ci-pipeline.md
 require_source_reference 'public string AccessKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
 require_source_reference 'public string SecretKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
 # shellcheck disable=SC2016 # Backticks are literal Markdown.

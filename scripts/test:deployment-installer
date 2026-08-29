@@ -26,7 +26,8 @@ chmod 700 "$root"
 dotnet restore src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --runtime linux-x64
 dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj \
   --no-restore --configuration Release --runtime linux-x64 --output "$publish_root"
-docker build --tag "$tag" --file src/HVO.SkyMonitor.CameraAgent/Dockerfile .
+docker build --build-arg "HVO_SOURCE_REVISION=$(git rev-parse HEAD)" --tag "$tag" \
+  --file src/HVO.SkyMonitor.CameraAgent/Dockerfile .
 image_id="$(docker image inspect --format '{{.Id}}' "$tag")"
 docker image save --output "$archive" "$tag"
 archive_sha256="$(sha256sum "$archive" | cut -d ' ' -f 1)"
