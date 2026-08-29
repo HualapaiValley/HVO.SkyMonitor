@@ -61,13 +61,42 @@ after every claimable run. Docker or runner state on `mmcblk` fails preflight.
 The evidence sampler records temperature, throttle state, available memory,
 load, and filesystem headroom throughout the job.
 
+The runner installation and `_work` must both be physical directories on the
+qualified filesystem; do not redirect either path through a symbolic link. Give
+the service account ownership of the installation, `_work`, and dedicated cache
+directories without granting access to unrelated host state.
+
+`actions/setup-dotnet` must install the pinned SDK into a service-account-owned
+directory. Set `DOTNET_INSTALL_DIR`, `DOTNET_CLI_HOME`, and `NUGET_PACKAGES` to
+dedicated paths on the qualified filesystem in the systemd service environment.
+Do not duplicate them in the runner installation `.env`, and remove any stale
+`DOTNET_ROOT` assignment from that file. The setup action exports the selected
+install directory as job-scoped `DOTNET_ROOT`.
+
+On a current Raspberry Pi kernel, grant the service account access only to the
+restricted `/dev/vcio_gencmd` interface through a dedicated group such as
+`hvo-vcgencmd`. Persist the device group and mode with a udev rule because the
+device may be recreated at boot:
+
+```udev
+KERNEL=="vcio_gencmd", GROUP="hvo-vcgencmd", MODE="0660"
+```
+
+Reload and trigger the rule or reboot, restart the runner service after changing
+group membership, then verify `vcgencmd get_throttled` and `vcgencmd
+measure_temp` as the service account. Do not grant sudo or the broader
+`/dev/vcio` firmware-mailbox interface to work around device permissions. A
+legacy host without `/dev/vcio_gencmd` requires a documented security review
+before it can become claimable.
+
 ## Registration
 
 Create a dedicated service account and place both the runner installation and
-work directory on the qualified SSD/NVMe filesystem. Obtain the current ARM64
-runner archive URL and SHA-256 from the official `actions/runner` release, then
-verify the archive before extraction. Never retain a registration or removal
-token in shell history, a file, a password manager export, or repository state.
+its physical `_work` directory on the qualified SSD/NVMe filesystem. Run
+`config.sh` as that account. Obtain the current ARM64 runner archive URL and
+SHA-256 from the official `actions/runner` release, then verify the archive
+before extraction. Never retain a registration or removal token in shell
+history, a file, a password manager export, or repository state.
 
 Create a short-lived repository registration token immediately before running.
 Read it without adding the value to shell history and unset it immediately after
@@ -82,27 +111,46 @@ printf '\n'
   --token "$RUNNER_TOKEN" \
   --name github-runner-pi-01 \
   --labels hvo-skymonitor-arm64,dotnet,docker,pi5 \
-  --work WORK_DIRECTORY \
+  --work _work \
   --unattended \
   --replace
 unset RUNNER_TOKEN
 ```
 
-Install and start the generated service using the host's administrative account;
-the runner service account itself must not have passwordless sudo. Confirm the
-GitHub runner inventory reports it online, idle, `Linux`, and `ARM64` with the
-closed label set above. Remove any accidental generic labels through repository
-runner administration before dispatching work.
+Install the generated service using the host's administrative account and pass
+the dedicated account explicitly, for example `sudo ./svc.sh install actions`.
+Do not start it yet. The runner service account itself must not have passwordless
+sudo.
 
-Add a systemd drop-in to the generated service before making it claimable:
+Create the service-account-owned cache directories and add a systemd drop-in to
+the generated service before starting it:
 
 ```ini
+[Unit]
+RequiresMountsFor=/srv/runner-data
+
 [Service]
+Environment="DOTNET_INSTALL_DIR=/srv/runner-data/cache/dotnet-install"
+Environment="DOTNET_CLI_HOME=/srv/runner-data/cache/dotnet-cli"
+Environment="NUGET_PACKAGES=/srv/runner-data/cache/nuget/packages"
+UnsetEnvironment=DOTNET_ROOT
 NoNewPrivileges=true
 ```
 
-Run `systemctl daemon-reload`, restart the runner service, and verify
-`NoNewPrivs: 1` in `/proc/MAIN_PID/status` for its main process.
+Run `systemctl daemon-reload`, start the service, and verify its account and
+inherited hardening using the generated service name:
+
+```bash
+service_name=$(<.service)
+test "$(systemctl show "$service_name" --property=User --value)" = actions
+main_pid=$(systemctl show "$service_name" --property=MainPID --value)
+grep -Eq '^NoNewPrivs:[[:space:]]+1$' "/proc/$main_pid/status"
+```
+
+Confirm the GitHub runner inventory reports it online, idle, `Linux`, and
+`ARM64` with the closed label set above. Remove accidental generic labels and
+confirm the effective job environment has no stale `DOTNET_ROOT` before
+dispatching work.
 
 Retain automatic runner updates initially. If updates are disabled later, the
 operator must own an image-based update process and GitHub's maximum supported

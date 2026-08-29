@@ -439,6 +439,14 @@ internal sealed class RawIngressFileStore(
             _ => throw new PlatformNotSupportedException($"Linux directory synchronization is not configured for {architecture}.")
         };
 
+    internal static int GetLinuxNoFollowFlag(Architecture architecture)
+        => architecture switch
+        {
+            Architecture.Arm or Architecture.Arm64 or Architecture.Armv6 or Architecture.Ppc64le => 0x8000,
+            Architecture.X86 or Architecture.X64 or Architecture.LoongArch64 or Architecture.RiscV64 or Architecture.S390x => 0x20000,
+            _ => throw new PlatformNotSupportedException($"Linux no-follow opening is not configured for {architecture}.")
+        };
+
     private void FlushDirectoryTracked(string directory)
     {
         FlushDirectory(directory);
