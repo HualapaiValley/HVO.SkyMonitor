@@ -3,8 +3,10 @@ using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using HVO.SkyMonitor.Common.Security;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -12,6 +14,112 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 [TestCategory("Unit")]
 public sealed class CentralArtifactRetrievalServiceTests
 {
+    [TestMethod]
+    public void CanonicalCredentialAccess_UsesSchemeSpecificSubjects()
+    {
+        var cookie = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, "cookie-user"), new Claim("account_type", "User")],
+            IdentityConstants.ApplicationScheme));
+        var apiKey = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.NameIdentifier, "key-user"),
+                new Claim("account_type", "User"),
+                new Claim(ApiKeyClaims.AuthenticationType, ApiKeyAuthenticationOptions.AuthenticationScheme),
+                new Claim(ApiKeyClaims.AccessLevel, nameof(ApiKeyAccessLevel.Read))
+            ],
+            ApiKeyAuthenticationOptions.AuthenticationScheme));
+        var bearer = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim("sub", "worker"), new Claim("account_type", "System")],
+            CentralArtifactCredentialAccess.BearerAuthenticationType));
+
+        CentralArtifactCredentialAccess.GetSubject(cookie).Should().Be("cookie-user");
+        CentralArtifactCredentialAccess.GetSubject(apiKey).Should().Be("key-user");
+        CentralArtifactCredentialAccess.GetSubject(bearer).Should().Be("worker");
+    }
+
+    [TestMethod]
+    public void CanonicalCredentialAccess_RejectsAmbiguousOrWrongSchemeClaims()
+    {
+        var invalidPrincipals = new[]
+        {
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "user")], IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "user"), new Claim("account_type", "Unknown")],
+                IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "system"), new Claim("account_type", "System")],
+                IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "user"),
+                    new Claim("account_type", "User"),
+                    new Claim("account_type", "User")
+                ], IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim("sub", "wrong"), new Claim("account_type", "User")],
+                IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "user"),
+                    new Claim("account_type", "User"),
+                    new Claim(ApiKeyClaims.AccessLevel, nameof(ApiKeyAccessLevel.Read))
+                ],
+                IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "user"),
+                    new Claim("account_type", "User"),
+                    new Claim("scope", "api.admin")
+                ],
+                IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "wrong"), new Claim("account_type", "User")],
+                CentralArtifactCredentialAccess.BearerAuthenticationType)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim("sub", "worker"),
+                    new Claim("account_type", "System"),
+                    new Claim(ApiKeyClaims.ObservatoryId, Guid.NewGuid().ToString("D"))
+                ],
+                CentralArtifactCredentialAccess.BearerAuthenticationType)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "key-user"),
+                    new Claim("account_type", "User"),
+                    new Claim(ApiKeyClaims.AuthenticationType, ApiKeyAuthenticationOptions.AuthenticationScheme),
+                    new Claim(ApiKeyClaims.AuthenticationType, ApiKeyAuthenticationOptions.AuthenticationScheme),
+                    new Claim(ApiKeyClaims.AccessLevel, nameof(ApiKeyAccessLevel.Read))
+                ],
+                ApiKeyAuthenticationOptions.AuthenticationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "key-user"),
+                    new Claim("account_type", "User"),
+                    new Claim(ApiKeyClaims.AuthenticationType, ApiKeyAuthenticationOptions.AuthenticationScheme),
+                    new Claim(ApiKeyClaims.AccessLevel, nameof(ApiKeyAccessLevel.Read)),
+                    new Claim(ApiKeyClaims.ObservatoryId, "not-a-guid")
+                ],
+                ApiKeyAuthenticationOptions.AuthenticationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.Name, "display-only"), new Claim("account_type", "User")],
+                IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal([
+                new ClaimsIdentity(
+                    [new Claim(ClaimTypes.NameIdentifier, "one"), new Claim("account_type", "User")],
+                    IdentityConstants.ApplicationScheme),
+                new ClaimsIdentity(
+                    [new Claim(ClaimTypes.NameIdentifier, "two"), new Claim("account_type", "User")],
+                    IdentityConstants.ApplicationScheme)
+            ])
+        };
+
+        foreach (var principal in invalidPrincipals)
+        {
+            CentralArtifactCredentialAccess.GetSingleCredentialIdentity(principal).Should().BeNull();
+        }
+    }
+
     [TestMethod]
     public async Task FindAsync_OwnerAndActiveWorkerCanReadExactArtifact()
     {
@@ -58,7 +166,10 @@ public sealed class CentralArtifactRetrievalServiceTests
             db, TimeProvider.System, telemetry, NullLogger<CentralArtifactRetrievalService>.Instance);
 
         var otherOwner = Principal(new Claim(ClaimTypes.NameIdentifier, "owner-2"));
-        var system = Principal(new Claim("account_type", "System"), new Claim("scope", "api.artifacts.read"));
+        var system = Principal(
+            new Claim("sub", "system-worker"),
+            new Claim("account_type", "System"),
+            new Claim("scope", "api.artifacts.read"));
 
         (await service.FindAsync(data.DevicePublicId, data.Artifact.ArtifactId, otherOwner, null, CancellationToken.None))
             .Status.Should().Be(CentralArtifactLookupStatus.NotFound);
@@ -118,7 +229,10 @@ public sealed class CentralArtifactRetrievalServiceTests
         var service = new CentralArtifactRetrievalService(
             db, TimeProvider.System, telemetry, NullLogger<CentralArtifactRetrievalService>.Instance);
         var human = Principal(new Claim(ClaimTypes.NameIdentifier, "owner-1"));
-        var system = Principal(new Claim("account_type", "System"), new Claim("scope", "api.artifacts.read"));
+        var system = Principal(
+            new Claim("sub", "system-worker"),
+            new Claim("account_type", "System"),
+            new Claim("scope", "api.artifacts.read"));
 
         (await service.RequiresDownloadAuthorizationAsync(data.Artifact, human, CancellationToken.None))
             .Should().BeTrue();
@@ -194,7 +308,17 @@ public sealed class CentralArtifactRetrievalServiceTests
     }
 
     private static ClaimsPrincipal Principal(params Claim[] claims)
-        => new(new ClaimsIdentity(claims, "Test"));
+    {
+        var canonicalClaims = claims.ToList();
+        if (!canonicalClaims.Any(claim => claim.Type == "account_type"))
+        {
+            canonicalClaims.Add(new Claim("account_type", "User"));
+        }
+        var scheme = canonicalClaims.Any(claim => claim.Type == "sub")
+            ? CentralArtifactCredentialAccess.BearerAuthenticationType
+            : IdentityConstants.ApplicationScheme;
+        return new ClaimsPrincipal(new ClaimsIdentity(canonicalClaims, scheme));
+    }
 
     private static ApplicationDbContext CreateContext()
     {

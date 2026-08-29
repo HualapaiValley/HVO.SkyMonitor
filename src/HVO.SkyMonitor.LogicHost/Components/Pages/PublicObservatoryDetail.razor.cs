@@ -32,7 +32,7 @@ public partial class PublicObservatoryDetail : ComponentBase
     {
         IsLoading = true;
         Detail = await PublicNetwork.GetObservatoryAsync(Slug);
-        userId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        userId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         IsFollowing = userId is not null && Detail is not null
             && await Personalization.IsFollowingAsync(userId, Detail.Observatory.Slug);
         IsLoading = false;

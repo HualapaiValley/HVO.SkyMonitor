@@ -4,6 +4,7 @@ using HVO.SkyMonitor.LogicHost.Controllers;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -337,9 +338,10 @@ public sealed class DeviceRegistrationsControllerTests
         var identity = new ClaimsIdentity(
         [
             new Claim(ClaimTypes.NameIdentifier, ownerUserId),
+            new Claim("account_type", "User"),
             new Claim("name", ownerUserId == "owner-1" ? "Owner One" : "Owner Two"),
             new Claim(ClaimTypes.Email, $"{ownerUserId}@example.com")
-        ], "test");
+        ], IdentityConstants.ApplicationScheme);
         return new DeviceRegistrationsController(registrationService, envelopeService, dbContext)
         {
             ControllerContext = new ControllerContext

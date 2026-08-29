@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 namespace HVO.SkyMonitor.AgentCore;
 
 /// <summary>Immutable, versioned deployment coordinates used by one CameraAgent capture lifecycle.</summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record DeploymentLocationSnapshot(
     [property: JsonRequired] string LocationId,
     [property: JsonRequired] long Version,

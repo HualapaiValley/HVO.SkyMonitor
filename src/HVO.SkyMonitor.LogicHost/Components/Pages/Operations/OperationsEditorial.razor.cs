@@ -19,7 +19,7 @@ public partial class OperationsEditorial : ComponentBase
 
     protected override async Task OnInitializedAsync()
     {
-        actorUserId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        actorUserId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         Observatories = (await PublicNetwork.ListObservatoriesAsync(50, null)).Items;
         Events = (await PublicNetwork.ListEventsAsync(50, null)).Items;
         IsLoading = false;

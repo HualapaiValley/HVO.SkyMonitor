@@ -565,9 +565,7 @@ internal sealed class DeviceRegistrationsController(
 
     private string? GetUserIdentifier()
     {
-        return User?.FindFirstValue(ClaimTypes.NameIdentifier)
-            ?? User?.FindFirstValue("sub")
-            ?? User?.Identity?.Name;
+        return User is null ? null : CentralArtifactCredentialAccess.GetOwnerId(User);
     }
 
     private string? GetUserDisplayName()
@@ -579,7 +577,6 @@ internal sealed class DeviceRegistrationsController(
 
     private string? GetUserEmail()
     {
-        return User?.FindFirstValue(ClaimTypes.Email)
-            ?? User?.FindFirstValue("preferred_username");
+        return User?.FindFirstValue(ClaimTypes.Email);
     }
 }

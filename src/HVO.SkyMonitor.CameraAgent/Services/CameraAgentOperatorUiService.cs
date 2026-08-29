@@ -1007,7 +1007,7 @@ internal sealed class CameraAgentOperatorUiService(
         {
             return null;
         }
-        return authenticationState.User.FindFirstValue(ClaimTypes.NameIdentifier) is { Length: > 0 and <= 128 } actor
+        return CameraAgentCredentialAccess.GetOwnerId(authenticationState.User) is { Length: > 0 and <= 128 } actor
             ? actor
             : null;
     }

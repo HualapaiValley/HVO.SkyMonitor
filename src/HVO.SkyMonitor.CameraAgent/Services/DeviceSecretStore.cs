@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.AgentCore;
@@ -40,7 +41,9 @@ internal sealed class DeviceSecretStore(
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
-        WriteIndented = true
+        WriteIndented = true,
+        RespectRequiredConstructorParameters = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
     private readonly DeviceProvisioningOptions options = optionsAccessor.Value;
@@ -60,12 +63,22 @@ internal sealed class DeviceSecretStore(
         using var reader = new StreamReader(stream);
         var protectedPayload = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
         var json = protector.Unprotect(protectedPayload);
-        return JsonSerializer.Deserialize<DeviceSecrets>(json, SerializerOptions);
+        var secrets = JsonSerializer.Deserialize<DeviceSecrets>(json, SerializerOptions)
+            ?? throw new InvalidDataException("Persisted device secrets are empty.");
+        if (secrets.DeploymentLocationAcknowledgment is not null && !HasCanonicalAcknowledgment(secrets))
+        {
+            throw new InvalidDataException("Persisted device secrets lack a valid deployment-location acknowledgment.");
+        }
+        return secrets;
     }
 
     public async Task SaveAsync(DeviceSecrets secrets, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(secrets);
+        if (!HasCanonicalAcknowledgment(secrets))
+        {
+            throw new InvalidDataException("Device secrets require a valid deployment-location acknowledgment.");
+        }
 
         var path = options.GetSecretsPath();
         DeviceStateFilePermissions.RestrictDirectory(Path.GetDirectoryName(path)!);
@@ -91,4 +104,10 @@ internal sealed class DeviceSecretStore(
 
         return Task.CompletedTask;
     }
+
+    private static bool HasCanonicalAcknowledgment(DeviceSecrets secrets)
+        => secrets.DeploymentLocationAcknowledgment is { } acknowledgment
+            && acknowledgment.Validate().IsValid
+            && acknowledgment.SourceKind != DeploymentLocationSourceKind.Unspecified
+            && acknowledgment.Observatory.ObservatoryId == secrets.ObservatoryId;
 }

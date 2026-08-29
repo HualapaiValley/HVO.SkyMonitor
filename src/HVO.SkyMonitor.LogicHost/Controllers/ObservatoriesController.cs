@@ -163,9 +163,7 @@ internal sealed class ObservatoriesController(IObservatoryService observatorySer
     }
 
     private Guid? GetApiKeyObservatoryId()
-        => Guid.TryParse(User.FindFirst(ApiKeyClaims.ObservatoryId)?.Value, out var observatoryId)
-            ? observatoryId
-            : null;
+        => CentralArtifactCredentialAccess.GetObservatoryScope(User);
 
     private static string CreateEtag(string sha256) => $"\"{sha256.ToUpperInvariant()}\"";
 

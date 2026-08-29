@@ -11,5 +11,5 @@ internal sealed record DeviceRegistrationEnvelopePayload(
     string RegistrationToken,
     DateTimeOffset IssuedAtUtc,
     DateTimeOffset ExpiresAtUtc,
-    long? ObservatoryLocationVersion = null,
-    string? ObservatoryLocationCanonicalSha256 = null);
+    long ObservatoryLocationVersion,
+    string ObservatoryLocationCanonicalSha256);

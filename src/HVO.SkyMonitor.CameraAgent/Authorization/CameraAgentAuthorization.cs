@@ -1,5 +1,7 @@
+using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
@@ -46,6 +48,27 @@ internal static class CameraAgentAuthorizationServiceCollectionExtensions
     }
 }
 
+internal sealed class CanonicalLocalUserClaimsPrincipalFactory(
+    UserManager<ApplicationUser> userManager,
+    IOptions<IdentityOptions> optionsAccessor)
+    : UserClaimsPrincipalFactory<ApplicationUser>(userManager, optionsAccessor)
+{
+    protected override async Task<ClaimsIdentity> GenerateClaimsAsync(ApplicationUser user)
+    {
+        var identity = await base.GenerateClaimsAsync(user).ConfigureAwait(false);
+        identity.AddClaim(new Claim(
+            CanonicalCredentialClaims.AccountTypeClaim,
+            CanonicalCredentialClaims.UserAccountType));
+        return identity;
+    }
+}
+
+internal static class CameraAgentCredentialAccess
+{
+    public static string? GetOwnerId(ClaimsPrincipal principal)
+        => CanonicalCredentialClaims.GetOwnerId(principal);
+}
+
 internal sealed class SiteOwnerRequirement : IAuthorizationRequirement
 {
     public static SiteOwnerRequirement ReadyOwner { get; } = new(requireReadyOwner: true);
@@ -72,7 +95,8 @@ internal sealed class SiteOwnerAuthorizationHandler(
         AuthorizationHandlerContext context,
         SiteOwnerRequirement requirement)
     {
-        if (context.User.Identity?.IsAuthenticated != true)
+        var ownerId = CameraAgentCredentialAccess.GetOwnerId(context.User);
+        if (ownerId is null)
         {
             return;
         }

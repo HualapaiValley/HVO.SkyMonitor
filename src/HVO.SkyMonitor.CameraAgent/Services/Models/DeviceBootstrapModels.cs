@@ -7,9 +7,9 @@ namespace HVO.SkyMonitor.CameraAgent.Services.Models;
 internal sealed record DeviceBootstrapRequestDto(
     string DeviceId,
     string Envelope,
-    string? Nonce = null,
-    DeploymentLocationSnapshot? DeploymentLocation = null,
-    DeploymentLocationSourceKind DeploymentLocationSourceKind = DeploymentLocationSourceKind.Unspecified);
+    string? Nonce,
+    DeploymentLocationSnapshot DeploymentLocation,
+    DeploymentLocationSourceKind DeploymentLocationSourceKind);
 
 internal sealed record DeviceBootstrapResponseDto(
     Guid RegistrationId,

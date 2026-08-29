@@ -3,6 +3,7 @@ using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.AgentCore;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.LogicHost.Controllers;
 
@@ -14,6 +15,7 @@ public sealed class DeviceBootstrapController(
     ILogger<DeviceBootstrapController> logger) : ControllerBase
 {
     [HttpPost]
+    [RequestSizeLimit(32 * 1024)]
     public async Task<ActionResult<DeviceBootstrapResponse>> BootstrapAsync(
         DeviceBootstrapRequestDto request,
         CancellationToken cancellationToken)
@@ -60,12 +62,13 @@ public sealed class DeviceBootstrapController(
 
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record DeviceBootstrapRequestDto(
     [Required, StringLength(128)] string DeviceId,
     [Required, StringLength(8192)] string Envelope,
-    [StringLength(128)] string? Nonce = null,
-    DeploymentLocationSnapshot? DeploymentLocation = null,
-    DeploymentLocationSourceKind DeploymentLocationSourceKind = DeploymentLocationSourceKind.Unspecified);
+    [StringLength(128)] string? Nonce,
+    [Required] DeploymentLocationSnapshot DeploymentLocation,
+    DeploymentLocationSourceKind DeploymentLocationSourceKind);
 
 public sealed record DeviceBootstrapResponse(
     Guid RegistrationId,

@@ -22,7 +22,7 @@ public partial class OperationsCamera : ComponentBase
         items.Clear();
         NextCursor = null;
         Camera = null;
-        userId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        userId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         if (userId is not null)
         {
             Camera = await Operations.GetCameraAsync(userId, CameraId);

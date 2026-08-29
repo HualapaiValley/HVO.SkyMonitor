@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Common.Identity;
+using HVO.SkyMonitor.AgentCore;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -28,9 +29,10 @@ public sealed class DeviceSecretStorePersistenceTests
             {
                 StateDirectory = stateDirectory
             });
+            var observatoryId = Guid.NewGuid();
             var expected = new DeviceSecrets(
                 Guid.NewGuid(),
-                Guid.NewGuid(),
+                observatoryId,
                 "Test device",
                 "registration-token",
                 "/api/device/heartbeat",
@@ -41,7 +43,8 @@ public sealed class DeviceSecretStorePersistenceTests
                 new CentralIdentityOptions
                 {
                     ServiceUrl = new Uri("https://identity.example", UriKind.Absolute)
-                });
+                },
+                DeploymentLocationAcknowledgment: CreateAcknowledgment(observatoryId));
 
             using (var services = CreateProvider(keyDirectory))
             {
@@ -87,7 +90,7 @@ public sealed class DeviceSecretStorePersistenceTests
     }
 
     [TestMethod]
-    public async Task GetAsync_PreChangeProtectedSecretsLoadsWithNullLocationAcknowledgment()
+    public async Task GetAsync_PreChangeProtectedSecretsRemainReadableForReconciliation()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-device-secrets-legacy-{Guid.NewGuid():N}");
         var keyDirectory = Path.Combine(root, "keys");
@@ -119,10 +122,10 @@ public sealed class DeviceSecretStorePersistenceTests
                 .ConfigureAwait(false);
             var store = new DeviceSecretStore(provider, options, NullLogger<DeviceSecretStore>.Instance);
 
-            var loaded = await store.GetAsync().ConfigureAwait(false);
+            var actual = await store.GetAsync().ConfigureAwait(false);
 
-            Assert.IsNotNull(loaded);
-            Assert.IsNull(loaded.DeploymentLocationAcknowledgment);
+            Assert.IsNotNull(actual);
+            Assert.IsNull(actual.DeploymentLocationAcknowledgment);
         }
         finally
         {
@@ -131,6 +134,86 @@ public sealed class DeviceSecretStorePersistenceTests
                 Directory.Delete(root, recursive: true);
             }
         }
+    }
+
+    [TestMethod]
+    [DataRow("foreign-observatory")]
+    [DataRow("unspecified-source")]
+    public async Task SaveAsync_RejectsNoncanonicalLocationAcknowledgmentWithoutWriting(string scenario)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-device-secrets-invalid-{Guid.NewGuid():N}");
+        var keyDirectory = Path.Combine(root, "keys");
+        var stateDirectory = Path.Combine(root, "state");
+        try
+        {
+            var observatoryId = Guid.NewGuid();
+            var acknowledgment = CreateAcknowledgment(
+                scenario == "foreign-observatory" ? Guid.NewGuid() : observatoryId);
+            if (scenario == "unspecified-source")
+            {
+                acknowledgment = acknowledgment with { SourceKind = DeploymentLocationSourceKind.Unspecified };
+            }
+            var secrets = new DeviceSecrets(
+                Guid.NewGuid(),
+                observatoryId,
+                "Invalid device",
+                "registration-token",
+                "/api/device/heartbeat",
+                60,
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddDays(1),
+                "device-key",
+                new CentralIdentityOptions(),
+                DeploymentLocationAcknowledgment: acknowledgment);
+            var options = Options.Create(new DeviceProvisioningOptions { StateDirectory = stateDirectory });
+            using var services = CreateProvider(keyDirectory);
+            var store = new DeviceSecretStore(
+                services.GetRequiredService<IDataProtectionProvider>(),
+                options,
+                NullLogger<DeviceSecretStore>.Instance);
+
+            await Assert.ThrowsAsync<InvalidDataException>(() => store.SaveAsync(secrets)).ConfigureAwait(false);
+
+            Assert.IsFalse(File.Exists(options.Value.GetSecretsPath()));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static DeploymentLocationAcknowledgment CreateAcknowledgment(Guid observatoryId)
+    {
+        var deployment = DeploymentLocationSnapshot.Create(
+            "device-secret-test",
+            1,
+            "manual test",
+            5,
+            DateTimeOffset.UnixEpoch,
+            null,
+            35.347,
+            -113.878,
+            520,
+            "America/Phoenix");
+        return new DeploymentLocationAcknowledgment(
+            ObservatoryLocationSnapshot.Create(
+                observatoryId,
+                1,
+                DateTimeOffset.UnixEpoch,
+                deployment.LatitudeDegrees,
+                deployment.LongitudeDegrees,
+                deployment.ElevationMeters,
+                deployment.TimeZoneId,
+                null),
+            deployment,
+            DeploymentLocationSourceKind.Manual,
+            DeploymentLocationResolutionStatus.Pending,
+            "boundary-unconfigured",
+            DateTimeOffset.UtcNow,
+            null);
     }
 
     private static ServiceProvider CreateProvider(string keyDirectory)

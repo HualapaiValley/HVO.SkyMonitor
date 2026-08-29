@@ -1,5 +1,5 @@
 @page "/account"
-@attribute [Authorize]
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
 
 <PageTitle>Account | HVO SkyMonitor</PageTitle>
 <header class="mb-4"><p class="text-uppercase text-info small fw-bold mb-1">Registered account</p><h1>Account and subscriptions</h1><p class="text-muted">Manage identity security, account-scoped API keys, follows, subscriptions, and notifications.</p></header>

@@ -1,5 +1,5 @@
 @page "/app/observatories"
-@attribute [Authorize]
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
 
 <PageTitle>Observatories | Network Operations</PageTitle>
 <div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-4"><div><p class="text-uppercase text-info small fw-bold mb-1">Operations scope</p><h1 class="mb-1">Observatories</h1><p class="text-muted mb-0">Protected exact state across your current memberships.</p></div><a class="btn btn-primary" href="app/observatories/manage">Manage exact settings</a></div>

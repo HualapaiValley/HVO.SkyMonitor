@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
@@ -133,12 +134,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
 
             var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
                 .ConfigureAwait(false);
-            var principal = new ClaimsPrincipal(new ClaimsIdentity([
-                new Claim(ClaimTypes.NameIdentifier, "reviewer-1"),
-                new Claim("sub", "reviewer-1"),
-                new Claim("account_type", "User"),
-                new Claim("scope", "api.admin")
-            ], "Test"));
+            var principal = CreateOwnerPrincipal("reviewer-1", admin: true);
             var reviewService = new CentralTransientReviewService(
                 database.Context,
                 new CentralTransientEventVersionAppender(database.Context),
@@ -1380,12 +1376,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             database.Context.ChangeTracker.Clear();
             var current = await database.Context.CentralTransientEventCurrent.AsNoTracking().SingleAsync()
                 .ConfigureAwait(false);
-            var principal = new ClaimsPrincipal(new ClaimsIdentity([
-                new Claim(ClaimTypes.NameIdentifier, "reviewer-concurrent"),
-                new Claim("sub", "reviewer-concurrent"),
-                new Claim("account_type", "User"),
-                new Claim("scope", "api.admin")
-            ], "Test"));
+            var principal = CreateOwnerPrincipal("reviewer-concurrent", admin: true);
             var request = new CentralTransientReviewRequest(
                 current.ActiveAssessmentId,
                 TransientReviewDisposition.Confirmed,
@@ -1908,11 +1899,10 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
 
     private static ClaimsPrincipal CreateOwnerPrincipal(string ownerId, bool admin = false)
         => new(new ClaimsIdentity([
-            new Claim(ClaimTypes.NameIdentifier, ownerId),
             new Claim("sub", ownerId),
             new Claim("account_type", "User"),
             new Claim("scope", admin ? "api.viewer api.admin" : "api.viewer")
-        ], "Test"));
+        ], CanonicalCredentialClaims.BearerAuthenticationType));
 
     internal static async Task<SeededDatabase> SeedAsync(
         ApplicationDbContext db,

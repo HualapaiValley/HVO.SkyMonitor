@@ -1,5 +1,5 @@
 @page "/app/invitations/{InvitationId:guid}/accept"
-@attribute [Authorize]
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
 
 <PageTitle>Accept Invitation | Network Operations</PageTitle>
 <div class="row justify-content-center"><div class="col-lg-7"><div class="card"><div class="card-body p-4"><p class="text-uppercase text-info small fw-bold mb-1">Observatory invitation</p><h1 class="h3">Accept membership</h1><p class="text-muted">Paste the one-time token delivered through the approved private channel. The invitation grants no access until acceptance succeeds.</p>@if(Message is not null){<div class="alert @(Succeeded ? "alert-success" : "alert-warning")" role="status">@Message</div>}<div class="mb-3"><label class="form-label" for="invitationToken">Acceptance token</label><input id="invitationToken" class="form-control font-monospace" autocomplete="off" @bind="AcceptanceToken" /></div><div class="d-flex flex-wrap gap-2"><button class="btn btn-primary" disabled="@IsBusy" @onclick="AcceptAsync">@(IsBusy ? "Accepting..." : "Accept invitation")</button><button class="btn btn-outline-light" disabled="@IsBusy" @onclick="DeclineAsync">Decline</button></div></div></div></div></div>

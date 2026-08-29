@@ -26,7 +26,7 @@ public partial class OperationsDashboard : ComponentBase
     protected override async Task OnInitializedAsync()
     {
         var user = (await AuthenticationStateTask).User;
-        userId = user.FindFirstValue(ClaimTypes.NameIdentifier);
+        userId = CentralArtifactCredentialAccess.GetOwnerId(user);
         if (!string.IsNullOrWhiteSpace(userId))
         {
             await LoadAsync(null);

@@ -13,7 +13,7 @@ linked GitHub issues.
    selects an observatory, and creates a pending registration. Current source
    stores a hash of the submitted code but has no independent channel that
    proves the code came from that device.
-3. LogicHost issues a short-lived, Data Protection-protected envelope containing
+3. LogicHost issues a short-lived, Data Protection-protected v2 envelope containing
    a unique 256-bit device key, registration token, endpoints, and the
    configured fleet OAuth client. New envelopes also pin the current immutable
    Observatory location version and hash.
@@ -21,9 +21,14 @@ linked GitHub issues.
    CameraAgent posts it to LogicHost `/api/device/bootstrap`, decrypts the
    AES-256-GCM response, and writes `device-secrets.dat` with ASP.NET Data
    Protection.
-5. CameraAgent sends its protected deployment-location snapshot during new
-   bootstrap. LogicHost records the exact version as acknowledged or pending;
-   pending resolution never blocks activation or replaces local capture geometry.
+5. CameraAgent sends its protected deployment-location snapshot and explicit
+   source kind during bootstrap. LogicHost rejects v1, missing location evidence,
+   and unspecified sources before durable mutation. It records the exact version
+   as acknowledged or pending; CameraAgent requires the matching acknowledgment
+   before staging location state or persisting secrets. Pending resolution never
+   blocks activation or replaces local capture geometry.
+   Already-active pre-v2 secret files remain readable so the reconciliation worker
+   can attach the current acknowledgment; they cannot be newly written without it.
 6. Successful sequential redemption changes the registration from Pending to
    Active, so later redemption fails. Concurrent redemption is not guarded by a
    database concurrency token and must be treated as an implementation gap. The
@@ -101,6 +106,13 @@ LogicHost owns ASP.NET Identity and OpenIddict in its `SkyMonitor` SQL Server
 database. Supported inbound authentication is the LogicHost Identity cookie,
 `X-API-Key`, and locally validated OpenIddict bearer tokens.
 
+Every accepted credential has one authenticated identity, one explicit `User` or
+`System` account type, and one scheme-specific subject: Identity cookies and API
+keys use `ClaimTypes.NameIdentifier`; bearer tokens use OIDC `sub`. Mixed
+credentials, duplicate or wrong-scheme claims, unknown account types, and display
+metadata such as `Identity.Name` or `preferred_username` are never authorization
+identities. CameraAgent local cookies use the same explicit user-account contract.
+
 OpenIddict exposes `/connect/authorize` and `/connect/token`. Development and
 Testing use development certificates. Production loads configured signing and
 encryption PFX files through `OpenIddictCertificates`; the split-host deployment
@@ -109,9 +121,10 @@ key overlap, automatic certificate rotation, token revocation, and a production
 TLS topology are not implemented.
 
 Device inventory and envelope issuance require the authenticated owner to match
-both the registration snapshot and its current observatory. Most bearer APIs do
-not yet enforce endpoint-specific scopes, so current LogicHost deployment must
-still be treated as trusted until those controls are added.
+both the registration snapshot and its current observatory. Bearer read, owner
+write, ingest, derivative, transient, and diagnostics policies require their
+current endpoint-specific scopes; cookies and scoped API keys retain their
+separate membership and access-level checks.
 
 ## Security Invariants
 

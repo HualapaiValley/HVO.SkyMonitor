@@ -12,6 +12,8 @@ using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.IntegrationTests;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.Common.Identity;
@@ -198,6 +200,27 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         var cameraConfiguration = await scopedProvider.GetRequiredService<ICameraAgentConfigurationLoader>()
             .LoadAsync(CancellationToken.None).ConfigureAwait(false);
         await _hostFixture.SeedRigProfileAsync("cameraagent-integration-test", cameraConfiguration.Rig).ConfigureAwait(false);
+        var deploymentLocationStore = scopedProvider.GetRequiredService<IDeploymentLocationStore>();
+        var deployment = deploymentLocationStore.Active
+            ?? throw new InvalidOperationException("The CameraAgent integration deployment location was not initialized.");
+        var sourceKind = deploymentLocationStore.ResolveSourceKind(deployment);
+        var acknowledgedAtUtc = DateTimeOffset.UtcNow;
+        var locationAcknowledgment = new DeploymentLocationAcknowledgment(
+            ObservatoryLocationSnapshot.Create(
+                activeDevice.ObservatoryId,
+                1,
+                DateTimeOffset.UnixEpoch,
+                deployment.LatitudeDegrees,
+                deployment.LongitudeDegrees,
+                deployment.ElevationMeters,
+                deployment.TimeZoneId,
+                null),
+            deployment,
+            sourceKind,
+            DeploymentLocationResolutionStatus.Pending,
+            "integration-fixture",
+            acknowledgedAtUtc,
+            null);
         await scopedProvider.GetRequiredService<IDeviceSecretStore>().SaveAsync(new DeviceSecrets(
             activeDevice.DevicePublicId,
             activeDevice.ObservatoryId,
@@ -208,7 +231,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             activeDevice.IssuedAtUtc,
             activeDevice.ExpiresAtUtc,
             "cameraagent-integration-key",
-            centralIdentity), CancellationToken.None).ConfigureAwait(false);
+            centralIdentity,
+            DeploymentLocationAcknowledgment: locationAcknowledgment), CancellationToken.None).ConfigureAwait(false);
         DeviceId = identity.DeviceId;
         DevicePublicId = activeDevice.DevicePublicId;
         ObservatoryId = activeDevice.ObservatoryId;

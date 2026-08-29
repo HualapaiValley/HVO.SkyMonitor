@@ -19,7 +19,7 @@ public partial class AcceptObservatoryInvitation : ComponentBase
     {
         if (IsBusy || string.IsNullOrWhiteSpace(AcceptanceToken)) return;
         IsBusy = true;
-        var userId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var userId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         var outcome = userId is null
             ? ObservatoryInvitationMutationOutcome.NotFoundOrDenied
             : await Invitations.AcceptAsync(InvitationId, userId, AcceptanceToken.Trim());
@@ -39,7 +39,7 @@ public partial class AcceptObservatoryInvitation : ComponentBase
     {
         if (IsBusy) return;
         IsBusy = true;
-        var userId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var userId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         var outcome = userId is null
             ? ObservatoryInvitationMutationOutcome.NotFoundOrDenied
             : await Invitations.DeclineAsync(InvitationId, userId);

@@ -239,7 +239,7 @@ internal sealed class CameraAgentCalibrationUiService(
     {
         var principal = await GetAuthorizedPrincipalAsync(
             CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
-        var actor = principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actor = principal is null ? null : CameraAgentCredentialAccess.GetOwnerId(principal);
         if (string.IsNullOrWhiteSpace(actor))
         {
             return Denied<CalibrationUiAcquisition>();
@@ -296,7 +296,7 @@ internal sealed class CameraAgentCalibrationUiService(
     {
         var principal = await GetAuthorizedPrincipalAsync(
             CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
-        var actor = principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actor = principal is null ? null : CameraAgentCredentialAccess.GetOwnerId(principal);
         if (string.IsNullOrWhiteSpace(actor))
         {
             return Denied<CalibrationUiAcquisition>();
@@ -344,7 +344,7 @@ internal sealed class CameraAgentCalibrationUiService(
     {
         var principal = await GetAuthorizedPrincipalAsync(
             CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
-        var actor = principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actor = principal is null ? null : CameraAgentCredentialAccess.GetOwnerId(principal);
         if (string.IsNullOrWhiteSpace(actor))
         {
             return Denied<CalibrationUiStatus>();

@@ -12,7 +12,7 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 [ApiController]
 [Route("api/v1.0/derivative-jobs")]
-[Authorize(AuthenticationSchemes = "Bearer", Policy = "DerivativeJobsRead")]
+[Authorize(Policy = "DerivativeJobsRead")]
 internal sealed class DerivativeJobsController(
     ApplicationDbContext dbContext,
     ICentralDerivativeJobOperationsService operations) : ControllerBase
@@ -156,9 +156,7 @@ internal sealed class DerivativeJobsController(
     }
 
     private string GetActor()
-        => User.FindFirstValue("sub")
-            ?? User.FindFirstValue(ClaimTypes.NameIdentifier)
-            ?? User.Identity?.Name
+        => CentralArtifactCredentialAccess.GetSubject(User)
             ?? "unknown";
 
     internal sealed record DerivativeJobItem(

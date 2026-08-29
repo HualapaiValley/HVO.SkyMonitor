@@ -5,9 +5,11 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -25,7 +27,11 @@ public sealed class CameraAgentEnvironmentalUiServiceIntegrationTests
     public async Task AuthorizedFacadeExecutesRealCommandServiceAndPropagatesOwnerActor()
     {
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, "owner-1")], "test"));
+            [
+                new Claim(ClaimTypes.NameIdentifier, "owner-1"),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ],
+            IdentityConstants.ApplicationScheme));
         var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
         authorization.Setup(service => service.AuthorizeAsync(
                 principal, null, CameraAgentAuthorizationPolicyNames.OperationsMutateV1))

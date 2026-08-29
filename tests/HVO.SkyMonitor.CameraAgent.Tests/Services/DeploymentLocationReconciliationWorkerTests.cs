@@ -92,18 +92,26 @@ public sealed class DeploymentLocationReconciliationWorkerTests
     }
 
     [TestMethod]
-    [DataRow(0, "restart-required")]
-    [DataRow(1, "restart-scheduled")]
+    [DataRow(0, null, "restart-required", true)]
+    [DataRow(1, null, "restart-scheduled", true)]
+    [DataRow(-2, -1, "acknowledgment-expired", false)]
     public async Task ReconcileOnceAsync_StagesDifferingAcknowledgmentWithoutChangingActiveLocation(
         int effectiveFromMinutes,
-        string expectedOutcome)
+        int? effectiveUntilMinutes,
+        string expectedOutcome,
+        bool expectPersistence)
     {
         var now = new DateTimeOffset(2026, 7, 24, 12, 0, 0, TimeSpan.Zero);
         var active = DeploymentLocationSnapshot.Create(
             "worker-location", 1, "local", 3, DateTimeOffset.UnixEpoch, null,
             35.347, -113.878, 520, "America/Phoenix");
         var approved = DeploymentLocationSnapshot.Create(
-            active.LocationId, 2, "approved", 2, now.AddMinutes(effectiveFromMinutes), null,
+            active.LocationId,
+            2,
+            "approved",
+            2,
+            now.AddMinutes(effectiveFromMinutes),
+            effectiveUntilMinutes.HasValue ? now.AddMinutes(effectiveUntilMinutes.Value) : null,
             35.348, -113.878, 521, "America/Phoenix");
         var observatory = ObservatoryLocationSnapshot.Create(
             Guid.NewGuid(), 1, DateTimeOffset.UnixEpoch, 35.348, -113.878, 521,
@@ -116,6 +124,10 @@ public sealed class DeploymentLocationReconciliationWorkerTests
             now.AddHours(-1), now.AddHours(1), "device-key", new CentralIdentityOptions());
         var secretStore = new Mock<IDeviceSecretStore>();
         secretStore.Setup(item => item.GetAsync(It.IsAny<CancellationToken>())).ReturnsAsync(secrets);
+        var durableWrites = new List<string>();
+        secretStore.Setup(item => item.SaveAsync(It.IsAny<DeviceSecrets>(), It.IsAny<CancellationToken>()))
+            .Callback(() => durableWrites.Add("secrets"))
+            .Returns(Task.CompletedTask);
         var identityStore = new Mock<IDeviceIdentityStore>();
         identityStore.Setup(item => item.GetOrCreateAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DeviceIdentity("camera-worker", "code", now));
@@ -126,7 +138,11 @@ public sealed class DeploymentLocationReconciliationWorkerTests
             .Returns(DeploymentLocationSourceKind.Gps);
         DeploymentLocationSnapshot? staged = null;
         locationStore.Setup(item => item.StageAsync(It.IsAny<DeploymentLocationSnapshot>(), It.IsAny<CancellationToken>()))
-            .Callback<DeploymentLocationSnapshot, CancellationToken>((value, _) => staged = value)
+            .Callback<DeploymentLocationSnapshot, CancellationToken>((value, _) =>
+            {
+                staged = value;
+                durableWrites.Add("location");
+            })
             .Returns(ValueTask.CompletedTask);
         using var client = new HttpClient(new CapturingHandler(acknowledgment))
         {
@@ -155,7 +171,18 @@ public sealed class DeploymentLocationReconciliationWorkerTests
 
         await worker.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(approved, staged);
+        if (expectPersistence)
+        {
+            Assert.AreEqual(approved, staged);
+            Assert.HasCount(2, durableWrites);
+            Assert.AreEqual("secrets", durableWrites[0]);
+            Assert.AreEqual("location", durableWrites[1]);
+        }
+        else
+        {
+            Assert.IsNull(staged);
+            Assert.IsEmpty(durableWrites);
+        }
         Assert.AreEqual(active, locationStore.Object.Active);
         Assert.AreEqual(expectedOutcome, state.Outcome);
         var activity = stopped.Single(item => item.OperationName == "deployment-location.reconcile"

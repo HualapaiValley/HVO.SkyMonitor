@@ -235,7 +235,7 @@ internal static class CameraAgentCalibrationOperationsEndpoints
         {
             return Invalid("A valid Idempotency-Key header is required.");
         }
-        var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actor = CameraAgentCredentialAccess.GetOwnerId(context.User);
         if (string.IsNullOrWhiteSpace(actor))
         {
             return Results.Problem(

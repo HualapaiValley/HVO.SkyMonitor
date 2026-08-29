@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 [ApiController]
 [Route("api/device/transient-candidates")]
-[Authorize(AuthenticationSchemes = "Bearer", Policy = "ArtifactIngest")]
+[Authorize(Policy = "ArtifactIngest")]
 internal sealed class DeviceTransientCandidateController(
     IDeviceCredentialValidator credentialValidator,
     ICentralTransientSubmissionService submissionService) : ControllerBase

@@ -7,7 +7,7 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 [ApiController]
 [Route("api/v1.0/devices/{devicePublicId:guid}/rigs/{rigId}/clear-reference")]
-[Authorize(AuthenticationSchemes = "Bearer", Policy = "DerivativeJobsRead")]
+[Authorize(Policy = "DerivativeJobsRead")]
 internal sealed class ClearReferenceDesignationsController(
     ICentralClearReferenceService service) : ControllerBase
 {
@@ -42,7 +42,7 @@ internal sealed class ClearReferenceDesignationsController(
                 devicePublicId,
                 rigId,
                 request.ArtifactId,
-                User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.Identity?.Name ?? "unknown",
+                CentralArtifactCredentialAccess.GetSubject(User) ?? "unknown",
                 cancellationToken).ConfigureAwait(false));
         }
         catch (CentralClearReferenceException exception)

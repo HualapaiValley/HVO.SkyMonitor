@@ -245,7 +245,7 @@ internal static class CameraAgentScheduleOperationsEndpoints
         CancellationToken cancellationToken)
     {
         var idempotencyKey = context.Request.Headers["Idempotency-Key"].ToString();
-        var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var actor = CameraAgentCredentialAccess.GetOwnerId(context.User);
         if (string.IsNullOrWhiteSpace(actor))
         {
             return Results.Problem(

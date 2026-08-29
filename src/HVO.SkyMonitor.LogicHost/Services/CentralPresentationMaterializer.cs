@@ -77,8 +77,9 @@ internal sealed class CentralPresentationMaterializer(
                 identity.Any(static character => character is not (>= '0' and <= '9' or >= 'A' and <= 'F'))) ||
             !CentralArtifactCredentialAccess.HasOwnerCredential(principal) ||
             CentralArtifactCredentialAccess.GetOwnerId(principal) is not { } ownerId ||
-            principal.FindFirst(ApiKeyClaims.AccessLevel)?.Value == nameof(ApiKeyAccessLevel.Read) ||
-            principal.Claims.Any(static claim => claim.Type == "scope") &&
+            CentralArtifactCredentialAccess.GetApiKeyAccessLevel(principal) == nameof(ApiKeyAccessLevel.Read) ||
+            CentralArtifactCredentialAccess.GetSingleCredentialIdentity(principal) is { } identity &&
+            CanonicalCredentialClaims.IsBearer(identity) &&
             !CentralArtifactCredentialAccess.HasScope(principal, "api.owner.write") &&
             !CentralArtifactCredentialAccess.HasScope(principal, "api.admin"))
         {

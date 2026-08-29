@@ -200,8 +200,7 @@ public partial class ManageObservatories : ComponentBase
 
         var authState = await AuthenticationStateTask;
         var user = authState.User;
-        var id = user.FindFirstValue(ClaimTypes.NameIdentifier)
-            ?? user.Identity?.Name;
+        var id = CentralArtifactCredentialAccess.GetOwnerId(user);
 
         if (string.IsNullOrWhiteSpace(id))
         {

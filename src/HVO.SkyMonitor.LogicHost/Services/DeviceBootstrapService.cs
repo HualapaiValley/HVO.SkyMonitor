@@ -20,9 +20,9 @@ public interface IDeviceBootstrapService
 public sealed record DeviceBootstrapRequest(
     string DeviceId,
     string Envelope,
-    string? Nonce = null,
-    DeploymentLocationSnapshot? DeploymentLocation = null,
-    DeploymentLocationSourceKind DeploymentLocationSourceKind = DeploymentLocationSourceKind.Unspecified);
+    string? Nonce,
+    DeploymentLocationSnapshot DeploymentLocation,
+    DeploymentLocationSourceKind DeploymentLocationSourceKind);
 
 public sealed record DeviceBootstrapResult(
     Guid RegistrationId,
@@ -83,6 +83,20 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
         if (!string.Equals(envelope.DeviceId, request.DeviceId, StringComparison.Ordinal))
         {
             throw new DeviceRegistrationException("Device identifier mismatch.");
+        }
+        if (envelope.ObservatoryLocationVersion <= 0
+            || !IsCanonicalSha256(envelope.ObservatoryLocationCanonicalSha256))
+        {
+            throw new DeviceRegistrationException("The registration envelope location evidence is invalid.");
+        }
+        if (request.DeploymentLocation is null || !request.DeploymentLocation.Validate().IsValid)
+        {
+            throw new DeviceRegistrationException("A v2 registration requires a valid protected deployment location.");
+        }
+        if (!Enum.IsDefined(request.DeploymentLocationSourceKind)
+            || request.DeploymentLocationSourceKind == DeploymentLocationSourceKind.Unspecified)
+        {
+            throw new DeviceRegistrationException("Deployment location source kind is invalid.");
         }
 
         var isRelational = dbContext.Database.IsRelational();
@@ -148,16 +162,6 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
             throw new DeviceRegistrationException(
                 "The Observatory location changed after envelope issuance. Restart registration.");
         }
-        if (request.DeploymentLocation is null)
-        {
-            throw new DeviceRegistrationException("A v2 registration requires the protected deployment location.");
-        }
-        if (!Enum.IsDefined(request.DeploymentLocationSourceKind)
-            || request.DeploymentLocationSourceKind == DeploymentLocationSourceKind.Unspecified)
-        {
-            throw new DeviceRegistrationException("Deployment location source kind is invalid.");
-        }
-
         registration.DevicePublicId ??= envelope.DevicePublicId;
         var locationAcknowledgment = await deploymentLocationAuthority.ProposeAsync(
             registration,
@@ -249,6 +253,10 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
         }
     }
 
+    private static bool IsCanonicalSha256(string? value)
+        => value is { Length: 64 }
+            && value.All(static character => character is >= '0' and <= '9' or >= 'A' and <= 'F');
+
     private static DeviceBootstrapEncryptedPayload EncryptSecrets(string deviceKey, DeviceBootstrapSecretPayload payload)
     {
         byte[] keyBytes;
@@ -304,5 +312,5 @@ internal sealed class DeviceBootstrapService : IDeviceBootstrapService
         DateTimeOffset IssuedAtUtc,
         DateTimeOffset ExpiresAtUtc,
         CentralIdentityOptions CentralIdentity,
-        DeploymentLocationAcknowledgment? DeploymentLocationAcknowledgment = null);
+        DeploymentLocationAcknowledgment DeploymentLocationAcknowledgment);
 }

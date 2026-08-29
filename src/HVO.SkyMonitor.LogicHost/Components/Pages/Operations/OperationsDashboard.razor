@@ -1,5 +1,5 @@
 @page "/app"
-@attribute [Authorize]
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
 
 <PageTitle>Network Operations | HVO SkyMonitor</PageTitle>
 

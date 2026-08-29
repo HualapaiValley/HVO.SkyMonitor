@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using Asp.Versioning;
 using HVO.SkyMonitor.Common.Security;
+using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -63,11 +64,11 @@ public sealed class StatusController : ControllerBase
     /// Get protected information using OAuth2/OpenID Connect token (requires valid access token).
     /// </summary>
     [HttpGet("protected")]
-    [Authorize(AuthenticationSchemes = "Bearer")]
+    [Authorize(Policy = AuthorizationPolicyNames.CanonicalBearer)]
     public IActionResult GetProtectedStatus()
     {
-        var accountType = User.FindFirst("account_type")?.Value ?? "Unknown";
-        var subject = User.FindFirst("sub")?.Value ?? "Unknown";
+        var accountType = CentralArtifactCredentialAccess.GetAccountType(User) ?? "Unknown";
+        var subject = CentralArtifactCredentialAccess.GetSubject(User) ?? "Unknown";
 
         return Ok(new
         {

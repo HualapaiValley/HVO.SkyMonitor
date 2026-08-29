@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 [ApiController]
 [Route("api/v1.0/artifacts")]
-[Authorize(AuthenticationSchemes = "Bearer", Policy = "ArtifactIngest")]
+[Authorize(Policy = "ArtifactIngest")]
 internal sealed class ArtifactIngestController(
     IArtifactIngestService ingestService,
     CentralIngestTelemetry telemetry) : ControllerBase

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Configuration;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
@@ -49,9 +50,7 @@ public sealed class CameraAgentAuthorizationTests
         using var serviceProvider = services.BuildServiceProvider();
         using var scope = serviceProvider.CreateScope();
         var authorizationService = scope.ServiceProvider.GetRequiredService<IAuthorizationService>();
-        var identity = authenticated
-            ? new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "test-user")], "Test")
-            : new ClaimsIdentity();
+        var identity = authenticated ? CanonicalIdentity("test-user") : new ClaimsIdentity();
 
         var result = await authorizationService.AuthorizeAsync(new ClaimsPrincipal(identity), policyName)
             .ConfigureAwait(false);
@@ -86,8 +85,7 @@ public sealed class CameraAgentAuthorizationTests
 
         using var provider = services.BuildServiceProvider();
         var authorization = provider.GetRequiredService<IAuthorizationService>();
-        var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, "test-user")], "Test"));
+        var principal = new ClaimsPrincipal(CanonicalIdentity("test-user"));
 
         var result = await authorization.AuthorizeAsync(
             principal, CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false);
@@ -113,8 +111,7 @@ public sealed class CameraAgentAuthorizationTests
         services.AddSingleton(Options.Create(new LocalIdentityOptions { AdminEmail = ConfiguredEmail }));
         services.AddCameraAgentAuthorization();
         using var provider = services.BuildServiceProvider();
-        var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, "owner")], "Test"));
+        var principal = new ClaimsPrincipal(CanonicalIdentity("owner"));
 
         var result = await provider.GetRequiredService<IAuthorizationService>().AuthorizeAsync(
             principal,
@@ -141,14 +138,57 @@ public sealed class CameraAgentAuthorizationTests
         services.AddSingleton(Options.Create(new LocalIdentityOptions { AdminEmail = ConfiguredEmail }));
         services.AddCameraAgentAuthorization();
         using var provider = services.BuildServiceProvider();
-        var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, "owner")], "Test"));
+        var principal = new ClaimsPrincipal(CanonicalIdentity("owner"));
 
         var result = await provider.GetRequiredService<IAuthorizationService>().AuthorizeAsync(
             principal,
             CameraAgentAuthorizationPolicyNames.OwnerBootstrapReadV1).ConfigureAwait(false);
 
         Assert.IsTrue(result.Succeeded);
+    }
+
+    [TestMethod]
+    public async Task SiteOwnerPolicy_RejectsNoncanonicalAndMixedCookieIdentities()
+    {
+        var userManager = CreateUserManager();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(userManager.Object);
+        services.AddSingleton<ILookupNormalizer, UpperInvariantLookupNormalizer>();
+        services.AddSingleton(Options.Create(new LocalIdentityOptions { AdminEmail = ConfiguredEmail }));
+        services.AddCameraAgentAuthorization();
+        using var provider = services.BuildServiceProvider();
+        var authorization = provider.GetRequiredService<IAuthorizationService>();
+        var noncanonicalPrincipals = new[]
+        {
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "owner")],
+                IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, "owner"),
+                    new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType),
+                    new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+                ],
+                IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim("sub", "owner"),
+                    new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+                ],
+                IdentityConstants.ApplicationScheme)),
+            new ClaimsPrincipal([CanonicalIdentity("owner"), CanonicalIdentity("other-owner")])
+        };
+
+        foreach (var principal in noncanonicalPrincipals)
+        {
+            var result = await authorization.AuthorizeAsync(
+                principal,
+                CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false);
+            Assert.IsFalse(result.Succeeded);
+        }
+
+        userManager.Verify(manager => manager.GetUserAsync(It.IsAny<ClaimsPrincipal>()), Times.Never);
     }
 
     private static Mock<UserManager<ApplicationUser>> CreateUserManager()
@@ -164,4 +204,12 @@ public sealed class CameraAgentAuthorizationTests
             Mock.Of<IServiceProvider>(),
             NullLogger<UserManager<ApplicationUser>>.Instance);
     }
+
+    private static ClaimsIdentity CanonicalIdentity(string ownerId)
+        => new(
+            [
+                new Claim(ClaimTypes.NameIdentifier, ownerId),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ],
+            IdentityConstants.ApplicationScheme);
 }

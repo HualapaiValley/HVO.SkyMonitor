@@ -27,7 +27,7 @@ public partial class PublicEvents : ComponentBase
     protected override async Task OnInitializedAsync()
     {
         await LoadAsync(null);
-        userId = (await AuthenticationStateTask).User.FindFirstValue(ClaimTypes.NameIdentifier);
+        userId = CentralArtifactCredentialAccess.GetOwnerId((await AuthenticationStateTask).User);
         if (userId is not null)
         {
             BookmarkedIds = await Personalization.ListBookmarkPublicIdsAsync(userId);

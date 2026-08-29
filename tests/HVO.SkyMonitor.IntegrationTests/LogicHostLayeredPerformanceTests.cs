@@ -1018,7 +1018,11 @@ public sealed partial class LogicHostIngestPerformanceTests
             .Select(static user => user.Id)
             .SingleAsync().ConfigureAwait(false);
         return new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, id)], IdentityConstants.ApplicationScheme));
+            [
+                new Claim(ClaimTypes.NameIdentifier, id),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ],
+            IdentityConstants.ApplicationScheme));
     }
 
     private static async Task<Issues437432MaterializationMeasurement> MeasureIssues437432MaterializationAsync(

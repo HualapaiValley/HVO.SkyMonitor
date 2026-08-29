@@ -9,9 +9,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -111,7 +113,11 @@ public sealed class CameraAgentOperatorUiServiceTests
     public async Task BindTransientOwnership_RequiresAcknowledgmentAndSealsNormalizedEvidenceAsync()
     {
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, "owner-id")], "test"));
+            [
+                new Claim(ClaimTypes.NameIdentifier, "owner-id"),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)
+            ],
+            IdentityConstants.ApplicationScheme));
         var authentication = new CountingAuthenticationStateProvider(principal);
         var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
         authorization.Setup(service => service.AuthorizeAsync(

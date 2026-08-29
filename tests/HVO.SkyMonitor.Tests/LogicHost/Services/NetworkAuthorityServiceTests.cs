@@ -8,6 +8,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.AspNetCore.Identity;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -367,8 +368,8 @@ public sealed class NetworkAuthorityServiceTests
             "public-event-v1",
             "owner-released");
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.NameIdentifier, data.Owner.Id)],
-            "test"));
+            [new Claim(ClaimTypes.NameIdentifier, data.Owner.Id), new Claim("account_type", "User")],
+            IdentityConstants.ApplicationScheme));
         var releaseDecision = await context.PublicRecordPublicationDecisions
             .SingleAsync(item => item.CentralTransientEventId == eventRecord.Id);
         releaseDecision.AuthorityObservatoryId.Should().Be(data.Observatory.Id);
