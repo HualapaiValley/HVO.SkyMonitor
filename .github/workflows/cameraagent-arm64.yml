@@ -1,0 +1,106 @@
+name: CameraAgent ARM64 Advisory
+
+on:
+  repository_dispatch:
+    types: [cameraagent-arm64]
+  schedule:
+    - cron: '30 6 * * *'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cameraagent-arm64-advisory
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  catalog-contracts:
+    name: Canonical Catalog Contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build exact production catalog contract
+        run: |
+          ./scripts/catalog/smoke-test.sh
+          catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
+          ./scripts/catalog/prepare-hyg-v42-contracts.sh "$catalog_root" >/dev/null
+          tar -czf "$RUNNER_TEMP/hyg-v42-contracts.tar.gz" -C "$catalog_root" .
+      - name: Upload exact production catalog contract
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: arm64-hyg-v42-contracts-${{ github.run_id }}
+          path: ${{ runner.temp }}/hyg-v42-contracts.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  cameraagent-arm64:
+    name: Native CameraAgent Evidence
+    needs: catalog-contracts
+    runs-on: [self-hosted, linux, ARM64, hvo-skymonitor-arm64]
+    timeout-minutes: 90
+    steps:
+      - name: Initialize pre-checkout evidence
+        run: |
+          evidence="$RUNNER_TEMP/arm64-workflow-start-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$evidence"
+          jq -n --arg startedUtc "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            '{schemaVersion:"hvo-arm64-workflow-start-v1",startedUtc:$startedUtc}' > "$evidence/workflow-start.json"
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Initialize evidence directory
+        run: |
+          evidence="TestResults/issue-381/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$evidence"
+          cp "$RUNNER_TEMP/arm64-workflow-start-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/workflow-start.json" "$evidence/"
+      - name: Download exact production catalog contract
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: arm64-hyg-v42-contracts-${{ github.run_id }}
+          path: ${{ runner.temp }}/hyg-v42-contract-artifact-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Restore exact production catalog contract
+        run: |
+          catalog_root="$RUNNER_TEMP/hyg-v42-contracts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -m 700 "$catalog_root"
+          tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/hyg-v42-contracts.tar.gz" -C "$catalog_root"
+          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s/build/hyg-v4.2-p3-s2-r1.bundle\n' "$catalog_root" >> "$GITHUB_ENV"
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Run native ARM64 build, test, publish, and smoke
+        run: ./scripts/test:cameraagent-arm64-ci "$HVO_PRODUCTION_CATALOG_BUNDLE"
+      - name: Upload native ARM64 evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cameraagent-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            TestResults/issue-381/${{ github.run_id }}-${{ github.run_attempt }}/
+            ${{ runner.temp }}/arm64-workflow-start-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove run-scoped workflow inputs
+        if: always()
+        run: |
+          chmod -R u+w \
+            "$RUNNER_TEMP/hyg-v42-contracts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/hyg-v42-contract-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/arm64-workflow-start-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" 2>/dev/null || true
+          rm -rf -- \
+            "$RUNNER_TEMP/hyg-v42-contracts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/hyg-v42-contract-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/arm64-workflow-start-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
