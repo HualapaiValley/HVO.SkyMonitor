@@ -547,13 +547,15 @@ chmod 600 "$PUBLISH_SMOKE_CONFIG"
         ./HVO.SkyMonitor.CameraAgent
 ) > "$RESULTS/publish-smoke.log" 2>&1 &
 PUBLISH_PID=$!
+# CameraCaptureService emits this only after ApplicationStarted and module initialization.
+readonly PUBLISH_READY_SIGNAL='Camera module Virtual Sky Camera initialized'
 deadline=$((SECONDS + 120))
 while (( SECONDS < deadline )); do
     kill -0 "$PUBLISH_PID" >/dev/null 2>&1 || fail "published CameraAgent exited before startup completed"
-    grep -Fq 'Now listening on:' "$RESULTS/publish-smoke.log" && break
+    grep -Fq "$PUBLISH_READY_SIGNAL" "$RESULTS/publish-smoke.log" && break
     sleep 2
 done
-grep -Fq 'Now listening on:' "$RESULTS/publish-smoke.log" || fail "published CameraAgent did not complete startup"
+grep -Fq "$PUBLISH_READY_SIGNAL" "$RESULTS/publish-smoke.log" || fail "published CameraAgent did not report application readiness"
 set +e
 stop_process "$PUBLISH_PID"
 publish_exit=$?
