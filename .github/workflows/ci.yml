@@ -29,7 +29,6 @@ jobs:
       mode: ${{ steps.classify.outputs.mode }}
       deployment: ${{ steps.classify.outputs.deployment }}
       deployment_catalog: ${{ steps.classify.outputs.deployment_catalog }}
-      deployment_layout: ${{ steps.classify.outputs.deployment_layout }}
       deployment_shards: ${{ steps.classify.outputs.deployment_shards }}
       deployment_installer: ${{ steps.classify.outputs.deployment_installer }}
     steps:
@@ -102,7 +101,7 @@ jobs:
           /tmp/actionlint .github/workflows/*.yml
       - name: Run static and lightweight contract checks
         run: |
-          bash -n .devcontainer/*.sh .devcontainer/opencode-host.conf scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/deploy:environment scripts/deploy:migrate-product-layout scripts/deploy/*.sh deploy/split-host/provision-sql.sh deploy/split-host/provision-minio.sh scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:deploy-environment scripts/test:deploy-environment-cli scripts/test:product-layout scripts/test:opencode scripts/test:cameraagent-ui scripts/test:logichost-ui scripts/test:cameraagent-standalone-production-smoke scripts/test:cameraagent-dual-standalone-smoke scripts/test:deployment-logichost-outage-contract scripts/test:deployment-normal-flow-contract scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/install-hvo-skymonitor.sh scripts/opencode:connect scripts/opencode:enable scripts/opencode:disable
+          bash -n .devcontainer/*.sh .devcontainer/opencode-host.conf scripts/docs:audit-operations scripts/identity:smoke scripts/smoke:env scripts/deploy:environment scripts/deploy/*.sh deploy/split-host/provision-sql.sh deploy/split-host/provision-minio.sh scripts/user-secret:set scripts/infra:operation-lock scripts/infra:validate-app-state-archive scripts/infra:start scripts/infra:reset scripts/infra:backup-app-state scripts/infra:restore-app-state scripts/test:infra scripts/test:smoke-env scripts/test:deploy-environment scripts/test:deploy-environment-cli scripts/test:opencode scripts/test:cameraagent-ui scripts/test:logichost-ui scripts/test:cameraagent-standalone-production-smoke scripts/test:cameraagent-dual-standalone-smoke scripts/test:deployment-logichost-outage-contract scripts/test:deployment-normal-flow-contract scripts/ci:classify scripts/ci:require scripts/test:ci-classification scripts/catalog/*.sh scripts/catalog:install scripts/install-hvo-skymonitor.sh scripts/opencode:connect scripts/opencode:enable scripts/opencode:disable
           ./scripts/docs:audit-operations
           ./scripts/test:infra
           ./scripts/test:smoke-env
@@ -162,16 +161,13 @@ jobs:
             printf 'Bash 5.1 or newer is required for deployment shard coordination.\n' >&2
             exit 1
           fi
-           ./scripts/test:deploy-environment --list-shards
-           bash -n scripts/deploy:migrate-product-layout scripts/test:product-layout scripts/test:deployment-installer
+          ./scripts/test:deploy-environment --list-shards
+          bash -n scripts/test:deployment-installer
       - name: Run exhaustive production catalog lifecycle
         if: needs.changes.outputs.deployment_catalog == 'true'
         run: |
           ./scripts/catalog/test-hyg-v42-install.sh \
             "$RUNNER_TEMP/hyg-v42-contracts/build/hyg-v4.2-p3-s2-r1.bundle"
-      - name: Run exhaustive product layout and migration contracts
-        if: needs.changes.outputs.deployment_layout == 'true'
-        run: ./scripts/test:product-layout
       - name: Run lightweight deployment contracts
         run: |
           ./scripts/test:deploy-environment-cli

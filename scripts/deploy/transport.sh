@@ -394,7 +394,7 @@ if [[ -e "$manifest" || -L "$manifest" ]]; then
     (keys | sort) == (["applicationIdentityFile","component","creationProvenance","instanceId","product","schemaVersion"] | sort) and
     .schemaVersion == $expected.schemaVersion and .product == $expected.product and .component == $expected.component and
     .instanceId == $expected.instanceId and .applicationIdentityFile == $expected.applicationIdentityFile and
-    (.creationProvenance == $expected.creationProvenance or .creationProvenance == {migration:"singular-layout-v1"})' "$manifest" >/dev/null || exit 91
+    .creationProvenance == $expected.creationProvenance' "$manifest" >/dev/null || exit 91
 else
   temporary="$root/.instance-manifest.tmp.$$"
   (umask 077; printf '%s\n' "$expected" > "$temporary")

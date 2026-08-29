@@ -20,6 +20,10 @@ use File::Find;
 use IO::Uncompress::Gunzip qw($GunzipError);
 
 my ($archive, $extract_root, $expected_inventory) = @ARGV;
+my $product_identity = 'HVO.SkyMonitor';
+my $expected_uid = $<;
+my $expected_gid = $(;
+$expected_gid =~ s/\s.*//;
 my @supported = qw(
     logichost/dataprotection
     logichost/home
@@ -60,8 +64,6 @@ sub canonical_name {
     my ($raw, $type) = @_;
     $raw =~ s/\0.*//s;
     reject('control characters in paths', 1) if $raw =~ /[\x00-\x1f\x7f]/;
-    $raw =~ s{^\./}{}; # Historical archives used one leading ./ prefix.
-    return '' if $raw eq '' && $type eq '5';
     if ($type eq '5') {
         reject('path aliases', 1) if $raw =~ m{//+$};
         $raw =~ s{/$}{};
@@ -71,6 +73,14 @@ sub canonical_name {
     reject('path aliases', 1) if $raw eq '' || $raw eq '.' || $raw =~ m{//} || $raw =~ m{(?:^|/)\.(?:/|$)};
     reject('unsafe paths', 1) if $raw =~ m{^/} || $raw =~ m{(?:^|/)\.\.(?:/|$)};
     return $raw;
+}
+
+sub component_for_path {
+    my ($path) = @_;
+    return 'logicHost' if index($path, 'logichost/') == 0;
+    return 'cameraAgent' if index($path, 'cameraagent/') == 0 || $path eq 'agent' ||
+        index($path, 'agent/') == 0 || $path eq 'archive' || index($path, 'archive/') == 0;
+    return '';
 }
 
 sub supported_path {
@@ -88,38 +98,44 @@ sub parse_inventory {
     pop @lines if @lines && $lines[-1] eq '';
     reject('missing inventory header', 1) unless @lines;
     my $header = shift @lines;
-    reject('unsupported inventory version', 1) unless $header eq "HVO-APPLICATION-STATE-INVENTORY\t1";
+    reject('unsupported inventory identity or version', 1)
+        unless $header eq "HVO-APPLICATION-STATE-INVENTORY\t1\t$product_identity";
     my %inventory;
     my $previous = '';
     my $invalid = 0;
     for my $line (@lines) {
         my @field = split(/\t/, $line, -1);
-        if (@field != 5 || $field[0] !~ /^[DF]$/ || $field[1] !~ /^[0-7]{4}$/ ||
-            $field[4] !~ /^(?:[0-9a-f]{2})+$/) {
+        if (@field != 8 || $field[0] !~ /^[DF]$/ || $field[1] !~ /^(?:logicHost|cameraAgent)$/ ||
+            $field[2] !~ /^(?:0|[1-9][0-9]*)$/ || $field[3] !~ /^(?:0|[1-9][0-9]*)$/ ||
+            $field[4] !~ /^0[0-7]{3}$/ || $field[7] !~ /^(?:[0-9a-f]{2})+$/) {
             $invalid++;
             next;
         }
-        my $path = pack('H*', $field[4]);
+        my $path = pack('H*', $field[7]);
         my $canonical = eval { canonical_name($path, $field[0] eq 'D' ? '5' : '0') };
         if (!$canonical || !supported_path($canonical) || exists $inventory{$canonical} ||
-            ($previous ne '' && $canonical le $previous)) {
+            ($previous ne '' && $canonical le $previous) || $field[1] ne component_for_path($canonical) ||
+            $field[2] != $expected_uid || $field[3] != $expected_gid) {
             $invalid++;
             next;
         }
         if ($field[0] eq 'D') {
-            $invalid++ unless $field[2] eq '-' && $field[3] eq '-';
+            $invalid++ unless $field[5] eq '-' && $field[6] eq '-';
         } else {
-            $invalid++ unless $field[2] =~ /^(?:0|[1-9][0-9]*)$/ && $field[3] =~ /^[0-9a-f]{64}$/;
+            $invalid++ unless $field[5] =~ /^(?:0|[1-9][0-9]*)$/ && $field[6] =~ /^[0-9a-f]{64}$/;
         }
         $inventory{$canonical} = {
-            type => $field[0], mode => oct($field[1]), size => $field[2], digest => $field[3]
+            type => $field[0], component => $field[1], uid => 0 + $field[2], gid => 0 + $field[3],
+            mode => oct($field[4]), size => $field[5], digest => $field[6]
         };
         $previous = $canonical;
     }
     reject('invalid inventory entries', $invalid) if $invalid;
     reject('empty internal inventory', 1) unless keys %inventory;
     for my $required (@supported) {
-        reject('missing required inventory entries', 1) unless exists $inventory{$required} && $inventory{$required}{type} eq 'D';
+        reject('missing or unsafe required inventory entries', 1)
+            unless exists $inventory{$required} && $inventory{$required}{type} eq 'D' &&
+                $inventory{$required}{mode} == 0700;
     }
     return \%inventory;
 }
@@ -144,7 +160,11 @@ opendir(my $root_handle, $extract_root) or reject('unsafe extraction directory',
 reject('nonempty extraction directory', 1) if grep { $_ ne '.' && $_ ne '..' } readdir($root_handle);
 closedir($root_handle);
 
-my $gzip = IO::Uncompress::Gunzip->new($archive, Transparent => 0) or reject('unreadable archive', 1);
+open(my $archive_handle, '<:raw', $archive) or reject('unreadable archive', 1);
+my $compressed_trailing = '';
+my $gzip = IO::Uncompress::Gunzip->new(
+    $archive_handle, Transparent => 0, MultiStream => 0, Strict => 1)
+    or reject('unreadable archive', 1);
 my %entries;
 my %directory_modes;
 my $manifest_content;
@@ -172,6 +192,8 @@ while (1) {
     $type = '0' if $type eq "\0";
     my $size = octal_field(substr($header, 124, 12), 'entry size');
     my $mode = octal_field(substr($header, 100, 8), 'entry mode') & 07777;
+    my $uid = octal_field(substr($header, 108, 8), 'entry uid');
+    my $gid = octal_field(substr($header, 116, 8), 'entry gid');
     if ($type eq 'L') {
         reject('nested GNU long-name records', 1) if defined $pending_long_name;
         reject('invalid GNU long-name length', 1) if $size < 2 || $size > 4096;
@@ -185,6 +207,7 @@ while (1) {
         next;
     }
     reject('link, extension, or special entries', 1) unless $type eq '0' || $type eq '5';
+    reject('archive ownership mismatch', 1) unless $uid == $expected_uid && $gid == $expected_gid;
     my $name = substr($header, 0, 100);
     my $prefix = substr($header, 345, 155);
     $name =~ s/\0.*//s;
@@ -194,10 +217,6 @@ while (1) {
     my $canonical = canonical_name($raw_name, $type);
     reject('directory with payload', 1) if $type eq '5' && $size != 0;
 
-    if ($canonical eq '') {
-        reject('root entry with payload', 1) unless $type eq '5' && $size == 0;
-        next;
-    }
     reject('duplicate canonical paths', 1) if exists $entries{$canonical};
     safe_parent_dirs($canonical);
     my $target = "$extract_root/$canonical";
@@ -234,41 +253,55 @@ while (1) {
     my $padding = (512 - ($size % 512)) % 512;
     read_exact($gzip, $padding) if $padding;
     $entries{$canonical} = {
-        type => $type eq '5' ? 'D' : 'F', mode => $mode, size => $size, digest => $digest
+        type => $type eq '5' ? 'D' : 'F', mode => $mode, uid => $uid, gid => $gid,
+        size => $size, digest => $digest
     };
 }
+while (1) {
+    my $read = $gzip->read(my $trailing, 1024 * 1024);
+    reject('unreadable archive', 1) unless defined $read;
+    last if $read == 0;
+    reject('nonzero data after archive terminator', 1) if $trailing =~ /[^\0]/;
+}
+$compressed_trailing = $gzip->trailingData();
 $gzip->close() or reject('unreadable archive', 1);
+while (1) {
+    my $read = read($archive_handle, my $raw_trailing, 1024 * 1024);
+    reject('unreadable archive', 1) unless defined $read;
+    last if $read == 0;
+    $compressed_trailing .= $raw_trailing;
+}
+close($archive_handle) or reject('unreadable archive', 1);
+reject('data after compressed archive', 1) if length($compressed_trailing);
 
-my $inventory;
-if (defined $manifest_content) {
-    $inventory = parse_inventory($manifest_content);
-    if ($expected_inventory ne '') {
-        open(my $expected, '<:raw', $expected_inventory) or reject('unreadable expected inventory', 1);
-        local $/;
-        my $content = <$expected>;
-        close($expected);
-        reject('internal inventory content mismatch', 1) unless $content eq $manifest_content;
-    }
-    my $expected_count = scalar(keys %$inventory) + 1;
-    reject('archive/inventory entry-count mismatch', abs(scalar(keys %entries) - $expected_count) || 1)
-        unless scalar(keys %entries) == $expected_count;
-    for my $path (keys %entries) {
-        next if $path eq '.hvo-application-state-inventory';
-        reject('extra archived entries', 1) unless exists $inventory->{$path};
-        my $actual = $entries{$path};
-        my $wanted = $inventory->{$path};
-        reject('inventory type mismatch', 1) unless $actual->{type} eq $wanted->{type};
-        reject('inventory mode mismatch', 1) unless $actual->{mode} == $wanted->{mode};
-        if ($actual->{type} eq 'F') {
-            reject('inventory size mismatch', 1) unless $actual->{size} eq $wanted->{size};
-            reject('inventory digest mismatch', 1) unless $actual->{digest} eq $wanted->{digest};
-        }
-    }
-} else {
-    reject('expected internal inventory is missing', 1) if $expected_inventory ne '';
-    for my $required (@supported) {
-        reject('missing required application-state directories', 1)
-            unless exists $entries{$required} && $entries{$required}{type} eq 'D';
+reject('required internal inventory is missing', 1) unless defined $manifest_content;
+my $inventory = parse_inventory($manifest_content);
+if ($expected_inventory ne '') {
+    open(my $expected, '<:raw', $expected_inventory) or reject('unreadable expected inventory', 1);
+    local $/;
+    my $content = <$expected>;
+    close($expected);
+    reject('internal inventory content mismatch', 1) unless $content eq $manifest_content;
+}
+my $inventory_entry = $entries{'.hvo-application-state-inventory'};
+reject('invalid internal inventory metadata', 1)
+    unless defined($inventory_entry) && $inventory_entry->{type} eq 'F' && $inventory_entry->{mode} == 0600 &&
+        $inventory_entry->{uid} == $expected_uid && $inventory_entry->{gid} == $expected_gid;
+my $expected_count = scalar(keys %$inventory) + 1;
+reject('archive/inventory entry-count mismatch', abs(scalar(keys %entries) - $expected_count) || 1)
+    unless scalar(keys %entries) == $expected_count;
+for my $path (keys %entries) {
+    next if $path eq '.hvo-application-state-inventory';
+    reject('extra archived entries', 1) unless exists $inventory->{$path};
+    my $actual = $entries{$path};
+    my $wanted = $inventory->{$path};
+    reject('inventory type mismatch', 1) unless $actual->{type} eq $wanted->{type};
+    reject('inventory mode mismatch', 1) unless $actual->{mode} == $wanted->{mode};
+    reject('inventory ownership mismatch', 1)
+        unless $actual->{uid} == $wanted->{uid} && $actual->{gid} == $wanted->{gid};
+    if ($actual->{type} eq 'F') {
+        reject('inventory size mismatch', 1) unless $actual->{size} eq $wanted->{size};
+        reject('inventory digest mismatch', 1) unless $actual->{digest} eq $wanted->{digest};
     }
 }
 
@@ -285,18 +318,22 @@ find({
         my @stat = lstat($File::Find::name);
         reject('post-extraction filesystem entry', 1) unless @stat && (S_ISREG($stat[2]) || S_ISDIR($stat[2]));
         reject('post-extraction duplicate path', 1) if $walked{$relative}++;
-        if (defined($inventory) && supported_path($relative)) {
+        if (supported_path($relative)) {
             reject('post-extraction unlisted inventory item', 1) unless exists $inventory->{$relative};
             my $wanted = $inventory->{$relative};
             reject('post-extraction inventory type mismatch', 1)
                 unless ($wanted->{type} eq 'D' && S_ISDIR($stat[2])) || ($wanted->{type} eq 'F' && S_ISREG($stat[2]));
             reject('post-extraction inventory mode mismatch', 1) unless ($stat[2] & 07777) == $wanted->{mode};
+            reject('post-extraction inventory ownership mismatch', 1)
+                unless $stat[4] == $wanted->{uid} && $stat[5] == $wanted->{gid};
         }
         if (exists $entries{$relative}) {
             my $entry = $entries{$relative};
             reject('post-extraction type mismatch', 1)
                 unless ($entry->{type} eq 'D' && S_ISDIR($stat[2])) || ($entry->{type} eq 'F' && S_ISREG($stat[2]));
             reject('post-extraction mode mismatch', 1) unless ($stat[2] & 07777) == $entry->{mode};
+            reject('post-extraction ownership mismatch', 1)
+                unless $stat[4] == $entry->{uid} && $stat[5] == $entry->{gid};
             if ($entry->{type} eq 'F') {
                 reject('post-extraction size mismatch', 1) unless $stat[7] == $entry->{size};
                 open(my $verify, '<:raw', $File::Find::name) or reject('post-extraction read failure', 1);
@@ -311,11 +348,9 @@ find({
 for my $path (keys %entries) {
     reject('post-extraction missing entry', 1) unless $walked{$path};
 }
-if (defined $inventory) {
-    for my $path (keys %$inventory) {
-        reject('post-extraction missing inventory item', 1) unless $walked{$path};
-    }
+for my $path (keys %$inventory) {
+    reject('post-extraction missing inventory item', 1) unless $walked{$path};
 }
 
-print defined($manifest_content) ? "inventory-v1\n" : "legacy\n";
+print "inventory-v1\n";
 PERL

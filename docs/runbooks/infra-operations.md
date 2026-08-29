@@ -208,18 +208,15 @@ Use `./scripts/infra:backup-app-state BACKUP_DIRECTORY` and
 `./scripts/infra:restore-app-state APPLICATION_STATE_ARCHIVE` for the mounted
 application portion. New `.tgz` archives contain only the seven supported paths
 listed above, never `data/catalog` or other runtime-root content. They include a
-versioned file/directory inventory with modes, file sizes, and SHA-256 digests,
-and retain the adjacent one-line `.sha256` transport-checksum format used by
-legacy archives. Restore accepts those legacy archive/checksum pairs, validates
-new inventories before installation and after extraction, preserves the target
-catalog independently, and retains exact pre-restore state for rollback. For an
-inventory-v1 archive, every regular file and every directory beneath a supported
-root must have exactly one canonical inventory entry and every inventory entry
-must exist after extraction with the recorded type and mode; implicitly created
-nested directories are rejected. Legacy archives have no internal inventory and
-therefore retain reduced verification: transport checksum, canonical header and
-type safety, collision-safe extraction, and post-walk filesystem type checks,
-without requiring old archives to list every extraction scaffold directory. A
+versioned file/directory inventory with product and component identity, UID/GID
+ownership, modes, file sizes, and SHA-256 digests, plus an adjacent relocatable
+one-line `.sha256` transport checksum. Restore requires inventory-v1, validates
+its exact one-to-one mapping before installation and after extraction, preserves
+the target catalog independently, and retains exact pre-restore state for
+rollback. Every regular file and directory beneath a supported root must have
+exactly one canonical inventory entry and every inventory entry must exist after
+extraction with the recorded component, ownership, type, and mode. Implicitly
+created nested directories and archives without the inventory are rejected. A
 failed application restore attempts collision-safe exact rollback and
 intentionally leaves both applications stopped. If exact rollback cannot
 complete, it preserves the durable transaction marker and rollback state for
@@ -261,11 +258,10 @@ policy applies to an existing backup destination before publication.
 
 Restore copies the selected archive into private staging, verifies that copy,
 and performs all header validation and extraction against it. It rejects path
-aliases, duplicate canonical targets, absolute/traversal/control paths,
-link/special entries, and tar extension/path-override records. The historical
-single `./` prefix from repository legacy archives is canonicalized before
-duplicate detection. Bounded GNU long-name records from historical GNU tar
-archives are resolved and canonicalized before those checks, allowing supported
+aliases including a leading `./`, duplicate canonical targets,
+absolute/traversal/control paths, link/special entries, and tar
+extension/path-override records. Bounded GNU long-name records are resolved
+before those checks, allowing supported
 long paths without accepting GNU long-link, sparse, or PAX override records.
 Staged filesystem swaps are individual same-filesystem
 renames coordinated by a durable phase marker; they are not a transaction that
