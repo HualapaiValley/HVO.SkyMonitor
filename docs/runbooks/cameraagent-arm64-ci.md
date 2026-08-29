@@ -32,7 +32,8 @@ environment, deployment, camera, or application secrets.
 Use a dedicated native Linux ARM64 host with:
 
 - at least 8 GB installed memory and 7.5 GB usable memory reported to Linux;
-- wired networking;
+- wired networking when available, with a stable physical WiFi link permitted as
+  a recorded fallback while Ethernet has no carrier;
 - NVMe or SSD storage for the runner work directory and Docker root, with at
   least 20 GiB and 100,000 inodes available for each runner filesystem;
 - active cooling and stable power;
@@ -113,9 +114,9 @@ The hosted catalog job builds the exact canonical production bundle on
 `ubuntu-24.04`; the ARM64 host only downloads and installs that immutable
 bundle. The native job then:
 
-1. verifies native host and Docker architecture, memory, wired networking,
-   SSD/NVMe placement, service-account privilege, temperature, and throttle
-   state;
+1. verifies native host and Docker architecture, memory, physical network link
+   and transport, SSD/NVMe placement, service-account privilege, temperature,
+   and throttle state;
 2. builds CameraAgent and its CameraAgent, acceptance, and SQLite catalog Unit
    projects in Release with warnings as errors and an invalid Docker endpoint;
 3. publishes `linux-arm64`, inspects AArch64 ELF identities, rejects test
@@ -156,8 +157,9 @@ Before OS, firmware, Docker, .NET, or runner maintenance, remove
 `hvo-skymonitor-arm64` or disable the runner and wait for the active job to
 finish. After maintenance or reboot:
 
-1. verify stable power, cooling, wired link, storage mounts, free space, Docker,
-   SDK, runner version, and the exact label set;
+1. verify stable power, cooling, the preferred wired link or recorded WiFi
+   fallback, storage mounts, free space, Docker, SDK, runner version, and the
+   exact label set;
 2. inspect the runner service and Docker logs for filesystem, I/O, network,
    thermal, power, or daemon failures;
 3. dispatch one bounded advisory workflow; and

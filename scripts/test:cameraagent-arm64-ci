@@ -285,11 +285,28 @@ readonly MEMORY_BYTES="$((MEMORY_KIB * 1024))"
 DEFAULT_INTERFACE="$(ip route show default | awk 'NR == 1 { print $5 }')"
 readonly DEFAULT_INTERFACE
 [[ -n "$DEFAULT_INTERFACE" ]] || fail "default network interface is unavailable"
-[[ ! -d "/sys/class/net/$DEFAULT_INTERFACE/wireless" ]] || fail "runner default route uses a wireless interface"
 [[ "$(<"/sys/class/net/$DEFAULT_INTERFACE/carrier")" == 1 ]] || fail "runner default network interface has no carrier"
 INTERFACE_PATH="$(readlink -f "/sys/class/net/$DEFAULT_INTERFACE")"
 readonly INTERFACE_PATH
 [[ -n "$INTERFACE_PATH" && "$INTERFACE_PATH" != *'/virtual/'* ]] || fail "runner default route does not use a physical interface"
+WIRED_CARRIER_AVAILABLE=false
+for interface in /sys/class/net/*; do
+    [[ -d "$interface" && ! -d "$interface/wireless" && "$(<"$interface/type")" == 1 ]] || continue
+    interface_path="$(readlink -f "$interface")"
+    [[ "$interface_path" != *'/virtual/'* ]] || continue
+    if [[ -r "$interface/carrier" && "$(<"$interface/carrier")" == 1 ]]; then
+        WIRED_CARRIER_AVAILABLE=true
+        break
+    fi
+done
+readonly WIRED_CARRIER_AVAILABLE
+if [[ -d "/sys/class/net/$DEFAULT_INTERFACE/wireless" ]]; then
+    [[ "$WIRED_CARRIER_AVAILABLE" == false ]] || fail "runner uses WiFi while a physical wired interface has carrier"
+    NETWORK_TRANSPORT=wireless-fallback
+else
+    NETWORK_TRANSPORT=wired
+fi
+readonly NETWORK_TRANSPORT
 
 DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
 readonly DOCKER_ROOT
@@ -346,11 +363,13 @@ jq -n \
     --arg runnerStorageSource "$TEMP_SOURCE" \
     --arg workspaceStorageSource "$WORKSPACE_SOURCE" \
     --arg networkInterface "$DEFAULT_INTERFACE" \
+    --arg networkTransport "$NETWORK_TRANSPORT" \
+    --argjson wiredCarrierAvailable "$WIRED_CARRIER_AVAILABLE" \
     --arg piModel "$PI_MODEL" \
     --arg initialThrottle "$INITIAL_THROTTLE" \
     --argjson processorCount "$(nproc)" \
     --argjson memoryBytes "$MEMORY_BYTES" \
-    '{schemaVersion:"hvo-arm64-runner-preflight-v1",architecture:$architecture,docker:{os:$os,architecture:$dockerArchitecture,version:$dockerVersion,storageSource:$dockerStorageSource},kernel:$kernel,dotnetSdk:$sdk,sqliteVersion:$sqliteVersion,processorCount:$processorCount,memoryBytes:$memoryBytes,runnerStorageSource:$runnerStorageSource,workspaceStorageSource:$workspaceStorageSource,networkInterface:$networkInterface,piModel:$piModel,initialThrottle:$initialThrottle}' \
+    '{schemaVersion:"hvo-arm64-runner-preflight-v1",architecture:$architecture,docker:{os:$os,architecture:$dockerArchitecture,version:$dockerVersion,storageSource:$dockerStorageSource},kernel:$kernel,dotnetSdk:$sdk,sqliteVersion:$sqliteVersion,processorCount:$processorCount,memoryBytes:$memoryBytes,runnerStorageSource:$runnerStorageSource,workspaceStorageSource:$workspaceStorageSource,networkInterface:$networkInterface,networkTransport:$networkTransport,wiredCarrierAvailable:$wiredCarrierAvailable,piModel:$piModel,initialThrottle:$initialThrottle}' \
     > "$RESULTS/preflight.json"
 
 printf 'timestamp_utc,temperature_millic,throttle,mem_available_kib,load_1m,temp_available_kib,docker_available_kib,disk_read_sectors,disk_write_sectors\n' > "$RESULTS/host-samples.csv"
