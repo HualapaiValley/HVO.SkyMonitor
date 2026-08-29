@@ -34,6 +34,7 @@ fi
 readonly RUNTIME_DATA_ROOT="$(realpath -ms "${HVO_RUNTIME_DATA_ROOT:-$REPO_ROOT/data}")"
 readonly BACKUP_DIRECTORY="$(realpath -ms "$1")"
 readonly INVENTORY_NAME=".hvo-application-state-inventory"
+readonly PRODUCT_IDENTITY="HVO.SkyMonitor"
 readonly SUPPORTED_PATHS=(
     logichost/dataprotection
     logichost/home
@@ -122,7 +123,7 @@ trap cleanup EXIT
 "$SCRIPT_DIR/infra:stop" logichost cameraagent
 
 inventory="$WORK_DIRECTORY/$INVENTORY_NAME"
-printf 'HVO-APPLICATION-STATE-INVENTORY\t1\n' > "$inventory"
+printf 'HVO-APPLICATION-STATE-INVENTORY\t1\t%s\n' "$PRODUCT_IDENTITY" > "$inventory"
 entry_count=0
 while IFS= read -r -d '' relative_path; do
     ((entry_count += 1))
@@ -132,13 +133,27 @@ while IFS= read -r -d '' relative_path; do
         exit 1
     fi
     path_hex="$(printf '%s' "$relative_path" | od -An -v -tx1 | tr -d ' \n')"
-    mode="$(stat -c '%a' "$RUNTIME_DATA_ROOT/$relative_path" 2>/dev/null)" || {
+    metadata="$(stat -c '%a:%u:%g' "$RUNTIME_DATA_ROOT/$relative_path" 2>/dev/null)" || {
         printf 'Application-state metadata changed during inventory generation.\n' >&2
         exit 1
     }
+    IFS=: read -r mode owner_uid owner_gid <<< "$metadata"
+    if [[ "$owner_uid" != "$(id -u)" || "$owner_gid" != "$(id -g)" ]]; then
+        printf 'Application state contains entries with unsupported ownership (count: 1).\n' >&2
+        exit 1
+    fi
+    case "$relative_path" in
+        logichost/*) component=logicHost ;;
+        cameraagent/* | agent | agent/* | archive | archive/*) component=cameraAgent ;;
+        *)
+            printf 'Application state contains an unsupported component path (count: 1).\n' >&2
+            exit 1
+            ;;
+    esac
     printf -v octal_mode '%04o' "$((8#$mode))"
     if [[ -d "$RUNTIME_DATA_ROOT/$relative_path" && ! -L "$RUNTIME_DATA_ROOT/$relative_path" ]]; then
-        printf 'D\t%s\t-\t-\t%s\n' "$octal_mode" "$path_hex" >> "$inventory"
+        printf 'D\t%s\t%s\t%s\t%s\t-\t-\t%s\n' \
+            "$component" "$owner_uid" "$owner_gid" "$octal_mode" "$path_hex" >> "$inventory"
     elif [[ -f "$RUNTIME_DATA_ROOT/$relative_path" && ! -L "$RUNTIME_DATA_ROOT/$relative_path" ]] &&
          link_count="$(stat -c '%h' "$RUNTIME_DATA_ROOT/$relative_path" 2>/dev/null)" &&
          [[ "$link_count" == 1 ]]; then
@@ -150,7 +165,8 @@ while IFS= read -r -d '' relative_path; do
             printf 'Application-state content changed during inventory generation.\n' >&2
             exit 1
         }
-        printf 'F\t%s\t%s\t%s\t%s\n' "$octal_mode" "$size" "${digest%% *}" "$path_hex" >> "$inventory"
+        printf 'F\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$component" "$owner_uid" "$owner_gid" "$octal_mode" "$size" "${digest%% *}" "$path_hex" >> "$inventory"
     else
         printf 'Application state contains unsupported filesystem entries (count: 1).\n' >&2
         exit 1

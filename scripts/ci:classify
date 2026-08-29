@@ -11,7 +11,6 @@ reason="non-pull-request events always run the full matrix"
 deployment="true"
 deployment_reason="non-pull-request events always run deployment contracts"
 deployment_catalog="true"
-deployment_layout="true"
 deployment_shards="true"
 deployment_installer="true"
 path_count=0
@@ -28,15 +27,15 @@ write_summary_path() {
 
 finish() {
   if [[ -n "$summary_file" ]]; then
-    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive product layout: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nPath count: %s\n' \
+    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nPath count: %s\n' \
       "$mode" "$reason" "$deployment" "$deployment_reason" "$deployment_catalog" \
-      "$deployment_layout" "$deployment_shards" "$deployment_installer" "$path_count" >> "$summary_file"
+      "$deployment_shards" "$deployment_installer" "$path_count" >> "$summary_file"
   fi
 
   printf 'CI classification: mode=%s deployment=%s reason=%s deployment-reason=%s paths=%s\n' \
     "$mode" "$deployment" "$reason" "$deployment_reason" "$path_count" >&2
-  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_layout=%s\ndeployment_shards=%s\ndeployment_installer=%s\n' \
-    "$mode" "$deployment" "$deployment_catalog" "$deployment_layout" "$deployment_shards" "$deployment_installer"
+  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_shards=%s\ndeployment_installer=%s\n' \
+    "$mode" "$deployment" "$deployment_catalog" "$deployment_shards" "$deployment_installer"
 }
 
 is_reduced_path() {
@@ -82,10 +81,10 @@ is_deployment_path() {
     scripts/ci:classify | scripts/ci:require | scripts/test:ci-classification)
       return 0
       ;;
-    scripts/deploy:environment | scripts/deploy:migrate-product-layout | scripts/deploy/* | scripts/install-hvo-skymonitor.sh)
+    scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-skymonitor.sh)
       return 0
       ;;
-    scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:product-layout | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract)
+    scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract)
       return 0
       ;;
     scripts/catalog:* | scripts/catalog/* | scripts/infra:operation-lock)
@@ -120,13 +119,11 @@ select_deployment_suites() {
   case "$path" in
     .github/workflows/ci.yml | global.json | scripts/ci:classify | scripts/ci:require | scripts/test:ci-classification)
       deployment_catalog="true"
-      deployment_layout="true"
       deployment_shards="true"
       deployment_installer="true"
       ;;
     scripts/catalog/catalog-common.sh | tests/fixtures/catalog/hyg-v42-bright-stars.sqlite)
       deployment_catalog="true"
-      deployment_layout="true"
       deployment_shards="true"
       ;;
     scripts/catalog:* | scripts/catalog/*)
@@ -135,15 +132,10 @@ select_deployment_suites() {
       ;;
     scripts/infra:operation-lock)
       deployment_catalog="true"
-      deployment_layout="true"
       deployment_shards="true"
       ;;
-    scripts/deploy:migrate-product-layout | scripts/deploy/common.sh | scripts/deploy/product-layout.sh)
-      deployment_layout="true"
+    scripts/deploy/common.sh | scripts/deploy/product-layout.sh)
       deployment_shards="true"
-      ;;
-    scripts/test:product-layout)
-      deployment_layout="true"
       ;;
     .github/workflows/release.yml)
       deployment_catalog="true"
@@ -164,7 +156,6 @@ select_deployment_suites() {
 
 select_all_deployment_suites() {
   deployment_catalog="true"
-  deployment_layout="true"
   deployment_shards="true"
   deployment_installer="true"
 }
@@ -178,7 +169,6 @@ reason="pull request contains only allowlisted documentation and developer-envir
 deployment="false"
 deployment_reason="pull request does not change deployment-contract inputs"
 deployment_catalog="false"
-deployment_layout="false"
 deployment_shards="false"
 deployment_installer="false"
 

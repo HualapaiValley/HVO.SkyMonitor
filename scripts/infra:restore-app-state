@@ -193,7 +193,7 @@ fi
 if ! archive_format="$("$SCRIPT_DIR/infra:validate-app-state-archive" "$PRIVATE_ARCHIVE" "$EXTRACT_DIRECTORY")"; then
     exit 1
 fi
-[[ "$archive_format" == inventory-v1 || "$archive_format" == legacy ]] || {
+[[ "$archive_format" == inventory-v1 ]] || {
     printf 'Application-state archive rejected: unknown validated format (count: 1).\n' >&2
     exit 1
 }
@@ -278,6 +278,10 @@ trigger_failpoint() {
     local point="$1"
     if [[ "${HVO_RESTORE_FAILPOINT:-}" == "$point" ]]; then
         printf 'Restore test failpoint triggered: %s.\n' "$point" >&2
+        if [[ "${HVO_ENABLE_TEST_FAILPOINTS:-false}" == true &&
+              "${HVO_RESTORE_TEST_INTERRUPT:-false}" == true ]]; then
+            kill -KILL "$BASHPID"
+        fi
         return 97
     fi
 }

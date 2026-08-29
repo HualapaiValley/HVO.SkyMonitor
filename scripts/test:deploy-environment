@@ -2017,8 +2017,49 @@ done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentityS
   . "$REPO_ROOT/scripts/deploy/preflight.sh"
   # shellcheck source=scripts/deploy/run-state.sh
   . "$REPO_ROOT/scripts/deploy/run-state.sh"
+  # shellcheck source=scripts/deploy/product-layout.sh
+  . "$REPO_ROOT/scripts/deploy/product-layout.sh"
   # shellcheck source=scripts/deploy/transient-confirm.sh
   . "$REPO_ROOT/scripts/deploy/transient-confirm.sh"
+  layout_inventory="$TEMP_DIR/canonical-layout.json"
+  jq '
+    .catalogs += [(.catalogs[0] | .catalogId="alternate" | .installRoot=(.installRoot | sub("test-production$"; "alternate")))] |
+    .cameraAgents[1].catalogId="alternate"
+  ' "$BASE_INVENTORY" > "$layout_inventory"
+  deploy_validate_product_layout "$layout_inventory" isolated
+  test "$(deploy_catalog_root "$layout_inventory" "$(jq -c '.cameraAgents[0]' "$layout_inventory")")" = \
+    "$(jq -r '.productRoot' "$layout_inventory")/catalogs/test-production"
+  test "$(deploy_catalog_root "$layout_inventory" "$(jq -c '.cameraAgents[1]' "$layout_inventory")")" = \
+    "$(jq -r '.productRoot' "$layout_inventory")/catalogs/alternate"
+  before_root="$(jq -r '.cameraAgents[0].runtimeRoot' "$layout_inventory")"
+  before_project="$(deploy_compose_project "$layout_inventory" "$(jq -c '.cameraAgents[0]' "$layout_inventory")")"
+  before_manifest="$(deploy_instance_manifest_json "$layout_inventory" "$(jq -c '.cameraAgents[0]' "$layout_inventory")" cameraAgent)"
+  jq '.cameraAgents[0].friendlyName="Renamed camera"' "$layout_inventory" > "$TEMP_DIR/layout-renamed.json"
+  deploy_validate_product_layout "$TEMP_DIR/layout-renamed.json" isolated
+  test "$(jq -r '.cameraAgents[0].runtimeRoot' "$TEMP_DIR/layout-renamed.json")" = "$before_root"
+  test "$(deploy_compose_project "$TEMP_DIR/layout-renamed.json" "$(jq -c '.cameraAgents[0]' "$TEMP_DIR/layout-renamed.json")")" = "$before_project"
+  test "$(deploy_instance_manifest_json "$TEMP_DIR/layout-renamed.json" "$(jq -c '.cameraAgents[0]' "$TEMP_DIR/layout-renamed.json")" cameraAgent)" = "$before_manifest"
+  reject_layout() {
+    if deploy_validate_product_layout "$1" "${3:-isolated}" >/dev/null 2>&1; then
+      fail "Invalid product layout was accepted: $2"
+    fi
+  }
+  jq '.cameraAgents[1].instanceId=.cameraAgents[0].instanceId' "$layout_inventory" > "$TEMP_DIR/layout-invalid.json"; reject_layout "$TEMP_DIR/layout-invalid.json" uuid-collision
+  jq '.cameraAgents[1].runtimeRoot=.cameraAgents[0].runtimeRoot' "$layout_inventory" > "$TEMP_DIR/layout-invalid.json"; reject_layout "$TEMP_DIR/layout-invalid.json" root-collision
+  jq '.cameraAgents[1].catalogId="missing"' "$layout_inventory" > "$TEMP_DIR/layout-invalid.json"; reject_layout "$TEMP_DIR/layout-invalid.json" unknown-catalog
+  jq '.catalogs[1].catalogId="Alternate"' "$layout_inventory" > "$TEMP_DIR/layout-invalid.json"; reject_layout "$TEMP_DIR/layout-invalid.json" invalid-catalog-id
+  jq '.catalogs[1].catalogId=("a" * 33) | .cameraAgents[1].catalogId=("a" * 33) | .productRoot as $root | .catalogs[1].installRoot=($root+"/catalogs/"+.catalogs[1].catalogId)' "$layout_inventory" > "$TEMP_DIR/layout-invalid.json"; reject_layout "$TEMP_DIR/layout-invalid.json" overlong-catalog-id
+  jq '.catalogs[1].installRoot=.cameraAgents[0].runtimeRoot+"/catalog"' "$layout_inventory" > "$TEMP_DIR/layout-invalid.json"; reject_layout "$TEMP_DIR/layout-invalid.json" unsafe-ancestry
+  jq '.productRoot="/var/lib/hvo/skymonitor" | .productRoot as $root |
+    .logicHost.runtimeRoot=($root+"/logichosts/"+.logicHost.instanceId) |
+    .cameraAgents |= map(.runtimeRoot=($root+"/cameraagents/"+.instanceId)) |
+    .catalogs |= map(.installRoot=($root+"/catalogs/"+.catalogId))' "$layout_inventory" > "$TEMP_DIR/layout-persistent.json"
+  deploy_validate_product_layout "$TEMP_DIR/layout-persistent.json" persistent
+  jq '.productRoot="/opt/not-skymonitor" | .productRoot as $root |
+    .logicHost.runtimeRoot=($root+"/logichosts/"+.logicHost.instanceId) |
+    .cameraAgents |= map(.runtimeRoot=($root+"/cameraagents/"+.instanceId)) |
+    .catalogs |= map(.installRoot=($root+"/catalogs/"+.catalogId))' "$layout_inventory" > "$TEMP_DIR/layout-noncanonical-persistent.json"
+  reject_layout "$TEMP_DIR/layout-noncanonical-persistent.json" persistent-root persistent
   jq -n '{schemaVersion:1,runId:"test-run",events:[{centralTransientEventId:"11111111-1111-4111-8111-111111111111",agentId:"synthetic-east"}]}' > "$TEMP_DIR/transient-allowlist.json"
   chmod 600 "$TEMP_DIR/transient-allowlist.json"
   deploy_transient_confirm_validate_allowlist "$TEMP_DIR/transient-allowlist.json" test-run
@@ -3638,12 +3679,21 @@ printf 'versions/fixture-v1\n' > "$install_root/.fixture-pointer-transaction"; c
 expect_fixture_resume_failure leftover-pointer-transaction
 rm "$install_root/.fixture-pointer-transaction"
 run_deploy_mode catalog "$deploy_case" isolated >/dev/null
-migrated_east_root="$(jq -r '.cameraAgents[0].runtimeRoot' "$INVENTORY")"
+canonical_east_root="$(jq -r '.cameraAgents[0].runtimeRoot' "$INVENTORY")"
 jq -n --arg instance "$(jq -r '.cameraAgents[0].instanceId' "$INVENTORY")" \
   '{schemaVersion:1,product:"HVO.SkyMonitor",component:"cameraAgent",instanceId:$instance,creationProvenance:{migration:"singular-layout-v1"},applicationIdentityFile:"application-identity.json"}' \
-  > "$migrated_east_root/instance-manifest.json"
-jq -cn '{schemaVersion:1,state:"pre-provisioning",configuredIdentity:"east-agent",boundIdentity:null}' > "$migrated_east_root/application-identity.json"
-chmod 600 "$migrated_east_root/instance-manifest.json" "$migrated_east_root/application-identity.json"
+  > "$canonical_east_root/instance-manifest.json"
+jq -cn '{schemaVersion:1,state:"pre-provisioning",configuredIdentity:"east-agent",boundIdentity:null}' > "$canonical_east_root/application-identity.json"
+chmod 600 "$canonical_east_root/instance-manifest.json" "$canonical_east_root/application-identity.json"
+compose_before_retired_provenance="$(grep -c $'\tcompose\t' "$LOG" || true)"
+if run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/retired-provenance.log" 2>&1; then
+  fail 'Up accepted retired singular-layout provenance.'
+fi
+test "$(grep -c $'\tcompose\t' "$LOG" || true)" = "$compose_before_retired_provenance" || \
+  fail 'Retired singular-layout provenance reached Compose mutation.'
+jq -n --arg instance "$(jq -r '.cameraAgents[0].instanceId' "$INVENTORY")" \
+  '{schemaVersion:1,product:"HVO.SkyMonitor",component:"cameraAgent",instanceId:$instance,creationProvenance:{installationId:"test-installation"},applicationIdentityFile:"application-identity.json"}' \
+  > "$canonical_east_root/instance-manifest.json"
 if DEPLOY_TEST_FAILPOINT=abrupt-after-private-scp-upload run_deploy_mode up "$deploy_case" isolated > "$TEMP_DIR/up-private-upload-crash.log" 2>&1; then
   fail 'Private SCP interruption failpoint passed.'
 fi
@@ -3698,7 +3748,7 @@ test "$(<"$east_config/secrets/Catalog__RequiredPackageKind")" = Fixture
 cmp -s "$TEMP_DIR/east-module.json" "$east_config/camera-module.json"
 test -s "$east_config/private/owner-password"
 test ! -e "$east_config/cameraagent.json"
-# Resume an already-provisioned migrated instance without restoring bootstrap defaults.
+# Resume an already-provisioned canonical instance without restoring bootstrap defaults.
 if [[ "$SELECTED_SHARD" == existing-catalog-up ]]; then
 jq -n '{schemaVersion:1,state:"bound",configuredIdentity:"east-agent",boundIdentity:"device-east"}' > "$east_root/application-identity.json"
 printf 'device-east\n' > "$east_config/secrets/CameraAgent__AgentId"
@@ -3757,12 +3807,12 @@ cp "$east_config/camera-module.json" "$FAKE_HTTP_STATE/east.active-profile.json"
 jq -S -c . "$east_config/camera-module.json" | sha256sum | cut -d' ' -f1 > "$FAKE_HTTP_STATE/east.active-config-sha"
 fi
 
-# An operator-supplied immutable v2 production catalog survives migration and is accepted by catalog resume and up.
+# An operator-supplied immutable v2 production catalog is accepted by catalog resume and up.
 if [[ "$SELECTED_SHARD" == existing-catalog-up && -n "${HVO_PRODUCTION_CATALOG_BUNDLE:-}" ]]; then
 legacy_path_inventory="$TEMP_DIR/legacy-v1-path.inventory"; cp "$INVENTORY" "$legacy_path_inventory"
-legacy_path_case=legacy-v1-path; legacy_path_root="$TEMP_DIR/legacy-v1-root"; legacy_path_product="$TEMP_DIR/remote/$legacy_path_case-skymonitor"
-legacy_path_source="$TEMP_DIR/legacy-v1-source-v2"; legacy_path_evidence="$TEMP_DIR/legacy-v1-migration.json"
-legacy_path_version="$legacy_path_root/data/catalog/versions/hyg-v4.2-p3-s2-r1"
+legacy_path_case=existing-catalog; legacy_path_product="$TEMP_DIR/remote/$legacy_path_case-skymonitor"
+legacy_path_source="$TEMP_DIR/existing-production-source-v2"
+legacy_path_version="$legacy_path_product/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r1"
 cp -a "$HVO_PRODUCTION_CATALOG_BUNDLE" "$legacy_path_source"
 legacy_path_sha="$(sha256sum "$legacy_path_source/hyg_v42.sqlite" | cut -d' ' -f1)"; legacy_path_length="$(wc -c < "$legacy_path_source/hyg_v42.sqlite")"
 jq --arg product "$legacy_path_product" --arg bundle "$legacy_path_source" --arg sha "$legacy_path_sha" --argjson length "$legacy_path_length" \
@@ -3784,16 +3834,13 @@ FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode preflight "$deploy_case" isolated 
 FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode prepare "$deploy_case" isolated >/dev/null
 rm -f "$FAKE_IMAGE_STATE"/*.pushed "$FAKE_IMAGE_STATE"/*.platforms "$FAKE_IMAGE_STATE"/*.labels "$FAKE_IMAGE_STATE"/*.reference "$FAKE_IMAGE_STATE"/*.config
 FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode images "$deploy_case" isolated >/dev/null
-mkdir -p "$legacy_path_root/config/cameraagent" "$legacy_path_root/data/agent" "$legacy_path_root/data/catalog/versions"
-cp "$TEMP_DIR/east-module.json" "$legacy_path_root/config/cameraagent/camera-module.json"
-printf 'legacy-v1-state\n' > "$legacy_path_root/data/agent/state"
+mkdir -p "$(dirname "$legacy_path_version")"
 cp -a "$HVO_PRODUCTION_CATALOG_BUNDLE" "$legacy_path_version"
-ln -s versions/hyg-v4.2-p3-s2-r1 "$legacy_path_root/data/catalog/current"
+ln -s versions/hyg-v4.2-p3-s2-r1 "$legacy_path_product/catalogs/hyg-v42-production/current"
+printf '' > "$legacy_path_product/catalogs/hyg-v42-production/.catalog.lock"
+chmod 600 "$legacy_path_product/catalogs/hyg-v42-production/.catalog.lock"
 legacy_manifest_sha_before="$(sha256sum "$legacy_path_version/manifest.json" | cut -d' ' -f1)"
 legacy_database_sha_before="$(sha256sum "$legacy_path_version/hyg_v42.sqlite" | cut -d' ' -f1)"
-legacy_path_instance=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
-"$REPO_ROOT/scripts/deploy:migrate-product-layout" apply --legacy-root "$legacy_path_root" --product-root "$legacy_path_product" \
-  --instance-id "$legacy_path_instance" --application-id legacy-path-agent --catalog-id hyg-v42-production --evidence "$legacy_path_evidence" >/dev/null
 FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode catalog "$deploy_case" isolated >/dev/null
 FAKE_CURL_ALWAYS_SUCCESS=true run_deploy_mode catalog "$deploy_case" isolated >/dev/null
 legacy_installed="$legacy_path_product/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r1"

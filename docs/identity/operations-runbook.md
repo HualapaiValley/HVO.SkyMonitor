@@ -433,13 +433,11 @@ state with:
   /approved/encrypted/backup-directory/hvo-application-state-UTC_TIMESTAMP.tgz
 ```
 
-The restore supports both new inventory archives and legacy `.tgz` plus
-`.sha256` pairs. It rejects unsafe or inconsistent entries before installation,
-and, for new archives, checks that the extracted inventory has an exact
-one-to-one file/directory mapping including nested directories and modes. Legacy
-archives retain structural and post-walk type checks without inventory-level
-verification. Restore preserves the target catalog regardless of legacy archive
-catalog content and retains the old runtime root as a rollback directory. It
+The restore requires inventory-v1 plus its adjacent `.sha256` checksum. It
+rejects unsafe or inconsistent entries before installation and checks that the
+extracted inventory has an exact one-to-one file/directory mapping including
+nested directories, component identity, ownership, and modes. Restore preserves
+the target catalog and retains the old runtime root as a rollback directory. It
 starts LogicHost and waits for `/health` before starting
 CameraAgent and waiting for CameraAgent `/health`. On failure it attempts exact
 old-tree rollback and leaves both applications stopped. If a collision prevents

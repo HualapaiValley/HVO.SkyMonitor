@@ -5,10 +5,10 @@ are separate identity domains beneath that root:
 
 ```text
 /var/lib/hvo/skymonitor/
-├── operations/                       # product-wide runtime operation lock
-├── catalogs/<catalog-id>/{current,previous,versions/}
-├── cameraagents/<instance-uuid>/{config,state}
-└── logichosts/<instance-uuid>/{config,state}
+|-- operations/                       # product-wide runtime operation lock
+|-- catalogs/<catalog-id>/{current,previous,versions/}
+|-- cameraagents/<instance-uuid>/{config,state}
+`-- logichosts/<instance-uuid>/{config,state}
 ```
 
 Persistent deployment rejects any other product root. Isolated contract tests
@@ -35,15 +35,15 @@ manifest binds schema, product, component kind, UUID, creating installation, and
 the current independent application identity through that binding. Bootstrap
 atomically advances only the binding from the declared pre-provisioning agent ID
 to the resulting device ID. An existing manifest must have the exact immutable
-identity fields and either its creating installation or guarded migration provenance; an
-identity binding explicitly records `pre-provisioning` with the configured ID or
-`bound` with both the configured and provisioned device IDs. A later `up` validates
-that binding before staging, requires the preserved provisioning gate to be
-`false` and upload to be `true`, and records those remotely read values in phase
-evidence. Missing, malformed, or contradictory bound state fails before staging
-or Compose mutation. The deployment preserves bound provisioning configuration. The
-binding must match its declared/restored lifecycle state; UUID reuse,
-component reuse, or unproved identity rebinding fails closed. Release revision is not
+identity fields and its creating installation; an identity binding explicitly
+records `pre-provisioning` with the configured ID or `bound` with both the
+configured and provisioned device IDs. A later `up` validates that binding before
+staging, requires the preserved provisioning gate to be `false` and upload to be
+`true`, and records those remotely read values in phase evidence. Missing,
+malformed, or contradictory bound state fails before staging or Compose
+mutation. The deployment preserves bound provisioning configuration. The
+binding must match its declared/restored lifecycle state; UUID reuse, component
+reuse, or unproved identity rebinding fails closed. Release revision is not
 creation identity and therefore does not change this manifest during upgrades.
 
 Each CameraAgent receives a UUID-derived cookie name, container name, Compose
@@ -60,13 +60,13 @@ cookies, application identities, and owner-password references remain distinct.
 
 `catalogId` is a stable logical identifier declared by the catalog specification,
 required as `catalog.id` in manifest version 2, and repeated exactly in inventory,
-for example `hyg-v42-production`. It is not a random
-installation UUID and is never inferred from a package filename or display
-name. The HYG v4.2 production specification assigns
-`hyg-v42-production`; exact snapshots remain identified by package version,
-schema/preprocessing versions, database SHA-256, byte length, and row count.
-Inventory declares `schemaVersion` and `preprocessingVersion`; source bundle,
-installed manifest, ledger, and active `current` selection must match exactly.
+for example `hyg-v42-production`. It is not a random installation UUID and is
+never inferred from a package filename or display name. The HYG v4.2 production
+specification assigns `hyg-v42-production`; exact snapshots remain identified by
+package version, schema/preprocessing versions, database SHA-256, byte length,
+and row count. Inventory declares `schemaVersion` and `preprocessingVersion`;
+source bundle, installed manifest, ledger, and active `current` selection must
+match exactly.
 
 Every application target selects one `catalogId`. Multiple targets may select
 the same installation root and mount it read-only at `/app/catalog`; another
@@ -91,87 +91,5 @@ Catalogs are immutable deployment artifacts, not part of an instance backup.
 Record the selected catalog ID and exact active snapshot identity, then reinstall
 or restore that verified catalog independently. Lifecycle operations must use
 the exact UUID instance root and ownership manifest; they must not enumerate or
-delete sibling roots.
-
-## Singular Layout Migration
-
-The guarded migration accepts only this shipped singular CameraAgent layout
-beneath an explicitly supplied legacy root:
-
-```text
-<legacy-root>/config/cameraagent
-<legacy-root>/data/agent
-<legacy-root>/data/catalog
-```
-
-Run it only while the CameraAgent is stopped. `apply` first publishes durable
-owner-only intent, copies into exact transaction staging roots, and atomically
-publishes each verified destination. An interruption resumes deterministically
-or can be rolled back even when a staging copy is incomplete. Rollback validates
-the intent-pinned staging path, owner, device, mode, and every present entry as a
-safe subset before removing it; it never requires a partial copy to look complete. It
-preserves the legacy source for rollback and verifies every
-directory, UID, GID, mode, device, inode, regular-file SHA-256, and safe relative
-symlink target, and writes an
-owner-only evidence record. `verify` repeats that comparison. Exercise login,
-health, protected location, provisioning, image identity, capture sequence, and
-capture continuity against the migrated instance before finalization.
-
-```bash
-./scripts/deploy:migrate-product-layout apply \
-  --legacy-root /var/lib/hvo \
-  --product-root /var/lib/hvo/skymonitor \
-  --instance-id <immutable-lowercase-uuid> \
-  --application-id <existing-agent-id> \
-  --catalog-id hyg-v42-production \
-  --evidence /owner-private/path/product-layout-migration.json
-
-./scripts/deploy:migrate-product-layout verify <same-options>
-```
-
-For an already provisioned CameraAgent, add `--bound-device-id <device-id>`.
-Migration verifies that identity against preserved configuration, publishes a
-`bound` application identity, and leaves module, password, provisioning-gate,
-and upload settings unchanged on later `up`, restart, or upgrade runs.
-
-Before cutover, `rollback` verifies that the copy still equals the retained
-legacy source and removes only the copied UUID root and migration-only catalog
-staging. A fully published and verified catalog root is retained because sibling
-instances may already consume that immutable catalog. A subsequent `apply` may
-reuse the retained root only when its complete tree, active pointer, manifest
-identity, ownership, modes, and content still exactly match the authenticated
-legacy snapshot; unknown or drifted state fails closed. `finalize` also
-requires owner-only JSON cutover evidence for image identity, health, login,
-provisioning, Data Protection, protected location history, artifact checksums,
-non-regressing capture sequence, and a rehearsed rollback. It records that
-evidence file's SHA-256. Finalization safely opens the supplied evidence once,
-pins its device and inode, and copies that descriptor into an owner-only
-`<evidence>.cutover.snapshot`. JSON validation, hashing, and capture-sequence
-extraction use only that immutable snapshot. A resume safely pins the supplied
-source again and requires it to match the retained snapshot exactly. After
-collecting the cutover evidence, stop the
-CameraAgent for the short finalization window. Finalization captures strict
-owner-only snapshots of the stopped migrated config and state, requires the
-recorded capture sequence to equal the cutover evidence, and binds both snapshot
-hashes into its exact intent and evidence. Immutable instance identity and catalog
-content remain bound to the initial migration snapshots. Finalization never
-renames or deletes `<legacy-root>/data/catalog`; a co-located LogicHost or sibling
-consumer may still mount that exact path. It continuously verifies the retained
-legacy catalog's path, active pointer, metadata, and bytes through pending and
-finalized states. Exact intent and evidence record `legacyCatalogRetained:true`;
-`legacyRetained:false` means only mutable legacy CameraAgent config and state were
-removed. Finalization then atomically renames the exact legacy CameraAgent config
-and state trees to transaction-scoped tombstones,
-revalidates every captured identity and the final migrated snapshots, and publishes
-`finalized-removal-pending` evidence before deleting any tombstone. It revalidates
-the final destination immediately before tombstone deletion and again before
-publishing final evidence. Tombstone removal is resumable and final evidence is
-published only after both mutable tombstones are
-absent. A partially deleted tombstone may resume only when its root identity is
-still pinned and every remaining entry is an exact safe subset of the original
-snapshot; missing entries are allowed, while additions or replacements fail.
-Device crossings, special files, hard links, escaping or absolute
-symlinks, and ownership/metadata drift fail closed. A finalized
-migration cannot use automated rollback. Never use deletion as migration proof.
-Tests must use disposable roots; the focused contract is
-`./scripts/test:product-layout`.
+delete sibling roots. The deployment does not accept or migrate the former
+singular product layout.

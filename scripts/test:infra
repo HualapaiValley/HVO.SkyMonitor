@@ -3,6 +3,7 @@
 
 set -euo pipefail
 export LC_ALL=C
+umask 022
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -49,12 +50,13 @@ snapshot_tree() {
     local root="$1"
     local output="$2"
     shift 2
-    local path type mode size digest
+    local path type mode owner size digest
     local roots=("$@")
     : > "$output"
     while IFS= read -r -d '' path; do
         type="$(stat -c '%F' "$root/$path")"
         mode="$(stat -c '%a' "$root/$path")"
+        owner="$(stat -c '%u:%g' "$root/$path")"
         size="-"
         digest="-"
         if [[ -f "$root/$path" ]]; then
@@ -62,7 +64,7 @@ snapshot_tree() {
             digest="$(sha256sum "$root/$path")"
             digest="${digest%% *}"
         fi
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$type" "$mode" "$size" "$digest" "$(readlink "$root/$path" 2>/dev/null || true)" >> "$output"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$type" "$mode" "$owner" "$size" "$digest" "$(readlink "$root/$path" 2>/dev/null || true)" >> "$output"
     done < <(
         cd "$root"
         if (( ${#roots[@]} > 0 )); then
@@ -99,6 +101,24 @@ expect_restore_rejected() {
     if restore_archive "$archive" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >"$TEMP_DIR/rejection.log" 2>&1; then
         fail "$label archive unexpectedly restored."
     fi
+}
+
+expect_restore_rejected_before_mutation() {
+    local archive="$1"
+    local label="$2"
+    local transaction=99999999999949998999999999999999
+    snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/rejection-before.snapshot"
+    : > "$TEMP_DIR/docker.log"
+    if restore_archive "$archive" env HVO_SKIP_RUNTIME_HEALTHCHECK=true HVO_ENABLE_TEST_FAILPOINTS=true \
+        HVO_RESTORE_TEST_TRANSACTION_ID="$transaction" >"$TEMP_DIR/rejection.log" 2>&1; then
+        fail "$label archive unexpectedly restored."
+    fi
+    snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/rejection-after.snapshot"
+    cmp -s "$TEMP_DIR/rejection-before.snapshot" "$TEMP_DIR/rejection-after.snapshot" || \
+        fail "$label rejection changed application state."
+    test ! -s "$TEMP_DIR/docker.log" || fail "$label rejection reached application lifecycle mutation."
+    test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+    test ! -e "$RUNTIME_ROOT.rollback.$transaction"
 }
 
 repack_inventory_archive() {
@@ -179,6 +199,16 @@ cat > "$TEMP_DIR/stat" <<'EOF'
 if [[ -n "${HVO_TEST_NONOWNED_PATH:-}" && "$*" == *'-c %u'* &&
     "${*: -1}" == "$HVO_TEST_NONOWNED_PATH" ]]; then
     printf '%s\n' "$(( $(id -u) == 0 ? 1 : 0 ))"
+    exit 0
+fi
+if [[ -n "${HVO_TEST_NONOWNED_PATH:-}" && "$*" == *'-c %a:%u:%g'* &&
+    "${*: -1}" == "$HVO_TEST_NONOWNED_PATH" ]]; then
+    /usr/bin/stat "$@" | perl -pe 's/^([^:]+):[0-9]+:/$1:99999:/'
+    exit 0
+fi
+if [[ -n "${HVO_TEST_NONGROUP_PATH:-}" && "$*" == *'-c %a:%u:%g'* &&
+    "${*: -1}" == "$HVO_TEST_NONGROUP_PATH" ]]; then
+    /usr/bin/stat "$@" | perl -pe 's/:[0-9]+$/:99999/'
     exit 0
 fi
 if [[ -n "${HVO_TEST_NONOWNED_HOST_PARENT:-}" && "$*" == *'-c %u'* &&
@@ -400,6 +430,12 @@ readonly VALID_ARCHIVE="${archive[0]}"
 test -f "$VALID_ARCHIVE.sha256"
 tar -tzf "$VALID_ARCHIVE" > "$TEMP_DIR/archive.list"
 grep -Fqx '.hvo-application-state-inventory' "$TEMP_DIR/archive.list"
+tar -xOzf "$VALID_ARCHIVE" .hvo-application-state-inventory > "$TEMP_DIR/valid.inventory"
+expected_owner="$(id -u):$(id -g)"
+EXPECTED_OWNER="$expected_owner" perl -F'\t' -lane '
+    if ($. == 1) { exit 91 unless @F == 3 && $F[0] eq "HVO-APPLICATION-STATE-INVENTORY" && $F[1] eq "1" && $F[2] eq "HVO.SkyMonitor"; next; }
+    exit 92 unless @F == 8 && $F[1] =~ /^(?:logicHost|cameraAgent)$/ && "$F[2]:$F[3]" eq $ENV{EXPECTED_OWNER};
+' "$TEMP_DIR/valid.inventory"
 if grep -Eq '(^|/)(catalog|unmanaged\.sentinel)(/|$)' "$TEMP_DIR/archive.list"; then
     fail 'A new backup included unsupported runtime-root state.'
 fi
@@ -454,25 +490,51 @@ fi
 rm -f "$RUNTIME_ROOT/agent/raced-link"
 test -z "$(find "$TEMP_DIR/raced-backup" -mindepth 1 -print -quit)"
 
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    HVO_TEST_NONGROUP_PATH="$RUNTIME_ROOT/agent/frame.json" \
+    "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/nonowned-backup" >/dev/null 2>&1; then
+    fail 'Backup accepted an application-state entry owned by another group.'
+fi
+test -z "$(find "$TEMP_DIR/nonowned-backup" -mindepth 1 -print -quit)"
+if PATH="$TEMP_DIR:$PATH" DOCKER_LOG="$TEMP_DIR/docker.log" HVO_RUNTIME_DATA_ROOT="$RUNTIME_ROOT" \
+    HVO_TEST_NONOWNED_PATH="$RUNTIME_ROOT/agent/frame.json" \
+    "$REPO_ROOT/scripts/infra:backup-app-state" "$TEMP_DIR/nonowner-backup" >/dev/null 2>&1; then
+    fail 'Backup accepted an application-state entry owned by another user.'
+fi
+test -z "$(find "$TEMP_DIR/nonowner-backup" -mindepth 1 -print -quit)"
+
 cp "$VALID_ARCHIVE" "$TEMP_DIR/mispaired.tgz"
 cp "$VALID_ARCHIVE.sha256" "$TEMP_DIR/mispaired.tgz.sha256"
-expect_restore_rejected "$TEMP_DIR/mispaired.tgz" 'Mispaired checksum'
+expect_restore_rejected_before_mutation "$TEMP_DIR/mispaired.tgz" 'Mispaired checksum'
 
 cp "$VALID_ARCHIVE" "$TEMP_DIR/outer-corrupt.tgz"
 write_checksum "$TEMP_DIR/outer-corrupt.tgz"
 printf 'corruption\n' >> "$TEMP_DIR/outer-corrupt.tgz"
-expect_restore_rejected "$TEMP_DIR/outer-corrupt.tgz" 'Outer-checksum corruption'
+expect_restore_rejected_before_mutation "$TEMP_DIR/outer-corrupt.tgz" 'Outer-checksum corruption'
+
+cp "$VALID_ARCHIVE" "$TEMP_DIR/trailing-data.tgz"
+printf 'hidden-after-terminator\n' >> "$TEMP_DIR/trailing-data.tgz"
+write_checksum "$TEMP_DIR/trailing-data.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/trailing-data.tgz" 'Trailing archive data'
+
+cp "$VALID_ARCHIVE" "$TEMP_DIR/trailing-tar-data.tgz"
+gunzip "$TEMP_DIR/trailing-tar-data.tgz"
+printf 'hidden-after-tar-terminator\n' >> "$TEMP_DIR/trailing-tar-data.tar"
+gzip "$TEMP_DIR/trailing-tar-data.tar"
+mv "$TEMP_DIR/trailing-tar-data.tar.gz" "$TEMP_DIR/trailing-tar-data.tgz"
+write_checksum "$TEMP_DIR/trailing-tar-data.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/trailing-tar-data.tgz" 'Trailing tar data'
 
 mkdir -p "$TEMP_DIR/mutations/corrupt" "$TEMP_DIR/mutations/missing" "$TEMP_DIR/mutations/version"
 tar -xzf "$VALID_ARCHIVE" -C "$TEMP_DIR/mutations/corrupt"
 printf 'changed-payload\n' > "$TEMP_DIR/mutations/corrupt/cameraagent/identity/identity.db"
 repack_inventory_archive "$TEMP_DIR/mutations/corrupt" "$TEMP_DIR/internal-corrupt.tgz"
-expect_restore_rejected "$TEMP_DIR/internal-corrupt.tgz" 'Internal payload corruption'
+expect_restore_rejected_before_mutation "$TEMP_DIR/internal-corrupt.tgz" 'Internal payload corruption'
 
 tar -xzf "$VALID_ARCHIVE" -C "$TEMP_DIR/mutations/missing"
 rm "$TEMP_DIR/mutations/missing/agent/frame.bin"
 repack_inventory_archive "$TEMP_DIR/mutations/missing" "$TEMP_DIR/missing-entry.tgz"
-expect_restore_rejected "$TEMP_DIR/missing-entry.tgz" 'Missing inventory entry'
+expect_restore_rejected_before_mutation "$TEMP_DIR/missing-entry.tgz" 'Missing inventory entry'
 
 # Omit a nested directory from both headers and inventory while retaining its inventoried child file.
 mkdir -p "$TEMP_DIR/mutations/implicit-parent"
@@ -503,13 +565,59 @@ if grep -Fqx "$implicit_parent/" "$TEMP_DIR/implicit-parent.list"; then
     fail 'Implicit-parent attack archive still contains the omitted directory header.'
 fi
 grep -Fqx "$implicit_child" "$TEMP_DIR/implicit-parent.list"
-expect_restore_rejected "$TEMP_DIR/implicit-parent.tgz" 'Implicit unlisted parent directory'
+expect_restore_rejected_before_mutation "$TEMP_DIR/implicit-parent.tgz" 'Implicit unlisted parent directory'
 grep -Fq 'post-extraction unlisted inventory item' "$TEMP_DIR/rejection.log"
 
 tar -xzf "$VALID_ARCHIVE" -C "$TEMP_DIR/mutations/version"
 perl -pi -e 's/INVENTORY\t1/INVENTORY\t2/' "$TEMP_DIR/mutations/version/.hvo-application-state-inventory"
 repack_inventory_archive "$TEMP_DIR/mutations/version" "$TEMP_DIR/unsupported-version.tgz"
-expect_restore_rejected "$TEMP_DIR/unsupported-version.tgz" 'Unsupported inventory version'
+expect_restore_rejected_before_mutation "$TEMP_DIR/unsupported-version.tgz" 'Unsupported inventory version'
+
+mkdir -p "$TEMP_DIR/mutations/product" "$TEMP_DIR/mutations/component" "$TEMP_DIR/mutations/owner" "$TEMP_DIR/mutations/mode"
+for mutation in product component owner mode; do
+    tar -xzf "$VALID_ARCHIVE" -C "$TEMP_DIR/mutations/$mutation"
+done
+perl -pi -e 's/\tHVO\.SkyMonitor$/\tOther.Product/' "$TEMP_DIR/mutations/product/.hvo-application-state-inventory"
+repack_inventory_archive "$TEMP_DIR/mutations/product" "$TEMP_DIR/wrong-product.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/wrong-product.tgz" 'Wrong product identity'
+
+logic_path_hex="$(printf '%s' logichost/dataprotection | od -An -v -tx1 | tr -d ' \n')"
+INVENTORY_PATH_HEX="$logic_path_hex" perl -pi -e \
+    's/^D\tlogicHost\t/D\tcameraAgent\t/ if /\t\Q$ENV{INVENTORY_PATH_HEX}\E$/' \
+    "$TEMP_DIR/mutations/component/.hvo-application-state-inventory"
+repack_inventory_archive "$TEMP_DIR/mutations/component" "$TEMP_DIR/wrong-component.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/wrong-component.tgz" 'Wrong component identity'
+
+foreign_uid="$(( $(id -u) + 1 ))"
+FOREIGN_UID="$foreign_uid" perl -pi -e \
+    'if ($. == 2) { s/^(D|F)\t([^\t]+)\t[0-9]+\t/$1\t$2\t$ENV{FOREIGN_UID}\t/ }' \
+    "$TEMP_DIR/mutations/owner/.hvo-application-state-inventory"
+repack_inventory_archive "$TEMP_DIR/mutations/owner" "$TEMP_DIR/wrong-inventory-owner.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/wrong-inventory-owner.tgz" 'Wrong inventory ownership'
+
+tar -xzf "$VALID_ARCHIVE" -C "$TEMP_DIR/mutations/owner"
+foreign_gid="$(( $(id -g) + 1 ))"
+FOREIGN_GID="$foreign_gid" perl -pi -e \
+    'if ($. == 2) { s/^(D|F)\t([^\t]+)\t([0-9]+)\t[0-9]+\t/$1\t$2\t$3\t$ENV{FOREIGN_GID}\t/ }' \
+    "$TEMP_DIR/mutations/owner/.hvo-application-state-inventory"
+repack_inventory_archive "$TEMP_DIR/mutations/owner" "$TEMP_DIR/wrong-inventory-group.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/wrong-inventory-group.tgz" 'Wrong inventory group'
+
+perl -pi -e 'if ($. == 2) { chomp; my @field = split(/\t/, $_, -1); $field[4] = "0755"; $_ = join("\t", @field) . "\n"; }' \
+    "$TEMP_DIR/mutations/mode/.hvo-application-state-inventory"
+repack_inventory_archive "$TEMP_DIR/mutations/mode" "$TEMP_DIR/invalid-mode.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/invalid-mode.tgz" 'Invalid inventory mode'
+
+tar --create --gzip --format=gnu --owner="$foreign_uid" --group="$(id -g)" \
+    --file "$TEMP_DIR/wrong-header-owner.tgz" --directory "$TEMP_DIR/mutations/corrupt" \
+    "${SUPPORTED_PATHS[@]}" .hvo-application-state-inventory
+write_checksum "$TEMP_DIR/wrong-header-owner.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/wrong-header-owner.tgz" 'Wrong archive ownership'
+tar --create --gzip --format=gnu --owner="$(id -u)" --group="$foreign_gid" \
+    --file "$TEMP_DIR/wrong-header-group.tgz" --directory "$TEMP_DIR/mutations/corrupt" \
+    "${SUPPORTED_PATHS[@]}" .hvo-application-state-inventory
+write_checksum "$TEMP_DIR/wrong-header-group.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/wrong-header-group.tgz" 'Wrong archive group'
 
 cp "$VALID_ARCHIVE" "$TEMP_DIR/duplicate-source.tgz"
 gunzip "$TEMP_DIR/duplicate-source.tgz"
@@ -517,7 +625,7 @@ tar --append --file "$TEMP_DIR/duplicate-source.tar" --directory "$TEMP_DIR/muta
 gzip "$TEMP_DIR/duplicate-source.tar"
 mv "$TEMP_DIR/duplicate-source.tar.gz" "$TEMP_DIR/duplicate.tgz"
 write_checksum "$TEMP_DIR/duplicate.tgz"
-expect_restore_rejected "$TEMP_DIR/duplicate.tgz" 'Duplicate path'
+expect_restore_rejected_before_mutation "$TEMP_DIR/duplicate.tgz" 'Duplicate path'
 
 cp "$VALID_ARCHIVE" "$TEMP_DIR/unsafe-source.tgz"
 gunzip "$TEMP_DIR/unsafe-source.tgz"
@@ -527,46 +635,50 @@ tar --append --file "$TEMP_DIR/unsafe-source.tar" --directory "$TEMP_DIR/mutatio
 gzip "$TEMP_DIR/unsafe-source.tar"
 mv "$TEMP_DIR/unsafe-source.tar.gz" "$TEMP_DIR/unsafe.tgz"
 write_checksum "$TEMP_DIR/unsafe.tgz"
-expect_restore_rejected "$TEMP_DIR/unsafe.tgz" 'Unsafe path'
+expect_restore_rejected_before_mutation "$TEMP_DIR/unsafe.tgz" 'Unsafe path'
 if grep -Fq 'private-payload' "$TEMP_DIR/rejection.log"; then
     fail 'Archive rejection diagnostics exposed a payload path.'
 fi
 
 append_transformed_entry "$TEMP_DIR/repeated-slash.tgz" 'agent//alias-entry'
-expect_restore_rejected "$TEMP_DIR/repeated-slash.tgz" 'Repeated-slash alias'
+expect_restore_rejected_before_mutation "$TEMP_DIR/repeated-slash.tgz" 'Repeated-slash alias'
 append_transformed_entry "$TEMP_DIR/dot-alias.tgz" 'agent/./alias-entry'
-expect_restore_rejected "$TEMP_DIR/dot-alias.tgz" 'Dot-component alias'
+expect_restore_rejected_before_mutation "$TEMP_DIR/dot-alias.tgz" 'Dot-component alias'
 append_transformed_entry "$TEMP_DIR/absolute.tgz" '/absolute-private-payload'
-expect_restore_rejected "$TEMP_DIR/absolute.tgz" 'Absolute path'
+expect_restore_rejected_before_mutation "$TEMP_DIR/absolute.tgz" 'Absolute path'
+tar --create --gzip --format=gnu --file "$TEMP_DIR/leading-dot.tgz" \
+    --directory "$TEMP_DIR/mutations/corrupt" .
+write_checksum "$TEMP_DIR/leading-dot.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/leading-dot.tgz" 'Leading-dot alias'
 
 tar --format=pax --create --gzip --file "$TEMP_DIR/pax.tgz" \
     --directory "$TEMP_DIR/mutations/corrupt" "${SUPPORTED_PATHS[@]}" .hvo-application-state-inventory
 write_checksum "$TEMP_DIR/pax.tgz"
-expect_restore_rejected "$TEMP_DIR/pax.tgz" 'PAX extension'
+expect_restore_rejected_before_mutation "$TEMP_DIR/pax.tgz" 'PAX extension'
 
 mkdir -p "$TEMP_DIR/special"
 for path in "${SUPPORTED_PATHS[@]}"; do mkdir -p "$TEMP_DIR/special/$path"; done
 mkfifo "$TEMP_DIR/special/agent/unsafe-fifo"
 tar -czf "$TEMP_DIR/special.tgz" -C "$TEMP_DIR/special" "${SUPPORTED_PATHS[@]}"
 write_checksum "$TEMP_DIR/special.tgz"
-expect_restore_rejected "$TEMP_DIR/special.tgz" 'Special entry'
+expect_restore_rejected_before_mutation "$TEMP_DIR/special.tgz" 'Special entry'
 rm "$TEMP_DIR/special/agent/unsafe-fifo"
 printf 'link-target\n' > "$TEMP_DIR/special/agent/link-target"
 ln -s link-target "$TEMP_DIR/special/agent/unsafe-symlink"
 tar -czf "$TEMP_DIR/symlink.tgz" -C "$TEMP_DIR/special" "${SUPPORTED_PATHS[@]}"
 write_checksum "$TEMP_DIR/symlink.tgz"
-expect_restore_rejected "$TEMP_DIR/symlink.tgz" 'Symbolic-link entry'
+expect_restore_rejected_before_mutation "$TEMP_DIR/symlink.tgz" 'Symbolic-link entry'
 rm "$TEMP_DIR/special/agent/unsafe-symlink"
 ln "$TEMP_DIR/special/agent/link-target" "$TEMP_DIR/special/agent/unsafe-hardlink"
 tar -czf "$TEMP_DIR/hardlink.tgz" -C "$TEMP_DIR/special" "${SUPPORTED_PATHS[@]}"
 write_checksum "$TEMP_DIR/hardlink.tgz"
-expect_restore_rejected "$TEMP_DIR/hardlink.tgz" 'Hard-link entry'
+expect_restore_rejected_before_mutation "$TEMP_DIR/hardlink.tgz" 'Hard-link entry'
 rm "$TEMP_DIR/special/agent/unsafe-hardlink"
 control_name=$'control\nprivate-name'
 printf 'control\n' > "$TEMP_DIR/special/agent/$control_name"
 tar -czf "$TEMP_DIR/control-path.tgz" -C "$TEMP_DIR/special" "${SUPPORTED_PATHS[@]}"
 write_checksum "$TEMP_DIR/control-path.tgz"
-expect_restore_rejected "$TEMP_DIR/control-path.tgz" 'Control-character path'
+expect_restore_rejected_before_mutation "$TEMP_DIR/control-path.tgz" 'Control-character path'
 if grep -Fq 'private-name' "$TEMP_DIR/rejection.log"; then
     fail 'Control-path rejection diagnostics exposed a payload path.'
 fi
@@ -617,19 +729,40 @@ if ! cmp -s "$TEMP_DIR/before-backup.snapshot" "$TEMP_DIR/after-roundtrip.snapsh
     fail 'Supported application state did not round-trip exactly.'
 fi
 
-# Fail after install and require byte/mode/path-exact old-state rollback without application restart.
-printf 'pre-failpoint\n' > "$RUNTIME_ROOT/agent/frame.bin"
-snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-failpoint.snapshot"
-: > "$TEMP_DIR/docker.log"
-if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true HVO_RESTORE_FAILPOINT=after-new-install >/dev/null 2>&1; then
-    fail 'Restore failpoint unexpectedly succeeded.'
-fi
-snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/post-failpoint.snapshot"
-cmp -s "$TEMP_DIR/pre-failpoint.snapshot" "$TEMP_DIR/post-failpoint.snapshot" || fail 'Failpoint rollback did not restore exact old state.'
-if grep -Fq 'compose -f docker-compose.apps.yml up -d' "$TEMP_DIR/docker.log"; then
-    fail 'Failed restore restarted applications.'
-fi
-test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+# Every durable restore boundary recovers exact old state after an uncatchable interruption.
+interruption_index=0
+for interruption in after-old-move after-new-install after-logichost-start after-cameraagent-start; do
+    ((interruption_index += 1))
+    transaction="8888888888884888888888888888888$interruption_index"
+    rollback="$RUNTIME_ROOT.rollback.$transaction"
+    printf 'pre-%s\n' "$interruption" > "$RUNTIME_ROOT/agent/frame.bin"
+    snapshot_tree "$RUNTIME_ROOT" "$TEMP_DIR/pre-$interruption.snapshot"
+    : > "$TEMP_DIR/docker.log"
+    if restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true HVO_ENABLE_TEST_FAILPOINTS=true \
+        HVO_RESTORE_TEST_INTERRUPT=true HVO_RESTORE_TEST_TRANSACTION_ID="$transaction" \
+        HVO_RESTORE_FAILPOINT="$interruption" >/dev/null 2>&1; then
+        fail "$interruption interruption unexpectedly succeeded."
+    fi
+    test -f "$TEMP_DIR/.hvo-application-state-restore.transaction"
+    case "$interruption" in
+        after-old-move) expected_phase=old-moved; test ! -e "$RUNTIME_ROOT" ;;
+        after-new-install) expected_phase=new-installed; test -d "$RUNTIME_ROOT" ;;
+        after-logichost-start) expected_phase=logichost-started; grep -Fq 'up -d logichost' "$TEMP_DIR/docker.log" ;;
+        after-cameraagent-start) expected_phase=cameraagent-started; grep -Fq 'up -d cameraagent' "$TEMP_DIR/docker.log" ;;
+    esac
+    grep -Fqx $'phase\t'"$expected_phase" "$TEMP_DIR/.hvo-application-state-restore.transaction"
+    snapshot_tree "$rollback" "$TEMP_DIR/rollback-$interruption.snapshot"
+    cmp -s "$TEMP_DIR/pre-$interruption.snapshot" "$TEMP_DIR/rollback-$interruption.snapshot" || \
+        fail "$interruption did not retain exact rollback state."
+    restore_archive "$VALID_ARCHIVE" env HVO_SKIP_RUNTIME_HEALTHCHECK=true HVO_ENABLE_TEST_FAILPOINTS=true \
+        HVO_RESTORE_TEST_TRANSACTION_ID="$transaction" >/dev/null
+    test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
+    snapshot_tree "$rollback" "$TEMP_DIR/retry-rollback-$interruption.snapshot"
+    cmp -s "$TEMP_DIR/pre-$interruption.snapshot" "$TEMP_DIR/retry-rollback-$interruption.snapshot" || \
+        fail "$interruption retry did not recover exact old state before installation."
+    test "$(<"$RUNTIME_ROOT/agent/frame.bin")" = payload-v1
+    rm -rf -- "$rollback"
+done
 
 # LogicHost readiness and container-start failures both restore exact old state and leave apps stopped.
 printf 'before-health-failure\n' > "$RUNTIME_ROOT/agent/frame.bin"
@@ -723,36 +856,11 @@ cmp -s "$TEMP_DIR/pre-stop-failure.snapshot" "$TEMP_DIR/post-stop-failure-recove
 test ! -e "$TEMP_DIR/.hvo-application-state-restore.transaction"
 test ! -e "$TEMP_DIR/$stop_failure_rollback"
 
-# Legacy archives remain supported, but their catalog is never installed over the target catalog.
-mkdir -p "$TEMP_DIR/legacy-with-catalog/catalog" "$TEMP_DIR/legacy-without-catalog"
-for path in "${SUPPORTED_PATHS[@]}"; do
-    mkdir -p "$TEMP_DIR/legacy-with-catalog/$path" "$TEMP_DIR/legacy-without-catalog/$path"
-done
-printf 'legacy-identity\n' > "$TEMP_DIR/legacy-with-catalog/cameraagent/identity/identity.db"
-printf 'legacy-identity\n' > "$TEMP_DIR/legacy-without-catalog/cameraagent/identity/identity.db"
-mkdir -p "$TEMP_DIR/legacy-with-catalog/agent/$LONG_COMPONENT" "$TEMP_DIR/legacy-without-catalog/agent/$LONG_COMPONENT"
-printf 'legacy-long-path\n' > "$TEMP_DIR/legacy-with-catalog/agent/$LONG_COMPONENT/payload.bin"
-printf 'legacy-long-path\n' > "$TEMP_DIR/legacy-without-catalog/agent/$LONG_COMPONENT/payload.bin"
-chmod 0777 "$TEMP_DIR/legacy-with-catalog/cameraagent/identity" "$TEMP_DIR/legacy-without-catalog/cameraagent/identity"
-chmod 0755 "$TEMP_DIR/legacy-with-catalog/agent" "$TEMP_DIR/legacy-without-catalog/agent"
-printf 'archive-catalog-must-not-win\n' > "$TEMP_DIR/legacy-with-catalog/catalog/manifest.json"
-tar -czf "$TEMP_DIR/legacy-with-catalog.tgz" -C "$TEMP_DIR/legacy-with-catalog" .
-write_checksum "$TEMP_DIR/legacy-with-catalog.tgz"
-printf 'target-catalog-v2\n' > "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
-restore_archive "$TEMP_DIR/legacy-with-catalog.tgz" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >/dev/null
-test "$(<"$RUNTIME_ROOT/catalog/versions/installed/manifest.json")" = target-catalog-v2
-test ! -e "$RUNTIME_ROOT/catalog/manifest.json"
-test "$(<"$RUNTIME_ROOT/cameraagent/identity/identity.db")" = legacy-identity
-test "$(<"$RUNTIME_ROOT/agent/$LONG_COMPONENT/payload.bin")" = legacy-long-path
-test "$(stat -c '%a' "$RUNTIME_ROOT/cameraagent/identity")" = 700
-test "$(stat -c '%a' "$RUNTIME_ROOT/agent")" = 700
-
-tar -czf "$TEMP_DIR/legacy-without-catalog.tgz" -C "$TEMP_DIR/legacy-without-catalog" .
-write_checksum "$TEMP_DIR/legacy-without-catalog.tgz"
-printf 'target-catalog-v3\n' > "$RUNTIME_ROOT/catalog/versions/installed/manifest.json"
-restore_archive "$TEMP_DIR/legacy-without-catalog.tgz" env HVO_SKIP_RUNTIME_HEALTHCHECK=true >/dev/null
-test "$(<"$RUNTIME_ROOT/catalog/versions/installed/manifest.json")" = target-catalog-v3
-test "$(<"$RUNTIME_ROOT/agent/$LONG_COMPONENT/payload.bin")" = legacy-long-path
+# Archives without the canonical inventory are rejected before lifecycle or state mutation.
+tar --create --gzip --format=gnu --file "$TEMP_DIR/missing-inventory.tgz" \
+    --directory "$TEMP_DIR/mutations/corrupt" "${SUPPORTED_PATHS[@]}"
+write_checksum "$TEMP_DIR/missing-inventory.tgz"
+expect_restore_rejected_before_mutation "$TEMP_DIR/missing-inventory.tgz" 'Missing inventory'
 
 # The common lock rejects ordinary start/rebuild/reset/catalog mutation without touching state.
 exec 8<>"$TEMP_DIR/.hvo-application-state.lock"

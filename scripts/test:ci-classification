@@ -28,12 +28,11 @@ expect_plan() {
 }
 
 expect_suites() {
-  local expected_catalog="$1" expected_layout="$2" expected_shards="$3" expected_installer="$4"
-  local event_name="$5" base_sha="$6" head_sha="$7" output
+  local expected_catalog="$1" expected_shards="$2" expected_installer="$3"
+  local event_name="$4" base_sha="$5" head_sha="$6" output
   output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
   for expectation in \
     "deployment_catalog=$expected_catalog" \
-    "deployment_layout=$expected_layout" \
     "deployment_shards=$expected_shards" \
     "deployment_installer=$expected_installer"; do
     grep -Fxq "$expectation" <<< "$output" || {
@@ -126,12 +125,10 @@ deployment_paths=(
   "scripts/test:ci-classification"
   "scripts/deploy:environment"
   "scripts/install-hvo-skymonitor.sh"
-  "scripts/deploy:migrate-product-layout"
   "scripts/deploy/common.sh"
   "scripts/test:deploy-environment"
   "scripts/test:deploy-environment-cli"
   "scripts/test:deployment-installer"
-  "scripts/test:product-layout"
   "scripts/test:deployment-logichost-outage-contract"
   "scripts/test:deployment-normal-flow-contract"
   "scripts/catalog/install-hyg-v42.sh"
@@ -171,29 +168,27 @@ update_file() {
 }
 
 verify_targeted_suites() {
-  local path="$1" expected_catalog="$2" expected_layout="$3" expected_shards="$4" expected_installer="$5"
+  local path="$1" expected_catalog="$2" expected_shards="$3" expected_installer="$4"
   local targeted_base targeted_head
   targeted_base="$(git -C "$work_root" rev-parse HEAD)"
   update_file "$path"
   targeted_head="$(git -C "$work_root" rev-parse HEAD)"
   expect_plan full true pull_request "$targeted_base" "$targeted_head"
-  expect_suites "$expected_catalog" "$expected_layout" "$expected_shards" "$expected_installer" \
+  expect_suites "$expected_catalog" "$expected_shards" "$expected_installer" \
     pull_request "$targeted_base" "$targeted_head"
 }
 
-verify_targeted_suites ".github/workflows/ci.yml" true true true true
-verify_targeted_suites ".github/workflows/release.yml" true false false true
-verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true false true false
-verify_targeted_suites "scripts/catalog/catalog-common.sh" true true true false
-verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true true true false
-verify_targeted_suites "scripts/infra:operation-lock" true true true false
-verify_targeted_suites "scripts/deploy:migrate-product-layout" false true true false
-verify_targeted_suites "scripts/deploy/common.sh" false true true false
-verify_targeted_suites "scripts/deploy/product-layout.sh" false true true false
-verify_targeted_suites "scripts/test:product-layout" false true false false
-verify_targeted_suites "scripts/test:deploy-environment" false false true false
-verify_targeted_suites "scripts/test:deployment-installer" false false false true
-verify_targeted_suites "scripts/test:deployment-normal-flow-contract" false false false false
+verify_targeted_suites ".github/workflows/ci.yml" true true true
+verify_targeted_suites ".github/workflows/release.yml" true false true
+verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true true false
+verify_targeted_suites "scripts/catalog/catalog-common.sh" true true false
+verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true true false
+verify_targeted_suites "scripts/infra:operation-lock" true true false
+verify_targeted_suites "scripts/deploy/common.sh" false true false
+verify_targeted_suites "scripts/deploy/product-layout.sh" false true false
+verify_targeted_suites "scripts/test:deploy-environment" false true false
+verify_targeted_suites "scripts/test:deployment-installer" false false true
+verify_targeted_suites "scripts/test:deployment-normal-flow-contract" false false false
 
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
 commit_file "docs/mixed.md"
@@ -267,7 +262,7 @@ for fake_case in malformed failure; do
   if [[ "$fake_case" == failure ]]; then fake_failure=true; else fake_failure=false; fi
   output="$(cd "$work_root" && PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" \
     "$classifier" pull_request fake-base fake-head)"
-  if [[ "$output" != $'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_layout=true\ndeployment_shards=true\ndeployment_installer=true' ]]; then
+  if [[ "$output" != $'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true' ]]; then
     printf 'Expected fail-closed malformed/diff-failure plan, received %s\n' "$output" >&2
     exit 1
   fi
@@ -318,7 +313,7 @@ grep -Fq "if: needs.changes.outputs.mode == 'full' && github.event_name == 'work
   printf 'Historical Phase 14 acceptance must remain manual-dispatch only.\n' >&2
   exit 1
 }
-for suite in catalog layout shards installer; do
+for suite in catalog shards installer; do
   grep -Fq "if: needs.changes.outputs.deployment_$suite == 'true'" "$workflow" || {
     printf 'Exhaustive deployment suite is not controlled by its classifier output: %s\n' "$suite" >&2
     exit 1

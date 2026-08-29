@@ -85,9 +85,9 @@ was not included in that execution-time comparison.
 Run
 [`32790325294`](https://github.com/RoySalisbury/HVO.SkyMonitor/actions/runs/32790325294)
 showed why the exhaustive suite was removed from pull-request critical paths:
-the nine fake-host shards took 11:43, catalog lifecycle plus product-layout
-recovery took 5:49, and the real disposable installer took another minute. The
+the nine fake-host shards took 11:43, the historical catalog lifecycle and
+singular-layout recovery suites took 5:49, and the real disposable installer took another minute. The
 current coordinator and campaign-shape contracts took 21 seconds. Every
 deployment-relevant pull request retains that focused boundary, and classifier
-outputs add only the affected exhaustive catalog, product-layout, split-host, or
-installer suite. Main/release/manual runs continue to execute all four.
+outputs add only the affected exhaustive catalog, split-host, or installer
+suite. Main/release/manual runs continue to execute all three.

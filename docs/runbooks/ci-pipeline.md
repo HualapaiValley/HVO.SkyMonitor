@@ -9,7 +9,7 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact. Skipped in classified reduced mode; its result is not currently aggregated by Required CI. |
 | **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
-| **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, product-layout, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
+| **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean Debug and Release builds plus complete, disjoint behavioral category discovery. Skipped only in classified reduced mode. |
 | **Unit Tests** | 2316 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Skipped only in classified reduced mode. |
 | **Integration Tests** | 556 Integration-category cases across SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, forwarded-header, host integration, and the six repository graph/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Skipped only in classified reduced mode. |
@@ -211,14 +211,14 @@ Deployment selection is independent from full/reduced mode. A full-mode pull
 request with ordinary application or test changes runs the existing full build
 and test matrix but skips Deployment Contracts. A deployment-relevant pull
 request runs the lightweight deployment gate plus the affected exhaustive suite
-selected by `deployment_catalog`, `deployment_layout`, `deployment_shards`, or
-`deployment_installer`. Main, `release/**`, and manual runs select all four. The
+selected by `deployment_catalog`, `deployment_shards`, or
+`deployment_installer`. Main, `release/**`, and manual runs select all three. The
 closed deployment path map is:
 
 - `.github/workflows/ci.yml`, `.dockerignore`, `.env.template`, `docker-compose.apps.yml`, and `global.json`
 - `scripts/ci:classify`, `scripts/ci:require`, and `scripts/test:ci-classification`
-- `scripts/deploy:environment`, `scripts/deploy:migrate-product-layout`, and `scripts/deploy/**`
-- `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:deployment-installer`, `scripts/test:product-layout`, `scripts/test:deployment-logichost-outage-contract`, and `scripts/test:deployment-normal-flow-contract`
+- `scripts/deploy:environment` and `scripts/deploy/**`
+- `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:deployment-installer`, `scripts/test:deployment-logichost-outage-contract`, and `scripts/test:deployment-normal-flow-contract`
 - `scripts/catalog:*`, `scripts/catalog/**`, and `scripts/infra:operation-lock`
 - `deploy/**`
 - `tests/fixtures/catalog/hyg-v42-bright-stars.sqlite`
@@ -228,7 +228,7 @@ closed deployment path map is:
 - `src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json`
 - `src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json` and `src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json`
 
-The classifier emits `mode`, `deployment`, and the four exhaustive-suite outputs
+The classifier emits `mode`, `deployment`, and the three exhaustive-suite outputs
 with reasons in the step summary. Missing commits, failed or malformed diffs,
 and empty change sets fail closed to every suite. Deletions, renames, type
 changes, and missing or non-regular entries use the affected path to select a
