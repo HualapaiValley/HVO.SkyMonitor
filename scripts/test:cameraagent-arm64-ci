@@ -29,6 +29,8 @@ readonly IMAGE_TAG="hvo-cameraagent-arm64-ci:$RUN_KEY"
 readonly CONTAINER="hvo-arm64-$RUN_KEY"
 readonly OWNERSHIP_LABEL_KEY="io.hvo.skymonitor.arm64-ci-run"
 readonly OWNERSHIP_LABEL="$OWNERSHIP_LABEL_KEY=$RUN_KEY"
+readonly DEPLOYMENT_LOCATION_EFFECTIVE_FROM_UTC="2025-01-01T00:00:00Z"
+readonly EXPECTED_DEPLOYMENT_LOCATION_SHA256="804A0DBBD7E53FE2D1845BE9BE0D677C5D2C0BE925741814D856CF9A44F8E467"
 
 SAMPLER_PID=""
 CONTAINER_SAMPLER_PID=""
@@ -530,6 +532,7 @@ chmod 600 "$PUBLISH_SMOKE_CONFIG"
         CameraAgent__AgentId="cameraagent-arm64-publish-$RUN_KEY" \
         CameraAgent__ConfigFilePath="$PUBLISH_SMOKE_CONFIG" \
         CameraAgent__RawIngressRoot="$PUBLISH_SMOKE_ROOT" \
+        CameraAgent__DeploymentLocation__EffectiveFromUtc="$DEPLOYMENT_LOCATION_EFFECTIVE_FROM_UTC" \
         CameraAgent__CentralIntegration__Mode=Disabled \
         CameraAgent__CaptureDistribution__UploadEnabled=false \
         CameraAgent__EnvironmentalDelivery__Enabled=false \
@@ -589,6 +592,7 @@ docker run --detach \
     --env CameraAgent__AgentId="cameraagent-arm64-$RUN_KEY" \
     --env CameraAgent__ConfigFilePath=/run/hvo/cameraagent.json \
     --env CameraAgent__RawIngressRoot=/var/lib/hvo/data/agent \
+    --env CameraAgent__DeploymentLocation__EffectiveFromUtc="$DEPLOYMENT_LOCATION_EFFECTIVE_FROM_UTC" \
     --env CameraAgent__CentralIntegration__Mode=Disabled \
     --env CameraAgent__CaptureDistribution__UploadEnabled=false \
     --env CameraAgent__EnvironmentalDelivery__Enabled=false \
@@ -640,9 +644,9 @@ EXPECTED_CATALOG_PREPROCESSING="$(jq -r '.preprocessingVersion' "$CATALOG_MANIFE
 readonly EXPECTED_CATALOG_PREPROCESSING
 EXPECTED_CONFIG_SHA="$(jq -cS -j . "$CONFIG_PATH" | sha256sum | awk '{ print $1 }')"
 readonly EXPECTED_CONFIG_SHA
-jq -e --arg sha "$EXPECTED_CATALOG_SHA" --argjson length "$EXPECTED_CATALOG_LENGTH" --arg schema "$EXPECTED_CATALOG_SCHEMA" --arg preprocessing "$EXPECTED_CATALOG_PREPROCESSING" --arg configurationSha "$EXPECTED_CONFIG_SHA" --arg agentId "cameraagent-arm64-$RUN_KEY" \
-    '.agentId == $agentId and .ownerEmail == "owner@arm64-ci.invalid" and .ownerBootstrapState == "owner-temporary-password" and .rawIngressRoot == "/var/lib/hvo/data/agent" and .deploymentLocationId == null and .deploymentLocationVersion == null and .deploymentLocationSha256 == null and .catalogId == "hyg-v42-production" and .packageVersion == "hyg-v4.2-p3-s2-r1" and .rowCount == 119625 and (.databaseSha256 | ascii_downcase) == $sha and .databaseLength == $length and .schemaVersion == $schema and .preprocessingVersion == $preprocessing and (.configurationSha256 | ascii_downcase) == $configurationSha and (.rigProfileSha256 | length == 64) and (.scheduleSha256 | length == 64)' \
-    "$RESULTS/installation-verification.json" >/dev/null || fail "installation verification did not report the canonical catalog and configuration"
+jq -e --arg sha "$EXPECTED_CATALOG_SHA" --argjson length "$EXPECTED_CATALOG_LENGTH" --arg schema "$EXPECTED_CATALOG_SCHEMA" --arg preprocessing "$EXPECTED_CATALOG_PREPROCESSING" --arg configurationSha "$EXPECTED_CONFIG_SHA" --arg deploymentLocationSha "$EXPECTED_DEPLOYMENT_LOCATION_SHA256" --arg agentId "cameraagent-arm64-$RUN_KEY" \
+    '.agentId == $agentId and .ownerEmail == "owner@arm64-ci.invalid" and .ownerBootstrapState == "owner-temporary-password" and .rawIngressRoot == "/var/lib/hvo/data/agent" and .deploymentLocationId == "hualapai-cameraagent" and .deploymentLocationVersion == 1 and .deploymentLocationSha256 == $deploymentLocationSha and .catalogId == "hyg-v42-production" and .packageVersion == "hyg-v4.2-p3-s2-r1" and .rowCount == 119625 and (.databaseSha256 | ascii_downcase) == $sha and .databaseLength == $length and .schemaVersion == $schema and .preprocessingVersion == $preprocessing and (.configurationSha256 | ascii_downcase) == $configurationSha and (.rigProfileSha256 | length == 64) and (.scheduleSha256 | length == 64)' \
+    "$RESULTS/installation-verification.json" >/dev/null || fail "installation verification did not report the canonical deployment location, catalog, and configuration"
 
 deadline=$((SECONDS + 120))
 raw_manifest=""
