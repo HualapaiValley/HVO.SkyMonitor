@@ -12,6 +12,7 @@ source "$SCRIPT_DIR/load-repo-env.sh"
 unset TAILSCALE_AUTHKEY
 
 bash "$SCRIPT_DIR/verify-persistent-agent-state.sh"
+bash "$SCRIPT_DIR/configure-opencode.sh"
 
 # Refresh the persisted key after local developer secrets have been loaded.
 if ! bash "$SCRIPT_DIR/setup-ssh-key.sh"; then

@@ -197,7 +197,7 @@ changed path is an added or modified member of this allowlist:
 - `tools/asi-capture/README.md`
 - one-level `src/*/README.md` and `tests/*/README.md`
 - `tests/fixtures/catalog/SOURCE.md` and `tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md`
-- `scripts/opencode:enable`, `scripts/opencode:disable`, `scripts/opencode:connect`, `scripts/opencode:prepare-rebuild`, `scripts/opencode:remote-connect`, and `scripts/test:opencode`
+- `scripts/opencode:enable`, `scripts/opencode:disable`, `scripts/opencode:connect`, `scripts/opencode:remote-connect`, and `scripts/test:opencode`
 
 Reduced mode still runs lightweight **Quality** and **Required CI**. Quality
 does not set up .NET, restore/format the solution, build catalog artifacts, or

@@ -20,6 +20,7 @@
 .devcontainer/devcontainer.local.env
 .devcontainer/hvo-docker.key
 .devcontainer/state/
+.devcontainer/.state-initialization-v1/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs

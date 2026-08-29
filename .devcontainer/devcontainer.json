@@ -79,6 +79,7 @@
     "DOTNET_ENVIRONMENT": "Development",
     "HVO_AGENT_STATE_ROOT": "/var/lib/hvo-agent-state",
     "HVO_AGENT_WORKTREE_ROOT": "/tmp/opencode",
+    "HVO_DEVCONTAINER_STATE_SOURCE": "${localWorkspaceFolder}/.devcontainer/state",
     "PLAYWRIGHT_BROWSERS_PATH": "/home/vscode/.cache/ms-playwright"
   },
   "remoteEnv": {

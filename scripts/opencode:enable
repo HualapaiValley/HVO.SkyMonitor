@@ -16,6 +16,7 @@ readonly PASSWORD_FILE="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}/server
 readonly LOCK_FILE="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}/server-lifecycle.lock"
 readonly OPENCODE_BINARY=/usr/local/bin/opencode
 readonly PERSISTENCE_SCRIPT="${HVO_OPENCODE_PERSISTENCE_VERIFIER:-$REPO_ROOT/.devcontainer/verify-persistent-agent-state.sh}"
+readonly CONFIGURE_SCRIPT="${HVO_OPENCODE_CONFIGURATOR:-$REPO_ROOT/.devcontainer/configure-opencode.sh}"
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -45,7 +46,7 @@ if [[ ! -f /.dockerenv ]]; then
     exit 1
 fi
 bash "$PERSISTENCE_SCRIPT"
-for command_name in curl flock ss tmux; do
+for command_name in curl flock openssl ss tmux; do
     require_command "$command_name"
 done
 if [[ ! -x "$OPENCODE_BINARY" ]]; then
@@ -60,6 +61,7 @@ if [[ ! "$CONTAINER_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$CONTAINER_PORT > 655
     echo "OPENCODE_CONTAINER_PORT must be an integer from 1 through 65535." >&2
     exit 1
 fi
+bash "$CONFIGURE_SCRIPT"
 if [[ ! -s "$PASSWORD_FILE" ]]; then
     echo "OpenCode password is missing at $PASSWORD_FILE. Run post-create setup first." >&2
     exit 1
