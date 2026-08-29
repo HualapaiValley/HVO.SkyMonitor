@@ -47,7 +47,7 @@ verify_dedicated_mount() {
         echo "$label is not a dedicated persistent mount: $path (resolved mount: $mount_target)" >&2
         return 1
     fi
-    if ! mount_source="$(findmnt --noheadings --raw --output SOURCE --target "$path" 2>/dev/null)" \
+    if ! mount_source="$(findmnt --noheadings --output SOURCE --target "$path" 2>/dev/null)" \
         || ! filesystem_type="$(findmnt --noheadings --raw --output FSTYPE --target "$path" 2>/dev/null)"; then
         echo "$label mount metadata is incomplete: $path" >&2
         return 1

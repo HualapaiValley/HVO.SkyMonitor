@@ -82,6 +82,7 @@ post_create_validation_line="$(grep -nF 'verify-persistent-agent-state.sh' \
 post_create_log_line="$(grep -nF 'LOG_ROOT=' "$REPO_ROOT/.devcontainer/post-create.sh" | cut -d : -f 1)"
 ((post_create_validation_line < post_create_log_line))
 grep -Fq 'findmnt --noheadings --raw --output TARGET --target "$path"' "$PERSISTENCE_SCRIPT"
+grep -Fq 'findmnt --noheadings --output SOURCE --target "$path"' "$PERSISTENCE_SCRIPT"
 grep -Fq 'filesystem_type" == "tmpfs"' "$PERSISTENCE_SCRIPT"
 grep -Fq 'HVO_DEVCONTAINER_STATE_SOURCE' "$PERSISTENCE_SCRIPT"
 grep -Fq 'OpenCode configuration root' "$PERSISTENCE_SCRIPT"
@@ -398,8 +399,10 @@ ln -s "$symlink_target" "$symlink_config"
 expect_configure_failure "$symlink_config" "$symlink_data" \
     'must be an existing non-symlink directory' "$TEMP_DIR/symlink.out"
 
+wrong_owner_uid=0
+[[ "$(id -u)" == 0 ]] && wrong_owner_uid=1
 if sudo -n true >/dev/null 2>&1; then
-    sudo chown 0:0 "$custom_data/server-password"
+    sudo chown "$wrong_owner_uid:$(id -g)" "$custom_data/server-password"
     expect_configure_failure "$custom_config" "$custom_data" \
         'must be owned by' "$TEMP_DIR/custom-owner.out"
     sudo chown "$(id -u):$(id -g)" "$custom_data/server-password"
@@ -603,8 +606,13 @@ cat > "$persistence_bin/findmnt" <<'EOF'
 set -euo pipefail
 output=""
 target=""
+raw=false
 while (($# > 0)); do
     case "$1" in
+        --raw)
+            raw=true
+            shift
+            ;;
         --output)
             output="$2"
             shift 2
@@ -619,7 +627,11 @@ done
 [[ "${FAKE_FINDMNT_FAIL:-false}" == false ]]
 case "$output" in
     TARGET) printf '%s\n' "${FAKE_FINDMNT_TARGET:-$target}" ;;
-    SOURCE) printf '%s\n' "${FAKE_FINDMNT_SOURCE:-/workspace/.devcontainer/state/$(basename "$target")}" ;;
+    SOURCE)
+        source="${FAKE_FINDMNT_SOURCE:-$HVO_DEVCONTAINER_STATE_SOURCE/$(basename "$target")}"
+        [[ "$raw" == false ]] || source="${source// /\\x20}"
+        printf '%s\n' "$source"
+        ;;
     FSTYPE) printf '%s\n' "${FAKE_FINDMNT_FSTYPE:-ext4}" ;;
     *) exit 2 ;;
 esac
@@ -631,7 +643,7 @@ persistence_env=(
     "PATH=$persistence_bin:/usr/bin:/bin"
     "HVO_AGENT_WORKTREE_ROOT=$persistence_root/opencode-worktrees"
     "HVO_AGENT_STATE_ROOT=$persistence_root/agent-scratch"
-    "HVO_DEVCONTAINER_STATE_SOURCE=/workspace/.devcontainer/state"
+    "HVO_DEVCONTAINER_STATE_SOURCE=/workspace with spaces/.devcontainer/state"
     "OPENCODE_CONFIG_DIR=$persistence_root/opencode-config"
     "OPENCODE_DATA_DIR=$persistence_root/opencode-data"
 )
@@ -645,7 +657,7 @@ if FAKE_FINDMNT_SOURCE=/wrong/source "${persistence_env[@]}" bash "$PERSISTENCE_
 fi
 grep -Fq 'has unexpected mount source' "$TEMP_DIR/persistence-source.out"
 
-if FAKE_FINDMNT_SOURCE=/other/checkout/.devcontainer/state/opencode-worktrees \
+if FAKE_FINDMNT_SOURCE='/other checkout/.devcontainer/state/opencode-worktrees' \
     "${persistence_env[@]}" bash "$PERSISTENCE_SCRIPT" \
     > "$TEMP_DIR/persistence-other-checkout.out" 2>&1; then
     echo "Persistence verification accepted another checkout with the expected root suffix." >&2
@@ -684,7 +696,7 @@ fi
 grep -Fq 'mount metadata is unavailable' "$TEMP_DIR/persistence-metadata.out"
 
 if sudo -n true >/dev/null 2>&1; then
-    sudo chown 0:0 "$persistence_root/opencode-data"
+    sudo chown "$wrong_owner_uid:$(id -g)" "$persistence_root/opencode-data"
     if "${persistence_env[@]}" bash "$PERSISTENCE_SCRIPT" \
         > "$TEMP_DIR/persistence-owner.out" 2>&1; then
         echo "Persistence verification accepted the wrong root owner." >&2
