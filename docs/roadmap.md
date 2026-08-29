@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-08-26
+Status date: 2026-08-29
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -41,8 +41,7 @@ The planning horizons are:
 
 | Priority | ID | Initiative | Active delivery |
 | --- | --- | --- | --- |
-| 1 | `RM-004` | Canonical layered capture products | [Epic #436](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/436). CameraAgent contracts, persistence, processing, and presentation complete before LogicHost ingestion and presentation. |
-| 2 | `RM-014` | CameraAgent presentation experience | [Epic #438](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/438). The design checkpoint may proceed in parallel; production presentation follows stable `RM-004` boundaries. |
+| 1 | `RM-014` | CameraAgent presentation experience | [Epic #438](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/438). The design checkpoint and `RM-004` inputs are complete; bounded current-image projection #443 is the next child before home, detail, and archive presentation. |
 
 The owning epics record readiness, coordinator, active claims, and the approved
 consolidated-PR delivery sequence.
@@ -52,9 +51,10 @@ consolidated-PR delivery sequence.
 No additional initiative is approved for automatic start. Recompute this horizon
 after the active initiatives complete or release capacity.
 
-The blocked CameraAgent storage/upload naming cleanup
-[#142](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/142) also inherits
-`RM-004` after #433 establishes the final layered product vocabulary.
+The deferred CameraAgent storage/upload naming cleanup
+[#142](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/142) inherits
+delivered `RM-004`. Its #433 vocabulary prerequisite is complete, but the
+naming-only residual is not approved for automatic start.
 
 ## Future
 
@@ -92,6 +92,7 @@ portfolio initiatives.
 | `RM-001` | Virtual-first SkyMonitor platform | Standalone CameraAgent plus optional reconstructable LogicHost processing, weather/cloud/transient workflows, UI, recovery, and production-readiness foundations. | [Epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89). Nested epics #59, #60, #62, #64, #65, #109, #205, and #243 inherit this ID. |
 | `RM-002` | Deferred Phase 14 evidence campaign | Imported, executed, aggregated, and dispositioned exhaustive evidence without reopening virtual-first completion. | [#305](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/305); children #318-#322 inherit this ID. |
 | `RM-003` | Installable and lifecycle-managed deployment | Delivered multi-instance-safe persistent layout, a self-contained installer, transactional upgrade/rollback/uninstall, and signed release/catalog distribution without adding physical-camera discovery or vendor SDK installation. | [#414](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/414), [#415](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/415), [#416](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/416), and [#417](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/417) |
+| `RM-004` | Canonical layered capture products | Delivered immutable base imagery, durable projected scenes and analytical layers, deterministic on-demand presentation, and explicit materialization across standalone CameraAgent and LogicHost. | [Epic #436](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/436); CameraAgent PR #454 and LogicHost PR #456 |
 | `RM-011` | Direct ZWO camera enablement | Added the optional direct ZWO CameraAgent adapter and retained Linux x64 ASI178MC and ARM64 ASI676MC functional deployment evidence. | [#265](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/265), [#266](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/266), and [#267](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/267) |
 
 Delivered does not imply broader physical calibration or field-performance

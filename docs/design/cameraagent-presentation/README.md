@@ -1,7 +1,7 @@
 # CameraAgent Presentation Checkpoint
 
-Status: proposed implementation direction for `RM-014/#440`, pending PR review
-and the required epic acceptance note. These static
+Status: accepted `RM-014/#440` design checkpoint, delivered through PR #453
+and recorded by epic #438. These static
 studies use synthetic imagery and representative CameraAgent facts. They are
 design evidence, not production behavior, processing authority, or an anonymous
 publication decision.
