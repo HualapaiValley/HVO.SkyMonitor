@@ -79,6 +79,7 @@
     "DOTNET_ENVIRONMENT": "Development",
     "HVO_AGENT_STATE_ROOT": "/var/lib/hvo-agent-state",
     "HVO_AGENT_WORKTREE_ROOT": "/tmp/opencode",
+    "HVO_DEVCONTAINER_STATE_SOURCE": "${localWorkspaceFolder}/.devcontainer/state",
     "PLAYWRIGHT_BROWSERS_PATH": "/home/vscode/.cache/ms-playwright"
   },
   "remoteEnv": {
@@ -144,7 +145,11 @@
     "onAutoForward": "silent"
   },
   // Ensure host-side secret and durable-state directories exist before mounting.
-  "initializeCommand": "bash .devcontainer/initialize.sh",
+  "initializeCommand": [
+    "bash",
+    ".devcontainer/initialize.sh",
+    "${localWorkspaceFolder}"
+  ],
   // Mount the host user-secrets store and ignored developer-tool state.
   "mounts": [
     {

@@ -24,6 +24,13 @@ This repository is configured to work with Visual Studio Code Dev Containers and
 - [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop) (for local development)
 
+On Windows, clone and open the repository from a WSL2 Linux filesystem, not an
+NTFS-mounted path, so owner-only persistent developer state can be enforced.
+Open the physical, non-symlinked checkout path and start Dev Containers from a
+normal non-root host account; initialization fails before state mutation when
+the account or checkout-source prerequisite is not met, and rejects filesystems
+that cannot enforce the required owner-only state.
+
 ### Getting Started
 
 #### Using Dev Containers (Local)
@@ -177,9 +184,7 @@ Its devcontainer would publish `0.0.0.0:4098:4096`. Host ports and tmux session 
 
 The OpenCode executable is pinned, checksum-verified, and installed root-owned in the container image. Provider credentials, configuration, sessions, agent worktrees, and resumable scratch state remain in ignored host bind mounts beneath `.devcontainer/state/` across container rebuilds and Docker daemon restarts. Specifically, `opencode-worktrees` is mounted at `/tmp/opencode`, while `agent-scratch` is mounted at `/var/lib/hvo-agent-state`. Normal `/tmp` remains disposable and must contain only caches, sockets, locks, and other reproducible files.
 
-Post-create and post-start checks refuse to start OpenCode unless both agent-state paths are dedicated writable mounts. This avoids the dangerous fallback where a missing mount appears to work but stores in-progress files on the disposable container layer. The bind-mounted state still belongs to the local checkout: back up `.devcontainer/state/` separately before deleting the clone, running an ignored-file cleanup such as `git clean -xfd`, or replacing the host disk.
-
-Before the first rebuild that introduces these mounts, stop OpenCode from a separate terminal with `./scripts/opencode:disable`, then run `./scripts/opencode:prepare-rebuild` inside the old container. It resolves the primary checkout, copies any legacy `/tmp/opencode` worktrees into its host bind source, and verifies the copy. Do not resume agents between migration and rebuild. Once the persistence-enabled container is running, the command verifies the expected bind source and reports that migration is no longer needed.
+Host initialization creates all four developer-state paths with owner-only permissions. Post-create, post-start, and manual enable checks refuse to start OpenCode unless the configuration, data, worktree, and scratch paths are dedicated writable mounts with the expected source, owner, and mode. A completely empty current configuration/data pair receives a schema-only configuration and random password once; partial, obsolete, or unsafe state causes startup to fail without rewriting or relocating it. This avoids the dangerous fallback where a missing mount appears to work but stores in-progress files on the disposable container layer. The bind-mounted state still belongs to the local checkout: back up `.devcontainer/state/` separately before deleting the clone, running an ignored-file cleanup such as `git clean -xfd`, or replacing the host disk.
 
 ### Extensions
 
