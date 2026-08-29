@@ -113,9 +113,8 @@ grep -Fq '"HVO_AGENT_WORKTREE_ROOT": "/tmp/opencode"' "$DEVCONTAINER_FILE"
 grep -Fq '"HVO_AGENT_STATE_ROOT": "/var/lib/hvo-agent-state"' "$DEVCONTAINER_FILE"
 grep -Fq '"HVO_DEVCONTAINER_STATE_SOURCE": "${localWorkspaceFolder}/.devcontainer/state"' \
     "$DEVCONTAINER_FILE"
-grep -Fq '"initializeCommand": [' "$DEVCONTAINER_FILE"
-grep -Fq '".devcontainer/initialize.sh"' "$DEVCONTAINER_FILE"
-grep -Fq '"${localWorkspaceFolder}"' "$DEVCONTAINER_FILE"
+perl -0 -e 'exit(!(<> =~ /"initializeCommand"\s*:\s*\[\s*"bash"\s*,\s*"\.devcontainer\/initialize\.sh"\s*,\s*"\$\{localWorkspaceFolder\}"\s*\]/s))' \
+    "$DEVCONTAINER_FILE"
 grep -Fq '"source": "${localWorkspaceFolder}/.devcontainer/state/opencode-worktrees"' "$DEVCONTAINER_FILE"
 grep -Fq '"target": "/tmp/opencode"' "$DEVCONTAINER_FILE"
 grep -Fq '"source": "${localWorkspaceFolder}/.devcontainer/state/agent-scratch"' "$DEVCONTAINER_FILE"
@@ -447,7 +446,7 @@ if sudo -n true >/dev/null 2>&1; then
 fi
 
 symlink_initialize_fixture="$TEMP_DIR/symlink-initialize-physical"
-symlink_initialize_alias="$TEMP_DIR/symlink-initialize-alias"
+symlink_initialize_alias="$TEMP_DIR/symlink initialize \$HOME;alias"
 mkdir -p "$symlink_initialize_fixture/.devcontainer" "$TEMP_DIR/symlink-initialize-home"
 cp "$INITIALIZE_SCRIPT" "$symlink_initialize_fixture/.devcontainer/initialize.sh"
 ln -s "$symlink_initialize_fixture" "$symlink_initialize_alias"
