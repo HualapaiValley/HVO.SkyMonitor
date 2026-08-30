@@ -344,6 +344,67 @@ rejected validation leaves prior evidence untouched. Interruptions after root,
 marker, ledger, running-manifest, or evidence publication resume idempotently.
 Prepare failure never changes the valid preflight manifest or evidence.
 
+### Inspect Or Clean An Incomplete Prepare
+
+Do not use normal `down` when prepare failed and `up` never ran. Inspect the
+retained run first without changing a target:
+
+```bash
+./scripts/deploy:environment partial-prepare-cleanup \
+  --inventory /absolute/path/inventory.yml \
+  --mode persistent \
+  --run-id d331-0821171819 \
+  --state-root /absolute/path/to/d331-0821171819/state \
+  --evidence-root /absolute/path/to/d331-0821171819/evidence \
+  --dry-run
+```
+
+The command requires the original canonical inventory and retained passed
+preflight plus failed prepare ledger, manifest, and evidence. Their run ID,
+inventory SHA-256, installation identity, targets, runtime roots, runtime owners,
+marker digests, creating runs, and creation flags must agree. Because this is a
+historical recovery command, it does not require the current checkout revision
+to equal the retained source revision and does not read the inventory's secret
+file. It still validates the complete inventory structure and retained source
+identity.
+
+Inspection independently re-correlates each SSH host and Docker daemon. It
+requires every expected Compose project and every run-labeled container,
+network, and volume to be absent. An `up` or `down` phase artifact, an
+unjournaled target root, application content, a mount below a cleanup candidate,
+or marker/lock/state drift refuses the operation. Sanitized
+`partial-prepare-inspect.json` records target names, creation flags, and
+dispositions without runtime paths, machine identities, Docker object IDs,
+credentials, or command output.
+
+After reviewing that evidence, remove only artifacts proven to have been
+created by the failed run:
+
+```bash
+./scripts/deploy:environment partial-prepare-cleanup \
+  --inventory /absolute/path/inventory.yml \
+  --mode persistent \
+  --run-id d331-0821171819 \
+  --state-root /absolute/path/to/d331-0821171819/state \
+  --evidence-root /absolute/path/to/d331-0821171819/evidence \
+  --confirm d331-0821171819
+```
+
+Confirmation must exactly equal the run ID and cannot be combined with
+`--dry-run`. Before the first delete, all inspection checks pass for all targets.
+The command removes the exact ownership marker, control directory, runtime root,
+prepare state sidecar, and prepare lock only when each corresponding creation
+flag and creating run authorize it. A pre-existing root or control directory is
+preserved. No Compose command is run, and no image, catalog, application data,
+shared service, wildcard path, or unrelated Docker resource is removed.
+
+`partial-prepare-cleanup-ledger.json` journals intent and completion outside the
+runtime roots. An interruption after marker, control-directory, root, state, or
+lock deletion resumes from that exact intent; initial absence without intent and
+recreation after completion fail closed. The matching manifest, digest commit,
+and sanitized `partial-prepare-cleanup.json` are published atomically. Keep these
+artifacts with the original run evidence.
+
 ## Build And Distribute Images
 
 After the exact run has matching passed preflight and prepare state, run:

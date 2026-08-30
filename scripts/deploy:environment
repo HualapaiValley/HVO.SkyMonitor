@@ -22,6 +22,8 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/preflight.sh"
 # shellcheck source=scripts/deploy/prepare.sh
 . "$SCRIPT_DIR/deploy/prepare.sh"
+# shellcheck source=scripts/deploy/partial-prepare.sh
+. "$SCRIPT_DIR/deploy/partial-prepare.sh"
 # shellcheck source=scripts/deploy/images.sh
 . "$SCRIPT_DIR/deploy/images.sh"
 # shellcheck source=scripts/deploy/catalog.sh
@@ -48,15 +50,15 @@ readonly REPO_ROOT
 . "$SCRIPT_DIR/deploy/transient-confirm.sh"
 
 usage() {
-    printf 'Usage: %s <preflight|prepare|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|acceptance-component|transient-confirm|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--component <logichost-dependencies>] [--allowlist <owner-only-json-path>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
+    printf 'Usage: %s <preflight|prepare|partial-prepare-cleanup|images|catalog|up|bootstrap|smoke|measure|acceptance-init|acceptance-record|acceptance-run|acceptance-component|transient-confirm|down> --inventory <file> --mode <isolated|persistent> [--run-id <id>] [--state-root <absolute-path>] [--evidence-root <absolute-path>] [--workload <W1|W2>] [--scenario <id>] [--artifact <absolute-json-path>] [--component <logichost-dependencies>] [--allowlist <owner-only-json-path>] [--dry-run | --confirm <run-id>] [--preserve-state | --delete-state --confirm <run-id>]\n' "${0##*/}" >&2
     printf '       acceptance-record requires --scenario and --artifact; acceptance-run requires --scenario; acceptance-component requires the fixed --component.\n' >&2
     exit 2
 }
 
 phase="${1:-}"
-[[ "$phase" == preflight || "$phase" == prepare || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == acceptance-init || "$phase" == acceptance-record || "$phase" == acceptance-run || "$phase" == acceptance-component || "$phase" == transient-confirm || "$phase" == down ]] || usage
+[[ "$phase" == preflight || "$phase" == prepare || "$phase" == partial-prepare-cleanup || "$phase" == images || "$phase" == catalog || "$phase" == up || "$phase" == bootstrap || "$phase" == smoke || "$phase" == measure || "$phase" == acceptance-init || "$phase" == acceptance-record || "$phase" == acceptance-run || "$phase" == acceptance-component || "$phase" == transient-confirm || "$phase" == down ]] || usage
 shift
-inventory="" mode="" run_id="" state_root="" evidence_root="" down_policy="" confirm="" workload="" scenario="" artifact="" component="" allowlist=""
+inventory="" mode="" run_id="" state_root="" evidence_root="" down_policy="" confirm="" workload="" scenario="" artifact="" component="" allowlist="" dry_run=false
 while (( $# > 0 )); do
     case "$1" in
         --inventory) (( $# >= 2 )) || usage; inventory="$2"; shift 2 ;;
@@ -72,11 +74,18 @@ while (( $# > 0 )); do
         --artifact) (( $# >= 2 )) || usage; artifact="$2"; shift 2 ;;
         --component) (( $# >= 2 )) || usage; component="$2"; shift 2 ;;
         --allowlist) (( $# >= 2 )) || usage; allowlist="$2"; shift 2 ;;
+        --dry-run) [[ "$dry_run" == false ]] || usage; dry_run=true; shift ;;
         *) usage ;;
     esac
 done
 [[ -n "$inventory" && ( "$mode" == isolated || "$mode" == persistent ) ]] || usage
-if [[ "$phase" == down ]]; then [[ -n "$down_policy" ]] || usage; else [[ -z "$down_policy" && -z "$confirm" ]] || usage; fi
+if [[ "$phase" == down ]]; then
+    [[ -n "$down_policy" && "$dry_run" == false ]] || usage
+elif [[ "$phase" == partial-prepare-cleanup ]]; then
+    [[ -z "$down_policy" && ( ( "$dry_run" == true && -z "$confirm" ) || ( "$dry_run" == false && -n "$confirm" ) ) ]] || usage
+else
+    [[ -z "$down_policy" && -z "$confirm" && "$dry_run" == false ]] || usage
+fi
 if [[ "$phase" == measure ]]; then [[ "$workload" == W1 || "$workload" == W2 ]] || usage; else [[ -z "$workload" ]] || usage; fi
 if [[ "$phase" == acceptance-record || "$phase" == acceptance-run ]]; then
     deploy_is_safe_name "$scenario" || usage
@@ -106,14 +115,14 @@ deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
 deploy_validate_inventory "$inventory" "$mode"
 deploy_validate_product_layout "$inventory" "$mode"
-deploy_validate_secret_references "$inventory"
+[[ "$phase" == partial-prepare-cleanup ]] || deploy_validate_secret_references "$inventory"
 expected_revision="$(jq -r '.source.revision' "$inventory")"
 actual_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-[[ "$actual_revision" == "$expected_revision" ]] || deploy_fail validate source "source-revision-mismatch"
+[[ "$phase" == partial-prepare-cleanup || "$actual_revision" == "$expected_revision" ]] || deploy_fail validate source "source-revision-mismatch"
 dirty_disposition="$(jq -r '.source.dirtyDisposition' "$inventory")"
 worktree_state=clean
 [[ -z "$(git -C "$REPO_ROOT" status --porcelain)" ]] || worktree_state=dirty
-[[ "$dirty_disposition" == allow-dirty || "$worktree_state" == clean ]] || deploy_fail validate source "dirty-worktree-rejected"
+[[ "$phase" == partial-prepare-cleanup || "$dirty_disposition" == allow-dirty || "$worktree_state" == clean ]] || deploy_fail validate source "dirty-worktree-rejected"
 source_tree="$(git -C "$REPO_ROOT" rev-parse "${actual_revision}^{tree}")"
 [[ "$source_tree" =~ ^[0-9a-f]{40,64}$ ]] || deploy_fail validate source "source-tree-invalid"
 [[ "$phase" != images || "$worktree_state" == clean ]] || deploy_fail validate source "images-require-clean-source"
@@ -128,6 +137,17 @@ evidence_root="${evidence_root:-$REPO_ROOT/TestResults/deploy/$run_id/evidence}"
 deploy_prepare_run_state "$state_root" "$evidence_root"
 deploy_transport_initialize_private_upload_registry "$state_root/private-upload-registry.json" "$inventory" "$phase" ||
   deploy_fail state private-upload-registry invalid
+
+if [[ "$phase" == partial-prepare-cleanup ]]; then
+    trap 'deploy_partial_prepare_mark_failed $?' ERR
+    if ! deploy_run_partial_prepare_cleanup "$inventory" "$run_id" "$mode" "$inventory_hash" "$expected_revision" "$dry_run" "$confirm"; then
+        deploy_partial_prepare_mark_failed 1
+        exit 1
+    fi
+    trap - ERR
+    deploy_status partial-prepare-cleanup complete passed "$([[ "$dry_run" == true ]] && printf inspected || printf cleaned)"
+    exit 0
+fi
 
 if [[ "$phase" == prepare ]]; then
     # shellcheck disable=SC2317 # Invoked indirectly by the ERR trap.

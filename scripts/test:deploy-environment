@@ -13,6 +13,7 @@ readonly REPO_ROOT
 readonly DEPLOY_CONTRACT_SHARDS=(
     preflight
     prepare-images
+    partial-prepare
     existing-catalog-up
     bootstrap-authority
     bootstrap-credentials
@@ -633,7 +634,14 @@ esac
 [[ "${FAKE_DOCKER_MISMATCH:-}" != "$context" ]] || id=changed-daemon
 [[ "${FAKE_DOCKER_WRONG_HOST_CONTEXT:-}" != "$context" ]] || name=wrong-node
 [[ "${FAKE_DOCKER_UNSUPPORTED_ARCH:-}" != "$context" ]] || daemon_architecture=ppc64le
-if [[ "$3" == image && "$4" == pull ]]; then
+if [[ ( "$3" == container || "$3" == network || "$3" == volume ) && "$4" == ls ]]; then
+  resource_kind=$3; resource_filter=
+  shift 4
+  while (( $# > 0 )); do
+    if [[ "$1" == --filter ]]; then resource_filter=$2; shift 2; else shift; fi
+  done
+  if [[ "${FAKE_PARTIAL_PREPARE_RESOURCE:-}" == "$context:$resource_kind:$resource_filter" ]]; then printf 'unexpected-resource\n'; fi
+elif [[ "$3" == image && "$4" == pull ]]; then
   reference=$5
   [[ "${FAKE_IMAGE_TRANSFER_FAIL:-}" != "$context" ]] || exit 1
   printf '%s\n' "$reference" > "${FAKE_IMAGE_STATE:?}/$context.reference"
@@ -946,6 +954,19 @@ EOF
 cat > "$REMOTE_BIN/stat" <<'EOF'
 #!/usr/bin/bash
 path="${*: -1}"
+if [[ "${FAKE_PARTIAL_PREPARE_REPLACE_PATH:-}" == "$path" && "${2:-}" == %d:%i ]]; then
+  count_file="${FAKE_IMAGE_STATE:?}/partial-prepare-replace-count"
+  count=0; [[ ! -f "$count_file" ]] || count="$(<"$count_file")"
+  count=$((count + 1)); printf '%s\n' "$count" > "$count_file"
+  if [[ "$count" -eq 2 ]]; then
+    mv -- "$path" "$path.race-original"
+    cp -a -- "$path.race-original" "$path"
+  fi
+fi
+if [[ "${2:-}" == %u && "${FAKE_PARTIAL_PREPARE_FOREIGN_PARENT_HOST:-}" == "${FAKE_REMOTE_HOST:-}" ]]; then
+  printf '0\n'
+  exit 0
+fi
 if [[ "${2:-}" == %u && -n "${FAKE_REMOTE_UID_MAP:-}" && -f "$FAKE_REMOTE_UID_MAP" ]]; then
   mapped_uid="$(/usr/bin/awk -F '\t' -v path="$path" '$1 == path { value=$2; count++ } END { if (count == 1) print value; else if (count > 1) exit 2 }' "$FAKE_REMOTE_UID_MAP")" || exit 1
   if [[ -n "$mapped_uid" ]]; then printf '%s\n' "$mapped_uid"; exit 0; fi
@@ -2842,6 +2863,169 @@ fi
 if grep -R -Eq 'logic-machine|east-machine|west-machine' "$TEMP_DIR/output"/*-evidence/prepare.json 2>/dev/null; then
     fail 'Sanitized prepare evidence exposed machine identity.'
 fi
+fi
+
+if shard_enabled partial-prepare; then
+# Failed prepare cleanup is a separate, no-container recovery path. Normal down remains unavailable.
+partial_case=partial-cleanup
+write_prepare_case "$partial_case" isolated
+cp "$INVENTORY" "$TEMP_DIR/$partial_case.inventory"
+run_prepare_preflight "$partial_case" isolated
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' "$partial_case" isolated
+partial_state="$TEMP_DIR/output/$partial_case-state"
+partial_evidence="$TEMP_DIR/output/$partial_case-evidence"
+partial_logic_root="$(inventory_runtime_root logic)"
+partial_logic_lock="${partial_logic_root%/*}/.hvo-deploy-prepare-$(printf 'v1\ntarget=logic\nroot=%s\n' "$partial_logic_root" | sha256sum | cut -c1-32).lock"
+
+run_partial_explicit() {
+  local run="$1" mode="$2"; shift 2
+  PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" partial-prepare-cleanup --inventory "$INVENTORY" --mode "$mode" \
+    --run-id "$run" --state-root "$partial_state" --evidence-root "$partial_evidence" "$@"
+}
+expect_partial_failure() {
+  local expected="$1" run="$2" mode="$3"; shift 3
+  if run_partial_explicit "$run" "$mode" "$@" > "$TEMP_DIR/partial-prepare-failure.log" 2>&1; then
+    fail "Partial-prepare cleanup accepted an invalid boundary: $expected"
+  fi
+  [[ -z "$expected" ]] || grep -Fq "$expected" "$TEMP_DIR/partial-prepare-failure.log" || {
+    /usr/bin/cat "$TEMP_DIR/partial-prepare-failure.log" >&2
+    fail "Partial-prepare cleanup did not report $expected."
+  }
+  test -d "$partial_logic_root" || fail 'Rejected partial-prepare cleanup mutated the runtime root.'
+}
+
+expect_partial_failure '' "$partial_case" isolated
+expect_partial_failure 'confirmation' "$partial_case" isolated --confirm wrong-run
+expect_partial_failure '' "$partial_case" isolated --dry-run --confirm "$partial_case"
+expect_partial_failure 'mismatch-or-not-passed' wrong-run isolated --dry-run
+if run_deploy_mode down "$partial_case" isolated --delete-state --confirm "$partial_case" > "$TEMP_DIR/partial-normal-down.log" 2>&1; then
+  fail 'Normal down accepted failed prepare state.'
+fi
+grep -Fq 'mismatch-or-not-passed' "$TEMP_DIR/partial-normal-down.log"
+
+# Every exact inventory identity is hash-bound to retained preflight and prepare state.
+for identity_case in hash installation target root owner; do
+  case "$identity_case" in
+    hash) jq '.catalogs[0].displayName="changed"' "$TEMP_DIR/$partial_case.inventory" > "$INVENTORY" ;;
+    installation) jq '.installationId="changed-installation"' "$TEMP_DIR/$partial_case.inventory" > "$INVENTORY" ;;
+    target) jq '.logicHost.expectedHostIdentity="changed-machine"' "$TEMP_DIR/$partial_case.inventory" > "$INVENTORY" ;;
+    root) jq --arg root "$TEMP_DIR/remote/changed-skymonitor" '.productRoot=$root |
+      .logicHost.runtimeRoot=($root+"/logichosts/"+.logicHost.instanceId) |
+      .cameraAgents[0].runtimeRoot=($root+"/cameraagents/"+.cameraAgents[0].instanceId) |
+      .cameraAgents[1].runtimeRoot=($root+"/cameraagents/"+.cameraAgents[1].instanceId) |
+      .catalogs |= map(.installRoot=($root+"/catalogs/"+.catalogId))' "$TEMP_DIR/$partial_case.inventory" > "$INVENTORY" ;;
+    owner) jq '.logicHost.runtimeOwner="missing-owner"' "$TEMP_DIR/$partial_case.inventory" > "$INVENTORY" ;;
+  esac
+  expect_partial_failure 'mismatch-or-not-passed' "$partial_case" isolated --dry-run
+done
+cp "$TEMP_DIR/$partial_case.inventory" "$INVENTORY"
+
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=logic expect_partial_failure 'provenance-or-content-invalid' "$partial_case" isolated --dry-run
+FAKE_DOCKER_MISMATCH=logic-context expect_partial_failure 'docker-daemon-correlation-mismatch' "$partial_case" isolated --dry-run
+
+cp "$partial_logic_root/.hvo-deploy/ownership" "$TEMP_DIR/partial-marker.valid"
+printf 'tampered\n' > "$partial_logic_root/.hvo-deploy/ownership"
+expect_partial_failure 'provenance-or-content-invalid' "$partial_case" isolated --dry-run
+cp "$TEMP_DIR/partial-marker.valid" "$partial_logic_root/.hvo-deploy/ownership"; chmod 600 "$partial_logic_root/.hvo-deploy/ownership"
+cp "$partial_logic_lock" "$TEMP_DIR/partial-lock.valid"
+printf 'tampered\n' > "$partial_logic_lock"
+expect_partial_failure 'provenance-or-content-invalid' "$partial_case" isolated --dry-run
+cp "$TEMP_DIR/partial-lock.valid" "$partial_logic_lock"; chmod 600 "$partial_logic_lock"
+cp "$partial_logic_lock.state" "$TEMP_DIR/partial-state.valid"
+/usr/bin/sed 's/rootNew\ttrue/rootNew\tfalse/' "$TEMP_DIR/partial-state.valid" > "$partial_logic_lock.state"
+expect_partial_failure 'provenance-or-content-invalid' "$partial_case" isolated --dry-run
+cp "$TEMP_DIR/partial-state.valid" "$partial_logic_lock.state"; chmod 600 "$partial_logic_lock.state"
+
+# Replacing a validated pathname with byte-identical content cannot authorize deletion.
+rm -f "$FAKE_IMAGE_STATE/partial-prepare-replace-count"
+FAKE_PARTIAL_PREPARE_REPLACE_PATH="$partial_logic_root/.hvo-deploy/ownership" \
+  expect_partial_failure '' "$partial_case" isolated --confirm "$partial_case"
+rm -f "$partial_logic_root/.hvo-deploy/ownership"
+mv "$partial_logic_root/.hvo-deploy/ownership.race-original" "$partial_logic_root/.hvo-deploy/ownership"
+rm -f "$FAKE_IMAGE_STATE/partial-prepare-replace-count"
+FAKE_PARTIAL_PREPARE_REPLACE_PATH="$partial_logic_lock.state" \
+  expect_partial_failure '' "$partial_case" isolated --confirm "$partial_case"
+rm -f "$partial_logic_lock.state"
+mv "$partial_logic_lock.state.race-original" "$partial_logic_lock.state"
+
+printf 'must-not-delete\n' > "$partial_logic_root/application-state"
+expect_partial_failure 'provenance-or-content-invalid' "$partial_case" isolated --dry-run
+rm "$partial_logic_root/application-state"
+for resource_kind in container network volume; do
+  FAKE_PARTIAL_PREPARE_RESOURCE="logic-context:$resource_kind:label=com.docker.compose.project=hvo-test-11111111111141118111111111111111" \
+    expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --dry-run
+done
+partial_container=hvo-skymonitor-11111111111141118111111111111111
+printf '"unexpected-container"\n' > "$FAKE_IMAGE_STATE/container-$partial_container"
+expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --dry-run
+rm "$FAKE_IMAGE_STATE/container-$partial_container"
+partial_network=hvo-test-11111111111141118111111111111111_default
+printf '"unexpected-network"\n' > "$FAKE_IMAGE_STATE/network-logic-context-$partial_network"
+expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --dry-run
+rm "$FAKE_IMAGE_STATE/network-logic-context-$partial_network"
+
+unrelated_resource="$FAKE_IMAGE_STATE/unrelated-resource"; printf 'preserve\n' > "$unrelated_resource"
+run_deploy_mode partial-prepare-cleanup "$partial_case" isolated --dry-run >/dev/null
+test -d "$partial_logic_root" && test -f "$partial_logic_lock.state"
+jq -e '.phaseStatus == "passed" and .operation == "dry-run" and
+  (.targets | map({target,disposition}) == [{target:"logic",disposition:"cleanup-candidate"},{target:"east",disposition:"not-created"},{target:"west",disposition:"not-created"}]) and
+  (.resources | length) == 0' "$partial_evidence/partial-prepare-inspect.json" >/dev/null
+if grep -Fq "$TEMP_DIR/remote" "$partial_evidence/partial-prepare-inspect.json"; then fail 'Inspection evidence exposed runtime paths.'; fi
+
+for boundary in marker control root lock-state lock; do
+  if DEPLOY_TEST_FAILPOINT="after-partial-prepare-$boundary:logic" \
+    run_deploy_mode partial-prepare-cleanup "$partial_case" isolated --confirm "$partial_case" > "$TEMP_DIR/partial-$boundary.log" 2>&1; then
+      fail "Partial-prepare cleanup failpoint passed: $boundary"
+  fi
+  jq -e '.phaseStatus == "failed" and any(.resources[]; .status == "intent" or .status == "completed")' \
+    "$partial_state/partial-prepare-cleanup-ledger.json" >/dev/null
+done
+test ! -e "$partial_logic_root" && test ! -e "$partial_logic_lock" && test ! -e "$partial_logic_lock.state"
+run_deploy_mode partial-prepare-cleanup "$partial_case" isolated --confirm "$partial_case" >/dev/null
+run_deploy_mode partial-prepare-cleanup "$partial_case" isolated --confirm "$partial_case" >/dev/null
+grep -Fxq preserve "$unrelated_resource"
+jq -e '.phaseStatus == "passed" and .operation == "cleanup" and
+  ([.resources[] | select(.status == "completed")] | length) == 2' "$partial_evidence/partial-prepare-cleanup.json" >/dev/null
+
+# A root that existed before prepare is retained while only run-created marker/control and lock provenance are removed.
+partial_case=partial-preexisting
+write_prepare_case "$partial_case" persistent
+partial_logic_root="$(inventory_runtime_root logic)"; mkdir -m 700 "$partial_logic_root"
+run_prepare_preflight "$partial_case" persistent
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' "$partial_case" persistent
+partial_state="$TEMP_DIR/output/$partial_case-state"; partial_evidence="$TEMP_DIR/output/$partial_case-evidence"
+run_deploy_mode partial-prepare-cleanup "$partial_case" persistent --confirm "$partial_case" >/dev/null
+test -d "$partial_logic_root" && test -z "$(find -P "$partial_logic_root" -mindepth 1 -print -quit)"
+jq -e '.targets[] | select(.target == "logic") | .newlyCreated.root == false and
+  .newlyCreated.controlDirectory == true and .newlyCreated.marker == true' "$partial_evidence/partial-prepare-cleanup.json" >/dev/null
+
+# The target that caused prepare to fail may have a foreign-owned parent and a pre-existing root; neither is a cleanup candidate.
+partial_case=partial-parent-preserve
+write_prepare_case "$partial_case" isolated
+partial_logic_root="$(inventory_runtime_root logic)"; partial_east_root="$(inventory_runtime_root east)"
+mkdir -m 700 "$partial_east_root"; printf 'preserve\n' > "$partial_east_root/pre-existing-state"
+run_prepare_preflight "$partial_case" isolated
+FAKE_PREPARE_ROOT_PARENT_HOST=east expect_prepare_failure 'owner-controlled-parent-required' "$partial_case" isolated
+partial_state="$TEMP_DIR/output/$partial_case-state"; partial_evidence="$TEMP_DIR/output/$partial_case-evidence"
+FAKE_PARTIAL_PREPARE_FOREIGN_PARENT_HOST=east \
+  run_deploy_mode partial-prepare-cleanup "$partial_case" isolated --confirm "$partial_case" >/dev/null
+test ! -e "$partial_logic_root"
+grep -Fxq preserve "$partial_east_root/pre-existing-state"
+
+# Existing-service infrastructure contexts are still scanned for run-labelled Docker resources.
+partial_case=partial-shared-context
+write_prepare_case "$partial_case" isolated
+jq --arg owner "$(id -un)" '.sharedServices={name:"shared",sshHost:"shared@example",dockerContext:"shared-context",
+  expectedArchitecture:"amd64",expectedHostName:"shared-node",expectedHostIdentity:"shared-machine",
+  expectedDockerDaemonIdentity:"shared-daemon",runtimeRoot:(.productRoot+"/shared-services"),runtimeOwner:$owner,ports:[4444]}' \
+  "$INVENTORY" > "$INVENTORY.changed"
+mv "$INVENTORY.changed" "$INVENTORY"
+partial_logic_root="$(inventory_runtime_root logic)"
+run_prepare_preflight "$partial_case" isolated
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' "$partial_case" isolated
+partial_state="$TEMP_DIR/output/$partial_case-state"; partial_evidence="$TEMP_DIR/output/$partial_case-evidence"
+FAKE_PARTIAL_PREPARE_RESOURCE="shared-context:container:label=io.hvoskymonitor.run-id=$partial_case" \
+  expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --dry-run
 fi
 
 prepare_lifecycle_fixture() {
