@@ -128,7 +128,7 @@ Run the path-classification and aggregate-protection contract tests when changin
 bash ./scripts/test:ci-classification
 ```
 
-Use a fresh result root for every collection. Before merging, require exactly one report from each of the fourteen category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those fourteen explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
+Use a fresh result root for every collection. Before merging, require exactly one report from each of the 14 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 14 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
 patterns=(
