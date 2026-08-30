@@ -125,6 +125,9 @@ require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Progra
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
 require_source_reference 'Unit=2339' docs/runbooks/ci-pipeline.md
 require_source_reference 'Integration=561' docs/runbooks/ci-pipeline.md
+require_source_reference 'The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage.' docs/runbooks/ci-pipeline.md
+require_source_reference 'aggregate baseline is 84.3690 percent line and 66.3253 percent branch' docs/planning/performance-validation.md
+require_source_reference 'CI collects fourteen explicit' docs/planning/performance-validation.md
 require_source_reference 'public string AccessKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
 require_source_reference 'public string SecretKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
 # shellcheck disable=SC2016 # Backticks are literal Markdown.
