@@ -68,11 +68,13 @@ internal static class OperatorUiTestData
         var previewId = Guid.Parse("00000000-0000-0000-0000-000000000102");
         var artifacts = new List<CameraAgentGalleryArtifact>
         {
-            new(rawId, FrameArtifactRole.Raw, "source-1", null, Now, "application/x-skymonitor-mono16", new string('A', 64), 2048, null, [], null),
+            new(rawId, FrameArtifactRole.Raw, "source-1", null, Now, "application/x-skymonitor-mono16", new string('A', 64), 2048, null, [], null,
+                PixelFormat: CameraPixelFormat.Mono16, PreviewReconstructionSupported: true),
             new(previewId, annotated ? FrameArtifactRole.AnnotatedPreview : FrameArtifactRole.Preview, "source-2", "display", Now,
                 "application/x-hvo-packed-image", new string('B', 64), 1024,
                 new CameraAgentGalleryRecipe("preview", "1.0.0", "build-7", new string('C', 64), new string('D', 64)),
-                [rawId], "preview-node")
+                [rawId], "preview-node", PixelFormat: CameraPixelFormat.Mono16,
+                PreviewReconstructionSupported: true)
         };
         var nodeCompleted = Now.AddSeconds(-3);
         var detail = new CameraAgentGalleryCaptureDetail(
@@ -106,6 +108,50 @@ internal static class OperatorUiTestData
             detail);
     }
 
+    internal static CameraAgentCurrentImagePresentation CurrentImage(
+        CameraAgentPresentationImageFreshness freshness = CameraAgentPresentationImageFreshness.Current,
+        CameraAgentPresentationSystemState systemState = CameraAgentPresentationSystemState.Capturing,
+        bool historicalFallback = false)
+    {
+        var captureId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var rawArtifactId = Guid.Parse("00000000-0000-0000-0000-000000000101");
+        var annotatedArtifactId = Guid.Parse("00000000-0000-0000-0000-000000000102");
+        var capture = new CameraAgentPresentationCapture(
+            captureId,
+            42,
+            Now.AddSeconds(-5),
+            5,
+            GalleryEvidenceOrigin.Simulated);
+        CameraAgentPresentationSlot[] stages =
+            [
+                new CameraAgentPresentationSlot(CameraAgentPresentationStage.Raw, "Raw", CameraAgentPresentationSlotAvailability.Available,
+                    "Available.", rawArtifactId, FrameArtifactRole.Raw, null, "image/jpeg",
+                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview", UriKind.Relative)),
+                new CameraAgentPresentationSlot(CameraAgentPresentationStage.Calibrated, "Calibrated", CameraAgentPresentationSlotAvailability.Missing,
+                    "NotProduced"),
+                new CameraAgentPresentationSlot(CameraAgentPresentationStage.Combined, "Combined", CameraAgentPresentationSlotAvailability.Missing,
+                    "NotProduced"),
+                new CameraAgentPresentationSlot(CameraAgentPresentationStage.Annotated, "Processed", CameraAgentPresentationSlotAvailability.Available,
+                    "Available.", annotatedArtifactId, FrameArtifactRole.AnnotatedPreview, "display", "image/jpeg",
+                    new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", UriKind.Relative))
+            ];
+        return new CameraAgentCurrentImagePresentation(
+            Now,
+            freshness,
+            new CameraAgentPresentationSystemStatus(
+                systemState,
+                systemState == CameraAgentPresentationSystemState.Capturing ? "Capture is running." : "Capture is not running.",
+                Now,
+                systemState == CameraAgentPresentationSystemState.Standby ? Now.AddHours(1) : null),
+            capture,
+            capture,
+            historicalFallback,
+            CameraAgentPresentationStage.Annotated,
+            stages,
+            false,
+            false);
+    }
+
     internal static CameraAgentSystemStatus SystemStatus() => new(
         "Unversioned startup snapshot",
         "Unavailable",
@@ -125,12 +171,25 @@ internal static class OperatorUiTestData
     private static OperationsSection<T> Section<T>(T value) => new("test-source", Now, "fresh", value);
 }
 
-internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService
+internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICameraAgentCapturePresentationProjector
 {
     internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentOperationsView>>> OperationsHandler { get; set; } =
         _ => ValueTask.FromResult(OperatorUiResult<CameraAgentOperationsView>.Success(OperatorUiTestData.Operations()));
     internal Func<CameraAgentGalleryQuery, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryPage>>> GalleryHandler { get; set; } =
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryPage>.Success(new CameraAgentGalleryPage([], null)));
+    internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentCurrentImagePresentation>>> CurrentImageHandler { get; set; } =
+        _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(new(
+            OperatorUiTestData.Now,
+            CameraAgentPresentationImageFreshness.Empty,
+            new CameraAgentPresentationSystemStatus(
+                CameraAgentPresentationSystemState.Capturing, "CameraAgent is capturing normally.", OperatorUiTestData.Now),
+            null,
+            null,
+            false,
+            null,
+            [],
+            false,
+            false)));
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentGalleryCapture>>> DetailHandler { get; set; } =
         (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(OperatorUiTestData.Capture()));
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>> PresentationHandler { get; set; } =
@@ -159,7 +218,55 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService
 
     public ValueTask<OperatorUiResult<CameraAgentOperationsView>> GetOperationsAsync(CancellationToken cancellationToken) => OperationsHandler(cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentGalleryPage>> GetGalleryPageAsync(CameraAgentGalleryQuery query, CancellationToken cancellationToken) => GalleryHandler(query, cancellationToken);
+    public ValueTask<OperatorUiResult<CameraAgentCurrentImagePresentation>> GetCurrentImagePresentationAsync(CancellationToken cancellationToken) => CurrentImageHandler(cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetGalleryCaptureAsync(Guid captureId, CancellationToken cancellationToken) => DetailHandler(captureId, cancellationToken);
+    public async ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        var result = await DetailHandler(captureId, cancellationToken).ConfigureAwait(false);
+        if (!result.IsSuccess || result.Value is null)
+        {
+            return OperatorUiResult<CameraAgentCaptureDetailView>.Failure(
+                result.Kind,
+                result.Message ?? "The capture detail is unavailable.");
+        }
+        var capture = result.Value;
+        return OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(
+            capture,
+            CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(Project(capture))));
+    }
+
+    public CameraAgentCapturePresentation Project(CameraAgentGalleryCapture? capture)
+    {
+        CameraAgentPresentationStage[] presentationStages =
+        [
+            CameraAgentPresentationStage.Raw,
+            CameraAgentPresentationStage.Calibrated,
+            CameraAgentPresentationStage.Combined,
+            CameraAgentPresentationStage.Annotated
+        ];
+        if (capture is null)
+        {
+            return new(null, presentationStages
+                .Select(static stage => new CameraAgentPresentationSlot(
+                    stage,
+                    stage == CameraAgentPresentationStage.Annotated ? "Processed" : stage.ToString(),
+                    CameraAgentPresentationSlotAvailability.Missing,
+                    "NoCapture"))
+                .ToArray());
+        }
+        var stages = presentationStages
+            .Select(stage => TestSlot(capture, stage))
+            .ToArray();
+        var selected = new[]
+        {
+            CameraAgentPresentationStage.Annotated,
+            CameraAgentPresentationStage.Combined,
+            CameraAgentPresentationStage.Calibrated,
+            CameraAgentPresentationStage.Raw
+        }.FirstOrDefault(stage => stages.Single(slot => slot.Stage == stage).Availability == CameraAgentPresentationSlotAvailability.Available);
+        var hasSelected = stages.Any(slot => slot.Stage == selected && slot.Availability == CameraAgentPresentationSlotAvailability.Available);
+        return new CameraAgentCapturePresentation(hasSelected ? selected : null, stages);
+    }
     public ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(Guid captureId, CancellationToken cancellationToken) => PresentationHandler(captureId, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(Guid captureId, IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken) => MaterializationHandler(captureId, enabledLayerIdentitySha256, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(string kind, string? storageAlias, string? cursor, int pageSize, CancellationToken cancellationToken) => QuarantineHandler(kind, storageAlias, cursor, pageSize, cancellationToken);
@@ -167,6 +274,46 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService
     public Task<OperatorUiResult<OperatorCommandReceipt>> SetCapturePausedAsync(bool paused, long expectedVersion, string idempotencyKey, CancellationToken cancellationToken) => CaptureHandler(paused, expectedVersion, idempotencyKey, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorTransientOwnershipBinding>> BindTransientRuntimeOwnershipAsync(string referenceToken, string deploymentRunId, string inventorySha256, bool legacyOwnershipExternallyEstablished, CancellationToken cancellationToken) => OwnershipHandler(referenceToken, deploymentRunId, inventorySha256, legacyOwnershipExternallyEstablished, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorCommandReceipt>> ResolveOutboxAsync(string kind, OutboxOperationAction action, string actionToken, string reasonCode, string idempotencyKey, CancellationToken cancellationToken) => OutboxHandler(kind, action, actionToken, reasonCode, idempotencyKey, cancellationToken);
+
+    private static CameraAgentPresentationSlot TestSlot(
+        CameraAgentGalleryCapture capture,
+        CameraAgentPresentationStage stage)
+    {
+        var roles = stage switch
+        {
+            CameraAgentPresentationStage.Raw => new[] { FrameArtifactRole.Raw },
+            CameraAgentPresentationStage.Calibrated => [FrameArtifactRole.Calibrated],
+            CameraAgentPresentationStage.Combined => [FrameArtifactRole.Combined],
+            _ => [FrameArtifactRole.AnnotatedPreview, FrameArtifactRole.Preview]
+        };
+        var artifact = roles
+            .Select(role => capture.Artifacts.FirstOrDefault(candidate =>
+                candidate.Role == role && TestPreviewEligible(candidate)))
+            .FirstOrDefault(static candidate => candidate is not null);
+        var label = stage == CameraAgentPresentationStage.Annotated ? "Processed" : stage.ToString();
+        return artifact is null
+            ? new(stage, label, CameraAgentPresentationSlotAvailability.Missing, "NotProduced")
+            : new(stage, label, CameraAgentPresentationSlotAvailability.Available, "Available", artifact.ArtifactId,
+                artifact.Role, artifact.Variant, artifact.MediaType,
+                new Uri(FormattableString.Invariant($"/api/v1/operations/artifacts/{artifact.ArtifactId:D}/preview"), UriKind.Relative));
+    }
+
+    private static bool TestPreviewEligible(CameraAgentGalleryArtifact artifact)
+    {
+        if (!string.Equals(artifact.Availability, "Available", StringComparison.Ordinal) || artifact.ByteLength is null or < 1)
+        {
+            return false;
+        }
+        if (artifact.Role is FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview &&
+            string.Equals(artifact.MediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase))
+        {
+            return artifact.EncodedWidth is > 0 && artifact.EncodedHeight is > 0;
+        }
+        return artifact.PreviewReconstructionSupported && artifact.PixelFormat is not null &&
+            artifact.MediaType is "application/x-hvo-packed-image" or "application/x-hvo-linear-frame" or
+                "application/x-skymonitor-mono8" or "application/x-skymonitor-mono16" or
+                "application/x-skymonitor-rgb24" or "application/x-skymonitor-bayer-rggb16";
+    }
 }
 
 internal sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider

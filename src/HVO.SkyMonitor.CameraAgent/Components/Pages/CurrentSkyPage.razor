@@ -1,0 +1,110 @@
+@page "/"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Common.Gallery
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Current sky</PageTitle>
+
+<div class="current-sky-page">
+    <header class="current-sky-heading">
+        <div>
+            <p class="eyebrow">Authenticated local observatory</p>
+            <h1 id="current-sky-heading" tabindex="-1">Current sky</h1>
+            <p>The latest useful durable image leads. Image age and CameraAgent state are reported independently.</p>
+        </div>
+        <button type="button" class="refresh-link" disabled="@_refreshing" @onclick="RefreshNowAsync">Refresh image</button>
+    </header>
+
+    @if (_errorMessage is not null)
+    {
+        <div class="state-notice state-notice--error" role="alert">
+            <strong>Current sky refresh unavailable</strong>
+            <span>@_errorMessage</span>
+            @if (_presentation is not null)
+            {
+                <span>The last successfully read image and capture facts remain visible.</span>
+            }
+        </div>
+    }
+
+    <section class="current-sky-hero" aria-label="Current sky presentation">
+        <div class="current-sky-visual">
+            <CaptureImage Loading="@(_initialLoading && _presentation is null)"
+                          Source="@SelectedSlot?.PreviewUrl"
+                          RetryObservedUtc="@_presentation?.ObservedUtc"
+                          Alt="@ImageAlt"
+                          ShowPersistentContent="@(FactCapture is not null)"
+                          EmptyTitle="No sky image is available yet"
+                          EmptyMessage="CameraAgent will keep this view ready for the first durable displayable capture.">
+                <PersistentContent>
+                    @if (FactCapture is not null)
+                    {
+                        <a class="image-action" href="@DetailUrl">Open capture details</a>
+                    }
+                </PersistentContent>
+                <ChildContent>
+                @if (_presentation?.DisplayCapture is not null && SelectedSlot is not null)
+                {
+                    <button id="current-sky-view-large" type="button" class="image-action" @onclick="OpenViewer">View large image</button>
+                }
+                </ChildContent>
+            </CaptureImage>
+
+            @if (_presentation is not null && _presentation.Stages.Count > 0)
+            {
+                <ImageStageSelector Stages="@_presentation.Stages"
+                                    SelectedStage="@_selectedStage"
+                                    SelectedStageChanged="SelectStage" />
+                <p class="stage-status" aria-live="polite">@StageStatus</p>
+            }
+        </div>
+
+        <aside class="current-sky-summary" aria-label="Current sky status and capture facts"
+               aria-live="polite" aria-atomic="true" aria-busy="@(_refreshing ? "true" : "false")">
+            <div class="status-chips" aria-label="Independent image and system states">
+                <span class="status-chip @FreshnessClass">@FreshnessLabel</span>
+                <span class="status-chip @SystemClass">@SystemLabel</span>
+            </div>
+            <p class="eyebrow">@SummaryEyebrow</p>
+            <h2>@SummaryHeading</h2>
+            <p class="summary-copy">@SummaryMessage</p>
+            @if (FactCapture is { } capture)
+            {
+                <dl>
+                    <div><dt>Captured</dt><dd><time datetime="@capture.ExposureStartedUtc.ToString("O")">@capture.ExposureStartedUtc.ToLocalTime().ToString("g")</time></dd></div>
+                    <div><dt>Image age</dt><dd>@FormatDuration(capture.AgeSeconds)</dd></div>
+                    <div><dt>Stage</dt><dd>@(SelectedSlot?.Label ?? "Unavailable")</dd></div>
+                    <div><dt>Evidence</dt><dd>@EvidenceLabel(capture.EvidenceOrigin)</dd></div>
+                </dl>
+            }
+            @if (_presentation?.System.NextTransitionUtc is { } nextTransition)
+            {
+                <p class="next-transition">Next schedule transition <time datetime="@nextTransition.ToString("O")">@nextTransition.ToLocalTime().ToString("g")</time>.</p>
+            }
+        </aside>
+    </section>
+
+    @if (UnavailableStageCount > 0 && _presentation?.DisplayCapture is not null)
+    {
+        <div class="state-notice" role="status">
+            <strong>Partial image stages</strong>
+            <span>@UnavailableStageCount stage@(UnavailableStageCount == 1 ? " is" : "s are") unavailable for this capture. Available controls always name the artifact they display.</span>
+        </div>
+    }
+    @if (_presentation?.HistoryBoundReached == true)
+    {
+        <div class="state-notice" role="status">
+            <strong>No displayable image found in bounded history</strong>
+            <span>Open the Archive to inspect retained captures and technical evidence.</span>
+        </div>
+    }
+</div>
+
+<LargeImageViewer @bind-Open="_viewerOpen"
+                  Source="@SelectedSlot?.PreviewUrl"
+                  Title="@ViewerTitle"
+                  Alt="@ImageAlt"
+                  TriggerId="current-sky-view-large" />

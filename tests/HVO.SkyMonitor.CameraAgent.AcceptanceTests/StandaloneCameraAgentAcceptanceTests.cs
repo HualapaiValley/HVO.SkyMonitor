@@ -74,6 +74,14 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         var preRestartMaximumSequence = await ReadMaximumSequenceAsync(fixture.Services).ConfigureAwait(false);
         await Task.Delay(TimeSpan.FromMilliseconds(1_200)).ConfigureAwait(false);
         Assert.AreEqual(preRestartMaximumSequence, await ReadMaximumSequenceAsync(fixture.Services).ConfigureAwait(false));
+        CameraAgentCurrentImagePresentation preRestartPresentation;
+        using (var pausedOwnerClient = await fixture.CreateOwnerClientAsync().ConfigureAwait(false))
+        {
+            preRestartPresentation = await ReadCurrentImagePresentationAsync(pausedOwnerClient).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentPresentationSystemState.Paused, preRestartPresentation.System.State);
+            Assert.AreNotEqual(CameraAgentPresentationImageFreshness.Empty, preRestartPresentation.ImageFreshness);
+            Assert.IsNotNull(preRestartPresentation.DisplayCapture);
+        }
         await AssertCentralStateIsEmptyAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
         AssertNoOutboundAttempts(fixture);
 
@@ -98,6 +106,21 @@ public sealed class StandaloneCameraAgentAcceptanceTests
             Assert.AreEqual("Paused", recoveredSummary.CaptureControl.Value.State);
             Assert.AreEqual(paused.Version, recoveredSummary.CaptureControl.Value.Version);
             await AssertCaptureHttpEvidenceAsync(recoveredOwnerClient, fixture.Root, firstCapture).ConfigureAwait(false);
+            var recoveredPresentation = await ReadCurrentImagePresentationAsync(recoveredOwnerClient).ConfigureAwait(false);
+            Assert.AreEqual(preRestartPresentation.DisplayCapture!.CaptureId, recoveredPresentation.DisplayCapture!.CaptureId);
+            Assert.AreEqual(preRestartPresentation.SelectedStage, recoveredPresentation.SelectedStage);
+            Assert.AreEqual(CameraAgentPresentationSystemState.Paused, recoveredPresentation.System.State);
+            var selected = recoveredPresentation.Stages.Single(stage =>
+                stage.Stage == recoveredPresentation.SelectedStage);
+            Assert.AreEqual(CameraAgentPresentationSlotAvailability.Available, selected.Availability);
+            Assert.IsNotNull(selected.PreviewUrl);
+            using var preview = await recoveredOwnerClient.GetAsync(selected.PreviewUrl).ConfigureAwait(false);
+            preview.EnsureSuccessStatusCode();
+            Assert.AreEqual("image/jpeg", preview.Content.Headers.ContentType?.MediaType);
+            var image = HVO.SkyMonitor.Imaging.JpegImageCodec.InspectJpeg(
+                await preview.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+            Assert.IsLessThanOrEqualTo(2_048, image.Width);
+            Assert.IsLessThanOrEqualTo(2_048, image.Height);
         }
         Assert.AreEqual(preRestartMaximumSequence, await ReadMaximumSequenceAsync(fixture.Services).ConfigureAwait(false));
         await AssertCentralStateIsEmptyAsync(fixture.Services, fixture.Root).ConfigureAwait(false);
@@ -396,6 +419,15 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         using var buffer = new MemoryStream();
         await content.CopyToAsync(buffer).ConfigureAwait(false);
         return buffer.ToArray();
+    }
+
+    private static async Task<CameraAgentCurrentImagePresentation> ReadCurrentImagePresentationAsync(HttpClient client)
+    {
+        var result = await client.GetFromJsonAsync<CameraAgentCurrentImagePresentation>(
+            new Uri("/api/v1/operations/gallery/current", UriKind.Relative), WebJson).ConfigureAwait(false);
+        Assert.IsNotNull(result);
+        Assert.HasCount(4, result.Stages);
+        return result;
     }
 
     private static async Task<CameraAgentGalleryCapture> WaitForCompleteCaptureAsync(

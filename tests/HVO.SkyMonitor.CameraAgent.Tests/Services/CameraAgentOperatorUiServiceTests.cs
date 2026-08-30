@@ -42,8 +42,10 @@ public sealed class CameraAgentOperatorUiServiceTests
 
         var operations = await service.GetOperationsAsync(CancellationToken.None).ConfigureAwait(false);
         var gallery = await service.GetGalleryPageAsync(new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+        var current = await service.GetCurrentImagePresentationAsync(CancellationToken.None).ConfigureAwait(false);
         var quarantine = await service.GetQuarantinePageAsync("Artifact", null, null, 25, CancellationToken.None).ConfigureAwait(false);
         var detail = await service.GetGalleryCaptureAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
+        var detailView = await service.GetCaptureDetailViewAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         var system = await service.GetSystemStatusAsync(CancellationToken.None).ConfigureAwait(false);
         var capture = await service.SetCapturePausedAsync(true, 1, "operation-key", CancellationToken.None).ConfigureAwait(false);
         var outbox = await service.ResolveOutboxAsync(
@@ -64,11 +66,13 @@ public sealed class CameraAgentOperatorUiServiceTests
             "reference-token", "d331-0821084607", new string('D', 64), true,
             CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(9, authentication.ReadCount);
+        Assert.AreEqual(11, authentication.ReadCount);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, operations.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, gallery.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, current.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, quarantine.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, detail.Kind);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, detailView.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, system.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, capture.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, outbox.Kind);
@@ -77,7 +81,7 @@ public sealed class CameraAgentOperatorUiServiceTests
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
-            CameraAgentAuthorizationPolicyNames.OperationsReadV1), Times.Exactly(5));
+            CameraAgentAuthorizationPolicyNames.OperationsReadV1), Times.Exactly(7));
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
@@ -191,6 +195,8 @@ public sealed class CameraAgentOperatorUiServiceTests
         OutboxOperationsTokenService? tokenService = null) => new(
             authentication,
             authorization,
+            null!,
+            null!,
             null!,
             null!,
             null!,

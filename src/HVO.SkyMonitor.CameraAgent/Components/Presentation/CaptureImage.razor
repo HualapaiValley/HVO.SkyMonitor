@@ -1,0 +1,46 @@
+@namespace HVO.SkyMonitor.CameraAgent.Components.Presentation
+
+<div class="capture-image @CssClass" aria-busy="@Loading.ToString().ToLowerInvariant()">
+    @if (Loading)
+    {
+        <div class="capture-image__state" role="status">
+            <span class="capture-image__pulse" aria-hidden="true"></span>
+            <strong>Loading the latest sky view</strong>
+            <span>The image canvas is reserved while durable evidence is read.</span>
+        </div>
+    }
+    else if (Source is null)
+    {
+        <div class="capture-image__state">
+            <i class="bi bi-image" aria-hidden="true"></i>
+            <strong>@EmptyTitle</strong>
+            <span>@EmptyMessage</span>
+        </div>
+    }
+    else if (_failedSource == Source.OriginalString)
+    {
+        <div class="capture-image__state" role="status">
+            <i class="bi bi-image-alt" aria-hidden="true"></i>
+            <strong>Image preview unavailable</strong>
+            <span>@FailureMessage</span>
+        </div>
+    }
+    else
+    {
+        <img src="@Source.OriginalString" alt="@Alt" style="object-fit: contain;" @onerror="HandleError" />
+    }
+    @if (!Loading && (ShowPersistentContent && PersistentContent is not null ||
+        (Source is not null && _failedSource != Source.OriginalString && ChildContent is not null)))
+    {
+        <div class="capture-image__actions">
+            @if (ShowPersistentContent)
+            {
+                @PersistentContent
+            }
+            @if (Source is not null && _failedSource != Source.OriginalString)
+            {
+                @ChildContent
+            }
+        </div>
+    }
+</div>

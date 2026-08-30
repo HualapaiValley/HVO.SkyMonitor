@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-08-29
+Status date: 2026-08-30
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -39,17 +39,13 @@ The planning horizons are:
 
 ## Current
 
-| Priority | ID | Initiative | Active delivery |
-| --- | --- | --- | --- |
-| 1 | `RM-014` | CameraAgent presentation experience | [Epic #438](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/438). The design checkpoint and `RM-004` inputs are complete; bounded current-image projection #443 is the next child before home, detail, and archive presentation. |
-
-The owning epics record readiness, coordinator, active claims, and the approved
-consolidated-PR delivery sequence.
+No initiative is actively delivering. The owning epics record readiness,
+coordinator, active claims, and approved delivery sequences.
 
 ## Next
 
-No additional initiative is approved for automatic start. Recompute this horizon
-after the active initiatives complete or release capacity.
+No initiative is approved for automatic start. Recompute this horizon before
+beginning another roadmap initiative.
 
 The deferred CameraAgent storage/upload naming cleanup
 [#142](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/142) inherits
@@ -94,6 +90,7 @@ portfolio initiatives.
 | `RM-003` | Installable and lifecycle-managed deployment | Delivered multi-instance-safe persistent layout, a self-contained installer, transactional upgrade/rollback/uninstall, and signed release/catalog distribution without adding physical-camera discovery or vendor SDK installation. | [#414](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/414), [#415](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/415), [#416](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/416), and [#417](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/417) |
 | `RM-004` | Canonical layered capture products | Delivered immutable base imagery, durable projected scenes and analytical layers, deterministic on-demand presentation, and explicit materialization across standalone CameraAgent and LogicHost. | [Epic #436](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/436); CameraAgent PR #454 and LogicHost PR #456 |
 | `RM-011` | Direct ZWO camera enablement | Added the optional direct ZWO CameraAgent adapter and retained Linux x64 ASI178MC and ARM64 ASI676MC functional deployment evidence. | [#265](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/265), [#266](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/266), and [#267](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/267) |
+| `RM-014` | CameraAgent presentation experience | Delivered an authenticated image-led current view, accessible presentation-first capture detail and enlargement, bounded archive browsing, and a separate retained technical operations workspace. | [Epic #438](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/438); design checkpoint PR #453 |
 
 Delivered does not imply broader physical calibration or field-performance
 acceptance. The retained future hardware requirements remain in the
@@ -104,15 +101,11 @@ acceptance. The retained future hardware requirements remain in the
 The primary forward dependency is:
 
 ```text
-RM-003 delivered installable deployment
-  +-> RM-014 CameraAgent presentation experience
-
 RM-004 layered capture products
   +-> RM-005 processing graphs and runners
   +-> RM-006 extension platform
   +-> RM-007 native artifacts and formats
   +-> RM-008 stream transient research
-  +-> RM-014 layered CameraAgent presentation integration
 
 RM-009 environmental source research is independently plannable.
 RM-010, RM-012, and RM-013 remain trigger- or capacity-dependent.

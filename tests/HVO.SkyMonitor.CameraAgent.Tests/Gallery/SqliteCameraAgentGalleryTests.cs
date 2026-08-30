@@ -184,6 +184,30 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     [TestMethod]
+    public async Task EncodedDimensionsSurviveStoreAndGalleryRestartAsync()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        var encoded = await fixture.AddProcessingOutputAsync(
+            raw,
+            "published-preview",
+            DurableProcessingNodeStatus.Completed,
+            encodedWidth: 1_280,
+            encodedHeight: 720).ConfigureAwait(false);
+
+        using var restarted = fixture.OpenRestartedGallery();
+        var page = await restarted.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var artifact = AssertSingle(page).Artifacts.Single(candidate =>
+            candidate.ArtifactId == encoded.Artifact.ArtifactId);
+        Assert.AreEqual("image/jpeg", artifact.MediaType);
+        Assert.AreEqual(1_280, artifact.EncodedWidth);
+        Assert.AreEqual(720, artifact.EncodedHeight);
+        Assert.AreEqual(CameraPixelFormat.Mono8, artifact.PixelFormat);
+    }
+
+    [TestMethod]
     public async Task CanonicalSceneAvailabilityIsIndependentOfBoundedArtifactProjection()
     {
         using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
@@ -203,6 +227,172 @@ public sealed class SqliteCameraAgentGalleryTests
         Assert.IsTrue(detail!.ArtifactsTruncated);
         Assert.AreEqual("Available", detail.CanonicalSceneAvailability);
         Assert.IsFalse(detail.Artifacts.Any(static artifact => artifact.ProductSchemaVersion == "projected-scene-v1"));
+    }
+
+    [TestMethod]
+    public async Task BoundedProjectionRetainsAvailableLowerStageBeforeUnavailableHigherStageAsync()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumArtifactsPerCapture; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"a-unavailable-annotated-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+        }
+        await fixture.ExecuteAsync(
+            "UPDATE processing_outputs SET availability_state = 'Missing', availability_reason = 'retention.missing';")
+            .ConfigureAwait(false);
+        var preview = await fixture.AddProcessingOutputAsync(
+            raw,
+            "z-published-preview",
+            DurableProcessingNodeStatus.Completed,
+            encodedWidth: 640,
+            encodedHeight: 480).ConfigureAwait(false);
+
+        var page = await fixture.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var capture = AssertSingle(page);
+        Assert.IsTrue(capture.ArtifactsTruncated);
+        Assert.IsTrue(capture.ProcessingNodesTruncated);
+        Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == preview.Artifact.ArtifactId));
+    }
+
+    [TestMethod]
+    public async Task BoundedProjectionReservesLowerStageBeforeAvailableUnsupportedHigherStageAsync()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumArtifactsPerCapture; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"a-unsupported-annotated-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+        }
+        var preview = await fixture.AddProcessingOutputAsync(
+            raw,
+            "z-published-preview",
+            DurableProcessingNodeStatus.Completed,
+            encodedWidth: 640,
+            encodedHeight: 480).ConfigureAwait(false);
+
+        var page = await fixture.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var capture = AssertSingle(page);
+        Assert.IsTrue(capture.ArtifactsTruncated);
+        Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == preview.Artifact.ArtifactId));
+    }
+
+    [TestMethod]
+    public async Task BoundedProjectionRetainsEncodedPreviewWithinSameRoleAsync()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumArtifactsPerCapture; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"a-unsupported-annotated-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+        }
+        var encoded = await fixture.AddProcessingOutputAsync(
+            raw,
+            "z-encoded-annotated",
+            DurableProcessingNodeStatus.Completed,
+            encodedWidth: 640,
+            encodedHeight: 480,
+            role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+
+        var page = await fixture.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var capture = AssertSingle(page);
+        Assert.IsTrue(capture.ArtifactsTruncated);
+        Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == encoded.Artifact.ArtifactId));
+    }
+
+    [TestMethod]
+    public async Task BoundedProjectionUsesPreviewEligibilityWithinSameRoleAsync()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumArtifactsPerCapture; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"a-oversized-annotated-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                encodedWidth: 4_096,
+                encodedHeight: 4_096,
+                role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+        }
+        var reconstructable = await fixture.AddProcessingOutputAsync(
+            raw,
+            "z-reconstructable-annotated",
+            DurableProcessingNodeStatus.Completed,
+            role: FrameArtifactRole.AnnotatedPreview,
+            mediaType: "application/x-hvo-packed-image").ConfigureAwait(false);
+
+        var page = await fixture.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var capture = AssertSingle(page);
+        Assert.IsTrue(capture.ArtifactsTruncated);
+        Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == reconstructable.Artifact.ArtifactId));
+    }
+
+    [TestMethod]
+    [DataRow(FrameArtifactRole.Combined, CameraAgentPresentationStage.Combined)]
+    [DataRow(FrameArtifactRole.Calibrated, CameraAgentPresentationStage.Calibrated)]
+    public async Task BoundedProjectionRanksTechnicalRoleEligibilityBeforeNodeLimitAsync(
+        FrameArtifactRole role,
+        CameraAgentPresentationStage stage)
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumProcessingNodesPerCapture - 5; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"a-ineligible-{role}-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                role: role,
+                mediaType: "image/png").ConfigureAwait(false);
+        }
+        var eligible = await fixture.AddProcessingOutputAsync(
+            raw,
+            $"b-eligible-{role}",
+            DurableProcessingNodeStatus.Completed,
+            role: role,
+            mediaType: "application/x-hvo-packed-image").ConfigureAwait(false);
+        for (var index = 0; index < 5; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"c-annotated-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+        }
+
+        var page = await fixture.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var capture = AssertSingle(page);
+        Assert.IsTrue(capture.ProcessingNodesTruncated);
+        Assert.IsTrue(capture.ProcessingNodes.Any(node => node.NodeId == $"b-eligible-{role}"));
+        Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == eligible.Artifact.ArtifactId));
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
+            .Project(capture);
+        var slot = projection.Stages.Single(candidate => candidate.Stage == stage);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Available, slot.Availability);
+        Assert.AreEqual(eligible.Artifact.ArtifactId, slot.ArtifactId);
     }
 
     [TestMethod]
@@ -858,12 +1048,7 @@ public sealed class SqliteCameraAgentGalleryTests
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-gallery-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
-            var options = Options.Create(new CameraAgentHostOptions
-            {
-                RawIngressRoot = root,
-                RawIngressReserveBytes = 0,
-                RawIngressSqliteBusyTimeoutSeconds = 1
-            });
+            var options = CreateOptions(root);
             var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
             await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var processingStore = new SqliteCaptureProcessingStore(options);
@@ -887,6 +1072,13 @@ public sealed class SqliteCameraAgentGalleryTests
             {
                 SecondaryRoot = secondaryRoot
             };
+        }
+
+        internal RestartedGallery OpenRestartedGallery()
+        {
+            var options = CreateOptions(Root);
+            var processingStore = new SqliteCaptureProcessingStore(options);
+            return new(processingStore, new SqliteCameraAgentGallery(options, processingStore));
         }
 
         internal async Task<ArtifactManifestV2> AddRawAsync(
@@ -947,7 +1139,11 @@ public sealed class SqliteCameraAgentGalleryTests
             DurableProcessingNodeStatus status,
             bool required = true,
             IReadOnlyList<string>? dependencies = null,
-            string reason = "sensitive processing failure")
+            string reason = "sensitive processing failure",
+            int? encodedWidth = null,
+            int? encodedHeight = null,
+            FrameArtifactRole role = FrameArtifactRole.Preview,
+            string? mediaType = null)
         {
             var recipe = RecipeIdentityDescriptor.Create(
                 "preview-recipe",
@@ -956,20 +1152,44 @@ public sealed class SqliteCameraAgentGalleryTests
                 JsonSerializer.SerializeToElement(new { stretch = "linear" }));
             var recipeIdentity = ProcessingIdentity.CreateRecipeIdentity(recipe).IdentitySha256;
             var outputIdentity = ProcessingIdentity.CreateOutputIdentity(
-                FrameArtifactRole.Preview, nodeId, recipeIdentity, [raw.Descriptor.Artifact.ArtifactId]);
+                role, nodeId, recipeIdentity, [raw.Descriptor.Artifact.ArtifactId]);
             var artifact = new ArtifactDescriptor(
                 ProcessingIdentity.CreateArtifactId(outputIdentity),
-                FrameArtifactRole.Preview,
+                role,
                 nodeId,
                 nodeId,
                 raw.Descriptor.Timing.ReadoutCompletedUtc,
                 [raw.Descriptor.Artifact.ArtifactId],
                 recipe,
-                "image/png",
+                mediaType ?? (encodedWidth is null ? "image/png" : "image/jpeg"),
                 new string('B', 64));
             var descriptor = raw.Descriptor with { Artifact = artifact };
-            var evidence = CaptureContractJson.Serialize(new ArtifactManifestV2(
-                ArtifactManifestV2.CurrentSchemaVersion, descriptor, $"products/{artifact.ArtifactId:N}.png"));
+            var relativePath = $"products/{artifact.ArtifactId:N}.{(encodedWidth is null ? "png" : "jpg")}";
+            byte[] evidence;
+            if (encodedWidth is not null && encodedHeight is not null)
+            {
+                evidence = DurableProcessingProductManifestJson.Serialize(new DurableEncodedProductManifestV2(
+                    DurableEncodedProductManifestV2.CurrentSchemaVersion,
+                    raw.Descriptor.Capture,
+                    artifact,
+                    outputIdentity,
+                    [new ProcessingAlgorithmIdentity("preview", "v1")],
+                    new ProcessingCompatibilityIdentity(
+                        "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "processing"),
+                    TimeSpan.FromSeconds(1).Ticks,
+                    4,
+                    relativePath,
+                    null,
+                    encodedWidth.Value,
+                    encodedHeight.Value,
+                    CameraPixelFormat.Mono8,
+                    nodeId));
+            }
+            else
+            {
+                evidence = CaptureContractJson.Serialize(new ArtifactManifestV2(
+                    ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath));
+            }
             var compatibility = new ProcessingCompatibilityIdentity(
                 "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "processing");
             var persistedNodeId = string.Equals(nodeId, "Preview", StringComparison.OrdinalIgnoreCase)
@@ -982,12 +1202,13 @@ public sealed class SqliteCameraAgentGalleryTests
                     INSERT INTO processing_nodes(
                         capture_id, node_id, required, dependencies_json, recipe_name, output_role,
                         output_variant, plan_sha256, status, reason, attempt, completed_unix_ms)
-                    VALUES ($capture, $node, $required, $dependencies, 'preview-recipe', 'Preview', $variant, $plan,
+                     VALUES ($capture, $node, $required, $dependencies, 'preview-recipe', $role, $variant, $plan,
                             $status, $reason, 2, $completed);
                     """;
                 node.Parameters.AddWithValue("$capture", raw.Descriptor.Capture.CaptureId.ToString("N"));
                 node.Parameters.AddWithValue("$node", persistedNodeId);
                 node.Parameters.AddWithValue("$variant", nodeId);
+                node.Parameters.AddWithValue("$role", role.ToString());
                 node.Parameters.AddWithValue("$required", required ? 1 : 0);
                 node.Parameters.AddWithValue("$dependencies", JsonSerializer.Serialize(dependencies ?? [], WebJson));
                 node.Parameters.AddWithValue("$plan", new string('C', 64));
@@ -1004,8 +1225,8 @@ public sealed class SqliteCameraAgentGalleryTests
                         payload_relative_path, sidecar_relative_path, descriptor_json, recipe_identity_sha256,
                         algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
                         committed_unix_ms)
-                    VALUES ($identity, $capture, $agent, $node, $artifact, 'Preview', $variant,
-                            'products/private-output.png', 'products/private-output.json', $descriptor, $recipe,
+                     VALUES ($identity, $capture, $agent, $node, $artifact, $role, $variant,
+                            $payload, $sidecar, $descriptor, $recipe,
                             $algorithms, $compatibility, $integration, $sequence, $committed);
                     """;
                 output.Parameters.AddWithValue("$identity", outputIdentity);
@@ -1014,6 +1235,9 @@ public sealed class SqliteCameraAgentGalleryTests
                 output.Parameters.AddWithValue("$node", persistedNodeId);
                 output.Parameters.AddWithValue("$artifact", artifact.ArtifactId.ToString("N"));
                 output.Parameters.AddWithValue("$variant", nodeId);
+                output.Parameters.AddWithValue("$role", role.ToString());
+                output.Parameters.AddWithValue("$payload", relativePath);
+                output.Parameters.AddWithValue("$sidecar", $"{relativePath}.json");
                 output.Parameters.AddWithValue("$descriptor", evidence);
                 output.Parameters.AddWithValue("$recipe", recipeIdentity);
                 output.Parameters.AddWithValue("$algorithms", JsonSerializer.SerializeToUtf8Bytes(
@@ -1025,6 +1249,27 @@ public sealed class SqliteCameraAgentGalleryTests
                 await output.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             return descriptor;
+        }
+
+        private static IOptions<CameraAgentHostOptions> CreateOptions(string root)
+            => Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                RawIngressReserveBytes = 0,
+                RawIngressSqliteBusyTimeoutSeconds = 1
+            });
+
+        internal sealed class RestartedGallery(
+            SqliteCaptureProcessingStore processingStore,
+            SqliteCameraAgentGallery gallery) : IDisposable
+        {
+            internal SqliteCameraAgentGallery Gallery { get; } = gallery;
+
+            public void Dispose()
+            {
+                processingStore.Dispose();
+                SqliteConnection.ClearAllPools();
+            }
         }
 
         internal async Task AddCloudAssessmentAsync(

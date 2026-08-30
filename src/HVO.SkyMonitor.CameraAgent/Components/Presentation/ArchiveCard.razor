@@ -1,0 +1,39 @@
+@namespace HVO.SkyMonitor.CameraAgent.Components.Presentation
+@using HVO.SkyMonitor.CameraAgent.Common.Gallery
+
+<article class="capture-card">
+    <a class="capture-card__image-link" href="@DetailUrl" aria-label="@ImageLinkLabel">
+        <div class="capture-card__image">
+            @if (SelectedSlot?.PreviewUrl is { } previewUrl && !PreviewFailed)
+            {
+                <img src="@previewUrl.OriginalString" alt="@ImageAlt" loading="lazy" decoding="async" @onerror="MarkPreviewFailed" />
+                <span class="stage-badge">@SelectedSlot.Label</span>
+            }
+            else
+            {
+                <span class="unsupported-preview"><i class="bi bi-image" aria-hidden="true"></i><strong>@(PreviewFailed ? "Image preview unavailable" : UnavailableTitle)</strong><small>Capture facts retained</small></span>
+            }
+        </div>
+    </a>
+    <div class="capture-card__body">
+        <header>
+            <div><p class="eyebrow">Sequence @Capture.CaptureSequence</p><h2><a href="@DetailUrl"><time datetime="@Capture.ExposureStartedUtc.ToString("O")">@CaptureTime</time></a></h2></div>
+            <span class="evidence @EvidenceClass">@EvidenceLabel</span>
+        </header>
+        <p class="capture-card__summary" aria-live="polite" aria-atomic="true"><strong>@SummaryTitle</strong><span aria-hidden="true"> / </span>@Age</p>
+        <div class="capture-card__actions">
+            @if (SelectedSlot?.PreviewUrl is not null && !PreviewFailed)
+            {
+                <button id="@ViewerTriggerId" type="button" class="btn btn-outline-light" @onclick="ViewLargeAsync"><i class="bi bi-arrows-fullscreen" aria-hidden="true"></i> View large image</button>
+            }
+            else if (PreviewFailed)
+            {
+                <button type="button" class="btn btn-outline-light" @onclick="RetryPreview">Try preview again</button>
+            }
+            else
+            {
+                <button type="button" class="btn btn-outline-light" disabled>View unavailable</button>
+            }
+        </div>
+    </div>
+</article>

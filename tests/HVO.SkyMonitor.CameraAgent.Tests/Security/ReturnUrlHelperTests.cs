@@ -14,6 +14,7 @@ public class ReturnUrlHelperTests
     [DataRow("/weather", "/weather")]
     [DataRow("weather/today", "/weather/today")]
     [DataRow("/weather/today?unit=metric", "/weather/today?unit=metric")]
+    [DataRow("/gallery?recipe=calibration..v2", "/gallery?recipe=calibration..v2")]
     public void NormalizeReturnUrl_WhenLocal_ReturnsSanitizedValue(string? input, string expected)
     {
         var result = ReturnUrlHelper.NormalizeReturnUrl(input);

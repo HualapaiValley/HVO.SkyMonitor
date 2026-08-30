@@ -18,6 +18,7 @@ public sealed class OperatorRouteTests
     {
         foreach (var type in new[]
         {
+            typeof(CurrentSkyPage),
             typeof(OperationsPage),
             typeof(QuarantinePage),
             typeof(GalleryPage),
@@ -50,11 +51,7 @@ public sealed class OperatorRouteTests
         CollectionAssert.AreEqual(
             new[]
             {
-                ("Operations", "/"), ("Gallery", "/gallery"), ("Transients", "/transients"),
-                ("Schedule", "/schedule"),
-                ("Calibration", "/calibration"),
-                ("Environment", "/environmental"),
-                ("System", "/system"), ("Device", "/devices/bootstrap")
+                ("Current sky", "/"), ("Archive", "/gallery"), ("Technical workspace", "/operations")
             },
             links);
         Assert.IsFalse(cut.Markup.Contains("Configuration", StringComparison.Ordinal));

@@ -575,7 +575,12 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
                     null,
                     [],
                     null)
-                : ProjectArtifact(rawDescriptor.Artifact, rawDescriptor.Layout.ByteLength, null, null)
+                : ProjectArtifact(
+                    rawDescriptor.Artifact,
+                    rawDescriptor.Layout.ByteLength,
+                    null,
+                    null,
+                    layout: rawDescriptor.Layout)
         };
         var nodes = new List<CameraAgentGalleryProcessingNode>();
         foreach (var node in durableNodes)
@@ -592,7 +597,11 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
                     output.ProductSchemaVersion,
                     output.ContentIdentitySha256,
                     output.AvailabilityState,
-                    output.AvailabilityReason));
+                    output.AvailabilityReason,
+                    (output.ProductManifest as DurableEncodedProductManifestV2)?.EncodedWidth,
+                    (output.ProductManifest as DurableEncodedProductManifestV2)?.EncodedHeight,
+                    output.Descriptor?.Layout,
+                    (output.ProductManifest as DurableEncodedProductManifestV2)?.EncodedPixelFormat));
             }
             nodes.Add(new CameraAgentGalleryProcessingNode(
                 node.NodeId,
@@ -631,7 +640,11 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
         string? productSchemaVersion = null,
         string? contentIdentitySha256 = null,
         string availability = "Available",
-        string? availabilityReason = null)
+        string? availabilityReason = null,
+        int? encodedWidth = null,
+        int? encodedHeight = null,
+        FrameLayoutDescriptor? layout = null,
+        CameraPixelFormat? encodedPixelFormat = null)
     {
         recipeIdentity ??= ProcessingIdentity.CreateRecipeIdentity(artifact.Recipe).IdentitySha256;
         return new CameraAgentGalleryArtifact(
@@ -657,7 +670,11 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
             productSchemaVersion,
             contentIdentitySha256,
             availability,
-            availabilityReason);
+            availabilityReason,
+            encodedWidth,
+            encodedHeight,
+            layout?.PixelFormat ?? encodedPixelFormat,
+            layout is not null && CameraAgentPreviewEligibilityPolicy.IsSupportedLayout(layout));
     }
 
     private static ArtifactManifestV2? TryReadTrustedManifest(RawGalleryRow row)

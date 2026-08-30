@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -187,6 +188,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
+    private readonly ArtifactReadOptions _artifactRead;
     private readonly TimeProvider _timeProvider;
     private readonly ICaptureProcessingFaultInjector _faultInjector;
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
@@ -202,6 +204,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         _root = Path.GetFullPath(values.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
         _busyTimeoutSeconds = values.RawIngressSqliteBusyTimeoutSeconds;
+        _artifactRead = values.ArtifactRead;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _faultInjector = faultInjector ?? NullCaptureProcessingFaultInjector.Instance;
     }
@@ -1544,21 +1547,83 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
 
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        connection.CreateFunction<byte[], string, string, int>(
+            "gallery_preview_rank",
+            GalleryPreviewRank,
+            isDeterministic: true);
         var placeholders = string.Join(", ", Enumerable.Range(0, captureIds.Count).Select(static index => $"$capture{index}"));
         var nodes = new List<(Guid CaptureId, string NodeId, bool Required, DurableProcessingNodeStatus Status, string? RecipeName, string? OutputRole, string? OutputVariant)>();
         using (var command = connection.CreateCommand())
         {
             command.CommandText = $"""
-                WITH ranked_nodes AS (
+                WITH node_candidates AS (
                     SELECT capture_id, node_id, required, status, recipe_name, output_role, output_variant,
-                           ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY node_id) AS gallery_rank
+                           CASE WHEN EXISTS (
+                               SELECT 1
+                               FROM processing_outputs AS candidate
+                               WHERE candidate.capture_id = processing_nodes.capture_id
+                                 AND candidate.node_id = processing_nodes.node_id
+                                 AND candidate.availability_state = 'Available'
+                           ) THEN 0 ELSE 1 END AS availability_rank,
+                           CASE
+                                WHEN output_role IN ('Preview', 'AnnotatedPreview', 'Combined', 'Calibrated') AND EXISTS (
+                                   SELECT 1
+                                   FROM processing_outputs AS candidate
+                                   WHERE candidate.capture_id = processing_nodes.capture_id
+                                     AND candidate.node_id = processing_nodes.node_id
+                                     AND candidate.role = processing_nodes.output_role
+                                     AND candidate.availability_state = 'Available'
+                                     AND gallery_preview_rank(
+                                         candidate.descriptor_json,
+                                         candidate.availability_state,
+                                         candidate.role) = 0
+                               ) THEN 0
+                                WHEN output_role IN ('Preview', 'AnnotatedPreview', 'Combined', 'Calibrated') THEN 1
+                               ELSE 0
+                           END AS preview_rank
                     FROM processing_nodes
                     WHERE capture_id IN ({placeholders})
+                ),
+                role_ranked_nodes AS (
+                    SELECT capture_id, node_id, required, status, recipe_name, output_role, output_variant,
+                           availability_rank, preview_rank,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY capture_id, COALESCE(output_role, '') ORDER BY
+                                    availability_rank,
+                                    preview_rank,
+                                    node_id) AS role_rank
+                    FROM node_candidates
+                ),
+                ranked_nodes AS (
+                    SELECT capture_id, node_id, required, status, recipe_name, output_role, output_variant,
+                           availability_rank, preview_rank, role_rank,
+                           ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY
+                               availability_rank,
+                               role_rank,
+                               CASE output_role
+                                   WHEN 'AnnotatedPreview' THEN 0
+                                   WHEN 'Preview' THEN 1
+                                   WHEN 'Combined' THEN 2
+                                   WHEN 'Calibrated' THEN 3
+                                   ELSE 4
+                               END,
+                               node_id) AS gallery_rank
+                    FROM role_ranked_nodes
                 )
                 SELECT capture_id, node_id, required, status, recipe_name, output_role, output_variant
                 FROM ranked_nodes
                 WHERE gallery_rank <= $maximum_nodes
-                ORDER BY capture_id, node_id;
+                ORDER BY capture_id,
+                    availability_rank,
+                    role_rank,
+                    CASE output_role
+                        WHEN 'AnnotatedPreview' THEN 0
+                        WHEN 'Preview' THEN 1
+                        WHEN 'Combined' THEN 2
+                        WHEN 'Calibrated' THEN 3
+                        ELSE 4
+                    END,
+                    node_id;
                 """;
             AddCaptureParameters(command, captureIds);
             command.Parameters.AddWithValue("$maximum_nodes", maximumNodesPerCapture + 1);
@@ -1580,16 +1645,41 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
         using (var command = connection.CreateCommand())
         {
             command.CommandText = $"""
-                WITH ranked_outputs AS (
+                WITH role_ranked_outputs AS (
                     SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                            descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
                            algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
-                               product_kind, product_schema_version, content_identity_sha256,
-                              availability_state, availability_reason, frame_artifact_recipe_version,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY capture_id ORDER BY node_id, output_identity_sha256) AS gallery_rank
+                           product_kind, product_schema_version, content_identity_sha256,
+                               availability_state, availability_reason, frame_artifact_recipe_version,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY capture_id, role ORDER BY
+                                    CASE availability_state WHEN 'Available' THEN 0 ELSE 1 END,
+                                    gallery_preview_rank(descriptor_json, availability_state, role),
+                                    node_id,
+                                    output_identity_sha256) AS role_rank
                     FROM processing_outputs
                     WHERE capture_id IN ({placeholders})
+                ),
+                ranked_outputs AS (
+                    SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
+                           descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
+                           algorithms_json, compatibility_json, total_integration_ticks, capture_sequence,
+                           product_kind, product_schema_version, content_identity_sha256,
+                           availability_state, availability_reason, frame_artifact_recipe_version, role_rank,
+                            ROW_NUMBER() OVER (
+                                 PARTITION BY capture_id ORDER BY
+                                     CASE availability_state WHEN 'Available' THEN 0 ELSE 1 END,
+                                     role_rank,
+                                     CASE role
+                                         WHEN 'AnnotatedPreview' THEN 0
+                                        WHEN 'Preview' THEN 1
+                                        WHEN 'Combined' THEN 2
+                                        WHEN 'Calibrated' THEN 3
+                                        ELSE 4
+                                    END,
+                                     node_id,
+                                     output_identity_sha256) AS gallery_rank
+                    FROM role_ranked_outputs
                 )
                 SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                        descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
@@ -1598,7 +1688,18 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                          availability_state, availability_reason, frame_artifact_recipe_version
                 FROM ranked_outputs
                 WHERE gallery_rank <= $maximum_outputs
-                ORDER BY capture_id, node_id, output_identity_sha256;
+                ORDER BY capture_id,
+                    CASE availability_state WHEN 'Available' THEN 0 ELSE 1 END,
+                    role_rank,
+                    CASE role
+                        WHEN 'AnnotatedPreview' THEN 0
+                        WHEN 'Preview' THEN 1
+                        WHEN 'Combined' THEN 2
+                        WHEN 'Calibrated' THEN 3
+                        ELSE 4
+                    END,
+                    node_id,
+                    output_identity_sha256;
                 """;
             AddCaptureParameters(command, captureIds);
             command.Parameters.AddWithValue("$maximum_outputs", maximumOutputsPerCapture + 1);
@@ -1636,6 +1737,67 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             node.OutputVariant,
             outputs[(node.CaptureId, node.NodeId)].ToArray())).ToArray();
         return new(projected, truncatedNodes, truncatedOutputs);
+    }
+
+    private int GalleryPreviewRank(byte[] descriptorJson, string availability, string roleValue)
+    {
+        if (!string.Equals(availability, "Available", StringComparison.Ordinal) ||
+            !Enum.TryParse<FrameArtifactRole>(roleValue, out var role) ||
+            role is not (FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview or
+                FrameArtifactRole.Combined or FrameArtifactRole.Calibrated))
+        {
+            return 1;
+        }
+        try
+        {
+            using var evidence = JsonDocument.Parse(descriptorJson);
+            if (evidence.RootElement.ValueKind != JsonValueKind.Object ||
+                !evidence.RootElement.TryGetProperty("schemaVersion", out var schema) ||
+                schema.ValueKind != JsonValueKind.String)
+            {
+                return 1;
+            }
+            ReconstructionDescriptor? descriptor = null;
+            IDurableProcessingProductManifest? productManifest = null;
+            if (schema.GetString() is DurableProcessingProductManifestV1.CurrentSchemaVersion or
+                DurableEncodedProductManifestV2.CurrentSchemaVersion or
+                DurableTypedMetadataProductManifestV3.CurrentSchemaVersion)
+            {
+                productManifest = DurableProcessingProductManifestJson.Parse(descriptorJson);
+            }
+            else
+            {
+                var parsed = CaptureContractJson.ParseManifest(descriptorJson);
+                descriptor = parsed.Document?.Manifest?.Descriptor;
+                if (!parsed.IsValid || descriptor is null)
+                {
+                    return 1;
+                }
+            }
+            var artifact = descriptor?.Artifact ?? productManifest!.Artifact;
+            if (artifact.Role != role)
+            {
+                return 1;
+            }
+            var encoded = productManifest as DurableEncodedProductManifestV2;
+            var layout = descriptor?.Layout;
+            return CameraAgentPreviewEligibilityPolicy.Evaluate(
+                role,
+                artifact.MediaType,
+                layout?.ByteLength ?? productManifest?.ByteLength,
+                layout?.PixelFormat ?? encoded?.EncodedPixelFormat,
+                layout is not null && CameraAgentPreviewEligibilityPolicy.IsSupportedLayout(layout),
+                encoded?.EncodedWidth,
+                encoded?.EncodedHeight,
+                _artifactRead) == CameraAgentPreviewEligibility.Available
+                    ? 0
+                    : 1;
+        }
+        catch (Exception exception) when (exception is InvalidDataException or JsonException or ArgumentException or
+                                          InvalidOperationException or OverflowException)
+        {
+            return 1;
+        }
     }
 
     internal async ValueTask<IReadOnlyList<DurableGalleryProcessingNodeDetail>> ReadGalleryNodeDetailsAsync(

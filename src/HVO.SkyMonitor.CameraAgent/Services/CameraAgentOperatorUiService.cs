@@ -189,12 +189,19 @@ internal sealed record CameraAgentTransientPolicyStatus(
     int MaximumAdjacentStartIntervalSeconds,
     int StarMaximumResults);
 
+internal sealed record CameraAgentCaptureDetailView(
+    CameraAgentGalleryCapture Capture,
+    CameraAgentCapturePresentation Presentation);
+
 internal interface ICameraAgentOperatorUiService
 {
     ValueTask<OperatorUiResult<CameraAgentOperationsView>> GetOperationsAsync(CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentGalleryPage>> GetGalleryPageAsync(
         CameraAgentGalleryQuery query,
+        CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentCurrentImagePresentation>> GetCurrentImagePresentationAsync(
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(
@@ -205,6 +212,10 @@ internal interface ICameraAgentOperatorUiService
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentGalleryCapture>> GetGalleryCaptureAsync(
+        Guid captureId,
+        CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
         Guid captureId,
         CancellationToken cancellationToken);
 
@@ -246,6 +257,8 @@ internal sealed class CameraAgentOperatorUiService(
     IAuthorizationService authorizationService,
     CameraAgentOperationsSummaryProvider operationsProvider,
     ICameraAgentGallery gallery,
+    ICameraAgentCapturePresentationProjector capturePresentation,
+    ICameraAgentCurrentImagePresentationService currentImagePresentation,
     ICameraAgentLayeredPresentationService layeredPresentations,
     ICameraAgentPresentationMaterializer presentationMaterializer,
     CaptureAdmissionCoordinator captureControl,
@@ -295,6 +308,31 @@ internal sealed class CameraAgentOperatorUiService(
         {
             logger.LogWarning(exception, "CameraAgent operations UI read failed.");
             return Unavailable<CameraAgentOperationsView>("Current operations data is unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentCurrentImagePresentation>> GetCurrentImagePresentationAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentCurrentImagePresentation>();
+        }
+
+        try
+        {
+            return OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(
+                await currentImagePresentation.GetAsync(cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent current-image presentation read failed.");
+            return Unavailable<CameraAgentCurrentImagePresentation>("The current sky image is temporarily unavailable.");
         }
     }
 
@@ -558,6 +596,84 @@ internal sealed class CameraAgentOperatorUiService(
             logger.LogWarning(exception, "CameraAgent gallery detail UI read failed.");
             return Unavailable<CameraAgentGalleryCapture>("The capture detail is temporarily unavailable.");
         }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentCaptureDetailView>> GetCaptureDetailViewAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentCaptureDetailView>();
+        }
+
+        try
+        {
+            var capture = await gallery.GetCaptureAsync(captureId, cancellationToken).ConfigureAwait(false);
+            return capture is null
+                ? OperatorUiResult<CameraAgentCaptureDetailView>.Failure(
+                    OperatorUiResultKind.NotFound,
+                    "The requested capture was not found.")
+                : OperatorUiResult<CameraAgentCaptureDetailView>.Success(new(
+                    capture,
+                    ProjectCaptureDetailPresentation(capturePresentation.Project(capture))));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent capture presentation UI read failed.");
+            return Unavailable<CameraAgentCaptureDetailView>("The capture detail is temporarily unavailable.");
+        }
+    }
+
+    internal static CameraAgentCapturePresentation ProjectCaptureDetailPresentation(
+        CameraAgentCapturePresentation projection)
+    {
+        var annotated = projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        var preview = projection.Stages.SingleOrDefault(slot => slot.Stage == CameraAgentPresentationStage.Preview);
+        if (preview is null)
+        {
+            CameraAgentPresentationSlot[] projectedStages =
+            [
+                annotated,
+                projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined),
+                projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Calibrated),
+                projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Raw)
+            ];
+            var projectedSelected = projectedStages.FirstOrDefault(static slot =>
+                slot.Availability == CameraAgentPresentationSlotAvailability.Available);
+            return new(projectedSelected?.Stage, projectedStages);
+        }
+        var processedSource = annotated.Availability == CameraAgentPresentationSlotAvailability.Available
+            ? annotated
+            : preview.Availability == CameraAgentPresentationSlotAvailability.Available
+                ? preview
+                : annotated.Reason is "ProcessingFailed" or "ProcessingSkipped"
+                    ? annotated
+                    : preview.Reason is "ProcessingFailed" or "ProcessingSkipped"
+                        ? preview
+                        : annotated.Availability != CameraAgentPresentationSlotAvailability.Missing
+                            ? annotated
+                            : preview;
+        var processed = processedSource with
+        {
+            Stage = CameraAgentPresentationStage.Annotated,
+            Label = "Processed"
+        };
+        CameraAgentPresentationSlot[] stages =
+        [
+            processed,
+            projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined),
+            projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Calibrated),
+            projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Raw)
+        ];
+        var selected = stages.FirstOrDefault(static slot =>
+            slot.Availability == CameraAgentPresentationSlotAvailability.Available);
+        return new(selected?.Stage, stages);
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]

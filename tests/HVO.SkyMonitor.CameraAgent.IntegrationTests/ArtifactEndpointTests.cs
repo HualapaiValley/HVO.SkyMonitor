@@ -127,6 +127,10 @@ public sealed class ArtifactEndpointTests
         using var preview = await client.GetAsync(previewUri).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, preview.StatusCode);
         Assert.AreEqual("image/jpeg", preview.Content.Headers.ContentType?.MediaType);
+        var cacheControl = preview.Headers.CacheControl?.ToString();
+        Assert.IsNotNull(cacheControl);
+        StringAssert.Contains(cacheControl, "no-cache", StringComparison.Ordinal);
+        Assert.IsFalse(cacheControl.Contains("immutable", StringComparison.Ordinal));
         CollectionAssert.AreEqual(service.Preview, await preview.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
         var previewETag = preview.Headers.ETag?.Tag;
         Assert.IsNotNull(previewETag);
@@ -243,5 +247,6 @@ public sealed class ArtifactEndpointTests
                     2,
                     2)
                 : new CameraAgentArtifactPreviewResult(CameraAgentArtifactReadStatus.NotFound));
+
     }
 }

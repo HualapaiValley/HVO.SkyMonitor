@@ -72,6 +72,9 @@ public sealed class OwnerAuthorizationTests
             Assert.AreEqual(HttpStatusCode.Forbidden, denied.StatusCode);
             Assert.AreEqual(OwnerBootstrapStates.PasswordChangeRequired,
                 denied.Headers.GetValues("X-HVO-Authorization-Reason").Single());
+            using var deniedCurrent = await client.GetAsync(
+                new Uri("/api/v1/operations/gallery/current", UriKind.Relative)).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.Forbidden, deniedCurrent.StatusCode);
 
             using var healthClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
             using var health = await healthClient.GetAsync(
@@ -203,6 +206,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousResponse = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/gallery", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+        using var anonymousCurrent = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/current", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousCurrent.StatusCode);
         using var anonymousPresentation = await anonymousClient.GetAsync(
             new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}/presentation", UriKind.Relative))
             .ConfigureAwait(false);
@@ -217,6 +223,9 @@ public sealed class OwnerAuthorizationTests
         using var nonOwnerResponse = await nonOwnerClient.GetAsync(
             new Uri("/api/v1/operations/gallery", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerResponse.StatusCode);
+        using var nonOwnerCurrent = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/current", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerCurrent.StatusCode);
         using var nonOwnerPresentation = await nonOwnerClient.GetAsync(
             new Uri($"/api/v1/operations/gallery/{Guid.NewGuid():D}/presentation.svg", UriKind.Relative))
             .ConfigureAwait(false);
@@ -231,6 +240,9 @@ public sealed class OwnerAuthorizationTests
         using var ownerResponse = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/gallery", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, ownerResponse.StatusCode);
+        using var ownerCurrent = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/gallery/current", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerCurrent.StatusCode);
         using var invalidQuery = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/gallery?pageSize=101", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, invalidQuery.StatusCode);
@@ -674,9 +686,9 @@ public sealed class OwnerAuthorizationTests
 
         foreach (var page in new[]
         {
-            (Path: "/", Expected: "Capture operations"),
+            (Path: "/", Expected: "Current sky"),
             (Path: "/operations", Expected: "Capture operations"),
-            (Path: "/gallery", Expected: "Capture gallery"),
+            (Path: "/gallery", Expected: "Archive"),
             (Path: "/schedule", Expected: "Schedule control"),
             (Path: "/calibration", Expected: "Calibration library"),
             (Path: "/environmental", Expected: "Environmental acquisition"),

@@ -11,14 +11,9 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 {
     private static readonly IReadOnlyList<NavigationLink> PrimaryLinks =
     [
-        new NavigationLink("/", "Operations", "bi bi-activity", NavLinkMatch.All),
-        new NavigationLink("/gallery", "Gallery", "bi bi-images", NavLinkMatch.Prefix),
-        new NavigationLink("/transients", "Transients", "bi bi-lightning-charge", NavLinkMatch.Prefix),
-        new NavigationLink("/schedule", "Schedule", "bi bi-calendar3", NavLinkMatch.Prefix),
-        new NavigationLink("/calibration", "Calibration", "bi bi-sliders", NavLinkMatch.Prefix),
-        new NavigationLink("/environmental", "Environment", "bi bi-cloud-sun", NavLinkMatch.Prefix),
-        new NavigationLink("/system", "System", "bi bi-cpu", NavLinkMatch.Prefix),
-        new NavigationLink("/devices/bootstrap", "Device", "bi bi-usb-symbol", NavLinkMatch.Prefix)
+        new NavigationLink("/", "Current sky", "bi bi-stars", NavLinkMatch.All),
+        new NavigationLink("/gallery", "Archive", "bi bi-images", NavLinkMatch.Prefix),
+        new NavigationLink("/operations", "Technical workspace", "bi bi-activity", NavLinkMatch.Prefix)
     ];
 
     [Inject]

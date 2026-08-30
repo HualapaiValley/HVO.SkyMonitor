@@ -49,7 +49,9 @@ public sealed class CameraAgentArtifactContentStream : Stream
         long byteLength,
         string checksumSha256,
         string fileName,
-        ReconstructionDescriptor? descriptor)
+        ReconstructionDescriptor? descriptor,
+        int? encodedWidth = null,
+        int? encodedHeight = null)
     {
         _stream = stream;
         ArtifactId = artifactId;
@@ -60,6 +62,8 @@ public sealed class CameraAgentArtifactContentStream : Stream
         ChecksumSha256 = checksumSha256;
         FileName = fileName;
         Descriptor = descriptor;
+        EncodedWidth = encodedWidth;
+        EncodedHeight = encodedHeight;
     }
 
     public Guid ArtifactId { get; }
@@ -77,6 +81,10 @@ public sealed class CameraAgentArtifactContentStream : Stream
     public string FileName { get; }
 
     internal ReconstructionDescriptor? Descriptor { get; }
+
+    internal int? EncodedWidth { get; }
+
+    internal int? EncodedHeight { get; }
 
     public override bool CanRead => _stream.CanRead;
 

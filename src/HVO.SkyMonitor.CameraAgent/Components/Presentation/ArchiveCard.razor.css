@@ -1,0 +1,22 @@
+.capture-card { min-width: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--hvo-border-muted); border-radius: .8rem; background: var(--hvo-card-bg); box-shadow: var(--hvo-panel-shadow); }
+.capture-card__image-link { color: var(--hvo-muted); text-decoration: none; }
+.capture-card__image { position: relative; display: grid; place-items: center; aspect-ratio: 4 / 3; overflow: hidden; background: radial-gradient(circle, rgba(59, 130, 246, .13), rgba(2, 6, 23, .98)); }
+.capture-card__image img { width: 100%; height: 100%; display: block; object-fit: contain; }
+.stage-badge { position: absolute; left: .55rem; bottom: .55rem; padding: .2rem .45rem; background: rgba(2, 6, 23, .85); color: white; font-size: .62rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.unsupported-preview { display: grid; justify-items: center; gap: .5rem; color: var(--hvo-muted); font-size: .78rem; }
+.unsupported-preview i { font-size: 2rem; }
+.unsupported-preview small { color: var(--hvo-muted-weak); }
+.capture-card__body { flex: 1; display: flex; flex-direction: column; padding: .85rem; }
+.capture-card__body header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.capture-card__body h2 { margin: 0; font-size: .98rem; }
+.capture-card__body h2 a { color: var(--hvo-body-color); text-decoration: none; }
+.eyebrow { margin: 0 0 .3rem; color: var(--hvo-info-fg); font-size: .68rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+.evidence { display: inline-flex; align-items: center; min-height: 1.7rem; padding: .2rem .6rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; color: var(--hvo-muted-strong); font-size: .68rem; font-weight: 750; white-space: nowrap; }
+.evidence--simulated { color: var(--hvo-info-fg); background: var(--hvo-info-bg); }
+.evidence--fixture { color: var(--hvo-warning-fg); background: var(--hvo-warning-bg); }
+.capture-card__summary { margin: .65rem 0; color: var(--hvo-muted); font-size: .78rem; }
+.capture-card__summary strong { color: var(--hvo-body-color); }
+.capture-card__actions { margin-top: auto; }
+.capture-card__actions .btn { width: 100%; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: .4rem; }
+:is(a, button):focus-visible { outline: 3px solid var(--hvo-info-strong); outline-offset: 3px; }
+@media (max-height: 500px) and (orientation: landscape) { .capture-card__image { max-height: 58vh; } }

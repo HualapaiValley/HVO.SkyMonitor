@@ -28,11 +28,13 @@ public static class ReturnUrlHelper
         }
 
         var trimmed = returnUrl.Trim();
+        var queryOrFragment = trimmed.IndexOfAny(['?', '#']);
+        var path = queryOrFragment < 0 ? trimmed : trimmed[..queryOrFragment];
 
         if (trimmed.StartsWith("//", StringComparison.Ordinal)
             || trimmed.StartsWith("\\\\", StringComparison.Ordinal)
             || trimmed.Contains("://", StringComparison.Ordinal)
-            || trimmed.Contains("..", StringComparison.Ordinal))
+            || path.Contains("..", StringComparison.Ordinal))
         {
             return DefaultPath;
         }
