@@ -71,6 +71,30 @@ deploy_images_correlate_target() {
     [[ "$actual_arch" == "$expected_arch" ]] || { deploy_fail images "$name" docker-daemon-correlation-mismatch; return 1; }
 }
 
+deploy_images_correlate_target_endpoint() {
+    local target="$1" preflight="$2" endpoint="$3" name expected_id expected_name expected_arch info actual_arch_raw actual_arch
+    name="$(jq -r '.name' <<< "$target")"
+    expected_id="$(jq -r '.expectedDockerDaemonIdentity' <<< "$target")"
+    expected_name="$(jq -r '.expectedHostName' <<< "$target")"
+    expected_arch="$(jq -r '.expectedArchitecture' <<< "$target")"
+    [[ "$endpoint" == ssh://* || "$endpoint" == unix://* ]] || {
+      deploy_fail images "$name" docker-context-invalid-endpoint; return 1;
+    }
+    jq -e --arg name "$name" --arg id "$expected_id" --arg host "$expected_name" --arg arch "$expected_arch" '
+      any(.targets[]; .name == $name and .dockerDaemonIdentity == $id and .hostName == $host and .architecture == $arch)' <<< "$preflight" >/dev/null 2>&1 ||
+      { deploy_fail images "$name" preflight-correlation-mismatch; return 1; }
+    info="$(deploy_transport_docker_info_host "$endpoint")" || { deploy_fail images "$name" docker-daemon-unavailable; return 1; }
+    actual_arch_raw="$(jq -er '.Architecture | strings | select(length > 0)' <<< "$info" 2>/dev/null)" ||
+      { deploy_fail images "$name" docker-daemon-invalid-response; return 1; }
+    actual_arch="$(deploy_normalize_docker_architecture "$actual_arch_raw")" ||
+      { deploy_fail images "$name" docker-daemon-unsupported-architecture; return 1; }
+    jq -e --arg id "$expected_id" --arg name "$expected_name" '
+      .ID == $id and .Name == $name and .OSType == "linux" and
+      (.ServerVersion | type == "string" and length > 0)' <<< "$info" >/dev/null 2>&1 ||
+      { deploy_fail images "$name" docker-daemon-correlation-mismatch; return 1; }
+    [[ "$actual_arch" == "$expected_arch" ]] || { deploy_fail images "$name" docker-daemon-correlation-mismatch; return 1; }
+}
+
 deploy_images_require_prepare() {
     local inventory="$1" run_id="$2" mode="$3" inventory_hash="$4" revision="$5" worktree_state="$6"
     local manifest ledger evidence

@@ -377,6 +377,12 @@ or marker/lock/state drift refuses the operation. Sanitized
 dispositions without runtime paths, machine identities, Docker object IDs,
 credentials, or command output.
 
+The inspection snapshots each declared SSH- or Unix-backed Docker context
+endpoint, correlates daemon identity through that endpoint, and uses the same
+endpoint for every absence decision. Rebinding the context name cannot redirect
+cleanup checks, and ambient Docker host or TLS variables are ignored. Other
+context transport types fail closed for this recovery command.
+
 After reviewing that evidence, remove only artifacts proven to have been
 created by the failed run:
 
@@ -397,6 +403,11 @@ prepare state sidecar, and prepare lock only when each corresponding creation
 flag and creating run authorize it. A pre-existing root or control directory is
 preserved. No Compose command is run, and no image, catalog, application data,
 shared service, wildcard path, or unrelated Docker resource is removed.
+Each authorized object is first moved relative to a pinned parent directory,
+then its captured inode and canonical content are revalidated at the quarantine
+name before removal. A replacement is restored and rejected rather than deleted.
+The runtime account remains inside the owner-controlled trust boundary described
+below and must not maliciously race the private quarantine name.
 
 `partial-prepare-cleanup-ledger.json` journals intent and completion outside the
 runtime roots. An interruption after marker, control-directory, root, state, or

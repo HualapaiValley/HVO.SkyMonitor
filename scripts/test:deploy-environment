@@ -448,12 +448,19 @@ shift
 case "$ssh_host" in logic@*) host=logic ;; east@*) host=east ;; west@*) host=west ;; shared@*) host=shared ;; *) exit 1 ;; esac
 [[ "${FAKE_SSH_UNREACHABLE:-}" != "$host" ]] || exit 255
 if [[ "${FAKE_MISSING_BASH_HOST:-}" == "$host" ]]; then /usr/bin/cat >/dev/null; exit 127; fi
-[[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
-shift 3
-# OpenSSH reconstructs the remote command and does not preserve empty arguments.
-ssh_args=()
-for arg in "$@"; do [[ -n "$arg" ]] && ssh_args+=("$arg"); done
-set -- "${ssh_args[@]}"
+if (( $# == 1 )); then
+  remote_command=$1
+  eval "set -- $remote_command"
+  [[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
+  shift 3
+else
+  [[ "$1" == bash && "$2" == -s && "$3" == -- ]] || exit 96
+  shift 3
+  # OpenSSH joins legacy command arguments without preserving empty values.
+  ssh_args=()
+  for arg in "$@"; do [[ -n "$arg" ]] && ssh_args+=("$arg"); done
+  set -- "${ssh_args[@]}"
+fi
 if [[ -n "${FAKE_RUNTIME_SSH_TIMEOUT_PHASE:-}" && -n "${FAKE_RUNTIME_SSH_TIMEOUT_MATCH:-}" &&
       "${1:-}" == *"$FAKE_RUNTIME_SSH_TIMEOUT_MATCH"* ]]; then
   if [[ "$FAKE_RUNTIME_SSH_TIMEOUT_PHASE" == initial && $# == 3 ]] ||
@@ -622,8 +629,36 @@ if [[ "$1" == buildx && "$2" == imagetools && "$3" == inspect ]]; then
     "$architecture" "${FAKE_REVISION:?}" "$(jq -r .created <<< "$labels")" "$(jq -r .source <<< "$labels")" "$component" "$(jq -r .sdk <<< "$labels")" "$tree"
   exit 0
 fi
-if [[ "$1" == context && "$2" == inspect ]]; then printf '%s\n' "${*: -1}"; exit 0; fi
+if [[ "$1" == context && "$2" == inspect ]]; then
+  context="${*: -1}"
+  case "$context" in
+    logic-context) endpoint=ssh://logic@example ;;
+    east-context) endpoint=ssh://east@example ;;
+    west-context) endpoint=ssh://west@example ;;
+    shared-context) endpoint=ssh://shared@example ;;
+    *) exit 1 ;;
+  esac
+  if [[ "$*" == *Endpoints.docker.Host* ]]; then printf '{"name":"%s","host":"%s"}\n' "$context" "$endpoint"
+  else printf '%s\n' "$context"; fi
+  exit 0
+fi
 context=$2
+if [[ "$1" == --host ]]; then
+  case "$context" in
+    ssh://logic@example) context=logic-context ;;
+    ssh://east@example) context=east-context ;;
+    ssh://west@example) context=west-context ;;
+    ssh://shared@example) context=shared-context ;;
+    *) exit 1 ;;
+  esac
+fi
+context_rebound=false
+if [[ "$1" == --context && "${FAKE_DOCKER_CONTEXT_REBIND:-}" == "$context" ]]; then
+  rebind_count_file="${FAKE_IMAGE_STATE:?}/docker-context-rebind-$context"
+  rebind_count=0; [[ ! -f "$rebind_count_file" ]] || rebind_count="$(<"$rebind_count_file")"
+  rebind_count=$((rebind_count + 1)); printf '%s\n' "$rebind_count" > "$rebind_count_file"
+  (( rebind_count <= 1 )) || context_rebound=true
+fi
 case "$context" in
   logic-context) id=logic-daemon; name=logic-node; daemon_architecture=x86_64; image_architecture=amd64 ;;
   east-context) id=east-daemon; name=east-node; daemon_architecture=aarch64; image_architecture=arm64 ;;
@@ -640,7 +675,7 @@ if [[ ( "$3" == container || "$3" == network || "$3" == volume ) && "$4" == ls ]
   while (( $# > 0 )); do
     if [[ "$1" == --filter ]]; then resource_filter=$2; shift 2; else shift; fi
   done
-  if [[ "${FAKE_PARTIAL_PREPARE_RESOURCE:-}" == "$context:$resource_kind:$resource_filter" ]]; then
+  if [[ "$context_rebound" != true && "${FAKE_PARTIAL_PREPARE_RESOURCE:-}" == "$context:$resource_kind:$resource_filter" ]]; then
     resource_count_file="${FAKE_IMAGE_STATE:?}/partial-prepare-resource-count"
     resource_count=0; [[ ! -f "$resource_count_file" ]] || resource_count="$(<"$resource_count_file")"
     resource_count=$((resource_count + 1)); printf '%s\n' "$resource_count" > "$resource_count_file"
@@ -1522,6 +1557,22 @@ fi
 exec /usr/bin/curl "$@"
 EOF
 chmod +x "$REMOTE_BIN/curl"
+cat > "$REMOTE_BIN/mv" <<'EOF'
+#!/usr/bin/bash
+set -euo pipefail
+source_path=${*: -2:1}
+physical_source=$(/usr/bin/readlink -f -- "$source_path" 2>/dev/null || true)
+if [[ -n "${FAKE_PARTIAL_PREPARE_REPLACE_ON_MOVE:-}" && "$physical_source" == "$FAKE_PARTIAL_PREPARE_REPLACE_ON_MOVE" ]]; then
+  marker="${FAKE_IMAGE_STATE:?}/partial-prepare-move-replaced"
+  if [[ ! -e "$marker" ]]; then
+    : > "$marker"
+    /usr/bin/mv -- "$physical_source" "$physical_source.race-original"
+    /usr/bin/cp -a -- "$physical_source.race-original" "$physical_source"
+  fi
+fi
+exec /usr/bin/mv "$@"
+EOF
+chmod +x "$REMOTE_BIN/mv"
 cat > "$REMOTE_BIN/rm" <<'EOF'
 #!/usr/bin/bash
 for argument in "$@"; do
@@ -1560,7 +1611,7 @@ fi
 exec /usr/bin/find "$@"
 EOF
 chmod +x "$REMOTE_BIN/find"
-for tool in bash basename cmp date df dirname grep timeout chmod flock mkdir mv cp ln readlink realpath rmdir sha256sum sqlite3 sync wc cut seq sleep jq; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
+for tool in bash basename cmp date df dirname grep timeout chmod flock mkdir cp ln readlink realpath rmdir sha256sum sqlite3 sync wc cut seq sleep jq; do ln -s "$(command -v "$tool")" "$REMOTE_BIN/$tool"; done
 for entry in "$REMOTE_BIN/"*; do
     [[ "$(basename "$entry")" == ss ]] || ln -s "$entry" "$REMOTE_BIN_NO_SS/$(basename "$entry")"
     [[ "$(basename "$entry")" == curl ]] || ln -s "$entry" "$REMOTE_BIN_NO_CURL/$(basename "$entry")"
@@ -2705,7 +2756,7 @@ logic_metadata_before_resume="$(stat -c '%u:%a' "$logic_prepare_root" "$logic_pr
 run_deploy_mode prepare fail-second isolated >/dev/null
 logic_calls_after_resume="$(grep -F "$logic_prepare_root" "$LOG" | grep -c 'logic@example')"
 (( logic_calls_after_resume == logic_calls_before_resume + 1 )) || fail 'Resume did not validate completed first target exactly once.'
-grep -F "$logic_prepare_root" "$LOG" | grep -Fq $'\tvalidate'
+grep -F "$logic_prepare_root" "$LOG" | grep -Fq "'validate'"
 [[ "$(sha256sum "$logic_prepare_root/.hvo-deploy/ownership")" == "$logic_marker_before_resume" ]] || fail 'Completed-target validation changed marker.'
 [[ "$(stat -c '%u:%a' "$logic_prepare_root" "$logic_prepare_root/.hvo-deploy" "$logic_prepare_root/.hvo-deploy/ownership")" == "$logic_metadata_before_resume" ]] || fail 'Completed-target validation changed ownership or modes.'
 jq -e '.phaseStatus == "passed" and (.targets | length) == 3' "$TEMP_DIR/output/fail-second-state/prepare-ledger.json" >/dev/null
@@ -2961,6 +3012,14 @@ FAKE_PARTIAL_PREPARE_REPLACE_PATH="$partial_logic_lock.state" \
 rm -f "$partial_logic_lock.state"
 mv "$partial_logic_lock.state.race-original" "$partial_logic_lock.state"
 
+# Replacement after the last pathname check is quarantined and rejected without deleting the replacement.
+rm -f "$FAKE_IMAGE_STATE/partial-prepare-move-replaced"
+FAKE_PARTIAL_PREPARE_REPLACE_ON_MOVE="$partial_logic_root/.hvo-deploy/ownership" \
+  expect_partial_failure '' "$partial_case" isolated --confirm "$partial_case"
+rm -f "$partial_logic_root/.hvo-deploy/ownership"
+mv "$partial_logic_root/.hvo-deploy/ownership.race-original" "$partial_logic_root/.hvo-deploy/ownership"
+rm -f "$FAKE_IMAGE_STATE/partial-prepare-move-replaced"
+
 printf 'must-not-delete\n' > "$partial_logic_root/application-state"
 expect_partial_failure 'provenance-or-content-invalid' "$partial_case" isolated --dry-run
 rm "$partial_logic_root/application-state"
@@ -2985,8 +3044,16 @@ FAKE_PARTIAL_PREPARE_RESOURCE="logic-context:container:label=io.hvoskymonitor.ru
   expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --confirm "$partial_case"
 test -f "$partial_logic_root/.hvo-deploy/ownership" && test -f "$partial_logic_lock.state"
 
+# Once correlated, absence checks use the pinned endpoint even if the context name is rebound.
+rm -f "$FAKE_IMAGE_STATE/docker-context-rebind-logic-context" "$FAKE_IMAGE_STATE/partial-prepare-resource-count"
+FAKE_DOCKER_CONTEXT_REBIND=logic-context \
+  FAKE_PARTIAL_PREPARE_RESOURCE="logic-context:container:label=io.hvoskymonitor.run-id=$partial_case" \
+  expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --dry-run
+
 unrelated_resource="$FAKE_IMAGE_STATE/unrelated-resource"; printf 'preserve\n' > "$unrelated_resource"
 run_deploy_mode partial-prepare-cleanup "$partial_case" isolated --dry-run >/dev/null
+DOCKER_HOST=tcp://must-not-be-used.invalid:2376 DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH=/must-not-be-used \
+  run_deploy_mode partial-prepare-cleanup "$partial_case" isolated --dry-run >/dev/null
 test -d "$partial_logic_root" && test -f "$partial_logic_lock.state"
 jq -e '.phaseStatus == "passed" and .operation == "dry-run" and
   (.targets | map({target,disposition}) == [{target:"logic",disposition:"cleanup-candidate"},{target:"east",disposition:"not-created"},{target:"west",disposition:"not-created"}]) and
@@ -3066,6 +3133,21 @@ root_new="$(awk -F '\t' '$1 == "rootNew" { print $2 }' "$partial_logic_lock.stat
 printf 'rootNew\t%s\n' "$root_new" >> "$partial_logic_lock.state"
 expect_partial_failure 'preserved-provenance-invalid' partial-foreign-new persistent --dry-run
 cp "$TEMP_DIR/partial-foreign-state.valid" "$partial_logic_lock.state"; chmod 600 "$partial_logic_lock.state"
+sed 's/creatingRun\tpartial-foreign-old/creatingRun\tpartial-foreign-other/' \
+  "$TEMP_DIR/partial-foreign-state.valid" > "$partial_logic_lock.state"
+expect_partial_failure 'preserved-provenance-invalid' partial-foreign-new persistent --dry-run
+cp "$TEMP_DIR/partial-foreign-state.valid" "$partial_logic_lock.state"; chmod 600 "$partial_logic_lock.state"
+
+# Accepted shell metacharacters and whitespace remain literal across every SSH cleanup boundary.
+partial_case=partial-quoted
+write_prepare_case 'partial quoted;false' isolated
+run_prepare_preflight "$partial_case" isolated
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' "$partial_case" isolated
+partial_state="$TEMP_DIR/output/$partial_case-state"; partial_evidence="$TEMP_DIR/output/$partial_case-evidence"
+partial_logic_root="$(inventory_runtime_root logic)"
+partial_logic_lock="${partial_logic_root%/*}/.hvo-deploy-prepare-$(printf 'v1\ntarget=logic\nroot=%s\n' "$partial_logic_root" | sha256sum | cut -c1-32).lock"
+run_deploy_mode partial-prepare-cleanup "$partial_case" isolated --confirm "$partial_case" >/dev/null
+test ! -e "$partial_logic_root" && test ! -e "$partial_logic_lock" && test ! -e "$partial_logic_lock.state"
 fi
 
 prepare_lifecycle_fixture() {

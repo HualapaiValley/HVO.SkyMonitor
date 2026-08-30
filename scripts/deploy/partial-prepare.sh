@@ -138,36 +138,44 @@ deploy_partial_prepare_resource_status() {
 
 deploy_partial_prepare_verify_docker() {
     local inventory="$1" run_id="$2" preflight="$3"
-    local target name context project container component
-    local -A contexts=()
+    local target name context binding endpoint project container component
+    local -A endpoints=() context_endpoints=()
     while IFS= read -r target; do
         name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"
-        deploy_images_correlate_target "$target" "$preflight" || return 1
-        contexts["$context"]="${contexts[$context]:-}"
+        binding="$(deploy_transport_docker_context_binding "$context")" || { deploy_fail images "$name" docker-context-unavailable; return 1; }
+        jq -e --arg context "$context" '.name == $context and (.host | type == "string" and length > 0)' <<< "$binding" >/dev/null 2>&1 || {
+          deploy_fail images "$name" docker-context-mismatch; return 1;
+        }
+        endpoint="$(jq -r '.host' <<< "$binding")"
+        deploy_images_correlate_target_endpoint "$target" "$preflight" "$endpoint" || return 1
+        context_endpoints["$context"]="$endpoint"
+        endpoints["$endpoint"]="${endpoints[$endpoint]:-}"
         if component="$(deploy_target_component "$inventory" "$name" 2>/dev/null)"; then
             project="$(deploy_compose_project "$inventory" "$target")"
-            contexts["$context"]+="${contexts[$context]:+ }$project"
+            endpoints["$endpoint"]+="${endpoints[$endpoint]:+ }$project"
             container="hvo-skymonitor-$(jq -r '.instanceId | gsub("-"; "")' <<< "$target")"
-            deploy_transport_require_container_absent "$context" "$container" || {
+            deploy_transport_require_container_absent_host "$endpoint" "$container" || {
               deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;
             }
             if [[ "$component" == logicHost ]]; then
-                deploy_transport_require_container_absent "$context" "$container-init" || {
+                deploy_transport_require_container_absent_host "$endpoint" "$container-init" || {
                   deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;
                 }
             fi
-            deploy_transport_require_network_absent "$context" "${project}_default" || {
+            deploy_transport_require_network_absent_host "$endpoint" "${project}_default" || {
               deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;
             }
         fi
     done < <(deploy_inventory_targets "$inventory")
     if [[ "$(jq -r '.deployment.services.mode' "$inventory")" == deploy ]]; then
         context="$(jq -r '.sharedServices.dockerContext' "$inventory")"
-        contexts["$context"]+="${contexts[$context]:+ }$(jq -r '.deployment.resources.project' "$inventory")-services"
+        endpoint="${context_endpoints[$context]:-}"
+        [[ -n "$endpoint" ]] || { deploy_fail images shared docker-context-mismatch; return 1; }
+        endpoints["$endpoint"]+="${endpoints[$endpoint]:+ }$(jq -r '.deployment.resources.project' "$inventory")-services"
     fi
-    for context in "${!contexts[@]}"; do
-        read -r -a projects <<< "${contexts[$context]}"
-        deploy_transport_require_partial_prepare_resources_absent "$context" "$run_id" "${projects[@]}" || {
+    for endpoint in "${!endpoints[@]}"; do
+        read -r -a projects <<< "${endpoints[$endpoint]}"
+        deploy_transport_require_partial_prepare_resources_absent_host "$endpoint" "$run_id" "${projects[@]}" || {
             deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;
         }
     done
@@ -175,7 +183,7 @@ deploy_partial_prepare_verify_docker() {
 
 deploy_partial_prepare_verify_all() {
     local inventory="$1" run_id="$2" mode="$3" hash="$4" preflight="$5"
-    local target name ssh root owner expected_machine expected_host deployment_state entry marker lock_name creating_run root_status lock_status result
+    local target name ssh root owner expected_machine expected_host deployment_state entry marker lock_name creating_run root_status lock_status result expected_result
     deploy_partial_prepare_verify_docker "$inventory" "$run_id" "$preflight" || return 1
     while IFS= read -r target; do
         name="$(jq -r '.name' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"; root="$(jq -r '.runtimeRoot' <<< "$target")"
@@ -194,7 +202,12 @@ deploy_partial_prepare_verify_all() {
         if [[ "$creating_run" != "$run_id" ]]; then
             result="$(deploy_transport_prepare_target "$ssh" "$root" "$mode" "$owner" "$run_id" "$hash" "$name" \
               "$(jq -r '.installationId' "$inventory")" "$marker" "$lock_name" "$expected_machine" "$expected_host" "" validate)"
-            [[ "${result%%$'\t'*}" == validated ]] || { deploy_fail partial-prepare-cleanup "$name" preserved-provenance-invalid; return 1; }
+            expected_result="$(printf 'validated\t%s\t%s\t%s\t%s\t%s' "$marker" "$creating_run" \
+              "$(jq -r '.newlyCreated.root' <<< "$entry")" "$(jq -r '.newlyCreated.controlDirectory' <<< "$entry")" \
+              "$(jq -r '.newlyCreated.marker' <<< "$entry")")"
+            [[ "$result" == "$expected_result" ]] || {
+              deploy_fail partial-prepare-cleanup "$name" preserved-provenance-invalid; return 1;
+            }
             continue
         fi
         root_status="$(deploy_partial_prepare_resource_status "$name" cleanup-runtime-artifacts)"; root_status="${root_status:-none}"
