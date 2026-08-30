@@ -2925,6 +2925,92 @@ fi
 
 if shard_enabled partial-prepare; then
 # Failed prepare cleanup is a separate, no-container recovery path. Normal down remains unavailable.
+(
+  # Recovery validates immutable schema 7 inputs without enabling them for normal deployment phases.
+  . "$REPO_ROOT/scripts/deploy/common.sh"
+  . "$REPO_ROOT/scripts/deploy/product-layout.sh"
+  . "$REPO_ROOT/scripts/deploy/inventory.sh"
+  . "$REPO_ROOT/scripts/deploy/partial-prepare.sh"
+  schema7_inventory="$TEMP_DIR/schema7-retained.inventory"
+  jq '
+    .schemaVersion=7 |
+    del(.productRoot) |
+    .logicHost |= del(.friendlyName,.instanceId,.applicationIdentity,.catalogId,.cookieName) |
+    .cameraAgents |= map(del(.instanceId,.applicationIdentity,.catalogId,.cookieName)) |
+    .catalog=(.catalogs[0] | {kind,version,sha256,length,rowCount}) |
+    .deployment.catalog=(.catalogs[0] | {bundlePath,installRoot,allowFixture}) |
+    del(.catalogs)
+  ' "$BASE_INVENTORY" > "$schema7_inventory"
+  deploy_validate_partial_prepare_inventory "$schema7_inventory" isolated
+  TMPDIR="$TEMP_DIR/untrusted-missing-tmp" deploy_validate_partial_prepare_inventory "$schema7_inventory" isolated
+  test "$(deploy_partial_prepare_project "$schema7_inventory" "$(jq -c '.logicHost' "$schema7_inventory")" logicHost)" = hvo-test-logic
+  test "$(deploy_partial_prepare_project "$schema7_inventory" "$(jq -c '.cameraAgents[0]' "$schema7_inventory")" cameraAgent)" = hvo-test-east
+  jq '.deployment.catalog.installRoot += ",retained"' "$schema7_inventory" > "$TEMP_DIR/schema7-historical-path.inventory"
+  deploy_validate_partial_prepare_inventory "$TEMP_DIR/schema7-historical-path.inventory" isolated
+  jq '.logicHost.instanceId="00000000-0000-4000-8000-000000000001"' "$schema7_inventory" > "$TEMP_DIR/schema7-invalid.inventory"
+  if deploy_validate_partial_prepare_inventory "$TEMP_DIR/schema7-invalid.inventory" isolated >/dev/null 2>&1; then
+    fail 'Schema 7 recovery accepted a schema-8-only target field.'
+  fi
+  jq '.cameraAgents[0].sshHost=.logicHost.sshHost' "$schema7_inventory" > "$TEMP_DIR/schema7-invalid.inventory"
+  if deploy_validate_partial_prepare_inventory "$TEMP_DIR/schema7-invalid.inventory" isolated >/dev/null 2>&1; then
+    fail 'Schema 7 recovery accepted a historically invalid target collision.'
+  fi
+  if PATH="$BIN:$PATH" "$REPO_ROOT/scripts/deploy:environment" preflight --inventory "$schema7_inventory" --mode isolated \
+    --run-id schema7-normal-phase --state-root "$TEMP_DIR/schema7-normal-state" --evidence-root "$TEMP_DIR/schema7-normal-evidence" >/dev/null 2>&1; then
+    fail 'Normal deployment phase accepted schema 7 inventory.'
+  fi
+)
+
+# Rebind a retained failed prepare to its immutable schema 7 bytes and exercise the full recovery command.
+schema7_case=partial-schema7
+write_prepare_case "$schema7_case" isolated
+run_prepare_preflight "$schema7_case" isolated
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' "$schema7_case" isolated
+schema7_logic_root="$(inventory_runtime_root logic)"
+schema7_logic_lock="${schema7_logic_root%/*}/.hvo-deploy-prepare-$(printf 'v1\ntarget=logic\nroot=%s\n' "$schema7_logic_root" | sha256sum | cut -c1-32).lock"
+jq '
+  .schemaVersion=7 |
+  del(.productRoot) |
+  .logicHost |= del(.friendlyName,.instanceId,.applicationIdentity,.catalogId,.cookieName) |
+  .cameraAgents |= map(del(.instanceId,.applicationIdentity,.catalogId,.cookieName)) |
+  .catalog=(.catalogs[0] | {kind,version,sha256,length,rowCount}) |
+  .deployment.catalog=(.catalogs[0] | {bundlePath,installRoot,allowFixture}) |
+  del(.catalogs)
+' "$INVENTORY" > "$INVENTORY.changed"
+mv "$INVENTORY.changed" "$INVENTORY"
+schema7_hash="$(jq -S -c . "$INVENTORY" | sha256sum | cut -d' ' -f1)"
+schema7_marker="$(printf 'v1\nmode=isolated\nrun=%s\ninventory=%s\ntarget=logic\nroot=%s\nowner=%s\n' \
+  "$schema7_case" "$schema7_hash" "$schema7_logic_root" "$(id -un)" | sha256sum | cut -d' ' -f1)"
+schema7_state="$TEMP_DIR/output/$schema7_case-state"
+schema7_evidence="$TEMP_DIR/output/$schema7_case-evidence"
+for schema7_path in "$schema7_state/manifest.json" "$schema7_evidence/preflight.json"; do
+  jq --arg hash "$schema7_hash" '.inventorySha256=$hash' "$schema7_path" > "$schema7_path.changed"
+  chmod 600 "$schema7_path.changed"; mv "$schema7_path.changed" "$schema7_path"
+done
+for schema7_path in "$schema7_state/prepare-ledger.json" "$schema7_state/prepare-manifest.json" "$schema7_evidence/prepare.json"; do
+  jq --arg hash "$schema7_hash" --arg marker "$schema7_marker" \
+    '.inventorySha256=$hash | (.targets[] | select(.target == "logic") | .markerDigest)=$marker' "$schema7_path" > "$schema7_path.changed"
+  chmod 600 "$schema7_path.changed"; mv "$schema7_path.changed" "$schema7_path"
+done
+printf 'HVO-DEPLOY-ROOT\t1\nmarker\t%s\n' "$schema7_marker" > "$schema7_logic_root/.hvo-deploy/ownership"
+printf 'HVO-DEPLOY-PREPARE-LOCK\t1\nmarker\t%s\n' "$schema7_marker" > "$schema7_logic_lock"
+printf 'HVO-DEPLOY-PREPARE-STATE\t1\nmarker\t%s\ncreatingRun\t%s\nrootNew\ttrue\ncontrolNew\ttrue\nmarkerNew\ttrue\n' \
+  "$schema7_marker" "$schema7_case" > "$schema7_logic_lock.state"
+chmod 600 "$schema7_logic_root/.hvo-deploy/ownership" "$schema7_logic_lock" "$schema7_logic_lock.state"
+if FAKE_PARTIAL_PREPARE_RESOURCE='logic-context:container:label=com.docker.compose.project=hvo-test-logic' \
+  run_deploy_mode partial-prepare-cleanup "$schema7_case" isolated --dry-run > "$TEMP_DIR/schema7-partial.log" 2>&1; then
+  fail 'Schema 7 recovery missed a historical-project Docker resource.'
+fi
+grep -Fq 'unexpected-deployment-resource' "$TEMP_DIR/schema7-partial.log"
+if FAKE_PARTIAL_PREPARE_RESOURCE='east-context:container:label=com.docker.compose.project=hvo-test-east' \
+  run_deploy_mode partial-prepare-cleanup "$schema7_case" isolated --dry-run > "$TEMP_DIR/schema7-partial.log" 2>&1; then
+  fail 'Schema 7 recovery missed a historical camera-project Docker resource.'
+fi
+grep -Fq 'unexpected-deployment-resource' "$TEMP_DIR/schema7-partial.log"
+run_deploy_mode partial-prepare-cleanup "$schema7_case" isolated --dry-run >/dev/null
+jq -e --arg hash "$schema7_hash" '.phaseStatus == "passed" and .operation == "dry-run" and .inventorySha256 == $hash' \
+  "$schema7_evidence/partial-prepare-inspect.json" >/dev/null
+
 partial_case=partial-cleanup
 write_prepare_case "$partial_case" isolated
 cp "$INVENTORY" "$TEMP_DIR/$partial_case.inventory"

@@ -136,6 +136,17 @@ deploy_partial_prepare_resource_status() {
       '.resources[]? | select(.resource == $resource and .action == $action) | .status // empty' <<< "$DEPLOY_PARTIAL_PREPARE_JSON"
 }
 
+deploy_partial_prepare_project() {
+    local inventory="$1" target="$2" component="$3" base name
+    if [[ "$(jq -r '.schemaVersion' "$inventory")" == 7 ]]; then
+        base="$(jq -r '.deployment.resources.project' "$inventory")"
+        if [[ "$component" == logicHost ]]; then name=logic; else name="$(jq -r '.name' <<< "$target")"; fi
+        printf '%s-%s\n' "$base" "$name"
+    else
+        deploy_compose_project "$inventory" "$target"
+    fi
+}
+
 deploy_partial_prepare_verify_docker() {
     local inventory="$1" run_id="$2" preflight="$3"
     local target name context binding endpoint project container component
@@ -151,16 +162,18 @@ deploy_partial_prepare_verify_docker() {
         context_endpoints["$context"]="$endpoint"
         endpoints["$endpoint"]="${endpoints[$endpoint]:-}"
         if component="$(deploy_target_component "$inventory" "$name" 2>/dev/null)"; then
-            project="$(deploy_compose_project "$inventory" "$target")"
+            project="$(deploy_partial_prepare_project "$inventory" "$target" "$component")"
             endpoints["$endpoint"]+="${endpoints[$endpoint]:+ }$project"
-            container="hvo-skymonitor-$(jq -r '.instanceId | gsub("-"; "")' <<< "$target")"
-            deploy_transport_require_container_absent_host "$endpoint" "$container" || {
-              deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;
-            }
-            if [[ "$component" == logicHost ]]; then
-                deploy_transport_require_container_absent_host "$endpoint" "$container-init" || {
+            if [[ "$(jq -r '.schemaVersion' "$inventory")" == 8 ]]; then
+                container="hvo-skymonitor-$(jq -r '.instanceId | gsub("-"; "")' <<< "$target")"
+                deploy_transport_require_container_absent_host "$endpoint" "$container" || {
                   deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;
                 }
+                if [[ "$component" == logicHost ]]; then
+                    deploy_transport_require_container_absent_host "$endpoint" "$container-init" || {
+                      deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;
+                    }
+                fi
             fi
             deploy_transport_require_network_absent_host "$endpoint" "${project}_default" || {
               deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;

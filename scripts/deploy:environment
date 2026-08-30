@@ -113,8 +113,12 @@ deploy_require_commands jq git sha256sum stat id realpath dirname mktemp install
 [[ "$phase" != images ]] || deploy_require_commands tar mv rm || exit 1
 [[ "$phase" != catalog && "$phase" != up && "$phase" != bootstrap && "$phase" != smoke && "$phase" != acceptance-run && "$phase" != transient-confirm ]] || deploy_require_commands scp curl sqlite3 wc || exit 1
 inventory="$(realpath -e -- "$inventory" 2>/dev/null)" || deploy_fail validate inventory "inventory-not-found"
-deploy_validate_inventory "$inventory" "$mode"
-deploy_validate_product_layout "$inventory" "$mode"
+if [[ "$phase" == partial-prepare-cleanup ]]; then
+    deploy_validate_partial_prepare_inventory "$inventory" "$mode"
+else
+    deploy_validate_inventory "$inventory" "$mode"
+    deploy_validate_product_layout "$inventory" "$mode"
+fi
 [[ "$phase" == partial-prepare-cleanup ]] || deploy_validate_secret_references "$inventory"
 expected_revision="$(jq -r '.source.revision' "$inventory")"
 actual_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
