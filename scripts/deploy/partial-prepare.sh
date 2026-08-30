@@ -136,13 +136,13 @@ deploy_partial_prepare_resource_status() {
       '.resources[]? | select(.resource == $resource and .action == $action) | .status // empty' <<< "$DEPLOY_PARTIAL_PREPARE_JSON"
 }
 
-deploy_partial_prepare_verify_all() {
-    local inventory="$1" run_id="$2" mode="$3" hash="$4" preflight="$5"
-    local target name context project container component ssh root owner expected_machine expected_host entry marker lock_name creating_run root_status lock_status result
+deploy_partial_prepare_verify_docker() {
+    local inventory="$1" run_id="$2" preflight="$3"
+    local target name context project container component
     local -A contexts=()
     while IFS= read -r target; do
         name="$(jq -r '.name' <<< "$target")"; context="$(jq -r '.dockerContext' <<< "$target")"
-        deploy_phase_correlate_target "$target" "$preflight" || return 1
+        deploy_images_correlate_target "$target" "$preflight" || return 1
         contexts["$context"]="${contexts[$context]:-}"
         if component="$(deploy_target_component "$inventory" "$name" 2>/dev/null)"; then
             project="$(deploy_compose_project "$inventory" "$target")"
@@ -168,9 +168,15 @@ deploy_partial_prepare_verify_all() {
     for context in "${!contexts[@]}"; do
         read -r -a projects <<< "${contexts[$context]}"
         deploy_transport_require_partial_prepare_resources_absent "$context" "$run_id" "${projects[@]}" || {
-          deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;
+            deploy_fail partial-prepare-cleanup docker unexpected-deployment-resource; return 1;
         }
     done
+}
+
+deploy_partial_prepare_verify_all() {
+    local inventory="$1" run_id="$2" mode="$3" hash="$4" preflight="$5"
+    local target name ssh root owner expected_machine expected_host deployment_state entry marker lock_name creating_run root_status lock_status result
+    deploy_partial_prepare_verify_docker "$inventory" "$run_id" "$preflight" || return 1
     while IFS= read -r target; do
         name="$(jq -r '.name' <<< "$target")"; ssh="$(jq -r '.sshHost' <<< "$target")"; root="$(jq -r '.runtimeRoot' <<< "$target")"
         owner="$(jq -r '.runtimeOwner' <<< "$target")"; expected_machine="$(jq -r '.expectedHostIdentity' <<< "$target")"; expected_host="$(jq -r '.expectedHostName' <<< "$target")"
@@ -178,7 +184,8 @@ deploy_partial_prepare_verify_all() {
         lock_name=".hvo-deploy-prepare-$(printf 'v1\ntarget=%s\nroot=%s\n' "$name" "$root" | sha256sum | cut -c1-32).lock"
         entry="$(jq -c --arg target "$name" '.targets[]? | select(.target == $target)' <<< "$DEPLOY_PARTIAL_PREPARE_SOURCE")"
         if [[ -z "$entry" ]]; then
-            deploy_transport_require_unprepared_target_absent "$ssh" "$root" "$lock_name" "$expected_machine" "$expected_host" "$owner" || {
+            deployment_state="$(jq -r --arg target "$name" '.targets[] | select(.name == $target) | .deploymentState' <<< "$preflight")"
+            deploy_transport_require_unprepared_target_absent "$ssh" "$root" "$lock_name" "$expected_machine" "$expected_host" "$owner" "$deployment_state" || {
               deploy_fail partial-prepare-cleanup "$name" unjournaled-prepare-artifacts; return 1;
             }
             continue
@@ -248,6 +255,7 @@ deploy_run_partial_prepare_cleanup() {
         if deploy_partial_prepare_begin_action "target:$name" cleanup-runtime-artifacts; then
             root_status=intent; lock_status="$(deploy_partial_prepare_resource_status "$name" cleanup-prepare-lock)"; lock_status="${lock_status:-none}"
             deploy_phase_correlate_target "$target" "$preflight" || return 1
+            deploy_partial_prepare_verify_docker "$inventory" "$run_id" "$preflight" || return 1
             deploy_transport_partial_prepare_target "$ssh" "$root" "$marker" "$run_id" "$lock_name" \
               "$(jq -r '.newlyCreated.root' <<< "$entry")" "$(jq -r '.newlyCreated.controlDirectory' <<< "$entry")" \
               "$(jq -r '.newlyCreated.marker' <<< "$entry")" "$root_status" "$lock_status" cleanup-root "${DEPLOY_TEST_FAILPOINT:-none}" "$name" \
@@ -258,6 +266,7 @@ deploy_run_partial_prepare_cleanup() {
         if deploy_partial_prepare_begin_action "target:$name" cleanup-prepare-lock; then
             root_status=completed; lock_status=intent
             deploy_phase_correlate_target "$target" "$preflight" || return 1
+            deploy_partial_prepare_verify_docker "$inventory" "$run_id" "$preflight" || return 1
             deploy_transport_partial_prepare_target "$ssh" "$root" "$marker" "$run_id" "$lock_name" \
               "$(jq -r '.newlyCreated.root' <<< "$entry")" "$(jq -r '.newlyCreated.controlDirectory' <<< "$entry")" \
               "$(jq -r '.newlyCreated.marker' <<< "$entry")" "$root_status" "$lock_status" cleanup-lock "${DEPLOY_TEST_FAILPOINT:-none}" "$name" \

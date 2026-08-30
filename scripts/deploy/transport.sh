@@ -1659,17 +1659,18 @@ REMOTE
 }
 
 deploy_transport_require_unprepared_target_absent() {
-    local ssh_host="$1" root="$2" lock_name="$3" expected_machine="$4" expected_host="$5" runtime_owner="$6"
+    local ssh_host="$1" root="$2" lock_name="$3" expected_machine="$4" expected_host="$5" runtime_owner="$6" deployment_state="$7"
     timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8 \
       -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" bash -s -- \
-      "$root" "$lock_name" "$expected_machine" "$expected_host" "$runtime_owner" 2>/dev/null <<'REMOTE'
+      "$root" "$lock_name" "$expected_machine" "$expected_host" "$runtime_owner" "$deployment_state" 2>/dev/null <<'REMOTE'
 set -euo pipefail
-root=$1; lock_name=$2; expected_machine=$3; expected_host=$4; runtime_owner=$5
+root=$1; lock_name=$2; expected_machine=$3; expected_host=$4; runtime_owner=$5; deployment_state=$6
 [[ "$(cat /etc/machine-id 2>/dev/null || hostname)" == "$expected_machine" && "$(hostname)" == "$expected_host" ]] || exit 90
 runtime_uid=$(id -u "$runtime_owner" 2>/dev/null) || exit 91
 [[ "$(id -u)" == "$runtime_uid" ]] || exit 91
 [[ "$root" == /* && "$root" != / && "$root" != *//* && "$root" != */../* && "$root" != */./* &&
-   "$lock_name" =~ ^\.hvo-deploy-prepare-[0-9a-f]{32}\.lock$ ]] || exit 92
+   "$lock_name" =~ ^\.hvo-deploy-prepare-[0-9a-f]{32}\.lock$ &&
+   ( "$deployment_state" == ready || "$deployment_state" == needs_prepare ) ]] || exit 92
 parent=${root%/*}; [[ -n "$parent" ]] || parent=/
 current=/; IFS=/ read -r -a components <<< "${parent#/}"
 for component in "${components[@]}"; do
@@ -1683,6 +1684,7 @@ done
 [[ -d "$parent" && ! -L "$parent" && -x "$parent" ]] || exit 93
 lock_path="$parent/$lock_name"
 [[ ! -e "$lock_path" && ! -L "$lock_path" && ! -e "$lock_path.state" && ! -L "$lock_path.state" ]]
+[[ "$deployment_state" != needs_prepare || ( ! -e "$root" && ! -L "$root" ) ]] || exit 94
 printf 'verified\n'
 REMOTE
 }
@@ -1944,22 +1946,27 @@ flock -n 9 || fail lock-contended
 if [[ "$operation" == validate ]]; then [[ "$(stat -c %u:%a "$lock_path" 2>/dev/null)" == "$runtime_uid:600" ]] || fail completed-drift
 else chmod 600 "$lock_path" || fail unsafe-lock; fi
 lock_expected=$'HVO-DEPLOY-PREPARE-LOCK\t1\nmarker\t'"$marker_digest"
+lock_expected_bytes=$((${#lock_expected} + 1))
 lock_actual=$(<"$lock_path")
 if [[ -z "$lock_actual" ]]; then
   [[ "$operation" != validate ]] || fail completed-drift
   printf '%s\n' "$lock_expected" >&9; lock_actual=$lock_expected
 fi
-[[ "$lock_actual" == "$lock_expected" ]] || fail lock-content-mismatch
+[[ "$(wc -c < "$lock_path")" == "$lock_expected_bytes" && "$lock_actual" == "$lock_expected" ]] || fail lock-content-mismatch
 validate_components "$parent" || fail unsafe-path
 state_path="$lock_path.state"; state_preexisting=false
 if [[ -e "$state_path" || -L "$state_path" ]]; then
   [[ -f "$state_path" && ! -L "$state_path" && "$(stat -c %h "$state_path" 2>/dev/null)" == 1 ]] || fail state-mismatch
-  state_preexisting=true; state_header=; state_marker=; creating_run=; root_new=; control_new=; marker_new=
+  state_preexisting=true; state_header=; state_marker=; creating_run=; root_new=; control_new=; marker_new=; state_actual=$(<"$state_path")
   while IFS=$'\t' read -r key value; do
     case "$key" in HVO-DEPLOY-PREPARE-STATE) state_header=$value ;; marker) state_marker=$value ;; creatingRun) creating_run=$value ;; rootNew) root_new=$value ;; controlNew) control_new=$value ;; markerNew) marker_new=$value ;; *) fail state-mismatch ;; esac
-  done < "$state_path"
+  done <<< "$state_actual"
   [[ "$state_header" == 1 && "$state_marker" == "$marker_digest" && "$creating_run" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && ( "$root_new" == true || "$root_new" == false ) &&
      ( "$control_new" == true || "$control_new" == false ) && ( "$marker_new" == true || "$marker_new" == false ) ]] || fail state-mismatch
+  state_expected=$(printf 'HVO-DEPLOY-PREPARE-STATE\t1\nmarker\t%s\ncreatingRun\t%s\nrootNew\t%s\ncontrolNew\t%s\nmarkerNew\t%s' \
+    "$state_marker" "$creating_run" "$root_new" "$control_new" "$marker_new")
+  state_expected_bytes=$((${#state_expected} + 1))
+  [[ "$(wc -c < "$state_path")" == "$state_expected_bytes" && "$state_actual" == "$state_expected" ]] || fail state-mismatch
 else
   creating_run=$run_id; root_new=false; control_new=false; marker_new=false
 fi
@@ -1969,7 +1976,8 @@ validate_completed_layout() {
   marker="$root/.hvo-deploy/ownership"
   [[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker" 2>/dev/null)" == 1 ]] || fail completed-drift
   marker_expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
-  [[ "$(<"$marker")" == "$marker_expected" ]] || fail completed-drift
+  marker_expected_bytes=$((${#marker_expected} + 1))
+  [[ "$(wc -c < "$marker")" == "$marker_expected_bytes" && "$(<"$marker")" == "$marker_expected" ]] || fail completed-drift
   [[ "$(stat -c %u:%a "$root" 2>/dev/null)" == "$runtime_uid:700" &&
      "$(stat -c %u:%a "$root/.hvo-deploy" 2>/dev/null)" == "$runtime_uid:700" &&
      "$(stat -c %u:%a "$marker" 2>/dev/null)" == "$runtime_uid:600" &&
@@ -1998,7 +2006,8 @@ if [[ -e "$root" || -L "$root" ]]; then
     [[ "$(stat -c %h "$marker" 2>/dev/null)" == 1 ]] || fail marker-mismatch
     marker_actual=$(<"$marker")
     marker_expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
-    [[ "$marker_actual" == "$marker_expected" ]] || fail marker-mismatch
+    marker_expected_bytes=$((${#marker_expected} + 1))
+    [[ "$(wc -c < "$marker")" == "$marker_expected_bytes" && "$marker_actual" == "$marker_expected" ]] || fail marker-mismatch
     [[ "$state_preexisting" == true ]] || fail state-mismatch
   else
     nonempty=$(find "$root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) || fail unsafe-path
@@ -2016,9 +2025,11 @@ if [[ "$state_preexisting" == false ]]; then
   [[ ! -e "$control" && ! -L "$control" ]] && control_new=true
   [[ ! -e "$marker" && ! -L "$marker" ]] && marker_new=true
   state_expected=$(printf 'HVO-DEPLOY-PREPARE-STATE\t1\nmarker\t%s\ncreatingRun\t%s\nrootNew\t%s\ncontrolNew\t%s\nmarkerNew\t%s\n' "$marker_digest" "$creating_run" "$root_new" "$control_new" "$marker_new")
+  state_expected_bytes=$((${#state_expected} + 1))
   state_temporary="$state_path.tmp.$marker_digest"
   if [[ ! -e "$state_temporary" ]]; then (umask 077; printf '%s\n' "$state_expected" > "$state_temporary") || fail create-failed; fi
-  [[ -f "$state_temporary" && ! -L "$state_temporary" && "$(<"$state_temporary")" == "$state_expected" ]] || fail state-mismatch
+  [[ -f "$state_temporary" && ! -L "$state_temporary" && "$(wc -c < "$state_temporary")" == "$state_expected_bytes" &&
+     "$(<"$state_temporary")" == "$state_expected" ]] || fail state-mismatch
   chmod 600 "$state_temporary" || fail create-failed
   mv -T "$state_temporary" "$state_path" || fail create-failed
 fi

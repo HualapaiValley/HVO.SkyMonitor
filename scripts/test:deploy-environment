@@ -640,7 +640,14 @@ if [[ ( "$3" == container || "$3" == network || "$3" == volume ) && "$4" == ls ]
   while (( $# > 0 )); do
     if [[ "$1" == --filter ]]; then resource_filter=$2; shift 2; else shift; fi
   done
-  if [[ "${FAKE_PARTIAL_PREPARE_RESOURCE:-}" == "$context:$resource_kind:$resource_filter" ]]; then printf 'unexpected-resource\n'; fi
+  if [[ "${FAKE_PARTIAL_PREPARE_RESOURCE:-}" == "$context:$resource_kind:$resource_filter" ]]; then
+    resource_count_file="${FAKE_IMAGE_STATE:?}/partial-prepare-resource-count"
+    resource_count=0; [[ ! -f "$resource_count_file" ]] || resource_count="$(<"$resource_count_file")"
+    resource_count=$((resource_count + 1)); printf '%s\n' "$resource_count" > "$resource_count_file"
+    if [[ -z "${FAKE_PARTIAL_PREPARE_RESOURCE_AFTER:-}" || "$resource_count" -ge "$FAKE_PARTIAL_PREPARE_RESOURCE_AFTER" ]]; then
+      printf 'unexpected-resource\n'
+    fi
+  fi
 elif [[ "$3" == image && "$4" == pull ]]; then
   reference=$5
   [[ "${FAKE_IMAGE_TRANSFER_FAIL:-}" != "$context" ]] || exit 1
@@ -2923,6 +2930,12 @@ cp "$TEMP_DIR/$partial_case.inventory" "$INVENTORY"
 FAKE_PREPARE_IDENTITY_MISMATCH_HOST=logic expect_partial_failure 'provenance-or-content-invalid' "$partial_case" isolated --dry-run
 FAKE_DOCKER_MISMATCH=logic-context expect_partial_failure 'docker-daemon-correlation-mismatch' "$partial_case" isolated --dry-run
 
+# A root absent at preflight cannot appear later without a prepare-ledger entry.
+partial_east_root="$(inventory_runtime_root east)"
+mkdir -m 700 "$partial_east_root"; printf 'unexpected\n' > "$partial_east_root/application-state"
+expect_partial_failure 'unjournaled-prepare-artifacts' "$partial_case" isolated --dry-run
+rm -rf "$partial_east_root"
+
 cp "$partial_logic_root/.hvo-deploy/ownership" "$TEMP_DIR/partial-marker.valid"
 printf 'tampered\n' > "$partial_logic_root/.hvo-deploy/ownership"
 expect_partial_failure 'provenance-or-content-invalid' "$partial_case" isolated --dry-run
@@ -2952,6 +2965,7 @@ printf 'must-not-delete\n' > "$partial_logic_root/application-state"
 expect_partial_failure 'provenance-or-content-invalid' "$partial_case" isolated --dry-run
 rm "$partial_logic_root/application-state"
 for resource_kind in container network volume; do
+  rm -f "$FAKE_IMAGE_STATE/partial-prepare-resource-count"
   FAKE_PARTIAL_PREPARE_RESOURCE="logic-context:$resource_kind:label=com.docker.compose.project=hvo-test-11111111111141118111111111111111" \
     expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --dry-run
 done
@@ -2963,6 +2977,13 @@ partial_network=hvo-test-11111111111141118111111111111111_default
 printf '"unexpected-network"\n' > "$FAKE_IMAGE_STATE/network-logic-context-$partial_network"
 expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --dry-run
 rm "$FAKE_IMAGE_STATE/network-logic-context-$partial_network"
+
+# Resource absence is rechecked after journaling and immediately before the first deletion.
+rm -f "$FAKE_IMAGE_STATE/partial-prepare-resource-count"
+FAKE_PARTIAL_PREPARE_RESOURCE="logic-context:container:label=io.hvoskymonitor.run-id=$partial_case" \
+  FAKE_PARTIAL_PREPARE_RESOURCE_AFTER=2 \
+  expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --confirm "$partial_case"
+test -f "$partial_logic_root/.hvo-deploy/ownership" && test -f "$partial_logic_lock.state"
 
 unrelated_resource="$FAKE_IMAGE_STATE/unrelated-resource"; printf 'preserve\n' > "$unrelated_resource"
 run_deploy_mode partial-prepare-cleanup "$partial_case" isolated --dry-run >/dev/null
@@ -3026,6 +3047,25 @@ FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismat
 partial_state="$TEMP_DIR/output/$partial_case-state"; partial_evidence="$TEMP_DIR/output/$partial_case-evidence"
 FAKE_PARTIAL_PREPARE_RESOURCE="shared-context:container:label=io.hvoskymonitor.run-id=$partial_case" \
   expect_partial_failure 'unexpected-deployment-resource' "$partial_case" isolated --dry-run
+
+# A persistent target retained from an earlier run must still have canonical marker, lock, and state bytes.
+write_prepare_case partial-foreign persistent
+run_prepare_preflight partial-foreign-old persistent
+run_deploy_mode prepare partial-foreign-old persistent >/dev/null
+partial_logic_root="$(inventory_runtime_root logic)"
+partial_logic_lock="${partial_logic_root%/*}/.hvo-deploy-prepare-$(printf 'v1\ntarget=logic\nroot=%s\n' "$partial_logic_root" | sha256sum | cut -c1-32).lock"
+run_prepare_preflight partial-foreign-new persistent
+FAKE_PREPARE_IDENTITY_MISMATCH_HOST=east expect_prepare_failure 'identity-mismatch' partial-foreign-new persistent
+partial_state="$TEMP_DIR/output/partial-foreign-new-state"; partial_evidence="$TEMP_DIR/output/partial-foreign-new-evidence"
+cp "$partial_logic_lock" "$TEMP_DIR/partial-foreign-lock.valid"
+printf '\n' >> "$partial_logic_lock"
+expect_partial_failure 'preserved-provenance-invalid' partial-foreign-new persistent --dry-run
+cp "$TEMP_DIR/partial-foreign-lock.valid" "$partial_logic_lock"; chmod 600 "$partial_logic_lock"
+cp "$partial_logic_lock.state" "$TEMP_DIR/partial-foreign-state.valid"
+root_new="$(awk -F '\t' '$1 == "rootNew" { print $2 }' "$partial_logic_lock.state")"
+printf 'rootNew\t%s\n' "$root_new" >> "$partial_logic_lock.state"
+expect_partial_failure 'preserved-provenance-invalid' partial-foreign-new persistent --dry-run
+cp "$TEMP_DIR/partial-foreign-state.valid" "$partial_logic_lock.state"; chmod 600 "$partial_logic_lock.state"
 fi
 
 prepare_lifecycle_fixture() {
