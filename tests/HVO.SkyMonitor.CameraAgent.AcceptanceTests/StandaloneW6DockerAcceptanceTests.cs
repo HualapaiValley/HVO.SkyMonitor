@@ -4379,9 +4379,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
         }
         await page.GotoAsync($"/gallery/{capture.CaptureId:D}").ConfigureAwait(false);
         await page.GetByText("Capture detail", new() { Exact = true }).WaitForAsync().ConfigureAwait(false);
+        var primaryImage = page.Locator(".detail-capture-image img");
+        await primaryImage.WaitForAsync().ConfigureAwait(false);
+        Assert.IsGreaterThan(0, await page.Locator(".stage-selector__button:not(:disabled)").CountAsync().ConfigureAwait(false));
         var layered = page.Locator(".layered-presentation");
         if (expectLayeredPresentation)
         {
+            await page.Locator(".layered-workspace > summary").ClickAsync().ConfigureAwait(false);
             await layered.WaitForAsync().ConfigureAwait(false);
             Assert.AreEqual(1, await layered.Locator(".layered-canvas > img").CountAsync().ConfigureAwait(false));
             Assert.AreEqual(1, await layered.Locator(".layered-overlay svg").CountAsync().ConfigureAwait(false));
@@ -4403,11 +4407,10 @@ public sealed class StandaloneW6DockerAcceptanceTests
         }
         else
         {
-            var directPreview = page.Locator(".detail-hero figure > img");
-            await directPreview.WaitForAsync().ConfigureAwait(false);
             Assert.AreEqual(0, await layered.CountAsync().ConfigureAwait(false));
-            Assert.AreEqual(1, await directPreview.CountAsync().ConfigureAwait(false));
+            Assert.AreEqual(1, await primaryImage.CountAsync().ConfigureAwait(false));
         }
+        await page.Locator(".technical-evidence > summary").ClickAsync().ConfigureAwait(false);
         var comparisonImages = page.Locator(".comparison-grid img");
         await comparisonImages.First.WaitForAsync().ConfigureAwait(false);
         Assert.AreEqual(2, await comparisonImages.CountAsync().ConfigureAwait(false));

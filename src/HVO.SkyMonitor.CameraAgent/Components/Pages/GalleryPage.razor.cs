@@ -1,6 +1,7 @@
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Components.Presentation;
 using HVO.SkyMonitor.CameraAgent.Security;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -25,9 +26,16 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     private int _draftPageSize = 24;
     private long _generation;
     private bool _isLoading;
+    private bool _viewerOpen;
+    private Uri? _viewerSource;
+    private string _viewerTitle = "Archived sky capture";
+    private string _viewerAlt = "Archived sky capture";
+    private string? _viewerTriggerId;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
+    [Inject] internal ICameraAgentCapturePresentationProjector CapturePresentation { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
+    [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
 
     [Parameter, SupplyParameterFromQuery(Name = "from")] public string? From { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "to")] public string? To { get; set; }
@@ -84,6 +92,7 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             else if (result.IsSuccess && result.Value is not null)
             {
                 _page = result.Value;
+                _viewerOpen = false;
             }
             else
             {
@@ -189,14 +198,32 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
         args.Value,
         CultureInfo.InvariantCulture);
 
-    internal static CameraAgentGalleryArtifact? PreferredPreview(CameraAgentGalleryCapture capture) =>
-        capture.Artifacts.FirstOrDefault(static artifact => artifact.Role == FrameArtifactRole.AnnotatedPreview) ??
-        capture.Artifacts.FirstOrDefault(static artifact => artifact.Role == FrameArtifactRole.Preview);
+    private CameraAgentCapturePresentation CardPresentation(CameraAgentGalleryCapture capture) =>
+        CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(CapturePresentation.Project(capture));
 
     internal static string PreviewUrl(Guid artifactId) =>
         FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/preview");
 
-    private string DetailUrl(Guid captureId)
+    private bool HasAdvancedFilters =>
+        !string.IsNullOrWhiteSpace(Origin) ||
+        !string.IsNullOrWhiteSpace(Role) ||
+        !string.IsNullOrWhiteSpace(Recipe) ||
+        !string.IsNullOrWhiteSpace(Status) ||
+        !string.IsNullOrWhiteSpace(RawState) ||
+        MinimumSequence is not null ||
+        MaximumSequence is not null ||
+        PageSize is not null and not 24;
+
+    private void OpenViewer(ArchiveLargeImageRequest request)
+    {
+        _viewerSource = request.Source;
+        _viewerTitle = request.Title;
+        _viewerAlt = request.Alt;
+        _viewerTriggerId = request.TriggerId;
+        _viewerOpen = true;
+    }
+
+    private Uri DetailUrl(Guid captureId)
     {
         var relative = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
         var returnUrl = ReturnUrlHelper.NormalizeReturnUrl($"/{relative}");
@@ -205,34 +232,32 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
         {
             returnUrl = "/gallery";
         }
-        return QueryHelpers.AddQueryString(
+        return new Uri(QueryHelpers.AddQueryString(
             FormattableString.Invariant($"/gallery/{captureId:D}"),
             "returnUrl",
-            returnUrl);
+            returnUrl), UriKind.Relative);
     }
 
-    private static string EvidenceLabel(GalleryEvidenceOrigin origin) => origin switch
+    private string FormatAge(DateTimeOffset capturedUtc)
     {
-        GalleryEvidenceOrigin.Simulated => "Simulated evidence",
-        GalleryEvidenceOrigin.DeveloperFixture => "Developer fixture",
-        _ => "Origin unknown / not physical"
-    };
-
-    private static string EvidenceClass(GalleryEvidenceOrigin origin) => origin switch
-    {
-        GalleryEvidenceOrigin.Simulated => "evidence--simulated",
-        GalleryEvidenceOrigin.DeveloperFixture => "evidence--fixture",
-        _ => "evidence--unknown"
-    };
-
-    private static string ProcessingSummary(CameraAgentGalleryCapture capture)
-    {
-        if (capture.ProcessingNodes.Count == 0)
+        var age = TimeProvider.GetUtcNow() - capturedUtc;
+        if (age < TimeSpan.Zero)
         {
-            return "No nodes";
+            age = TimeSpan.Zero;
         }
-        var complete = capture.ProcessingNodes.Count(static node => string.Equals(node.Status, "completed", StringComparison.OrdinalIgnoreCase));
-        return FormattableString.Invariant($"{complete}/{capture.ProcessingNodes.Count} complete");
+        if (age.TotalMinutes < 1)
+        {
+            return FormattableString.Invariant($"{Math.Max(0, (int)age.TotalSeconds)} sec old");
+        }
+        if (age.TotalHours < 1)
+        {
+            return FormattableString.Invariant($"{(int)age.TotalMinutes} min old");
+        }
+        if (age.TotalDays < 1)
+        {
+            return FormattableString.Invariant($"{(int)age.TotalHours} hr old");
+        }
+        return FormattableString.Invariant($"{(int)age.TotalDays} day{(age.TotalDays >= 2 ? "s" : string.Empty)} old");
     }
 
     internal static string FormatCaptureTime(DateTimeOffset value) =>

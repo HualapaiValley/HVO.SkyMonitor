@@ -17,7 +17,9 @@ internal interface ICameraAgentPreviewEncoder
     CameraAgentEncodedPreview Encode(
         FrameLayoutDescriptor layout,
         ReadOnlyMemory<byte> payload,
-        int maximumDimension);
+        int maximumDimension,
+        int maximumEncodedBytes,
+        CancellationToken cancellationToken);
 }
 
 internal sealed record CameraAgentEncodedPreview(byte[] Content, int Width, int Height);
@@ -27,26 +29,38 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
     public CameraAgentEncodedPreview Encode(
         FrameLayoutDescriptor layout,
         ReadOnlyMemory<byte> payload,
-        int maximumDimension)
+        int maximumDimension,
+        int maximumEncodedBytes,
+        CancellationToken cancellationToken)
     {
-        var resized = PackedImageDownsampler.Downsample(layout, payload, maximumDimension);
-        var result = layout.PixelFormat switch
+        var dimension = maximumDimension;
+        while (true)
         {
-            CameraPixelFormat.Mono8 => SkiaPreviewEncoder.EncodeMono8ToJpeg(
-                resized.Width, resized.Height, resized.Payload),
-            CameraPixelFormat.Mono16 => SkiaPreviewEncoder.EncodeMono16ToJpeg(
-                resized.Width, resized.Height, resized.Payload),
-            CameraPixelFormat.Rgb24 => SkiaPreviewEncoder.EncodeRgb24ToJpeg(
-                resized.Width, resized.Height, resized.Payload),
-            CameraPixelFormat.BayerRggb16 => SkiaPreviewEncoder.EncodeBayerRggb16ToJpeg(
-                resized.Width, resized.Height, resized.Payload),
-            _ => throw new NotSupportedException()
-        };
-        if (result.IsFailure)
-        {
-            throw new InvalidDataException("The durable preview could not be encoded.", result.Error);
+            cancellationToken.ThrowIfCancellationRequested();
+            var resized = PackedImageDownsampler.Downsample(layout, payload, dimension);
+            var result = layout.PixelFormat switch
+            {
+                CameraPixelFormat.Mono8 => SkiaPreviewEncoder.EncodeMono8ToJpeg(
+                    resized.Width, resized.Height, resized.Payload),
+                CameraPixelFormat.Mono16 => SkiaPreviewEncoder.EncodeMono16ToJpeg(
+                    resized.Width, resized.Height, resized.Payload),
+                CameraPixelFormat.Rgb24 => SkiaPreviewEncoder.EncodeRgb24ToJpeg(
+                    resized.Width, resized.Height, resized.Payload),
+                CameraPixelFormat.BayerRggb16 => SkiaPreviewEncoder.EncodeBayerRggb16ToJpeg(
+                    resized.Width, resized.Height, resized.Payload),
+                _ => throw new NotSupportedException()
+            };
+            if (result.IsFailure)
+            {
+                throw new InvalidDataException("The durable preview could not be encoded.", result.Error);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (result.Value.Length <= maximumEncodedBytes || resized.Width == 1 && resized.Height == 1)
+            {
+                return new(result.Value, resized.Width, resized.Height);
+            }
+            dimension = Math.Max(1, Math.Max(resized.Width, resized.Height) / 2);
         }
-        return new(result.Value, resized.Width, resized.Height);
     }
 
     internal static (int Width, int Height, ReadOnlyMemory<byte> Payload) Downsample(
@@ -60,7 +74,6 @@ internal sealed class CameraAgentPreviewEncoder : ICameraAgentPreviewEncoder
 internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, IDisposable
 {
     private const long MaximumEvidenceBytes = 4L * 1024 * 1024;
-    private const int AbsoluteMaximumPreviewDimension = 2_048;
     private const int AbsoluteMaximumPreviewEncodedBytes = 16 * 1024 * 1024;
     private readonly string _root;
     private readonly string _databasePath;
@@ -71,7 +84,6 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private readonly SemaphoreSlim _previewGate;
     private readonly object _cacheGate = new();
     private readonly Dictionary<PreviewCacheKey, PreviewCacheEntry> _previewCache = [];
-    private readonly Dictionary<PreviewCacheKey, Task<CameraAgentArtifactPreviewResult>> _previewFlights = [];
     private readonly Dictionary<ArtifactValidationCacheKey, ArtifactValidationCacheEntry> _validationCache = [];
     private long _previewCacheBytes;
     private long _cacheSequence;
@@ -95,11 +107,17 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         _previewGate = new SemaphoreSlim(_options.MaximumConcurrentPreviews, _options.MaximumConcurrentPreviews);
     }
 
+    public ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(
+        Guid artifactId,
+        CancellationToken cancellationToken)
+        => OpenContentCoreAsync(artifactId, forPreview: false, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated retrieval boundary must fail closed without exposing storage or parser exceptions.")]
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The opened immutable payload handle is intentionally transferred to the returned stream lease.")]
     [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The payload may be assigned when asynchronous validation fails and must then be disposed by this boundary.")]
-    public async ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(
+    private async ValueTask<CameraAgentArtifactContentResult> OpenContentCoreAsync(
         Guid artifactId,
+        bool forPreview,
         CancellationToken cancellationToken)
     {
         if (artifactId == Guid.Empty)
@@ -128,6 +146,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             if (!cachedValidation)
             {
                 validated = await ValidateEvidenceAsync(row, cancellationToken).ConfigureAwait(false);
+            }
+            if (forPreview && PreviewStatus(validated) is { } previewStatus)
+            {
+                return new(previewStatus);
             }
             if (!File.Exists(payloadPath))
             {
@@ -169,7 +191,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 validated.ByteLength,
                 validated.ChecksumSha256.ToUpperInvariant(),
                 CreateFileName(validated.ArtifactId, validated.MediaType),
-                validated.Descriptor);
+                validated.Descriptor,
+                validated.EncodedWidth,
+                validated.EncodedHeight);
             payload = null;
             return new(CameraAgentArtifactReadStatus.Found, content);
         }
@@ -224,117 +248,147 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         Guid artifactId,
         CancellationToken cancellationToken)
     {
-        var opened = await OpenContentAsync(artifactId, cancellationToken).ConfigureAwait(false);
-        if (opened.Status != CameraAgentArtifactReadStatus.Found || opened.Content is null)
-        {
-            return new(opened.Status);
-        }
-        CameraAgentArtifactContentStream? content = opened.Content;
-        if (!IsReconstructablePreviewRole(content.Role) || content.Descriptor is null ||
-            !IsSupportedPreviewMediaType(content.MediaType, content.Descriptor.Layout.PixelFormat))
-        {
-            await content.DisposeAsync().ConfigureAwait(false);
-            return new(CameraAgentArtifactReadStatus.UnsupportedMediaType);
-        }
-        var descriptor = content.Descriptor;
-        var layout = descriptor.Layout;
-        if (content.ByteLength > _options.MaximumPreviewSourceBytes ||
-            content.ByteLength > int.MaxValue)
-        {
-            await content.DisposeAsync().ConfigureAwait(false);
-            return new(CameraAgentArtifactReadStatus.TooLarge);
-        }
-        if (!HasPackedLayout(layout) || !HasSupportedByteOrder(layout))
-        {
-            await content.DisposeAsync().ConfigureAwait(false);
-            return new(CameraAgentArtifactReadStatus.UnsupportedMediaType);
-        }
-
-        var cacheKey = new PreviewCacheKey(
-            content.ChecksumSha256,
-            layout.Width,
-            layout.Height,
-            layout.PixelFormat);
-        Task<CameraAgentArtifactPreviewResult>? flight;
-        CameraAgentArtifactPreviewResult cached = default!;
-        lock (_cacheGate)
-        {
-            if (TryGetCachedLocked(cacheKey, out cached))
-            {
-                flight = null;
-            }
-            else if (!_previewFlights.TryGetValue(cacheKey, out flight))
-            {
-                flight = EncodePreviewAsync(cacheKey, content, descriptor);
-                _previewFlights.Add(cacheKey, flight);
-                content = null;
-            }
-        }
-        if (content is not null)
-        {
-            await content.DisposeAsync().ConfigureAwait(false);
-        }
-        return flight is null
-            ? cached
-            : await flight.WaitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Preview encoder failures are converted to a sanitized artifact status for every single-flight waiter.")]
-    private async Task<CameraAgentArtifactPreviewResult> EncodePreviewAsync(
-        PreviewCacheKey cacheKey,
-        CameraAgentArtifactContentStream content,
-        ReconstructionDescriptor descriptor)
-    {
-        await Task.Yield();
-        await _previewGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        await _previewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await using var contentLease = content.ConfigureAwait(false);
-            var source = new byte[checked((int)content.ByteLength)];
-            await content.ReadExactlyAsync(source, CancellationToken.None).ConfigureAwait(false);
-            if (!FrameReconstructor.TryReconstruct(descriptor, source, out _, verifyChecksum: false).IsValid)
+            var opened = await OpenContentCoreAsync(artifactId, forPreview: true, cancellationToken).ConfigureAwait(false);
+            if (opened.Status != CameraAgentArtifactReadStatus.Found || opened.Content is null)
             {
-                return new(CameraAgentArtifactReadStatus.Conflict);
+                return new(opened.Status);
             }
-            CameraAgentEncodedPreview encoded;
-            try
+            var content = opened.Content;
+            if (CameraAgentPreviewEligibilityPolicy.IsEncodedJpeg(content.Role, content.MediaType))
             {
-                encoded = _previewEncoder.Encode(
-                    descriptor.Layout,
-                    source,
-                    Math.Min(_options.MaximumPreviewDimension, AbsoluteMaximumPreviewDimension));
+                return await ReadEncodedJpegAsync(content, cancellationToken).ConfigureAwait(false);
             }
-            catch (NotSupportedException)
+            if (content.Descriptor is not { } descriptor ||
+                !CameraAgentPreviewEligibilityPolicy.IsSupportedLayout(descriptor.Layout))
             {
+                await content.DisposeAsync().ConfigureAwait(false);
                 return new(CameraAgentArtifactReadStatus.UnsupportedMediaType);
             }
-            catch (Exception)
+
+            var layout = descriptor.Layout;
+            var cacheKey = new PreviewCacheKey(
+                content.ChecksumSha256,
+                layout.Width,
+                layout.Height,
+                layout.PixelFormat);
+            CameraAgentArtifactPreviewResult cached;
+            bool cacheHit;
+            lock (_cacheGate)
             {
-                return new(CameraAgentArtifactReadStatus.Conflict);
+                cacheHit = TryGetCachedLocked(cacheKey, out cached);
             }
-            if (encoded.Content.Length > Math.Min(
-                    _options.MaximumPreviewEncodedBytes,
-                    AbsoluteMaximumPreviewEncodedBytes))
+            if (cacheHit)
             {
-                return new(CameraAgentArtifactReadStatus.TooLarge);
+                await content.DisposeAsync().ConfigureAwait(false);
+                return cached;
             }
-            var result = new CameraAgentArtifactPreviewResult(
-                CameraAgentArtifactReadStatus.Found,
-                encoded.Content,
-                PayloadChecksum.ComputeSha256(encoded.Content),
-                encoded.Width,
-                encoded.Height);
-            AddCached(cacheKey, result);
-            return result;
+            return await EncodePreviewAsync(cacheKey, content, descriptor, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            lock (_cacheGate)
-            {
-                _previewFlights.Remove(cacheKey);
-            }
             _previewGate.Release();
         }
+    }
+
+    private async ValueTask<CameraAgentArtifactPreviewResult> ReadEncodedJpegAsync(
+        CameraAgentArtifactContentStream content,
+        CancellationToken cancellationToken)
+    {
+        await using var contentLease = content.ConfigureAwait(false);
+        if (content.ByteLength > Math.Min(_options.MaximumPreviewEncodedBytes, AbsoluteMaximumPreviewEncodedBytes) ||
+            content.ByteLength > int.MaxValue)
+        {
+            return new(CameraAgentArtifactReadStatus.TooLarge);
+        }
+        try
+        {
+            var encoded = new byte[checked((int)content.ByteLength)];
+            await content.ReadExactlyAsync(encoded, cancellationToken).ConfigureAwait(false);
+            var info = JpegImageCodec.InspectJpeg(encoded);
+            if (content.EncodedWidth != info.Width || content.EncodedHeight != info.Height)
+            {
+                return new(CameraAgentArtifactReadStatus.Conflict);
+            }
+            return new(
+                CameraAgentArtifactReadStatus.Found,
+                encoded,
+                content.ChecksumSha256,
+                info.Width,
+                info.Height);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or OverflowException)
+        {
+            return new(CameraAgentArtifactReadStatus.Conflict);
+        }
+        catch (EndOfStreamException)
+        {
+            return new(CameraAgentArtifactReadStatus.Conflict);
+        }
+        catch (IOException)
+        {
+            return new(CameraAgentArtifactReadStatus.Unavailable);
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Preview encoder failures are converted to a sanitized artifact status.")]
+    private async ValueTask<CameraAgentArtifactPreviewResult> EncodePreviewAsync(
+        PreviewCacheKey cacheKey,
+        CameraAgentArtifactContentStream content,
+        ReconstructionDescriptor descriptor,
+        CancellationToken cancellationToken)
+    {
+        await using var contentLease = content.ConfigureAwait(false);
+        var source = new byte[checked((int)content.ByteLength)];
+        await content.ReadExactlyAsync(source, cancellationToken).ConfigureAwait(false);
+        if (!FrameReconstructor.TryReconstruct(descriptor, source, out _, verifyChecksum: false).IsValid)
+        {
+            return new(CameraAgentArtifactReadStatus.Conflict);
+        }
+        CameraAgentEncodedPreview encoded;
+        try
+        {
+            encoded = _previewEncoder.Encode(
+                descriptor.Layout,
+                source,
+                _options.MaximumPreviewDimension,
+                Math.Min(_options.MaximumPreviewEncodedBytes, AbsoluteMaximumPreviewEncodedBytes),
+                cancellationToken);
+        }
+        catch (NotSupportedException)
+        {
+            return new(CameraAgentArtifactReadStatus.UnsupportedMediaType);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return new(CameraAgentArtifactReadStatus.Conflict);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (encoded.Content.Length > Math.Min(
+                _options.MaximumPreviewEncodedBytes,
+                AbsoluteMaximumPreviewEncodedBytes))
+        {
+            return new(CameraAgentArtifactReadStatus.TooLarge);
+        }
+        var result = new CameraAgentArtifactPreviewResult(
+            CameraAgentArtifactReadStatus.Found,
+            encoded.Content,
+            PayloadChecksum.ComputeSha256(encoded.Content),
+            encoded.Width,
+            encoded.Height);
+        cancellationToken.ThrowIfCancellationRequested();
+        AddCached(cacheKey, result);
+        return result;
     }
 
     private async ValueTask<ValidatedArtifact> ValidateEvidenceAsync(
@@ -414,6 +468,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     product.Artifact,
                     product.RelativeArtifactPath,
                     product.ByteLength);
+                var encoded = product as DurableEncodedProductManifestV2;
                 return new ValidatedArtifact(
                     product.Artifact.ArtifactId,
                     product.Capture.CaptureId,
@@ -422,7 +477,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     product.ByteLength,
                     product.Artifact.ChecksumSha256,
                     product.RelativeArtifactPath,
-                    null);
+                    null,
+                    encoded?.EncodedWidth,
+                    encoded?.EncodedHeight);
             }
         }
         catch (JsonException exception)
@@ -471,7 +528,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             descriptor.Layout.ByteLength,
             descriptor.Artifact.ChecksumSha256,
             payloadRelativePath,
-            descriptor);
+            descriptor,
+            null,
+            null);
 
     private static async ValueTask<ArtifactEvidenceLookup> FindEvidenceAsync(
         SqliteConnection connection,
@@ -639,38 +698,27 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
     }
 
-    private static bool HasPackedLayout(FrameLayoutDescriptor layout)
+    private CameraAgentArtifactReadStatus? PreviewStatus(ValidatedArtifact artifact)
     {
-        try
+        var eligibility = CameraAgentPreviewEligibilityPolicy.Evaluate(
+            artifact.Role,
+            artifact.MediaType,
+            artifact.ByteLength,
+            artifact.Descriptor?.Layout.PixelFormat,
+            artifact.Descriptor is { } descriptor &&
+                CameraAgentPreviewEligibilityPolicy.IsSupportedLayout(descriptor.Layout),
+            artifact.EncodedWidth,
+            artifact.EncodedHeight,
+            _options);
+        return eligibility switch
         {
-            return layout.StrideBytes == checked(layout.Width * ImageLayout.BytesPerPixel(layout.PixelFormat)) &&
-                   layout.ByteLength == checked((long)layout.StrideBytes * layout.Height);
-        }
-        catch (Exception exception) when (exception is ArgumentOutOfRangeException or OverflowException)
-        {
-            return false;
-        }
+            CameraAgentPreviewEligibility.Available => null,
+            CameraAgentPreviewEligibility.UnsupportedMediaType => CameraAgentArtifactReadStatus.UnsupportedMediaType,
+            CameraAgentPreviewEligibility.TooLarge => CameraAgentArtifactReadStatus.TooLarge,
+            CameraAgentPreviewEligibility.Invalid => CameraAgentArtifactReadStatus.Conflict,
+            _ => throw new InvalidOperationException("The preview eligibility is invalid.")
+        };
     }
-
-    private static bool HasSupportedByteOrder(FrameLayoutDescriptor layout)
-        => layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16
-            ? layout.ByteOrder == FrameByteOrder.LittleEndian
-            : layout.ByteOrder == FrameByteOrder.NotApplicable;
-
-    private static bool IsSupportedPreviewMediaType(string mediaType, CameraPixelFormat pixelFormat)
-        => string.Equals(mediaType, "application/x-hvo-packed-image", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(mediaType, pixelFormat switch
-            {
-                CameraPixelFormat.Mono8 => "application/x-skymonitor-mono8",
-                CameraPixelFormat.Mono16 => "application/x-skymonitor-mono16",
-                CameraPixelFormat.Rgb24 => "application/x-skymonitor-rgb24",
-                CameraPixelFormat.BayerRggb16 => "application/x-skymonitor-bayer-rggb16",
-                _ => string.Empty
-            }, StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsReconstructablePreviewRole(FrameArtifactRole role)
-        => role is FrameArtifactRole.Raw or FrameArtifactRole.Calibrated or FrameArtifactRole.Combined or
-            FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview;
 
     private static string CreateFileName(Guid artifactId, string mediaType)
     {
@@ -852,7 +900,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         long ByteLength,
         string ChecksumSha256,
         string PayloadRelativePath,
-        ReconstructionDescriptor? Descriptor);
+        ReconstructionDescriptor? Descriptor,
+        int? EncodedWidth,
+        int? EncodedHeight);
 
     private sealed record PreviewCacheKey(
         string ChecksumSha256,

@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -7,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -179,7 +179,10 @@ public sealed class CameraAgentArtifactServiceTests
         using var fixture = await ArtifactFixture.CreateAsync(encoder: encoder).ConfigureAwait(false);
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
         var preview = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Preview).ConfigureAwait(false);
-        var calibrated = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Calibrated).ConfigureAwait(false);
+        var calibrated = await fixture.AddOutputAsync(
+            raw.Manifest,
+            FrameArtifactRole.Calibrated,
+            mediaType: "application/x-hvo-linear-frame").ConfigureAwait(false);
         var combined = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Combined).ConfigureAwait(false);
         var metadata = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Metadata).ConfigureAwait(false);
         var unsupported = await fixture.AddOutputAsync(
@@ -235,6 +238,125 @@ public sealed class CameraAgentArtifactServiceTests
         Assert.AreEqual(1, onePixel.Width);
         Assert.AreEqual(1, onePixel.Height);
         CollectionAssert.AreEqual(new byte[] { 0, 0 }, onePixel.Payload.ToArray());
+
+        var noisyPayload = new byte[256 * 256];
+        uint noiseState = 443;
+        for (var index = 0; index < noisyPayload.Length; index++)
+        {
+            noiseState = noiseState * 1_664_525 + 1_013_904_223;
+            noisyPayload[index] = (byte)(noiseState >> 24);
+        }
+        var noisy = ReconstructableCaptureContractTests.CreateManifest(
+            CameraPixelFormat.Mono8, 256, 256, 256, noisyPayload);
+        var bounded = new CameraAgentPreviewEncoder().Encode(
+            noisy.Descriptor.Layout,
+            noisyPayload,
+            256,
+            CameraAgentPreviewEligibilityPolicy.MinimumGeneratedPreviewEncodedBytes,
+            CancellationToken.None);
+        Assert.IsLessThanOrEqualTo(
+            CameraAgentPreviewEligibilityPolicy.MinimumGeneratedPreviewEncodedBytes,
+            bounded.Content.Length);
+        Assert.IsLessThan(256, bounded.Width);
+    }
+
+    [TestMethod]
+    public async Task PublishedJpegPreviewReturnsExactBoundedDurableBytesAsync()
+    {
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync().ConfigureAwait(false);
+        var published = await fixture.AddOutputAsync(
+            raw.Manifest,
+            FrameArtifactRole.AnnotatedPreview,
+            mediaType: "image/jpeg").ConfigureAwait(false);
+
+        var result = await fixture.Service.GetPreviewAsync(published.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, result.Status);
+        CollectionAssert.AreEqual(published.Payload, result.Content.ToArray());
+        Assert.AreEqual(published.ChecksumSha256, result.ChecksumSha256);
+        Assert.AreEqual(2, result.Width);
+        Assert.AreEqual(2, result.Height);
+
+        using var boundedFixture = await ArtifactFixture.CreateAsync(
+            artifactRead: new ArtifactReadOptions { MaximumPreviewEncodedBytes = 1 }).ConfigureAwait(false);
+        var boundedRaw = await boundedFixture.AddRawAsync().ConfigureAwait(false);
+        var oversized = await boundedFixture.AddOutputAsync(
+            boundedRaw.Manifest,
+            FrameArtifactRole.Preview,
+            mediaType: "image/jpeg").ConfigureAwait(false);
+        var rejected = await boundedFixture.Service.GetPreviewAsync(
+            oversized.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.TooLarge, rejected.Status);
+        Assert.AreEqual(0L, boundedFixture.Service.PayloadValidationReads);
+
+        using var mismatchedFixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        var mismatchedRaw = await mismatchedFixture.AddRawAsync().ConfigureAwait(false);
+        var mismatched = await mismatchedFixture.AddOutputAsync(
+            mismatchedRaw.Manifest,
+            FrameArtifactRole.AnnotatedPreview,
+            mediaType: "image/jpeg",
+            encodedWidth: 3).ConfigureAwait(false);
+        var conflict = await mismatchedFixture.Service.GetPreviewAsync(
+            mismatched.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict, conflict.Status);
+
+        using var dimensionFixture = await ArtifactFixture.CreateAsync(
+            artifactRead: new ArtifactReadOptions { MaximumPreviewDimension = 1 }).ConfigureAwait(false);
+        var dimensionRaw = await dimensionFixture.AddRawAsync().ConfigureAwait(false);
+        var dimensionBounded = await dimensionFixture.AddOutputAsync(
+            dimensionRaw.Manifest,
+            FrameArtifactRole.AnnotatedPreview,
+            mediaType: "image/jpeg").ConfigureAwait(false);
+        var dimensionRejected = await dimensionFixture.Service.GetPreviewAsync(
+            dimensionBounded.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.TooLarge, dimensionRejected.Status);
+        Assert.AreEqual(0L, dimensionFixture.Service.PayloadValidationReads);
+    }
+
+    [TestMethod]
+    public async Task UnsupportedMediaPrecedesSourceBoundsAndPublishedJpegsShareConcurrencyGateAsync()
+    {
+        using (var fixture = await ArtifactFixture.CreateAsync(
+                   artifactRead: new ArtifactReadOptions { MaximumPreviewSourceBytes = 1 }).ConfigureAwait(false))
+        {
+            var raw = await fixture.AddRawAsync().ConfigureAwait(false);
+            var unsupported = await fixture.AddOutputAsync(
+                raw.Manifest,
+                FrameArtifactRole.AnnotatedPreview,
+                mediaType: "text/plain").ConfigureAwait(false);
+
+            var result = await fixture.Service.GetPreviewAsync(
+                unsupported.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(CameraAgentArtifactReadStatus.UnsupportedMediaType, result.Status);
+            Assert.AreEqual(0L, fixture.Service.PayloadValidationReads);
+        }
+
+        var blockingEncoder = new BlockingPreviewEncoder();
+        using var bounded = await ArtifactFixture.CreateAsync(
+            artifactRead: new ArtifactReadOptions { MaximumConcurrentPreviews = 1 },
+            encoder: blockingEncoder).ConfigureAwait(false);
+        var generatedRaw = await bounded.AddRawAsync().ConfigureAwait(false);
+        var generated = await bounded.AddOutputAsync(
+            generatedRaw.Manifest, FrameArtifactRole.Preview).ConfigureAwait(false);
+        var jpegRaw = await bounded.AddRawAsync().ConfigureAwait(false);
+        var jpeg = await bounded.AddOutputAsync(
+            jpegRaw.Manifest,
+            FrameArtifactRole.AnnotatedPreview,
+            payloadSeed: 20,
+            mediaType: "image/jpeg").ConfigureAwait(false);
+        var first = Task.Run(async () => await bounded.Service.GetPreviewAsync(
+            generated.ArtifactId, CancellationToken.None).ConfigureAwait(false));
+        await blockingEncoder.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        using var queuedCancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await bounded.Service.GetPreviewAsync(jpeg.ArtifactId, queuedCancellation.Token).ConfigureAwait(false))
+            .ConfigureAwait(false);
+        Assert.AreEqual(1L, bounded.Service.PayloadValidationReads);
+        blockingEncoder.Release.TrySetResult();
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, (await first.ConfigureAwait(false)).Status);
     }
 
     [TestMethod]
@@ -258,6 +380,7 @@ public sealed class CameraAgentArtifactServiceTests
             var preview = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Preview).ConfigureAwait(false);
             var result = await fixture.Service.GetPreviewAsync(preview.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.TooLarge, result.Status);
+            Assert.AreEqual(0L, fixture.Service.PayloadValidationReads);
         }
 
         using (var fixture = await ArtifactFixture.CreateAsync(
@@ -318,6 +441,31 @@ public sealed class CameraAgentArtifactServiceTests
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, (await first.ConfigureAwait(false)).Status);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, (await second.ConfigureAwait(false)).Status);
         }
+    }
+
+    [TestMethod]
+    public async Task ActivePreviewCancellationIsObservedBeforeCachingAsync()
+    {
+        var blockingEncoder = new BlockingPreviewEncoder();
+        using var fixture = await ArtifactFixture.CreateAsync(
+            artifactRead: new ArtifactReadOptions { MaximumConcurrentPreviews = 1 },
+            encoder: blockingEncoder).ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync().ConfigureAwait(false);
+        var preview = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Preview).ConfigureAwait(false);
+        using var cancellation = new CancellationTokenSource();
+        var canceled = Task.Run(async () => await fixture.Service.GetPreviewAsync(
+            preview.ArtifactId, cancellation.Token).ConfigureAwait(false));
+        await blockingEncoder.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        blockingEncoder.Release.TrySetResult();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await canceled.ConfigureAwait(false)).ConfigureAwait(false);
+        var retry = await fixture.Service.GetPreviewAsync(
+            preview.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, retry.Status);
+        Assert.AreEqual(1, blockingEncoder.Count);
     }
 
     private static async Task AssertStatusAfterMutationAsync(
@@ -447,9 +595,13 @@ public sealed class CameraAgentArtifactServiceTests
             ArtifactManifestV2 raw,
             FrameArtifactRole role,
             byte payloadSeed = 10,
-            string mediaType = "application/x-hvo-packed-image")
+            string mediaType = "application/x-hvo-packed-image",
+            int encodedWidth = 2,
+            int encodedHeight = 2)
         {
-            var payload = new byte[] { payloadSeed, 20, 30, 40 };
+            var payload = string.Equals(mediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase)
+                ? JpegImageCodec.EncodeMono8ToJpeg(2, 2, new byte[] { payloadSeed, 20, 30, 40 })
+                : new byte[] { payloadSeed, 20, 30, 40 };
             var recipe = RecipeIdentityDescriptor.Create(
                 "artifact-reader-preview",
                 "1.0.0",
@@ -488,7 +640,24 @@ public sealed class CameraAgentArtifactServiceTests
             var relativePath = $"derived/{artifactId:N}.bin";
             var sidecarRelativePath = $"derived/{artifactId:N}.json";
             var manifest = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath);
-            var sidecar = CaptureContractJson.Serialize(manifest);
+            var sidecar = string.Equals(mediaType, "image/jpeg", StringComparison.OrdinalIgnoreCase)
+                ? DurableProcessingProductManifestJson.Serialize(new DurableEncodedProductManifestV2(
+                    DurableEncodedProductManifestV2.CurrentSchemaVersion,
+                    raw.Descriptor.Capture,
+                    artifact,
+                    outputIdentity,
+                    [new ProcessingAlgorithmIdentity("preview", "v1")],
+                    new ProcessingCompatibilityIdentity(
+                        "rig", "orientation", "calibration", "mask", "sensor", "setpoint", "processing"),
+                    0,
+                    payload.LongLength,
+                    relativePath,
+                    null,
+                    encodedWidth,
+                    encodedHeight,
+                    CameraPixelFormat.Mono8,
+                    "jpeg"))
+                : CaptureContractJson.Serialize(manifest);
             var payloadPath = Path.Combine(Root, relativePath);
             var sidecarPath = Path.Combine(Root, sidecarRelativePath);
             Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
@@ -596,8 +765,11 @@ public sealed class CameraAgentArtifactServiceTests
         public virtual CameraAgentEncodedPreview Encode(
             FrameLayoutDescriptor layout,
             ReadOnlyMemory<byte> payload,
-            int maximumDimension)
+            int maximumDimension,
+            int maximumEncodedBytes,
+            CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Count++;
             var scale = Math.Min(1d, Math.Min(
                 (double)maximumDimension / layout.Width,
@@ -622,7 +794,9 @@ public sealed class CameraAgentArtifactServiceTests
         public override CameraAgentEncodedPreview Encode(
             FrameLayoutDescriptor layout,
             ReadOnlyMemory<byte> payload,
-            int maximumDimension)
+            int maximumDimension,
+            int maximumEncodedBytes,
+            CancellationToken cancellationToken)
         {
             Entered.TrySetResult();
             if (Interlocked.Increment(ref _entered) >= requiredEntrants)
@@ -630,7 +804,8 @@ public sealed class CameraAgentArtifactServiceTests
                 RequiredEntered.TrySetResult();
             }
             Release.Task.GetAwaiter().GetResult();
-            return base.Encode(layout, payload, maximumDimension);
+            return base.Encode(layout, payload, maximumDimension, maximumEncodedBytes, cancellationToken);
         }
     }
+
 }

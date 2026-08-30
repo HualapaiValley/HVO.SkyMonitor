@@ -5,6 +5,9 @@
 .operations-heading > div > p:last-child { max-width: 48rem; color: var(--hvo-muted); margin: .75rem 0 0; }
 .eyebrow { margin: 0 0 .35rem; color: var(--hvo-info-fg); font-size: .72rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
 .heading-status { display: grid; justify-items: end; gap: .4rem; color: var(--hvo-muted); font-size: .78rem; }
+.technical-navigation { display: flex; gap: .45rem; margin: 0 0 1.25rem; padding-bottom: .35rem; overflow-x: auto; }
+.technical-navigation a { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .4rem; min-height: 44px; padding: .45rem .75rem; border: 1px solid var(--hvo-border-muted); border-radius: 999px; color: var(--hvo-muted-strong); background: var(--hvo-nav-badge-bg); text-decoration: none; }
+.technical-navigation a[aria-current="page"] { border-color: var(--hvo-info-strong); color: var(--hvo-body-color); }
 .refresh-link { min-height: 44px; padding: .25rem .45rem; border: 0; color: var(--hvo-info-fg); background: transparent; text-decoration: underline; text-underline-offset: .2rem; }
 .state-chip, .freshness { display: inline-flex; align-items: center; min-height: 1.7rem; padding: .2rem .65rem; border: 1px solid var(--hvo-border-stronger); border-radius: 999px; font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
 .state-chip--current, .freshness--fresh { color: var(--hvo-success-fg); background: var(--hvo-success-bg); }
@@ -56,4 +59,4 @@ dd { margin: .15rem 0 0; overflow-wrap: anywhere; font-weight: 650; }
 @media (max-width: 960px) { .instrument-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .instrument-card--wide { grid-column: span 2; } }
 @media (max-width: 640px) { .operations-page { padding: 1rem .75rem 2rem; } .operations-heading { display: grid; } .heading-status { justify-items: start; } .instrument-grid, .lane-grid, .storage-grid, .quarantine-grid { grid-template-columns: 1fr; } .instrument-card--wide { grid-column: auto; } .telemetry-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } .state-banner { align-items: flex-start; flex-direction: column; } .confirmation-actions { display: grid; } }
 @media (max-height: 500px) and (orientation: landscape) { .operations-page { padding-top: .65rem; } .operations-heading h1 { font-size: 2rem; } .confirmation { max-height: calc(100dvh - 1rem); } }
-@media (pointer: coarse) { .btn, select, .inline-link { min-height: 44px; } }
+@media (pointer: coarse) { .btn, select, .inline-link, .technical-navigation a { min-height: 44px; } }

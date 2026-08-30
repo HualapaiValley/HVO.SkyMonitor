@@ -213,6 +213,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingTelemetry>();
         services.AddSingleton<SqliteCaptureProcessingStore>();
         services.AddSingleton<ICameraAgentGallery, SqliteCameraAgentGallery>();
+        services.AddSingleton<ICameraAgentCapturePresentationProjector, CameraAgentCapturePresentationProjector>();
+        services.AddSingleton<ICameraAgentPresentationRuntime, CameraAgentPresentationRuntime>();
+        services.AddSingleton<ICameraAgentStructuredLayerAvailability, CameraAgentStructuredLayerAvailability>();
+        services.AddSingleton<ICameraAgentCurrentImagePresentationService, CameraAgentCurrentImagePresentationService>();
         services.AddSingleton<ICameraAgentPreviewEncoder, CameraAgentPreviewEncoder>();
         services.AddSingleton<ICameraAgentArtifactService, CameraAgentArtifactService>();
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();

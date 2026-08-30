@@ -310,7 +310,7 @@ public sealed class ArtifactReadOptions
     [Range(1, 1_073_741_824)]
     public long MaximumPreviewSourceBytes { get; init; } = 64L * 1024 * 1024;
 
-    [Range(1, 16_777_216)]
+    [Range(4_096, 16_777_216)]
     public int MaximumPreviewEncodedBytes { get; init; } = 16 * 1024 * 1024;
 
     [Range(1, 32)]

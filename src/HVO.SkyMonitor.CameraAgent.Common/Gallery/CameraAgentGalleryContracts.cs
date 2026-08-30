@@ -149,7 +149,11 @@ public sealed record CameraAgentGalleryArtifact(
     string? ProductSchemaVersion = null,
     string? ContentIdentitySha256 = null,
     string Availability = "Available",
-    string? AvailabilityReason = null);
+    string? AvailabilityReason = null,
+    int? EncodedWidth = null,
+    int? EncodedHeight = null,
+    CameraPixelFormat? PixelFormat = null,
+    bool PreviewReconstructionSupported = false);
 
 public sealed record CameraAgentGalleryAlgorithm(string Name, string Version);
 

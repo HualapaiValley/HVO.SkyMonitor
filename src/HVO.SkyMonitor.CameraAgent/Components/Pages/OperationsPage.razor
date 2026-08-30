@@ -1,4 +1,3 @@
-@page "/"
 @page "/operations"
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Operations
@@ -25,6 +24,17 @@
             <button type="button" class="refresh-link" disabled="@_isSubmitting" @onclick="RefreshNowAsync">Refresh now</button>
         </div>
     </header>
+
+    <nav class="technical-navigation" aria-label="Technical workspace">
+        <a href="/operations" aria-current="page"><i class="bi bi-activity"></i><span>Operations</span></a>
+        <a href="/transients"><i class="bi bi-lightning-charge"></i><span>Transients</span></a>
+        <a href="/schedule"><i class="bi bi-calendar3"></i><span>Schedule</span></a>
+        <a href="/calibration"><i class="bi bi-sliders"></i><span>Calibration</span></a>
+        <a href="/environmental"><i class="bi bi-cloud-sun"></i><span>Environment</span></a>
+        <a href="/system"><i class="bi bi-cpu"></i><span>System</span></a>
+        <a href="/devices/bootstrap"><i class="bi bi-usb-symbol"></i><span>Device</span></a>
+        <a href="/operations/quarantine"><i class="bi bi-shield-exclamation"></i><span>Quarantine</span></a>
+    </nav>
 
     @if (_isInitialLoading)
     {

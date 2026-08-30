@@ -1551,14 +1551,44 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
             command.CommandText = $"""
                 WITH ranked_nodes AS (
                     SELECT capture_id, node_id, required, status, recipe_name, output_role, output_variant,
-                           ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY node_id) AS gallery_rank
+                           ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY
+                               CASE WHEN EXISTS (
+                                   SELECT 1
+                                   FROM processing_outputs AS candidate
+                                   WHERE candidate.capture_id = processing_nodes.capture_id
+                                     AND candidate.node_id = processing_nodes.node_id
+                                     AND candidate.availability_state = 'Available'
+                               ) THEN 0 ELSE 1 END,
+                               CASE output_role
+                                   WHEN 'AnnotatedPreview' THEN 0
+                                   WHEN 'Preview' THEN 1
+                                   WHEN 'Combined' THEN 2
+                                   WHEN 'Calibrated' THEN 3
+                                   ELSE 4
+                               END,
+                               node_id) AS gallery_rank
                     FROM processing_nodes
                     WHERE capture_id IN ({placeholders})
                 )
                 SELECT capture_id, node_id, required, status, recipe_name, output_role, output_variant
                 FROM ranked_nodes
                 WHERE gallery_rank <= $maximum_nodes
-                ORDER BY capture_id, node_id;
+                ORDER BY capture_id,
+                    CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM processing_outputs AS candidate
+                        WHERE candidate.capture_id = ranked_nodes.capture_id
+                          AND candidate.node_id = ranked_nodes.node_id
+                          AND candidate.availability_state = 'Available'
+                    ) THEN 0 ELSE 1 END,
+                    CASE output_role
+                        WHEN 'AnnotatedPreview' THEN 0
+                        WHEN 'Preview' THEN 1
+                        WHEN 'Combined' THEN 2
+                        WHEN 'Calibrated' THEN 3
+                        ELSE 4
+                    END,
+                    node_id;
                 """;
             AddCaptureParameters(command, captureIds);
             command.Parameters.AddWithValue("$maximum_nodes", maximumNodesPerCapture + 1);
@@ -1587,7 +1617,17 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                                product_kind, product_schema_version, content_identity_sha256,
                               availability_state, availability_reason, frame_artifact_recipe_version,
                            ROW_NUMBER() OVER (
-                               PARTITION BY capture_id ORDER BY node_id, output_identity_sha256) AS gallery_rank
+                                PARTITION BY capture_id ORDER BY
+                                    CASE availability_state WHEN 'Available' THEN 0 ELSE 1 END,
+                                    CASE role
+                                        WHEN 'AnnotatedPreview' THEN 0
+                                        WHEN 'Preview' THEN 1
+                                        WHEN 'Combined' THEN 2
+                                        WHEN 'Calibrated' THEN 3
+                                        ELSE 4
+                                    END,
+                                    node_id,
+                                    output_identity_sha256) AS gallery_rank
                     FROM processing_outputs
                     WHERE capture_id IN ({placeholders})
                 )
@@ -1598,7 +1638,17 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                          availability_state, availability_reason, frame_artifact_recipe_version
                 FROM ranked_outputs
                 WHERE gallery_rank <= $maximum_outputs
-                ORDER BY capture_id, node_id, output_identity_sha256;
+                ORDER BY capture_id,
+                    CASE availability_state WHEN 'Available' THEN 0 ELSE 1 END,
+                    CASE role
+                        WHEN 'AnnotatedPreview' THEN 0
+                        WHEN 'Preview' THEN 1
+                        WHEN 'Combined' THEN 2
+                        WHEN 'Calibrated' THEN 3
+                        ELSE 4
+                    END,
+                    node_id,
+                    output_identity_sha256;
                 """;
             AddCaptureParameters(command, captureIds);
             command.Parameters.AddWithValue("$maximum_outputs", maximumOutputsPerCapture + 1);

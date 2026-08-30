@@ -122,6 +122,7 @@ public sealed class AuthorizationRevocationComponentTests
     {
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        context.Services.AddSingleton<ICameraAgentCapturePresentationProjector>(service);
         context.Services.AddSingleton(TimeProvider.System);
         return service;
     }

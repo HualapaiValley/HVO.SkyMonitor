@@ -146,7 +146,7 @@ internal static class CameraAgentArtifactEndpoints
             }
 
             var etag = CreateETag(preview.ChecksumSha256);
-            SetPrivateHeaders(context.Response, immutable: true);
+            SetPrivateHeaders(context.Response, immutable: false);
             context.Response.Headers.ETag = etag;
             context.Response.Headers[ChecksumHeader] = preview.ChecksumSha256;
             context.Response.Headers.XContentTypeOptions = "nosniff";

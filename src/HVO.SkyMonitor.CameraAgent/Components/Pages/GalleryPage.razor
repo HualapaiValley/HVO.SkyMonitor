@@ -6,29 +6,36 @@
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
-<PageTitle>Gallery</PageTitle>
+<PageTitle>Archive</PageTitle>
 
 <div class="gallery-page">
     <header class="gallery-heading">
-        <div><p class="eyebrow">Protected durable evidence</p><h1>Capture gallery</h1><p>One bounded cursor page of local raw and derived capture facts.</p></div>
+        <div><p class="eyebrow">Bounded local history</p><h1>Archive</h1><p>Browse the sky visually. Capture facts and technical filters remain available when needed.</p></div>
         @if (_page is not null)
         {
             <span class="result-count">@_page.Items.Count result@(_page.Items.Count == 1 ? string.Empty : "s")</span>
         }
     </header>
 
-    <form class="gallery-filters" @onsubmit="ApplyFiltersAsync" @onsubmit:preventDefault aria-label="Gallery filters">
-        <div><label for="gallery-from">From (UTC)</label><input id="gallery-from" class="form-control" type="datetime-local" step="1" value="@_draftFrom" @onchange="SetDraftFrom" /></div>
-        <div><label for="gallery-to">To (UTC)</label><input id="gallery-to" class="form-control" type="datetime-local" step="1" value="@_draftTo" @onchange="SetDraftTo" /></div>
-        <div><label for="gallery-origin">Evidence origin</label><select id="gallery-origin" class="form-select" @bind="_draftOrigin"><option value="">Any origin</option><option value="Simulated">Simulated</option><option value="DeveloperFixture">Developer fixture</option><option value="Unknown">Unknown</option></select></div>
-        <div><label for="gallery-role">Artifact role</label><select id="gallery-role" class="form-select" @bind="_draftRole"><option value="">Any role</option>@foreach (var role in Enum.GetValues<FrameArtifactRole>()) { <option value="@role">@OperationsPage.SplitWords(role.ToString())</option> }</select></div>
-        <div><label for="gallery-recipe">Recipe name</label><input id="gallery-recipe" class="form-control" maxlength="128" @bind="_draftRecipe" /></div>
-        <div><label for="gallery-status">Processing status</label><input id="gallery-status" class="form-control" maxlength="64" @bind="_draftStatus" /></div>
-        <div><label for="gallery-raw">Raw state</label><input id="gallery-raw" class="form-control" maxlength="64" @bind="_draftRawState" /></div>
-        <div><label for="gallery-min-sequence">Minimum sequence</label><input id="gallery-min-sequence" class="form-control" type="number" min="1" step="1" @bind="_draftMinimumSequence" /></div>
-        <div><label for="gallery-max-sequence">Maximum sequence</label><input id="gallery-max-sequence" class="form-control" type="number" min="1" step="1" @bind="_draftMaximumSequence" /></div>
-        <div><label for="gallery-size">Page size</label><select id="gallery-size" class="form-select" @bind="_draftPageSize"><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></div>
-        <div class="filter-actions"><button type="submit" class="btn btn-primary">Apply filters</button><button type="button" class="btn btn-outline-light" @onclick="ClearFilters">Clear</button></div>
+    <form class="archive-browse" @onsubmit="ApplyFiltersAsync" @onsubmit:preventDefault aria-label="Archive browsing controls">
+        <div class="common-browse">
+            <div><label for="gallery-from">From (UTC)</label><input id="gallery-from" class="form-control" type="datetime-local" step="1" value="@_draftFrom" @onchange="SetDraftFrom" /></div>
+            <div><label for="gallery-to">To (UTC)</label><input id="gallery-to" class="form-control" type="datetime-local" step="1" value="@_draftTo" @onchange="SetDraftTo" /></div>
+            <div class="filter-actions"><button type="submit" class="btn btn-primary">Apply filters</button><button type="button" class="btn btn-outline-light" @onclick="ClearFilters">Clear</button></div>
+        </div>
+        <details class="advanced-filters" open="@HasAdvancedFilters">
+            <summary>Advanced filters</summary>
+            <div class="advanced-filters__grid">
+                <div><label for="gallery-origin">Evidence origin</label><select id="gallery-origin" class="form-select" @bind="_draftOrigin"><option value="">Any origin</option><option value="Simulated">Simulated</option><option value="DeveloperFixture">Developer fixture</option><option value="Unknown">Unknown</option></select></div>
+                <div><label for="gallery-role">Artifact role</label><select id="gallery-role" class="form-select" @bind="_draftRole"><option value="">Any role</option>@foreach (var role in Enum.GetValues<FrameArtifactRole>()) { <option value="@role">@OperationsPage.SplitWords(role.ToString())</option> }</select></div>
+                <div><label for="gallery-recipe">Recipe name</label><input id="gallery-recipe" class="form-control" maxlength="128" @bind="_draftRecipe" /></div>
+                <div><label for="gallery-status">Processing status</label><input id="gallery-status" class="form-control" maxlength="64" @bind="_draftStatus" /></div>
+                <div><label for="gallery-raw">Raw state</label><input id="gallery-raw" class="form-control" maxlength="64" @bind="_draftRawState" /></div>
+                <div><label for="gallery-min-sequence">Minimum sequence</label><input id="gallery-min-sequence" class="form-control" type="number" min="1" step="1" @bind="_draftMinimumSequence" /></div>
+                <div><label for="gallery-max-sequence">Maximum sequence</label><input id="gallery-max-sequence" class="form-control" type="number" min="1" step="1" @bind="_draftMaximumSequence" /></div>
+                <div><label for="gallery-size">Page size</label><select id="gallery-size" class="form-select" @bind="_draftPageSize"><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></div>
+            </div>
+        </details>
     </form>
 
     @if (_isLoading)
@@ -52,24 +59,11 @@
         <section class="capture-grid" aria-label="Capture results">
             @foreach (var capture in _page.Items)
             {
-                var preview = PreferredPreview(capture);
-                <article class="capture-card">
-                    <a class="capture-image" href="@DetailUrl(capture.CaptureId)" aria-label="Open capture @capture.CaptureSequence detail">
-                        @if (preview is not null)
-                        {
-                            <img src="@PreviewUrl(preview.ArtifactId)" alt="Capture @capture.CaptureSequence @OperationsPage.SplitWords(preview.Role.ToString())" loading="lazy" />
-                            <span>@OperationsPage.SplitWords(preview.Role.ToString())</span>
-                        }
-                        else
-                        {
-                            <span class="unsupported-preview"><i class="bi bi-image" aria-hidden="true"></i>No supported preview artifact</span>
-                        }
-                    </a>
-                    <div class="capture-card__body">
-                        <header><div><p class="eyebrow">Sequence @capture.CaptureSequence</p><h2><a href="@DetailUrl(capture.CaptureId)"><time datetime="@capture.ExposureStartedUtc.ToString("O")">@FormatCaptureTime(capture.ExposureStartedUtc)</time></a></h2></div><span class="evidence @EvidenceClass(capture.EvidenceOrigin)">@EvidenceLabel(capture.EvidenceOrigin)</span></header>
-                        <dl><div><dt>Raw state</dt><dd>@OperationsPage.SplitWords(capture.RawState)</dd></div><div><dt>Artifacts</dt><dd>@capture.Artifacts.Count</dd></div><div><dt>Processing</dt><dd>@ProcessingSummary(capture)</dd></div><div><dt>Durable ingress</dt><dd>@FormatCaptureTime(capture.DurableIngressUtc)</dd></div></dl>
-                    </div>
-                </article>
+                <ArchiveCard Capture="@capture"
+                             Presentation="@CardPresentation(capture)"
+                             DetailUrl="@DetailUrl(capture.CaptureId)"
+                             Age="@FormatAge(capture.ExposureStartedUtc)"
+                             ViewLargeRequested="OpenViewer" />
             }
         </section>
         <nav class="cursor-nav" aria-label="Gallery pages">
@@ -84,3 +78,5 @@
         </nav>
     }
 </div>
+
+<LargeImageViewer @bind-Open="_viewerOpen" Source="@_viewerSource" Title="@_viewerTitle" Alt="@_viewerAlt" TriggerId="@_viewerTriggerId" />

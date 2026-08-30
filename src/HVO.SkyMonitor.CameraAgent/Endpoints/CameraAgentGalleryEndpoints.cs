@@ -21,6 +21,11 @@ internal static class CameraAgentGalleryEndpoints
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden);
+        gallery.MapGet("/current", GetCurrentAsync)
+            .WithName("GetCameraAgentCurrentImagePresentation")
+            .Produces<CameraAgentCurrentImagePresentation>()
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
         gallery.MapGet("/{captureId:guid}", GetCaptureAsync)
             .WithName("GetCameraAgentGalleryCapture")
             .Produces<CameraAgentGalleryCapture>()
@@ -81,6 +86,11 @@ internal static class CameraAgentGalleryEndpoints
                 title: "The gallery query is invalid.");
         }
     }
+
+    private static async Task<IResult> GetCurrentAsync(
+        ICameraAgentCurrentImagePresentationService presentation,
+        CancellationToken cancellationToken)
+        => Results.Ok(await presentation.GetAsync(cancellationToken).ConfigureAwait(false));
 
     private static async Task<IResult> GetCaptureAsync(
         Guid captureId,

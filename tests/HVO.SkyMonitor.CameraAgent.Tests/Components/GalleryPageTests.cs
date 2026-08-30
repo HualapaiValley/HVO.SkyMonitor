@@ -27,7 +27,7 @@ public sealed class GalleryPageTests
     }
 
     [TestMethod]
-    public void BoundedPage_RendersPreferredPreviewOriginsProcessingAndCursor()
+    public void BoundedPage_RendersImageLedCardsAndCollapsedAdvancedFilters()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -40,15 +40,97 @@ public sealed class GalleryPageTests
 
         cut.WaitForAssertion(() =>
         {
-            var images = cut.FindAll(".capture-image img");
+            var images = cut.FindAll(".capture-card__image img");
             Assert.HasCount(2, images);
             StringAssert.Contains(images[0].GetAttribute("src")!, "/api/v1/operations/artifacts/", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Annotated Preview", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Processed", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "5 sec old", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Simulated evidence", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Developer fixture", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "1/1 complete", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Additional capture history remains unloaded", StringComparison.Ordinal);
             Assert.HasCount(4, cut.FindAll("a[href^='/gallery/']"));
+            Assert.HasCount(2, cut.FindAll("button[id^='archive-view-large-']"));
+            Assert.IsFalse(cut.Find(".advanced-filters").HasAttribute("open"));
+        });
+    }
+
+    [TestMethod]
+    public void CardsUseTruthfulFallbackAndRetainFactsWhenNoImageIsDisplayable()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var combinedId = Guid.Parse("00000000-0000-0000-0000-000000000201");
+        var combined = OperatorUiTestData.Capture() with
+        {
+            Artifacts = [new CameraAgentGalleryArtifact(
+                combinedId,
+                HVO.SkyMonitor.AgentCore.FrameArtifactRole.Combined,
+                "combined",
+                "stack",
+                OperatorUiTestData.Now,
+                "application/x-hvo-packed-image",
+                new string('C', 64),
+                1024,
+                null,
+                [],
+                "combined-node",
+                PixelFormat: HVO.SkyMonitor.AgentCore.CameraPixelFormat.Mono16,
+                PreviewReconstructionSupported: true)]
+        };
+        var unavailable = OperatorUiTestData.Capture(
+            Guid.Parse("00000000-0000-0000-0000-000000000202"),
+            GalleryEvidenceOrigin.Unknown) with
+        {
+            CaptureSequence = 41,
+            Artifacts = [],
+            ProcessingNodes = []
+        };
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([combined, unavailable], null)));
+
+        var cut = context.Render<GalleryPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find(".stage-badge").TextContent, "Combined", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find(".unsupported-preview").TextContent, "Capture facts retained", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Origin unknown / not physical", StringComparison.Ordinal);
+            var unavailableAction = cut.FindAll(".capture-card__actions button")
+                .Single(button => button.TextContent.Contains("View unavailable", StringComparison.Ordinal));
+            Assert.IsTrue(unavailableAction.HasAttribute("disabled"));
+        });
+    }
+
+    [TestMethod]
+    public void PreviewFailureOffersBoundedRetryAndLargeViewerActionIsDistinct()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = Configure(context);
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([OperatorUiTestData.Capture()], null)));
+        var cut = context.Render<GalleryPage>();
+        cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll(".capture-card__image img")));
+
+        cut.Find(".capture-card__image img").TriggerEvent("onerror", EventArgs.Empty);
+        cut.WaitForAssertion(() =>
+        {
+            var summary = cut.Find(".capture-card__summary");
+            StringAssert.Contains(summary.TextContent, "Image preview unavailable", StringComparison.Ordinal);
+            Assert.AreEqual("polite", summary.GetAttribute("aria-live"));
+            StringAssert.Contains(
+                cut.Find(".capture-card__image-link").GetAttribute("aria-label")!,
+                "Image preview unavailable",
+                StringComparison.Ordinal);
+        });
+        cut.Find(".capture-card__actions button").Click();
+        cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll(".capture-card__image img")));
+
+        cut.Find("button[id^='archive-view-large-']").Click();
+        cut.WaitForAssertion(() =>
+        {
+            Assert.HasCount(1, cut.FindAll(".large-viewer img"));
+            StringAssert.Contains(cut.Find(".large-viewer h2").TextContent, "Processed capture", StringComparison.Ordinal);
         });
     }
 
@@ -80,6 +162,7 @@ public sealed class GalleryPageTests
             Assert.AreEqual("durable", observed.RawState);
             Assert.AreEqual(40, observed.MinimumSequence);
             Assert.AreEqual(50, observed.MaximumSequence);
+            Assert.IsTrue(cut.Find(".advanced-filters").HasAttribute("open"));
         });
 
         cut.Find("button[type='submit']").Click();
@@ -101,7 +184,7 @@ public sealed class GalleryPageTests
 
         cut.WaitForAssertion(() =>
         {
-            var href = cut.Find(".capture-image").GetAttribute("href");
+            var href = cut.Find(".capture-card__image-link").GetAttribute("href");
             Assert.IsNotNull(href);
             StringAssert.Contains(href, "returnUrl=", StringComparison.Ordinal);
             StringAssert.Contains(Uri.UnescapeDataString(href), "/gallery?origin=Simulated&cursor=safe-cursor&minSequence=10", StringComparison.Ordinal);
@@ -143,6 +226,8 @@ public sealed class GalleryPageTests
     {
         var service = new TestOperatorUiService();
         context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        context.Services.AddSingleton<ICameraAgentCapturePresentationProjector>(service);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(OperatorUiTestData.Now));
         return service;
     }
 }

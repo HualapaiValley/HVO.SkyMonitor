@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Playwright;
 
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
@@ -22,6 +23,8 @@ public sealed class CameraAgentGalleryPerformanceTests
     private const int MaximumResponseBytes = 512 * 1024;
     private const double MaximumP95Milliseconds = 5_000;
     private const long MaximumWorkingSetGrowthBytes = 256L * 1024 * 1024;
+    private const long MaximumRenderedPageBytes = 1024L * 1024;
+    private const long MaximumPerSessionWorkingSetBytes = 32L * 1024 * 1024;
     private static readonly int[] CaptureCounts = [1_000, 10_000];
     private static readonly int[] ConcurrencyLevels = [1, 10, 50];
     private static readonly JsonSerializerOptions EvidenceJson = new(JsonSerializerDefaults.Web)
@@ -42,8 +45,26 @@ public sealed class CameraAgentGalleryPerformanceTests
         var plans = new List<SqlPlanEvidence>();
         var correctness = new List<CorrectnessEvidence>();
         var apiMeasurements = new List<ApiMeasurement>();
+        var browserMeasurements = new List<BrowserRenderMeasurement>();
+        var browserPreviewFailureMeasurements = new List<BrowserPreviewFailureMeasurement>();
         PreviewCacheEvidence? previewCache = null;
         string? sqliteVersion = null;
+        var evidenceLabel = string.Equals(
+            Environment.GetEnvironmentVariable("HVO_GALLERY_EVIDENCE_LABEL"),
+            "baseline",
+            StringComparison.Ordinal)
+            ? "baseline"
+            : "candidate";
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        if (!File.Exists(playwright.Chromium.ExecutablePath))
+        {
+            Assert.Inconclusive(
+                "Pinned Playwright Chromium is absent. Run `scripts/test:cameraagent-ui --install-browser` from the repository root.");
+        }
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true
+        }).ConfigureAwait(false);
 
         foreach (var captureCount in CaptureCounts)
         {
@@ -100,6 +121,10 @@ public sealed class CameraAgentGalleryPerformanceTests
                 apiMeasurements.Add(await MeasureHttpApiAsync(
                     ownerClient, captureCount, concurrency).ConfigureAwait(false));
             }
+            var browserSessionMeasurements = await MeasureBrowserSessionsAsync(
+                browser, host.BaseAddress, captureCount, evidenceLabel != "baseline").ConfigureAwait(false);
+            browserMeasurements.AddRange(browserSessionMeasurements.Renders);
+            browserPreviewFailureMeasurements.AddRange(browserSessionMeasurements.PreviewFailures);
 
             previewCache ??= await MeasurePreviewCacheAsync(fixture).ConfigureAwait(false);
         }
@@ -107,7 +132,7 @@ public sealed class CameraAgentGalleryPerformanceTests
         AssertScaling(allMeasurements);
         var evidence = new
         {
-            SchemaVersion = "cameraagent-ui-106-performance-v1",
+            SchemaVersion = "cameraagent-archive-441-performance-v2",
             Revision = ReadRevisionEvidence(),
             RecordedUtc = DateTimeOffset.UtcNow,
             Command = "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --configuration Release --filter FullyQualifiedName~CameraAgentGalleryPerformanceTests",
@@ -136,6 +161,8 @@ public sealed class CameraAgentGalleryPerformanceTests
                 MaximumResponseBytes,
                 MaximumP95Milliseconds,
                 MaximumWorkingSetGrowthBytes,
+                MaximumRenderedPageBytes,
+                MaximumPerSessionWorkingSetBytes,
                 LaterPageMultiplier = 4,
                 LaterPageAllowanceMilliseconds = 25,
                 HistoryAllocationMultiplier = 2,
@@ -144,11 +171,13 @@ public sealed class CameraAgentGalleryPerformanceTests
             SqlPlans = plans,
             Measurements = allMeasurements,
             AuthenticatedKestrelApiMeasurements = apiMeasurements,
+            AuthenticatedBrowserMeasurements = browserMeasurements,
+            AuthenticatedBrowserPreviewFailureMeasurements = browserPreviewFailureMeasurements,
             Baseline = new
             {
-                Status = "NotApplicable",
-                Reason = "No predecessor CameraAgent operations/gallery endpoint or UI exists for issue #106.",
-                Comparison = "Acceptance compares 1K versus 10K scaling and declared thresholds only."
+                Status = evidenceLabel == "baseline" ? "Captured" : "Candidate",
+                EvidenceLabel = evidenceLabel,
+                Comparison = "Compare equivalent issue-441 baseline and candidate files by capture count and concurrency."
             },
             Correctness = correctness,
             Cancellation = new { PreCancelledReadThrows = true, MaximumObservedMilliseconds = 2_000 },
@@ -161,13 +190,189 @@ public sealed class CameraAgentGalleryPerformanceTests
             }
         };
 
-        var outputDirectory = Path.Combine(GetRepositoryRoot(), "TestResults", "issue-106", "working-tree");
+        var outputDirectory = Path.Combine(GetRepositoryRoot(), "TestResults", "issue-441", evidenceLabel);
         Directory.CreateDirectory(outputDirectory);
         var outputPath = Path.Combine(outputDirectory, "cameraagent-gallery-performance.json");
         var evidenceBytes = JsonSerializer.SerializeToUtf8Bytes(evidence, EvidenceJson);
         await File.WriteAllBytesAsync(outputPath, evidenceBytes).ConfigureAwait(false);
-        TestContext.WriteLine($"Issue #106 performance evidence: {outputPath}");
-        TestContext.WriteLine($"Issue #106 performance evidence SHA-256: {Convert.ToHexString(SHA256.HashData(evidenceBytes))}");
+        TestContext.WriteLine($"Issue #441 performance evidence: {outputPath}");
+        TestContext.WriteLine($"Issue #441 performance evidence SHA-256: {Convert.ToHexString(SHA256.HashData(evidenceBytes))}");
+    }
+
+    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Await-using must retain the strongly typed Playwright context for the measured session scope.")]
+    private static async Task<BrowserSessionMeasurements> MeasureBrowserSessionsAsync(
+        IBrowser browser,
+        Uri baseAddress,
+        int captureCount,
+        bool measurePreviewFailures)
+    {
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = baseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1440, Height = 900 },
+            ColorScheme = ColorScheme.Dark,
+            ReducedMotion = ReducedMotion.Reduce
+        }).ConfigureAwait(false);
+        context.SetDefaultTimeout(45_000);
+        context.SetDefaultNavigationTimeout(45_000);
+        var loginPage = await context.NewPageAsync().ConfigureAwait(false);
+        await LoginAsync(loginPage).ConfigureAwait(false);
+        await loginPage.CloseAsync().ConfigureAwait(false);
+        await context.RouteAsync(
+            "**/api/v1/operations/artifacts/*/preview",
+            static route => route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "image/svg+xml",
+                Body = "<svg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/>",
+            })).ConfigureAwait(false);
+        var measurements = new List<BrowserRenderMeasurement>();
+        var previewFailureMeasurements = new List<BrowserPreviewFailureMeasurement>();
+        foreach (var concurrency in ConcurrencyLevels)
+        {
+            ForceCollection();
+            using var process = Process.GetCurrentProcess();
+            process.Refresh();
+            var workingSetBefore = process.WorkingSet64;
+            var rssBefore = ReadRssBytes();
+            var cpuBefore = process.TotalProcessorTime;
+            var allocationsBefore = GC.GetTotalAllocatedBytes(precise: true);
+            var pages = await Task.WhenAll(Enumerable.Range(0, concurrency)
+                .Select(_ => context.NewPageAsync())).ConfigureAwait(false);
+            var overall = Stopwatch.StartNew();
+            var renders = await Task.WhenAll(pages.Select(async page =>
+            {
+                var timer = Stopwatch.StartNew();
+                await page.GotoAsync("/gallery?pageSize=50").ConfigureAwait(false);
+                await page.Locator(".capture-card").First.WaitForAsync().ConfigureAwait(false);
+                timer.Stop();
+                var cardCount = await page.Locator(".capture-card").CountAsync().ConfigureAwait(false);
+                var content = await page.ContentAsync().ConfigureAwait(false);
+                return new BrowserRenderResult(
+                    timer.Elapsed.TotalMilliseconds,
+                    System.Text.Encoding.UTF8.GetByteCount(content),
+                    cardCount);
+            })).ConfigureAwait(false);
+            overall.Stop();
+            process.Refresh();
+            var workingSetAfter = process.WorkingSet64;
+            var rssAfter = ReadRssBytes();
+            var cpuAfter = process.TotalProcessorTime;
+            var allocationsAfter = GC.GetTotalAllocatedBytes(precise: true);
+            Assert.IsTrue(renders.All(static render => render.CardCount == PageSize));
+            Assert.IsTrue(renders.All(static render => render.RenderedBytes <= MaximumRenderedPageBytes));
+            var workingSetGrowth = Math.Max(0, workingSetAfter - workingSetBefore);
+            var perSessionGrowth = workingSetGrowth / concurrency;
+            Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
+            var latencies = renders.Select(static render => render.ElapsedMilliseconds).Order().ToArray();
+            Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, Percentile(latencies, 0.95));
+            measurements.Add(new BrowserRenderMeasurement(
+                captureCount,
+                concurrency,
+                renders.Length,
+                overall.Elapsed.TotalMilliseconds,
+                Percentile(latencies, 0.5),
+                latencies.Length >= 30 ? Percentile(latencies, 0.95) : null,
+                latencies[^1],
+                renders.Min(static render => render.RenderedBytes),
+                renders.Max(static render => render.RenderedBytes),
+                renders[0].CardCount,
+                (cpuAfter - cpuBefore).TotalMilliseconds,
+                Math.Max(0, allocationsAfter - allocationsBefore),
+                workingSetBefore,
+                workingSetAfter,
+                rssBefore,
+                rssAfter,
+                perSessionGrowth,
+                concurrency / Math.Max(overall.Elapsed.TotalSeconds, 0.000_001)));
+            if (measurePreviewFailures)
+            {
+                previewFailureMeasurements.Add(await MeasurePreviewFailuresAsync(
+                    pages,
+                    captureCount,
+                    concurrency,
+                    workingSetBefore,
+                    rssBefore).ConfigureAwait(false));
+            }
+            await Task.WhenAll(pages.Select(static page => page.CloseAsync())).ConfigureAwait(false);
+            await Task.Delay(250).ConfigureAwait(false);
+        }
+        return new BrowserSessionMeasurements(measurements, previewFailureMeasurements);
+    }
+
+    private static async Task<BrowserPreviewFailureMeasurement> MeasurePreviewFailuresAsync(
+        IPage[] pages,
+        int captureCount,
+        int concurrency,
+        long sessionWorkingSetBefore,
+        long sessionRssBefore)
+    {
+        foreach (var page in pages)
+        {
+            Assert.AreEqual(PageSize, await page.Locator(".capture-card__image img").CountAsync().ConfigureAwait(false));
+            Assert.AreEqual(0, await page.GetByRole(AriaRole.Button, new()
+            {
+                Name = "Try preview again",
+                Exact = true
+            }).CountAsync().ConfigureAwait(false));
+        }
+        ForceCollection();
+        using var process = Process.GetCurrentProcess();
+        process.Refresh();
+        var cpuBefore = process.TotalProcessorTime;
+        var allocationsBefore = GC.GetTotalAllocatedBytes(precise: true);
+        var overall = Stopwatch.StartNew();
+        var latencies = await Task.WhenAll(pages.Select(async page =>
+        {
+            var timer = Stopwatch.StartNew();
+            await page.WaitForFunctionAsync("""
+                () => {
+                    document.querySelectorAll('.capture-card__image img')
+                        .forEach(image => image.dispatchEvent(new Event('error')));
+                    return [...document.querySelectorAll('.capture-card__actions button')]
+                        .filter(button => button.textContent.includes('Try preview again')).length === 50;
+                }
+                """).ConfigureAwait(false);
+            timer.Stop();
+            return timer.Elapsed.TotalMilliseconds;
+        })).ConfigureAwait(false);
+        overall.Stop();
+        process.Refresh();
+        var workingSetAfter = process.WorkingSet64;
+        var rssAfter = ReadRssBytes();
+        var cpuAfter = process.TotalProcessorTime;
+        var allocationsAfter = GC.GetTotalAllocatedBytes(precise: true);
+        var workingSetGrowth = Math.Max(0, workingSetAfter - sessionWorkingSetBefore);
+        var perSessionGrowth = workingSetGrowth / concurrency;
+        Assert.IsLessThanOrEqualTo(MaximumPerSessionWorkingSetBytes, perSessionGrowth);
+        Array.Sort(latencies);
+        Assert.IsLessThanOrEqualTo(MaximumP95Milliseconds, Percentile(latencies, 0.95));
+        return new BrowserPreviewFailureMeasurement(
+            captureCount,
+            concurrency,
+            pages.Length,
+            overall.Elapsed.TotalMilliseconds,
+            Percentile(latencies, 0.5),
+            latencies.Length >= 30 ? Percentile(latencies, 0.95) : null,
+            latencies[^1],
+            PageSize,
+            (cpuAfter - cpuBefore).TotalMilliseconds,
+            Math.Max(0, allocationsAfter - allocationsBefore),
+            sessionWorkingSetBefore,
+            workingSetAfter,
+            sessionRssBefore,
+            rssAfter,
+            perSessionGrowth);
+    }
+
+    private static async Task LoginAsync(IPage page)
+    {
+        await page.GotoAsync("/Account/Login").ConfigureAwait(false);
+        await page.GetByLabel("Email").FillAsync(CameraAgentKestrelFixture.OwnerEmail).ConfigureAwait(false);
+        await page.GetByLabel("Password").FillAsync(CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase))
+            .ConfigureAwait(false);
     }
 
     private static async Task<ApiMeasurement> MeasureHttpApiAsync(
@@ -599,6 +804,52 @@ public sealed class CameraAgentGalleryPerformanceTests
         double ThroughputRequestsPerSecond,
         string ResponseSha256);
 
+    private sealed record BrowserRenderResult(
+        double ElapsedMilliseconds,
+        int RenderedBytes,
+        int CardCount);
+
+    private sealed record BrowserRenderMeasurement(
+        int CaptureCount,
+        int Concurrency,
+        int SampleCount,
+        double WallMilliseconds,
+        double MedianMilliseconds,
+        double? P95Milliseconds,
+        double MaximumMilliseconds,
+        int MinimumRenderedBytes,
+        int MaximumRenderedBytes,
+        int CardCount,
+        double CpuMilliseconds,
+        long AllocatedBytes,
+        long WorkingSetBeforeBytes,
+        long WorkingSetAfterBytes,
+        long RssBeforeBytes,
+        long RssAfterBytes,
+        long PerSessionWorkingSetGrowthBytes,
+        double ThroughputPagesPerSecond);
+
+    private sealed record BrowserSessionMeasurements(
+        IReadOnlyList<BrowserRenderMeasurement> Renders,
+        IReadOnlyList<BrowserPreviewFailureMeasurement> PreviewFailures);
+
+    private sealed record BrowserPreviewFailureMeasurement(
+        int CaptureCount,
+        int Concurrency,
+        int SampleCount,
+        double WallMilliseconds,
+        double MedianMilliseconds,
+        double? P95Milliseconds,
+        double MaximumMilliseconds,
+        int FailedPreviewsPerPage,
+        double CpuMilliseconds,
+        long AllocatedBytes,
+        long WorkingSetBeforeBytes,
+        long WorkingSetAfterBytes,
+        long RssBeforeBytes,
+        long RssAfterBytes,
+        long PerSessionWorkingSetGrowthBytes);
+
     private sealed record SqlPlanEvidence(
         int CaptureCount,
         string Name,
@@ -633,8 +884,11 @@ public sealed class CameraAgentGalleryPerformanceTests
         public CameraAgentEncodedPreview Encode(
             FrameLayoutDescriptor layout,
             ReadOnlyMemory<byte> payload,
-            int maximumDimension)
+            int maximumDimension,
+            int maximumEncodedBytes,
+            CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Count++;
             var scale = Math.Min(1d, Math.Min(
                 (double)maximumDimension / layout.Width,

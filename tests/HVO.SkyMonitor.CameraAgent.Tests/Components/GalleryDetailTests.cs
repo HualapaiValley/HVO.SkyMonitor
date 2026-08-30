@@ -13,6 +13,158 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class GalleryDetailTests
 {
     [TestMethod]
+    public void DetailLeadsWithExactStageSummaryAndLargeViewer()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var capture = OperatorUiTestData.Capture();
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(capture))
+        });
+
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
+        cut.WaitForElement(".detail-capture-image img");
+
+        Assert.AreEqual(
+            "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview",
+            cut.Find(".detail-capture-image img").GetAttribute("src"));
+        StringAssert.Contains(cut.Find(".capture-summary").TextContent, "Processed", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".capture-summary").TextContent, "1 sec", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find(".technical-evidence").HasAttribute("open"));
+
+        cut.FindAll(".stage-selector__button").Single(button => button.TextContent.Contains("Raw", StringComparison.Ordinal)).Click();
+
+        Assert.AreEqual(
+            "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000101/preview",
+            cut.Find(".detail-capture-image img").GetAttribute("src"));
+        StringAssert.Contains(cut.Find(".capture-summary").TextContent, "Raw", StringComparison.Ordinal);
+        cut.Find("#capture-detail-view-large").Click();
+        cut.WaitForAssertion(() => Assert.IsTrue(context.JSInterop.Invocations.Any(static invocation =>
+            invocation.Identifier.EndsWith("show", StringComparison.Ordinal))));
+        var viewer = cut.FindComponent<HVO.SkyMonitor.CameraAgent.Components.Presentation.LargeImageViewer>();
+        Assert.AreEqual(cut.Find(".detail-capture-image img").GetAttribute("src"), viewer.Find("img").GetAttribute("src"));
+        viewer.FindAll(".large-viewer__modes button")[1].Click();
+        Assert.HasCount(1, viewer.FindAll(".large-viewer__canvas--native"));
+
+        cut.Find(".detail-capture-image img").TriggerEvent("onerror", EventArgs.Empty);
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "retained preview could not be loaded", StringComparison.Ordinal));
+        StringAssert.Contains(cut.Markup, "Download content", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void DetailNavigationStaysWithinOriginatingBoundedArchivePage()
+    {
+        using var context = new BunitContext();
+        var current = OperatorUiTestData.Capture();
+        var newer = OperatorUiTestData.Capture(Guid.Parse("00000000-0000-0000-0000-000000000011")) with { CaptureSequence = 43 };
+        var older = OperatorUiTestData.Capture(Guid.Parse("00000000-0000-0000-0000-000000000012")) with { CaptureSequence = 41 };
+        CameraAgentGalleryQuery? observedQuery = null;
+        var service = new TestOperatorUiService
+        {
+            DetailHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryCapture>.Success(current)),
+            GalleryHandler = (query, _) =>
+            {
+                observedQuery = query;
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentGalleryPage>.Success(new([newer, current, older], null)));
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+
+        var returnUrl = "/gallery?origin=Simulated&pageSize=3&cursor=bounded-cursor";
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo(Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(
+            $"/gallery/{current.CaptureId:D}",
+            "returnUrl",
+            returnUrl));
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, current.CaptureId));
+
+        cut.WaitForAssertion(() => Assert.HasCount(2, cut.FindAll(".capture-navigation__control[href]")));
+        Assert.AreEqual(GalleryEvidenceOrigin.Simulated, observedQuery?.EvidenceOrigin);
+        Assert.AreEqual(3, observedQuery?.PageSize);
+        Assert.AreEqual("bounded-cursor", observedQuery?.Cursor);
+        var links = cut.FindAll(".capture-navigation__control[href]");
+        StringAssert.Contains(links[0].GetAttribute("href"), older.CaptureId.ToString(), StringComparison.Ordinal);
+        StringAssert.Contains(links[1].GetAttribute("href"), newer.CaptureId.ToString(), StringComparison.Ordinal);
+        Assert.IsTrue(links.All(link => link.GetAttribute("href")?.Contains("returnUrl=", StringComparison.Ordinal) == true));
+
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([current, older], "older-page")));
+        var boundary = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, current.CaptureId));
+        boundary.WaitForAssertion(() => Assert.HasCount(1, boundary.FindAll(".capture-navigation__control[href]")));
+        Assert.HasCount(1, boundary.FindAll(".capture-navigation__control--disabled"));
+    }
+
+    [TestMethod]
+    public void CaptureDetailPresentsOneProcessedStageWithItsExactPreviewBackingRole()
+    {
+        var previewId = Guid.Parse("00000000-0000-0000-0000-000000000221");
+        var durableProjection = new CameraAgentCapturePresentation(
+            CameraAgentPresentationStage.Preview,
+            [
+                new(CameraAgentPresentationStage.Raw, "Raw", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Calibrated, "Calibrated", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Combined, "Combined", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Preview, "Preview", CameraAgentPresentationSlotAvailability.Available,
+                    "Available", previewId, HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview, "display", "image/jpeg",
+                    new Uri($"/api/v1/operations/artifacts/{previewId:D}/preview", UriKind.Relative)),
+                new(CameraAgentPresentationStage.Annotated, "Processed", CameraAgentPresentationSlotAvailability.Missing, "NotProduced")
+            ]);
+
+        var detailProjection = CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(durableProjection);
+
+        Assert.HasCount(4, detailProjection.Stages);
+        Assert.IsFalse(detailProjection.Stages.Any(static slot => slot.Stage == CameraAgentPresentationStage.Preview));
+        var processed = detailProjection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreEqual("Processed", processed.Label);
+        Assert.AreEqual(HVO.SkyMonitor.AgentCore.FrameArtifactRole.Preview, processed.ArtifactRole);
+        Assert.AreEqual(previewId, processed.ArtifactId);
+        Assert.AreEqual(CameraAgentPresentationStage.Annotated, detailProjection.SelectedStage);
+    }
+
+    [TestMethod]
+    public void CaptureDetailPreservesUnavailableAnnotatedEvidenceWhenProcessedFallbackIsMissing()
+    {
+        var durableProjection = new CameraAgentCapturePresentation(
+            null,
+            [
+                new(CameraAgentPresentationStage.Raw, "Raw", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Calibrated, "Calibrated", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Combined, "Combined", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Preview, "Preview", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Annotated, "Processed", CameraAgentPresentationSlotAvailability.Unavailable, "ArtifactInvalid")
+            ]);
+
+        var detailProjection = CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(durableProjection);
+
+        var processed = detailProjection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Unavailable, processed.Availability);
+        Assert.AreEqual("ArtifactInvalid", processed.Reason);
+    }
+
+    [TestMethod]
+    [DataRow("ProcessingFailed")]
+    [DataRow("ProcessingSkipped")]
+    public void CaptureDetailPrioritizesExplicitProcessedFailureOverUnavailableAnnotatedEvidence(string reason)
+    {
+        var durableProjection = new CameraAgentCapturePresentation(
+            null,
+            [
+                new(CameraAgentPresentationStage.Raw, "Raw", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Calibrated, "Calibrated", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Combined, "Combined", CameraAgentPresentationSlotAvailability.Missing, "NotProduced"),
+                new(CameraAgentPresentationStage.Preview, "Preview", CameraAgentPresentationSlotAvailability.Unavailable, reason),
+                new(CameraAgentPresentationStage.Annotated, "Processed", CameraAgentPresentationSlotAvailability.Unavailable, "ArtifactInvalid")
+            ]);
+
+        var detailProjection = CameraAgentOperatorUiService.ProjectCaptureDetailPresentation(durableProjection);
+
+        var processed = detailProjection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Unavailable, processed.Availability);
+        Assert.AreEqual(reason, processed.Reason);
+    }
+
+    [TestMethod]
     public void LayeredDetailRendersOneBaseOneGroupedSvgAndLocalToggleControls()
     {
         using var context = new BunitContext();
@@ -107,7 +259,7 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
-    public void Detail_RendersExactLineageRecipesNodesAndDirectEndpointsWithoutDisclosure()
+    public void Detail_RetainsExactLineageRecipesNodesAndDirectEndpointsInTechnicalDisclosure()
     {
         using var context = new BunitContext();
         var service = new TestOperatorUiService();
@@ -140,6 +292,7 @@ public sealed class GalleryDetailTests
             Assert.HasCount(2, cut.FindAll(".comparison-grid img"));
             Assert.HasCount(2, cut.FindAll(".comparison-selectors select"));
             Assert.HasCount(2, cut.FindAll("a[href$='/content']"));
+            Assert.IsFalse(cut.Find(".technical-evidence").HasAttribute("open"));
             Assert.IsFalse(cut.Markup.Contains("/tmp/", StringComparison.Ordinal));
             Assert.IsFalse(cut.Markup.Contains("optionsJson", StringComparison.OrdinalIgnoreCase));
             Assert.IsFalse(cut.Markup.Contains("secret", StringComparison.OrdinalIgnoreCase));
@@ -215,13 +368,17 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
-    public void DetailWithoutPreview_RendersUnsupportedText()
+    public void DetailWithoutDisplayableArtifact_RendersUnsupportedTextAndTechnicalDownload()
     {
         using var context = new BunitContext();
         var service = new TestOperatorUiService();
         var capture = OperatorUiTestData.Capture() with
         {
-            Artifacts = OperatorUiTestData.Capture().Artifacts.Where(static artifact => artifact.Role == HVO.SkyMonitor.AgentCore.FrameArtifactRole.Raw).ToArray()
+            Artifacts = [OperatorUiTestData.Capture().Artifacts[0] with
+            {
+                MediaType = "application/octet-stream",
+                PreviewReconstructionSupported = false
+            }]
         };
         service.DetailHandler = (_, _) => ValueTask.FromResult(
             OperatorUiResult<HVO.SkyMonitor.CameraAgent.Common.Gallery.CameraAgentGalleryCapture>.Success(capture));
@@ -229,7 +386,8 @@ public sealed class GalleryDetailTests
 
         var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, capture.CaptureId));
 
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Preview unsupported", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "This capture cannot be displayed", StringComparison.Ordinal));
+        StringAssert.Contains(cut.Markup, "Download content", StringComparison.Ordinal);
         StringAssert.Contains(cut.Markup, "Two reconstructable artifacts", StringComparison.Ordinal);
     }
 
@@ -274,5 +432,27 @@ public sealed class GalleryDetailTests
             StringAssert.Contains(cut.Markup, "Not executed", StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("Unavailable for legacy processing record", StringComparison.Ordinal));
         });
+    }
+
+    [TestMethod]
+    public async Task DisposalCancelsPendingCaptureRead()
+    {
+        using var context = new BunitContext();
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService
+        {
+            DetailHandler = async (_, token) =>
+            {
+                using var registration = token.Register(() => cancellationObserved.TrySetResult());
+                await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+                return OperatorUiResult<CameraAgentGalleryCapture>.Failure(OperatorUiResultKind.Unavailable, "unreachable");
+            }
+        });
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, Guid.NewGuid()));
+        cut.WaitForElement(".detail-state[role='status']");
+
+        await cut.Instance.DisposeAsync().ConfigureAwait(false);
+
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
     }
 }
