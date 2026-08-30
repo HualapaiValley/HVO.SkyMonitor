@@ -1,7 +1,7 @@
 {
   "aggregate": {
-    "line": 0.60570016,
-    "branch": 0.56224066,
+    "line": 0.843690,
+    "branch": 0.663253,
     "tolerancePercentagePoints": 0.01
   },
   "files": {

@@ -15,7 +15,7 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Integration Tests** | 561 Integration-category cases across SQLite, filesystem, SQL Server, Redis, MinIO, Mailpit, forwarded-header, host integration, and the six repository graph/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Skipped only in classified reduced mode. |
 | **Architecture & Publish** | Six Integration-category repository graph/MSBuild/publish cases, retained host publish manifests, and self-contained installer publishes plus SHA-256 manifests for Linux x64 and ARM64. |
 | **Migrations** | Exactly one canonical initial migration source for CameraAgent Identity and LogicHost plus zero pending EF model changes; unreleased legacy-schema convergence is not supported. |
-| **Coverage** | Exact source-path and branch merge of fourteen expected reports, checked-in aggregate non-regression, and risk-file floors. |
+| **Coverage** | Exact source-path and branch merge of fourteen expected reports, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. |
 | **Required CI** | Current-head aggregate that fails when any expected check fails, times out, is canceled, is missing, or is unexpectedly skipped or run for the selected mode. |
 
 Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected fourteen, preventing missing or overwritten evidence.

@@ -64,6 +64,21 @@ public sealed class EnvironmentalObservationContractTests
         Assert.AreEqual(
             EnvironmentalObservationReasonCodes.InvalidIdentity,
             EnvironmentalObservationJson.Validate(receivedLater with { ContentSha256 = new string('A', 64) }).ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidJson,
+            EnvironmentalObservationJson.Parse("null"u8.ToArray()).Validation.ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidIdentity,
+            EnvironmentalObservationJson.Validate(receivedLater with { Observation = null! }).ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidValue,
+            EnvironmentalObservationJson.Validate(receivedLater with
+            {
+                Observation = observation with { Value = null! }
+            }).ReasonCode);
+        Assert.AreEqual(
+            EnvironmentalObservationReasonCodes.InvalidIdentity,
+            EnvironmentalObservationJson.Validate(receivedLater with { ContentSha256 = "not-a-sha256" }).ReasonCode);
     }
 
     [TestMethod]
@@ -194,7 +209,10 @@ public sealed class EnvironmentalObservationContractTests
             source.Value with { Uncertainty = double.NaN },
             source.Value with { SubmittedNumericValue = 45 },
             source.Value with { SubmittedUnit = "fahrenheit" },
-            source.Value with { SubmittedNumericValue = double.NegativeInfinity, SubmittedUnit = "fahrenheit" }
+            source.Value with { SubmittedNumericValue = double.NegativeInfinity, SubmittedUnit = "fahrenheit" },
+            source.Value with { Kind = (EnvironmentalObservationKind)(-1) },
+            source.Value with { Unit = (EnvironmentalObservationUnit)(-1) },
+            source.Value with { Quality = (EnvironmentalObservationQuality)(-1) }
         };
 
         foreach (var value in invalidValues)
@@ -289,13 +307,59 @@ public sealed class EnvironmentalObservationContractTests
     {
         var source = CreateObservation();
         var duplicateParameters = Json("""{"calibration":1,"calibration":2}""");
+        var nestedDuplicateParameters = Json("""{"items":[{"calibration":1,"calibration":2}]}""");
         var invalid = new[]
         {
             source with { ObservationId = Guid.Empty },
+            source with { Target = null! },
             source with { Target = source.Target with { SiteId = Guid.Empty } },
+            source with { Target = source.Target with { AgentId = Guid.Empty } },
+            source with { Target = source.Target with { RigId = new string('r', 129) } },
             source with { Target = source.Target with { AgentId = null, RigId = "rig-1" } },
             source with { Source = source.Source with { Provider = " provider" } },
             source with { Source = source.Source with { Version = new string('v', 65) } },
+            source with { Source = source.Source with { Provenance = null! } },
+            source with
+            {
+                Source = source.Source with
+                {
+                    Provenance = source.Source.Provenance with { Method = null! }
+                }
+            },
+            source with
+            {
+                Source = source.Source with
+                {
+                    Provenance = source.Source.Provenance with
+                    {
+                        Method = source.Source.Provenance.Method with { Name = " " }
+                    }
+                }
+            },
+            source with
+            {
+                Source = source.Source with
+                {
+                    Provenance = source.Source.Provenance with
+                    {
+                        Method = source.Source.Provenance.Method with { Version = new string('v', 65) }
+                    }
+                }
+            },
+            source with
+            {
+                Source = source.Source with
+                {
+                    Provenance = source.Source.Provenance with { Parameters = Json("[]") }
+                }
+            },
+            source with
+            {
+                Source = source.Source with
+                {
+                    Provenance = source.Source.Provenance with { ParametersSha256 = "not-a-sha256" }
+                }
+            },
             source with
             {
                 Source = source.Source with
@@ -311,6 +375,17 @@ public sealed class EnvironmentalObservationContractTests
                     {
                         Parameters = duplicateParameters,
                         ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(duplicateParameters)
+                    }
+                }
+            },
+            source with
+            {
+                Source = source.Source with
+                {
+                    Provenance = source.Source.Provenance with
+                    {
+                        Parameters = nestedDuplicateParameters,
+                        ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(nestedDuplicateParameters)
                     }
                 }
             }

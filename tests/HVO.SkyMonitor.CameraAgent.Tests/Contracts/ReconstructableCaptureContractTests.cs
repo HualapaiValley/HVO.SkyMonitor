@@ -1219,6 +1219,88 @@ public sealed class ReconstructableCaptureContractTests
         {
             Artifact = descriptor.Artifact with { SourceArtifactIds = [Guid.Empty] }
         };
+        var invalidIdentities = new (string Name, ReconstructionDescriptor Descriptor)[]
+        {
+            ("missing capture", descriptor with { Capture = null! }),
+            ("blank rig", descriptor with { Capture = descriptor.Capture with { RigId = " " } })
+        };
+        var invalidTimings = new (string Name, ReconstructionDescriptor Descriptor)[]
+        {
+            ("missing timing", descriptor with { Timing = null! }),
+            ("requested start non-UTC", descriptor with
+            {
+                Timing = descriptor.Timing with { RequestedStartUtc = descriptor.Timing.RequestedStartUtc.ToOffset(TimeSpan.FromHours(1)) }
+            }),
+            ("exposure start non-UTC", descriptor with
+            {
+                Timing = descriptor.Timing with { ExposureStartedUtc = descriptor.Timing.ExposureStartedUtc.ToOffset(TimeSpan.FromHours(1)) }
+            }),
+            ("exposure end non-UTC", descriptor with
+            {
+                Timing = descriptor.Timing with { ExposureEndedUtc = descriptor.Timing.ExposureEndedUtc.ToOffset(TimeSpan.FromHours(1)) }
+            }),
+            ("readout non-UTC", descriptor with
+            {
+                Timing = descriptor.Timing with { ReadoutCompletedUtc = descriptor.Timing.ReadoutCompletedUtc.ToOffset(TimeSpan.FromHours(1)) }
+            }),
+            ("durable ingress non-UTC", descriptor with
+            {
+                Timing = descriptor.Timing with { DurableIngressUtc = descriptor.Timing.DurableIngressUtc.ToOffset(TimeSpan.FromHours(1)) }
+            }),
+            ("setpoint non-UTC", descriptor with
+            {
+                Timing = descriptor.Timing with { SetpointAppliedUtc = descriptor.Timing.RequestedStartUtc.ToOffset(TimeSpan.FromHours(1)) }
+            }),
+            ("setpoint after exposure start", descriptor with
+            {
+                Timing = descriptor.Timing with { SetpointAppliedUtc = descriptor.Timing.ExposureStartedUtc.AddTicks(1) }
+            }),
+            ("exposure start after end", descriptor with
+            {
+                Timing = descriptor.Timing with { ExposureStartedUtc = descriptor.Timing.ExposureEndedUtc.AddTicks(1) }
+            }),
+            ("readout after ingress", descriptor with
+            {
+                Timing = descriptor.Timing with { ReadoutCompletedUtc = descriptor.Timing.DurableIngressUtc.AddTicks(1) }
+            })
+        };
+        var invalidControls = new (string Name, ReconstructionDescriptor Descriptor)[]
+        {
+            ("missing controls", descriptor with { Controls = null! }),
+            ("negative requested exposure", descriptor with
+            {
+                Controls = descriptor.Controls with { RequestedExposure = TimeSpan.FromTicks(-1) }
+            }),
+            ("negative effective exposure", descriptor with
+            {
+                Controls = descriptor.Controls with { EffectiveExposure = TimeSpan.FromTicks(-1) }
+            }),
+            ("requested gain NaN", descriptor with { Controls = descriptor.Controls with { RequestedGain = double.NaN } }),
+            ("effective gain NaN", descriptor with { Controls = descriptor.Controls with { EffectiveGain = double.NaN } }),
+            ("requested offset NaN", descriptor with { Controls = descriptor.Controls with { RequestedOffset = double.NaN } }),
+            ("effective offset NaN", descriptor with { Controls = descriptor.Controls with { EffectiveOffset = double.NaN } }),
+            ("temperature setpoint NaN", descriptor with
+            {
+                Controls = descriptor.Controls with { TemperatureSetpointC = double.NaN }
+            }),
+            ("effective temperature NaN", descriptor with
+            {
+                Controls = descriptor.Controls with { EffectiveTemperatureC = double.NaN }
+            })
+        };
+        var invalidProfiles = new (string Name, ReconstructionDescriptor Descriptor)[]
+        {
+            ("missing profiles", descriptor with { Profiles = null! }),
+            ("missing rig profile", descriptor with { Profiles = descriptor.Profiles with { Rig = null! } }),
+            ("missing calibration profile", descriptor with { Profiles = descriptor.Profiles with { Calibration = null! } }),
+            ("missing sensor profile", descriptor with { Profiles = descriptor.Profiles with { Sensor = null! } }),
+            ("missing processing profile", descriptor with { Profiles = descriptor.Profiles with { Processing = null! } })
+        };
+        var invalidLocation = descriptor with
+        {
+            Location = new CaptureLocationProvenance(
+                "", 1, "test", null, descriptor.Timing.RequestedStartUtc, null)
+        };
 
         Assert.AreEqual(CaptureContractReasonCodes.InvalidIdentity, invalidIdentity.Validate().ReasonCode);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidCaptureSequence, invalidSequence.Validate().ReasonCode);
@@ -1227,6 +1309,23 @@ public sealed class ReconstructableCaptureContractTests
         Assert.AreEqual(CaptureContractReasonCodes.RecipeHashMismatch, invalidRecipe.Validate().ReasonCode);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidStride, invalidLayout.Validate().ReasonCode);
         Assert.AreEqual(CaptureContractReasonCodes.InvalidLineage, invalidLineage.Validate().ReasonCode);
+        foreach (var testCase in invalidIdentities)
+        {
+            Assert.AreEqual(CaptureContractReasonCodes.InvalidIdentity, testCase.Descriptor.Validate().ReasonCode, testCase.Name);
+        }
+        foreach (var testCase in invalidTimings)
+        {
+            Assert.AreEqual(CaptureContractReasonCodes.InvalidTimingOrder, testCase.Descriptor.Validate().ReasonCode, testCase.Name);
+        }
+        foreach (var testCase in invalidControls)
+        {
+            Assert.AreEqual(CaptureContractReasonCodes.InvalidControls, testCase.Descriptor.Validate().ReasonCode, testCase.Name);
+        }
+        foreach (var testCase in invalidProfiles)
+        {
+            Assert.AreEqual(CaptureContractReasonCodes.InvalidProfile, testCase.Descriptor.Validate().ReasonCode, testCase.Name);
+        }
+        Assert.AreEqual(CaptureContractReasonCodes.InvalidLocation, invalidLocation.Validate().ReasonCode);
     }
 
     [TestMethod]
