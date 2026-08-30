@@ -16,7 +16,7 @@ wait_for_process_exit() {
     return 1
 }
 
-expected_shards=$'preflight\nprepare-images\nexisting-catalog-up\nbootstrap-authority\nbootstrap-credentials\nsmoke\nmeasure\nexisting-down\ndeploy-services'
+expected_shards=$'preflight\nprepare-images\npartial-prepare\nexisting-catalog-up\nbootstrap-authority\nbootstrap-credentials\nsmoke\nmeasure\nexisting-down\ndeploy-services'
 actual_shards="$($HARNESS --list-shards)"
 [[ "$actual_shards" == "$expected_shards" ]] || {
     printf 'Deployment shard listing did not match the closed contract.\n' >&2
@@ -72,7 +72,7 @@ grep -Fq 'Injected early failure for deployment contract shard preflight.' "$WOR
 grep -Fq 'Deployment contract shards failed' "$WORK_ROOT/coordinator.log"
 grep -Eq '^failed elapsed_seconds=[0-9]+$' "$run_dir/preflight.status"
 grep -Eq '^terminated elapsed_seconds=[0-9]+$' "$run_dir/prepare-images.status"
-for shard in existing-catalog-up bootstrap-authority bootstrap-credentials smoke measure existing-down deploy-services; do
+for shard in partial-prepare existing-catalog-up bootstrap-authority bootstrap-credentials smoke measure existing-down deploy-services; do
     grep -Eq '^not-started elapsed_seconds=[0-9]+$' "$run_dir/$shard.status"
     grep -Fq 'Shard was not started because another shard failed.' "$run_dir/$shard.log"
 done

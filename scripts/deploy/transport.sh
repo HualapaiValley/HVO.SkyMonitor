@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 # All SSH and context-selected Docker invocations for split-host deployment live here.
 
+deploy_transport_remote_command() {
+    local command='bash -s --' argument escaped
+    for argument in "$@"; do
+        escaped="${argument//\'/\'\\\'\'}"
+        command+=" '$escaped'"
+    done
+    printf '%s\n' "$command"
+}
+
 deploy_transport_ssh_probe() {
-    local ssh_host="$1" runtime_root="$2" ports_csv="$3" output status
-    if output="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$runtime_root" "$ports_csv" 2>/dev/null <<'REMOTE'
+    local ssh_host="$1" runtime_root="$2" ports_csv="$3" output status remote_command
+    remote_command="$(deploy_transport_remote_command "$runtime_root" "$ports_csv")"
+    if output="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" "$remote_command" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 root=$1
 ports=$2
@@ -100,8 +110,17 @@ deploy_transport_docker_context() {
     docker context inspect --format '{{.Name}}' "$1" 2>/dev/null
 }
 
+deploy_transport_docker_context_binding() {
+    docker context inspect --format '{"name":{{json .Name}},"host":{{json .Endpoints.docker.Host}}}' "$1" 2>/dev/null
+}
+
 deploy_transport_docker_info() {
     docker --context "$1" info --format '{"ID":{{json .ID}},"Name":{{json .Name}},"Architecture":{{json .Architecture}},"OSType":{{json .OSType}},"ServerVersion":{{json .ServerVersion}}}' 2>/dev/null
+}
+
+deploy_transport_docker_info_host() {
+    env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH docker --host "$1" info \
+      --format '{"ID":{{json .ID}},"Name":{{json .Name}},"Architecture":{{json .Architecture}},"OSType":{{json .OSType}},"ServerVersion":{{json .ServerVersion}}}' 2>/dev/null
 }
 
 deploy_transport_docker_compose_version() {
@@ -1024,9 +1043,37 @@ deploy_transport_docker_inspect_json() {
     return 1
 }
 
+deploy_transport_docker_host_inspect_json() {
+    local host="$1" kind="$2" name="$3" format="$4" output error status
+    error="$(mktemp /tmp/hvo-docker-inspect.XXXXXX)" || return 1
+    if output="$(env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH \
+      docker --host "$host" "$kind" inspect --format "$format" "$name" 2>"$error")"; then
+        rm -f -- "$error"
+        [[ -n "$output" && "$output" != *$'\n'* ]] || return 1
+        printf '%s\n' "$output"
+        return 0
+    else
+        status=$?
+    fi
+    if [[ "$status" == 1 ]] && { grep -Eq "^(Error: No such $kind: $name|Error response from daemon: (get $name: no such $kind|$kind $name not found))$" "$error" ||
+      grep -Fqx "Error response from daemon: No such $kind: $name" "$error"; }; then
+        rm -f -- "$error"
+        return 44
+    fi
+    rm -f -- "$error"
+    return 1
+}
+
 deploy_transport_require_container_absent() {
     local status
     deploy_transport_docker_inspect_json "$1" container "$2" '{{json .Id}}' >/dev/null && return 1
+    status=$?
+    [[ "$status" == 44 ]]
+}
+
+deploy_transport_require_container_absent_host() {
+    local status
+    deploy_transport_docker_host_inspect_json "$1" container "$2" '{{json .Id}}' >/dev/null && return 1
     status=$?
     [[ "$status" == 44 ]]
 }
@@ -1114,6 +1161,59 @@ deploy_transport_require_network_absent() {
     [[ "$status" == 44 ]]
 }
 
+deploy_transport_require_network_absent_host() {
+    local status
+    deploy_transport_docker_host_inspect_json "$1" network "$2" '{{json .Name}}' >/dev/null && return 1
+    status=$?
+    [[ "$status" == 44 ]]
+}
+
+deploy_transport_require_partial_prepare_resources_absent() {
+    local context="$1" run_id="$2"
+    shift 2
+    local project kind output
+    for project in "$@"; do
+        [[ "$project" =~ ^[a-z0-9][a-z0-9_.-]{0,127}$ ]] || return 1
+        output="$(docker --context "$context" container ls --all --quiet --filter "label=com.docker.compose.project=$project" 2>/dev/null)" || return 1
+        [[ -z "$output" ]] || return 1
+        for kind in network volume; do
+            output="$(docker --context "$context" "$kind" ls --quiet --filter "label=com.docker.compose.project=$project" 2>/dev/null)" || return 1
+            [[ -z "$output" ]] || return 1
+        done
+    done
+    output="$(docker --context "$context" container ls --all --quiet --filter "label=io.hvoskymonitor.run-id=$run_id" 2>/dev/null)" || return 1
+    [[ -z "$output" ]] || return 1
+    for kind in network volume; do
+        output="$(docker --context "$context" "$kind" ls --quiet --filter "label=io.hvoskymonitor.run-id=$run_id" 2>/dev/null)" || return 1
+        [[ -z "$output" ]] || return 1
+    done
+}
+
+deploy_transport_require_partial_prepare_resources_absent_host() {
+    local host="$1" run_id="$2"
+    shift 2
+    local project kind output
+    for project in "$@"; do
+        [[ "$project" =~ ^[a-z0-9][a-z0-9_.-]{0,127}$ ]] || return 1
+        output="$(env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH \
+          docker --host "$host" container ls --all --quiet --filter "label=com.docker.compose.project=$project" 2>/dev/null)" || return 1
+        [[ -z "$output" ]] || return 1
+        for kind in network volume; do
+            output="$(env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH \
+              docker --host "$host" "$kind" ls --quiet --filter "label=com.docker.compose.project=$project" 2>/dev/null)" || return 1
+            [[ -z "$output" ]] || return 1
+        done
+    done
+    output="$(env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH \
+      docker --host "$host" container ls --all --quiet --filter "label=io.hvoskymonitor.run-id=$run_id" 2>/dev/null)" || return 1
+    [[ -z "$output" ]] || return 1
+    for kind in network volume; do
+        output="$(env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH \
+          docker --host "$host" "$kind" ls --quiet --filter "label=io.hvoskymonitor.run-id=$run_id" 2>/dev/null)" || return 1
+        [[ -z "$output" ]] || return 1
+    done
+}
+
 deploy_transport_compose_service_state() {
     local context="$1" project="$2" env_file="$3" compose_file="$4" service="$5" container identity
     container="$(docker --context "$context" compose --project-name "$project" --env-file "$env_file" --file "$compose_file" ps --all -q "$service" 2>/dev/null)" || return 1
@@ -1127,7 +1227,9 @@ deploy_transport_compose_service_state() {
 }
 
 deploy_transport_require_runtime_root_absent() {
-    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$1" bash -s -- "$2" 2>/dev/null <<'REMOTE'
+    local remote_command
+    remote_command="$(deploy_transport_remote_command "$2")"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$1" "$remote_command" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 root=$1
 [[ "$root" == /* && "$root" != / && "$root" != *//* && "$root" != */../* && "$root" != */./* ]] || exit 90
@@ -1171,10 +1273,11 @@ deploy_transport_helper_image() {
 # Revalidation prevents accidental or foreign-path deletion; the runtime owner remains trusted not to race its owner-controlled parent.
 deploy_transport_remove_runtime_root() {
     local ssh_host="$1" root="$2" marker_digest="$3" allow_absent="${4:-false}" context="${5:-}" helper_env="${6:-}" helper_key="${7:-}" target="${8:-}"
-    local inspection runtime_uid mixed helper_image ciddir cidfile cid='' helper_status lifecycle_ok cid_valid
+    local inspection runtime_uid mixed helper_image ciddir cidfile cid='' helper_status lifecycle_ok cid_valid remote_command
     [[ "$root" != *'\'* ]] || return 1
+    remote_command="$(deploy_transport_remote_command "$root" "$marker_digest" "$allow_absent")"
     inspection="$(timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8 \
-      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" bash -s -- "$root" "$marker_digest" "$allow_absent" 2>/dev/null <<'REMOTE'
+      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" "$remote_command" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 export LC_ALL=C
 root=$1; marker_digest=$2; allow_absent=$3
@@ -1309,9 +1412,9 @@ HELPER
         [[ "$helper_status" == 0 && "$lifecycle_ok" == true ]] || return 1
         [[ "${DEPLOY_TEST_FAILPOINT:-}" != after-mixed-runtime-helper-clear ]] || return 75
     fi
+    remote_command="$(deploy_transport_remote_command "$root" "$marker_digest" "$runtime_uid" "$mixed")"
     timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8 \
-      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" bash -s -- \
-      "$root" "$marker_digest" "$runtime_uid" "$mixed" 2>/dev/null <<'REMOTE'
+      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" "$remote_command" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 export LC_ALL=C
 root=$1; marker_digest=$2; runtime_uid=$3; mixed=$4; control="$root/.hvo-deploy"; marker="$control/ownership"
@@ -1367,10 +1470,11 @@ REMOTE
 
 deploy_transport_remove_prepare_lock() {
     local ssh_host="$1" root="$2" marker_digest="$3" run_id="$4" lock_name="$5"
-    local root_new="$6" control_new="$7" marker_new="$8" allow_partial="${9:-false}" failpoint="${10:-none}" target="${11:-}"
+    local root_new="$6" control_new="$7" marker_new="$8" allow_partial="${9:-false}" failpoint="${10:-none}" target="${11:-}" remote_command
+    remote_command="$(deploy_transport_remote_command "$root" "$marker_digest" "$run_id" "$lock_name" "$root_new" "$control_new" \
+      "$marker_new" "$allow_partial" "$failpoint" "$target")"
     timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8 \
-      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" bash -s -- \
-      "$root" "$marker_digest" "$run_id" "$lock_name" "$root_new" "$control_new" "$marker_new" "$allow_partial" "$failpoint" "$target" 2>/dev/null <<'REMOTE'
+      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" "$remote_command" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 export LC_ALL=C
 root=$1; marker_digest=$2; run_id=$3; lock_name=$4; root_new=$5; control_new=$6; marker_new=$7; allow_partial=$8; failpoint=$9; target=${10}
@@ -1418,8 +1522,9 @@ REMOTE
 }
 
 deploy_transport_require_prepare_lock_absent() {
-    local ssh_host="$1" root="$2" lock_name="$3"
-    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$lock_name" 2>/dev/null <<'REMOTE'
+    local ssh_host="$1" root="$2" lock_name="$3" remote_command
+    remote_command="$(deploy_transport_remote_command "$root" "$lock_name")"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" "$remote_command" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 root=$1; lock_name=$2
 [[ "$root" == /* && "$root" != / && "$lock_name" =~ ^\.hvo-deploy-prepare-[0-9a-f]{32}\.lock$ ]] || exit 90
@@ -1436,8 +1541,9 @@ REMOTE
 }
 
 deploy_transport_validate_runtime_root() {
-    local ssh_host="$1" root="$2" marker_digest="$3"
-    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$root" "$marker_digest" 2>/dev/null <<'REMOTE'
+    local ssh_host="$1" root="$2" marker_digest="$3" remote_command
+    remote_command="$(deploy_transport_remote_command "$root" "$marker_digest")"
+    ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" "$remote_command" 2>/dev/null <<'REMOTE'
 set -euo pipefail
 root=$1; marker_digest=$2
 [[ "$root" == /* && "$root" != / && "$marker_digest" =~ ^[0-9a-f]{64}$ ]] || exit 90
@@ -1452,6 +1558,292 @@ marker="$root/.hvo-deploy/ownership"; expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$
 expected_bytes=$((${#expected} + 1))
 [[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker")" == 1 &&
    "$(wc -c < "$marker")" == "$expected_bytes" && "$(<"$marker")" == "$expected" ]] || exit 92
+REMOTE
+}
+
+deploy_transport_partial_prepare_target() {
+    local ssh_host="$1" root="$2" marker_digest="$3" run_id="$4" lock_name="$5"
+    local root_new="$6" control_new="$7" marker_new="$8" root_status="$9" lock_status="${10}"
+    local operation="${11}" failpoint="${12}" target="${13}" expected_machine="${14}" expected_host="${15}" runtime_owner="${16}"
+    local output remote_command
+    remote_command="$(deploy_transport_remote_command "$root" "$marker_digest" "$run_id" "$lock_name" "$root_new" "$control_new" "$marker_new" \
+      "$root_status" "$lock_status" "$operation" "$failpoint" "$target" "$expected_machine" "$expected_host" "$runtime_owner")"
+    output="$(timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8 \
+      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" "$remote_command" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+export LC_ALL=C
+root=$1; marker_digest=$2; run_id=$3; lock_name=$4; root_new=$5; control_new=$6; marker_new=$7
+root_status=$8; lock_status=$9; operation=${10}; failpoint=${11}; target=${12}; expected_machine=${13}; expected_host=${14}; runtime_owner=${15}
+marker_fd=; state_fd=
+[[ "$(cat /etc/machine-id 2>/dev/null || hostname)" == "$expected_machine" && "$(hostname)" == "$expected_host" ]] || exit 90
+runtime_uid=$(id -u "$runtime_owner" 2>/dev/null) || exit 91
+[[ "$(id -u)" == "$runtime_uid" ]] || exit 91
+[[ "$root" == /* && "$root" != / && "$root" != *//* && "$root" != */../* && "$root" != */./* ]] || exit 92
+[[ "$marker_digest" =~ ^[0-9a-f]{64}$ && "$run_id" =~ ^[a-z0-9][a-z0-9-]{0,31}$ &&
+   "$lock_name" =~ ^\.hvo-deploy-prepare-[0-9a-f]{32}\.lock$ ]] || exit 93
+[[ ( "$root_new" == true || "$root_new" == false ) && ( "$control_new" == true || "$control_new" == false ) &&
+   ( "$marker_new" == true || "$marker_new" == false ) ]] || exit 94
+[[ "$root_new" == true || "$control_new" == true || "$marker_new" == true ]] || exit 94
+[[ "$root_status" == none || "$root_status" == intent || "$root_status" == completed ]] || exit 95
+[[ "$lock_status" == none || "$lock_status" == intent || "$lock_status" == completed ]] || exit 95
+[[ "$operation" == inspect || "$operation" == cleanup-root || "$operation" == cleanup-lock || "$operation" == verify ]] || exit 96
+parent=${root%/*}; [[ -n "$parent" ]] || parent=/
+current=/; IFS=/ read -r -a components <<< "${parent#/}"
+for component in "${components[@]}"; do
+  [[ -n "$component" ]] || continue
+  [[ "$current" == / ]] && current="/$component" || current="$current/$component"
+  [[ -d "$current" && ! -L "$current" ]] || exit 97
+done
+parent_mode=$(stat -c %a "$parent")
+[[ "$(stat -c %u "$parent")" == "$runtime_uid" ]] || exit 98
+(( (8#$parent_mode & 0200) != 0 && (8#$parent_mode & 0022) == 0 )) || exit 98
+parent_identity=$(stat -c '%d:%i' -- "$parent") || exit 98
+exec {parent_fd}<"$parent" || exit 98
+root_name=${root##*/}; control="$root/.hvo-deploy"; marker="$control/ownership"; lock_path="$parent/$lock_name"; state_path="$lock_path.state"
+root_quarantine="$parent/.hvo-deploy-cleanup-root-$marker_digest"
+control_quarantine="$root/.hvo-deploy.cleanup.$marker_digest"
+marker_quarantine="$control/.ownership.cleanup.$marker_digest"
+lock_quarantine="$parent/$lock_name.cleanup.$marker_digest"
+state_quarantine="$parent/$lock_name.state.cleanup.$marker_digest"
+expected_marker=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"; expected_marker_bytes=$((${#expected_marker} + 1))
+expected_lock=$'HVO-DEPLOY-PREPARE-LOCK\t1\nmarker\t'"$marker_digest"; expected_lock_bytes=$((${#expected_lock} + 1))
+expected_state=$(printf 'HVO-DEPLOY-PREPARE-STATE\t1\nmarker\t%s\ncreatingRun\t%s\nrootNew\t%s\ncontrolNew\t%s\nmarkerNew\t%s' \
+  "$marker_digest" "$run_id" "$root_new" "$control_new" "$marker_new")
+expected_state_bytes=$((${#expected_state} + 1))
+
+created_absent_allowed=false; [[ "$root_status" != none ]] && created_absent_allowed=true
+[[ ! ( ( -e "$root" || -L "$root" ) && ( -e "$root_quarantine" || -L "$root_quarantine" ) ) ]] || exit 99
+root_path=$root
+if [[ ! -e "$root" && ! -L "$root" && ( -e "$root_quarantine" || -L "$root_quarantine" ) ]]; then
+  [[ "$root_new" == true && "$created_absent_allowed" == true ]] || exit 99
+  root_path=$root_quarantine
+fi
+if [[ -e "$root_path" || -L "$root_path" ]]; then
+  [[ -d "$root_path" && ! -L "$root_path" && "$(stat -c %u:%a "$root_path")" == "$runtime_uid:700" ]] || exit 99
+  root_identity=$(stat -c '%d:%i' -- "$root_path") || exit 99
+  exec {root_fd}<"$root_path" || exit 99
+  awk -v root="$root" '
+    function escaped(path, result, position, character) {
+      result=""; for (position=1; position<=length(path); position++) {
+        character=substr(path,position,1)
+        if (character == "\\") result=result "\\134"
+        else if (character == " ") result=result "\\040"
+        else if (character == sprintf("%c",9)) result=result "\\011"
+        else if (character == sprintf("%c",10)) result=result "\\012"
+        else result=result character
+      } return result
+    }
+    BEGIN { root=escaped(root) }
+    $5 == root || index($5, root "/") == 1 { exit 42 }
+  ' /proc/self/mountinfo || exit 100
+elif [[ "$root_new" == false || "$created_absent_allowed" != true ]]; then
+  exit 101
+fi
+[[ ! ( ( -e "$control" || -L "$control" ) && ( -e "$control_quarantine" || -L "$control_quarantine" ) ) ]] || exit 102
+control_path=$control
+if [[ ! -e "$control" && ! -L "$control" && ( -e "$control_quarantine" || -L "$control_quarantine" ) ]]; then
+  [[ "$control_new" == true && "$created_absent_allowed" == true ]] || exit 102
+  control_path=$control_quarantine
+fi
+if [[ -e "$control_path" || -L "$control_path" ]]; then
+  [[ "$root_path" == "$root" && -d "$control_path" && ! -L "$control_path" && "$(stat -c %u:%a "$control_path")" == "$runtime_uid:700" ]] || exit 102
+  control_identity=$(stat -c '%d:%i' -- "$control_path") || exit 102
+  exec {control_fd}<"$control_path" || exit 102
+elif [[ "$control_new" == false || "$created_absent_allowed" != true ]]; then
+  exit 103
+fi
+[[ ! ( ( -e "$marker" || -L "$marker" ) && ( -e "$marker_quarantine" || -L "$marker_quarantine" ) ) ]] || exit 104
+marker_path=$marker
+if [[ ! -e "$marker" && ! -L "$marker" && ( -e "$marker_quarantine" || -L "$marker_quarantine" ) ]]; then
+  [[ "$marker_new" == true && "$created_absent_allowed" == true ]] || exit 104
+  marker_path=$marker_quarantine
+fi
+if [[ -e "$marker_path" || -L "$marker_path" ]]; then
+  [[ "$control_path" == "$control" && -f "$marker_path" && ! -L "$marker_path" && "$(stat -c %u:%h:%a "$marker_path")" == "$runtime_uid:1:600" &&
+     "$(wc -c < "$marker_path")" == "$expected_marker_bytes" && "$(<"$marker_path")" == "$expected_marker" ]] || exit 104
+  exec {marker_fd}<"$marker_path" || exit 104
+  marker_identity=$(stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/$marker_fd") || exit 104
+  [[ "$(stat -c '%d:%i' -- "$marker_path")" == "$marker_identity" ]] || exit 104
+elif [[ "$marker_new" == false || "$created_absent_allowed" != true ]]; then
+  exit 105
+fi
+if [[ -d "$root_path" && ! -L "$root_path" ]]; then
+  remaining=$(find -P "$root_path" -mindepth 1 ! -path "$control_path" ! -path "$marker_path" -print -quit) || exit 106
+  [[ -z "$remaining" ]] || exit 107
+fi
+if [[ -d "$control_path" && ! -L "$control_path" ]]; then
+  remaining=$(find -P "$control_path" -mindepth 1 ! -path "$marker_path" -print -quit) || exit 108
+  [[ -z "$remaining" ]] || exit 109
+fi
+
+lock_absent_allowed=false; [[ "$lock_status" != none ]] && lock_absent_allowed=true
+[[ ! ( ( -e "$lock_path" || -L "$lock_path" ) && ( -e "$lock_quarantine" || -L "$lock_quarantine" ) ) ]] || exit 110
+actual_lock_path=$lock_path
+if [[ ! -e "$lock_path" && ! -L "$lock_path" && ( -e "$lock_quarantine" || -L "$lock_quarantine" ) ]]; then
+  [[ "$lock_absent_allowed" == true ]] || exit 110
+  actual_lock_path=$lock_quarantine
+fi
+if [[ -e "$actual_lock_path" || -L "$actual_lock_path" ]]; then
+  [[ -f "$actual_lock_path" && ! -L "$actual_lock_path" && "$(stat -c %u:%h:%a "$actual_lock_path")" == "$runtime_uid:1:600" ]] || exit 110
+  exec 9<>"$actual_lock_path" || exit 110
+  flock -n 9 || exit 111
+  lock_identity=$(stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/9") || exit 112
+  [[ "$(stat -c '%d:%i' -- "$actual_lock_path")" == "$lock_identity" &&
+     "$(wc -c < "/proc/$BASHPID/fd/9")" == "$expected_lock_bytes" && "$(<"/proc/$BASHPID/fd/9")" == "$expected_lock" ]] || exit 112
+elif [[ "$lock_absent_allowed" != true ]]; then
+  exit 113
+fi
+[[ ! ( ( -e "$state_path" || -L "$state_path" ) && ( -e "$state_quarantine" || -L "$state_quarantine" ) ) ]] || exit 114
+actual_state_path=$state_path
+if [[ ! -e "$state_path" && ! -L "$state_path" && ( -e "$state_quarantine" || -L "$state_quarantine" ) ]]; then
+  [[ "$lock_absent_allowed" == true ]] || exit 114
+  actual_state_path=$state_quarantine
+fi
+if [[ -e "$actual_state_path" || -L "$actual_state_path" ]]; then
+  [[ -e "$actual_lock_path" && -f "$actual_state_path" && ! -L "$actual_state_path" &&
+     "$(stat -c %u:%h:%a "$actual_state_path")" == "$runtime_uid:1:600" &&
+     "$(wc -c < "$actual_state_path")" == "$expected_state_bytes" && "$(<"$actual_state_path")" == "$expected_state" ]] || exit 114
+  exec {state_fd}<"$actual_state_path" || exit 114
+  state_identity=$(stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/$state_fd") || exit 114
+  [[ "$(stat -c '%d:%i' -- "$actual_state_path")" == "$state_identity" ]] || exit 114
+elif [[ "$lock_absent_allowed" != true ]]; then
+  exit 115
+fi
+
+revalidate_parent() {
+  [[ -d "$parent" && ! -L "$parent" && "$(stat -c '%d:%i' -- "$parent")" == "$parent_identity" &&
+     "$(stat -c %u "$parent")" == "$runtime_uid" ]] || return 1
+}
+revalidate_directory() {
+  local path=$1 identity=$2 fd=$3
+  [[ -d "$path" && ! -L "$path" && "$(stat -c '%d:%i' -- "$path")" == "$identity" &&
+     "$(stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/$fd")" == "$identity" &&
+     "$(stat -c %u:%a "$path")" == "$runtime_uid:700" ]]
+}
+revalidate_file() {
+  local path=$1 identity=$2 fd=$3 expected_bytes=$4 expected_content=$5
+  [[ -f "$path" && ! -L "$path" && "$(stat -c '%d:%i' -- "$path")" == "$identity" &&
+     "$(stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/$fd")" == "$identity" &&
+     "$(stat -c %u:%h:%a "$path")" == "$runtime_uid:1:600" &&
+     "$(wc -c < "/proc/$BASHPID/fd/$fd")" == "$expected_bytes" &&
+     "$(<"/proc/$BASHPID/fd/$fd")" == "$expected_content" ]]
+}
+remove_file_bound() {
+  local directory_fd=$1 source_name=$2 quarantine_name=$3 actual_path=$4 identity=$5 fd=$6 expected_bytes=$7 expected_content=$8
+  local source="/proc/$BASHPID/fd/$directory_fd/$source_name" quarantine="/proc/$BASHPID/fd/$directory_fd/$quarantine_name"
+  if [[ "${actual_path##*/}" == "$source_name" ]]; then
+    revalidate_file "$source" "$identity" "$fd" "$expected_bytes" "$expected_content" &&
+      [[ ! -e "$quarantine" && ! -L "$quarantine" ]] || return 1
+    mv -T -n -- "$source" "$quarantine" || return 1
+    [[ ! -e "$source" && ! -L "$source" ]] || return 1
+  fi
+  if ! revalidate_file "$quarantine" "$identity" "$fd" "$expected_bytes" "$expected_content"; then
+    [[ -e "$source" || -L "$source" ]] || mv -T -n -- "$quarantine" "$source" || true
+    return 1
+  fi
+  rm -f -- "$quarantine"
+}
+remove_directory_bound() {
+  local directory_fd=$1 source_name=$2 quarantine_name=$3 actual_path=$4 identity=$5 fd=$6
+  local source="/proc/$BASHPID/fd/$directory_fd/$source_name" quarantine="/proc/$BASHPID/fd/$directory_fd/$quarantine_name"
+  if [[ "${actual_path##*/}" == "$source_name" ]]; then
+    revalidate_directory "$source" "$identity" "$fd" && [[ ! -e "$quarantine" && ! -L "$quarantine" ]] || return 1
+    mv -T -n -- "$source" "$quarantine" || return 1
+    [[ ! -e "$source" && ! -L "$source" ]] || return 1
+  fi
+  if ! revalidate_directory "$quarantine" "$identity" "$fd"; then
+    [[ -e "$source" || -L "$source" ]] || mv -T -n -- "$quarantine" "$source" || true
+    return 1
+  fi
+  rmdir -- "$quarantine"
+}
+
+if [[ "$operation" == cleanup-root ]]; then
+  [[ -e "$actual_lock_path" && -e "$actual_state_path" ]] || exit 116
+  revalidate_parent && revalidate_file "$actual_lock_path" "$lock_identity" 9 "$expected_lock_bytes" "$expected_lock" &&
+    revalidate_file "$actual_state_path" "$state_identity" "$state_fd" "$expected_state_bytes" "$expected_state" || exit 116
+  if [[ "$marker_new" == true && ( -e "$marker_path" || -L "$marker_path" ) ]]; then
+    revalidate_directory "$root_path" "$root_identity" "$root_fd" && revalidate_directory "$control_path" "$control_identity" "$control_fd" &&
+      remove_file_bound "$control_fd" ownership ".ownership.cleanup.$marker_digest" "$marker_path" "$marker_identity" "$marker_fd" \
+        "$expected_marker_bytes" "$expected_marker" || exit 117
+    marker_path=
+  fi
+  [[ "$failpoint" != "after-partial-prepare-marker:$target" ]] || exit 75
+  if [[ "$control_new" == true && ( -e "$control_path" || -L "$control_path" ) ]]; then
+    revalidate_parent && revalidate_directory "$root_path" "$root_identity" "$root_fd" &&
+      remove_directory_bound "$root_fd" .hvo-deploy ".hvo-deploy.cleanup.$marker_digest" "$control_path" "$control_identity" "$control_fd" || exit 118
+    control_path=
+  fi
+  [[ "$failpoint" != "after-partial-prepare-control:$target" ]] || exit 75
+  if [[ "$root_new" == true && ( -e "$root_path" || -L "$root_path" ) ]]; then
+    revalidate_parent && remove_directory_bound "$parent_fd" "$root_name" ".hvo-deploy-cleanup-root-$marker_digest" \
+      "$root_path" "$root_identity" "$root_fd" || exit 119
+    root_path=
+  fi
+  [[ "$failpoint" != "after-partial-prepare-root:$target" ]] || exit 75
+fi
+if [[ "$operation" == cleanup-lock ]]; then
+  [[ "$marker_new" == false || ( ! -e "$marker" && ! -L "$marker" && ! -e "$marker_quarantine" && ! -L "$marker_quarantine" ) ]] || exit 120
+  [[ "$control_new" == false || ( ! -e "$control" && ! -L "$control" && ! -e "$control_quarantine" && ! -L "$control_quarantine" ) ]] || exit 121
+  [[ "$root_new" == false || ( ! -e "$root" && ! -L "$root" && ! -e "$root_quarantine" && ! -L "$root_quarantine" ) ]] || exit 122
+  if [[ -e "$actual_state_path" || -L "$actual_state_path" ]]; then
+    revalidate_parent && revalidate_file "$actual_lock_path" "$lock_identity" 9 "$expected_lock_bytes" "$expected_lock" &&
+      remove_file_bound "$parent_fd" "$lock_name.state" "$lock_name.state.cleanup.$marker_digest" "$actual_state_path" \
+        "$state_identity" "$state_fd" "$expected_state_bytes" "$expected_state" || exit 123
+    actual_state_path=
+  fi
+  [[ "$failpoint" != "after-partial-prepare-lock-state:$target" ]] || exit 75
+  if [[ -e "$actual_lock_path" || -L "$actual_lock_path" ]]; then
+    revalidate_parent && remove_file_bound "$parent_fd" "$lock_name" "$lock_name.cleanup.$marker_digest" "$actual_lock_path" \
+      "$lock_identity" 9 "$expected_lock_bytes" "$expected_lock" || exit 124
+    actual_lock_path=
+  fi
+  [[ "$failpoint" != "after-partial-prepare-lock:$target" ]] || exit 75
+fi
+
+if [[ "$operation" == cleanup-root || "$root_status" == completed ]]; then
+  [[ "$marker_new" == false || ( ! -e "$marker" && ! -L "$marker" && ! -e "$marker_quarantine" && ! -L "$marker_quarantine" ) ]] || exit 125
+  [[ "$control_new" == false || ( ! -e "$control" && ! -L "$control" && ! -e "$control_quarantine" && ! -L "$control_quarantine" ) ]] || exit 126
+  [[ "$root_new" == false || ( ! -e "$root" && ! -L "$root" && ! -e "$root_quarantine" && ! -L "$root_quarantine" ) ]] || exit 127
+fi
+if [[ "$operation" == cleanup-lock || "$lock_status" == completed ]]; then
+  [[ ! -e "$lock_path" && ! -L "$lock_path" && ! -e "$lock_quarantine" && ! -L "$lock_quarantine" &&
+     ! -e "$state_path" && ! -L "$state_path" && ! -e "$state_quarantine" && ! -L "$state_quarantine" ]] || exit 128
+fi
+printf 'verified\n'
+REMOTE
+)" || return 1
+    [[ "$output" == verified ]]
+}
+
+deploy_transport_require_unprepared_target_absent() {
+    local ssh_host="$1" root="$2" lock_name="$3" expected_machine="$4" expected_host="$5" runtime_owner="$6" deployment_state="$7" remote_command
+    remote_command="$(deploy_transport_remote_command "$root" "$lock_name" "$expected_machine" "$expected_host" "$runtime_owner" "$deployment_state")"
+    timeout --signal=TERM --kill-after=30s 3600 ssh -o BatchMode=yes -o ConnectTimeout=8 \
+      -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -- "$ssh_host" "$remote_command" 2>/dev/null <<'REMOTE'
+set -euo pipefail
+root=$1; lock_name=$2; expected_machine=$3; expected_host=$4; runtime_owner=$5; deployment_state=$6
+[[ "$(cat /etc/machine-id 2>/dev/null || hostname)" == "$expected_machine" && "$(hostname)" == "$expected_host" ]] || exit 90
+runtime_uid=$(id -u "$runtime_owner" 2>/dev/null) || exit 91
+[[ "$(id -u)" == "$runtime_uid" ]] || exit 91
+[[ "$root" == /* && "$root" != / && "$root" != *//* && "$root" != */../* && "$root" != */./* &&
+   "$lock_name" =~ ^\.hvo-deploy-prepare-[0-9a-f]{32}\.lock$ &&
+   ( "$deployment_state" == ready || "$deployment_state" == needs_prepare ) ]] || exit 92
+parent=${root%/*}; [[ -n "$parent" ]] || parent=/
+current=/; IFS=/ read -r -a components <<< "${parent#/}"
+for component in "${components[@]}"; do
+  [[ -n "$component" ]] || continue
+  [[ -d "$current" && ! -L "$current" && -x "$current" ]] || exit 93
+  [[ "$current" == / ]] && next="/$component" || next="$current/$component"
+  if [[ ! -e "$next" && ! -L "$next" ]]; then printf 'verified\n'; exit 0; fi
+  [[ -d "$next" && ! -L "$next" ]] || exit 93
+  current=$next
+done
+[[ -d "$parent" && ! -L "$parent" && -x "$parent" ]] || exit 93
+lock_path="$parent/$lock_name"
+[[ ! -e "$lock_path" && ! -L "$lock_path" && ! -e "$lock_path.state" && ! -L "$lock_path.state" ]]
+[[ "$deployment_state" != needs_prepare || ( ! -e "$root" && ! -L "$root" ) ]] || exit 94
+printf 'verified\n'
 REMOTE
 }
 
@@ -1662,7 +2054,7 @@ REMOTE
 deploy_transport_prepare_target() {
     local ssh_host="$1"
     shift
-    local remote_script output status reason prepared_root prepared_control prepared_marker prepared_digest prepared_run expected_digest="${8}"
+    local remote_script remote_command output status reason prepared_root prepared_control prepared_marker prepared_digest prepared_run expected_digest="${8}"
     remote_script="$(cat <<'REMOTE'
 set -euo pipefail
 root=$1; mode=$2; runtime_owner=$3; run_id=$4; inventory_hash=$5; target=$6
@@ -1712,22 +2104,27 @@ flock -n 9 || fail lock-contended
 if [[ "$operation" == validate ]]; then [[ "$(stat -c %u:%a "$lock_path" 2>/dev/null)" == "$runtime_uid:600" ]] || fail completed-drift
 else chmod 600 "$lock_path" || fail unsafe-lock; fi
 lock_expected=$'HVO-DEPLOY-PREPARE-LOCK\t1\nmarker\t'"$marker_digest"
+lock_expected_bytes=$((${#lock_expected} + 1))
 lock_actual=$(<"$lock_path")
 if [[ -z "$lock_actual" ]]; then
   [[ "$operation" != validate ]] || fail completed-drift
   printf '%s\n' "$lock_expected" >&9; lock_actual=$lock_expected
 fi
-[[ "$lock_actual" == "$lock_expected" ]] || fail lock-content-mismatch
+[[ "$(wc -c < "$lock_path")" == "$lock_expected_bytes" && "$lock_actual" == "$lock_expected" ]] || fail lock-content-mismatch
 validate_components "$parent" || fail unsafe-path
 state_path="$lock_path.state"; state_preexisting=false
 if [[ -e "$state_path" || -L "$state_path" ]]; then
   [[ -f "$state_path" && ! -L "$state_path" && "$(stat -c %h "$state_path" 2>/dev/null)" == 1 ]] || fail state-mismatch
-  state_preexisting=true; state_header=; state_marker=; creating_run=; root_new=; control_new=; marker_new=
+  state_preexisting=true; state_header=; state_marker=; creating_run=; root_new=; control_new=; marker_new=; state_actual=$(<"$state_path")
   while IFS=$'\t' read -r key value; do
     case "$key" in HVO-DEPLOY-PREPARE-STATE) state_header=$value ;; marker) state_marker=$value ;; creatingRun) creating_run=$value ;; rootNew) root_new=$value ;; controlNew) control_new=$value ;; markerNew) marker_new=$value ;; *) fail state-mismatch ;; esac
-  done < "$state_path"
+  done <<< "$state_actual"
   [[ "$state_header" == 1 && "$state_marker" == "$marker_digest" && "$creating_run" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && ( "$root_new" == true || "$root_new" == false ) &&
      ( "$control_new" == true || "$control_new" == false ) && ( "$marker_new" == true || "$marker_new" == false ) ]] || fail state-mismatch
+  state_expected=$(printf 'HVO-DEPLOY-PREPARE-STATE\t1\nmarker\t%s\ncreatingRun\t%s\nrootNew\t%s\ncontrolNew\t%s\nmarkerNew\t%s' \
+    "$state_marker" "$creating_run" "$root_new" "$control_new" "$marker_new")
+  state_expected_bytes=$((${#state_expected} + 1))
+  [[ "$(wc -c < "$state_path")" == "$state_expected_bytes" && "$state_actual" == "$state_expected" ]] || fail state-mismatch
 else
   creating_run=$run_id; root_new=false; control_new=false; marker_new=false
 fi
@@ -1737,7 +2134,8 @@ validate_completed_layout() {
   marker="$root/.hvo-deploy/ownership"
   [[ -f "$marker" && ! -L "$marker" && "$(stat -c %h "$marker" 2>/dev/null)" == 1 ]] || fail completed-drift
   marker_expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
-  [[ "$(<"$marker")" == "$marker_expected" ]] || fail completed-drift
+  marker_expected_bytes=$((${#marker_expected} + 1))
+  [[ "$(wc -c < "$marker")" == "$marker_expected_bytes" && "$(<"$marker")" == "$marker_expected" ]] || fail completed-drift
   [[ "$(stat -c %u:%a "$root" 2>/dev/null)" == "$runtime_uid:700" &&
      "$(stat -c %u:%a "$root/.hvo-deploy" 2>/dev/null)" == "$runtime_uid:700" &&
      "$(stat -c %u:%a "$marker" 2>/dev/null)" == "$runtime_uid:600" &&
@@ -1766,7 +2164,8 @@ if [[ -e "$root" || -L "$root" ]]; then
     [[ "$(stat -c %h "$marker" 2>/dev/null)" == 1 ]] || fail marker-mismatch
     marker_actual=$(<"$marker")
     marker_expected=$'HVO-DEPLOY-ROOT\t1\nmarker\t'"$marker_digest"
-    [[ "$marker_actual" == "$marker_expected" ]] || fail marker-mismatch
+    marker_expected_bytes=$((${#marker_expected} + 1))
+    [[ "$(wc -c < "$marker")" == "$marker_expected_bytes" && "$marker_actual" == "$marker_expected" ]] || fail marker-mismatch
     [[ "$state_preexisting" == true ]] || fail state-mismatch
   else
     nonempty=$(find "$root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) || fail unsafe-path
@@ -1784,9 +2183,11 @@ if [[ "$state_preexisting" == false ]]; then
   [[ ! -e "$control" && ! -L "$control" ]] && control_new=true
   [[ ! -e "$marker" && ! -L "$marker" ]] && marker_new=true
   state_expected=$(printf 'HVO-DEPLOY-PREPARE-STATE\t1\nmarker\t%s\ncreatingRun\t%s\nrootNew\t%s\ncontrolNew\t%s\nmarkerNew\t%s\n' "$marker_digest" "$creating_run" "$root_new" "$control_new" "$marker_new")
+  state_expected_bytes=$((${#state_expected} + 1))
   state_temporary="$state_path.tmp.$marker_digest"
   if [[ ! -e "$state_temporary" ]]; then (umask 077; printf '%s\n' "$state_expected" > "$state_temporary") || fail create-failed; fi
-  [[ -f "$state_temporary" && ! -L "$state_temporary" && "$(<"$state_temporary")" == "$state_expected" ]] || fail state-mismatch
+  [[ -f "$state_temporary" && ! -L "$state_temporary" && "$(wc -c < "$state_temporary")" == "$state_expected_bytes" &&
+     "$(<"$state_temporary")" == "$state_expected" ]] || fail state-mismatch
   chmod 600 "$state_temporary" || fail create-failed
   mv -T "$state_temporary" "$state_path" || fail create-failed
 fi
@@ -1813,7 +2214,8 @@ chmod 600 "$marker" || fail create-failed
 printf 'prepared\t%s\t%s\t%s\t%s\t%s\n' "$root_new" "$control_new" "$marker_new" "$marker_digest" "$creating_run"
 REMOTE
 )"
-    if output="$(printf '%s\n' "$remote_script" | ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" bash -s -- "$@" 2>/dev/null)"; then status=0; else status=$?; fi
+    remote_command="$(deploy_transport_remote_command "$@")"
+    if output="$(printf '%s\n' "$remote_script" | ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ssh_host" "$remote_command" 2>/dev/null)"; then status=0; else status=$?; fi
     if [[ "$status" == 0 && "$output" == validated$'\t'* ]]; then
         IFS=$'\t' read -r _ prepared_digest prepared_run prepared_root prepared_control prepared_marker <<< "$output"
         if [[ "$prepared_digest" == "$expected_digest" && "$prepared_run" =~ ^[a-z0-9][a-z0-9-]{0,31}$ &&

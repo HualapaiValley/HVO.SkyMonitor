@@ -75,7 +75,7 @@ all-contract mode for local validation:
 ./scripts/test:deploy-environment
 ```
 
-Its closed shard inventory is `preflight`, `prepare-images`,
+Its closed shard inventory is `preflight`, `prepare-images`, `partial-prepare`,
 `existing-catalog-up`, `bootstrap-authority`, `bootstrap-credentials`, `smoke`,
 `measure`, `existing-down`, and `deploy-services`. Inspect it with
 `./scripts/test:deploy-environment --list-shards`, or run one isolated shard with
