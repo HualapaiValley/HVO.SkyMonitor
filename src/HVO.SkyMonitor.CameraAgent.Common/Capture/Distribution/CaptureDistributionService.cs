@@ -106,7 +106,12 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
             _workers.Add(RunLaneAsync(lane, handler, signal.Reader));
         }
         _workers.Add(RunEphemeralAsync());
-        _logger.CaptureLanesInitialized(SqliteRawCaptureJournal.CurrentSchemaVersion, _policy.Definitions.Count(static lane => lane.Enabled));
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.CaptureLanesInitialized(
+                SqliteRawCaptureJournal.CurrentSchemaVersion,
+                _policy.Definitions.Count(static lane => lane.Enabled));
+        }
         activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
     }
 
@@ -223,8 +228,8 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Handler exceptions are converted into durable retry state so one lane cannot terminate another.")]
     private async Task ProcessLeaseAsync(ICaptureLaneHandler handler, CaptureLaneLease lease)
     {
-        using var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(_abort.Token);
-        using var renewalCancellation = new CancellationTokenSource();
+        var processingCancellation = CancellationTokenSource.CreateLinkedTokenSource(_abort.Token);
+        var renewalCancellation = new CancellationTokenSource();
         var renewal = RenewLeaseAsync(lease, processingCancellation, renewalCancellation.Token);
         using var activity = CaptureLaneTelemetry.ActivitySource.StartActivity("capture-lanes.process");
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -274,13 +279,21 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
         }
         finally
         {
-            await renewalCancellation.CancelAsync().ConfigureAwait(false);
             try
             {
-                await renewal.ConfigureAwait(false);
+                await renewalCancellation.CancelAsync().ConfigureAwait(false);
+                try
+                {
+                    await renewal.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (renewalCancellation.IsCancellationRequested)
+                {
+                }
             }
-            catch (OperationCanceledException) when (renewalCancellation.IsCancellationRequested)
+            finally
             {
+                renewalCancellation.Dispose();
+                processingCancellation.Dispose();
             }
         }
     }

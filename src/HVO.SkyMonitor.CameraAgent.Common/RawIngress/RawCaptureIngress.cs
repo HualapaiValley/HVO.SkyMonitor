@@ -207,9 +207,10 @@ internal sealed class RawCaptureIngress :
             }
             catch (Exception exception)
             {
+                var reason = FailureReason(exception);
                 SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, "initialization-failed");
-                _telemetry.RecordFailure("initialization", FailureReason(exception));
-                _logger.RawIngressIntegrityFailed(FailureReason(exception));
+                _telemetry.RecordFailure("initialization", reason);
+                _logger.RawIngressIntegrityFailed(reason);
                 if (exception is Microsoft.Data.Sqlite.SqliteException)
                 {
                     _logger.RawIngressSqliteResult("initialization", "failure");
@@ -861,7 +862,10 @@ internal sealed class RawCaptureIngress :
             {
                 if (current.Availability == CaptureLaneAvailability.Healthy)
                 {
-                    _logger.CaptureLanePressureRecovered(current.Availability.ToString());
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.CaptureLanePressureRecovered(current.Availability.ToString());
+                    }
                 }
                 else
                 {

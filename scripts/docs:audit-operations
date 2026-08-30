@@ -109,6 +109,21 @@ require_source_reference() {
     fi
 }
 
+coverage_line="$(jq -er '.aggregate.line * 100' scripts/coverage/baseline.json)"
+coverage_branch="$(jq -er '.aggregate.branch * 100' scripts/coverage/baseline.json)"
+LC_ALL=C printf -v coverage_line_percent '%.4f' "$coverage_line"
+LC_ALL=C printf -v coverage_branch_percent '%.4f' "$coverage_branch"
+coverage_report_count="$(awk '
+    /name: Enforce exact-path coverage baseline/ { in_step = 1 }
+    in_step && /patterns=\(/ { in_patterns = 1; next }
+    in_patterns && /^[[:space:]]*\)/ { print count; exit }
+    in_patterns && /coverage\.cobertura\.xml/ { count++ }
+' .github/workflows/ci.yml)"
+if [[ ! "$coverage_report_count" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'Could not derive the explicit coverage report count from .github/workflows/ci.yml.\n' >&2
+    exit 1
+fi
+
 require_source_reference '[HttpGet("detailed")]' src/HVO.SkyMonitor.LogicHost/Controllers/StatusController.cs
 require_source_reference '[HttpGet("protected")]' src/HVO.SkyMonitor.LogicHost/Controllers/StatusController.cs
 require_source_reference '/connect/token' src/HVO.SkyMonitor.LogicHost/Program.cs
@@ -123,8 +138,15 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_source_reference 'Unit=2338' docs/runbooks/ci-pipeline.md
-require_source_reference 'Integration=560' docs/runbooks/ci-pipeline.md
+require_source_reference 'Unit=2339' docs/runbooks/ci-pipeline.md
+require_source_reference 'Integration=561' docs/runbooks/ci-pipeline.md
+require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
+require_source_reference "report count other than the expected $coverage_report_count" docs/runbooks/ci-pipeline.md
+require_source_reference "each of the $coverage_report_count category/project slots" docs/runbooks/ci-pipeline.md
+require_source_reference "Merge those $coverage_report_count explicit reports" docs/runbooks/ci-pipeline.md
+require_source_reference "The Coverlet 10.0.1 baseline is $coverage_line_percent% line and $coverage_branch_percent% branch coverage." docs/runbooks/ci-pipeline.md
+require_source_reference "aggregate baseline is $coverage_line_percent percent line and $coverage_branch_percent percent branch" docs/planning/performance-validation.md
+require_source_reference "CI collects $coverage_report_count explicit" docs/planning/performance-validation.md
 require_source_reference 'public string AccessKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
 require_source_reference 'public string SecretKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
 # shellcheck disable=SC2016 # Backticks are literal Markdown.

@@ -4,6 +4,7 @@
     <AssemblyName>HVO.SkyMonitor.LogicHost</AssemblyName>
     <RootNamespace>HVO.SkyMonitor.LogicHost</RootNamespace>
     <UserSecretsId>hvo-skymonitor-logichost</UserSecretsId>
+    <UseRazorSourceGenerator Condition="'$(DesignTimeBuild)' != 'true'">false</UseRazorSourceGenerator>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,6 +30,7 @@
 
   <ItemGroup>
     <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" />
+    <PackageReference Include="Asp.Versioning.OpenApi" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
     <!-- Direct package references (replaced Aspire wrappers) -->
     <PackageReference Include="StackExchange.Redis" />

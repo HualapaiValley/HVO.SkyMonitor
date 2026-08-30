@@ -65,8 +65,7 @@ public sealed class SqlOperationsIssue255Tests
         var originalBlockedThreshold = 0;
         var originalShowAdvanced = 0;
 
-        await using var container = new MsSqlBuilder()
-            .WithImage(IntegrationTestFixture.SqlServerImage)
+        await using var container = new MsSqlBuilder(IntegrationTestFixture.SqlServerImage)
             .WithPassword(Password)
             .WithEnvironment("ISSUE255_SQLCMD_USER", instanceLogin)
             .WithEnvironment("HVO_SQL_XE_ENABLE_TEST_FAULTS", "1")
@@ -763,9 +762,12 @@ public sealed class SqlOperationsIssue255Tests
               -i /tmp/issue255-query-store-capture.sql \
               -v "DatabaseName=x']; CREATE DATABASE [{markerDatabase}];--"
             """);
-        await container.CopyAsync(script, "/tmp/issue255-query-store-capture.sql", UnixFileModes.UserRead).ConfigureAwait(false);
+        await container.CopyAsync(
+            script,
+            "/tmp/issue255-query-store-capture.sql",
+            fileMode: UnixFileModes.UserRead).ConfigureAwait(false);
         await container.CopyAsync(wrapper, "/tmp/issue255-run-sqlcmd.sh",
-            UnixFileModes.UserRead | UnixFileModes.UserExecute).ConfigureAwait(false);
+            fileMode: UnixFileModes.UserRead | UnixFileModes.UserExecute).ConfigureAwait(false);
         var result = await container.ExecAsync(["/tmp/issue255-run-sqlcmd.sh"]).ConfigureAwait(false);
         result.ExitCode.Should().NotBe(0);
         await using var admin = await OpenAsync(connectionString, "master").ConfigureAwait(false);
@@ -867,14 +869,14 @@ public sealed class SqlOperationsIssue255Tests
         var root = FindRepositoryRoot();
         var wrapper = await File.ReadAllBytesAsync(Path.Combine(FindRepositoryRoot(), "scripts", "sql-xe:create")).ConfigureAwait(false);
         await container.CopyAsync(wrapper, "/tmp/issue255-toolkit/scripts/sql-xe:create",
-            UnixFileModes.UserRead | UnixFileModes.UserExecute |
+            fileMode: UnixFileModes.UserRead | UnixFileModes.UserExecute |
             UnixFileModes.GroupRead | UnixFileModes.GroupExecute |
             UnixFileModes.OtherRead | UnixFileModes.OtherExecute).ConfigureAwait(false);
         foreach (var script in new[] { "xe-create.sql", "xe-drop.sql" })
         {
             var content = await File.ReadAllBytesAsync(Path.Combine(root, "deploy", "sql", script)).ConfigureAwait(false);
             await container.CopyAsync(content, $"/tmp/issue255-toolkit/deploy/sql/{script}",
-                UnixFileModes.UserRead | UnixFileModes.GroupRead | UnixFileModes.OtherRead).ConfigureAwait(false);
+                fileMode: UnixFileModes.UserRead | UnixFileModes.GroupRead | UnixFileModes.OtherRead).ConfigureAwait(false);
         }
         var credentialSetup = Encoding.UTF8.GetBytes("""
             #!/bin/sh
@@ -886,7 +888,7 @@ public sealed class SqlOperationsIssue255Tests
             } > /tmp/issue255-sqlcmd.credentials
             """);
         await container.CopyAsync(credentialSetup, "/tmp/issue255-create-sqlcmd-credentials",
-            UnixFileModes.UserRead | UnixFileModes.UserExecute |
+            fileMode: UnixFileModes.UserRead | UnixFileModes.UserExecute |
             UnixFileModes.GroupRead | UnixFileModes.GroupExecute |
             UnixFileModes.OtherRead | UnixFileModes.OtherExecute).ConfigureAwait(false);
         var credentials = await container.ExecAsync(["/tmp/issue255-create-sqlcmd-credentials"]).ConfigureAwait(false);
@@ -899,7 +901,7 @@ public sealed class SqlOperationsIssue255Tests
             GO
             """);
         await container.CopyAsync(maliciousIni, "/tmp/issue255-malicious-sqlcmd.ini",
-            UnixFileModes.UserRead | UnixFileModes.GroupRead | UnixFileModes.OtherRead).ConfigureAwait(false);
+            fileMode: UnixFileModes.UserRead | UnixFileModes.GroupRead | UnixFileModes.OtherRead).ConfigureAwait(false);
         var maliciousLauncher = Encoding.UTF8.GetBytes("""
             #!/bin/sh
             set -eu
@@ -917,7 +919,7 @@ public sealed class SqlOperationsIssue255Tests
             exec /tmp/issue255-toolkit/scripts/sql-xe:create "$@"
             """);
         await container.CopyAsync(maliciousLauncher, "/tmp/issue255-malicious-sqlcmd-environment",
-            UnixFileModes.UserRead | UnixFileModes.UserExecute |
+            fileMode: UnixFileModes.UserRead | UnixFileModes.UserExecute |
             UnixFileModes.GroupRead | UnixFileModes.GroupExecute |
             UnixFileModes.OtherRead | UnixFileModes.OtherExecute).ConfigureAwait(false);
     }
@@ -984,7 +986,10 @@ public sealed class SqlOperationsIssue255Tests
             arguments.Add(fault);
         }
         var result = await container.ExecAsync(arguments).ConfigureAwait(false);
-        return new(result.ExitCode, result.Stdout.Trim(), result.Stderr.Trim());
+        return new(
+            result.ExitCode ?? throw new InvalidOperationException("The container command did not report an exit code."),
+            result.Stdout.Trim(),
+            result.Stderr.Trim());
     }
 
     private static async Task<int> QueryStoreOwnerCountAsync(SqlConnection connection, string? token = null)
@@ -1044,9 +1049,15 @@ public sealed class SqlOperationsIssue255Tests
         await using var transaction = (SqlTransaction)await blocker.BeginTransactionAsync().ConfigureAwait(false);
         await NonQueryAsync(blocker, "UPDATE dbo.Issue255Invariant SET Quantity=Quantity WHERE Id=1;", transaction).ConfigureAwait(false);
         var waiting = NonQueryAsync(waiter, "UPDATE dbo.Issue255Invariant SET Quantity=Quantity WHERE Id=1;", timeout: 25);
-        await Task.Delay(TimeSpan.FromSeconds(17)).ConfigureAwait(false);
-        await transaction.RollbackAsync().ConfigureAwait(false);
-        await waiting.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(17)).ConfigureAwait(false);
+            await transaction.RollbackAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            await waiting.ConfigureAwait(false);
+        }
     }
 
     private static async Task<int> ProduceMixedDeadlockAsync(string connectionString, string databaseName)
@@ -1062,7 +1073,7 @@ public sealed class SqlOperationsIssue255Tests
         var firstWait = CaptureSqlNumberAsync(first, "UPDATE dbo.Issue255Invariant SET Quantity=Quantity WHERE Id=2;", firstTransaction);
         await Task.Delay(100).ConfigureAwait(false);
         var secondWait = CaptureSqlNumberAsync(second, "UPDATE dbo.Issue255Invariant SET Quantity=Quantity WHERE Id=1;", secondTransaction);
-        var results = await Task.WhenAll(firstWait, secondWait).WaitAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        var results = await Task.WhenAll(firstWait, secondWait).ConfigureAwait(false);
         results.Count(number => number == 1205).Should().Be(1);
         return 1205;
     }

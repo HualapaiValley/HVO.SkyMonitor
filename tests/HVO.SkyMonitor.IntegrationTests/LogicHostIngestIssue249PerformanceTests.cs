@@ -152,7 +152,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 CpuCount = Environment.ProcessorCount,
                 CpuModel = ReadCpuModel(),
                 TotalMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
-                SqlServer = "SQL Server 2022 CU14 Ubuntu 22.04 Testcontainer",
+                SqlServer = "SQL Server 2022 CU26 Ubuntu 22.04 Testcontainer",
                 ObjectStore = "MinIO RELEASE.2025-09-07T16-13-09Z Testcontainer",
                 Host = "ASP.NET Core TestServer"
             },

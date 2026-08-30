@@ -211,13 +211,13 @@ undrained work, or reports misleading telemetry is a failed result.
 
 The executable gate is `./scripts/coverage:enforce` with the reviewed baseline
 and exact source-path risk mapping in `scripts/coverage/baseline.json`. The
-aggregate baseline is 60.570016 percent line and 56.224066 percent branch with a
+aggregate baseline is 84.3690 percent line and 66.3253 percent branch with a
 maximum 0.01 percentage-point regression. High-risk managed paths retain 95 percent
 line/90 percent branch floors, and renderer/catalog paths retain 90/85 floors. The
 native JPEG wrapper retains 95/80 because defensive null/failure branches inside
 successful Skia factory and codec calls cannot be induced deterministically.
 
-ReportGenerator is the single authoritative merger. CI collects eleven explicit
+ReportGenerator is the single authoritative merger. CI collects 14 explicit
 Unit, Integration, and architecture reports, creates one canonical Cobertura
 report, and enforces and publishes that same result. Pull requests cannot remove
 risk paths, lower thresholds, or widen tolerance relative to the target branch.

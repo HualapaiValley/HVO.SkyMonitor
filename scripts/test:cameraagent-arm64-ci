@@ -476,7 +476,8 @@ for base_image in "${base_images[@]}"; do
     docker image inspect "$base_image" > "$TEMP_ROOT/base-image.json"
     jq -e '.[0].Architecture == "arm64" and .[0].Os == "linux" and (.[0].RepoDigests | length > 0)' \
         "$TEMP_ROOT/base-image.json" >/dev/null || fail "base image is not immutable native Linux ARM64: $base_image"
-    repository="${base_image%:*}@"
+    repository="${base_image%%@*}"
+    repository="${repository%:*}@"
     base_digest="$(jq -er --arg repository "$repository" '[.[0].RepoDigests[] | select(startswith($repository))][0]' "$TEMP_ROOT/base-image.json")"
     if [[ "$base_image" == */sdk:* ]]; then
         SDK_IMAGE_DIGEST="$base_digest"

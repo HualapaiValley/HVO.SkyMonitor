@@ -61,8 +61,8 @@ public sealed class ObservatoryLocationAuthorityTests
         };
         context.Observatories.Add(observatory);
 
-        Func<Task> act = () => ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
-            context, observatory, DateTimeOffset.UtcNow, "test", CancellationToken.None);
+        Func<Task> act = async () => await ObservatoryLocationAuthority.EnsureCurrentVersionAsync(
+            context, observatory, DateTimeOffset.UtcNow, "test", CancellationToken.None).ConfigureAwait(false);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*authority is incomplete*");

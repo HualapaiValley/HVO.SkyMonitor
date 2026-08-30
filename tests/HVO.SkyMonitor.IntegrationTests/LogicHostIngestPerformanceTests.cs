@@ -265,7 +265,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 {
                     Sdk = ReadPinnedSdkVersion(evidenceRun.RepositoryRoot),
                     Configuration = "Release",
-                    SqlServer = "SQL Server 2022 CU14 Ubuntu 22.04 Testcontainer",
+                    SqlServer = "SQL Server 2022 CU26 Ubuntu 22.04 Testcontainer",
                     Minio = "MinIO RELEASE.2025-09-07T16-13-09Z Testcontainer",
                     Http = "ASP.NET Core TestServer"
                 }

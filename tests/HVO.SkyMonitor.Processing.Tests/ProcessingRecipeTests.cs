@@ -1240,10 +1240,14 @@ public sealed class ProcessingRecipeTests
             "invalid")).ConfigureAwait(false);
         Assert.AreEqual(ProcessingReasonCodes.InvalidInput, invalidProducer.ReasonCode);
 
-        var malformedInputs = new[]
+        ProcessingArtifact[] malformedInputs =
         {
+            null!,
+            input with { ArtifactId = Guid.Empty },
+            input with { Role = (FrameArtifactRole)999 },
             input with { Variant = " " },
             input with { MediaType = " " },
+            input with { RecipeIdentitySha256 = new string('G', 64) },
             input with { CreatedUtc = DateTimeOffset.Parse("2025-01-15T08:00:00+01:00", CultureInfo.InvariantCulture) },
             input with { Integration = TimeSpan.FromTicks(-1) },
             input with { Compatibility = null! },

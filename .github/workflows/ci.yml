@@ -95,8 +95,8 @@ jobs:
         run: dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes
       - name: Lint GitHub Actions workflows
         run: |
-          curl -fsSL -o /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
-          printf '%s  %s\n' '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757' /tmp/actionlint.tar.gz | sha256sum --check
+          curl -fsSL -o /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' /tmp/actionlint.tar.gz | sha256sum --check
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint .github/workflows/*.yml
       - name: Run static and lightweight contract checks
@@ -319,6 +319,7 @@ jobs:
       - name: Restore and build Release
         run: |
           dotnet restore HVO.SkyMonitor.v9.slnx
+          dotnet clean HVO.SkyMonitor.v9.slnx --configuration Release
           dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release
       - name: Validate architecture graph and publish outputs
         env:

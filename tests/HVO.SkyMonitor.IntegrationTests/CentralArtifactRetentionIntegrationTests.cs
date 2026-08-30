@@ -1193,15 +1193,22 @@ public sealed class CentralArtifactRetentionIntegrationTests
         await using var blockerContext = CreateContext(database.ConnectionString);
         var blocker = await CentralObjectApplicationLock.AcquireAsync(
             blockerContext, seeded.StorageReference, CancellationToken.None).ConfigureAwait(false);
+        await using var reconciliationContext = CreateContext(database.ConnectionString);
+        await using var contenderContext = CreateContext(database.ConnectionString);
+        Task<CentralObjectApplicationLock>? acquiring = null;
+        Task<CentralObjectApplicationLock>? contender = null;
+        CentralObjectApplicationLock? currentLock = null;
+        CentralObjectApplicationLock? acquired = null;
+        using var acquiringCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var contenderCancellation = new CancellationTokenSource();
         try
         {
-            await using var reconciliationContext = CreateContext(database.ConnectionString);
             var artifact = await reconciliationContext.CentralArtifacts.SingleAsync(item => item.Id == seeded.ArtifactId)
                 .ConfigureAwait(false);
-            var acquiring = CentralArtifactReconciliationService.AcquireCurrentObjectLockAsync(
-                reconciliationContext, artifact, CancellationToken.None);
+            acquiring = CentralArtifactReconciliationService.AcquireCurrentObjectLockAsync(
+                reconciliationContext, artifact, acquiringCancellation.Token);
             await Task.Delay(100).ConfigureAwait(false);
-            acquiring.IsCompleted.Should().BeFalse();
+            var acquiredWhileBlocked = acquiring.IsCompleted;
             await using (var writer = CreateContext(database.ConnectionString))
             {
                 (await writer.CentralArtifacts.Where(item => item.Id == seeded.ArtifactId)
@@ -1209,20 +1216,38 @@ public sealed class CentralArtifactRetentionIntegrationTests
                         item => item.StorageReference, replacementReference)).ConfigureAwait(false)).Should().Be(1);
             }
             await blocker.DisposeAsync().ConfigureAwait(false);
-            await using var currentLock = await acquiring.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            currentLock = await acquiring.ConfigureAwait(false);
+            acquiredWhileBlocked.Should().BeFalse();
             artifact.StorageReference.Should().Be(replacementReference);
 
-            await using var contenderContext = CreateContext(database.ConnectionString);
-            var contender = CentralObjectApplicationLock.AcquireAsync(
-                contenderContext, replacementReference, CancellationToken.None);
+            contender = CentralObjectApplicationLock.AcquireAsync(
+                contenderContext, replacementReference, contenderCancellation.Token);
+            contenderCancellation.CancelAfter(TimeSpan.FromSeconds(10));
             await Task.Delay(100).ConfigureAwait(false);
-            contender.IsCompleted.Should().BeFalse("reconciliation must hold the reloaded exact key");
+            var contenderAcquiredWhileBlocked = contender.IsCompleted;
             await currentLock.DisposeAsync().ConfigureAwait(false);
-            await using var acquired = await contender.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            acquired = await contender.ConfigureAwait(false);
+            contenderAcquiredWhileBlocked.Should().BeFalse("reconciliation must hold the reloaded exact key");
         }
         finally
         {
             await blocker.DisposeAsync().ConfigureAwait(false);
+            if (currentLock is null && acquiring is not null)
+            {
+                currentLock = await acquiring.ConfigureAwait(false);
+            }
+            if (currentLock is not null)
+            {
+                await currentLock.DisposeAsync().ConfigureAwait(false);
+            }
+            if (acquired is null && contender is not null)
+            {
+                acquired = await contender.ConfigureAwait(false);
+            }
+            if (acquired is not null)
+            {
+                await acquired.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 

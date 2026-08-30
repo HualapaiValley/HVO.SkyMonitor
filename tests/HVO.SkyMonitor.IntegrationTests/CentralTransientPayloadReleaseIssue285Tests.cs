@@ -458,8 +458,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         await Task.Delay(100).ConfigureAwait(false);
         var secondWait = CaptureIssue285SqlExceptionAsync(
             secondConnection, secondTransaction, artifactIds[0]);
-        var outcomes = await Task.WhenAll(firstWait, secondWait).WaitAsync(TimeSpan.FromSeconds(15))
-            .ConfigureAwait(false);
+        var outcomes = await Task.WhenAll(firstWait, secondWait).ConfigureAwait(false);
         var deadlocks = outcomes.Where(exception => exception?.Number == 1205).ToArray();
         deadlocks.Should().ContainSingle();
         return deadlocks[0]!;

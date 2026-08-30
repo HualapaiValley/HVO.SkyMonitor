@@ -428,12 +428,12 @@ before progress publication. All artifacts are owner-only and atomic; bounded
 errors and evidence contain no raw Docker/registry output, secret-source path,
 credentials, or secret values.
 
-The Dockerfiles pin the build SDK to `10.0.100`, but their Microsoft SDK/runtime
-and Debian package inputs are still referenced by upstream tags and package
-indexes. Those upstream inputs can change until reviewed base-image digests and
-package snapshots are adopted. The produced application manifests, archives,
-config IDs, and deployed references are nevertheless recorded and verified by
-digest; this runbook does not claim the current builds are bit-reproducible.
+The Dockerfiles pin the build SDK to `10.0.400` and the ASP.NET runtime to
+`10.0.11`, both by reviewed multiarchitecture digest. Debian package inputs still
+come from the base image package indexes and can change between uncached builds.
+The produced application manifests, archives, config IDs, and deployed references
+are recorded and verified by digest; this runbook does not claim the apt layer is
+bit-reproducible.
 
 ## Install Catalogs
 

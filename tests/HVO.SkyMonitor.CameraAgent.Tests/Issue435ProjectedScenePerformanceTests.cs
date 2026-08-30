@@ -717,7 +717,7 @@ public sealed class Issue435ProjectedScenePerformanceTests
         Assert.AreEqual(measuredSources.Sha256, document.MeasuredSourceTreeSha256, ignoreCase: true);
         Assert.AreEqual(measuredSources.Files.Count, document.MeasuredSourceFileCount);
         Assert.AreEqual("Release", document.Configuration);
-        Assert.AreEqual("10.0.100", document.SdkVersion);
+        Assert.AreEqual("10.0.400", document.SdkVersion);
         Assert.IsGreaterThan(document.BuildStartedUtc, document.BuildCompletedUtc);
         Assert.AreEqual("tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj", document.Project);
         var outputDirectory = Path.GetFullPath(document.OutputDirectory);

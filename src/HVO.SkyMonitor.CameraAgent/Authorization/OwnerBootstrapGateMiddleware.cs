@@ -10,6 +10,7 @@ internal sealed class OwnerBootstrapGateMiddleware(
     RequestDelegate next,
     ILogger<OwnerBootstrapGateMiddleware> logger)
 {
+    private static readonly EventId OwnerOperationDeniedEvent = new(4183, "OwnerOperationDeniedDuringBootstrap");
     internal const string DenialReason = OwnerBootstrapStates.PasswordChangeRequired;
     internal const string ReplacementPath = "/Account/ReplaceTemporaryPassword";
     internal const string StatusPath = "/api/internal/owner-bootstrap/status";
@@ -49,10 +50,13 @@ internal sealed class OwnerBootstrapGateMiddleware(
 
         if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
         {
-            logger.LogInformation(
-                new EventId(4183, "OwnerOperationDeniedDuringBootstrap"),
-                "Denied an owner operation while password replacement is required; {Reason}",
-                DenialReason);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation(
+                    OwnerOperationDeniedEvent,
+                    "Denied an owner operation while password replacement is required; {Reason}",
+                    DenialReason);
+            }
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             context.Response.Headers["X-HVO-Authorization-Reason"] = DenialReason;
             await context.Response.WriteAsJsonAsync(new

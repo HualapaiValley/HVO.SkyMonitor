@@ -21,7 +21,7 @@ services:
       - skymonitor
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:7.4.11-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     container_name: skymonitor-redis
     command:
       - /bin/sh
@@ -47,7 +47,7 @@ services:
       - skymonitor
 
   mailpit:
-    image: axllent/mailpit:latest
+    image: axllent/mailpit:v1.31.0@sha256:c96991d9bef73594c246d89ca81411d4e916f03e76a7d2d72fa2ab5dd3c9ce24
     container_name: skymonitor-mailpit
     ports:
       - "${SMTP_PORT:-1025}:1025"

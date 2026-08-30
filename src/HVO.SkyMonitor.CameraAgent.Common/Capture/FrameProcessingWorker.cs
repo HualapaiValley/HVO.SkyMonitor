@@ -326,7 +326,10 @@ internal sealed class FrameProcessingWorker
                     context.RegisterProcessingProduct(product);
                 }
                 telemetry.RecordNode(node, status, reason, duration);
-                logger.CaptureProcessingNodeOutcome(node.Id, status.ToString());
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.CaptureProcessingNodeOutcome(node.Id, status.ToString());
+                }
                 nodeActivity?.SetStatus(
                     status == DurableProcessingNodeStatus.Completed ? ActivityStatusCode.Ok : ActivityStatusCode.Error,
                     reason);

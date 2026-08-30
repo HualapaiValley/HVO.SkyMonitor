@@ -462,14 +462,17 @@ internal sealed class CameraModuleRunner
                 setpointDuration,
                 cycleDuration,
                 ingressDuration);
-            _logger.CaptureControlDecision(
-                cadenceMode.ToString(),
-                exposureControl.ToString(),
-                gainControl.ToString(),
-                regime?.ToString() ?? "none",
-                automatic.Reason.ToString(),
-                metering?.ConsideredSampleCount ?? 0,
-                metering?.ScannedBytes ?? 0);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.CaptureControlDecision(
+                    cadenceMode.ToString(),
+                    exposureControl.ToString(),
+                    gainControl.ToString(),
+                    regime?.ToString() ?? "none",
+                    automatic.Reason.ToString(),
+                    metering?.ConsideredSampleCount ?? 0,
+                    metering?.ScannedBytes ?? 0);
+            }
             if (effectiveSchedule.StartReason == CaptureStartReason.DeadlineOverrun)
             {
                 _logger.CaptureDeadlineOverrun(monotonicStartJitter.TotalMilliseconds);

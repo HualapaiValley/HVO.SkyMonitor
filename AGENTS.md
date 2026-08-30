@@ -2,7 +2,7 @@
 
 ## Toolchain and Validation
 
-- Use the SDK pinned in `global.json` (`10.0.100`, prerelease permitted) and the solution `HVO.SkyMonitor.v9.slnx`.
+- Use the SDK pinned in `global.json` (`10.0.400`, stable releases only) and the solution `HVO.SkyMonitor.v9.slnx`.
 - Package versions are centralized in `Directory.Packages.props`; do not put `Version` attributes on individual `PackageReference` items.
 - Run the core validation with:
   ```bash

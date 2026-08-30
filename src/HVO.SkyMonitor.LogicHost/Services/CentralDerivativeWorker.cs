@@ -124,122 +124,136 @@ internal sealed partial class CentralDerivativeWorker(
         Justification = "A hosted worker must persist terminal failure and continue processing later durable jobs.")]
     private async Task ExecuteLeaseAsync(CentralDerivativeJobLease lease, CancellationToken stoppingToken)
     {
-        using var executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         try
         {
-            await using var executionScope = scopeFactory.CreateAsyncScope();
-            using var renewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            var execution = executionScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
-                .ExecuteAsync(lease, executionCancellation.Token);
-            var renewal = RenewUntilCanceledAsync(lease, executionCancellation, renewalCancellation.Token);
-            CentralDerivativeExecutionResult? result = null;
-            Exception? executionFailure = null;
             try
             {
-                result = await execution.ConfigureAwait(false);
+                await using var executionScope = scopeFactory.CreateAsyncScope();
+                var renewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                try
+                {
+                    var execution = executionScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>()
+                        .ExecuteAsync(lease, executionCancellation.Token);
+                    var renewal = RenewUntilCanceledAsync(lease, executionCancellation, renewalCancellation.Token);
+                    CentralDerivativeExecutionResult? result = null;
+                    Exception? executionFailure = null;
+                    try
+                    {
+                        result = await execution.ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        executionFailure = exception;
+                    }
+                    finally
+                    {
+                        await renewalCancellation.CancelAsync().ConfigureAwait(false);
+                    }
+                    var renewalFailure = await renewal.ConfigureAwait(false);
+                    if (renewalFailure is not null)
+                    {
+                        throw new CentralDerivativeJobStateException(
+                            "Central derivative lease renewal failed; local execution was canceled.",
+                            renewalFailure);
+                    }
+                    if (executionFailure is not null)
+                    {
+                        ExceptionDispatchInfo.Capture(executionFailure).Throw();
+                    }
+                    telemetry.RecordAttempt(
+                        lease.RecipeName,
+                        GetOutcome(result!.Status),
+                        result.ReasonCode is null ? "none" : "recipe",
+                        timeProvider.GetUtcNow());
+                    Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                        result.Status.ToString(), result.ReasonCode);
+                }
+                finally
+                {
+                    renewalCancellation.Dispose();
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // Host shutdown leaves the lease for expiry and safe reclamation.
+            }
+            catch (CentralDerivativeInputRejectedException exception)
+            {
+                telemetry.RecordAttempt(lease.RecipeName, "terminal", "input", timeProvider.GetUtcNow());
+                await TryFailAsync(lease, exception.Message, retryable: false, stoppingToken).ConfigureAwait(false);
+                Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                    "TerminalFailure", "input.rejected");
+            }
+            catch (CentralDerivativeJobStateException exception)
+            {
+                telemetry.RecordAttempt(lease.RecipeName, "lease-lost", "lease", timeProvider.GetUtcNow());
+                Log.LeaseLost(logger, exception, lease.JobId, lease.AttemptCount);
+            }
+            catch (CentralArtifactMissingException exception)
+            {
+                telemetry.RecordAttempt(lease.RecipeName, "retryable", "source-missing", timeProvider.GetUtcNow());
+                Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                    "RetryableFailure", exception.Message);
+            }
+            catch (CentralArtifactStorageException exception)
+            {
+                telemetry.RecordAttempt(lease.RecipeName, "retryable", "storage", timeProvider.GetUtcNow());
+                telemetry.RecordDependencyFailure("storage", timeProvider.GetUtcNow());
+                await TryFailAsync(lease, exception.Message, retryable: true, stoppingToken).ConfigureAwait(false);
+                Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                    "RetryableFailure", "storage.unavailable");
+            }
+            catch (MinioException exception)
+            {
+                telemetry.RecordAttempt(lease.RecipeName, "retryable", "storage", timeProvider.GetUtcNow());
+                telemetry.RecordDependencyFailure("storage", timeProvider.GetUtcNow());
+                await TryFailAsync(lease, exception.GetType().Name, retryable: true, stoppingToken).ConfigureAwait(false);
+                Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                    "RetryableFailure", "storage.unavailable");
+            }
+            catch (CentralArtifactIntegrityException exception)
+            {
+                telemetry.RecordAttempt(lease.RecipeName, "quarantined", "source-integrity", timeProvider.GetUtcNow());
+                Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                    "Quarantined", exception.ReasonCode);
+            }
+            catch (CentralDerivativeOutputIntegrityException exception)
+            {
+                telemetry.RecordAttempt(lease.RecipeName, "quarantined", "output-integrity", timeProvider.GetUtcNow());
+                Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                    "Quarantined", exception.ReasonCode);
+            }
+            catch (DbUpdateException exception)
+            {
+                telemetry.RecordAttempt(lease.RecipeName, "retryable", "database", timeProvider.GetUtcNow());
+                telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                await TryFailAsync(lease, exception.GetType().Name, retryable: true, stoppingToken).ConfigureAwait(false);
+                Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                    "RetryableFailure", "database.unavailable");
+            }
+            catch (DbException exception)
+            {
+                telemetry.RecordAttempt(lease.RecipeName, "retryable", "database", timeProvider.GetUtcNow());
+                telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
+                await TryFailAsync(lease, exception.GetType().Name, retryable: true, stoppingToken).ConfigureAwait(false);
+                Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                    "RetryableFailure", "database.unavailable");
             }
             catch (Exception exception)
             {
-                executionFailure = exception;
+                var reasonCode = exception is CentralTransientPersistenceException persistenceException
+                    ? persistenceException.ReasonCode
+                    : $"processing.execution-failed.{exception.GetType().Name}";
+                telemetry.RecordAttempt(lease.RecipeName, "terminal", "execution", timeProvider.GetUtcNow());
+                Log.Unexpected(logger, exception, lease.JobId, lease.AttemptCount);
+                await TryFailAsync(lease, reasonCode, retryable: false, stoppingToken)
+                    .ConfigureAwait(false);
             }
-            finally
-            {
-                await renewalCancellation.CancelAsync().ConfigureAwait(false);
-            }
-            var renewalFailure = await renewal.ConfigureAwait(false);
-            if (executionFailure is not null)
-            {
-                if (renewalFailure is not null)
-                {
-                    throw new CentralDerivativeJobStateException(
-                        "Central derivative lease renewal failed; local execution was canceled.",
-                        renewalFailure);
-                }
-                ExceptionDispatchInfo.Capture(executionFailure).Throw();
-            }
-            telemetry.RecordAttempt(
-                lease.RecipeName,
-                GetOutcome(result!.Status),
-                result.ReasonCode is null ? "none" : "recipe",
-                timeProvider.GetUtcNow());
-            Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                result.Status.ToString(), result.ReasonCode);
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        finally
         {
-            // Host shutdown leaves the lease for expiry and safe reclamation.
-        }
-        catch (CentralDerivativeInputRejectedException exception)
-        {
-            telemetry.RecordAttempt(lease.RecipeName, "terminal", "input", timeProvider.GetUtcNow());
-            await TryFailAsync(lease, exception.Message, retryable: false, stoppingToken).ConfigureAwait(false);
-            Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                "TerminalFailure", "input.rejected");
-        }
-        catch (CentralDerivativeJobStateException exception)
-        {
-            telemetry.RecordAttempt(lease.RecipeName, "lease-lost", "lease", timeProvider.GetUtcNow());
-            Log.LeaseLost(logger, exception, lease.JobId, lease.AttemptCount);
-        }
-        catch (CentralArtifactMissingException exception)
-        {
-            telemetry.RecordAttempt(lease.RecipeName, "retryable", "source-missing", timeProvider.GetUtcNow());
-            Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                "RetryableFailure", exception.Message);
-        }
-        catch (CentralArtifactStorageException exception)
-        {
-            telemetry.RecordAttempt(lease.RecipeName, "retryable", "storage", timeProvider.GetUtcNow());
-            telemetry.RecordDependencyFailure("storage", timeProvider.GetUtcNow());
-            await TryFailAsync(lease, exception.Message, retryable: true, stoppingToken).ConfigureAwait(false);
-            Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                "RetryableFailure", "storage.unavailable");
-        }
-        catch (MinioException exception)
-        {
-            telemetry.RecordAttempt(lease.RecipeName, "retryable", "storage", timeProvider.GetUtcNow());
-            telemetry.RecordDependencyFailure("storage", timeProvider.GetUtcNow());
-            await TryFailAsync(lease, exception.GetType().Name, retryable: true, stoppingToken).ConfigureAwait(false);
-            Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                "RetryableFailure", "storage.unavailable");
-        }
-        catch (CentralArtifactIntegrityException exception)
-        {
-            telemetry.RecordAttempt(lease.RecipeName, "quarantined", "source-integrity", timeProvider.GetUtcNow());
-            Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                "Quarantined", exception.ReasonCode);
-        }
-        catch (CentralDerivativeOutputIntegrityException exception)
-        {
-            telemetry.RecordAttempt(lease.RecipeName, "quarantined", "output-integrity", timeProvider.GetUtcNow());
-            Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                "Quarantined", exception.ReasonCode);
-        }
-        catch (DbUpdateException exception)
-        {
-            telemetry.RecordAttempt(lease.RecipeName, "retryable", "database", timeProvider.GetUtcNow());
-            telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
-            await TryFailAsync(lease, exception.GetType().Name, retryable: true, stoppingToken).ConfigureAwait(false);
-            Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                "RetryableFailure", "database.unavailable");
-        }
-        catch (DbException exception)
-        {
-            telemetry.RecordAttempt(lease.RecipeName, "retryable", "database", timeProvider.GetUtcNow());
-            telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
-            await TryFailAsync(lease, exception.GetType().Name, retryable: true, stoppingToken).ConfigureAwait(false);
-            Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                "RetryableFailure", "database.unavailable");
-        }
-        catch (Exception exception)
-        {
-            var reasonCode = exception is CentralTransientPersistenceException persistenceException
-                ? persistenceException.ReasonCode
-                : $"processing.execution-failed.{exception.GetType().Name}";
-            telemetry.RecordAttempt(lease.RecipeName, "terminal", "execution", timeProvider.GetUtcNow());
-            Log.Unexpected(logger, exception, lease.JobId, lease.AttemptCount);
-            await TryFailAsync(lease, reasonCode, retryable: false, stoppingToken)
-                .ConfigureAwait(false);
+            executionCancellation.Dispose();
         }
     }
 
