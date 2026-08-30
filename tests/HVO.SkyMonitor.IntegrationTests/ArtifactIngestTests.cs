@@ -3240,12 +3240,15 @@ public sealed class ArtifactIngestTests
         Guid tombstoneArtifactId = default;
         Guid tombstoneDispositionId = default;
         Guid tombstoneFrameId = default;
+        using var client = fixture.Factory.CreateClient();
+        using var ingestCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        HttpResponseMessage? response = null;
+        Task<HttpResponseMessage>? ingest = null;
         try
         {
-            using var client = fixture.Factory.CreateClient();
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
                 "Bearer", await GetSystemTokenAsync(client).ConfigureAwait(false));
-            var ingest = PostAsync(client, manifest, payload);
+            ingest = PostAsync(client, manifest, payload, ingestCancellation.Token);
             await Task.Delay(250).ConfigureAwait(false);
             ingest.IsCompleted.Should().BeFalse();
 
@@ -3309,7 +3312,7 @@ public sealed class ArtifactIngestTests
                     .ConfigureAwait(false)).Should().Be(0);
             }
             await blocker.DisposeAsync().ConfigureAwait(false);
-            using var response = await ingest.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            response = await ingest.ConfigureAwait(false);
             response.StatusCode.Should().Be(HttpStatusCode.Conflict);
 
             await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
@@ -3321,16 +3324,27 @@ public sealed class ArtifactIngestTests
         finally
         {
             await blocker.DisposeAsync().ConfigureAwait(false);
-            if (tombstoneDispositionId != Guid.Empty)
+            try
             {
-                await using var cleanupScope = fixture.Factory.Services.CreateAsyncScope();
-                var db = cleanupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                await db.CentralObjectRecoveryDispositions.Where(item => item.Id == tombstoneDispositionId)
-                    .ExecuteDeleteAsync().ConfigureAwait(false);
-                await db.CentralArtifacts.Where(item => item.Id == tombstoneArtifactId)
-                    .ExecuteDeleteAsync().ConfigureAwait(false);
-                await db.CentralFrames.Where(item => item.Id == tombstoneFrameId)
-                    .ExecuteDeleteAsync().ConfigureAwait(false);
+                if (ingest is not null)
+                {
+                    response ??= await ingest.ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                response?.Dispose();
+                if (tombstoneDispositionId != Guid.Empty)
+                {
+                    await using var cleanupScope = fixture.Factory.Services.CreateAsyncScope();
+                    var db = cleanupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                    await db.CentralObjectRecoveryDispositions.Where(item => item.Id == tombstoneDispositionId)
+                        .ExecuteDeleteAsync().ConfigureAwait(false);
+                    await db.CentralArtifacts.Where(item => item.Id == tombstoneArtifactId)
+                        .ExecuteDeleteAsync().ConfigureAwait(false);
+                    await db.CentralFrames.Where(item => item.Id == tombstoneFrameId)
+                        .ExecuteDeleteAsync().ConfigureAwait(false);
+                }
             }
         }
     }
@@ -4458,7 +4472,11 @@ public sealed class ArtifactIngestTests
         scheduler.InvocationCount.Should().Be(0);
     }
 
-    private static async Task<HttpResponseMessage> PostAsync(HttpClient client, ArtifactManifestV2 manifest, byte[] payloadBytes)
+    private static async Task<HttpResponseMessage> PostAsync(
+        HttpClient client,
+        ArtifactManifestV2 manifest,
+        byte[] payloadBytes,
+        CancellationToken cancellationToken = default)
     {
         var content = new MultipartFormDataContent();
         content.Add(new ByteArrayContent(CaptureContractJson.Serialize(manifest))
@@ -4471,7 +4489,7 @@ public sealed class ArtifactIngestTests
         }, "payload", "artifact.bin");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri("/api/v1.0/artifacts", UriKind.Relative)) { Content = content };
         request.Headers.TryAddWithoutValidation("Idempotency-Key", manifest.IdempotencyKey);
-        return await client.SendAsync(request).ConfigureAwait(false);
+        return await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<HttpResponseMessage> PostAsync(

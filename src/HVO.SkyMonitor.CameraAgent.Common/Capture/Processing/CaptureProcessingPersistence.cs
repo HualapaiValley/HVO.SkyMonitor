@@ -536,7 +536,7 @@ internal sealed class CaptureProcessingPersistence(
                 leaseToken,
                 outputs,
                 cancellationToken).ConfigureAwait(false);
-            if (outputs.Count > 0)
+            if (outputs.Count > 0 && _logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.CaptureProcessingOutputPersisted(
                     node.Id,

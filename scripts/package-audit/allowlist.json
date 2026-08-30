@@ -1,37 +1,5 @@
 [
   {
-    "id": "Azure.Identity",
-    "version": "1.14.2",
-    "framework": "net10.0",
-    "dependencyType": "Transitive",
-    "projects": [
-      "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
-      "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj",
-      "tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj",
-      "tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj"
-    ],
-    "deprecationReasons": ["Other"],
-    "alternativePackage": null,
-    "expiresOn": "2026-10-13",
-    "reason": "Accepted only as a transitive Microsoft.Data.SqlClient 6.1.1 dependency through EF Core 10.0.10; review upstream replacement before expiry."
-  },
-  {
-    "id": "Microsoft.Identity.Client",
-    "version": "4.73.1",
-    "framework": "net10.0",
-    "dependencyType": "Transitive",
-    "projects": [
-      "src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj",
-      "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj",
-      "tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj",
-      "tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj"
-    ],
-    "deprecationReasons": ["CriticalBugs"],
-    "alternativePackage": null,
-    "expiresOn": "2026-10-13",
-    "reason": "CriticalBugs deprecation accepted temporarily because Azure.Identity 1.14.2 brings this transitively through Microsoft.Data.SqlClient; no direct use is permitted."
-  },
-  {
     "id": "Polly.Extensions.Http",
     "version": "3.0.0",
     "framework": "net10.0",
@@ -45,6 +13,6 @@
     "deprecationReasons": ["Legacy"],
     "alternativePackage": "Microsoft.Extensions.Http.Resilience|>= 0.0.0",
     "expiresOn": "2026-10-13",
-    "reason": "Legacy package accepted only through OpenIddict 7.2.0 and Microsoft.Extensions.Http.Polly 10.0.0; migrate when OpenIddict removes the dependency."
+    "reason": "Legacy package accepted only as a transitive dependency of Microsoft.Extensions.Http.Polly 10.0.11; migrate when that package removes the dependency."
   }
 ]

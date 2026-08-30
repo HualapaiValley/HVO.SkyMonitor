@@ -122,6 +122,9 @@ dotnet_diagnostic.CA1707.severity = none
 dotnet_diagnostic.CA2000.severity = none
 dotnet_diagnostic.CA2007.severity = none
 dotnet_diagnostic.CA1812.severity = none
+# SDK 10.0.400's CA2025 analyzer crashes while scanning this assembly (roslyn-analyzers#7652).
+# File-scoped suppression still executes the analyzer and reports AD0001; remove after the pinned SDK contains the fix.
+dotnet_diagnostic.CA2025.severity = none
 dotnet_diagnostic.MSTEST0001.severity = none
 dotnet_diagnostic.MSTEST0002.severity = none
 dotnet_diagnostic.MSTEST0003.severity = none
@@ -134,6 +137,9 @@ dotnet_diagnostic.MSTEST0009.severity = none
 dotnet_diagnostic.CA1515.severity = none
 dotnet_diagnostic.CA1707.severity = none
 dotnet_diagnostic.CA2000.severity = none
+# SDK 10.0.400's CA2025 analyzer also crashes while scanning this assembly (roslyn-analyzers#7652).
+# File-scoped suppression still executes the analyzer and reports AD0001; remove after the pinned SDK contains the fix.
+dotnet_diagnostic.CA2025.severity = none
 dotnet_diagnostic.MSTEST0037.severity = none
 
 # Astronomy tests use MSTest's public test discovery surface and scenario names.

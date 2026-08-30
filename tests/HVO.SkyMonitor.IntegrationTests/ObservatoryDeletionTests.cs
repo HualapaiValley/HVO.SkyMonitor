@@ -272,6 +272,16 @@ public sealed class ObservatoryDeletionTests
             await setupDb.SaveChangesAsync().ConfigureAwait(false);
         }
         lockInterceptor.Arm(raceObservatory.Id);
+        await using (var unrelatedScope = raceFactory.Services.CreateAsyncScope())
+        {
+            var unrelatedDb = unrelatedScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var unrelatedUsers = await unrelatedDb.Users.AsNoTracking()
+                .Where(user => user.Id == raceObservatory.OwnerUserId)
+                .ToListAsync().ConfigureAwait(false);
+            unrelatedUsers.Should().ContainSingle();
+        }
+        lockInterceptor.IsArmed.Should().BeTrue(
+            "an unrelated reader must not consume the target observatory lock signal");
         var registrationTask = CreatePendingRegistrationAsync();
         await lockInterceptor.WaitUntilLockedAsync().ConfigureAwait(false);
         var deletionTask = DeleteRaceObservatoryAsync();
@@ -330,6 +340,8 @@ public sealed class ObservatoryDeletionTests
             Volatile.Write(ref armed, 1);
         }
 
+        public bool IsArmed => Volatile.Read(ref armed) == 1;
+
         public Task WaitUntilLockedAsync() => locked.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         public void Release() => released.TrySetResult();
@@ -340,10 +352,10 @@ public sealed class ObservatoryDeletionTests
             DbDataReader result,
             CancellationToken cancellationToken = default)
         {
-            if (Interlocked.CompareExchange(ref armed, 0, 1) == 1
-                && command.CommandText.Contains("[Observatories] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal)
+            if (command.CommandText.Contains("[Observatories] WITH (UPDLOCK, HOLDLOCK)", StringComparison.Ordinal)
                 && command.Parameters.Cast<DbParameter>().Any(parameter =>
-                    parameter.Value is Guid value && value == observatoryId))
+                    parameter.Value is Guid value && value == observatoryId)
+                && Interlocked.CompareExchange(ref armed, 0, 1) == 1)
             {
                 locked.TrySetResult();
                 await released.Task.WaitAsync(cancellationToken).ConfigureAwait(false);

@@ -629,7 +629,7 @@ public sealed class LogicHostUiPerformanceTests
             LogicalProcessorCount = Environment.ProcessorCount,
             AvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
             Storage = "container filesystem; physical medium unavailable",
-            DotnetSdk = "10.0.100 (pinned global.json)",
+            DotnetSdk = "10.0.400 (pinned global.json)",
             DotnetRuntime = RuntimeInformation.FrameworkDescription,
             Configuration = "Release",
             ServerGarbageCollection = GCSettings.IsServerGC,

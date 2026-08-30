@@ -1,9 +1,9 @@
 # Pin to Ubuntu LTS; the .NET SDK is supplied by the devcontainer feature.
-FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
+FROM mcr.microsoft.com/devcontainers/base:3.0.7-ubuntu24.04@sha256:456e33716a8570448b7deca1ffd98fc337adc7b446aceeadb8beaf8d660345b4
 
 ARG TARGETARCH
-ARG TAILSCALE_VERSION=1.98.8
-ARG OPENCODE_VERSION=1.18.2
+ARG TAILSCALE_VERSION=1.102.3
+ARG OPENCODE_VERSION=1.18.25
 
 ENV NUGET_XMLDOC_MODE=
 ENV PATH="/home/vscode/.dotnet/tools:${PATH}"
@@ -42,11 +42,11 @@ RUN apt-get update \
     && case "$architecture" in \
     amd64) \
     opencode_archive="opencode-linux-x64-baseline.tar.gz"; \
-    opencode_sha256="88f9b79f44b02e8e7c33e528832047c177b0cb20939484afaff22425a47f3d81" \
+    opencode_sha256="ccd10586611b598b1eaed7c05cfbcbc68e3ec09e736b360da09b1d615d922968" \
     ;; \
     arm64) \
     opencode_archive="opencode-linux-arm64.tar.gz"; \
-    opencode_sha256="93352b30d37d8da2e5c226085f1afbf37cf57cfcecedc813520ff2d0f8581540" \
+    opencode_sha256="35ef77897425e41b5183a2c21ac4fb1d4d944d82a94e3c920f57b5490af11ac5" \
     ;; \
     *) \
     echo "Unsupported OpenCode architecture: $architecture" >&2; \

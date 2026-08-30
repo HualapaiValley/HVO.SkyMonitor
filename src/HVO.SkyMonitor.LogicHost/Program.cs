@@ -221,7 +221,6 @@ public sealed partial class Program
 
         // OpenAPI and Scalar
         builder.Services.AddEndpointsApiExplorer();
-        builder.Services.AddOpenApi();
 
         // API Versioning
         builder.Services.AddApiVersioning(options =>
@@ -230,11 +229,13 @@ public sealed partial class Program
             options.AssumeDefaultVersionWhenUnspecified = true;
             options.ReportApiVersions = true;
         })
+        .AddMvc()
         .AddApiExplorer(options =>
         {
             options.GroupNameFormat = "'v'VVV";
             options.SubstituteApiVersionInUrl = true;
-        });
+        })
+        .AddOpenApi();
 
         // Prometheus metrics endpoint
         builder.Services.AddOpenTelemetry()
@@ -998,7 +999,7 @@ public sealed partial class Program
         app.UseAntiforgery();
 
         // OpenAPI and Scalar
-        app.MapOpenApi();
+        app.MapOpenApi().WithDocumentPerVersion();
         app.MapScalarApiReference(options =>
         {
             options.Title = "HVO SkyMonitor API";

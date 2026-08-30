@@ -5343,7 +5343,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         {
             if (!OperatingSystem.IsLinux()
                 || RuntimeInformation.ProcessArchitecture != Architecture.X64
-                || !string.Equals(pinnedSdk, "10.0.100", StringComparison.Ordinal)
+                || !string.Equals(pinnedSdk, "10.0.400", StringComparison.Ordinal)
                 || !string.Equals(executingSdk, pinnedSdk, StringComparison.Ordinal)
                 || totalMemory < minimumMemory
                 || availableDisk < minimumDisk
@@ -5351,7 +5351,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 || sqlStorageFree < minimumDisk)
             {
                 throw new InvalidOperationException(
-                    "Full issue #250 evidence requires Linux X64, SDK 10.0.100, at least 8 GiB available memory, and at least 25 GiB free on workspace, MinIO /data, and SQL Server /var/opt/mssql/data filesystems.");
+                    "Full issue #250 evidence requires Linux X64, SDK 10.0.400, at least 8 GiB available memory, and at least 25 GiB free on workspace, MinIO /data, and SQL Server /var/opt/mssql/data filesystems.");
             }
         }
         if (phase != "development"

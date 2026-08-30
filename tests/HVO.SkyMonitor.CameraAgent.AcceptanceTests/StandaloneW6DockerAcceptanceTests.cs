@@ -4679,7 +4679,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     }
 
     private static int CountDenyHits(string logs)
-        => Regex.Matches(logs, "HVO211_DENY_HIT", RegexOptions.CultureInvariant).Count;
+        => Regex.Count(logs, "HVO211_DENY_HIT", RegexOptions.CultureInvariant);
 
     private static int AssertCentralHandlerAttempts(string path)
     {

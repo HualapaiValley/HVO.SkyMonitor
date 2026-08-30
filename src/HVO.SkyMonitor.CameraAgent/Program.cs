@@ -155,7 +155,6 @@ public class Program
             options.SuppressModelStateInvalidFilter = true;
         });
         builder.Services.AddEndpointsApiExplorer();
-        builder.Services.AddOpenApi();
 
         builder.Services.AddRazorComponents()
             .AddInteractiveServerComponents();
@@ -187,11 +186,13 @@ public class Program
                 options.AssumeDefaultVersionWhenUnspecified = true;
                 options.ReportApiVersions = true;
             })
+            .AddMvc()
             .AddApiExplorer(options =>
                 {
                     options.GroupNameFormat = "'v'VVV";
                     options.SubstituteApiVersionInUrl = true;
-                });
+                })
+            .AddOpenApi();
 
         var healthChecks = builder.Services.AddSkyMonitorHealthChecks();
         builder.Services.AddSingleton<CameraAgentOperatorTelemetry>();
@@ -345,7 +346,7 @@ public class Program
 
         app.UseAntiforgery();
 
-        app.MapOpenApi();
+        app.MapOpenApi().WithDocumentPerVersion();
         app.MapScalarApiReference(options =>
         {
             options.Title = "SkyMonitor Camera Agent";

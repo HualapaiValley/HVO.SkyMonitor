@@ -62,6 +62,35 @@ public sealed class CentralDerivativeWorkerTests
     }
 
     [TestMethod]
+    public async Task RenewalFailureWinsRaceWithNormalExecutorCompletionAsync()
+    {
+        var lease = CreateLease();
+        var jobs = new ScriptedJobService
+        {
+            Claim = (attempt, _) => Task.FromResult(attempt == 1 ? lease : null),
+            Renew = (_, _) => Task.FromException<CentralDerivativeJobLease>(
+                new InvalidOperationException("renewal unavailable"))
+        };
+        var gate = new ExecutorGate(waitAfterCancellation: false, completeAfterCancellation: true);
+        await using var harness = CreateHarness(
+            jobs,
+            _ => new GatedExecutor(gate),
+            renewalInterval: TimeSpan.FromMilliseconds(10));
+
+        await harness.Worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        await gate.Canceled.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await jobs.SecondClaim.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        await harness.Worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+
+        harness.Telemetry.HasRecentRenewalFailure(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1))
+            .Should().BeTrue();
+        harness.Telemetry.LastSuccessUtc.Should().BeNull(
+            "results produced after lease renewal fails must not be accepted");
+        jobs.FailCount.Should().Be(0);
+        gate.Disposed.Should().BeTrue();
+    }
+
+    [TestMethod]
     public async Task SuccessfulExecutionCancelsRenewalWithoutRecordingFailureAsync()
     {
         var lease = CreateLease();
@@ -284,6 +313,13 @@ public sealed class CentralDerivativeWorkerTests
                 {
                     await gate.Release.Task.ConfigureAwait(false);
                 }
+                if (gate.CompleteAfterCancellation)
+                {
+                    return new CentralDerivativeExecutionResult(
+                        ProcessingOutcomeStatus.Produced,
+                        Guid.NewGuid(),
+                        null);
+                }
                 throw;
             }
             throw new InvalidOperationException("The gated executor unexpectedly resumed.");
@@ -292,7 +328,7 @@ public sealed class CentralDerivativeWorkerTests
         public void Dispose() => gate.Disposed = true;
     }
 
-    private sealed class ExecutorGate(bool waitAfterCancellation)
+    private sealed class ExecutorGate(bool waitAfterCancellation, bool completeAfterCancellation = false)
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -301,6 +337,8 @@ public sealed class CentralDerivativeWorkerTests
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool WaitAfterCancellation { get; } = waitAfterCancellation;
+
+        public bool CompleteAfterCancellation { get; } = completeAfterCancellation;
 
         public bool Disposed { get; set; }
     }

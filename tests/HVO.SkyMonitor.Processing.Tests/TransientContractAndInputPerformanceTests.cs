@@ -69,7 +69,7 @@ public sealed class TransientContractAndInputPerformanceTests
                 cpu = GetCpuDescription(),
                 logicalProcessorCount = Environment.ProcessorCount,
                 totalAvailableMemoryBytes = memory.TotalAvailableMemoryBytes,
-                sdk = "10.0.100 (global.json)",
+                sdk = "10.0.400 (global.json)",
                 runtime = RuntimeInformation.FrameworkDescription,
                 executionMode = "native-process",
                 configuration = "Release",

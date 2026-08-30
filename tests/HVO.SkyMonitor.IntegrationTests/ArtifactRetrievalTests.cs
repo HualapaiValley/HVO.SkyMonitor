@@ -525,24 +525,42 @@ public sealed class ArtifactRetrievalTests
         using var cancellation = new CancellationTokenSource();
         using var request = new HttpRequestMessage(HttpMethod.Get, seeded.ContentUri);
 
+        HttpResponseMessage? response = null;
         var responseTask = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellation.Token);
-        await reader.Started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        await cancellation.CancelAsync().ConfigureAwait(false);
         try
         {
-            using var response = await responseTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        (await reader.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).Should().BeTrue();
+            await reader.Started.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            try
+            {
+                response = await responseTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+            }
+            response?.Dispose();
+            response = null;
+            (await reader.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).Should().BeTrue();
 
-        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var artifact = await db.CentralArtifacts.SingleAsync(item => item.ArtifactId == seeded.ArtifactId
-            && item.DevicePublicId == seeded.DevicePublicId).ConfigureAwait(false);
-        artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
-        artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+            await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var artifact = await db.CentralArtifacts.SingleAsync(item => item.ArtifactId == seeded.ArtifactId
+                && item.DevicePublicId == seeded.DevicePublicId).ConfigureAwait(false);
+            artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+            artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+        }
+        finally
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            try
+            {
+                response = await responseTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+            }
+            response?.Dispose();
+        }
     }
 
     [TestMethod]

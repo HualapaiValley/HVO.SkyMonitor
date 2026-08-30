@@ -42,16 +42,20 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
                 ExpectedPackageVersion = configuration[RequiredPackageVersionKey]
             });
 
-            CatalogSnapshotResolved(
-                serviceProvider.GetRequiredService<ILogger<SqliteCelestialCatalog>>(),
-                result.PackageKind,
-                result.CatalogId,
-                "explicit-manifest-v2",
-                result.CatalogVersion,
-                result.SchemaVersion,
-                result.PreprocessingVersion,
-                result.DatabaseSha256,
-                result.RowCount);
+            var logger = serviceProvider.GetRequiredService<ILogger<SqliteCelestialCatalog>>();
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                CatalogSnapshotResolved(
+                    logger,
+                    result.PackageKind,
+                    result.CatalogId,
+                    "explicit-manifest-v2",
+                    result.CatalogVersion,
+                    result.SchemaVersion,
+                    result.PreprocessingVersion,
+                    result.DatabaseSha256,
+                    result.RowCount);
+            }
             return result;
         });
         services.AddSingleton(static serviceProvider =>

@@ -73,8 +73,15 @@ public sealed class CalibrationTelemetry : IDisposable
         int adopted = 0,
         int quarantined = 0,
         int failed = 0)
-        => CalibrationLog.LibraryOperation(
-            _logger, NormalizeOperation(operation), NormalizeOutcome(outcome), inspected, adopted, quarantined, failed);
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            var normalizedOperation = NormalizeOperation(operation);
+            var normalizedOutcome = NormalizeOutcome(outcome);
+            CalibrationLog.LibraryOperation(
+                _logger, normalizedOperation, normalizedOutcome, inspected, adopted, quarantined, failed);
+        }
+    }
 
     internal void RecordAcquisitionTransition(
         string previousState,
@@ -82,13 +89,22 @@ public sealed class CalibrationTelemetry : IDisposable
         string phase,
         int attemptCount,
         string? reason)
-        => CalibrationLog.AcquisitionTransition(
-            _logger,
-            NormalizeAcquisitionState(previousState),
-            NormalizeAcquisitionState(currentState),
-            NormalizePhase(phase),
-            attemptCount,
-            NormalizeReason(reason));
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            var normalizedPreviousState = NormalizeAcquisitionState(previousState);
+            var normalizedCurrentState = NormalizeAcquisitionState(currentState);
+            var normalizedPhase = NormalizePhase(phase);
+            var normalizedReason = NormalizeReason(reason);
+            CalibrationLog.AcquisitionTransition(
+                _logger,
+                normalizedPreviousState,
+                normalizedCurrentState,
+                normalizedPhase,
+                attemptCount,
+                normalizedReason);
+        }
+    }
 
     internal void RecordAcquisition(string outcome, TimeSpan duration)
     {
@@ -109,8 +125,15 @@ public sealed class CalibrationTelemetry : IDisposable
     }
 
     internal void RecordActivation(string command, string outcome, long stateVersion)
-        => CalibrationLog.Activation(
-            _logger, NormalizeActivationCommand(command), NormalizeOutcome(outcome), stateVersion);
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            var normalizedCommand = NormalizeActivationCommand(command);
+            var normalizedOutcome = NormalizeOutcome(outcome);
+            CalibrationLog.Activation(
+                _logger, normalizedCommand, normalizedOutcome, stateVersion);
+        }
+    }
 
     internal void RecordSelection(string reason, TimeSpan duration, long stateVersion, bool log)
     {

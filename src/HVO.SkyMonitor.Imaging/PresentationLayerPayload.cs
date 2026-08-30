@@ -277,9 +277,9 @@ public static class PresentationLayerCompositor
         {
             var rows = Glyph(char.ToUpperInvariant(text[character]));
             for (var row = 0; row < 7; row++) for (var column = 0; column < 5; column++)
-                    if ((rows[row] & 1 << (4 - column)) != 0)
-                        for (var sy = 0; sy < scale; sy++) for (var sx = 0; sx < scale; sx++)
-                                Set(pixels, layout, x + character * 6 * scale + column * scale + sx, y + row * scale + sy, color, layer);
+                if ((rows[row] & 1 << (4 - column)) != 0)
+                    for (var sy = 0; sy < scale; sy++) for (var sx = 0; sx < scale; sx++)
+                        Set(pixels, layout, x + character * 6 * scale + column * scale + sx, y + row * scale + sy, color, layer);
         }
     }
 
