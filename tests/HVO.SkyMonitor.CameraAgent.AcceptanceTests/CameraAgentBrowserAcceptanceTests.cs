@@ -327,7 +327,9 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Archive", Level = 1 })).ConfigureAwait(false);
         var advanced = page.Locator(".advanced-filters");
         Assert.IsFalse(await advanced.EvaluateAsync<bool>("details => details.open").ConfigureAwait(false));
-        var firstCard = page.Locator(".capture-card").First;
+        var firstCard = page.Locator(".capture-card")
+            .Filter(new LocatorFilterOptions { HasText = "Processed" })
+            .First;
         var imageLink = firstCard.Locator(".capture-card__image-link");
         var image = firstCard.Locator("img");
         var viewerButton = firstCard.GetByRole(AriaRole.Button, new() { Name = "View large image" });
@@ -993,7 +995,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await VisibleAsync(image).ConfigureAwait(false);
         Assert.IsTrue(await image.EvaluateAsync<bool>(
             "element => element.complete && element.naturalWidth > 0 && element.naturalHeight > 0").ConfigureAwait(false));
-        Assert.AreEqual(5, await page.Locator(".stage-selector button").CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(4, await page.Locator(".stage-selector button").CountAsync().ConfigureAwait(false));
         Assert.AreEqual(1, await page.Locator(".stage-selector button[aria-pressed='true']").CountAsync().ConfigureAwait(false));
         Assert.IsGreaterThan(0, await page.Locator(".stage-selector button:disabled").CountAsync().ConfigureAwait(false));
         await VisibleAsync(page.GetByRole(AriaRole.Link, new() { Name = "Open capture details" })).ConfigureAwait(false);

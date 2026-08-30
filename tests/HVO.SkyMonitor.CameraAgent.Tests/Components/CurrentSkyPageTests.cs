@@ -26,7 +26,7 @@ public sealed class CurrentSkyPageTests
         {
             StringAssert.Contains(cut.Markup, "Image delayed", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Standby", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Annotated sky capture", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Markup, "Processed sky capture", StringComparison.Ordinal);
             Assert.AreEqual(
                 "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview",
                 cut.Find(".capture-image img").GetAttribute("src"));
@@ -221,6 +221,25 @@ public sealed class CurrentSkyPageTests
         await cut.Instance.DisposeAsync().ConfigureAwait(false);
 
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public void RefreshReportsBusyStateAndNavigatesOnAuthorizationRevocation()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var reads = 0;
+        service.CurrentImageHandler = _ => ValueTask.FromResult(Interlocked.Increment(ref reads) == 1
+            ? OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(OperatorUiTestData.CurrentImage())
+            : OperatorUiResult<CameraAgentCurrentImagePresentation>.Failure(OperatorUiResultKind.Unauthorized, "revoked"));
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForElement(".current-sky-summary[aria-live='polite'][aria-atomic='true'][aria-busy='false']");
+
+        cut.Find("button.refresh-link").Click();
+
+        cut.WaitForAssertion(() => Assert.AreEqual(
+            "/Account/AccessDenied",
+            new Uri(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>().Uri).AbsolutePath));
     }
 
     private static TestOperatorUiService Configure(BunitContext context)

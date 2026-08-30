@@ -24,6 +24,7 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     private string? _saveError;
     private string? _saveMessage;
     private long _generation;
+    private long _saveGeneration;
     private bool _isLoading;
     private bool _bindPresentation;
     private bool _isSaving;
@@ -90,6 +91,10 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         _nextCaptureId = null;
         _selectedStage = null;
         _viewerOpen = false;
+        Interlocked.Increment(ref _saveGeneration);
+        _isSaving = false;
+        _saveError = null;
+        _saveMessage = null;
         try
         {
             var result = await OperatorService.GetCaptureDetailViewAsync(CaptureId, cancellation.Token);
@@ -341,6 +346,14 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
         {
             return;
         }
+        var loadGeneration = Volatile.Read(ref _generation);
+        var saveGeneration = Interlocked.Increment(ref _saveGeneration);
+        var captureId = CaptureId;
+        var cancellation = _loadCancellation;
+        if (cancellation is null)
+        {
+            return;
+        }
         _isSaving = true;
         _saveError = null;
         _saveMessage = null;
@@ -349,8 +362,16 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
             _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>(
                 "import", "./Components/Pages/GalleryDetail.razor.js");
             var selected = await _module.InvokeAsync<string[]>("selectedLayerIdentities", _presentationRoot) ?? [];
+            if (!IsCurrentSave(loadGeneration, saveGeneration, captureId, cancellation))
+            {
+                return;
+            }
             var result = await OperatorService.SaveLayeredPresentationAsync(
-                CaptureId, selected, _loadCancellation?.Token ?? CancellationToken.None);
+                captureId, selected, cancellation.Token);
+            if (!IsCurrentSave(loadGeneration, saveGeneration, captureId, cancellation))
+            {
+                return;
+            }
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 NavigationManager.NavigateTo("/Account/AccessDenied");
@@ -366,14 +387,28 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
                 _saveError = result.Message ?? "The presentation stack could not be saved.";
             }
         }
-        catch (OperationCanceledException) when (_loadCancellation?.IsCancellationRequested == true)
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
         }
         finally
         {
-            _isSaving = false;
+            if (saveGeneration == Volatile.Read(ref _saveGeneration))
+            {
+                _isSaving = false;
+            }
         }
     }
+
+    private bool IsCurrentSave(
+        long loadGeneration,
+        long saveGeneration,
+        Guid captureId,
+        CancellationTokenSource cancellation)
+        => loadGeneration == Volatile.Read(ref _generation) &&
+           saveGeneration == Volatile.Read(ref _saveGeneration) &&
+           captureId == CaptureId &&
+           ReferenceEquals(cancellation, _loadCancellation) &&
+           !cancellation.IsCancellationRequested;
 
     private IReadOnlyList<CameraAgentGalleryArtifact> ComparisonArtifacts =>
         _capturePresentation?.Stages
@@ -524,6 +559,7 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Interlocked.Increment(ref _generation);
+        Interlocked.Increment(ref _saveGeneration);
         var cancellation = Interlocked.Exchange(ref _loadCancellation, null);
         if (cancellation is not null)
         {

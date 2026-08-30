@@ -84,6 +84,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private readonly SemaphoreSlim _previewGate;
     private readonly object _cacheGate = new();
     private readonly Dictionary<PreviewCacheKey, PreviewCacheEntry> _previewCache = [];
+    private readonly Dictionary<PreviewCacheKey, PreviewGenerationGate> _previewGenerationGates = [];
     private readonly Dictionary<ArtifactValidationCacheKey, ArtifactValidationCacheEntry> _validationCache = [];
     private long _previewCacheBytes;
     private long _cacheSequence;
@@ -249,6 +250,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         CancellationToken cancellationToken)
     {
         await _previewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var previewGateHeld = true;
         try
         {
             var opened = await OpenContentCoreAsync(artifactId, forPreview: true, cancellationToken).ConfigureAwait(false);
@@ -285,11 +287,51 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 await content.DisposeAsync().ConfigureAwait(false);
                 return cached;
             }
-            return await EncodePreviewAsync(cacheKey, content, descriptor, cancellationToken).ConfigureAwait(false);
+
+            _previewGate.Release();
+            previewGateHeld = false;
+            var generationGate = AddPreviewGenerationWaiter(cacheKey);
+            var contentOwned = true;
+            try
+            {
+                await generationGate.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    lock (_cacheGate)
+                    {
+                        cacheHit = TryGetCachedLocked(cacheKey, out cached);
+                    }
+                    if (cacheHit)
+                    {
+                        await content.DisposeAsync().ConfigureAwait(false);
+                        contentOwned = false;
+                        return cached;
+                    }
+                    await _previewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    previewGateHeld = true;
+                    contentOwned = false;
+                    return await EncodePreviewAsync(cacheKey, content, descriptor, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    generationGate.Semaphore.Release();
+                }
+            }
+            finally
+            {
+                RemovePreviewGenerationWaiter(cacheKey, generationGate);
+                if (contentOwned)
+                {
+                    await content.DisposeAsync().ConfigureAwait(false);
+                }
+            }
         }
         finally
         {
-            _previewGate.Release();
+            if (previewGateHeld)
+            {
+                _previewGate.Release();
+            }
         }
     }
 
@@ -767,6 +809,33 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
     }
 
+    private PreviewGenerationGate AddPreviewGenerationWaiter(PreviewCacheKey key)
+    {
+        lock (_cacheGate)
+        {
+            if (!_previewGenerationGates.TryGetValue(key, out var gate))
+            {
+                gate = new PreviewGenerationGate();
+                _previewGenerationGates.Add(key, gate);
+            }
+            gate.Waiters++;
+            return gate;
+        }
+    }
+
+    private void RemovePreviewGenerationWaiter(PreviewCacheKey key, PreviewGenerationGate gate)
+    {
+        lock (_cacheGate)
+        {
+            gate.Waiters--;
+            if (gate.Waiters == 0)
+            {
+                _previewGenerationGates.Remove(key);
+                gate.Semaphore.Dispose();
+            }
+        }
+    }
+
     private bool TryGetValidatedArtifact(
         ArtifactEvidenceRow row,
         string payloadPath,
@@ -848,7 +917,18 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
     internal long EvidenceValidationReads => Interlocked.Read(ref _evidenceValidationReads);
 
-    public void Dispose() => _previewGate.Dispose();
+    public void Dispose()
+    {
+        _previewGate.Dispose();
+        lock (_cacheGate)
+        {
+            foreach (var gate in _previewGenerationGates.Values)
+            {
+                gate.Semaphore.Dispose();
+            }
+            _previewGenerationGates.Clear();
+        }
+    }
 
     private static StringComparison PathComparison =>
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -915,6 +995,13 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         internal CameraAgentArtifactPreviewResult Result { get; } = result;
 
         internal long Sequence { get; set; } = sequence;
+    }
+
+    private sealed class PreviewGenerationGate
+    {
+        internal SemaphoreSlim Semaphore { get; } = new(1, 1);
+
+        internal int Waiters { get; set; }
     }
 
     private sealed record ArtifactValidationCacheKey(Guid ArtifactId, string ChecksumSha256);

@@ -69,7 +69,7 @@ landmarks, image sizing, contrast, and responsive acceptance boundaries. A full
 axe rule scan is not part of this gate; scoped component tests and manual visual
 review remain necessary for rules outside these deterministic checks.
 
-The focused RM-014 browser scenarios additionally prove:
+The focused RM-014 browser and component scenarios additionally prove:
 
 - `/` is an authenticated image-led Current sky route while `/operations`
   retains technical health and controls;
@@ -116,6 +116,13 @@ deterministic per-card preview failures without retries. The harness proves:
 - every preview-failure page contains exactly 50 failed cards and zero retry
   actions before interaction.
 
+The browser-render workload substitutes deterministic valid one-pixel images so
+that its latency and memory numbers isolate server rendering, component state,
+and session concurrency rather than image transfer or decode variance. Separate
+production-service measurements cover preview validation, encoding, cache, and
+concurrency; focused browser acceptance verifies that real authorized previews
+load and decode. The evidence does not claim end-to-end image-transfer latency.
+
 Generated evidence is ignored by Git and written to:
 
 ```text
@@ -134,18 +141,18 @@ The accepted predecessor baseline is based on commit
 correction identified in the JSON. Its evidence SHA-256 is
 `9f45522b56f52c083daf12e4fdd537997871c98b72ad78ca65dfeb80ab755d93`.
 The candidate evidence SHA-256 is
-`79662386c1f0789ff2d5d47852b7f0958fd51dc00c4a259e28ba6f07e9bba427`,
+`0b3899347cce2e53d09d3f178d491d9a05cd9171af0275d51dcc56bf3e72d80e`,
 with revision fingerprint
-`41E94D3F1FB6A9F7DEA76C20AC126F20D80A1E67476EE7C9C074FB9E8E5746D3`.
+`AA6EC1E496948E80D230A7F2294139664198F52F1901EE43D52FA99A60BAE206`.
 Documentation-only changes after that measurement do not invalidate the
 measured path under the performance protocol.
 
-At concurrency 50, candidate browser-render p95 was 2,669.9025 ms for the 1K
-history and 2,765.8572 ms for 10K, compared with baseline 2,899.6764 ms and
-2,978.5488 ms. Candidate cumulative working-set growth was about 1.24 MiB and
-1.97 MiB per session respectively. The candidate-only completed preview-failure
-p95 was 942.296 ms for 1K and 707.2654 ms for 10K, with about 1.95 MiB and
-2.01 MiB cumulative growth per session. No unexplained material regression was
+At concurrency 50, candidate browser-render p95 was 2,273.7785 ms for the 1K
+history and 2,613.4969 ms for 10K, compared with baseline 2,899.6764 ms and
+2,978.5488 ms. Candidate cumulative working-set growth was about 0.93 MiB and
+1.51 MiB per session respectively. The candidate-only completed preview-failure
+p95 was 857.5561 ms for 1K and 513.3282 ms for 10K, with about 2.42 MiB and
+1.84 MiB cumulative growth per session. No unexplained material regression was
 observed.
 Fixed synthetic identities may appear in SQL evidence;
 credentials, payload content, lease tokens, and internal paths must not.

@@ -634,7 +634,20 @@ internal sealed class CameraAgentOperatorUiService(
         CameraAgentCapturePresentation projection)
     {
         var annotated = projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Annotated);
-        var preview = projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Preview);
+        var preview = projection.Stages.SingleOrDefault(slot => slot.Stage == CameraAgentPresentationStage.Preview);
+        if (preview is null)
+        {
+            CameraAgentPresentationSlot[] projectedStages =
+            [
+                annotated,
+                projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined),
+                projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Calibrated),
+                projection.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Raw)
+            ];
+            var projectedSelected = projectedStages.FirstOrDefault(static slot =>
+                slot.Availability == CameraAgentPresentationSlotAvailability.Available);
+            return new(projectedSelected?.Stage, projectedStages);
+        }
         var processedSource = annotated.Availability == CameraAgentPresentationSlotAvailability.Available
             ? annotated
             : preview.Availability == CameraAgentPresentationSlotAvailability.Available

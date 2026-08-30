@@ -262,6 +262,93 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     [TestMethod]
+    public async Task BoundedProjectionReservesLowerStageBeforeAvailableUnsupportedHigherStageAsync()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumArtifactsPerCapture; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"a-unsupported-annotated-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+        }
+        var preview = await fixture.AddProcessingOutputAsync(
+            raw,
+            "z-published-preview",
+            DurableProcessingNodeStatus.Completed,
+            encodedWidth: 640,
+            encodedHeight: 480).ConfigureAwait(false);
+
+        var page = await fixture.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var capture = AssertSingle(page);
+        Assert.IsTrue(capture.ArtifactsTruncated);
+        Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == preview.Artifact.ArtifactId));
+    }
+
+    [TestMethod]
+    public async Task BoundedProjectionRetainsEncodedPreviewWithinSameRoleAsync()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumArtifactsPerCapture; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"a-unsupported-annotated-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+        }
+        var encoded = await fixture.AddProcessingOutputAsync(
+            raw,
+            "z-encoded-annotated",
+            DurableProcessingNodeStatus.Completed,
+            encodedWidth: 640,
+            encodedHeight: 480,
+            role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+
+        var page = await fixture.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var capture = AssertSingle(page);
+        Assert.IsTrue(capture.ArtifactsTruncated);
+        Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == encoded.Artifact.ArtifactId));
+    }
+
+    [TestMethod]
+    public async Task BoundedProjectionUsesPreviewEligibilityWithinSameRoleAsync()
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumArtifactsPerCapture; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"a-oversized-annotated-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                encodedWidth: 4_096,
+                encodedHeight: 4_096,
+                role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+        }
+        var reconstructable = await fixture.AddProcessingOutputAsync(
+            raw,
+            "z-reconstructable-annotated",
+            DurableProcessingNodeStatus.Completed,
+            role: FrameArtifactRole.AnnotatedPreview,
+            mediaType: "application/x-hvo-packed-image").ConfigureAwait(false);
+
+        var page = await fixture.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var capture = AssertSingle(page);
+        Assert.IsTrue(capture.ArtifactsTruncated);
+        Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == reconstructable.Artifact.ArtifactId));
+    }
+
+    [TestMethod]
     public async Task CanonicalSceneQueryFailureReturnsProjectionUnavailable()
     {
         using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
@@ -1008,7 +1095,8 @@ public sealed class SqliteCameraAgentGalleryTests
             string reason = "sensitive processing failure",
             int? encodedWidth = null,
             int? encodedHeight = null,
-            FrameArtifactRole role = FrameArtifactRole.Preview)
+            FrameArtifactRole role = FrameArtifactRole.Preview,
+            string? mediaType = null)
         {
             var recipe = RecipeIdentityDescriptor.Create(
                 "preview-recipe",
@@ -1026,7 +1114,7 @@ public sealed class SqliteCameraAgentGalleryTests
                 raw.Descriptor.Timing.ReadoutCompletedUtc,
                 [raw.Descriptor.Artifact.ArtifactId],
                 recipe,
-                encodedWidth is null ? "image/png" : "image/jpeg",
+                mediaType ?? (encodedWidth is null ? "image/png" : "image/jpeg"),
                 new string('B', 64));
             var descriptor = raw.Descriptor with { Artifact = artifact };
             var relativePath = $"products/{artifact.ArtifactId:N}.{(encodedWidth is null ? "png" : "jpg")}";

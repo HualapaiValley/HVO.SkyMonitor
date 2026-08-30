@@ -426,7 +426,7 @@ public sealed class StandaloneCameraAgentAcceptanceTests
         var result = await client.GetFromJsonAsync<CameraAgentCurrentImagePresentation>(
             new Uri("/api/v1/operations/gallery/current", UriKind.Relative), WebJson).ConfigureAwait(false);
         Assert.IsNotNull(result);
-        Assert.HasCount(5, result.Stages);
+        Assert.HasCount(4, result.Stages);
         return result;
     }
 

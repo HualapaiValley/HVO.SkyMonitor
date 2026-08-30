@@ -6,7 +6,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Fleet.Contracts;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
@@ -73,13 +75,12 @@ internal interface ICameraAgentStructuredLayerAvailability
 }
 
 internal sealed class CameraAgentStructuredLayerAvailability(
-    SqliteCaptureProcessingStore processingStore) : ICameraAgentStructuredLayerAvailability
+    ICameraAgentLayeredPresentationService presentations) : ICameraAgentStructuredLayerAvailability
 {
     public async ValueTask<bool> IsAvailableAsync(Guid captureId, CancellationToken cancellationToken)
     {
-        var products = await processingStore.ReadCaptureProductsAsync(
-            captureId, OverlayManifestV1.CurrentSchemaVersion, 2, cancellationToken).ConfigureAwait(false);
-        return products.Count == 1 && string.Equals(products[0].AvailabilityState, "Available", StringComparison.Ordinal);
+        var result = await presentations.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+        return result.Status == CameraAgentLayeredPresentationStatus.Found;
     }
 }
 
@@ -126,6 +127,24 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             historicalFallback,
             observedUtc,
             runtimeSnapshot.ExpectedCaptureInterval);
+        var structuredLayersAvailable = false;
+        if (display is not null)
+        {
+            try
+            {
+                structuredLayersAvailable = await structuredLayers.IsAvailableAsync(
+                    display.CaptureId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is SqliteException or InvalidDataException or
+                JsonException or ArgumentException or InvalidOperationException or OverflowException)
+            {
+                structuredLayersAvailable = false;
+            }
+        }
 
         return new CameraAgentCurrentImagePresentation(
             observedUtc,
@@ -136,8 +155,7 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             historicalFallback,
             selectedStage,
             projectedCapture.Stages,
-            display is not null && await structuredLayers.IsAvailableAsync(display.CaptureId, cancellationToken)
-                .ConfigureAwait(false),
+            structuredLayersAvailable,
             display is null && historyBoundReached);
     }
 
@@ -195,14 +213,12 @@ internal sealed class CameraAgentCapturePresentationProjector(
         CameraAgentPresentationStage.Raw,
         CameraAgentPresentationStage.Calibrated,
         CameraAgentPresentationStage.Combined,
-        CameraAgentPresentationStage.Preview,
         CameraAgentPresentationStage.Annotated
     ];
 
     private static readonly CameraAgentPresentationStage[] SelectionOrder =
     [
         CameraAgentPresentationStage.Annotated,
-        CameraAgentPresentationStage.Preview,
         CameraAgentPresentationStage.Combined,
         CameraAgentPresentationStage.Calibrated,
         CameraAgentPresentationStage.Raw
@@ -223,8 +239,8 @@ internal sealed class CameraAgentCapturePresentationProjector(
         CameraAgentGalleryCapture capture,
         CameraAgentPresentationStage stage)
     {
-        var role = RoleFor(stage);
-        var matching = capture.Artifacts.Where(artifact => artifact.Role == role).ToArray();
+        var roles = RolesFor(stage);
+        var matching = capture.Artifacts.Where(artifact => roles.Contains(artifact.Role)).ToArray();
         if (stage == CameraAgentPresentationStage.Raw &&
             !string.Equals(capture.RawState, "committed", StringComparison.Ordinal))
         {
@@ -241,7 +257,7 @@ internal sealed class CameraAgentCapturePresentationProjector(
             {
                 Artifact = artifact,
                 Eligibility = CameraAgentPreviewEligibilityPolicy.Evaluate(
-                    role,
+                    artifact.Role,
                     artifact.MediaType,
                     artifact.ByteLength,
                     artifact.PixelFormat,
@@ -254,8 +270,9 @@ internal sealed class CameraAgentCapturePresentationProjector(
         var available = availableArtifacts
             .Where(static candidate => candidate.Eligibility == CameraAgentPreviewEligibility.Available)
             .Select(static candidate => candidate.Artifact)
-            .OrderBy(MediaRank)
-            .ThenBy(artifact => role == FrameArtifactRole.Raw || artifact.SourceArtifactIds.Count > 0 ? 0 : 1)
+            .OrderBy(artifact => artifact.Role == FrameArtifactRole.AnnotatedPreview ? 0 : 1)
+            .ThenBy(MediaRank)
+            .ThenBy(artifact => roles.Contains(FrameArtifactRole.Raw) || artifact.SourceArtifactIds.Count > 0 ? 0 : 1)
             .ThenBy(static artifact => artifact.Recipe?.IdentitySha256, StringComparer.Ordinal)
             .ThenBy(static artifact => artifact.Variant, StringComparer.Ordinal)
             .ThenByDescending(static artifact => artifact.CreatedUtc)
@@ -275,6 +292,17 @@ internal sealed class CameraAgentCapturePresentationProjector(
                 new Uri(FormattableString.Invariant(
                     $"/api/v1/operations/artifacts/{available.ArtifactId:D}/preview"), UriKind.Relative));
         }
+        var producingNodes = capture.ProcessingNodes.Where(node =>
+            node.OutputRole is { } role && roles.Contains(role)).ToArray();
+        var processingReason = producingNodes.Any(static node => node.Status is "RetryableFailure" or "TerminalFailure")
+            ? "ProcessingFailed"
+            : producingNodes.Any(static node => string.Equals(node.Status, "Skipped", StringComparison.Ordinal))
+                ? "ProcessingSkipped"
+                : null;
+        if (stage == CameraAgentPresentationStage.Annotated && processingReason is not null)
+        {
+            return Unavailable(stage, CameraAgentPresentationSlotAvailability.Unavailable, processingReason);
+        }
         if (availableArtifacts.Any(static candidate => candidate.Eligibility == CameraAgentPreviewEligibility.TooLarge))
         {
             return Unavailable(stage, CameraAgentPresentationSlotAvailability.Unavailable, "PreviewBoundsExceeded");
@@ -291,14 +319,9 @@ internal sealed class CameraAgentCapturePresentationProjector(
         {
             return Unavailable(stage, CameraAgentPresentationSlotAvailability.Unavailable, "ArtifactUnavailable");
         }
-        var producingNodes = capture.ProcessingNodes.Where(node => node.OutputRole == role).ToArray();
-        if (producingNodes.Any(static node => node.Status is "RetryableFailure" or "TerminalFailure"))
+        if (processingReason is not null)
         {
-            return Unavailable(stage, CameraAgentPresentationSlotAvailability.Unavailable, "ProcessingFailed");
-        }
-        if (producingNodes.Any(static node => string.Equals(node.Status, "Skipped", StringComparison.Ordinal)))
-        {
-            return Unavailable(stage, CameraAgentPresentationSlotAvailability.Unavailable, "ProcessingSkipped");
+            return Unavailable(stage, CameraAgentPresentationSlotAvailability.Unavailable, processingReason);
         }
         if (capture.ArtifactsTruncated)
         {
@@ -320,13 +343,12 @@ internal sealed class CameraAgentCapturePresentationProjector(
         return artifact.Variant?.Contains("thumbnail", StringComparison.OrdinalIgnoreCase) == true ? 1 : 3;
     }
 
-    private static FrameArtifactRole RoleFor(CameraAgentPresentationStage stage) => stage switch
+    private static FrameArtifactRole[] RolesFor(CameraAgentPresentationStage stage) => stage switch
     {
-        CameraAgentPresentationStage.Raw => FrameArtifactRole.Raw,
-        CameraAgentPresentationStage.Calibrated => FrameArtifactRole.Calibrated,
-        CameraAgentPresentationStage.Combined => FrameArtifactRole.Combined,
-        CameraAgentPresentationStage.Preview => FrameArtifactRole.Preview,
-        CameraAgentPresentationStage.Annotated => FrameArtifactRole.AnnotatedPreview,
+        CameraAgentPresentationStage.Raw => [FrameArtifactRole.Raw],
+        CameraAgentPresentationStage.Calibrated => [FrameArtifactRole.Calibrated],
+        CameraAgentPresentationStage.Combined => [FrameArtifactRole.Combined],
+        CameraAgentPresentationStage.Annotated => [FrameArtifactRole.AnnotatedPreview, FrameArtifactRole.Preview],
         _ => throw new ArgumentOutOfRangeException(nameof(stage))
     };
 
@@ -335,7 +357,6 @@ internal sealed class CameraAgentCapturePresentationProjector(
         CameraAgentPresentationStage.Raw => "Raw",
         CameraAgentPresentationStage.Calibrated => "Calibrated",
         CameraAgentPresentationStage.Combined => "Combined",
-        CameraAgentPresentationStage.Preview => "Preview",
         CameraAgentPresentationStage.Annotated => "Processed",
         _ => throw new ArgumentOutOfRangeException(nameof(stage))
     };

@@ -395,7 +395,7 @@ public sealed class CameraAgentArtifactServiceTests
 
         var blockingEncoder = new BlockingPreviewEncoder();
         using (var fixture = await ArtifactFixture.CreateAsync(
-                   artifactRead: new ArtifactReadOptions { MaximumConcurrentPreviews = 1 },
+                   artifactRead: new ArtifactReadOptions { MaximumConcurrentPreviews = 2 },
                    encoder: blockingEncoder).ConfigureAwait(false))
         {
             var raw = await fixture.AddRawAsync().ConfigureAwait(false);

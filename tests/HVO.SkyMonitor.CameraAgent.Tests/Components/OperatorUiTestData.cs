@@ -131,9 +131,7 @@ internal static class OperatorUiTestData
                     "NotProduced"),
                 new CameraAgentPresentationSlot(CameraAgentPresentationStage.Combined, "Combined", CameraAgentPresentationSlotAvailability.Missing,
                     "NotProduced"),
-                new CameraAgentPresentationSlot(CameraAgentPresentationStage.Preview, "Preview", CameraAgentPresentationSlotAvailability.Missing,
-                    "NotProduced"),
-                new CameraAgentPresentationSlot(CameraAgentPresentationStage.Annotated, "Annotated", CameraAgentPresentationSlotAvailability.Available,
+                new CameraAgentPresentationSlot(CameraAgentPresentationStage.Annotated, "Processed", CameraAgentPresentationSlotAvailability.Available,
                     "Available.", annotatedArtifactId, FrameArtifactRole.AnnotatedPreview, "display", "image/jpeg",
                     new Uri("/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000102/preview", UriKind.Relative))
             ];
@@ -239,9 +237,16 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
 
     public CameraAgentCapturePresentation Project(CameraAgentGalleryCapture? capture)
     {
+        CameraAgentPresentationStage[] presentationStages =
+        [
+            CameraAgentPresentationStage.Raw,
+            CameraAgentPresentationStage.Calibrated,
+            CameraAgentPresentationStage.Combined,
+            CameraAgentPresentationStage.Annotated
+        ];
         if (capture is null)
         {
-            return new(null, Enum.GetValues<CameraAgentPresentationStage>()
+            return new(null, presentationStages
                 .Select(static stage => new CameraAgentPresentationSlot(
                     stage,
                     stage == CameraAgentPresentationStage.Annotated ? "Processed" : stage.ToString(),
@@ -249,13 +254,12 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
                     "NoCapture"))
                 .ToArray());
         }
-        var stages = Enum.GetValues<CameraAgentPresentationStage>()
+        var stages = presentationStages
             .Select(stage => TestSlot(capture, stage))
             .ToArray();
         var selected = new[]
         {
             CameraAgentPresentationStage.Annotated,
-            CameraAgentPresentationStage.Preview,
             CameraAgentPresentationStage.Combined,
             CameraAgentPresentationStage.Calibrated,
             CameraAgentPresentationStage.Raw
@@ -275,15 +279,17 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         CameraAgentGalleryCapture capture,
         CameraAgentPresentationStage stage)
     {
-        var role = stage switch
+        var roles = stage switch
         {
-            CameraAgentPresentationStage.Raw => FrameArtifactRole.Raw,
-            CameraAgentPresentationStage.Calibrated => FrameArtifactRole.Calibrated,
-            CameraAgentPresentationStage.Combined => FrameArtifactRole.Combined,
-            CameraAgentPresentationStage.Preview => FrameArtifactRole.Preview,
-            _ => FrameArtifactRole.AnnotatedPreview
+            CameraAgentPresentationStage.Raw => new[] { FrameArtifactRole.Raw },
+            CameraAgentPresentationStage.Calibrated => [FrameArtifactRole.Calibrated],
+            CameraAgentPresentationStage.Combined => [FrameArtifactRole.Combined],
+            _ => [FrameArtifactRole.AnnotatedPreview, FrameArtifactRole.Preview]
         };
-        var artifact = capture.Artifacts.FirstOrDefault(candidate => candidate.Role == role && TestPreviewEligible(candidate));
+        var artifact = roles
+            .Select(role => capture.Artifacts.FirstOrDefault(candidate =>
+                candidate.Role == role && TestPreviewEligible(candidate)))
+            .FirstOrDefault(static candidate => candidate is not null);
         var label = stage == CameraAgentPresentationStage.Annotated ? "Processed" : stage.ToString();
         return artifact is null
             ? new(stage, label, CameraAgentPresentationSlotAvailability.Missing, "NotProduced")

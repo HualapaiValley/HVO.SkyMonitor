@@ -62,7 +62,8 @@
             }
         </div>
 
-        <aside class="current-sky-summary" aria-label="Current sky status and capture facts">
+        <aside class="current-sky-summary" aria-label="Current sky status and capture facts"
+               aria-live="polite" aria-atomic="true" aria-busy="@(_refreshing ? "true" : "false")">
             <div class="status-chips" aria-label="Independent image and system states">
                 <span class="status-chip @FreshnessClass">@FreshnessLabel</span>
                 <span class="status-chip @SystemClass">@SystemLabel</span>

@@ -38,7 +38,7 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
 
         Assert.AreEqual(CameraAgentPresentationImageFreshness.Current, result.ImageFreshness);
         Assert.AreEqual(CameraAgentPresentationStage.Annotated, result.SelectedStage);
-        Assert.HasCount(5, result.Stages);
+        Assert.HasCount(4, result.Stages);
         var annotated = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
         Assert.AreEqual(thumbnailId, annotated.ArtifactId);
         Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, annotated.ArtifactRole);
@@ -77,7 +77,10 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
         Assert.AreEqual(prior.CaptureId, result.DisplayCapture!.CaptureId);
         Assert.IsTrue(result.IsHistoricalFallback);
         Assert.AreEqual(CameraAgentPresentationImageFreshness.Historical, result.ImageFreshness);
-        Assert.AreEqual(CameraAgentPresentationStage.Preview, result.SelectedStage);
+        Assert.AreEqual(CameraAgentPresentationStage.Annotated, result.SelectedStage);
+        Assert.AreEqual(
+            FrameArtifactRole.Preview,
+            result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated).ArtifactRole);
     }
 
     [TestMethod]
@@ -158,7 +161,7 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
 
         Assert.IsNull(oversizedResult.DisplayCapture);
         var oversizedSlot = oversizedResult.Stages.Single(static slot =>
-            slot.Stage == CameraAgentPresentationStage.Preview);
+            slot.Stage == CameraAgentPresentationStage.Annotated);
         Assert.AreEqual(CameraAgentPresentationSlotAvailability.Unavailable, oversizedSlot.Availability);
         Assert.AreEqual("PreviewBoundsExceeded", oversizedSlot.Reason);
         Assert.IsNull(oversizedSlot.PreviewUrl);
@@ -215,9 +218,55 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
 
         Assert.AreEqual(
             "ProcessingFailed",
-            projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Preview).Reason);
+            projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated).Reason);
         Assert.AreEqual(
             "ProcessingSkipped",
+            projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Calibrated).Reason);
+    }
+
+    [TestMethod]
+    public void ProcessedFailureTakesPrecedenceOverInvalidBackingArtifact()
+    {
+        var capture = Capture(
+            4,
+            Now.AddSeconds(-3),
+            [Artifact(Guid.NewGuid(), FrameArtifactRole.AnnotatedPreview, "invalid", "image/jpeg", byteLength: 0)]) with
+        {
+            ProcessingNodes =
+            [
+                new CameraAgentGalleryProcessingNode(
+                    "preview", true, "TerminalFailure", "preview", FrameArtifactRole.Preview, "display", [])
+            ]
+        };
+
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
+            .Project(capture);
+
+        Assert.AreEqual(
+            "ProcessingFailed",
+            projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated).Reason);
+    }
+
+    [TestMethod]
+    public void TechnicalStageKeepsSpecificArtifactFailureBeforeProcessingFailure()
+    {
+        var capture = Capture(
+            4,
+            Now.AddSeconds(-3),
+            [Artifact(Guid.NewGuid(), FrameArtifactRole.Calibrated, "invalid", "application/x-hvo-packed-image", byteLength: 0)]) with
+        {
+            ProcessingNodes =
+            [
+                new CameraAgentGalleryProcessingNode(
+                    "calibrate", true, "TerminalFailure", "calibrate", FrameArtifactRole.Calibrated, "linear", [])
+            ]
+        };
+
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
+            .Project(capture);
+
+        Assert.AreEqual(
+            "ArtifactInvalid",
             projection.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Calibrated).Reason);
     }
 
@@ -233,21 +282,22 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
             Artifact(Guid.NewGuid(), FrameArtifactRole.AnnotatedPreview, "annotated-thumbnail-1024-jpeg", "image/jpeg")
         };
         var projector = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()));
-        CameraAgentPresentationStage[] expectedOrder =
+        (CameraAgentPresentationStage Stage, FrameArtifactRole Role)[] expectedOrder =
         [
-            CameraAgentPresentationStage.Annotated,
-            CameraAgentPresentationStage.Preview,
-            CameraAgentPresentationStage.Combined,
-            CameraAgentPresentationStage.Calibrated,
-            CameraAgentPresentationStage.Raw
+            (CameraAgentPresentationStage.Annotated, FrameArtifactRole.AnnotatedPreview),
+            (CameraAgentPresentationStage.Annotated, FrameArtifactRole.Preview),
+            (CameraAgentPresentationStage.Combined, FrameArtifactRole.Combined),
+            (CameraAgentPresentationStage.Calibrated, FrameArtifactRole.Calibrated),
+            (CameraAgentPresentationStage.Raw, FrameArtifactRole.Raw)
         ];
 
         foreach (var expected in expectedOrder)
         {
             var projection = projector.Project(Capture(5, Now, artifacts));
-            Assert.AreEqual(expected, projection.SelectedStage);
-            artifacts.RemoveAll(artifact => artifact.Role == projection.Stages
-                .Single(slot => slot.Stage == expected).ArtifactRole);
+            Assert.AreEqual(expected.Stage, projection.SelectedStage);
+            var selected = projection.Stages.Single(slot => slot.Stage == expected.Stage);
+            Assert.AreEqual(expected.Role, selected.ArtifactRole);
+            artifacts.RemoveAll(artifact => artifact.Role == selected.ArtifactRole);
         }
     }
 
@@ -295,18 +345,40 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
             await canceling.GetAsync(cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
+    [TestMethod]
+    public async Task OptionalStructuredLayerFailurePreservesCurrentImageAsync()
+    {
+        var capture = Capture(
+            1,
+            Now.AddSeconds(-5),
+            [Artifact(Guid.NewGuid(), FrameArtifactRole.Preview, "default", "application/x-hvo-packed-image")]);
+        var service = CreateService(
+            new StubGallery(new CameraAgentGalleryPage([capture], null)),
+            structuredLayersFailure: new InvalidDataException("malformed optional layer"));
+
+        var result = await service.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(capture.CaptureId, result.DisplayCapture!.CaptureId);
+        Assert.AreEqual(CameraAgentPresentationStage.Annotated, result.SelectedStage);
+        Assert.AreEqual(
+            FrameArtifactRole.Preview,
+            result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated).ArtifactRole);
+        Assert.IsFalse(result.StructuredLayersAvailable);
+    }
+
     private static CameraAgentCurrentImagePresentationService CreateService(
         ICameraAgentGallery gallery,
         CameraAgentPresentationSystemState systemState = CameraAgentPresentationSystemState.Capturing,
         TimeSpan? expectedInterval = null,
-        bool structuredLayersAvailable = false)
+        bool structuredLayersAvailable = false,
+        Exception? structuredLayersFailure = null)
         => new(
             gallery,
             new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions())),
             new StubRuntime(new CameraAgentPresentationRuntimeSnapshot(
                 new CameraAgentPresentationSystemStatus(systemState, "Bounded state.", Now),
                 expectedInterval)),
-            new StubStructuredLayers(structuredLayersAvailable),
+            new StubStructuredLayers(structuredLayersAvailable, structuredLayersFailure),
             new FixedTimeProvider(Now));
 
     private static CameraAgentGalleryCapture Capture(
@@ -413,10 +485,12 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
         public CameraAgentPresentationRuntimeSnapshot GetSnapshot(DateTimeOffset observedUtc) => snapshot;
     }
 
-    private sealed class StubStructuredLayers(bool available) : ICameraAgentStructuredLayerAvailability
+    private sealed class StubStructuredLayers(bool available, Exception? failure = null) : ICameraAgentStructuredLayerAvailability
     {
         public ValueTask<bool> IsAvailableAsync(Guid captureId, CancellationToken cancellationToken)
-            => ValueTask.FromResult(available);
+            => failure is null
+                ? ValueTask.FromResult(available)
+                : ValueTask.FromException<bool>(failure);
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider

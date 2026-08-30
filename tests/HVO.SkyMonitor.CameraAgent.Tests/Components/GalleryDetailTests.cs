@@ -259,6 +259,63 @@ public sealed class GalleryDetailTests
     }
 
     [TestMethod]
+    public async Task NavigatingDuringLayerSelectionDoesNotSaveOrShowAStaleReceiptAsync()
+    {
+        using var context = new BunitContext();
+        var first = OperatorUiTestData.Capture();
+        var second = OperatorUiTestData.Capture(Guid.Parse("00000000-0000-0000-0000-000000000021"));
+        var selectedIdentity = new string('D', 64);
+        var materializationCalls = 0;
+        var service = new TestOperatorUiService
+        {
+            DetailHandler = (captureId, _) => ValueTask.FromResult(
+                OperatorUiResult<CameraAgentGalleryCapture>.Success(captureId == first.CaptureId ? first : second)),
+            PresentationHandler = (captureId, _) => ValueTask.FromResult(
+                OperatorUiResult<CameraAgentLayeredPresentation>.Success(new(
+                    captureId,
+                    Guid.Parse("00000000-0000-0000-0000-000000000102"),
+                    new string('A', 64),
+                    new string('B', 64),
+                    new string('C', 64),
+                    640,
+                    480,
+                    [new(selectedIdentity, "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1")],
+                    System.Text.Encoding.UTF8.GetBytes(
+                        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 480\"><g id=\"hvo-layer-0\"></g></svg>")))),
+            MaterializationHandler = (captureId, _, _) =>
+            {
+                Interlocked.Increment(ref materializationCalls);
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(new(
+                    captureId,
+                    Guid.Parse("00000000-0000-0000-0000-000000000104"),
+                    new string('F', 64),
+                    new string('A', 64),
+                    1024,
+                    false)));
+            }
+        };
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(service);
+        var module = context.JSInterop.SetupModule("./Components/Pages/GalleryDetail.razor.js");
+        module.SetupVoid("bindLayerToggles", _ => true);
+        var selection = module.Setup<string[]>("selectedLayerIdentities", _ => true);
+        var cut = context.Render<GalleryDetail>(parameters => parameters.Add(page => page.CaptureId, first.CaptureId));
+        cut.WaitForElement(".layer-save button");
+
+        var save = cut.Find(".layer-save button").ClickAsync();
+        cut.WaitForAssertion(() => Assert.IsTrue(module.Invocations.Any(static invocation =>
+            invocation.Identifier == "selectedLayerIdentities")));
+        cut.Render(parameters => parameters.Add(page => page.CaptureId, second.CaptureId));
+        selection.SetResult([selectedIdentity]);
+        await save.ConfigureAwait(false);
+        await cut.Find(".stage-selector__button").ClickAsync().ConfigureAwait(false);
+
+        Assert.AreEqual(0, materializationCalls);
+        Assert.IsEmpty(cut.FindAll("[role='status']"));
+        Assert.IsEmpty(cut.FindAll("[role='alert']"));
+        Assert.IsFalse(cut.Find(".layer-save button").HasAttribute("disabled"));
+    }
+
+    [TestMethod]
     public void Detail_RetainsExactLineageRecipesNodesAndDirectEndpointsInTechnicalDisclosure()
     {
         using var context = new BunitContext();
