@@ -283,7 +283,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         var previewGateHeld = true;
         try
         {
-            var opened = await OpenContentCoreAsync(artifactId, forPreview: true, cancellationToken).ConfigureAwait(false);
+            var opened = await OpenContentCoreAsync(
+                artifactId,
+                forPreview: true,
+                cancellationToken).ConfigureAwait(false);
             if (opened.Status != CameraAgentArtifactReadStatus.Found || opened.Content is null)
             {
                 return new(opened.Status);

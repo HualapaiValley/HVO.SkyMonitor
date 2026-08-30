@@ -1566,7 +1566,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                                  AND candidate.availability_state = 'Available'
                            ) THEN 0 ELSE 1 END AS availability_rank,
                            CASE
-                               WHEN output_role IN ('Preview', 'AnnotatedPreview') AND EXISTS (
+                                WHEN output_role IN ('Preview', 'AnnotatedPreview', 'Combined', 'Calibrated') AND EXISTS (
                                    SELECT 1
                                    FROM processing_outputs AS candidate
                                    WHERE candidate.capture_id = processing_nodes.capture_id
@@ -1578,7 +1578,7 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
                                          candidate.availability_state,
                                          candidate.role) = 0
                                ) THEN 0
-                               WHEN output_role IN ('Preview', 'AnnotatedPreview') THEN 1
+                                WHEN output_role IN ('Preview', 'AnnotatedPreview', 'Combined', 'Calibrated') THEN 1
                                ELSE 0
                            END AS preview_rank
                     FROM processing_nodes
@@ -1743,7 +1743,8 @@ internal sealed class SqliteCaptureProcessingStore : IDisposable
     {
         if (!string.Equals(availability, "Available", StringComparison.Ordinal) ||
             !Enum.TryParse<FrameArtifactRole>(roleValue, out var role) ||
-            role is not (FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview))
+            role is not (FrameArtifactRole.Preview or FrameArtifactRole.AnnotatedPreview or
+                FrameArtifactRole.Combined or FrameArtifactRole.Calibrated))
         {
             return 1;
         }

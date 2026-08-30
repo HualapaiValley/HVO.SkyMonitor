@@ -349,6 +349,53 @@ public sealed class SqliteCameraAgentGalleryTests
     }
 
     [TestMethod]
+    [DataRow(FrameArtifactRole.Combined, CameraAgentPresentationStage.Combined)]
+    [DataRow(FrameArtifactRole.Calibrated, CameraAgentPresentationStage.Calibrated)]
+    public async Task BoundedProjectionRanksTechnicalRoleEligibilityBeforeNodeLimitAsync(
+        FrameArtifactRole role,
+        CameraAgentPresentationStage stage)
+    {
+        using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);
+        var raw = await fixture.AddRawAsync(Utc(5), "Physical", null).ConfigureAwait(false);
+        for (var index = 0; index < SqliteCameraAgentGallery.MaximumProcessingNodesPerCapture - 5; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"a-ineligible-{role}-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                role: role,
+                mediaType: "image/png").ConfigureAwait(false);
+        }
+        var eligible = await fixture.AddProcessingOutputAsync(
+            raw,
+            $"b-eligible-{role}",
+            DurableProcessingNodeStatus.Completed,
+            role: role,
+            mediaType: "application/x-hvo-packed-image").ConfigureAwait(false);
+        for (var index = 0; index < 5; index++)
+        {
+            await fixture.AddProcessingOutputAsync(
+                raw,
+                $"c-annotated-{index:D3}",
+                DurableProcessingNodeStatus.Completed,
+                role: FrameArtifactRole.AnnotatedPreview).ConfigureAwait(false);
+        }
+
+        var page = await fixture.Gallery.GetPageAsync(
+            new CameraAgentGalleryQuery(), CancellationToken.None).ConfigureAwait(false);
+
+        var capture = AssertSingle(page);
+        Assert.IsTrue(capture.ProcessingNodesTruncated);
+        Assert.IsTrue(capture.ProcessingNodes.Any(node => node.NodeId == $"b-eligible-{role}"));
+        Assert.IsTrue(capture.Artifacts.Any(artifact => artifact.ArtifactId == eligible.Artifact.ArtifactId));
+        var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
+            .Project(capture);
+        var slot = projection.Stages.Single(candidate => candidate.Stage == stage);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Available, slot.Availability);
+        Assert.AreEqual(eligible.Artifact.ArtifactId, slot.ArtifactId);
+    }
+
+    [TestMethod]
     public async Task CanonicalSceneQueryFailureReturnsProjectionUnavailable()
     {
         using var fixture = await GalleryFixture.CreateAsync().ConfigureAwait(false);

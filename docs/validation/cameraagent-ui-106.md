@@ -141,18 +141,18 @@ The accepted predecessor baseline is based on commit
 correction identified in the JSON. Its evidence SHA-256 is
 `9f45522b56f52c083daf12e4fdd537997871c98b72ad78ca65dfeb80ab755d93`.
 The candidate evidence SHA-256 is
-`0b3899347cce2e53d09d3f178d491d9a05cd9171af0275d51dcc56bf3e72d80e`,
+`8393a10b4c7a92e35ae740101a3d3bd476380b0336b918127a4a97b67ae8b609`,
 with revision fingerprint
-`AA6EC1E496948E80D230A7F2294139664198F52F1901EE43D52FA99A60BAE206`.
+`333652BC2DBB049959A86F75D70D71B879580DA843888C8CCF45146CBDA1AC74`.
 Documentation-only changes after that measurement do not invalidate the
 measured path under the performance protocol.
 
-At concurrency 50, candidate browser-render p95 was 2,273.7785 ms for the 1K
-history and 2,613.4969 ms for 10K, compared with baseline 2,899.6764 ms and
-2,978.5488 ms. Candidate cumulative working-set growth was about 0.93 MiB and
-1.51 MiB per session respectively. The candidate-only completed preview-failure
-p95 was 857.5561 ms for 1K and 513.3282 ms for 10K, with about 2.42 MiB and
-1.84 MiB cumulative growth per session. No unexplained material regression was
+At concurrency 50, candidate browser-render p95 was 2,852.0874 ms for the 1K
+history and 2,062.6439 ms for 10K, compared with baseline 2,899.6764 ms and
+2,978.5488 ms. Candidate cumulative working-set growth was about 1.45 MiB and
+1.16 MiB per session respectively. The candidate-only completed preview-failure
+p95 was 469.1274 ms for 1K and 506.8519 ms for 10K, with about 2.61 MiB and
+1.71 MiB cumulative growth per session. No unexplained material regression was
 observed.
 Fixed synthetic identities may appear in SQL evidence;
 credentials, payload content, lease tokens, and internal paths must not.

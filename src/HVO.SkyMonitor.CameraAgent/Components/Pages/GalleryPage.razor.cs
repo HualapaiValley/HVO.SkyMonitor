@@ -58,6 +58,9 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     private async Task LoadAsync()
     {
         var generation = Interlocked.Increment(ref _generation);
+        _viewerOpen = false;
+        _viewerSource = null;
+        _viewerTriggerId = null;
         var cancellation = new CancellationTokenSource();
         var prior = Interlocked.Exchange(ref _loadCancellation, cancellation);
         if (prior is not null)
@@ -92,7 +95,6 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             else if (result.IsSuccess && result.Value is not null)
             {
                 _page = result.Value;
-                _viewerOpen = false;
             }
             else
             {

@@ -247,5 +247,6 @@ public sealed class ArtifactEndpointTests
                     2,
                     2)
                 : new CameraAgentArtifactPreviewResult(CameraAgentArtifactReadStatus.NotFound));
+
     }
 }

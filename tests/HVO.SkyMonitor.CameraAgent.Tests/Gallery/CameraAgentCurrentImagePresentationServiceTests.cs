@@ -2,6 +2,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.Fleet.Contracts;
 using Microsoft.Extensions.Options;
 
@@ -12,6 +13,14 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Gallery;
 public sealed class CameraAgentCurrentImagePresentationServiceTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 30, 12, 0, 0, TimeSpan.Zero);
+    private static readonly CameraAgentPresentationStage[] ExpectedStageOrder =
+    [
+        CameraAgentPresentationStage.Annotated,
+        CameraAgentPresentationStage.Combined,
+        CameraAgentPresentationStage.Calibrated,
+        CameraAgentPresentationStage.Raw
+    ];
+    private static readonly string[] ExpectedStageLabels = ["Processed", "Combined", "Calibrated", "Raw"];
 
     [TestMethod]
     public async Task ProjectsFixedTruthfulSlotsAndDeterministicDisplayVariantAsync()
@@ -39,6 +48,8 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
         Assert.AreEqual(CameraAgentPresentationImageFreshness.Current, result.ImageFreshness);
         Assert.AreEqual(CameraAgentPresentationStage.Annotated, result.SelectedStage);
         Assert.HasCount(4, result.Stages);
+        CollectionAssert.AreEqual(ExpectedStageOrder, result.Stages.Select(static slot => slot.Stage).ToArray());
+        CollectionAssert.AreEqual(ExpectedStageLabels, result.Stages.Select(static slot => slot.Label).ToArray());
         var annotated = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
         Assert.AreEqual(thumbnailId, annotated.ArtifactId);
         Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, annotated.ArtifactRole);
@@ -81,6 +92,122 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
         Assert.AreEqual(
             FrameArtifactRole.Preview,
             result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated).ArtifactRole);
+    }
+
+    [TestMethod]
+    [DataRow(CameraAgentArtifactReadStatus.Gone)]
+    [DataRow(CameraAgentArtifactReadStatus.Conflict)]
+    public async Task InvalidNewestPreviewFallsBackToLatestValidatedCaptureAsync(
+        CameraAgentArtifactReadStatus invalidStatus)
+    {
+        var latestArtifactId = Guid.NewGuid();
+        var priorArtifactId = Guid.NewGuid();
+        var latest = Capture(
+            3,
+            Now.AddSeconds(-5),
+            [Artifact(latestArtifactId, FrameArtifactRole.Preview, "default", "application/x-hvo-packed-image")]);
+        var prior = Capture(
+            2,
+            Now.AddMinutes(-1),
+            [Artifact(priorArtifactId, FrameArtifactRole.Preview, "default", "application/x-hvo-packed-image")]);
+        var artifacts = new StubArtifactService(new Dictionary<Guid, CameraAgentArtifactReadStatus>
+        {
+            [latestArtifactId] = invalidStatus,
+            [priorArtifactId] = CameraAgentArtifactReadStatus.Found
+        });
+        var service = CreateService(
+            new StubGallery(new CameraAgentGalleryPage([latest, prior], null)),
+            artifacts: artifacts);
+
+        var result = await service.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(latest.CaptureId, result.LatestCapture!.CaptureId);
+        Assert.AreEqual(prior.CaptureId, result.DisplayCapture!.CaptureId);
+        Assert.IsTrue(result.IsHistoricalFallback);
+        Assert.AreEqual(CameraAgentPresentationImageFreshness.Historical, result.ImageFreshness);
+        Assert.AreEqual(priorArtifactId, result.Stages.Single(static slot =>
+            slot.Stage == CameraAgentPresentationStage.Annotated).ArtifactId);
+        CollectionAssert.AreEqual(new[] { latestArtifactId, priorArtifactId }, artifacts.RequestedArtifactIds.ToArray());
+    }
+
+    [TestMethod]
+    public async Task InvalidPreferredStageFallsBackWithinCaptureAndRedactsFailedSlotsAsync()
+    {
+        var processedId = Guid.NewGuid();
+        var combinedId = Guid.NewGuid();
+        var rawId = Guid.NewGuid();
+        var latest = Capture(
+            3,
+            Now.AddSeconds(-5),
+            [
+                Artifact(processedId, FrameArtifactRole.Preview, "default", "application/x-hvo-packed-image"),
+                Artifact(combinedId, FrameArtifactRole.Combined, "stack", "application/x-hvo-packed-image"),
+                Artifact(rawId, FrameArtifactRole.Raw, "camera-native", "application/x-skymonitor-mono16", sources: [])
+            ]);
+        var prior = Capture(
+            2,
+            Now.AddMinutes(-1),
+            [Artifact(Guid.NewGuid(), FrameArtifactRole.Preview, "default", "application/x-hvo-packed-image")]);
+        var artifacts = new StubArtifactService(new Dictionary<Guid, CameraAgentArtifactReadStatus>
+        {
+            [processedId] = CameraAgentArtifactReadStatus.Gone,
+            [combinedId] = CameraAgentArtifactReadStatus.Found,
+            [rawId] = CameraAgentArtifactReadStatus.Conflict
+        });
+
+        var result = await CreateService(
+            new StubGallery(new CameraAgentGalleryPage([latest, prior], null)),
+            artifacts: artifacts).GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(latest.CaptureId, result.DisplayCapture!.CaptureId);
+        Assert.IsFalse(result.IsHistoricalFallback);
+        Assert.AreEqual(CameraAgentPresentationStage.Combined, result.SelectedStage);
+        var processed = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Unavailable, processed.Availability);
+        Assert.AreEqual("Gone", processed.Reason);
+        Assert.IsNull(processed.ArtifactId);
+        Assert.IsNull(processed.PreviewUrl);
+        var raw = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Raw);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Unavailable, raw.Availability);
+        Assert.AreEqual("Conflict", raw.Reason);
+        CollectionAssert.AreEqual(
+            new[] { processedId, combinedId, rawId },
+            artifacts.RequestedArtifactIds.ToArray());
+    }
+
+    [TestMethod]
+    public async Task InvalidPreferredArtifactFallsBackWithinProcessedStageAsync()
+    {
+        var annotatedId = Guid.NewGuid();
+        var previewId = Guid.NewGuid();
+        var capture = Capture(
+            3,
+            Now.AddSeconds(-5),
+            [
+                Artifact(
+                    annotatedId,
+                    FrameArtifactRole.AnnotatedPreview,
+                    "annotated-thumbnail-1024-jpeg",
+                    "image/jpeg"),
+                Artifact(previewId, FrameArtifactRole.Preview, "default", "application/x-hvo-packed-image")
+            ]);
+        var artifacts = new StubArtifactService(new Dictionary<Guid, CameraAgentArtifactReadStatus>
+        {
+            [annotatedId] = CameraAgentArtifactReadStatus.Conflict,
+            [previewId] = CameraAgentArtifactReadStatus.Found
+        });
+
+        var result = await CreateService(
+            new StubGallery(new CameraAgentGalleryPage([capture], null)),
+            artifacts: artifacts).GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(capture.CaptureId, result.DisplayCapture!.CaptureId);
+        Assert.AreEqual(CameraAgentPresentationStage.Annotated, result.SelectedStage);
+        var processed = result.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Annotated);
+        Assert.AreEqual(CameraAgentPresentationSlotAvailability.Available, processed.Availability);
+        Assert.AreEqual(previewId, processed.ArtifactId);
+        Assert.AreEqual(FrameArtifactRole.Preview, processed.ArtifactRole);
+        CollectionAssert.AreEqual(new[] { annotatedId, previewId }, artifacts.RequestedArtifactIds.ToArray());
     }
 
     [TestMethod]
@@ -142,6 +269,29 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
         Assert.IsTrue(result.IsHistoricalFallback);
         Assert.AreEqual(2, gallery.ReadCount);
         Assert.IsFalse(result.HistoryBoundReached);
+    }
+
+    [TestMethod]
+    public async Task PreviewValidationAttemptsAreRequestBoundedAsync()
+    {
+        var captures = Enumerable.Range(0, CameraAgentCurrentImagePresentationService.MaximumPreviewValidationAttempts + 1)
+            .Select(index => Capture(
+                100 - index,
+                Now.AddSeconds(-index),
+                [Artifact(Guid.NewGuid(), FrameArtifactRole.Preview, "default", "application/x-hvo-packed-image")]))
+            .ToArray();
+        var statuses = captures.SelectMany(static capture => capture.Artifacts)
+            .ToDictionary(static artifact => artifact.ArtifactId, static _ => CameraAgentArtifactReadStatus.Conflict);
+        var artifacts = new StubArtifactService(statuses);
+
+        var result = await CreateService(
+            new StubGallery(new CameraAgentGalleryPage(captures, "more")),
+            artifacts: artifacts).GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNull(result.DisplayCapture);
+        Assert.IsTrue(result.HistoryBoundReached);
+        Assert.HasCount(CameraAgentCurrentImagePresentationService.MaximumPreviewValidationAttempts,
+            artifacts.RequestedArtifactIds);
     }
 
     [TestMethod]
@@ -311,20 +461,69 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
             true);
 
         var unavailable = CameraAgentPresentationRuntime.Project(
-            admission, null, TimeSpan.FromMinutes(1), FleetAvailability.Unavailable, Now);
+            admission, null, null, TimeSpan.FromMinutes(1), FleetAvailability.Unavailable, Now);
         var starting = CameraAgentPresentationRuntime.Project(
-            admission, null, TimeSpan.FromMinutes(1), FleetAvailability.Initializing, Now);
+            admission, null, null, TimeSpan.FromMinutes(1), FleetAvailability.Initializing, Now);
         var pausedAdmission = admission with
         {
             State = HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureAdmissionState.Paused
         };
         var pausedUnavailable = CameraAgentPresentationRuntime.Project(
-            pausedAdmission, null, TimeSpan.FromMinutes(1), FleetAvailability.Unavailable, Now);
+            pausedAdmission, null, null, TimeSpan.FromMinutes(1), FleetAvailability.Unavailable, Now);
 
         Assert.AreEqual(CameraAgentPresentationSystemState.Unavailable, unavailable.System.State);
         Assert.AreEqual(CameraAgentPresentationSystemState.Starting, starting.System.State);
         Assert.AreEqual(CameraAgentPresentationSystemState.Unavailable, pausedUnavailable.System.State);
         Assert.AreEqual(TimeSpan.FromMinutes(1), unavailable.ExpectedCaptureInterval.GetValueOrDefault());
+    }
+
+    [TestMethod]
+    [DataRow(1, 10, CameraAgentPresentationImageFreshness.Current)]
+    [DataRow(10, 1, CameraAgentPresentationImageFreshness.Delayed)]
+    public async Task RuntimeProjectionUsesAdmittedProfileCadenceForFreshnessAsync(
+        int baseMinutes,
+        int profileMinutes,
+        CameraAgentPresentationImageFreshness expected)
+    {
+        var admission = new HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureAdmissionSnapshot(
+            HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureAdmissionState.Running,
+            1,
+            Now,
+            true);
+        var profile = new CaptureScheduleSetpointProfile(
+            "active",
+            TimeSpan.FromSeconds(1),
+            1,
+            TimeSpan.FromMinutes(profileMinutes));
+        var schedule = new CaptureScheduleDefinition("capture-schedule-v1", [profile], []);
+        var decision = new CaptureScheduleDecision(
+            true,
+            CaptureScheduleAdmissionReason.WeeklyWindow,
+            CaptureScheduleSafetyState.Available,
+            Now,
+            profile.Id,
+            null,
+            null,
+            false,
+            null);
+        var snapshot = CameraAgentPresentationRuntime.Project(
+            admission,
+            decision,
+            schedule,
+            TimeSpan.FromMinutes(baseMinutes),
+            FleetAvailability.Available,
+            Now);
+        var capture = Capture(
+            1,
+            Now.AddMinutes(-3),
+            [Artifact(Guid.NewGuid(), FrameArtifactRole.Preview, "default", "application/x-hvo-packed-image")]);
+
+        var result = await CreateService(
+            new StubGallery(new CameraAgentGalleryPage([capture], null)),
+            expectedInterval: snapshot.ExpectedCaptureInterval).GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(TimeSpan.FromMinutes(profileMinutes), snapshot.ExpectedCaptureInterval.GetValueOrDefault());
+        Assert.AreEqual(expected, result.ImageFreshness);
     }
 
     [TestMethod]
@@ -371,10 +570,12 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
         CameraAgentPresentationSystemState systemState = CameraAgentPresentationSystemState.Capturing,
         TimeSpan? expectedInterval = null,
         bool structuredLayersAvailable = false,
-        Exception? structuredLayersFailure = null)
+        Exception? structuredLayersFailure = null,
+        ICameraAgentArtifactService? artifacts = null)
         => new(
             gallery,
             new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions())),
+            artifacts ?? new StubArtifactService(),
             new StubRuntime(new CameraAgentPresentationRuntimeSnapshot(
                 new CameraAgentPresentationSystemStatus(systemState, "Bounded state.", Now),
                 expectedInterval)),
@@ -478,6 +679,29 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
             Guid captureId,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<CameraAgentGalleryCapture?>(null);
+    }
+
+    private sealed class StubArtifactService(
+        IReadOnlyDictionary<Guid, CameraAgentArtifactReadStatus>? statuses = null) : ICameraAgentArtifactService
+    {
+        internal List<Guid> RequestedArtifactIds { get; } = [];
+
+        public ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(
+            Guid artifactId,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(new CameraAgentArtifactContentResult(CameraAgentArtifactReadStatus.NotFound));
+
+        public ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(
+            Guid artifactId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RequestedArtifactIds.Add(artifactId);
+            var status = statuses is not null && statuses.TryGetValue(artifactId, out var configured)
+                ? configured
+                : CameraAgentArtifactReadStatus.Found;
+            return ValueTask.FromResult(new CameraAgentArtifactPreviewResult(status));
+        }
     }
 
     private sealed class StubRuntime(CameraAgentPresentationRuntimeSnapshot snapshot) : ICameraAgentPresentationRuntime

@@ -33,6 +33,7 @@ internal sealed class CameraAgentPresentationRuntime(
         return Project(
             admission,
             schedule?.CurrentDecision,
+            schedule?.Revision.Definition,
             schedule?.Configuration.Rig.Pipeline.CaptureInterval,
             fleetRuntime.Snapshot.Capture.Availability,
             observedUtc);
@@ -41,6 +42,7 @@ internal sealed class CameraAgentPresentationRuntime(
     internal static CameraAgentPresentationRuntimeSnapshot Project(
         CaptureAdmissionSnapshot admission,
         CaptureScheduleDecision? decision,
+        CaptureScheduleDefinition? schedule,
         TimeSpan? expectedInterval,
         FleetAvailability captureAvailability,
         DateTimeOffset observedUtc)
@@ -63,9 +65,13 @@ internal sealed class CameraAgentPresentationRuntime(
                 (CameraAgentPresentationSystemState.Standby, "Capture is waiting for its next scheduled window."),
             _ => (CameraAgentPresentationSystemState.Capturing, "CameraAgent is capturing normally.")
         };
+        var activeInterval = decision is { Admitted: true, SetpointProfileId: { } profileId }
+            ? schedule?.SetpointProfiles.FirstOrDefault(profile =>
+                string.Equals(profile.Id, profileId, StringComparison.Ordinal))?.CaptureInterval
+            : null;
         return new(
             new CameraAgentPresentationSystemStatus(state, message, observedUtc, decision?.NextTransitionUtc),
-            expectedInterval is { } interval && interval > TimeSpan.Zero ? interval : null);
+            (activeInterval ?? expectedInterval) is { } interval && interval > TimeSpan.Zero ? interval : null);
     }
 }
 
@@ -87,12 +93,14 @@ internal sealed class CameraAgentStructuredLayerAvailability(
 internal sealed class CameraAgentCurrentImagePresentationService(
     ICameraAgentGallery gallery,
     ICameraAgentCapturePresentationProjector capturePresentation,
+    ICameraAgentArtifactService artifacts,
     ICameraAgentPresentationRuntime runtime,
     ICameraAgentStructuredLayerAvailability structuredLayers,
     TimeProvider timeProvider) : ICameraAgentCurrentImagePresentationService
 {
     internal const int MaximumCandidateCaptures = 12;
     internal const int MaximumCandidatePages = 4;
+    internal const int MaximumPreviewValidationAttempts = 12;
 
     public async ValueTask<CameraAgentCurrentImagePresentation> GetAsync(CancellationToken cancellationToken)
     {
@@ -100,8 +108,11 @@ internal sealed class CameraAgentCurrentImagePresentationService(
         var runtimeSnapshot = runtime.GetSnapshot(observedUtc);
         CameraAgentGalleryCapture? latest = null;
         CameraAgentGalleryCapture? display = null;
+        CameraAgentCapturePresentation? latestPresentation = null;
+        CameraAgentCapturePresentation? displayPresentation = null;
         string? cursor = null;
         var historyBoundReached = false;
+        var validationAttempts = 0;
         for (var pageIndex = 0; pageIndex < MaximumCandidatePages; pageIndex++)
         {
             var page = await gallery.GetPageAsync(
@@ -111,15 +122,39 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             {
                 latest = page.Items[0];
             }
-            display = page.Items.FirstOrDefault(HasDisplayableArtifact);
-            if (display is not null || page.NextCursor is null)
+            foreach (var candidate in page.Items)
+            {
+                var validation = await ValidatePresentationAsync(
+                    candidate,
+                    MaximumPreviewValidationAttempts - validationAttempts,
+                    cancellationToken)
+                    .ConfigureAwait(false);
+                validationAttempts += validation.Attempts;
+                var candidatePresentation = validation.Presentation;
+                if (candidate.CaptureId == latest?.CaptureId)
+                {
+                    latestPresentation = candidatePresentation;
+                }
+                if (candidatePresentation.SelectedStage is not null)
+                {
+                    display = candidate;
+                    displayPresentation = candidatePresentation;
+                    break;
+                }
+                if (validation.BoundReached)
+                {
+                    historyBoundReached = true;
+                    break;
+                }
+            }
+            if (display is not null || historyBoundReached || page.NextCursor is null)
             {
                 break;
             }
             cursor = page.NextCursor;
             historyBoundReached = pageIndex == MaximumCandidatePages - 1;
         }
-        var projectedCapture = capturePresentation.Project(display ?? latest);
+        var projectedCapture = displayPresentation ?? latestPresentation ?? capturePresentation.Project(null);
         var selectedStage = display is null ? null : projectedCapture.SelectedStage;
         var historicalFallback = latest is not null && display is not null && latest.CaptureId != display.CaptureId;
         var freshness = GetFreshness(
@@ -159,8 +194,73 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             display is null && historyBoundReached);
     }
 
-    private bool HasDisplayableArtifact(CameraAgentGalleryCapture capture)
-        => capturePresentation.Project(capture).SelectedStage is not null;
+    private async ValueTask<ValidatedPresentation> ValidatePresentationAsync(
+        CameraAgentGalleryCapture capture,
+        int maximumAttempts,
+        CancellationToken cancellationToken)
+    {
+        var projection = capturePresentation.Project(capture);
+        CameraAgentPresentationStage? selectedStage = null;
+        var stages = new CameraAgentPresentationSlot[projection.Stages.Count];
+        var attempts = 0;
+        var boundReached = false;
+        for (var index = 0; index < projection.Stages.Count; index++)
+        {
+            var slot = projection.Stages[index];
+            if (slot.Availability != CameraAgentPresentationSlotAvailability.Available)
+            {
+                stages[index] = slot;
+                continue;
+            }
+            var excluded = new HashSet<Guid>();
+            while (slot.ArtifactId is { } artifactId)
+            {
+                if (attempts >= maximumAttempts)
+                {
+                    stages[index] = Unavailable(slot, "ValidationBoundReached");
+                    boundReached = true;
+                    break;
+                }
+                attempts++;
+                var preview = await artifacts.GetPreviewAsync(artifactId, cancellationToken).ConfigureAwait(false);
+                if (preview.Status == CameraAgentArtifactReadStatus.Found)
+                {
+                    selectedStage ??= slot.Stage;
+                    stages[index] = slot;
+                    break;
+                }
+                var failed = Unavailable(slot, preview.Status.ToString());
+                excluded.Add(artifactId);
+                var remaining = capture with
+                {
+                    Artifacts = capture.Artifacts.Where(artifact => !excluded.Contains(artifact.ArtifactId)).ToArray()
+                };
+                slot = capturePresentation.Project(remaining).Stages.Single(candidate => candidate.Stage == slot.Stage);
+                if (slot.Availability != CameraAgentPresentationSlotAvailability.Available)
+                {
+                    stages[index] = failed;
+                    break;
+                }
+            }
+            if (stages[index] is null)
+            {
+                stages[index] = slot;
+            }
+        }
+        return new(new CameraAgentCapturePresentation(selectedStage, stages), attempts, boundReached);
+    }
+
+    private static CameraAgentPresentationSlot Unavailable(CameraAgentPresentationSlot slot, string reason)
+        => slot with
+        {
+            Availability = CameraAgentPresentationSlotAvailability.Unavailable,
+            Reason = reason,
+            ArtifactId = null,
+            ArtifactRole = null,
+            Variant = null,
+            MediaType = null,
+            PreviewUrl = null
+        };
 
     private static CameraAgentPresentationImageFreshness GetFreshness(
         CameraAgentGalleryCapture? display,
@@ -201,6 +301,11 @@ internal sealed class CameraAgentCurrentImagePresentationService(
                 capture.ExposureStartedUtc,
                 Math.Max(0, (long)(observedUtc - capture.ExposureStartedUtc).TotalSeconds),
                 capture.EvidenceOrigin);
+
+    private sealed record ValidatedPresentation(
+        CameraAgentCapturePresentation Presentation,
+        int Attempts,
+        bool BoundReached);
 }
 
 internal sealed class CameraAgentCapturePresentationProjector(
@@ -210,10 +315,10 @@ internal sealed class CameraAgentCapturePresentationProjector(
 
     private static readonly CameraAgentPresentationStage[] StageOrder =
     [
-        CameraAgentPresentationStage.Raw,
-        CameraAgentPresentationStage.Calibrated,
+        CameraAgentPresentationStage.Annotated,
         CameraAgentPresentationStage.Combined,
-        CameraAgentPresentationStage.Annotated
+        CameraAgentPresentationStage.Calibrated,
+        CameraAgentPresentationStage.Raw
     ];
 
     private static readonly CameraAgentPresentationStage[] SelectionOrder =

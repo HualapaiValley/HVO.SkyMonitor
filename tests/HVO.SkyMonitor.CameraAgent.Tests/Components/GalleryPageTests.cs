@@ -135,6 +135,46 @@ public sealed class GalleryPageTests
     }
 
     [TestMethod]
+    public async Task ParameterChangeClosesAndClearsViewerWhenLoadBeginsAsync()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var service = Configure(context);
+        service.GalleryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentGalleryPage>.Success(new([OperatorUiTestData.Capture()], null)));
+        var cut = context.Render<GalleryPage>();
+        cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll("button[id^='archive-view-large-']")));
+        await cut.Find("button[id^='archive-view-large-']").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll(".large-viewer img")));
+
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentGalleryPage>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        service.GalleryHandler = (_, _) =>
+        {
+            requestStarted.TrySetResult();
+            return new ValueTask<OperatorUiResult<CameraAgentGalleryPage>>(pending.Task);
+        };
+        context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>()
+            .NavigateTo("/gallery?cursor=next");
+        await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Markup, "Loading gallery page", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".large-viewer img"));
+        });
+        pending.SetResult(OperatorUiResult<CameraAgentGalleryPage>.Failure(
+            OperatorUiResultKind.Unavailable,
+            "The gallery is temporarily unavailable."));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("alert", cut.Find(".gallery-state--error").GetAttribute("role"));
+            Assert.IsEmpty(cut.FindAll(".large-viewer img"));
+        });
+    }
+
+    [TestMethod]
     public void Filters_ArePassedToBoundedQueryAndNavigationClearsCursor()
     {
         using var context = new BunitContext();
