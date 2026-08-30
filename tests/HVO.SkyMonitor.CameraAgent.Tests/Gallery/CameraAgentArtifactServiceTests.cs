@@ -395,23 +395,65 @@ public sealed class CameraAgentArtifactServiceTests
 
         var blockingEncoder = new BlockingPreviewEncoder();
         using (var fixture = await ArtifactFixture.CreateAsync(
-                   artifactRead: new ArtifactReadOptions { MaximumConcurrentPreviews = 2 },
+                   artifactRead: new ArtifactReadOptions
+                   {
+                       MaximumConcurrentPreviews = 1,
+                       PreviewCacheBytes = 1
+                   },
                    encoder: blockingEncoder).ConfigureAwait(false))
         {
             var raw = await fixture.AddRawAsync().ConfigureAwait(false);
             var preview = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Preview).ConfigureAwait(false);
             var first = Task.Run(async () => await fixture.Service.GetPreviewAsync(
                 preview.ArtifactId, CancellationToken.None).ConfigureAwait(false));
-            await blockingEncoder.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-            var queued = Enumerable.Range(0, 49).Select(_ => fixture.Service.GetPreviewAsync(
-                preview.ArtifactId, CancellationToken.None).AsTask()).ToArray();
-            Assert.IsTrue(queued.All(static request => !request.IsCompleted));
-            blockingEncoder.Release.TrySetResult();
+            Task<CameraAgentArtifactPreviewResult>[] queued = [];
+            try
+            {
+                await blockingEncoder.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                queued = Enumerable.Range(0, 49).Select(_ => fixture.Service.GetPreviewAsync(
+                    preview.ArtifactId, CancellationToken.None).AsTask()).ToArray();
+                Assert.IsTrue(queued.All(static request => !request.IsCompleted));
+                await WaitUntilAsync(() => fixture.Service.PreviewRequestWaiters == 50).ConfigureAwait(false);
+            }
+            finally
+            {
+                blockingEncoder.Release.TrySetResult();
+                await Task.WhenAll(queued.Prepend(first)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, (await first.ConfigureAwait(false)).Status);
             var completed = await Task.WhenAll(queued).ConfigureAwait(false);
             Assert.IsTrue(completed.All(static result => result.Status == CameraAgentArtifactReadStatus.Found));
             Assert.AreEqual(1, blockingEncoder.Count);
             Assert.HasCount(1, completed.Select(static result => result.ChecksumSha256).Distinct().ToArray());
+        }
+
+        var failingEncoder = new FailingBlockingPreviewEncoder();
+        using (var fixture = await ArtifactFixture.CreateAsync(
+                   artifactRead: new ArtifactReadOptions { MaximumConcurrentPreviews = 1 },
+                   encoder: failingEncoder).ConfigureAwait(false))
+        {
+            var raw = await fixture.AddRawAsync().ConfigureAwait(false);
+            var preview = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Preview).ConfigureAwait(false);
+            var first = Task.Run(async () => await fixture.Service.GetPreviewAsync(
+                preview.ArtifactId, CancellationToken.None).ConfigureAwait(false));
+            Task<CameraAgentArtifactPreviewResult>[] queued = [];
+            try
+            {
+                await failingEncoder.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                queued = Enumerable.Range(0, 9).Select(_ => fixture.Service.GetPreviewAsync(
+                    preview.ArtifactId, CancellationToken.None).AsTask()).ToArray();
+                Assert.IsTrue(queued.All(static request => !request.IsCompleted));
+                await WaitUntilAsync(() => fixture.Service.PreviewRequestWaiters == 10).ConfigureAwait(false);
+            }
+            finally
+            {
+                failingEncoder.Release.TrySetResult();
+                await Task.WhenAll(queued.Prepend(first)).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict, (await first.ConfigureAwait(false)).Status);
+            var completed = await Task.WhenAll(queued).ConfigureAwait(false);
+            Assert.IsTrue(completed.All(static result => result.Status == CameraAgentArtifactReadStatus.Conflict));
+            Assert.AreEqual(1, failingEncoder.Count);
         }
 
         var concurrentEncoder = new BlockingPreviewEncoder(requiredEntrants: 2);
@@ -484,6 +526,15 @@ public sealed class CameraAgentArtifactServiceTests
         using var memory = new MemoryStream();
         await stream.CopyToAsync(memory).ConfigureAwait(false);
         return memory.ToArray();
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!condition())
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token).ConfigureAwait(false);
+        }
     }
 
     private sealed class ArtifactFixture : IDisposable
@@ -781,7 +832,7 @@ public sealed class CameraAgentArtifactServiceTests
         }
     }
 
-    private sealed class BlockingPreviewEncoder(int requiredEntrants = 1) : CountingPreviewEncoder
+    private class BlockingPreviewEncoder(int requiredEntrants = 1) : CountingPreviewEncoder
     {
         private int _entered;
 
@@ -805,6 +856,20 @@ public sealed class CameraAgentArtifactServiceTests
             }
             Release.Task.GetAwaiter().GetResult();
             return base.Encode(layout, payload, maximumDimension, maximumEncodedBytes, cancellationToken);
+        }
+    }
+
+    private sealed class FailingBlockingPreviewEncoder : BlockingPreviewEncoder
+    {
+        public override CameraAgentEncodedPreview Encode(
+            FrameLayoutDescriptor layout,
+            ReadOnlyMemory<byte> payload,
+            int maximumDimension,
+            int maximumEncodedBytes,
+            CancellationToken cancellationToken)
+        {
+            _ = base.Encode(layout, payload, maximumDimension, maximumEncodedBytes, cancellationToken);
+            throw new InvalidOperationException("Expected encoder failure.");
         }
     }
 

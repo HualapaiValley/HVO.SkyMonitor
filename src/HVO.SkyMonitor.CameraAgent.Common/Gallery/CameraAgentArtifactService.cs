@@ -85,6 +85,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private readonly object _cacheGate = new();
     private readonly Dictionary<PreviewCacheKey, PreviewCacheEntry> _previewCache = [];
     private readonly Dictionary<PreviewCacheKey, PreviewGenerationGate> _previewGenerationGates = [];
+    private readonly Dictionary<Guid, PreviewGenerationGate> _previewRequestGates = [];
     private readonly Dictionary<ArtifactValidationCacheKey, ArtifactValidationCacheEntry> _validationCache = [];
     private long _previewCacheBytes;
     private long _cacheSequence;
@@ -249,6 +250,35 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         Guid artifactId,
         CancellationToken cancellationToken)
     {
+        var requestGate = AddPreviewRequestWaiter(artifactId);
+        try
+        {
+            await requestGate.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (requestGate.Result is { } completed)
+                {
+                    return completed;
+                }
+                var result = await GetPreviewCoreAsync(artifactId, cancellationToken).ConfigureAwait(false);
+                requestGate.Result = result;
+                return result;
+            }
+            finally
+            {
+                requestGate.Semaphore.Release();
+            }
+        }
+        finally
+        {
+            RemovePreviewRequestWaiter(artifactId, requestGate);
+        }
+    }
+
+    private async ValueTask<CameraAgentArtifactPreviewResult> GetPreviewCoreAsync(
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
         await _previewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var previewGateHeld = true;
         try
@@ -297,6 +327,12 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 await generationGate.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
+                    if (generationGate.Result is { } completed)
+                    {
+                        await content.DisposeAsync().ConfigureAwait(false);
+                        contentOwned = false;
+                        return completed;
+                    }
                     lock (_cacheGate)
                     {
                         cacheHit = TryGetCachedLocked(cacheKey, out cached);
@@ -310,7 +346,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     await _previewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
                     previewGateHeld = true;
                     contentOwned = false;
-                    return await EncodePreviewAsync(cacheKey, content, descriptor, cancellationToken).ConfigureAwait(false);
+                    var result = await EncodePreviewAsync(cacheKey, content, descriptor, cancellationToken).ConfigureAwait(false);
+                    generationGate.Result = result;
+                    return result;
                 }
                 finally
                 {
@@ -823,6 +861,33 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         }
     }
 
+    private PreviewGenerationGate AddPreviewRequestWaiter(Guid artifactId)
+    {
+        lock (_cacheGate)
+        {
+            if (!_previewRequestGates.TryGetValue(artifactId, out var gate))
+            {
+                gate = new PreviewGenerationGate();
+                _previewRequestGates.Add(artifactId, gate);
+            }
+            gate.Waiters++;
+            return gate;
+        }
+    }
+
+    private void RemovePreviewRequestWaiter(Guid artifactId, PreviewGenerationGate gate)
+    {
+        lock (_cacheGate)
+        {
+            gate.Waiters--;
+            if (gate.Waiters == 0)
+            {
+                _previewRequestGates.Remove(artifactId);
+                gate.Semaphore.Dispose();
+            }
+        }
+    }
+
     private void RemovePreviewGenerationWaiter(PreviewCacheKey key, PreviewGenerationGate gate)
     {
         lock (_cacheGate)
@@ -917,6 +982,17 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
     internal long EvidenceValidationReads => Interlocked.Read(ref _evidenceValidationReads);
 
+    internal int PreviewRequestWaiters
+    {
+        get
+        {
+            lock (_cacheGate)
+            {
+                return _previewRequestGates.Values.Sum(static gate => gate.Waiters);
+            }
+        }
+    }
+
     public void Dispose()
     {
         _previewGate.Dispose();
@@ -927,6 +1003,11 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 gate.Semaphore.Dispose();
             }
             _previewGenerationGates.Clear();
+            foreach (var gate in _previewRequestGates.Values)
+            {
+                gate.Semaphore.Dispose();
+            }
+            _previewRequestGates.Clear();
         }
     }
 
@@ -1000,6 +1081,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private sealed class PreviewGenerationGate
     {
         internal SemaphoreSlim Semaphore { get; } = new(1, 1);
+
+        internal CameraAgentArtifactPreviewResult? Result { get; set; }
 
         internal int Waiters { get; set; }
     }
