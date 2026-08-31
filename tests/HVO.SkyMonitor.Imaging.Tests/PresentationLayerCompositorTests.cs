@@ -119,12 +119,14 @@ public sealed class PresentationLayerCompositorTests
             new WeatherCloudOverlayRenderOptions()).Pixels.ToArray();
 
         var constellation = Payload(width, height, segments: [new(new(-2, 20), new(35, 20), 1, new(96, 160, 255))]);
-        var annotation = Payload(width, height,
+        var imageCircle = Payload(width, height,
+            ellipses: [new(new(20, 15), 10, 10, new(96, 96, 96))]);
+        var starAnnotations = Payload(width, height,
             markers: [new(new(12, 12), 3, new(144, 144, 144))],
-            ellipses: [new(new(20, 15), 10, 10, new(96, 96, 96))],
+            text: [new(PresentationTextAnchor.Point, new PixelPoint(17, 9), ["STAR"], 1, 0, 0, new(255, 255, 255))]);
+        var cardinalDirections = Payload(width, height,
             text:
             [
-                new(PresentationTextAnchor.Point, new PixelPoint(17, 9), ["STAR"], 1, 0, 0, new(255, 255, 255)),
                 new(PresentationTextAnchor.Point, new PixelPoint(16, 4), ["N"], 2, 0, 0, new(255, 255, 255)),
                 new(PresentationTextAnchor.Point, new PixelPoint(26, 9), ["E"], 2, 0, 0, new(255, 255, 255)),
                 new(PresentationTextAnchor.Point, new PixelPoint(16, 15), ["S"], 2, 0, 0, new(255, 255, 255)),
@@ -137,7 +139,9 @@ public sealed class PresentationLayerCompositorTests
         var actual = PresentationLayerCompositor.Composite(layout, source,
         [
             new(constellation, true, PresentationRasterBlendMode.Normal, 800_000),
-            new(annotation, true, PresentationRasterBlendMode.Lighten, 1_000_000),
+            new(imageCircle, true, PresentationRasterBlendMode.Normal, 1_000_000),
+            new(starAnnotations, true, PresentationRasterBlendMode.Normal, 1_000_000),
+            new(cardinalDirections, true, PresentationRasterBlendMode.Normal, 1_000_000),
             new(cloudMask, true, PresentationRasterBlendMode.Normal, 1_000_000),
             new(cloudLabels, true, PresentationRasterBlendMode.Lighten, 1_000_000)
         ]);

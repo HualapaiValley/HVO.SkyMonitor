@@ -30,6 +30,13 @@ public sealed record PresentationSceneLayerPayloadsV1(
     PresentationLayerPayloadV1 AnnotationAndGeometry,
     PresentationLayerPayloadV1 Constellations);
 
+/// <summary>Scene primitive groups split for independent presentation controls.</summary>
+public sealed record PresentationSceneLayerPayloadsV2(
+    PresentationLayerPayloadV1 StarAnnotations,
+    PresentationLayerPayloadV1 CardinalDirections,
+    PresentationLayerPayloadV1 ImageCircle,
+    PresentationLayerPayloadV1 Constellations);
+
 /// <summary>Cloud mask and label groups whose legacy raster operations use different blend semantics.</summary>
 public sealed record PresentationCloudLayerPayloadsV1(
     PresentationLayerPayloadV1 Mask,
@@ -88,7 +95,7 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v1";
+    public const string SceneProducerVersion = "projected-scene-presentation-v2";
     public const string MetadataProducerVersion = "metadata-corner-presentation-v1";
     public const string CloudProducerVersion = "cloud-presentation-v1";
 
@@ -102,17 +109,17 @@ public static class PresentationLayerProducers
         bool includeProjectionGeometry = true)
     {
         ArgumentNullException.ThrowIfNull(scene);
-        var groups = FromProjectedSceneGroups(scene, style, includeMarkers, includeLabels,
-            includeConstellations, includeProjectionGeometry);
+        var groups = FromProjectedSceneGroupsV2(scene, style, includeMarkers, includeLabels,
+            includeConstellations, includeProjectionGeometry, includeProjectionGeometry);
         return PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256,
             scene.ImageTransform.OutputWidthPixels, scene.ImageTransform.OutputHeightPixels,
-            groups.AnnotationAndGeometry.Markers,
+            groups.StarAnnotations.Markers,
             groups.Constellations.Segments,
-            groups.AnnotationAndGeometry.Ellipses,
-            groups.AnnotationAndGeometry.TextBlocks);
+            groups.ImageCircle.Ellipses,
+            groups.StarAnnotations.TextBlocks.Concat(groups.CardinalDirections.TextBlocks).ToArray());
     }
 
-    /// <summary>Creates independently composable annotation/geometry and constellation groups from one canonical scene.</summary>
+    /// <summary>Creates the original combined annotation/geometry and constellation groups.</summary>
     public static PresentationSceneLayerPayloadsV1 FromProjectedSceneGroups(
         ProjectedSceneV1 scene,
         PresentationAnnotationStyleV1? style = null,
@@ -120,6 +127,26 @@ public static class PresentationLayerProducers
         bool includeLabels = true,
         bool includeConstellations = true,
         bool includeProjectionGeometry = true)
+    {
+        var groups = FromProjectedSceneGroupsV2(scene, style, includeMarkers, includeLabels,
+            includeConstellations, includeProjectionGeometry, includeProjectionGeometry);
+        return new(
+            PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256,
+                scene.ImageTransform.OutputWidthPixels, scene.ImageTransform.OutputHeightPixels,
+                groups.StarAnnotations.Markers, ellipses: groups.ImageCircle.Ellipses,
+                textBlocks: groups.StarAnnotations.TextBlocks.Concat(groups.CardinalDirections.TextBlocks).ToArray()),
+            groups.Constellations);
+    }
+
+    /// <summary>Creates independently composable star, cardinal, circle, and constellation groups from one canonical scene.</summary>
+    public static PresentationSceneLayerPayloadsV2 FromProjectedSceneGroupsV2(
+        ProjectedSceneV1 scene,
+        PresentationAnnotationStyleV1? style = null,
+        bool includeMarkers = true,
+        bool includeLabels = true,
+        bool includeConstellations = true,
+        bool includeImageCircle = true,
+        bool includeCardinalDirections = true)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
@@ -142,15 +169,16 @@ public static class PresentationLayerProducers
         var segments = includeConstellations ? scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
             style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase))
             .Select(item => new PresentationSegmentV1(item.FromPixel, item.ToPixel, style.SegmentThickness, segmentColor)) : [];
-        var texts = includeLabels && style.MaximumLabelCharacters > 0
+        var starTexts = includeLabels && style.MaximumLabelCharacters > 0
             ? annotatedObjects.Select(item => new PresentationTextBlockV1(PresentationTextAnchor.Point,
                 new PixelPoint(item.Pixel.X + style.MarkerRadius + 2, item.Pixel.Y - 3 * style.LabelScale),
                 new ReadOnlyCollection<string>([item.DisplayName[..Math.Min(item.DisplayName.Length, style.MaximumLabelCharacters)]]),
                 style.LabelScale, 0, 0, labelColor)).ToList()
             : [];
         var ellipses = new List<PresentationEllipseV1>();
+        var cardinalTexts = new List<PresentationTextBlockV1>();
         PixelPoint? cardinalCenter = null;
-        if (includeProjectionGeometry && scene.Projection.ImageCircleRadiusPixels is { } radius)
+        if ((includeImageCircle || includeCardinalDirections) && scene.Projection.ImageCircleRadiusPixels is { } radius)
         {
             var sourceCenter = new PixelPoint(scene.Projection.PrincipalPointX, scene.Projection.PrincipalPointY);
             var sourceXBasis = new PixelPoint(scene.Projection.PrincipalPointX + radius, scene.Projection.PrincipalPointY);
@@ -158,7 +186,7 @@ public static class PresentationLayerProducers
             if (TryApply(sourceCenter, out var center))
             {
                 cardinalCenter = sourceCenter;
-                if (TryApply(sourceXBasis, out var xBasis) && TryApply(sourceYBasis, out var yBasis))
+                if (includeImageCircle && TryApply(sourceXBasis, out var xBasis) && TryApply(sourceYBasis, out var yBasis))
                 {
                     var xVector = new PixelPoint(xBasis.X - center.X, xBasis.Y - center.Y);
                     var yVector = new PixelPoint(yBasis.X - center.X, yBasis.Y - center.Y);
@@ -168,25 +196,32 @@ public static class PresentationLayerProducers
                         ellipses.Add(new(center, radiusX, radiusY, imageCircleColor));
                 }
             }
-            var projection = new ProjectionContext(scene.Projection.Model, scene.Projection.PrincipalPointX,
-                scene.Projection.PrincipalPointY, scene.Projection.FocalLengthXPixels, scene.Projection.FocalLengthYPixels,
-                scene.Projection.WidthPixels, scene.Projection.HeightPixels, scene.Projection.Aperture,
-                scene.Projection.ImageCircleRadiusPixels, scene.Projection.BoresightAltitudeDegrees,
-                scene.Projection.BoresightAzimuthDegrees, scene.Projection.RollDegrees,
-                scene.Projection.HorizontalFlip, scene.Projection.EnforceSensorBounds);
-            if (RigProjectionContextFactory.CreateAnnotationLandmarks(projection) is { } landmarks)
+            if (includeCardinalDirections)
             {
-                cardinalCenter ??= ContainsCrop(landmarks.Center) ? landmarks.Center : null;
-                if (cardinalCenter is not null)
+                var projection = new ProjectionContext(scene.Projection.Model, scene.Projection.PrincipalPointX,
+                    scene.Projection.PrincipalPointY, scene.Projection.FocalLengthXPixels, scene.Projection.FocalLengthYPixels,
+                    scene.Projection.WidthPixels, scene.Projection.HeightPixels, scene.Projection.Aperture,
+                    scene.Projection.ImageCircleRadiusPixels, scene.Projection.BoresightAltitudeDegrees,
+                    scene.Projection.BoresightAzimuthDegrees, scene.Projection.RollDegrees,
+                    scene.Projection.HorizontalFlip, scene.Projection.EnforceSensorBounds);
+                if (RigProjectionContextFactory.CreateAnnotationLandmarks(projection) is { } landmarks)
                 {
-                    AddCardinal("N", landmarks.North); AddCardinal("E", landmarks.East);
-                    AddCardinal("S", landmarks.South); AddCardinal("W", landmarks.West);
+                    cardinalCenter ??= ContainsCrop(landmarks.Center) ? landmarks.Center : null;
+                    if (cardinalCenter is not null)
+                    {
+                        AddCardinal("N", landmarks.North); AddCardinal("E", landmarks.East);
+                        AddCardinal("S", landmarks.South); AddCardinal("W", landmarks.West);
+                    }
                 }
             }
         }
         return new(
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
-                scene.ImageTransform.OutputHeightPixels, markers, ellipses: ellipses, textBlocks: texts),
+                scene.ImageTransform.OutputHeightPixels, markers, textBlocks: starTexts),
+            PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
+                scene.ImageTransform.OutputHeightPixels, textBlocks: cardinalTexts),
+            PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
+                scene.ImageTransform.OutputHeightPixels, ellipses: ellipses),
             PresentationLayerPayloadJson.Create(scene.SceneIdentitySha256, scene.ImageTransform.OutputWidthPixels,
                 scene.ImageTransform.OutputHeightPixels, segments: segments));
 
@@ -205,7 +240,7 @@ public static class PresentationLayerProducers
             else if (deltaY > 0) factor = Math.Min(factor,
                 (scene.ImageTransform.OutputHeightPixels - 4 * scale - 1 - outputCenter.Y) / deltaY);
             factor = Math.Clamp(factor, 0, 1);
-            texts.Add(new(PresentationTextAnchor.Point,
+            cardinalTexts.Add(new(PresentationTextAnchor.Point,
                 new PixelPoint(Math.Round(outputCenter.X + deltaX * factor, MidpointRounding.AwayFromZero) - 2 * scale,
                     Math.Round(outputCenter.Y + deltaY * factor, MidpointRounding.AwayFromZero) - 3 * scale),
                 new ReadOnlyCollection<string>([label]), scale, 0, 0, cardinalColor));
