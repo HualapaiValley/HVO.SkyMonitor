@@ -19,7 +19,7 @@ Repository helpers also load the ignored root `.env` and optional ignored
 `.devcontainer/devcontainer.local.env`. Root `.env` names such as
 `MINIO_ACCESS_KEY` are a Compose/script contract; Compose and
 `./scripts/with-env` translate them to .NET names such as
-`Minio__AccessKey`.
+`ObjectStorage__AccessKey`.
 
 `CAMERA_AGENT_LOGIC_BASEURL` is the container-internal LogicHost URL.
 `CAMERA_AGENT_PUBLIC_LOGIC_BASEURL` is the agent-reachable URL embedded by a
@@ -94,7 +94,7 @@ project for LogicHost keys.
 | `ConnectionStrings:skymonitordb-migrations` | LogicHost controlled database-initialization principal | Deployment secret store; expose only to the one-shot initialization command |
 | `REDIS_PASSWORD` / `Redis:Configuration` | LogicHost prefixed distributed cache | Ignored `.env`; direct nested environment override |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | MinIO administration and service-account provisioning only | Ignored `.env` available only to operator scripts |
-| `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` / `Minio:AccessKey`, `Minio:SecretKey` | LogicHost access to the two approved buckets | Ignored `.env`; direct nested environment override |
+| `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` / `ObjectStorage:AccessKey`, `ObjectStorage:SecretKey` | LogicHost access to the two approved buckets | Ignored `.env`; direct nested environment override |
 | `Smtp:Username`, `Smtp:Password` | Authenticated SMTP where required | User Secrets or environment variables |
 | `DatabaseSeed:Users:*:Password` | Optional configured LogicHost seed users | User Secrets or environment variables |
 | `DatabaseSeed:ApiKeys:*:RawKey` | Optional configured integration keys | User Secrets or environment variables |

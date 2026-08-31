@@ -26,7 +26,9 @@ using System.Diagnostics.CodeAnalysis;
 [assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Diagnostics request/response types are serialized over the public API.", Scope = "namespaceanddescendants", Target = "HVO.SkyMonitor.LogicHost.Models.Diagnostics")]
 
 // Configuration option types participate in DI and controller constructors
-[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Options are injected into public controllers via IOptions<T> and must remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Configuration.MinioOptions")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Options are injected into public controllers via IOptions<T> and must remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Configuration.CentralObjectStorageOptions")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "The public object-storage options expose this configuration enum.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Configuration.ObjectStorageAddressingStyle")]
+[assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "The public object-storage options expose this configuration enum.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Configuration.ObjectStorageCredentialMode")]
 [assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Options are injected into public controllers via IOptions<T> and must remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Configuration.RedisOptions")]
 [assembly: SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Options are injected into public controllers via IOptions<T> and must remain public.", Scope = "type", Target = "HVO.SkyMonitor.LogicHost.Configuration.SmtpOptions")]
 

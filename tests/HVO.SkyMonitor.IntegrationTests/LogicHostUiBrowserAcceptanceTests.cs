@@ -502,7 +502,7 @@ public sealed class LogicHostUiBrowserAcceptanceTests
             "-155.412345",
             TestUsers.Operator.Email,
             IntegrationTestFixture.MinioSecretKey,
-            "minio://",
+            "s3://",
             "ConnectionStrings:",
             "/tmp/"
         })

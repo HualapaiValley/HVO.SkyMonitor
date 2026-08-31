@@ -27,7 +27,7 @@ internal sealed class CentralTransientDerivativeJob
     public ICollection<CentralTransientDerivativeOutputIntent> OutputIntents { get; } = [];
 }
 
-/// <summary>Mutable publication intent that fences MinIO recovery before immutable evidence is committed.</summary>
+/// <summary>Mutable publication intent that fences object recovery before immutable evidence is committed.</summary>
 internal sealed class CentralTransientDerivativeOutputIntent
 {
     public Guid Id { get; init; } = Guid.NewGuid();

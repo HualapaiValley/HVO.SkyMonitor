@@ -131,7 +131,7 @@ public sealed class CentralClearReferenceServiceTests
             MediaType = "application/x-hvo-linear-frame",
             ByteLength = 8,
             ChecksumSha256 = Hash("payload"),
-            StorageReference = "minio://skymonitor-artifacts/reference",
+            StorageReference = "s3://skymonitor-artifacts/reference",
             ReceivedAtUtc = now,
             IdempotencyKey = Hash("idempotency"),
             SourceId = "camera-capture",

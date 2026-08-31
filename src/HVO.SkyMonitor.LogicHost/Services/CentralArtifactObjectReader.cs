@@ -1,8 +1,5 @@
 using System.Security.Cryptography;
 using HVO.SkyMonitor.LogicHost.Data;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -23,7 +20,7 @@ internal interface ICentralArtifactObjectReader
 }
 
 internal sealed partial class CentralArtifactObjectReader(
-    IMinioClient minio,
+    IObjectStore objectStore,
     CentralArtifactRetrievalTelemetry telemetry,
     TimeProvider timeProvider,
     ILogger<CentralArtifactObjectReader> logger,
@@ -47,43 +44,38 @@ internal sealed partial class CentralArtifactObjectReader(
         long bytesRead = 0;
         try
         {
-            var stat = await minio.StatObjectAsync(new StatObjectArgs().WithBucket(Bucket).WithObject(objectKey), cancellationToken)
-                .ConfigureAwait(false);
-            if (stat.Size != artifact.ByteLength)
+            var stat = await objectStore.StatAsync(Bucket, objectKey, cancellationToken).ConfigureAwait(false);
+            if (stat.ContentLength != artifact.ByteLength)
             {
-                throw new CentralArtifactIntegrityException("object.length-mismatch", stat.ETag);
+                throw new CentralArtifactIntegrityException("object.length-mismatch", stat.Generation);
             }
 
             string? checksum = null;
-            await minio.GetObjectAsync(new GetObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(objectKey)
-                .WithMatchETag(stat.ETag)
-                .WithCallbackStream(async (stream, token) =>
+            await objectStore.ReadAsync(Bucket, objectKey, stat.Generation, async (stream, token) =>
+            {
+                using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var buffer = new byte[81920];
+                int read;
+                while ((read = await stream.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
                 {
-                    using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-                    var buffer = new byte[81920];
-                    int read;
-                    while ((read = await stream.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
-                    {
-                        hash.AppendData(buffer, 0, read);
-                        bytesRead += read;
-                    }
-                    checksum = Convert.ToHexString(hash.GetHashAndReset());
-                }), cancellationToken).ConfigureAwait(false);
+                    hash.AppendData(buffer, 0, read);
+                    bytesRead += read;
+                }
+                checksum = Convert.ToHexString(hash.GetHashAndReset());
+            }, cancellationToken).ConfigureAwait(false);
             if (bytesRead != artifact.ByteLength)
             {
-                throw new CentralArtifactIntegrityException("object.length-mismatch", stat.ETag);
+                throw new CentralArtifactIntegrityException("object.length-mismatch", stat.Generation);
             }
             if (!string.Equals(checksum, artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
             {
-                throw new CentralArtifactIntegrityException("object.checksum-mismatch", stat.ETag);
+                throw new CentralArtifactIntegrityException("object.checksum-mismatch", stat.Generation);
             }
             telemetry.RecordVerification("matched");
             telemetry.RecordObjectRead("verify", "completed", bytesRead, timeProvider.GetElapsedTime(started));
-            return new CentralArtifactObjectSnapshot(objectKey, stat.ETag, artifact.ByteLength);
+            return new CentralArtifactObjectSnapshot(objectKey, stat.Generation, artifact.ByteLength);
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             telemetry.RecordObjectRead("verify", "missing", 0, timeProvider.GetElapsedTime(started));
             throw new CentralArtifactMissingException(exception);
@@ -118,12 +110,11 @@ internal sealed partial class CentralArtifactObjectReader(
         }
         try
         {
-            var stat = await minio.StatObjectAsync(new StatObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(artifact.StorageReference[BucketPrefix.Length..]), cancellationToken).ConfigureAwait(false);
-            return string.Equals(stat.ETag, storageETag, StringComparison.Ordinal);
+            var stat = await objectStore.StatAsync(
+                Bucket, artifact.StorageReference[BucketPrefix.Length..], cancellationToken).ConfigureAwait(false);
+            return string.Equals(stat.Generation, storageETag, StringComparison.Ordinal);
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             return false;
         }
@@ -147,18 +138,14 @@ internal sealed partial class CentralArtifactObjectReader(
         ArgumentNullException.ThrowIfNull(destination);
         var started = timeProvider.GetTimestamp();
         long objectBytesRead = 0;
-        var args = new GetObjectArgs()
-            .WithBucket(Bucket)
-            .WithObject(snapshot.ObjectKey)
-            .WithMatchETag(snapshot.StorageETag);
         try
         {
-            await minio.GetObjectAsync(args.WithCallbackStream(async (stream, token) =>
+            await objectStore.ReadAsync(Bucket, snapshot.ObjectKey, snapshot.StorageETag, async (stream, token) =>
             {
                 objectBytesRead = range is null
                     ? await CopyFullAsync(stream, destination, token).ConfigureAwait(false)
                     : await CopyRangeAsync(stream, destination, range, token).ConfigureAwait(false);
-            }), cancellationToken).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
             telemetry.RecordObjectRead("serve", "completed", objectBytesRead, timeProvider.GetElapsedTime(started));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -233,7 +220,7 @@ internal sealed partial class CentralArtifactObjectReader(
     }
 
     private static bool IsStorageFailure(Exception exception)
-        => exception is MinioException or HttpRequestException or IOException or TimeoutException
+        => exception is ObjectStoreException or HttpRequestException or IOException or TimeoutException
             or OperationCanceledException;
 }
 

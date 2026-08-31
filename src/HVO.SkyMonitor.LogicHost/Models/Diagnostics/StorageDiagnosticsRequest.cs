@@ -1,7 +1,7 @@
 namespace HVO.SkyMonitor.LogicHost.Models.Diagnostics;
 
 /// <summary>
-/// Request payload for MinIO diagnostics.
+/// Request payload for object-storage diagnostics.
 /// </summary>
 public sealed class StorageDiagnosticsRequest
 {

@@ -376,6 +376,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(collector.Http, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
 
     private async Task<IReadOnlyList<SeededRetentionArtifact>> SeedArtifactsAsync(
@@ -408,7 +409,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
                 MediaType = "application/octet-stream",
                 ByteLength = payload.LongLength,
                 ChecksumSha256 = checksum,
-                StorageReference = $"minio://{Bucket}/{key}",
+                StorageReference = $"s3://{Bucket}/{key}",
                 ReceivedAtUtc = DateTimeOffset.UnixEpoch,
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Available,
@@ -528,7 +529,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
                     .WithBucket(Bucket).WithObject(artifact.ObjectKey)).ConfigureAwait(false);
                 Assert.Fail("The released object still exists.");
             }
-            catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+            catch (MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception))
             {
             }
         }
@@ -1483,7 +1484,7 @@ public sealed partial class CentralArtifactRetentionPerformanceTests
         var json = Encoding.UTF8.GetString(evidenceBytes);
         var keyValues = keys.ToArray();
         var forbidden = keyValues
-            .Concat(keyValues.Select(key => $"minio://{Bucket}/{key}"))
+            .Concat(keyValues.Select(key => $"s3://{Bucket}/{key}"))
             .Concat(entityIds.SelectMany(id => new[] { id.ToString("D"), id.ToString("N") }))
             .Concat([
                 IntegrationTestFixture.MinioAccessKey,

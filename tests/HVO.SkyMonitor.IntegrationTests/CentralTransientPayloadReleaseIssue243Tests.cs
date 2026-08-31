@@ -76,7 +76,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             }
             foreach (var artifact in seeded.Artifacts)
             {
-                var objectKey = artifact.StorageReference["minio://skymonitor-artifacts/".Length..];
+                var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
                 var payload = fixture.Payloads[artifact.ArtifactId];
                 await using var stream = new MemoryStream(payload, writable: false);
                 await fixtureMinio.PutObjectAsync(new PutObjectArgs()
@@ -103,7 +103,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var service = new CentralTransientPayloadReleaseService(
                 subjectDb,
                 new CentralArtifactRetentionReferences(subjectDb),
-                minio,
+                ObjectStoreTestClient.Create(minio),
                 Options.Create(new CentralTransientPayloadReleaseOptions
                 {
                     Enabled = true,
@@ -151,7 +151,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 var recovery = new CentralTransientPayloadReleaseService(
                     recoveryDb,
                     new CentralArtifactRetentionReferences(recoveryDb),
-                    fixtureMinio,
+                    ObjectStoreTestClient.Create(fixtureMinio),
                     Options.Create(new CentralTransientPayloadReleaseOptions
                     {
                         Enabled = true,

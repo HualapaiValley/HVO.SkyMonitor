@@ -2612,7 +2612,7 @@ public sealed partial class DeploymentLocationAuthorityIssue248BaselineTests
                     EffectiveFromUtc = deployment.EffectiveFromUtc
                 };
                 artifacts[index] = Id($"{prefix}:artifact:{index}");
-                var storage = $"minio://skymonitor-artifacts/issue-248/{count}/{index:D5}";
+                var storage = $"s3://skymonitor-artifacts/issue-248/{count}/{index:D5}";
                 var idempotency = $"issue-248-{count}-{index:D5}";
                 frame.Artifacts.Add(new CentralArtifact
                 {

@@ -22,7 +22,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
     [
         new(IntegrationDependency.SqlServer, "database"),
         new(IntegrationDependency.Redis, "redis"),
-        new(IntegrationDependency.Minio, "minio"),
+        new(IntegrationDependency.Minio, "s3-object-store"),
         new(IntegrationDependency.Smtp, "smtp")
     ];
 
@@ -272,7 +272,7 @@ public sealed class LogicHostDependencyOutageAcceptanceTests
                     ExpirationSeconds = 60
                 }, timeout.Token).ConfigureAwait(false),
             IntegrationDependency.Minio => await client.PostAsJsonAsync(
-                new Uri("/api/v1.0/diagnostics/minio", UriKind.Relative),
+                new Uri("/api/v1.0/diagnostics/object-storage", UriKind.Relative),
                 new StorageDiagnosticsRequest
                 {
                     ObjectName = "diagnostics/i107-outage.txt",

@@ -27,7 +27,7 @@ Do not introduce guidance here that conflicts with those sources.
 - Common owns reusable ASP.NET security, identity, API, middleware, and
   observability infrastructure, not domain workflows.
 - CameraAgent.Common owns edge orchestration and local SQLite/file durability.
-- LogicHost owns central SQL Server/Redis/MinIO persistence, workers, and UI.
+- LogicHost owns central SQL Server/Redis/provider-neutral S3 persistence, workers, and UI.
 - Production projects must not reference TestSupport.
 
 ## Implementation
@@ -42,7 +42,7 @@ Do not introduce guidance here that conflicts with those sources.
   compatibility.
 - Use deterministic tests for domain behavior. Integration tests use the real
   disposable dependency where the boundary matters; do not replace SQL,
-  SQLite, MinIO, filesystem, or HTTP behavior with mocks and call it integration
+  SQLite, configured S3, filesystem, or HTTP behavior with mocks and call it integration
   coverage.
 - Do not suppress warnings, weaken tests, hide package advisories, or recategorize
   tests merely to make a gate pass.

@@ -145,8 +145,8 @@ deploy_validate_inventory() {
       (.deployment as $deployment |
         any($deployment.secretMappings[]; .reference == $deployment.services.sql.runtimeConnectionReference and .key == "ConnectionStrings__skymonitordb") and
         any($deployment.secretMappings[]; .reference == $deployment.services.sql.initializerConnectionReference and .key == "ConnectionStrings__skymonitordb-migrations") and
-        any($deployment.secretMappings[]; .reference == $deployment.services.minio.accessKeyReference and .key == "Minio__AccessKey") and
-        any($deployment.secretMappings[]; .reference == $deployment.services.minio.secretKeyReference and .key == "Minio__SecretKey") and
+        any($deployment.secretMappings[]; .reference == $deployment.services.minio.accessKeyReference and .key == "ObjectStorage__AccessKey") and
+        any($deployment.secretMappings[]; .reference == $deployment.services.minio.secretKeyReference and .key == "ObjectStorage__SecretKey") and
         ($deployment.services.smtp.usernameReference == null or any($deployment.secretMappings[];
           .reference == $deployment.services.smtp.usernameReference and .key == "Smtp__Username")) and
         ($deployment.services.smtp.passwordReference == null or any($deployment.secretMappings[];

@@ -1,0 +1,43 @@
+{
+  "schema": "hvo-runtime-signal-manifest-v1",
+  "issue": 504,
+  "component": "LogicHost provider-neutral object storage",
+  "meter": "HVO.SkyMonitor.LogicHost.ObjectStorage",
+  "activitySource": "HVO.SkyMonitor.LogicHost.ObjectStorage",
+  "logs": [
+    { "eventId": 2180, "level": "Information", "fields": ["EndpointMode", "CredentialMode", "AddressingStyle", "UseTls"] },
+    { "eventId": 2181, "level": "Warning", "fields": ["Operation", "Reason", "Recovery"] },
+    { "eventId": 2182, "level": "Error", "fields": ["Operation", "Outcome", "Retryable", "Exception"] },
+    { "eventId": 2183, "level": "Warning", "fields": ["Operation", "Reason", "Recovery"] },
+    { "eventId": 2184, "level": "Information", "fields": ["Previous", "Current", "Reason"] }
+  ],
+  "metrics": [
+    { "name": "skymonitor.central.object_storage.operations", "unit": "{operation}", "labels": { "operation": ["bucket-exists", "put", "stat", "get", "copy", "delete", "list"], "outcome": ["success", "missing-object", "missing-bucket", "authentication", "authorization", "precondition", "unsupported", "throttled", "timeout", "canceled", "transient", "ambiguous"], "bucket_role": ["artifact", "diagnostics"] } },
+    { "name": "skymonitor.central.object_storage.duration", "unit": "ms", "labels": { "operation": ["bucket-exists", "put", "stat", "get", "copy", "delete", "list"], "outcome": ["success", "missing-object", "missing-bucket", "authentication", "authorization", "precondition", "unsupported", "throttled", "timeout", "canceled", "transient", "ambiguous"], "bucket_role": ["artifact", "diagnostics"] } },
+    { "name": "skymonitor.central.object_storage.bytes", "unit": "By", "labels": { "operation": ["put", "get"], "direction": ["read", "write"], "bucket_role": ["artifact", "diagnostics"] } },
+    { "name": "skymonitor.central.object_storage.retries", "unit": "{retry}", "labels": { "operation": ["bucket-exists", "put", "stat", "get", "copy", "delete", "list"], "reason": ["caller-retry", "reconcile"], "bucket_role": ["artifact", "diagnostics"] } },
+    { "name": "skymonitor.central.object_storage.active_streams", "unit": "{stream}", "labels": { "direction": ["read", "write"] } }
+  ],
+  "spans": [
+    { "name": "object-store.request", "kind": "Client", "tags": ["object_store.operation", "object_store.outcome", "object_store.bucket_role", "object_store.addressing_style"] }
+  ],
+  "health": {
+    "check": "s3-object-store",
+    "healthy": ["both-required-buckets-authenticated"],
+    "degraded": ["throttled", "timeout", "transient"],
+    "unhealthy": ["invalid-configuration", "authentication", "authorization", "missing-bucket", "unsupported", "persistent-outage"],
+    "fields": ["Status", "Reason"]
+  },
+  "privacy": {
+    "forbidden": ["credential", "session token", "endpoint URL", "bucket name", "object key", "generation token", "payload", "hash", "storage path", "user identity", "device identity"],
+    "identifiers": "Bucket role, operation, outcome, addressing style, direction, and bounded reason are the only object-storage metric or span dimensions."
+  },
+  "collection": {
+    "focusedCommand": "dotnet test tests/HVO.SkyMonitor.Tests/HVO.SkyMonitor.Tests.csproj --no-build --configuration Release --filter FullyQualifiedName~S3ObjectStore",
+    "conformanceCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~S3ObjectStoreConformanceTests",
+    "workflowCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter \"FullyQualifiedName~ArtifactIngestTests|FullyQualifiedName~ArtifactRetrievalTests|FullyQualifiedName~CentralRecoveryIntegrationTests|FullyQualifiedName~CentralArtifactRetentionIntegrationTests|FullyQualifiedName~CentralTransientPayloadReleaseIssue250Tests\"",
+    "performanceCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~S3ObjectStorePerformanceTests",
+    "retainedArtifactPath": "TestResults/issue-504/<revision>/<run-id>/",
+    "uiBoundary": "N/A: issue 504 changes an internal LogicHost infrastructure boundary and diagnostics route only."
+  }
+}

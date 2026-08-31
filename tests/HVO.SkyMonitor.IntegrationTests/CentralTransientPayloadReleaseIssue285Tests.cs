@@ -433,7 +433,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         return new(
             db,
             references,
-            CreateIssue250Minio(handler),
+            ObjectStoreTestClient.Create(CreateIssue250Minio(handler)),
             Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
             TimeProvider.System,
             telemetry);

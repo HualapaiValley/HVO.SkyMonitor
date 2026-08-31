@@ -17,12 +17,15 @@ services:
       ConnectionStrings__skymonitordb: "Server=${SQLSERVER_HOST:?SQLSERVER_HOST must be set},${SQLSERVER_PORT:?SQLSERVER_PORT must be set};Database=${SQLSERVER_DATABASE:?SQLSERVER_DATABASE must be set};User Id=${SQLSERVER_USER:?SQLSERVER_USER must be set};Password=${SQLSERVER_PASSWORD:?SQLSERVER_PASSWORD must be set};TrustServerCertificate=True"
       Redis__Configuration: "${REDIS_HOST:?REDIS_HOST must be set}:${REDIS_PORT:?REDIS_PORT must be set},user=${REDIS_USER:-skymonitor-app},password=${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
       Redis__InstanceName: "skymonitor:"
-      Minio__Endpoint: "${MINIO_HOST:?MINIO_HOST must be set}"
-      Minio__Port: ${MINIO_API_PORT:?MINIO_API_PORT must be set}
-      Minio__AccessKey: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY must be set}
-      Minio__SecretKey: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set}
-      Minio__DefaultBucket: skymonitor-diagnostics
-      Minio__UseSsl: "false"
+      ObjectStorage__ServiceEndpoint: "${MINIO_HOST:?MINIO_HOST must be set}:${MINIO_API_PORT:?MINIO_API_PORT must be set}"
+      ObjectStorage__Region: us-east-1
+      ObjectStorage__UseTls: "false"
+      ObjectStorage__AddressingStyle: Path
+      ObjectStorage__CredentialMode: Static
+      ObjectStorage__AccessKey: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY must be set}
+      ObjectStorage__SecretKey: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set}
+      ObjectStorage__ArtifactBucket: skymonitor-artifacts
+      ObjectStorage__DiagnosticsBucket: skymonitor-diagnostics
       Smtp__Host: ${SMTP_HOST:?SMTP_HOST must be set}
       Smtp__Port: ${SMTP_PORT:?SMTP_PORT must be set}
       Smtp__From: ${SMTP_FROM:-no-reply@skymonitor.local}

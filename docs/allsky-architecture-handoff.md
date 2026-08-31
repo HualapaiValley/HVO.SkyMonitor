@@ -56,7 +56,7 @@ SQLite/file state is the source of truth.
 ### LogicHost
 
 LogicHost is the central system. It accepts many CameraAgents across sites. It
-owns registration/profile history, central ingest, SQL/Redis/MinIO-backed state,
+owns registration/profile history, central ingest, SQL/Redis/S3-backed state,
 background workers, central processing, durable history, retrieval APIs, and
 operator UI.
 

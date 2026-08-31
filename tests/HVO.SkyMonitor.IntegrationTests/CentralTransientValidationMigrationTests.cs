@@ -554,7 +554,7 @@ public sealed class CentralTransientValidationMigrationTests
             MediaType = "application/octet-stream",
             ByteLength = 2,
             ChecksumSha256 = ShaA,
-            StorageReference = $"minio://skymonitor-artifacts/{Guid.NewGuid():N}.bin",
+            StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}.bin",
             ReceivedAtUtc = now,
             IdempotencyKey = Guid.NewGuid().ToString("N").PadRight(64, '0'),
             Variant = "raw",

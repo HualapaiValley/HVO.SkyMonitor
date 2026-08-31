@@ -109,7 +109,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var clock = new MutableIssue250TimeProvider(seed.CreatedUtc);
             replacementKey = $"issue-250/{Guid.NewGuid():N}/replacement.bin";
             await PutIssue250ObjectAsync(minio, replacementKey, Issue250ReplacementPayload).ConfigureAwait(false);
-            var replacementReference = "minio://skymonitor-artifacts/" + replacementKey;
+            var replacementReference = "s3://skymonitor-artifacts/" + replacementKey;
             var mutated = false;
             var fault = new Issue250StageFaultInjector(async (stage, _, _, token) =>
             {
@@ -455,7 +455,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var service = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
-                minio,
+                ObjectStoreTestClient.Create(minio),
                 Issue250ReleaseOptions(maximumRetryCount: 1),
                 new MutableIssue250TimeProvider(seed.CreatedUtc));
 
@@ -890,7 +890,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         byte[] itemRowVersion = [1, 2, 3, 4, 5, 6, 7, 8];
         byte[] targetRowVersion = [8, 7, 6, 5, 4, 3, 2, 1];
         const long generation = 7;
-        const string storageReference = "minio://skymonitor-artifacts/issue-250/comparison.bin";
+        const string storageReference = "s3://skymonitor-artifacts/issue-250/comparison.bin";
         var expected = new CentralTransientPayloadReservationExpected(
             token, requestedAt, itemRowVersion, targetRowVersion, generation, storageReference);
         var current = new CentralTransientPayloadReservationCurrent(
@@ -919,7 +919,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             ("reserved-generation", current with { ReservedTargetGeneration = generation + 1 }),
             ("reserved-storage-reference", current with
             {
-                ReservedStorageReference = "minio://skymonitor-artifacts/issue-250/replacement.bin"
+                ReservedStorageReference = "s3://skymonitor-artifacts/issue-250/replacement.bin"
             }),
             ("target-rowversion", current with
             {
@@ -928,7 +928,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             ("generation", current with { CurrentTargetGeneration = generation + 1 }),
             ("storage-reference", current with
             {
-                CurrentStorageReference = "minio://skymonitor-artifacts/issue-250/replacement.bin"
+                CurrentStorageReference = "s3://skymonitor-artifacts/issue-250/replacement.bin"
             })
         };
         foreach (var mutation in mutations)
@@ -1015,7 +1015,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                             replacementKey = $"issue-250/{Guid.NewGuid():N}/cas-replacement.bin";
                             await PutIssue250ObjectAsync(rawMinio, replacementKey, Issue250ReplacementPayload)
                                 .ConfigureAwait(false);
-                            var replacementReference = "minio://skymonitor-artifacts/" + replacementKey;
+                            var replacementReference = "s3://skymonitor-artifacts/" + replacementKey;
                             if (scenario.Derivative)
                             {
                                 _ = await mutationDb.CentralTransientDerivativeOutputIntents
@@ -1151,7 +1151,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
         => new(
             db,
             references ?? new CentralArtifactRetentionReferences(db),
-            minio,
+            ObjectStoreTestClient.Create(minio),
             Issue250ReleaseOptions(),
             clock,
             faultInjector: fault);
@@ -1189,7 +1189,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             .Select(item => new Issue250ReleaseTarget(
                 item.Id,
                 item.StorageReference,
-                item.StorageReference["minio://skymonitor-artifacts/".Length..],
+                item.StorageReference["s3://skymonitor-artifacts/".Length..],
                 item.RecoveryGeneration,
                 fixture.Payloads[item.ArtifactId]))
             .ToArray();
@@ -1354,7 +1354,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             ByteLength = payload.Length,
             ChecksumSha256 = Convert.ToHexString(SHA256.HashData(payload)),
             OutputIdentitySha256 = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
-            StorageReference = "minio://skymonitor-artifacts/" + objectKey,
+            StorageReference = "s3://skymonitor-artifacts/" + objectKey,
             StorageETag = "issue-250",
             ObjectState = CentralArtifactObjectState.Available,
             CreatedAtUtc = now,

@@ -308,7 +308,7 @@ public sealed class ArtifactIngestTests
         var corruptSource = await evidenceDb.CentralArtifacts.SingleAsync(item => item.Id == artifact.Id)
             .ConfigureAwait(false);
         var originalChecksum = corruptSource.ChecksumSha256;
-        var sourceObjectKey = corruptSource.StorageReference["minio://skymonitor-artifacts/".Length..];
+        var sourceObjectKey = corruptSource.StorageReference["s3://skymonitor-artifacts/".Length..];
         var minio = evidenceScope.ServiceProvider.GetRequiredService<IMinioClient>();
         var corruptPayload = payload.Reverse().ToArray();
         await using (var corruptStream = new MemoryStream(corruptPayload))
@@ -521,7 +521,7 @@ public sealed class ArtifactIngestTests
 
         var corruptBytes = layerBytes.ToArray();
         corruptBytes[^1] ^= 1;
-        var objectKey = artifact.StorageReference["minio://skymonitor-artifacts/".Length..];
+        var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
         await using (var corruptStream = new MemoryStream(corruptBytes, writable: false))
         {
             await assertionScope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
@@ -613,7 +613,7 @@ public sealed class ArtifactIngestTests
                 MediaType = CentralPresentationBaseDecoder.PackedMediaType,
                 ByteLength = baseBytes.LongLength,
                 ChecksumSha256 = baseChecksum,
-                StorageReference = $"minio://skymonitor-artifacts/derivatives/presentation/{baseArtifactId:D}.bin",
+                StorageReference = $"s3://skymonitor-artifacts/derivatives/presentation/{baseArtifactId:D}.bin",
                 ReceivedAtUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
                 IdempotencyKey = new string('3', 64),
                 SourceId = "integration-presentation",
@@ -1641,6 +1641,7 @@ public sealed class ArtifactIngestTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(copyFault, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
         using (var faultClient = faultFactory.CreateClient())
         {
@@ -2672,6 +2673,7 @@ public sealed class ArtifactIngestTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(copyFault, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
         Guid jobId;
         await using (var faultScope = faultFactory.Services.CreateAsyncScope())
@@ -2683,8 +2685,10 @@ public sealed class ArtifactIngestTests
             lease!.RecipeName.Should().Be(BuiltInProcessingRecipes.ImageQuality);
             jobId = lease.JobId;
             var executor = faultScope.ServiceProvider.GetRequiredService<ICentralDerivativeJobExecutor>();
-            await FluentActions.Awaiting(() => executor.ExecuteAsync(lease, CancellationToken.None))
-                .Should().ThrowAsync<MinioException>().ConfigureAwait(false);
+            var failure = await FluentActions.Awaiting(() => executor.ExecuteAsync(lease, CancellationToken.None))
+                .Should().ThrowAsync<ObjectStoreException>().ConfigureAwait(false);
+            failure.Which.Kind.Should().Be(ObjectStoreFailureKind.Ambiguous);
+            failure.Which.Operation.Should().Be("copy");
         }
 
         Guid outputArtifactId;
@@ -2862,7 +2866,7 @@ public sealed class ArtifactIngestTests
         artifact.ReconstructionState.Should().Be(CentralReconstructionState.PendingReference);
         artifact.StateReasonCode.Should().Be("profile.rig-not-found");
         var storageReference = artifact.StorageReference;
-        var objectKey = storageReference["minio://skymonitor-artifacts/".Length..];
+        var objectKey = storageReference["s3://skymonitor-artifacts/".Length..];
         var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
         await minio.RemoveObjectAsync(new RemoveObjectArgs()
             .WithBucket("skymonitor-artifacts").WithObject(objectKey)).ConfigureAwait(false);
@@ -2947,6 +2951,7 @@ public sealed class ArtifactIngestTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(minioCounter, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
         using var statusClient = statusFactory.CreateClient();
         statusClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -3005,7 +3010,7 @@ public sealed class ArtifactIngestTests
                 item.Frame!.RegistrationId == registrationId
                 && item.ArtifactId == manifest.Descriptor.Artifact.ArtifactId).ConfigureAwait(false);
             artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
-            var objectKey = artifact.StorageReference["minio://skymonitor-artifacts/".Length..];
+            var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
             var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
             if (failure != "missing")
             {
@@ -3034,6 +3039,7 @@ public sealed class ArtifactIngestTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(minioCounter, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
         using var statusClient = statusFactory.CreateClient();
         statusClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -3041,8 +3047,12 @@ public sealed class ArtifactIngestTests
         using var status = await PostStatusAsync(statusClient, manifest).ConfigureAwait(false);
 
         status.StatusCode.Should().Be(HttpStatusCode.NotFound);
-        minioCounter.GetRequests.Should().Be(failure == "checksum" ? 1 : 0,
-            "missing and truncated objects fail prerequisite stat checks, while same-length corruption is streamed once");
+        minioCounter.GetRequests.Should().Be(failure switch
+        {
+            "missing" => 2,
+            "checksum" => 1,
+            _ => 0
+        }, "missing objects require authenticated bucket disambiguation, truncated objects fail stat, and same-length corruption is streamed once");
         await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
         var assertionDb = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var quarantined = await assertionDb.CentralArtifacts.SingleAsync(item =>
@@ -3145,6 +3155,7 @@ public sealed class ArtifactIngestTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(failureHandler, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
         using var failureClient = failureFactory.CreateClient();
         failureClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -3289,7 +3300,7 @@ public sealed class ArtifactIngestTests
                     RetentionDeletionToken = operationToken,
                     RetentionDeletionRequestedAtUtc = now
                 };
-                var objectKey = storageReference["minio://skymonitor-artifacts/".Length..];
+                var objectKey = storageReference["s3://skymonitor-artifacts/".Length..];
                 var disposition = new CentralObjectRecoveryDisposition
                 {
                     SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
@@ -3369,7 +3380,7 @@ public sealed class ArtifactIngestTests
                 .SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
             storageReference = ArtifactIngestService.CreateCanonicalStorageReference(
                 registration.DevicePublicId!.Value, ingestManifest);
-            objectKey = storageReference["minio://skymonitor-artifacts/".Length..];
+            objectKey = storageReference["s3://skymonitor-artifacts/".Length..];
             var now = DateTimeOffset.UtcNow;
             var token = Guid.NewGuid();
             var frame = new CentralFrame
@@ -4241,7 +4252,7 @@ public sealed class ArtifactIngestTests
             var registration = await db.DeviceRegistrations.SingleAsync(item => item.Id == registrationId).ConfigureAwait(false);
             var sourceManifest = CreateManifestV2(deviceId, rig, payload, 27, artifactId: sourceArtifactId);
             var sourceFrame = CreateTestFrame(registration, sourceManifest.Descriptor.Capture.CaptureId);
-            var sourceArtifact = CreateTestArtifact(sourceFrame, sourceManifest, "minio://migration/source-arrived");
+            var sourceArtifact = CreateTestArtifact(sourceFrame, sourceManifest, "s3://migration/source-arrived");
             sourceArtifact.ReconstructionState = CentralReconstructionState.Complete;
             sourceArtifact.StateReasonCode = null;
             sourceRowId = sourceArtifact.Id;
@@ -4284,7 +4295,7 @@ public sealed class ArtifactIngestTests
         {
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var artifact = await db.CentralArtifacts.SingleAsync(item => item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
-            var objectKey = artifact.StorageReference["minio://skymonitor-artifacts/".Length..];
+            var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
             var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
             await minio.RemoveObjectAsync(new RemoveObjectArgs()
                 .WithBucket("skymonitor-artifacts").WithObject(objectKey)).ConfigureAwait(false);
@@ -4382,7 +4393,7 @@ public sealed class ArtifactIngestTests
                 _ = await minio.StatObjectAsync(new StatObjectArgs().WithBucket(bucket).WithObject(objectKey))
                     .ConfigureAwait(false);
             }
-            catch (Minio.Exceptions.MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+            catch (Minio.Exceptions.MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception))
             {
                 removed = true;
                 break;
@@ -4734,7 +4745,7 @@ public sealed class ArtifactIngestTests
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var artifact = await db.CentralArtifacts.SingleAsync(item => item.Frame!.RegistrationId == registrationId).ConfigureAwait(false);
-        var objectKey = artifact.StorageReference["minio://skymonitor-artifacts/".Length..];
+        var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
         var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
         await minio.RemoveObjectAsync(new RemoveObjectArgs()
             .WithBucket("skymonitor-artifacts")
@@ -4747,7 +4758,7 @@ public sealed class ArtifactIngestTests
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var artifact = await db.CentralArtifacts.SingleAsync(item =>
             item.Frame!.RegistrationId == registrationId && item.ArtifactId == artifactId).ConfigureAwait(false);
-        var objectKey = artifact.StorageReference["minio://skymonitor-artifacts/".Length..];
+        var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
         var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
         await minio.RemoveObjectAsync(new RemoveObjectArgs()
             .WithBucket("skymonitor-artifacts")
@@ -4767,7 +4778,7 @@ public sealed class ArtifactIngestTests
         artifact.ObjectState.Should().Be(CentralArtifactObjectState.Available);
         artifact.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
         artifact.IngestIdentities.Should().HaveCount(2);
-        var objectKey = artifact.StorageReference["minio://skymonitor-artifacts/".Length..];
+        var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
         var storedPayload = new MemoryStream();
         var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
         await minio.GetObjectAsync(new GetObjectArgs()

@@ -199,7 +199,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                     var publisherDb = publisherScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                     var blockedWriter = new CentralTransientDerivativeOutputWriter(
                         publisherDb,
-                        publisherScope.ServiceProvider.GetRequiredService<IMinioClient>(),
+                        publisherScope.ServiceProvider.GetRequiredService<IObjectStore>(),
                         new CentralTransientEventVersionAppender(publisherDb),
                         TimeProvider.System);
                     var blockedPublication = blockedWriter.PersistAsync(
@@ -238,7 +238,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                             RetentionDeletionToken = operationToken,
                             RetentionDeletionRequestedAtUtc = now
                         };
-                        var objectKey = blockedReference[$"minio://{Bucket}/".Length..];
+                        var objectKey = blockedReference[$"s3://{Bucket}/".Length..];
                         var disposition = new CentralObjectRecoveryDisposition
                         {
                             SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
@@ -295,7 +295,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             {
                 var writer = new CentralTransientDerivativeOutputWriter(
                     lockLossDb,
-                    AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>(),
+                    AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>(),
                     new CentralTransientEventVersionAppender(lockLossDb),
                     TimeProvider.System);
                 var stalePublication = writer.PersistAsync(
@@ -335,7 +335,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                         RetentionDeletionToken = operationToken,
                         RetentionDeletionRequestedAtUtc = now
                     };
-                    var objectKey = blockedReference[$"minio://{Bucket}/".Length..];
+                    var objectKey = blockedReference[$"s3://{Bucket}/".Length..];
                     var disposition = new CentralObjectRecoveryDisposition
                     {
                         SourceObjectIdentitySha256 = CentralObjectOwnershipFence.CreateObjectKeyIdentity(objectKey),
@@ -390,7 +390,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var writer = new CentralTransientDerivativeOutputWriter(
                     db,
-                    faultMinio,
+                    ObjectStoreTestClient.Create(faultMinio),
                     new CentralTransientEventVersionAppender(db),
                     TimeProvider.System);
                 var action = () => writer.PersistAsync(
@@ -427,7 +427,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             {
                 var writer = new CentralTransientDerivativeOutputWriter(
                     faultDb,
-                    AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>(),
+                    AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>(),
                     new CentralTransientEventVersionAppender(faultDb),
                     TimeProvider.System);
                 var action = () => writer.PersistAsync(
@@ -507,7 +507,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                     }
                     if (intent.Id == intents[0].Id)
                     {
-                        var objectKey = intent.StorageReference[$"minio://{Bucket}/".Length..];
+                        var objectKey = intent.StorageReference[$"s3://{Bucket}/".Length..];
                         var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
                         await using (var corrupt = new MemoryStream(new byte[derivativeBytes.Length], writable: false))
                         {
@@ -636,7 +636,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
                 var db = corruptScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var source = await db.CentralArtifacts.AsNoTracking()
                     .SingleAsync(item => item.Id == sources[100]).ConfigureAwait(false);
-                var objectName = source.StorageReference[$"minio://{Bucket}/".Length..];
+                var objectName = source.StorageReference[$"s3://{Bucket}/".Length..];
                 await using var corrupt = new MemoryStream(CreatePayload(101), writable: false);
                 await corruptScope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
                     .WithBucket(Bucket)
@@ -835,7 +835,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
         var releaseService = new CentralTransientPayloadReleaseService(
             derivativeDb,
             new CentralArtifactRetentionReferences(derivativeDb),
-            derivativeScope.ServiceProvider.GetRequiredService<IMinioClient>(),
+            derivativeScope.ServiceProvider.GetRequiredService<IObjectStore>(),
             Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
             TimeProvider.System);
         var release = await releaseService.ReleaseAsync(
@@ -1520,7 +1520,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var storageReference = await db.CentralArtifacts.Where(item => item.Id == sources[99])
                 .Select(item => item.StorageReference).SingleAsync().ConfigureAwait(false);
-            var objectName = storageReference[$"minio://{Bucket}/".Length..];
+            var objectName = storageReference[$"s3://{Bucket}/".Length..];
             await using var corrupt = new MemoryStream(CreatePayload(101), writable: false);
             await scope.ServiceProvider.GetRequiredService<IMinioClient>().PutObjectAsync(new PutObjectArgs()
                 .WithBucket(Bucket)
@@ -2325,7 +2325,7 @@ public sealed class CentralDerivativeWindowIntegrationTests
             MediaType = "application/x-hvo-linear-frame",
             ByteLength = payload.Length,
             ChecksumSha256 = checksum,
-            StorageReference = $"minio://{Bucket}/{objectKey}",
+            StorageReference = $"s3://{Bucket}/{objectKey}",
             ReceivedAtUtc = receivedAtUtc ?? DateTimeOffset.UtcNow,
             IdempotencyKey = HashText($"{scenario}-{sequence}"),
             SourceId = "window-integration",

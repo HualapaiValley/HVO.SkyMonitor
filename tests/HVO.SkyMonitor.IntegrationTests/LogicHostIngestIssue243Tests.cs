@@ -159,6 +159,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
 
     private static async Task<SqlCriticalSectionSnapshot> ReadIssue243IngestSnapshotAsync(

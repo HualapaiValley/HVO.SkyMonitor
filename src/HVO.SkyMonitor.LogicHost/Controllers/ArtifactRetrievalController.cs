@@ -3,7 +3,6 @@ using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.LogicHost.Controllers;
 
@@ -193,7 +192,7 @@ internal sealed partial class ArtifactRetrievalController(
             Log.Terminal(logger, devicePublicId, artifactId, "verify", "cancelled");
             return;
         }
-        catch (MinioException)
+        catch (ObjectStoreException)
         {
             Log.Terminal(logger, devicePublicId, artifactId, "verify", "storage-unavailable");
             await WriteProblemAsync(StatusCodes.Status503ServiceUnavailable, "Artifact storage is temporarily unavailable.", cancellationToken)
@@ -231,7 +230,7 @@ internal sealed partial class ArtifactRetrievalController(
             // Client cancellation is not an object consistency failure.
             Log.Terminal(logger, devicePublicId, artifactId, range is null ? "full" : "range", "cancelled");
         }
-        catch (MinioException)
+        catch (ObjectStoreException)
         {
             Log.Terminal(logger, devicePublicId, artifactId, range is null ? "full" : "range", "storage-unavailable");
             await HandleStreamingFailureAsync().ConfigureAwait(false);

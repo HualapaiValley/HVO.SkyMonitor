@@ -2,9 +2,6 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 using System.Data;
 using System.Security.Cryptography;
 using System.Text;
@@ -27,7 +24,7 @@ internal interface ICentralDerivativeOutputWriter
 
 internal sealed partial class CentralDerivativeOutputWriter(
     ApplicationDbContext dbContext,
-    IMinioClient minio,
+    IObjectStore objectStore,
     ICentralArtifactObjectReader objectReader,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider,
@@ -102,7 +99,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         ValidateProduct(lease, product);
         var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
         var storageReference = CreateStorageReference(lease, product, Bucket);
-        var objectKey = storageReference[$"minio://{Bucket}/".Length..];
+        var objectKey = storageReference[_storageNames.ArtifactPrefix.Length..];
         await using var objectLock = await CentralObjectApplicationLock.AcquireAsync(
             dbContext, storageReference, cancellationToken).ConfigureAwait(false);
         await EnsureNotRetiredOrExpireOwnIntentAsync(lease, storageReference, cancellationToken).ConfigureAwait(false);
@@ -191,7 +188,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
             MediaType = product.MediaType,
             ByteLength = product.Payload.Length,
             ChecksumSha256 = product.ChecksumSha256,
-            StorageReference = $"minio://{Bucket}/{objectKey}",
+            StorageReference = _storageNames.ArtifactPrefix + objectKey,
             ReceivedAtUtc = now,
             IdempotencyKey = CreateArtifactIdempotencyKey(
                 lease.SourceDevicePublicId, product.OutputIdentitySha256),
@@ -280,26 +277,18 @@ internal sealed partial class CentralDerivativeOutputWriter(
         try
         {
             await using var payload = new MemoryStream(product.Payload.ToArray(), writable: false);
-            await minio.PutObjectAsync(new PutObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(stagingKey)
-                .WithStreamData(payload)
-                .WithObjectSize(product.Payload.Length)
-                .WithContentType(product.MediaType), cancellationToken).ConfigureAwait(false);
-            var source = new CopySourceObjectArgs().WithBucket(Bucket).WithObject(stagingKey);
-            await minio.CopyObjectAsync(new CopyObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(objectKey)
-                .WithCopyObjectSource(source), cancellationToken).ConfigureAwait(false);
+            await objectStore.PutAsync(
+                Bucket, stagingKey, payload, product.Payload.Length, product.MediaType, cancellationToken)
+                .ConfigureAwait(false);
+            await objectStore.CopyAsync(Bucket, stagingKey, objectKey, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             try
             {
-                await minio.RemoveObjectAsync(new RemoveObjectArgs()
-                    .WithBucket(Bucket).WithObject(stagingKey), CancellationToken.None).ConfigureAwait(false);
+                await objectStore.DeleteAsync(Bucket, stagingKey, CancellationToken.None).ConfigureAwait(false);
             }
-            catch (MinioException)
+            catch (ObjectStoreException)
             {
                 // The reconciliation service removes stale staging objects.
             }
@@ -403,7 +392,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
     private async Task EnsureNotRetiredAsync(string storageReference, CancellationToken cancellationToken)
     {
         if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                dbContext, storageReference, cancellationToken, $"minio://{Bucket}/").ConfigureAwait(false))
+                dbContext, storageReference, cancellationToken, _storageNames.ArtifactPrefix).ConfigureAwait(false))
         {
             throw new CentralDerivativeJobStateException(
                 "The immutable derivative object key has been permanently retired.");
@@ -416,7 +405,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         CancellationToken cancellationToken)
     {
         if (!await CentralObjectOwnershipFence.IsRetiredAsync(
-                dbContext, storageReference, cancellationToken, $"minio://{Bucket}/").ConfigureAwait(false))
+                dbContext, storageReference, cancellationToken, _storageNames.ArtifactPrefix).ConfigureAwait(false))
         {
             return;
         }
@@ -430,7 +419,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         string storageReference)
     {
         if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                dbContext, storageReference, CancellationToken.None, $"minio://{Bucket}/").ConfigureAwait(false))
+                dbContext, storageReference, CancellationToken.None, _storageNames.ArtifactPrefix).ConfigureAwait(false))
         {
             await ExpireOwnIntentAsync(lease, storageReference).ConfigureAwait(false);
         }
@@ -572,7 +561,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
         CentralDerivativeJobLease lease,
         ProcessingProduct product,
         string bucket = Configuration.CentralObjectStorageOptions.DefaultArtifactBucket)
-        => $"minio://{bucket}/derivatives/{lease.SourceDevicePublicId:N}/{product.OutputIdentitySha256}.bin";
+        => $"s3://{bucket}/derivatives/{lease.SourceDevicePublicId:N}/{product.OutputIdentitySha256}.bin";
 
     private static void ValidateProduct(CentralDerivativeJobLease lease, ProcessingProduct product)
     {
@@ -612,7 +601,7 @@ internal sealed partial class CentralDerivativeOutputWriter(
             || !HasExpectedSources(artifact, lease)
             || artifact.ByteLength != product.Payload.Length
             || !string.Equals(artifact.ChecksumSha256, product.ChecksumSha256, StringComparison.OrdinalIgnoreCase)
-            || artifact.StorageReference != $"minio://{bucket}/{objectKey}")
+            || artifact.StorageReference != $"s3://{bucket}/{objectKey}")
         {
             throw new CentralDerivativeJobStateException("The derivative output identity conflicts with existing evidence.");
         }

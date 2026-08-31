@@ -1,9 +1,6 @@
 using System.Security.Claims;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -46,7 +43,7 @@ internal interface ICentralTransientDerivativeRetrievalService
 
 internal sealed class CentralTransientDerivativeRetrievalService(
     ApplicationDbContext dbContext,
-    IMinioClient minio,
+    IObjectStore objectStore,
     CentralObjectStorageNames? storageNames = null) : ICentralTransientDerivativeRetrievalService
 {
     private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
@@ -120,10 +117,9 @@ internal sealed class CentralTransientDerivativeRetrievalService(
                 return new(CentralTransientDerivativeLookupStatus.Unavailable);
             }
             var objectKey = intent.StorageReference[BucketPrefix.Length..];
-            var stat = await minio.StatObjectAsync(new StatObjectArgs().WithBucket(Bucket).WithObject(objectKey),
-                cancellationToken).ConfigureAwait(false);
-            if (stat.Size != intent.ByteLength ||
-                !string.Equals(stat.ETag, current.StorageETag, StringComparison.Ordinal))
+            var stat = await objectStore.StatAsync(Bucket, objectKey, cancellationToken).ConfigureAwait(false);
+            if (stat.ContentLength != intent.ByteLength ||
+                !string.Equals(stat.Generation, current.StorageETag, StringComparison.Ordinal))
             {
                 return new(CentralTransientDerivativeLookupStatus.IntegrityFailure);
             }
@@ -139,7 +135,7 @@ internal sealed class CentralTransientDerivativeRetrievalService(
                 current.StorageETag,
                 transferredLock);
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             return new(CentralTransientDerivativeLookupStatus.Unavailable);
         }
@@ -164,36 +160,35 @@ internal sealed class CentralTransientDerivativeRetrievalService(
         {
             throw new CentralArtifactStorageException("Transient derivative content is not streamable.");
         }
-        await minio.GetObjectAsync(new GetObjectArgs().WithBucket(Bucket).WithObject(content.ObjectKey)
-            .WithMatchETag(content.StorageETag).WithCallbackStream(async (stream, token) =>
+        await objectStore.ReadAsync(Bucket, content.ObjectKey, content.StorageETag, async (stream, token) =>
+        {
+            var buffer = new byte[81920];
+            if (range is not null)
             {
-                var buffer = new byte[81920];
-                if (range is not null)
-                {
-                    var skip = range.Start;
-                    while (skip > 0)
-                    {
-                        var read = await stream.ReadAsync(
-                            buffer.AsMemory(0, (int)Math.Min(buffer.Length, skip)), token).ConfigureAwait(false);
-                        if (read == 0)
-                        {
-                            throw new EndOfStreamException("Derivative ended before the requested range.");
-                        }
-                        skip -= read;
-                    }
-                }
-                var remaining = range?.Length ?? content.ByteLength;
-                while (remaining > 0)
+                var skip = range.Start;
+                while (skip > 0)
                 {
                     var read = await stream.ReadAsync(
-                        buffer.AsMemory(0, (int)Math.Min(buffer.Length, remaining)), token).ConfigureAwait(false);
+                        buffer.AsMemory(0, (int)Math.Min(buffer.Length, skip)), token).ConfigureAwait(false);
                     if (read == 0)
                     {
-                        throw new EndOfStreamException("Derivative ended while streaming content.");
+                        throw new EndOfStreamException("Derivative ended before the requested range.");
                     }
-                    await destination.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
-                    remaining -= read;
+                    skip -= read;
                 }
-            }), cancellationToken).ConfigureAwait(false);
+            }
+            var remaining = range?.Length ?? content.ByteLength;
+            while (remaining > 0)
+            {
+                var read = await stream.ReadAsync(
+                    buffer.AsMemory(0, (int)Math.Min(buffer.Length, remaining)), token).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    throw new EndOfStreamException("Derivative ended while streaming content.");
+                }
+                await destination.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
+                remaining -= read;
+            }
+        }, cancellationToken).ConfigureAwait(false);
     }
 }

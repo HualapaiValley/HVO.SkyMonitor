@@ -115,7 +115,7 @@ internal sealed class TransientEventsController(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
-        catch (Exception exception) when (exception is Minio.Exceptions.MinioException or
+        catch (Exception exception) when (exception is ObjectStoreException or
             CentralArtifactStorageException or IOException)
         {
             if (Response.HasStarted)

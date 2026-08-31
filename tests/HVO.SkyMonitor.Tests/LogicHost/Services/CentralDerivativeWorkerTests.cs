@@ -240,7 +240,7 @@ public sealed class CentralDerivativeWorkerTests
         Guid.NewGuid(),
         FrameArtifactRole.Raw,
         "raw-v1",
-        "minio://test/source.raw",
+        "s3://test/source.raw",
         new string('A', 64),
         "application/octet-stream",
         Guid.NewGuid(),
