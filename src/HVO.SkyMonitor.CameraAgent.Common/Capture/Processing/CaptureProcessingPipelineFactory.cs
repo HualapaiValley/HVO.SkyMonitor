@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Immutable;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
@@ -242,13 +243,18 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
 
             ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
             ValidateStoragePolicies(configured, nodesById, explicitV2);
-            var nodes = TopologicalSort(configured, nodesById, explicitV2);
+            var sharedPlan = explicitV2
+                ? CompileSharedPlan(config.Pipeline, configuredSteps, configured, nodesById)
+                : null;
+            var nodes = sharedPlan is null
+                ? BuildLegacyRuntimeGraph(configured, nodesById)
+                : BuildRuntimeGraph(configured, nodesById, sharedPlan);
             stopwatch.Stop();
             _telemetry.RecordValidation(nodes.Count, stopwatch.Elapsed);
             activity?.SetStatus(ActivityStatusCode.Ok);
             _logger.CaptureProcessingGraphValidated(nodes.Count);
             _logger.CaptureProcessingPipelineBuilt(nodes.Count);
-            return new CaptureProcessingGraph(nodes);
+            return new CaptureProcessingGraph(nodes, sharedPlan);
         }
         catch
         {
@@ -624,7 +630,13 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     private static IReadOnlyList<CaptureProcessingOutputDescriptor> GetOutputs(ICaptureProcessingGraphStep step)
         => step is IMultiOutputCaptureProcessingGraphStep multi
             ? multi.Outputs
-            : [new(step.OutputRole, step.OutputVariant, step.RecipeName, step.OutputSchemaVersion)];
+            : [new(
+                step.OutputRole,
+                step.OutputVariant,
+                step.RecipeName,
+                step.OutputSchemaVersion,
+                step.SharedOutputRecipe,
+                step.SharedOutputAlgorithms)];
 
     private static bool RequiresLinear16(string recipeName)
         => recipeName is HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.RollingMean or
@@ -643,24 +655,385 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     private static bool IsRawDependency(string dependency)
         => string.Equals(dependency, "$raw", StringComparison.OrdinalIgnoreCase);
 
-    private static List<CaptureProcessingGraphNode> TopologicalSort(
+    private static ProcessingGraphExecutionPlan CompileSharedPlan(
+        CapturePipelineConfig pipeline,
+        IReadOnlyList<CaptureProcessingStepConfig> configuredSteps,
+        List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+    {
+        var rawSource = new ProcessingGraphSourceDefinition(
+            "$raw",
+            [new(FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData)]);
+        var definitions = configured
+            .Select(item => CreateSharedNodeDefinition(item, nodesById))
+            .ToList();
+        definitions.AddRange(configuredSteps
+            .Where(static step => step.Enabled == false)
+            .Select(step => new ProcessingGraphNodeDefinition(
+                string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim(),
+                step.Type,
+                "cameraagent-v2-disabled",
+                ProcessingOperationKind.Transform,
+                false,
+                step.Required
+                    ? ProcessingGraphNodeFailurePolicy.Required
+                    : ProcessingGraphNodeFailurePolicy.Optional,
+                step.Order ?? 0,
+                step.Options is { ValueKind: JsonValueKind.Object } options
+                    ? options
+                    : CaptureContractJson.SerializeToElement(new { }),
+                (step.DependsOn ?? []).Select(dependency => new ProcessingGraphDependencyDefinition(
+                    IsRawDependency(dependency) ? "$raw" : dependency,
+                    ProcessingGraphDependencyKind.Ordering)).ToImmutableArray(),
+                [],
+                [],
+                null,
+                [],
+                [ProcessingGraphHosts.CameraAgent])));
+        var definition = new ProcessingGraphDefinition(
+            ProcessingGraphSchemaVersions.Current,
+            "cameraagent-capture-processing",
+            pipeline.SchemaVersion,
+            [rawSource],
+            definitions.ToImmutableArray());
+        var result = ProcessingGraphCompiler.Compile(
+            definition,
+            new(ProcessingGraphHosts.CameraAgent, []));
+        if (!result.IsValid)
+        {
+            var diagnostic = result.Diagnostics[0];
+            throw new InvalidOperationException(
+                $"Shared processing graph validation failed ({diagnostic.Code} at {diagnostic.Path}): {diagnostic.Message}");
+        }
+        return result.Plan!;
+    }
+
+    private static ProcessingGraphNodeDefinition CreateSharedNodeDefinition(
+        (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step) item,
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+    {
+        var graphStep = item.Step as ICaptureProcessingGraphStep;
+        var declaredDependencies = item.Config.DependsOn?.ToArray() ?? [];
+        var normalizedDependencies = declaredDependencies
+            .Select(dependency => IsRawDependency(dependency)
+                ? "$raw"
+                : nodesById.TryGetValue(dependency, out var producer) ? producer.Step.Name : dependency)
+            .ToArray();
+        var dependencyKind = item.Step switch
+        {
+            ICaptureProcessingOutcomeConsumer => ProcessingGraphDependencyKind.Outcome,
+            ICaptureProcessingArtifactConsumer => ProcessingGraphDependencyKind.Artifact,
+            ICaptureProcessingGraphStep { AcceptedInputRoles.Count: > 0 } => ProcessingGraphDependencyKind.Artifact,
+            _ => ProcessingGraphDependencyKind.Ordering
+        };
+        var optionalDependencies = ResolveOptionalDependencyIds(item.Step, normalizedDependencies, nodesById);
+        var dependencies = normalizedDependencies.Select(dependency => new ProcessingGraphDependencyDefinition(
+            dependency,
+            dependencyKind,
+            !optionalDependencies.Contains(dependency))).ToImmutableArray();
+        var inputs = CreateSharedInputs(item.Step, normalizedDependencies, nodesById);
+        var outputs = graphStep is null
+            ? ImmutableArray<ProcessingGraphProductContract>.Empty
+            : GetOutputs(graphStep).Select(output => new ProcessingGraphProductContract(
+                output.Role,
+                output.Variant,
+                output.Role == FrameArtifactRole.Metadata
+                    ? ProcessingProductKind.Metadata
+                    : ProcessingProductKind.PixelData,
+                ResolveRecipeDefinition(output, item.Config.Type, item.Step),
+                output.SchemaVersion,
+                output.SharedAlgorithms?.ToImmutableArray() ?? [])).ToImmutableArray();
+        var window = item.Step is IWindowCaptureProcessingGraphStep windowStep
+            ? new ProcessingGraphWindowRequirement(
+                ProcessingGraphWindowKind.Trailing,
+                1,
+                windowStep.MaximumInputCount,
+                [],
+                [
+                    "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
+                    "sensor", "setpoint", "processing-profile", "location"
+                ])
+            : null;
+        // Publication, storage, upload, and telemetry options stay in the CameraAgent plan identity.
+        var effectiveSharedOptions = graphStep is null
+            ? CaptureContractJson.SerializeToElement(new { })
+            : item.Config.Options ?? CaptureContractJson.SerializeToElement(new { });
+        if (item.Step is PresentationMaterializerCaptureProcessingStep)
+        {
+            effectiveSharedOptions = NormalizeStringSetProperty(
+                effectiveSharedOptions,
+                "enabledLayerKinds",
+                PresentationLayerKinds.CanonicalizeSelectionIdentity);
+        }
+        return new ProcessingGraphNodeDefinition(
+            item.Step.Name,
+            item.Config.Type,
+            ResolveSharedStepVersion(graphStep, item.Config.Type, item.Step),
+            ResolveSharedOperationKind(graphStep, item.Step),
+            true,
+            item.Config.Required
+                ? ProcessingGraphNodeFailurePolicy.Required
+                : ProcessingGraphNodeFailurePolicy.Optional,
+            item.Step.Order,
+            effectiveSharedOptions,
+            dependencies,
+            inputs,
+            outputs,
+            window,
+            [],
+            [ProcessingGraphHosts.CameraAgent]);
+    }
+
+    private static ImmutableArray<ProcessingGraphInputContract> CreateSharedInputs(
+        ICaptureProcessingStep step,
+        IReadOnlyList<string> dependencies,
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+    {
+        if (step is IRequiredCaptureProcessingDependencies required)
+        {
+            return required.DependencyRequirements.Select((requirement, index) => new ProcessingGraphInputContract(
+                requirement.Roles.ToImmutableArray(),
+                [],
+                requirement.Variant is null ? [] : [requirement.Variant],
+                requirement.RecipeNames?.Select(ResolveSharedInputRecipeName).ToImmutableArray() ?? [],
+                requirement.SchemaVersions?.ToImmutableArray() ?? [],
+                requirement.Required,
+                index == 0 ? "input" : $"input-{index}",
+                index == 0
+                    ? ProcessingGraphInputBindingKind.PrimaryArtifact
+                    : ProcessingGraphInputBindingKind.AuxiliaryArtifact)).ToImmutableArray();
+        }
+        if (step is ICompoundCaptureProcessingGraphStep compound)
+        {
+            return compound.RequiredDependencyRoleGroups.Select((group, index) =>
+            {
+                var recipes = group.Count == 1 && compound.RequiredDependencyRecipes.TryGetValue(group.Single(), out var names)
+                    ? names.Select(ResolveSharedInputRecipeName).ToImmutableArray()
+                    : [];
+                return new ProcessingGraphInputContract(
+                    group.ToImmutableArray(), [], [], recipes, [], true,
+                    index == 0 ? "input" : $"input-{index}",
+                    index == 0
+                        ? ProcessingGraphInputBindingKind.PrimaryArtifact
+                        : ProcessingGraphInputBindingKind.AuxiliaryArtifact);
+            }).ToImmutableArray();
+        }
+        if (step is ICaptureProcessingArtifactConsumer consumer)
+        {
+            return dependencies.SelectMany(dependency => IsRawDependency(dependency)
+                    ? new[] { new ProcessingGraphProductContract(FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData) }
+                    : nodesById.TryGetValue(dependency, out var producer) && producer.Step is ICaptureProcessingGraphStep producerStep
+                        ? GetOutputs(producerStep).Select(output => new ProcessingGraphProductContract(
+                            output.Role,
+                            output.Variant,
+                            output.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData,
+                            ResolveRecipeDefinition(output, producer.Config.Type, producer.Step),
+                            output.SchemaVersion,
+                            output.SharedAlgorithms?.ToImmutableArray() ?? []))
+                        : [])
+                .Where(output => consumer.AcceptedDependencyRoles.Contains(output.Role))
+                .Select((output, index) => new ProcessingGraphInputContract(
+                    [output.Role],
+                    [output.ProductKind],
+                    [output.Variant],
+                    output.Recipe is null ? [] : [output.Recipe.Name],
+                    output.SchemaVersion is null ? [] : [output.SchemaVersion],
+                    true,
+                    $"artifact-{index}",
+                    ProcessingGraphInputBindingKind.AuxiliaryArtifact))
+                .ToImmutableArray();
+        }
+        return step is ICaptureProcessingGraphStep graphStep && graphStep.AcceptedInputRoles.Count > 0
+            ? [new(
+                graphStep.AcceptedInputRoles.ToImmutableArray(),
+                [],
+                [],
+                [],
+                [],
+                true)]
+            : [];
+    }
+
+    private static HashSet<string> ResolveOptionalDependencyIds(
+        ICaptureProcessingStep step,
+        string[] dependencies,
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+    {
+        if (step is not IRequiredCaptureProcessingDependencies required ||
+            dependencies.Any(IsRawDependency))
+        {
+            return new(StringComparer.Ordinal);
+        }
+        var producerSteps = dependencies.Select(dependency =>
+            (ICaptureProcessingGraphStep)nodesById[dependency].Step).ToArray();
+        return TryAssignRequiredDependencies(producerSteps, required.DependencyRequirements, out var optionalIndexes)
+            ? optionalIndexes.Select(index => dependencies[index]).ToHashSet(StringComparer.Ordinal)
+            : new(StringComparer.Ordinal);
+    }
+
+    private static ProcessingRecipeDefinition ResolveRecipeDefinition(
+        CaptureProcessingOutputDescriptor output,
+        string stepAlias,
+        ICaptureProcessingStep step)
+    {
+        if (output.SharedRecipe is not null)
+        {
+            return output.SharedRecipe;
+        }
+        if (BuiltInProcessingRecipes.TryGetDefinition(output.RecipeName, out var definition) && definition is not null)
+        {
+            return definition;
+        }
+        var operationKind = step is IWindowCaptureProcessingGraphStep
+            ? ProcessingOperationKind.Window
+            : output.Role == FrameArtifactRole.Metadata
+                ? ProcessingOperationKind.Analyzer
+                : ProcessingOperationKind.Transform;
+        return new(output.RecipeName, "1.0.0", $"cameraagent-v2:{stepAlias}", operationKind);
+    }
+
+    private static string ResolveSharedInputRecipeName(string recipeName) => recipeName switch
+    {
+        ScenePresentationLayerCaptureProcessingStep.Recipe or
+        CloudPresentationLayerCaptureProcessingStep.Recipe or
+        EnvironmentPresentationLayerCaptureProcessingStep.Recipe => PresentationProcessingProducts.LayerRecipeName,
+        _ => recipeName
+    };
+
+    private static string ResolveSharedStepVersion(
+        ICaptureProcessingGraphStep? graphStep,
+        string stepAlias,
+        ICaptureProcessingStep step)
+    {
+        if (graphStep?.SharedStepVersion is { } sharedVersion)
+        {
+            return sharedVersion;
+        }
+        if (graphStep is not null && BuiltInProcessingRecipes.TryGetDefinition(graphStep.RecipeName, out var definition) &&
+            definition is not null)
+        {
+            return definition.ImplementationVersion;
+        }
+        return step is IWindowCaptureProcessingGraphStep
+            ? $"cameraagent-window-v2:{stepAlias}"
+            : $"cameraagent-step-v2:{stepAlias}";
+    }
+
+    private static ProcessingOperationKind ResolveSharedOperationKind(
+        ICaptureProcessingGraphStep? graphStep,
+        ICaptureProcessingStep step)
+    {
+        if (graphStep?.SharedOperationKind is { } sharedOperationKind)
+        {
+            return sharedOperationKind;
+        }
+        if (step is IWindowCaptureProcessingGraphStep)
+        {
+            return ProcessingOperationKind.Window;
+        }
+        if (graphStep is not null && BuiltInProcessingRecipes.TryGetDefinition(graphStep.RecipeName, out var definition) &&
+            definition is not null)
+        {
+            return definition.OperationKind;
+        }
+        return step is ICaptureProcessingOutcomeConsumer
+            ? ProcessingOperationKind.Gate
+            : ProcessingOperationKind.Transform;
+    }
+
+    private static JsonElement NormalizeStringSetProperty(
+        JsonElement options,
+        string propertyName,
+        Func<string, string> normalize)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var property in options.EnumerateObject())
+            {
+                writer.WritePropertyName(property.Name);
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    writer.WriteStartArray();
+                    foreach (var value in property.Value.EnumerateArray()
+                        .Select(static item => item.GetString()!)
+                        .Select(normalize)
+                        .Distinct(StringComparer.Ordinal)
+                        .Order(StringComparer.Ordinal))
+                    {
+                        writer.WriteStringValue(value);
+                    }
+                    writer.WriteEndArray();
+                }
+                else
+                {
+                    property.Value.WriteTo(writer);
+                }
+            }
+            writer.WriteEndObject();
+        }
+        using var document = JsonDocument.Parse(stream.ToArray());
+        return document.RootElement.Clone();
+    }
+
+    private static List<CaptureProcessingGraphNode> BuildRuntimeGraph(
         List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
         Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById,
-        bool explicitV2)
+        ProcessingGraphExecutionPlan sharedPlan)
+    {
+        var ordered = new List<CaptureProcessingGraphNode>(configured.Count);
+        foreach (var planNode in sharedPlan.Nodes)
+        {
+            var item = nodesById[planNode.Definition.Id];
+            var graphStep = item.Step as ICaptureProcessingGraphStep;
+            var dependencies = item.Config.DependsOn?.Where(static dependency => !IsRawDependency(dependency)).ToArray() ?? [];
+            IReadOnlySet<string>? optionalDependencies = null;
+            if (item.Step is IRequiredCaptureProcessingDependencies required && graphStep is not null)
+            {
+                var producerSteps = dependencies.Select(dependency =>
+                    (ICaptureProcessingGraphStep)nodesById[dependency].Step).ToArray();
+                if (!TryAssignRequiredDependencies(producerSteps, required.DependencyRequirements, out var optionalIndexes))
+                    throw new InvalidOperationException($"Capture processing step '{item.Step.Name}' dependency assignment changed during ordering.");
+                optionalDependencies = optionalIndexes.Select(index => dependencies[index]).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            }
+            ordered.Add(new CaptureProcessingGraphNode(
+                item.Step.Name,
+                item.Step,
+                dependencies,
+                item.Config.Required,
+                graphStep?.RecipeName,
+                graphStep?.OutputRole,
+                graphStep?.OutputVariant,
+                ComputeNodePlanSha256(
+                    item.Config,
+                    item.Step,
+                    graphStep,
+                    item.Config.DependsOn?.ToArray() ?? dependencies),
+                item.Config.Type,
+                item.Step.Order,
+                item.Config.Options,
+                item.Config.DependsOn?.ToArray(),
+                item.Config.Publication,
+                optionalDependencies,
+                planNode.IdentitySha256));
+        }
+        return ordered;
+    }
+
+    private static List<CaptureProcessingGraphNode> BuildLegacyRuntimeGraph(
+        List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
     {
         var remainingDependencies = configured.ToDictionary(
             static item => item.Step.Name,
-            item => new HashSet<string>(
-                explicitV2
-                    ? (item.Config.DependsOn ?? []).Where(static dependency => !IsRawDependency(dependency))
-                    : item.Config.DependsOn ?? [],
-                StringComparer.OrdinalIgnoreCase),
+            item => new HashSet<string>(item.Config.DependsOn ?? [], StringComparer.OrdinalIgnoreCase),
             StringComparer.OrdinalIgnoreCase);
         var ordered = new List<CaptureProcessingGraphNode>(configured.Count);
         while (ordered.Count < configured.Count)
         {
             var ready = configured
-                .Where(item => remainingDependencies.ContainsKey(item.Step.Name) && remainingDependencies[item.Step.Name].Count == 0)
+                .Where(item => remainingDependencies.TryGetValue(item.Step.Name, out var dependencies) && dependencies.Count == 0)
                 .OrderBy(static item => item.Step.Order)
                 .ThenBy(static item => item.Step.Name, StringComparer.Ordinal)
                 .ToArray();
@@ -672,17 +1045,19 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             foreach (var item in ready)
             {
                 var graphStep = item.Step as ICaptureProcessingGraphStep;
-                var dependencies = explicitV2
-                    ? item.Config.DependsOn?.Where(static dependency => !IsRawDependency(dependency)).ToArray() ?? []
-                    : item.Config.DependsOn?.ToArray() ?? [];
+                var dependencies = item.Config.DependsOn?.ToArray() ?? [];
                 IReadOnlySet<string>? optionalDependencies = null;
                 if (item.Step is IRequiredCaptureProcessingDependencies required && graphStep is not null)
                 {
                     var producerSteps = dependencies.Select(dependency =>
                         (ICaptureProcessingGraphStep)nodesById[dependency].Step).ToArray();
                     if (!TryAssignRequiredDependencies(producerSteps, required.DependencyRequirements, out var optionalIndexes))
-                        throw new InvalidOperationException($"Capture processing step '{item.Step.Name}' dependency assignment changed during ordering.");
-                    optionalDependencies = optionalIndexes.Select(index => dependencies[index]).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    {
+                        throw new InvalidOperationException(
+                            $"Capture processing step '{item.Step.Name}' dependency assignment changed during ordering.");
+                    }
+                    optionalDependencies = optionalIndexes.Select(index => dependencies[index])
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 }
                 ordered.Add(new CaptureProcessingGraphNode(
                     item.Step.Name,
@@ -692,11 +1067,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     graphStep?.RecipeName,
                     graphStep?.OutputRole,
                     graphStep?.OutputVariant,
-                    ComputeNodePlanSha256(
-                        item.Config,
-                        item.Step,
-                        graphStep,
-                        item.Config.DependsOn?.ToArray() ?? dependencies),
+                    ComputeNodePlanSha256(item.Config, item.Step, graphStep, dependencies),
                     item.Config.Type,
                     item.Step.Order,
                     item.Config.Options,

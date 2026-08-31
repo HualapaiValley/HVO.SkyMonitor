@@ -6,12 +6,75 @@ using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using HVO.SkyMonitor.AgentCore;
 using System.Text.Json;
+using System.Collections.Immutable;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
 [TestClass]
 public sealed class LogicHostProcessingConformanceTests
 {
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void LogicHostGraphAdapterCompilesSharedPlanWithoutEdgeOrInfrastructureState()
+    {
+        Assert.IsTrue(BuiltInProcessingRecipes.TryGetDefinition(
+            BuiltInProcessingRecipes.EncodedPreview,
+            out var previewRecipe));
+        var effectiveOptions = BuiltInProcessingRecipes.NormalizeOptions(
+            BuiltInProcessingRecipes.EncodedPreview,
+            JsonSerializer.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed")));
+        var definition = new ProcessingGraphDefinition(
+            ProcessingGraphSchemaVersions.Current,
+            "central-reconstruction",
+            "1",
+            [new(
+                "$archive",
+                [new(FrameArtifactRole.Raw, "archive", ProcessingProductKind.PixelData)])],
+            [new ProcessingGraphNodeDefinition(
+                "preview",
+                "encoded-preview",
+                previewRecipe!.ImplementationVersion,
+                previewRecipe.OperationKind,
+                true,
+                ProcessingGraphNodeFailurePolicy.Required,
+                0,
+                effectiveOptions,
+                [new("$archive")],
+                [new(
+                    [FrameArtifactRole.Raw],
+                    [ProcessingProductKind.PixelData],
+                    [],
+                    [],
+                    [],
+                    true)],
+                [new(
+                    FrameArtifactRole.Preview,
+                    "central-preview",
+                    ProcessingProductKind.PixelData,
+                    previewRecipe)],
+                null,
+                ["cpu"],
+                [ProcessingGraphHosts.LogicHost])]);
+
+        var result = LogicHostProcessingGraphAdapter.Compile(definition, ["cpu"]);
+
+        Assert.IsTrue(result.IsValid, string.Join(Environment.NewLine, result.Diagnostics));
+        var plan = result.Plan!;
+        var bindings = LogicHostProcessingGraphAdapter.Bind(plan);
+        var hostBinding = Assert.ContainsSingle(bindings);
+        var node = Assert.ContainsSingle(plan.Nodes).Definition;
+        Assert.AreEqual("preview", node.Id);
+        Assert.AreEqual(previewRecipe, node.Outputs[0].Recipe);
+        Assert.AreEqual(previewRecipe.ImplementationVersion, node.StepVersion);
+        Assert.AreEqual(node.Id, hostBinding.NodeId);
+        Assert.AreEqual(node.StepAlias, hostBinding.StepAlias);
+        Assert.AreEqual(node.StepVersion, hostBinding.StepVersion);
+        Assert.AreEqual("input", Assert.ContainsSingle(hostBinding.Inputs).BindingName);
+        Assert.AreEqual(ProcessingGraphInputBindingKind.PrimaryArtifact, hostBinding.Inputs[0].BindingKind);
+        Assert.AreEqual(node.Outputs[0], Assert.ContainsSingle(hostBinding.Outputs));
+        Assert.AreEqual(64, plan.PlanIdentitySha256.Length);
+    }
+
     [TestMethod]
     [TestCategory("Unit")]
     public async Task EdgeAndReconstructionAdaptersPreserveReportedObservationTimingAndDetectorIdentity()

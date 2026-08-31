@@ -174,6 +174,30 @@ public sealed class CaptureProcessingGraphTests
     }
 
     [TestMethod]
+    public void CreateGraph_LegacyPlanRetainsOptionalProducerClassification()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var services = new ServiceCollection().BuildServiceProvider();
+        var factory = new CaptureProcessingPipelineFactory(
+            services,
+            [
+                new("Producer", typeof(GraphSchemaV1Step), typeof(GraphTestOptions)),
+                new("Optional", typeof(GraphOptionalContractStep), typeof(GraphTestOptions))
+            ],
+            NullLogger<CaptureProcessingPipelineFactory>.Instance,
+            telemetry);
+        var graph = factory.CreateGraph(CreateLegacyConfig(
+            new CaptureProcessingStepConfig("Producer", "producer", DependsOn: []),
+            new CaptureProcessingStepConfig("Optional", "consumer", DependsOn: ["producer"])));
+
+        Assert.IsNull(graph.SharedPlan);
+        CollectionAssert.AreEqual(
+            ExpectedProducerDependency,
+            graph.Nodes.Single(static node => node.Id == "consumer").OptionalDependencies!.ToArray());
+        graph.DisposeSteps();
+    }
+
+    [TestMethod]
     public void CreateGraph_UsesDeterministicTopologicalOrder()
     {
         using var telemetry = new CaptureProcessingTelemetry();
@@ -346,6 +370,9 @@ public sealed class CaptureProcessingGraphTests
 
         Assert.HasCount(1, graph.Nodes);
         Assert.AreEqual("storage", graph.Nodes[0].Id);
+        Assert.IsNotNull(graph.SharedPlan);
+        Assert.HasCount(1, graph.SharedPlan.Nodes);
+        Assert.HasCount(2, graph.SharedPlan.CanonicalDefinition.GetProperty("nodes").EnumerateArray());
         graph.DisposeSteps();
     }
 
@@ -362,8 +389,13 @@ public sealed class CaptureProcessingGraphTests
         var graph = factory.CreateGraph(config);
 
         CollectionAssert.AreEqual(ExpectedProducerConsumerOrder, graph.Nodes.Select(static node => node.Id).ToArray());
+        CollectionAssert.AreEqual(
+            ExpectedProducerConsumerOrder,
+            graph.SharedPlan!.Nodes.Select(static node => node.Definition.Id).ToArray());
+        Assert.AreEqual("source", Assert.ContainsSingle(graph.SharedPlan.Sources).Outputs[0].Variant);
         Assert.IsEmpty(graph.Nodes[0].Dependencies);
         CollectionAssert.AreEqual(ExpectedProducerDependency, graph.Nodes[1].Dependencies.ToArray());
+        Assert.IsTrue(graph.Nodes.All(static node => node.SharedPlanNodeIdentitySha256.Length == 64));
         graph.DisposeSteps();
     }
 
@@ -416,11 +448,16 @@ public sealed class CaptureProcessingGraphTests
             CreateExplicitConfig(new CaptureProcessingStepConfig("Calibrated", "$raw", DependsOn: ["$raw"]))));
         var legacyDynamic = factory.CreateGraph(CreateLegacyConfig(new CaptureProcessingStepConfig(
             implementationName, "legacy", DependsOn: [])));
+        var legacyAssemblyQualified = factory.CreateGraph(CreateLegacyConfig(new CaptureProcessingStepConfig(
+            typeof(GraphDynamicStep).AssemblyQualifiedName!, "legacy-qualified", DependsOn: [])));
 
         StringAssert.Contains(aliasException.Message, "not a registered stable alias", StringComparison.Ordinal);
         StringAssert.Contains(registeredImplementationException.Message, "not a registered stable alias", StringComparison.Ordinal);
         StringAssert.Contains(reservedIdException.Message, "is reserved", StringComparison.Ordinal);
+        Assert.IsNull(legacyDynamic.SharedPlan);
+        Assert.IsNull(legacyAssemblyQualified.SharedPlan);
         legacyDynamic.DisposeSteps();
+        legacyAssemblyQualified.DisposeSteps();
     }
 
     [TestMethod]
@@ -487,6 +524,8 @@ public sealed class CaptureProcessingGraphTests
         var secondPreview = factory.PreviewPlan(second);
         var defaultedPreview = factory.PreviewPlan(defaulted);
         var materializedPreview = factory.PreviewPlan(materializedDefaults);
+        var defaultedGraph = factory.CreateGraph(defaulted);
+        var materializedGraph = factory.CreateGraph(materializedDefaults);
         Assert.AreNotEqual(firstPreview.DesiredSha256, secondPreview.DesiredSha256);
         Assert.AreNotEqual(firstPreview.EffectiveSha256, secondPreview.EffectiveSha256);
         Assert.AreNotEqual(defaultedPreview.DesiredSha256, materializedPreview.DesiredSha256);
@@ -494,6 +533,11 @@ public sealed class CaptureProcessingGraphTests
         Assert.AreEqual(
             CaptureContractJson.ComputeCanonicalJsonSha256(defaultedPreview.EffectiveNodes),
             CaptureContractJson.ComputeCanonicalJsonSha256(materializedPreview.EffectiveNodes));
+        Assert.AreEqual(
+            defaultedGraph.SharedPlan!.PlanIdentitySha256,
+            materializedGraph.SharedPlan!.PlanIdentitySha256);
+        defaultedGraph.DisposeSteps();
+        materializedGraph.DisposeSteps();
     }
 
     [TestMethod]

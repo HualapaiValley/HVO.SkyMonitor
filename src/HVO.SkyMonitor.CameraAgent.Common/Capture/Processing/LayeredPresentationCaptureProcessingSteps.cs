@@ -64,6 +64,10 @@ internal static class PresentationLayerKinds
         _ => kind
     };
 
+    internal static string CanonicalizeSelectionIdentity(string kind) => kind == "star-annotations"
+        ? kind
+        : Canonicalize(kind);
+
     internal static bool Matches(string configuredKind, string layerKind) =>
         string.Equals(configuredKind, layerKind, StringComparison.Ordinal) ||
         configuredKind == "scene-annotation" && layerKind is "star-annotations" or "scene-cardinals" or "cardinal-directions" or "scene-image-circle" or "image-circle" ||
@@ -92,17 +96,23 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
       ICaptureProcessingGraphStep, IMultiOutputCaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
     internal const string Recipe = "scene-presentation-layer";
+    private static readonly ProcessingRecipeDefinition SharedLayerRecipe = new(
+        PresentationProcessingProducts.LayerRecipeName,
+        "1.0.0",
+        PresentationLayerProducers.SceneProducerVersion,
+        ProcessingOperationKind.Transform);
     public bool Enabled => true;
     public string RecipeName => Recipe;
+    public string? SharedStepVersion => PresentationLayerProducers.SceneProducerVersion;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.AnnotationOutputVariant;
     public string? OutputSchemaVersion => PresentationLayerPayloadV1.CurrentSchemaVersion;
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
     [
-        new(OutputRole, Options.AnnotationOutputVariant, RecipeName, OutputSchemaVersion),
-        new(OutputRole, Options.CardinalOutputVariant, RecipeName, OutputSchemaVersion),
-        new(OutputRole, Options.ImageCircleOutputVariant, RecipeName, OutputSchemaVersion),
-        new(OutputRole, Options.ConstellationOutputVariant, RecipeName, OutputSchemaVersion)
+        new(OutputRole, Options.AnnotationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe),
+        new(OutputRole, Options.CardinalOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe),
+        new(OutputRole, Options.ImageCircleOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe),
+        new(OutputRole, Options.ConstellationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe)
     ];
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
@@ -151,15 +161,21 @@ internal sealed class CloudPresentationLayerCaptureProcessingStep(
       ICaptureProcessingGraphStep, IMultiOutputCaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
     internal const string Recipe = "cloud-presentation-layer";
+    private static readonly ProcessingRecipeDefinition SharedLayerRecipe = new(
+        PresentationProcessingProducts.LayerRecipeName,
+        "1.0.0",
+        PresentationLayerProducers.CloudProducerVersion,
+        ProcessingOperationKind.Transform);
     public bool Enabled => true;
     public string RecipeName => Recipe;
+    public string? SharedStepVersion => PresentationLayerProducers.CloudProducerVersion;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.MaskOutputVariant;
     public string? OutputSchemaVersion => PresentationLayerPayloadV1.CurrentSchemaVersion;
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
     [
-        new(OutputRole, Options.MaskOutputVariant, RecipeName, OutputSchemaVersion),
-        new(OutputRole, Options.LabelOutputVariant, RecipeName, OutputSchemaVersion)
+        new(OutputRole, Options.MaskOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe),
+        new(OutputRole, Options.LabelOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe)
     ];
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
@@ -195,16 +211,28 @@ internal sealed class EnvironmentPresentationLayerCaptureProcessingStep(
       ICaptureProcessingGraphStep, IMultiOutputCaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
     internal const string Recipe = "environment-presentation-layer";
+    private static readonly ProcessingRecipeDefinition SharedFactsRecipe = new(
+        PresentationProcessingProducts.MetadataFactsRecipeName,
+        "1.0.0",
+        PresentationLayerProducers.MetadataProducerVersion,
+        ProcessingOperationKind.Analyzer);
+    private static readonly ProcessingRecipeDefinition SharedLayerRecipe = new(
+        PresentationProcessingProducts.LayerRecipeName,
+        "1.0.0",
+        PresentationLayerProducers.MetadataProducerVersion,
+        ProcessingOperationKind.Transform);
     public bool Enabled => true;
     public string RecipeName => Recipe;
+    public string? SharedStepVersion => PresentationLayerProducers.MetadataProducerVersion;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => PresentationLayerPayloadV1.CurrentSchemaVersion;
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
     [
         new(FrameArtifactRole.Metadata, Options.FactsOutputVariant,
-            PresentationProcessingProducts.MetadataFactsRecipeName, PresentationMetadataFactsProductV1.CurrentSchemaVersion),
-        new(FrameArtifactRole.Metadata, Options.OutputVariant, RecipeName, OutputSchemaVersion)
+            PresentationProcessingProducts.MetadataFactsRecipeName, PresentationMetadataFactsProductV1.CurrentSchemaVersion,
+            SharedFactsRecipe),
+        new(FrameArtifactRole.Metadata, Options.OutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe)
     ];
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole>
     {
@@ -274,8 +302,19 @@ internal sealed class OverlayManifestCaptureProcessingStep(
     : ConfigurableCaptureProcessingStep<OverlayManifestProcessingStepOptions>(metadata, options),
       ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
+    private static readonly ProcessingRecipeDefinition SharedRecipe = new(
+        PresentationProcessingProducts.ManifestRecipeName,
+        "1.0.0",
+        "overlay-manifest-v1",
+        ProcessingOperationKind.Transform);
     public bool Enabled => true;
     public string RecipeName => PresentationProcessingProducts.ManifestRecipeName;
+    public string? SharedStepVersion => SharedRecipe.ImplementationVersion;
+    public ProcessingRecipeDefinition? SharedOutputRecipe => SharedRecipe;
+    public IReadOnlyList<ProcessingAlgorithmIdentity> SharedOutputAlgorithms { get; } =
+    [
+        new("overlay-manifest-contract", "1.0.0")
+    ];
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => OverlayManifestV1.CurrentSchemaVersion;
@@ -346,8 +385,20 @@ internal sealed class PresentationMaterializerCaptureProcessingStep(
     : ConfigurableCaptureProcessingStep<PresentationMaterializerProcessingStepOptions>(metadata, options),
       ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
+    private static readonly ProcessingRecipeDefinition SharedRecipe = new(
+        PresentationProcessingProducts.MaterializationRecipeName,
+        "1.0.0",
+        "typed-presentation-materialization-v1",
+        ProcessingOperationKind.Transform);
     public bool Enabled => true;
     public string RecipeName => PresentationProcessingProducts.MaterializationRecipeName;
+    public string? SharedStepVersion => SharedRecipe.ImplementationVersion;
+    public ProcessingRecipeDefinition? SharedOutputRecipe => SharedRecipe;
+    public IReadOnlyList<ProcessingAlgorithmIdentity> SharedOutputAlgorithms { get; } =
+    [
+        new("presentation-compositor", PresentationLayerCompositor.AlgorithmVersion),
+        new(PresentationMaterializationExecutor.PackedEncoderName, PresentationMaterializationExecutor.PackedEncoderVersion)
+    ];
     public FrameArtifactRole OutputRole => FrameArtifactRole.AnnotatedPreview;
     public string OutputVariant => Options.OutputVariant;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
