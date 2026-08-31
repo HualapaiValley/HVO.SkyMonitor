@@ -88,7 +88,7 @@
                         <legend>Presentation layers</legend>
                         @foreach (var layer in _presentation.Layers)
                         {
-                            <label><input type="checkbox" checked="@layer.EnabledByDefault" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span>@OperationsPage.SplitWords(layer.Kind)</span><small>z @layer.ZOrder / @layer.StyleVersion</small></label>
+                            <label><input type="checkbox" checked="@layer.EnabledByDefault" data-layer-target="@layer.DomGroupId" data-layer-identity="@layer.IdentitySha256" /><span>@LayerLabel(layer.Kind)</span><small>z @layer.ZOrder / @layer.StyleVersion</small></label>
                         }
                         <div class="layer-save"><button type="button" class="btn btn-primary" disabled="@_isSaving" @onclick="SaveSelectedStackAsync">@(_isSaving ? "Saving stack..." : "Save selected stack")</button><small>Creates one immutable flattened derivative without rerunning analysis.</small></div>
                     </fieldset>

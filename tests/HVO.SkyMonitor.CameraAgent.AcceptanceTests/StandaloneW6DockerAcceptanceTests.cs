@@ -40,11 +40,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedAgentId = "cameraagent-standalone-w6-asi676mc";
     private const string ExpectedCatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
     private const string ExpectedRigSha256 = "7191D84F4BA368482546AB6A09FBFEDD2F273BD626FABE6F3156C55C54DFCA9B";
-    private const string ExpectedProcessingSha256 = "8F9EC413736CCF95026581287D8FFA6C8B05BAF1174420D95A3E49B185A3E18D";
-    private const string ExpectedLocalProfileSha256 = "966C360EA52CDCE8AC150A138D94903587B56B2D2F0EC2618AE5E6506259388C";
+    private const string ExpectedProcessingSha256 = "FE3EA5C9A5FB0605FA7522C7271E39FE32B0C8B44178BFF6A5625956C3AFAACE";
+    private const string ExpectedLocalProfileSha256 = "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3";
     private const string ExpectedScheduleSha256 = "6A5E298C74CA520E3EB3EEE6CE67D30A8BDFC1340ACC2FE1AA5DDDF0F6F9CFDD";
-    private const string ExpectedDesiredGraphSha256 = "13DBCBB11F6FBF633B2259FFC668F5109E33F664501ED38B03F6F7ED4AE3F363";
-    private const string ExpectedEffectiveGraphSha256 = "40D49A5166B07FACECA41173263DA75DA8A9A7E28480CB361BDA34191994DB61";
+    private const string ExpectedDesiredGraphSha256 = "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069";
+    private const string ExpectedEffectiveGraphSha256 = "01BDA19E83DB375F0A87CE13A1A8395BAFFDC31A8AEAF17BD72001A36B437386";
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479";
     private const string ExpectedMonoProcessingSha256 = "2F106F303DE1CD41AE1E1B8B001B15BD521A6121A9595BD3BB0D38B00DE30631";
@@ -83,7 +83,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         FrameArtifactRole.Metadata
     ];
     private static readonly string[] ExpectedPresentationLayerKinds =
-        ["scene-constellations", "scene-annotation", "cloud-mask", "cloud-labels", "environment"];
+        ["scene-constellations", "scene-image-circle", "scene-annotation", "scene-cardinals", "cloud-mask", "cloud-labels", "environment"];
     private static readonly FrameArtifactRole[] ExpectedMonoRoles =
     [
         FrameArtifactRole.Raw,
@@ -102,6 +102,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         "Metadata/cloud-assessment-v1",
         "Metadata/w6-constellation-layer",
         "Metadata/w6-scene-annotation-layer",
+        "Metadata/w6-cardinal-layer",
+        "Metadata/w6-image-circle-layer",
         "Metadata/w6-cloud-mask-layer",
         "Metadata/w6-cloud-label-layer",
         "Metadata/w6-presentation-metadata-facts",

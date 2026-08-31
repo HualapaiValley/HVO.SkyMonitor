@@ -311,6 +311,8 @@
         "publication": { "persistence": "durable-local" },
         "options": {
           "annotationOutputVariant": "w6-scene-annotation-layer",
+          "cardinalOutputVariant": "w6-cardinal-layer",
+          "imageCircleOutputVariant": "w6-image-circle-layer",
           "constellationOutputVariant": "w6-constellation-layer",
           "constellationIds": [ "ORI", "UMA", "UMI", "CAS", "CYG", "LYR" ]
         }
@@ -351,6 +353,8 @@
         "options": {
           "outputVariant": "w6-overlay-manifest",
           "sceneAnnotationVariant": "w6-scene-annotation-layer",
+          "sceneCardinalVariant": "w6-cardinal-layer",
+          "sceneImageCircleVariant": "w6-image-circle-layer",
           "sceneConstellationVariant": "w6-constellation-layer",
           "cloudMaskVariant": "w6-cloud-mask-layer",
           "cloudLabelVariant": "w6-cloud-label-layer",
@@ -367,6 +371,8 @@
         "options": {
           "outputVariant": "w6-annotated-preview",
           "sceneAnnotationVariant": "w6-scene-annotation-layer",
+          "sceneCardinalVariant": "w6-cardinal-layer",
+          "sceneImageCircleVariant": "w6-image-circle-layer",
           "sceneConstellationVariant": "w6-constellation-layer",
           "cloudMaskVariant": "w6-cloud-mask-layer",
           "cloudLabelVariant": "w6-cloud-label-layer",
