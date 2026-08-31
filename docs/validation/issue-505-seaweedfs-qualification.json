@@ -35,12 +35,14 @@
         {
           "platform": "linux/amd64",
           "manifestDigest": "sha256:c927ea0755b1d7dd5a3101081e4717126d00e75e89d3142e21df374b0a90acad",
-          "configDigest": "sha256:8fc7729947c1786300b4ad9b86d1ef047e7f21acc1d5d46d7ccdbde20224f55a"
+          "configDigest": "sha256:8fc7729947c1786300b4ad9b86d1ef047e7f21acc1d5d46d7ccdbde20224f55a",
+          "sourceRevisionLabel": "3563738699f29fd1c9efde6fcbf4ba253439cac8"
         },
         {
           "platform": "linux/arm64",
           "manifestDigest": "sha256:48ef310500b5b4123d49952b414fea569c45d588af28cacbff9f82d614c84b29",
-          "configDigest": "sha256:575750515663a37858f40023c776e4b71102486af902c35185f65319549f6b07"
+          "configDigest": "sha256:575750515663a37858f40023c776e4b71102486af902c35185f65319549f6b07",
+          "sourceRevisionLabel": "3563738699f29fd1c9efde6fcbf4ba253439cac8"
         }
       ]
     }
@@ -49,11 +51,14 @@
     "upstreamBuildWorkflow": {
       "url": "https://github.com/seaweedfs/seaweedfs/blob/4.44/.github/workflows/container_release_unified.yml",
       "sha256": "40ba973a098d6468d85b86d0a69a2df6ccfbb3f9c917e5362825b45a1aa51855",
+      "releaseRunUrl": "https://github.com/seaweedfs/seaweedfs/actions/runs/32560256408",
+      "releaseRunHeadCommit": "3563738699f29fd1c9efde6fcbf4ba253439cac8",
+      "releaseRunConclusion": "success",
       "provenance": "disabled by provenance: false",
       "sbom": "No upstream release SBOM was found.",
       "signature": "No release or OCI signature was found.",
       "attestation": "No GitHub artifact attestation was found.",
-      "sourceToImageBinding": "No upstream provenance, signature, or attestation binds the release source commit to the OCI index. This absence is retained as a supply-chain limitation; no source-to-image claim is made.",
+      "sourceToImageBinding": "Both immutable platform configs self-assert source revision 3563738699f29fd1c9efde6fcbf4ba253439cac8 and the upstream release workflow succeeded on that exact head. No signature, provenance, or attestation independently proves that the OCI bytes were produced from it, so source findings are release-source qualification failures rather than runtime reproduction against the image.",
       "vulnerabilityGate": "Report-only, native-platform, ignore-unfixed HIGH/CRITICAL scan with exit code 0."
     },
     "independentScanner": {
@@ -108,7 +113,7 @@
           "severityBasis": "Trivy selected HIGH; its retained vendor severities record Red Hat and Photon as HIGH and Ubuntu as MEDIUM, while the OpenSSL advisory rates the issue Low.",
           "packages": ["libcrypto3 3.5.7-r0", "libssl3 3.5.7-r0"],
           "fixedVersion": "3.5.8-r0",
-          "reachability": "The advisory requires an application-created OpenSSL QUIC server. The assessed weed mini topology is TCP-only, publishes no UDP listener, and does not use OpenSSL as a QUIC server.",
+          "reachability": "The advisory requires an application-created OpenSSL QUIC server. The proposed weed mini topology would publish only TCP port 8333 and no UDP listener, but topology and runtime reachability were not executed for this no-go candidate.",
           "disposition": "Policy failure: an exception may be technically eligible, but no explicit reviewed exception was requested or accepted for this candidate.",
           "requiredMitigationsIfReassessed": [
             "Publish only S3 TCP port 8333.",
@@ -124,6 +129,7 @@
     "assessedUpstreamCommitUrl": "https://github.com/seaweedfs/seaweedfs/commit/d3b8030a69de22ac06cd8e90dad0eeddb194fc45",
     "compareUrl": "https://github.com/seaweedfs/seaweedfs/compare/3563738699f29fd1c9efde6fcbf4ba253439cac8...d3b8030a69de22ac06cd8e90dad0eeddb194fc45",
     "commitsAheadAtAssessment": 101,
+    "applicability": "The exact OCI configs self-assert the assessed release source revision, but absent signed provenance these findings fail release-source qualification and are not claims that the source defects were reproduced against the image. The independently scanned vulnerability policy failure remains sufficient for the exact-image no-go.",
     "blockingFindings": [
       {
         "id": "prefix-key-object-loss",
@@ -168,7 +174,7 @@
         "fixedBy": "c80664ec21a5e4217e0255e46f6cd315e500a1d3",
         "fixedAtUtc": "2026-08-24T05:11:08Z",
         "url": "https://github.com/seaweedfs/seaweedfs/commit/c80664ec21a5e4217e0255e46f6cd315e500a1d3",
-        "mitigation": "None without rebuilding the provider or weakening the required acknowledged-write durability and recovery gate."
+        "mitigation": "Release 4.44 source cannot define a topology that enforces configured fsync for S3 writes without rebuilding the provider or weakening the required durability gate; impact was not reproduced against the exact image."
       }
     ],
     "boundedFindings": [
@@ -191,11 +197,11 @@
   "gates": [
     { "name": "source-license-identity", "status": "passed" },
     { "name": "immutable-index-and-platform-digests", "status": "passed" },
-    { "name": "source-to-image-provenance", "status": "bounded-absence", "reason": "No upstream signature, provenance, or attestation binds source to the image; exact digest inspection remains reproducible and no source-to-image claim is made." },
+    { "name": "source-to-image-provenance", "status": "bounded-absence", "reason": "Immutable config labels and exact-head workflow metadata associate source and image, but no upstream signature, provenance, or attestation independently proves the binding." },
     { "name": "independent-amd64-arm64-sbom-and-scan", "status": "passed" },
     { "name": "vulnerability-policy", "status": "failed", "reason": "Both platforms contain HIGH CVE-2026-14456 and no explicit reviewed exception was accepted." },
     { "name": "provider-neutral-contract-source-review", "status": "failed" },
-    { "name": "runtime-conformance", "status": "not-run", "reason": "Fail-fast after unmitigable source-level contract failures." },
+    { "name": "runtime-conformance", "status": "not-run", "reason": "Fail-fast after the exact image failed vulnerability policy; release-source contract findings could not reverse that no-go." },
     { "name": "least-privilege-non-root-topology", "status": "not-run", "reason": "Cannot reverse the no-go decision." },
     { "name": "fault-and-restart-matrix", "status": "not-run", "reason": "Cannot reverse the no-go decision." },
     { "name": "backup-destructive-loss-restore", "status": "not-run", "reason": "Cannot reverse the no-go decision." },
@@ -218,11 +224,13 @@
   "decision": {
     "outcome": "no-go",
     "decisiveGates": [
-      "vulnerability-policy",
-      "provider-neutral-contract-source-review"
+      "vulnerability-policy"
     ],
-    "reasonIds": [
-      "unexcepted-high-vulnerability",
+    "decisiveReasonIds": [
+      "unexcepted-high-vulnerability"
+    ],
+    "additionalFailedGate": "provider-neutral-contract-source-review",
+    "releaseSourceFindingIds": [
       "prefix-key-object-loss",
       "cross-request-upload-cancellation",
       "conditional-missing-misclassification",
@@ -232,6 +240,14 @@
     "adoptionAuthorized": false,
     "automaticFallbackAuthorized": false,
     "downstreamIssue506": "blocked",
-    "nextAction": "Return to epic #499 for an explicit decision to wait for a stable SeaweedFS release containing the required fixes or approve a separately qualified fallback candidate."
+    "operationalOwner": "RM-016 roadmap coordinator recorded in epic #499",
+    "releaseAndAdvisoryMonitoringPolicy": "Before another candidate claim, select a new exact stable release and OCI index, confirm disposition of every cited source fix and current advisory, and repeat digest-bound SBOM, vulnerability, provenance, conformance, topology, recovery, performance, and native-platform qualification from a fresh evidence root.",
+    "investigatedFallback": "VersityGW",
+    "residualRisks": [
+      "The exact image was not started, so topology, contract, fault, restore, runtime signal, performance, and native-platform behavior remain unqualified.",
+      "The source revision labels and release workflow metadata are not signed source-to-image provenance.",
+      "A later SeaweedFS release or VersityGW requires a complete independent qualification; no fallback is automatic."
+    ],
+    "nextAction": "Return to epic #499 for an explicit decision to wait for a stable SeaweedFS release containing the required fixes or approve VersityGW, the investigated alternative, for a separate qualification."
   }
 }
