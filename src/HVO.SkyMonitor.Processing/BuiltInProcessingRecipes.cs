@@ -19,6 +19,21 @@ public static class BuiltInProcessingRecipes
     public const string ReferenceCalibration = "reference-calibration";
     public const string ProjectedScene = "projected-scene";
 
+    private static readonly Dictionary<string, ProcessingRecipeDefinition> Definitions = CreateAll()
+        .Select(static recipe => recipe.Definition)
+        .ToDictionary(static definition => definition.Name, StringComparer.Ordinal);
+
+    public static bool TryGetDefinition(string recipeName, out ProcessingRecipeDefinition? definition)
+    {
+        if (Definitions.TryGetValue(recipeName, out var found))
+        {
+            definition = found;
+            return true;
+        }
+        definition = null;
+        return false;
+    }
+
     public static ProcessingRecipeIdentity CreateRequestedIdentity(
         string recipeName,
         JsonElement options,
