@@ -513,7 +513,7 @@ public sealed class ProtectedApiTests
             MediaType = "image/jpeg",
             ByteLength = 1,
             ChecksumSha256 = new string('A', 64),
-            StorageReference = $"minio://scope-test/{suffix}",
+            StorageReference = $"s3://scope-test/{suffix}",
             ReceivedAtUtc = DateTimeOffset.UtcNow,
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ObjectState = CentralArtifactObjectState.Available,

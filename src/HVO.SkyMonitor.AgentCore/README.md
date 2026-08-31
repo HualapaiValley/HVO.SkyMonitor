@@ -13,7 +13,7 @@ Key types include:
 - `ExposureEnvelope` - optional min/max bands plus day/twilight/night defaults, preference, hysteresis, and bounded adjustment settings.
 - `ICameraModule`/`ICameraSetpointController` and `ICameraModuleFactory` - capture plus pre-ingress setpoint application abstractions consumed by the host loop.
 
-Astronomy projection contracts belong in `HVO.SkyMonitor.Astronomy`; this project must not gain ASP.NET, EF Core, MinIO, SkiaSharp, or camera-SDK dependencies.
+Astronomy projection contracts belong in `HVO.SkyMonitor.Astronomy`; this project must not gain ASP.NET, EF Core, object-storage SDK, SkiaSharp, or camera-SDK dependencies.
 
 The manifest-v2 wire contract and compatibility behavior are documented in
 [`docs/contracts/capture-manifest-v2.md`](../../docs/contracts/capture-manifest-v2.md).

@@ -156,6 +156,8 @@ deploy_up_stage_target() {
             secret_destinations=("$config_root/initializer-secrets" "$config_root/runtime-secrets")
             [[ "$key" != ConnectionStrings__skymonitordb-migrations ]] || secret_destinations=("$config_root/initializer-secrets")
             [[ "$key" != ConnectionStrings__skymonitordb ]] || secret_destinations=("$config_root/runtime-secrets")
+            [[ "$key" != ObjectStorage__AccessKey && "$key" != ObjectStorage__SecretKey && "$key" != ObjectStorage__SessionToken ]] ||
+              secret_destinations=("$config_root/runtime-secrets")
         fi
         for destination in "${secret_destinations[@]}"; do
             deploy_phase_correlate_target "$target" "$DEPLOY_IMAGES_PREFLIGHT_JSON" || { rm -f -- "$local_secret"; return 1; }
@@ -171,9 +173,11 @@ deploy_up_stage_target() {
             deploy_up_stage_value "$target" "$render_root" "$destination" OpenIddictCertificates__SigningPath /run/hvo-certificates/signing.pfx || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" OpenIddictCertificates__EncryptionPath /run/hvo-certificates/encryption.pfx || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Redis__InstanceName "$(jq -r '.deployment.services.redis.prefix' "$inventory")" || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" Minio__Endpoint "$(jq -r '.deployment.services.minio.host' "$inventory")" || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" Minio__Port "$(jq -r '.deployment.services.minio.port' "$inventory")" || return 1
-            deploy_up_stage_value "$target" "$render_root" "$destination" Minio__UseSsl "$(jq -r '.deployment.services.minio.useSsl' "$inventory")" || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__ServiceEndpoint "$(jq -r '.deployment.services.minio.host' "$inventory"):$(jq -r '.deployment.services.minio.port' "$inventory")" || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__Region us-east-1 || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__UseTls "$(jq -r '.deployment.services.minio.useSsl' "$inventory")" || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__AddressingStyle Path || return 1
+            deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__CredentialMode Static || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__ArtifactBucket "$(jq -r '.deployment.resources.artifactBucket' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" ObjectStorage__DiagnosticsBucket "$(jq -r '.deployment.resources.diagnosticsBucket' "$inventory")" || return 1
             deploy_up_stage_value "$target" "$render_root" "$destination" Catalog__Root /app/catalog || return 1
@@ -410,8 +414,8 @@ deploy_run_up() {
     image="$(jq -r --arg target "$name" '.targets[] | select(.target == $target) | .reference' <<< "$images")"
     deploy_up_stage_target "$inventory" "$target" "$run_id" "$render_root" "$image" logicHost || return 1
     if [[ "$mode_services" == deploy ]]; then
-        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/runtime-secrets" Minio__AccessKey "$minio_runtime_access" || return 1
-        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/runtime-secrets" Minio__SecretKey "$minio_runtime_secret" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/runtime-secrets" ObjectStorage__AccessKey "$minio_runtime_access" || return 1
+        deploy_up_stage_value "$target" "$render_root" "$DEPLOY_UP_CONFIG_ROOT/runtime-secrets" ObjectStorage__SecretKey "$minio_runtime_secret" || return 1
         unset minio_runtime_access minio_runtime_secret
     fi
     deploy_up_compose_mutation "$target" "$context" "$(deploy_compose_project "$inventory" "$target")" "$DEPLOY_UP_ENV_FILE" "$REPO_ROOT/deploy/split-host/compose.logichost.yml" --profile initialize run --rm logic-init || { deploy_fail up logic initializer-failed; return 1; }

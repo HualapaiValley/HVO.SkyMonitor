@@ -228,7 +228,7 @@ public sealed class CentralRecoveryPerformanceTests
             OperationalLimits = new
             {
                 CatchAllAudit = "One linear O(namespace) streaming listing per prefix and 24-hour generation; each prefix must complete within the renewable 30-minute recovery lease",
-                CanonicalGeneratedKeys = $"Bounded to {CentralArtifactReconciliationService.MaximumMinioInventoryObjectsPerCycle} objects per partition cycle"
+                CanonicalGeneratedKeys = $"Bounded to {CentralArtifactReconciliationService.MaximumObjectStoreInventoryObjectsPerCycle} objects per partition cycle"
             },
             Command = "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter \"FullyQualifiedName~CentralRecoveryPerformanceTests.W3M_10000MetadataAndBoundedPayloadRecovery_RecordsExactEvidence\"",
             CanonicalW3PCommand = "HVO_RECOVERY_PERF_W3P=1 dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter \"FullyQualifiedName~CentralRecoveryPerformanceTests.W3M_10000MetadataAndBoundedPayloadRecovery_RecordsExactEvidence\""
@@ -269,7 +269,7 @@ public sealed class CentralRecoveryPerformanceTests
         {
             var artifactId = Guid.NewGuid();
             table.Rows.Add(Guid.NewGuid(), frameId, artifactId, devicePublicId, "Preview", "w3m-v1", "legacy",
-                "application/octet-stream", 1L, new string('A', 64), $"minio://legacy-w3m/{runId}/{index:D5}",
+                "application/octet-stream", 1L, new string('A', 64), $"s3://legacy-w3m/{runId}/{index:D5}",
                 DateTimeOffset.UnixEpoch, Convert.ToHexString(SHA256.HashData(artifactId.ToByteArray())),
                 "Available", "Complete", 0, 0L, 0);
         }
@@ -311,7 +311,7 @@ public sealed class CentralRecoveryPerformanceTests
                 MediaType = "application/octet-stream",
                 ByteLength = payload.LongLength,
                 ChecksumSha256 = checksum,
-                StorageReference = $"minio://{Bucket}/{key}",
+                StorageReference = $"s3://{Bucket}/{key}",
                 ReceivedAtUtc = DateTimeOffset.UnixEpoch,
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Pending,
@@ -369,10 +369,10 @@ public sealed class CentralRecoveryPerformanceTests
     {
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
-        services.AddSingleton(AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IMinioClient>());
+        services.AddSingleton(AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>());
         services.AddSingleton<CentralArtifactRetrievalTelemetry>();
         services.AddScoped<ICentralArtifactObjectReader>(provider => new CentralArtifactObjectReader(
-            provider.GetRequiredService<IMinioClient>(),
+            provider.GetRequiredService<IObjectStore>(),
             provider.GetRequiredService<CentralArtifactRetrievalTelemetry>(),
             TimeProvider.System,
             NullLogger<CentralArtifactObjectReader>.Instance));

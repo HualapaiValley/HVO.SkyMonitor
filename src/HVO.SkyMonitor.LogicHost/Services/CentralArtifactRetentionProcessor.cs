@@ -1,12 +1,8 @@
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
-using System.Net;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -27,7 +23,7 @@ internal enum CentralArtifactRetentionProcessResult
 internal sealed partial class CentralArtifactRetentionProcessor(
     ApplicationDbContext dbContext,
     ICentralArtifactRetentionReferences references,
-    IMinioClient minio,
+    IObjectStore objectStore,
     TimeProvider timeProvider,
     CentralArtifactRetentionTelemetry telemetry,
     ILogger<CentralArtifactRetentionProcessor> logger,
@@ -145,13 +141,8 @@ internal sealed partial class CentralArtifactRetentionProcessor(
         using var deleteActivity = CentralArtifactRetentionTelemetry.Start("central-artifact.retention.delete");
         try
         {
-            await minio.RemoveObjectAsync(new RemoveObjectArgs()
-                .WithBucket(_storageNames.ArtifactBucket)
-                .WithObject(snapshot.ObjectKey), cancellationToken).ConfigureAwait(false);
-        }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
-        {
-            deleteOutcome = "missing";
+            await objectStore.DeleteAsync(
+                _storageNames.ArtifactBucket, snapshot.ObjectKey, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -609,10 +600,7 @@ internal sealed partial class CentralArtifactRetentionProcessor(
             Math.Pow(2, Math.Clamp(attemptCount - 1, 0, 20))));
 
     private static bool IsObjectStoreFailure(Exception exception)
-        => exception is MinioException
-            or HttpRequestException
-            or IOException
-            or TimeoutException
+        => exception is ObjectStoreException
             or OperationCanceledException
             or ArgumentException
             or NotSupportedException
@@ -624,54 +612,25 @@ internal sealed partial class CentralArtifactRetentionProcessor(
         {
             return true;
         }
-        if (exception is not MinioException minioException)
-        {
-            return false;
-        }
-        var status = minioException.ServerResponse?.StatusCode;
-        var code = minioException.Response?.Code;
-        return status is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
-            or HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed or HttpStatusCode.NotImplemented
-            || code is "AccessDenied" or "InvalidAccessKeyId" or "SignatureDoesNotMatch"
-                or "InvalidRequest" or "InvalidBucketName" or "NoSuchBucket" or "NotImplemented";
+        return exception is ObjectStoreException objectStoreException && objectStoreException.IsTerminal;
     }
 
     private static string GetFailureCategory(Exception exception)
     {
-        if (exception is TimeoutException or OperationCanceledException) return "timeout";
-        if (exception is HttpRequestException or IOException) return "connection";
+        if (exception is OperationCanceledException) return "timeout";
         if (exception is ArgumentException) return "invalid-reference";
         if (exception is NotSupportedException) return "unsupported-storage";
         if (exception is InvalidOperationException) return "configuration";
-        if (exception is MinioException minioException)
+        if (exception is ObjectStoreException objectStoreException)
         {
-            if (minioException.Response?.Code is "InvalidAccessKeyId" or "SignatureDoesNotMatch")
+            return objectStoreException.Kind switch
             {
-                return "authentication";
-            }
-            if (minioException.Response?.Code == "AccessDenied")
-            {
-                return "authorization";
-            }
-            if (minioException.Response?.Code == "InvalidRequest")
-            {
-                return "invalid-reference";
-            }
-            if (minioException.Response?.Code is "InvalidBucketName" or "NoSuchBucket")
-            {
-                return "configuration";
-            }
-            if (minioException.Response?.Code == "NotImplemented")
-            {
-                return "unsupported-storage";
-            }
-            return minioException.ServerResponse?.StatusCode switch
-            {
-                HttpStatusCode.Unauthorized => "authentication",
-                HttpStatusCode.Forbidden => "authorization",
-                HttpStatusCode.BadRequest => "invalid-reference",
-                HttpStatusCode.NotFound => "configuration",
-                HttpStatusCode.MethodNotAllowed or HttpStatusCode.NotImplemented => "unsupported-storage",
+                ObjectStoreFailureKind.Authentication => "authentication",
+                ObjectStoreFailureKind.Authorization => "authorization",
+                ObjectStoreFailureKind.MissingBucket => "configuration",
+                ObjectStoreFailureKind.Unsupported => "unsupported-storage",
+                ObjectStoreFailureKind.Timeout or ObjectStoreFailureKind.Canceled => "timeout",
+                ObjectStoreFailureKind.Transient or ObjectStoreFailureKind.Throttled => "connection",
                 _ => "object-store"
             };
         }

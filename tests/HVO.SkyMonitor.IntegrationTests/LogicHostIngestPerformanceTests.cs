@@ -558,6 +558,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                     .WithHttpClient(httpClient, disposeHttpClient: true)
                     .Build();
             });
+            ObjectStoreTestClient.Replace(services);
             if (startWorker)
             {
                 services.AddHostedService<CentralArtifactReconciliationService>();
@@ -946,7 +947,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             Assert.IsNotNull(frame);
             Assert.AreEqual(expected.Workload.Payload.LongLength, frame.PixelData.Length);
 
-            var objectKey = artifact.StorageReference[$"minio://{ArtifactBucket}/".Length..];
+            var objectKey = artifact.StorageReference[$"s3://{ArtifactBucket}/".Length..];
             string? objectChecksum = null;
             var objectInfo = await minio.StatObjectAsync(new StatObjectArgs()
                 .WithBucket(ArtifactBucket).WithObject(objectKey)).ConfigureAwait(false);

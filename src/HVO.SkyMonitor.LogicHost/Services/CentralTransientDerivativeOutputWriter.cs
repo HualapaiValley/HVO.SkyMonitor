@@ -7,9 +7,6 @@ using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -25,7 +22,7 @@ internal interface ICentralTransientDerivativeOutputWriter
 
 internal sealed class CentralTransientDerivativeOutputWriter(
     ApplicationDbContext dbContext,
-    IMinioClient minio,
+    IObjectStore objectStore,
     ICentralTransientEventVersionAppender versionAppender,
     TimeProvider timeProvider,
     CentralTransientLifecycleTelemetry? telemetry = null,
@@ -495,35 +492,33 @@ internal sealed class CentralTransientDerivativeOutputWriter(
         var objectKey = intent.StorageReference[BucketPrefix.Length..];
         try
         {
-            var stat = await minio.StatObjectAsync(new StatObjectArgs().WithBucket(Bucket).WithObject(objectKey),
-                cancellationToken).ConfigureAwait(false);
-            if (stat.Size != intent.ByteLength)
+            var stat = await objectStore.StatAsync(Bucket, objectKey, cancellationToken).ConfigureAwait(false);
+            if (stat.ContentLength != intent.ByteLength)
             {
                 throw new CentralDerivativeOutputIntegrityException("object.length-mismatch");
             }
             long bytesRead = 0;
             string? checksum = null;
-            await minio.GetObjectAsync(new GetObjectArgs().WithBucket(Bucket).WithObject(objectKey)
-                .WithMatchETag(stat.ETag).WithCallbackStream(async (stream, token) =>
+            await objectStore.ReadAsync(Bucket, objectKey, stat.Generation, async (stream, token) =>
+            {
+                using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var buffer = new byte[81920];
+                int read;
+                while ((read = await stream.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
                 {
-                    using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-                    var buffer = new byte[81920];
-                    int read;
-                    while ((read = await stream.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
-                    {
-                        hash.AppendData(buffer, 0, read);
-                        bytesRead += read;
-                    }
-                    checksum = Convert.ToHexString(hash.GetHashAndReset());
-                }), cancellationToken).ConfigureAwait(false);
+                    hash.AppendData(buffer, 0, read);
+                    bytesRead += read;
+                }
+                checksum = Convert.ToHexString(hash.GetHashAndReset());
+            }, cancellationToken).ConfigureAwait(false);
             if (bytesRead != intent.ByteLength ||
                 !string.Equals(checksum, intent.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new CentralDerivativeOutputIntegrityException("object.checksum-mismatch");
             }
-            return stat.ETag;
+            return stat.Generation;
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             return null;
         }
@@ -541,21 +536,17 @@ internal sealed class CentralTransientDerivativeOutputWriter(
             await using var stream = MemoryMarshal.TryGetArray(payload, out var segment) && segment.Array is not null
                 ? new MemoryStream(segment.Array, segment.Offset, segment.Count, writable: false, publiclyVisible: false)
                 : new MemoryStream(payload.ToArray(), writable: false);
-            await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(stagingKey)
-                .WithStreamData(stream).WithObjectSize(payload.Length).WithContentType(intent.MediaType),
-                cancellationToken).ConfigureAwait(false);
-            await minio.CopyObjectAsync(new CopyObjectArgs().WithBucket(Bucket).WithObject(objectKey)
-                .WithCopyObjectSource(new CopySourceObjectArgs().WithBucket(Bucket).WithObject(stagingKey)),
-                cancellationToken).ConfigureAwait(false);
+            await objectStore.PutAsync(
+                Bucket, stagingKey, stream, payload.Length, intent.MediaType, cancellationToken).ConfigureAwait(false);
+            await objectStore.CopyAsync(Bucket, stagingKey, objectKey, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             try
             {
-                await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket(Bucket).WithObject(stagingKey),
-                    CancellationToken.None).ConfigureAwait(false);
+                await objectStore.DeleteAsync(Bucket, stagingKey, CancellationToken.None).ConfigureAwait(false);
             }
-            catch (MinioException)
+            catch (ObjectStoreException)
             {
                 // The reconciliation worker removes stale staging objects.
             }
@@ -587,7 +578,7 @@ internal sealed class CentralTransientDerivativeOutputWriter(
         CentralDerivativeJobLease lease,
         CentralTransientDerivativeBundle bundle)
         => CreateStorageReferences(CreateOutputs(lease, bundle),
-            $"minio://{Configuration.CentralObjectStorageOptions.DefaultArtifactBucket}/");
+            $"s3://{Configuration.CentralObjectStorageOptions.DefaultArtifactBucket}/");
 
     private static string[] CreateStorageReferences(IReadOnlyList<Output> outputs, string bucketPrefix)
         => outputs.Select(output => $"{bucketPrefix}{output.ObjectKey}")

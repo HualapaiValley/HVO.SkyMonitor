@@ -38,7 +38,7 @@ public sealed class DiagnosticsTests
             Content = $"Payload-{Guid.NewGuid():N}"
         };
 
-        var response = await _client!.PostAsJsonAsync(new Uri("/api/v1.0/diagnostics/minio", UriKind.Relative), request).ConfigureAwait(false);
+        var response = await _client!.PostAsJsonAsync(new Uri("/api/v1.0/diagnostics/object-storage", UriKind.Relative), request).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         var result = await response.Content.ReadFromJsonAsync<StorageDiagnosticsResponse>().ConfigureAwait(false);
@@ -51,7 +51,7 @@ public sealed class DiagnosticsTests
     {
         await AuthenticateAsSystemAsync().ConfigureAwait(false);
 
-        var response = await _client!.PostAsJsonAsync(new Uri("/api/v1.0/diagnostics/minio", UriKind.Relative), new StorageDiagnosticsRequest
+        var response = await _client!.PostAsJsonAsync(new Uri("/api/v1.0/diagnostics/object-storage", UriKind.Relative), new StorageDiagnosticsRequest
         {
             Bucket = "other-repository-data",
             Content = "must not be written"

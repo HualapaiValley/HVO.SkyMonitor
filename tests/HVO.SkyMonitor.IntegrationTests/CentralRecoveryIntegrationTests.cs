@@ -29,7 +29,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class CentralRecoveryIntegrationTests
 {
     private const string Bucket = "skymonitor-artifacts";
-    private const string StoragePrefix = "minio://skymonitor-artifacts/";
+    private const string StoragePrefix = "s3://skymonitor-artifacts/";
     private readonly HashSet<string> objectKeys = new(StringComparer.Ordinal);
     private readonly string agentMarker = $"central-recovery-test-{Guid.NewGuid():N}";
 
@@ -139,7 +139,7 @@ public sealed class CentralRecoveryIntegrationTests
                     await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket(Bucket).WithObject(key), cancellationToken)
                         .ConfigureAwait(false);
                 }
-                catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+                catch (MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception))
                 {
                 }
             }).ConfigureAwait(false);
@@ -216,7 +216,7 @@ public sealed class CentralRecoveryIntegrationTests
                 CentralReconstructionState.Complete).ConfigureAwait(false);
         }
         var legacyId = await AddArtifactAsync(db, $"legacy/{Guid.NewGuid():N}-not-owned.bin", [7], CentralArtifactObjectState.Available,
-            CentralReconstructionState.Complete, storageReference: "minio://unsupported-bucket/not-owned.bin").ConfigureAwait(false);
+            CentralReconstructionState.Complete, storageReference: "s3://unsupported-bucket/not-owned.bin").ConfigureAwait(false);
         await SetCheckpointAsync(db, CentralRecoveryPhases.SqlArtifacts, generation: generation).ConfigureAwait(false);
 
         await CreateReconciler(database.Services, TimeProvider.System)
@@ -224,7 +224,7 @@ public sealed class CentralRecoveryIntegrationTests
 
         db.ChangeTracker.Clear();
         var checkpoint = await db.CentralRecoveryCheckpoints.SingleAsync().ConfigureAwait(false);
-        checkpoint.Phase.Should().Be(CentralRecoveryPhases.MinioArtifacts,
+        checkpoint.Phase.Should().Be(CentralRecoveryPhases.ObjectStoreArtifacts,
             "an exact SQL page is complete without an empty follow-up query");
         (await db.CentralArtifacts.CountAsync(item => item.Frame!.AgentId == agentMarker
                 && item.RecoveryGeneration == generation).ConfigureAwait(false))
@@ -262,7 +262,7 @@ public sealed class CentralRecoveryIntegrationTests
         (await db.CentralArtifacts.CountAsync(item => ids.Contains(item.Id) && item.RecoveryGeneration == generation)
             .ConfigureAwait(false)).Should().Be(ids.Count);
         (await db.CentralRecoveryCheckpoints.SingleAsync().ConfigureAwait(false)).Phase
-            .Should().Be(CentralRecoveryPhases.MinioArtifacts);
+            .Should().Be(CentralRecoveryPhases.ObjectStoreArtifacts);
         firstImmediate.Should().BeTrue();
         secondImmediate.Should().BeTrue();
         (ids.Count / elapsed.TotalSeconds).Should().BeGreaterThan(1);
@@ -277,8 +277,8 @@ public sealed class CentralRecoveryIntegrationTests
         var key = $"{objectNamespace}/30/{Guid.NewGuid():N}.bin";
         await PutObjectAsync(key, payload).ConfigureAwait(false);
         await SetCheckpointAsync(objectNamespace == "artifacts"
-            ? CentralRecoveryPhases.MinioArtifacts
-            : CentralRecoveryPhases.MinioDerivatives, partition: 0x30).ConfigureAwait(false);
+            ? CentralRecoveryPhases.ObjectStoreArtifacts
+            : CentralRecoveryPhases.ObjectStoreDerivatives, partition: 0x30).ConfigureAwait(false);
 
         await RunFreshCycleAsync().ConfigureAwait(false);
         var pendingCopy = await ReadDispositionAsync(key).ConfigureAwait(false);
@@ -303,7 +303,7 @@ public sealed class CentralRecoveryIntegrationTests
     {
         var key = $"artifacts/35/{Guid.NewGuid():N}.bin";
         await PutObjectAsync(key, [1, 2, 3]).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x35).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0x35).ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
         var firstCopy = await ReadDispositionAsync(key).ConfigureAwait(false);
@@ -326,7 +326,7 @@ public sealed class CentralRecoveryIntegrationTests
         var payload = new byte[] { 4, 2 };
         var key = $"artifacts/36/{Guid.NewGuid():N}.bin";
         await PutObjectAsync(key, payload).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x36).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0x36).ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
         var pending = await ReadDispositionAsync(key).ConfigureAwait(false);
         pending.State.Should().Be(CentralObjectRecoveryStates.PendingCopy);
@@ -348,7 +348,7 @@ public sealed class CentralRecoveryIntegrationTests
         var payload = new byte[] { 4, 2 };
         var key = $"artifacts/37/{Guid.NewGuid():N}.bin";
         await PutObjectAsync(key, payload).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x37).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0x37).ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
         var pending = await ReadDispositionAsync(key).ConfigureAwait(false);
         pending.State.Should().Be(CentralObjectRecoveryStates.PendingCopy);
@@ -370,7 +370,7 @@ public sealed class CentralRecoveryIntegrationTests
         var payload = new byte[] { 4, 3 };
         var key = $"artifacts/39/{Guid.NewGuid():N}.bin";
         await PutObjectAsync(key, payload).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x39).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0x39).ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
         var copied = await ReadDispositionAsync(key).ConfigureAwait(false);
@@ -391,7 +391,7 @@ public sealed class CentralRecoveryIntegrationTests
     {
         var key = $"artifacts/40/{Guid.NewGuid():N}.bin";
         await PutObjectAsync(key, [1]).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x40).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0x40).ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
@@ -400,7 +400,7 @@ public sealed class CentralRecoveryIntegrationTests
         var firstTarget = first.TargetObjectKey;
 
         await PutObjectAsync(key, [2]).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x40).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0x40).ConfigureAwait(false);
         await RunFreshCycleAsync().ConfigureAwait(false);
         var reopened = await ReadDispositionAsync(key).ConfigureAwait(false);
 
@@ -418,7 +418,7 @@ public sealed class CentralRecoveryIntegrationTests
         var key = $"artifacts/50/{Guid.NewGuid():N}.bin";
         await AddArtifactAsync(key, [5, 4, 3], CentralArtifactObjectState.Expired,
             CentralReconstructionState.Complete).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x50).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0x50).ConfigureAwait(false);
 
         _ = await RunFreshCycleAsync().ConfigureAwait(false);
 
@@ -447,7 +447,7 @@ public sealed class CentralRecoveryIntegrationTests
         completed.OperationToken.Should().NotBeNull();
         completed.State.Should().Be(CentralObjectRecoveryStates.Completed);
         await PutObjectAsync(key, payload).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x51).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0x51).ConfigureAwait(false);
 
         await RunFreshCycleAsync().ConfigureAwait(false);
 
@@ -480,14 +480,14 @@ public sealed class CentralRecoveryIntegrationTests
     {
         const int partition = 0x60;
         var payload = new byte[] { 6 };
-        var count = CentralArtifactReconciliationService.MaximumMinioInventoryObjectsPerCycle + 1;
+        var count = CentralArtifactReconciliationService.MaximumObjectStoreInventoryObjectsPerCycle + 1;
         for (var index = 0; index < count; index++)
         {
             var key = $"artifacts/60/{index:D3}.bin";
             await AddArtifactAsync(key, payload, CentralArtifactObjectState.Available,
                 CentralReconstructionState.PendingReference).ConfigureAwait(false);
         }
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: partition).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: partition).ConfigureAwait(false);
 
         await RunFreshCycleAsync().ConfigureAwait(false);
         await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
@@ -519,7 +519,7 @@ public sealed class CentralRecoveryIntegrationTests
             CentralReconstructionState.PendingReference).ConfigureAwait(false);
         await PutObjectAsync(upperKey, [2]).ConfigureAwait(false);
         await PutObjectAsync(malformedKey, [3]).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifactsCatchAll).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifactsCatchAll).ConfigureAwait(false);
 
         var immediate = await RunFreshCycleAsync().ConfigureAwait(false);
 
@@ -531,7 +531,7 @@ public sealed class CentralRecoveryIntegrationTests
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var checkpoint = await db.CentralRecoveryCheckpoints.SingleAsync().ConfigureAwait(false);
-        checkpoint.Phase.Should().Be(CentralRecoveryPhases.MinioDerivatives);
+        checkpoint.Phase.Should().Be(CentralRecoveryPhases.ObjectStoreDerivatives);
         checkpoint.ObjectCursor.Should().BeNull();
         (await db
             .CentralObjectRecoveryDispositions.CountAsync(item =>
@@ -576,7 +576,7 @@ public sealed class CentralRecoveryIntegrationTests
                     .WithStreamData(new MemoryStream([1], writable: false)).WithObjectSize(1), cancellationToken)
                     .ConfigureAwait(false);
             }).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifactsCatchAll).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifactsCatchAll).ConfigureAwait(false);
         using var observations = new RecoveryObservationCollector();
 
         var immediate = await RunFreshCycleAsync().ConfigureAwait(false);
@@ -587,7 +587,7 @@ public sealed class CentralRecoveryIntegrationTests
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var checkpoint = await db.CentralRecoveryCheckpoints.AsNoTracking().SingleAsync().ConfigureAwait(false);
-        checkpoint.Phase.Should().Be(CentralRecoveryPhases.MinioDerivatives);
+        checkpoint.Phase.Should().Be(CentralRecoveryPhases.ObjectStoreDerivatives);
         checkpoint.ObjectCursor.Should().BeNull("linear catch-all traversal has no client replay cursor");
         (await db.CentralObjectRecoveryDispositions.CountAsync(item => item.SourceObjectKey.StartsWith(
             $"artifacts/{deviceKey}/")).ConfigureAwait(false)).Should().Be(0,
@@ -598,7 +598,7 @@ public sealed class CentralRecoveryIntegrationTests
     public async Task EmptyMinioPartitions_RequestImmediateContinuation()
     {
         var partition = await FindEmptyObjectPartitionPairAsync("artifacts/").ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: partition).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: partition).ConfigureAwait(false);
 
         var first = await RunFreshCycleAsync().ConfigureAwait(false);
         var second = await RunFreshCycleAsync().ConfigureAwait(false);
@@ -608,7 +608,7 @@ public sealed class CentralRecoveryIntegrationTests
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var checkpoint = await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
             .CentralRecoveryCheckpoints.SingleAsync().ConfigureAwait(false);
-        checkpoint.Phase.Should().Be(CentralRecoveryPhases.MinioArtifacts);
+        checkpoint.Phase.Should().Be(CentralRecoveryPhases.ObjectStoreArtifacts);
         checkpoint.ObjectPartition.Should().Be(partition + 2);
     }
 
@@ -690,7 +690,7 @@ public sealed class CentralRecoveryIntegrationTests
     {
         var key = $"artifacts/a0/{Guid.NewGuid():N}.bin";
         await PutObjectAsync(key, [1, 0]).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0xa0).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0xa0).ConfigureAwait(false);
         using var firstTelemetry = new CentralIngestTelemetry();
         using var secondTelemetry = new CentralIngestTelemetry();
         var scopeFactory = AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IServiceScopeFactory>();
@@ -735,6 +735,7 @@ public sealed class CentralRecoveryIntegrationTests
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
         services.AddSingleton<IMinioClient>(minio);
+        services.AddSingleton<IObjectStore>(ObjectStoreTestClient.Create(minio));
         AddObjectReader(services);
         services.AddScoped<ICentralDerivativeJobScheduler>(_ => new RecordingScheduler());
         await using var provider = services.BuildServiceProvider();
@@ -765,6 +766,8 @@ public sealed class CentralRecoveryIntegrationTests
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
         services.AddSingleton(GetMinio());
+        services.AddSingleton<IObjectStore>(provider =>
+            ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
         AddObjectReader(services);
         services.AddScoped<ICentralDerivativeJobScheduler>(provider => new CommittingLeaseStealingScheduler(
             provider.GetRequiredService<ApplicationDbContext>(), provider.GetRequiredService<IServiceScopeFactory>(), state));
@@ -1082,7 +1085,7 @@ public sealed class CentralRecoveryIntegrationTests
         var clock = new MutableTimeProvider(now);
         var artifactId = await AddArtifactAsync($"unsupported/{Guid.NewGuid():N}.bin", [8],
             CentralArtifactObjectState.Available, CentralReconstructionState.PendingReference, putObject: false,
-            storageReference: $"minio://legacy-overflow/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
+            storageReference: $"s3://legacy-overflow/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
         await using (var setupScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             await setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralArtifacts
@@ -1108,7 +1111,7 @@ public sealed class CentralRecoveryIntegrationTests
         var artifactId = await AddArtifactAsync(
             $"unsupported/{Guid.NewGuid():N}.bin", [8, 8], CentralArtifactObjectState.Pending,
             CentralReconstructionState.Complete, putObject: false,
-            storageReference: $"minio://legacy-private/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
+            storageReference: $"s3://legacy-private/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
         await SetCheckpointAsync(CentralRecoveryPhases.Idle, nextInventoryAtUtc: clock.UtcNow.AddDays(1))
             .ConfigureAwait(false);
         var reconciler = CreateReconciler(AssemblyHooks.Fixture.Factory.Services, clock);
@@ -1158,7 +1161,7 @@ public sealed class CentralRecoveryIntegrationTests
                 MediaType = "application/octet-stream",
                 ByteLength = 1,
                 ChecksumSha256 = new string('A', 64),
-                StorageReference = $"minio://legacy-fairness/{Guid.NewGuid():N}",
+                StorageReference = $"s3://legacy-fairness/{Guid.NewGuid():N}",
                 ReceivedAtUtc = now.AddMinutes(-index),
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 ObjectState = CentralArtifactObjectState.Available,
@@ -1200,7 +1203,7 @@ public sealed class CentralRecoveryIntegrationTests
         await PutObjectAsync(key, [9]).ConfigureAwait(false);
         _ = await AddArtifactAsync(pendingKey, [9, 1], CentralArtifactObjectState.Pending,
             CentralReconstructionState.Complete).ConfigureAwait(false);
-        await SetCheckpointAsync(CentralRecoveryPhases.MinioArtifacts, partition: 0x90).ConfigureAwait(false);
+        await SetCheckpointAsync(CentralRecoveryPhases.ObjectStoreArtifacts, partition: 0x90).ConfigureAwait(false);
         using var observations = new RecoveryObservationCollector();
         using var telemetry = new CentralIngestTelemetry();
         var logger = new RecordingLogger<CentralArtifactReconciliationService>();
@@ -1295,7 +1298,7 @@ public sealed class CentralRecoveryIntegrationTests
             CentralArtifactObjectState.Pending,
             CentralReconstructionState.Complete,
             putObject: false,
-            storageReference: $"minio://legacy/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
+            storageReference: $"s3://legacy/{Guid.NewGuid():N}.bin").ConfigureAwait(false);
         await using (var setupScope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
         {
             var db = setupScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -1421,7 +1424,7 @@ public sealed class CentralRecoveryIntegrationTests
             await GetMinio().StatObjectAsync(new StatObjectArgs().WithBucket(Bucket).WithObject(key)).ConfigureAwait(false);
             return true;
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception))
         {
             return false;
         }
@@ -1458,6 +1461,8 @@ public sealed class CentralRecoveryIntegrationTests
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
         services.AddSingleton(GetMinio());
+        services.AddSingleton<IObjectStore>(provider =>
+            ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
         if (objectReader is null)
         {
             AddObjectReader(services);
@@ -1475,6 +1480,8 @@ public sealed class CentralRecoveryIntegrationTests
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(AssemblyHooks.Fixture.SqlServerConnectionString));
         services.AddSingleton(GetMinio());
+        services.AddSingleton<IObjectStore>(provider =>
+            ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
         AddObjectReader(services);
         services.AddScoped<ICentralDerivativeJobScheduler>(provider => new DurableRecordingScheduler(
             provider.GetRequiredService<ApplicationDbContext>(), state));
@@ -1485,7 +1492,7 @@ public sealed class CentralRecoveryIntegrationTests
     {
         services.AddSingleton<CentralArtifactRetrievalTelemetry>();
         services.AddScoped<ICentralArtifactObjectReader>(provider => new CentralArtifactObjectReader(
-            provider.GetRequiredService<IMinioClient>(),
+            provider.GetRequiredService<IObjectStore>(),
             provider.GetRequiredService<CentralArtifactRetrievalTelemetry>(),
             TimeProvider.System,
             NullLogger<CentralArtifactObjectReader>.Instance));
@@ -1882,6 +1889,8 @@ public sealed class CentralRecoveryIntegrationTests
             services.AddDbContext<ApplicationDbContext>(builder => builder.UseSqlServer(connection)
                 .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
             services.AddSingleton(GetMinio());
+            services.AddSingleton<IObjectStore>(provider =>
+                ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
             AddObjectReader(services);
             services.AddScoped<ICentralDerivativeJobScheduler>(_ => new RecordingScheduler());
             return new IsolatedRecoveryDatabase(context, services.BuildServiceProvider());

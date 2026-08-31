@@ -11,13 +11,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Options;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 /// <summary>
-/// Diagnostics endpoints that exercise Redis, MinIO, and SMTP infrastructure.
+/// Diagnostics endpoints that exercise Redis, object storage, and SMTP infrastructure.
 /// </summary>
 [SuppressMessage("Usage", "CA1515:Consider making the type internal", Justification = "Controllers must remain public for routing.")]
 [ApiController]
@@ -27,26 +25,20 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 public sealed class DiagnosticsController : ControllerBase
 {
     private readonly IDistributedCache _cache;
-    private readonly ILogger<DiagnosticsController> _logger;
-    private readonly MinioOptions _minioOptions;
     private readonly CentralObjectStorageOptions _storageOptions;
     private readonly SmtpOptions _smtpOptions;
     private readonly IServiceProvider _serviceProvider;
 
     public DiagnosticsController(
         IDistributedCache cache,
-        IOptions<MinioOptions> minioOptions,
         IOptions<CentralObjectStorageOptions> storageOptions,
         IOptions<SmtpOptions> smtpOptions,
         IServiceProvider serviceProvider,
         ILogger<DiagnosticsController> logger)
     {
-        ArgumentNullException.ThrowIfNull(minioOptions);
         ArgumentNullException.ThrowIfNull(storageOptions);
         ArgumentNullException.ThrowIfNull(smtpOptions);
         _cache = cache;
-        _logger = logger;
-        _minioOptions = minioOptions.Value;
         _storageOptions = storageOptions.Value;
         _smtpOptions = smtpOptions.Value;
         _serviceProvider = serviceProvider;
@@ -78,19 +70,14 @@ public sealed class DiagnosticsController : ControllerBase
         });
     }
 
-    [HttpPost("minio")]
-    public async Task<IActionResult> MinioRoundTripAsync(
+    [HttpPost("object-storage")]
+    public async Task<IActionResult> ObjectStorageRoundTripAsync(
         [FromBody] StorageDiagnosticsRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var minioClient = ResolveMinioClient();
-        if (minioClient is null)
-        {
-            return StatusCode(StatusCodes.Status503ServiceUnavailable, Problem("MinIO is not configured."));
-        }
-
+        var objectStore = _serviceProvider.GetRequiredService<IObjectStore>();
         var bucket = _storageOptions.DiagnosticsBucket;
         if (!string.IsNullOrWhiteSpace(request.Bucket) && !string.Equals(request.Bucket, bucket, StringComparison.Ordinal))
         {
@@ -102,28 +89,28 @@ public sealed class DiagnosticsController : ControllerBase
             ? $"diagnostics/{Guid.NewGuid():N}.txt"
             : request.ObjectName!;
 
-        await EnsureBucketExistsAsync(minioClient, bucket, cancellationToken);
+        if (!await objectStore.BucketExistsAsync(bucket, cancellationToken).ConfigureAwait(false))
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                Problem("The configured diagnostics bucket is unavailable."));
+        }
 
         var payload = Encoding.UTF8.GetBytes(request.Content);
         using (var writeStream = new MemoryStream(payload, writable: false))
         {
-            var putArgs = new PutObjectArgs()
-                .WithBucket(bucket)
-                .WithObject(objectName)
-                .WithContentType("text/plain")
-                .WithStreamData(writeStream)
-                .WithObjectSize(writeStream.Length);
-
-            await minioClient.PutObjectAsync(putArgs, cancellationToken).ConfigureAwait(false);
+            await objectStore.PutAsync(
+                bucket, objectName, writeStream, writeStream.Length, "text/plain", cancellationToken)
+                .ConfigureAwait(false);
         }
 
+        var metadata = await objectStore.StatAsync(bucket, objectName, cancellationToken).ConfigureAwait(false);
         var buffer = new MemoryStream();
-        var getArgs = new GetObjectArgs()
-            .WithBucket(bucket)
-            .WithObject(objectName)
-            .WithCallbackStream(stream => stream.CopyTo(buffer));
-
-        await minioClient.GetObjectAsync(getArgs, cancellationToken).ConfigureAwait(false);
+        await objectStore.ReadAsync(
+            bucket,
+            objectName,
+            metadata.Generation,
+            (stream, token) => stream.CopyToAsync(buffer, token),
+            cancellationToken).ConfigureAwait(false);
 
         buffer.Position = 0;
         var storedContent = Encoding.UTF8.GetString(buffer.ToArray());
@@ -159,51 +146,4 @@ public sealed class DiagnosticsController : ControllerBase
         });
     }
 
-    private IMinioClient? ResolveMinioClient()
-    {
-        var client = _serviceProvider.GetService<IMinioClient>();
-        if (client is not null)
-        {
-            return client;
-        }
-
-        if (string.IsNullOrWhiteSpace(_minioOptions.Endpoint)
-            || string.IsNullOrWhiteSpace(_minioOptions.AccessKey)
-            || string.IsNullOrWhiteSpace(_minioOptions.SecretKey))
-        {
-            _logger.LogWarning("MinIO diagnostics requested but configuration is incomplete.");
-            return null;
-        }
-
-        var builder = new MinioClient()
-            .WithEndpoint(_minioOptions.Endpoint, _minioOptions.Port)
-            .WithCredentials(_minioOptions.AccessKey, _minioOptions.SecretKey);
-
-        if (_minioOptions.UseSsl)
-        {
-            builder = builder.WithSSL();
-        }
-
-        if (!string.IsNullOrWhiteSpace(_minioOptions.Region))
-        {
-            builder = builder.WithRegion(_minioOptions.Region);
-        }
-
-        return builder.Build();
-    }
-
-    private async Task EnsureBucketExistsAsync(IMinioClient client, string bucket, CancellationToken cancellationToken)
-    {
-        var exists = await client.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket), cancellationToken)
-            .ConfigureAwait(false);
-        if (!exists)
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Creating MinIO bucket {Bucket}", bucket);
-            }
-            await client.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket), cancellationToken)
-                .ConfigureAwait(false);
-        }
-    }
 }

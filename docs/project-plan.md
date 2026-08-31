@@ -121,9 +121,9 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 
 | Project | Owns | Must not own |
 | --- | --- | --- |
-| `HVO.SkyMonitor.AgentCore` | Stable transport-neutral camera, rig, capture timing, frame-layout, artifact, identity, lineage, and version-descriptor contracts | Executable recipes, event assessments, ASP.NET Core, EF Core, MinIO, SQLite, SkiaSharp, camera SDKs, host orchestration |
+| `HVO.SkyMonitor.AgentCore` | Stable transport-neutral camera, rig, capture timing, frame-layout, artifact, identity, lineage, and version-descriptor contracts | Executable recipes, event assessments, ASP.NET Core, EF Core, object-store SDKs, SQLite, SkiaSharp, camera SDKs, host orchestration |
 | `HVO.SkyMonitor.Astronomy` | Catalog contracts, time, coordinates, ephemerides, camera geometry, projection, and visible-scene behavior | Storage, jobs, image filters, host APIs |
-| `HVO.SkyMonitor.Imaging` | Pure raw/image layout validation, renderers, calibration primitives, combination, demosaic, encoding, annotation, masks, and image-analysis algorithms | Host orchestration, SQL, MinIO, UI |
+| `HVO.SkyMonitor.Imaging` | Pure raw/image layout validation, renderers, calibration primitives, combination, demosaic, encoding, annotation, masks, and image-analysis algorithms | Host orchestration, SQL, object storage, UI |
 | `HVO.SkyMonitor.Fleet.Contracts` | Stable transport-neutral fleet status, health, timing, and acknowledgement contracts | HTTP, host orchestration, persistence, retention, authentication, UI |
 | `HVO.SkyMonitor.Processing` | Host-neutral recipe definitions/execution contracts, selectors, transforms, analyzers, gates, windows, environmental/event products, assessments, outcomes, and canonical recipe identity | Host persistence, HTTP, UI, background-service policy |
 | `HVO.SkyMonitor.Catalog.Sqlite` | Shared read-only SQLite catalog adapter | Shared SQL schema, mutable catalog state |
@@ -131,7 +131,7 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.CameraAgent.Common` | Edge acquisition orchestration, SQLite WAL journal, durable lanes, local storage, outbox, retention, telemetry, and configuration | LogicHost references or central persistence |
 | `HVO.SkyMonitor.CameraAgent.Modules.Zwo` | Linux ZWO ASI SDK interop and full-frame bin-1 color RAW16 acquisition for the ASI676MC and ASI178MC | Host orchestration, processing, persistence, vendor artifacts, unsupported ZWO modes, or non-ZWO cameras |
 | `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
-| `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/MinIO services, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
+| `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/provider-neutral S3 object-storage services, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
 
 CameraAgent and LogicHost must never reference each other. Shared behavior moves
 through AgentCore, Astronomy, Imaging, Processing, or another explicitly
@@ -210,7 +210,7 @@ identity is prohibited.
 
 - SQL is authoritative for jobs, leases, state transitions, lineage, and
   historical metadata.
-- MinIO is authoritative for immutable payload bytes.
+- Object storage is authoritative for immutable payload bytes.
 - Redis may accelerate notifications or caches but is never authoritative job
   state.
 - HTTP ingest records durable work but never performs derivative rendering.
@@ -321,6 +321,19 @@ the exact production query or transaction plus comparable plan, lock, I/O, and
 correctness evidence. Dapper, generic repositories, blanket retries, `NOLOCK`,
 database splits, and provider-wide procedure conversion are not default
 solutions.
+
+### 3.12 Provider-neutral S3 object storage
+
+| ID | Requirement |
+| --- | --- |
+| `S3-001` | LogicHost owns a provider-SDK-neutral, strongly consistent S3 subset covering authenticated bucket readiness, non-seekable known-length put, stat with an opaque generation token, conditional streamed get, same-bucket copy, idempotent delete, and complete ordinal paginated prefix listing. It normalizes provider failures, keeps SHA-256 and byte length authoritative, supports custom-endpoint and AWS-style configuration, confines provider types to LogicHost infrastructure, and supplies one reusable conformance suite. |
+| `S3-002` | Before adoption, qualify one immutable SeaweedFS release and single-node topology for the complete contract, source and license identity, SBOM and provenance disposition, vulnerability status, least privilege, non-root private operation, runtime signals, faults, actual backup and restore, `W1`/`W2`/`W3M`/`W3P`/`W4` performance, and native Linux amd64 and arm64 operation. Failure returns to #499 for an explicit decision and never authorizes automatic substitution. |
+| `S3-003` | Supported deployment uses the exact qualified artifact and platform digests across Compose, installer inventory, Testcontainers, CI, provisioning, configuration, and current runbooks. Initialization is fresh-state, deterministic, private, and least privilege; old MinIO state remains untouched and unsupported, and all central workflows are requalified against the adopted artifact. |
+
+Runtime LogicHost credentials are data-plane-only for two pre-provisioned private
+buckets. Deployment infrastructure owns bucket, user, and policy administration.
+Provider ETags are opaque generation tokens; application SHA-256 and byte length
+remain integrity authority. CameraAgent never depends on central object storage.
 
 ## 4. Performance Is a Design Requirement
 
@@ -717,10 +730,10 @@ Requirements:
 | `CENTRAL-002` | Persist capture sequence, timing, layout, metadata, profile identity, and reconstruction status in the canonical current schema. |
 | `CENTRAL-003` | Add variant, canonical recipe, and normalized source lineage. |
 | `CENTRAL-004` | Bind delayed upload to capture-time rig/profile identity. |
-| `CENTRAL-005` | Add internal streamed MinIO reader and writer abstractions. |
+| `CENTRAL-005` | Add an internal streamed provider-neutral object-store boundary. |
 | `CENTRAL-006` | Add authorized content and range retrieval with checksum verification. |
 | `CENTRAL-007` | Reject retired schemas, null profile identities, and incomplete capture locations without runtime repair; persist missing exact current references only as `PendingReference`. |
-| `CENTRAL-008` | Never expose MinIO credentials or browser-direct storage references. |
+| `CENTRAL-008` | Never expose object-store credentials or browser-direct storage references. |
 
 Exit gate `GATE-P08`:
 
@@ -888,7 +901,7 @@ Requirements:
 | `PIPE-LOCAL-002` | Add reconstructable object/cardinal/image-circle and four-corner metadata overlays plus per-node artifact/status/lineage comparison in authenticated local UI. |
 | `STANDALONE-001` | Run the full production-catalog ASI676MC 12-in-16 Bayer profile with provisional 2.5 mm fisheye, five-second calibrated lights, virtual environment, edge transient processing, storage, retention, and telemetry. |
 | `STANDALONE-002` | Exercise the real CameraAgent UI, durable restart/fault/pressure boundaries, known-sky geometry, calibration residuals, checksums, lineage, runtime signals, and bounded resource/backlog behavior. |
-| `STANDALONE-003` | Complete with LogicHost, SQL Server, Redis, and MinIO absent and prove zero central attempts; also run an ASI174 Mono8 ROI/bin profile through the same configuration-driven path. |
+| `STANDALONE-003` | Complete with LogicHost, SQL Server, Redis, and central object storage absent and prove zero central attempts; also run an ASI174 Mono8 ROI/bin profile through the same configuration-driven path. |
 
 Exit gate `GATE-P12A`:
 
@@ -947,7 +960,7 @@ Requirements:
 
 | ID | Requirement |
 | --- | --- |
-| `E2E-001` | Exercise the real CameraAgent outbox drain against an in-process/test LogicHost and SQL/Redis/MinIO dependencies. |
+| `E2E-001` | Exercise the real CameraAgent outbox drain against an in-process/test LogicHost and SQL/Redis/object-storage dependencies. |
 | `E2E-002` | Cover raw ingress, local derivatives, outage, restart, upload, central reconstruction, central execution, retrieval, windows, clouds, and transients. |
 | `E2E-003` | Inject crashes at every durable boundary. |
 | `E2E-004` | Verify outputs through checksums, numeric invariants, provenance, and expected durable state. |
@@ -965,7 +978,7 @@ Required fault cases:
 - Crash after payload publication but before journal commit.
 - Crash after journal commit but before wake-up.
 - LogicHost/network outage.
-- MinIO failure.
+- Object-storage failure.
 - SQL failure.
 - Worker crash before output persistence.
 - Worker crash after output persistence but before completion.

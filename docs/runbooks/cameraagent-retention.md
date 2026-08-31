@@ -114,7 +114,7 @@ idempotency prevents a duplicate central record.
 
 Set `CameraAgent:UploadBandwidthLimitBytesPerSecond` to a positive value to
 limit streamed payload reads, or leave it at `0` for no application-level
-limit. LogicHost acknowledges only after payload checksum verification, MinIO
+limit. LogicHost acknowledges only after payload checksum verification, object
 storage, and SQL metadata persistence. CameraAgent validates the returned
 idempotency key, artifact ID, checksum, length, and accepted schema before
 recording acknowledgement and releasing a derivative's local artifact. It does not remove an ingress-owned raw

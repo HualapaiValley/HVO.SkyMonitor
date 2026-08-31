@@ -579,7 +579,7 @@ public sealed class NetworkAuthorityServiceTests
             MediaType = "application/octet-stream",
             ByteLength = 4,
             ChecksumSha256 = new string('B', 64),
-            StorageReference = "minio://skymonitor-artifacts/private-object-key",
+            StorageReference = "s3://skymonitor-artifacts/private-object-key",
             ReceivedAtUtc = Now,
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ObjectState = CentralArtifactObjectState.Available,
@@ -597,7 +597,7 @@ public sealed class NetworkAuthorityServiceTests
             MediaType = "image/png",
             ByteLength = 4,
             ChecksumSha256 = new string('C', 64),
-            StorageReference = "minio://skymonitor-artifacts/private-preview-key",
+            StorageReference = "s3://skymonitor-artifacts/private-preview-key",
             ReceivedAtUtc = Now,
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ObjectState = CentralArtifactObjectState.Available,
@@ -615,7 +615,7 @@ public sealed class NetworkAuthorityServiceTests
             MediaType = "image/svg+xml",
             ByteLength = 4,
             ChecksumSha256 = new string('D', 64),
-            StorageReference = "minio://skymonitor-artifacts/private-active-image-key",
+            StorageReference = "s3://skymonitor-artifacts/private-active-image-key",
             ReceivedAtUtc = Now,
             IdempotencyKey = Guid.NewGuid().ToString("N"),
             ObjectState = CentralArtifactObjectState.Available,
@@ -729,7 +729,7 @@ public sealed class NetworkAuthorityServiceTests
             && source.ResolvedArtifactId == artifact.ArtifactId);
         hidden.Should().BeNull();
         var json = JsonSerializer.Serialize(detail);
-        json.Should().NotContain("private-object-key").And.NotContain("minio://");
+        json.Should().NotContain("private-object-key").And.NotContain("s3://");
         detail.Artifacts.Should().ContainSingle(item =>
             item.ArtifactId == artifact.ArtifactId
             && !item.IsPubliclyEligible

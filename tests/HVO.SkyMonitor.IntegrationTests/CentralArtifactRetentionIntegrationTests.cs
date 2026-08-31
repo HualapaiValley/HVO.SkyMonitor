@@ -33,7 +33,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 public sealed class CentralArtifactRetentionIntegrationTests
 {
     private const string ArtifactBucketPrefix =
-        "minio://" + HVO.SkyMonitor.LogicHost.Configuration.CentralObjectStorageOptions.DefaultArtifactBucket + "/";
+        "s3://" + HVO.SkyMonitor.LogicHost.Configuration.CentralObjectStorageOptions.DefaultArtifactBucket + "/";
     private const string Bucket = "skymonitor-artifacts";
 
     [TestMethod]
@@ -1033,7 +1033,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
             await using var publisherContext = CreateContext(database.ConnectionString);
             var writer = new CentralDerivativeOutputWriter(
                 publisherContext,
-                GetFixtureMinio(),
+                ObjectStoreTestClient.Create(GetFixtureMinio()),
                 AssemblyHooks.Fixture.Factory.Services.GetRequiredService<ICentralArtifactObjectReader>(),
                 AssemblyHooks.Fixture.Factory.Services.GetRequiredService<CentralDerivativeWorkerTelemetry>(),
                 TimeProvider.System,
@@ -1458,7 +1458,7 @@ public sealed class CentralArtifactRetentionIntegrationTests
         => new(
             db,
             references ?? new CentralArtifactRetentionReferences(db),
-            minio,
+            ObjectStoreTestClient.Create(minio),
             TimeProvider.System,
             telemetry,
             logger ?? NullLogger<CentralArtifactRetentionProcessor>.Instance);
@@ -1540,6 +1540,8 @@ public sealed class CentralArtifactRetentionIntegrationTests
         var services = new ServiceCollection();
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(connectionString));
         services.AddSingleton<IMinioClient>(GetFixtureMinio());
+        services.AddSingleton<IObjectStore>(provider =>
+            ObjectStoreTestClient.Create(provider.GetRequiredService<IMinioClient>()));
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton(telemetry);
         services.AddScoped<ICentralArtifactRetentionReferences, CentralArtifactRetentionReferences>();
@@ -1581,9 +1583,10 @@ public sealed class CentralArtifactRetentionIntegrationTests
 
     private static async Task AssertMissingAsync(string objectKey)
     {
-        var action = () => GetFixtureMinio().StatObjectAsync(
-            new StatObjectArgs().WithBucket(Bucket).WithObject(objectKey));
-        await action.Should().ThrowAsync<MinioException>().ConfigureAwait(false);
+        var action = () => AssemblyHooks.Fixture.Factory.Services.GetRequiredService<IObjectStore>()
+            .StatAsync(Bucket, objectKey, CancellationToken.None);
+        (await action.Should().ThrowAsync<ObjectStoreException>().ConfigureAwait(false))
+            .Which.Kind.Should().Be(ObjectStoreFailureKind.MissingObject);
     }
 
     private static IMinioClient GetFixtureMinio()

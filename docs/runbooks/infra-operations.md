@@ -285,7 +285,7 @@ deleted.
 
 LogicHost persists a leased recovery checkpoint in SQL Server. After startup
 and once every 24 hours it verifies canonical `Available` artifacts against
-MinIO in bounded SQL and generated-key partitions. Missing objects return to
+object storage in bounded SQL and generated-key partitions. Missing objects return to
 `Pending`; length or checksum conflicts become `Quarantined`; pending lineage
 and rig references retry with capped recurring backoff. Unknown final objects
 are never adopted from bytes alone. A durable disposition copies each orphan to
@@ -294,8 +294,8 @@ source key. Ingest, derivative publication, retention, and recovery hold the
 same hashed SQL application lock across each final object copy or deletion so a
 new SQL owner cannot race orphan cleanup.
 
-MinIO 7 does not expose a caller-supplied continuation token. Canonical keys are
-therefore partitioned and bounded; the noncanonical catch-all is one linear,
+The provider-neutral adapter returns every page of each prefix listing. Canonical
+keys remain partitioned and bounded; the noncanonical catch-all is one linear,
 cancellable namespace audit per recovery generation. Its operational cost is
 proportional to objects in the two artifact prefixes and must be included in
 site recovery capacity evidence. It does not run every 30 seconds.

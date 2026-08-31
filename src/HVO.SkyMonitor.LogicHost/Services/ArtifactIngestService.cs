@@ -4,9 +4,6 @@ using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
@@ -138,10 +135,10 @@ internal sealed record ArtifactIngestManifest(
     }
 }
 
-/// <summary>Streams a versioned artifact into MinIO and records an idempotent metadata row.</summary>
+/// <summary>Streams a versioned artifact into object storage and records an idempotent metadata row.</summary>
 internal sealed partial class ArtifactIngestService(
     ApplicationDbContext dbContext,
-    IMinioClient minio,
+    IObjectStore objectStore,
     ICentralArtifactObjectReader objectReader,
     TimeProvider timeProvider,
     ICentralDerivativeJobScheduler derivativeJobScheduler,
@@ -153,7 +150,6 @@ internal sealed partial class ArtifactIngestService(
     private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
     private string Bucket => _storageNames.ArtifactBucket;
     private const string CaptureSequenceIdentityIndex = "IX_CentralFrames_DevicePublicId_CaptureSequence";
-    private static readonly SemaphoreSlim BucketInitialization = new(1, 1);
     private static readonly ConcurrentDictionary<(string AgentId, Guid ArtifactId), ArtifactGate> ArtifactGates = new();
 
     public async Task<ArtifactIngestResult> IngestAsync(ArtifactManifestDocument document, Stream payload, CancellationToken cancellationToken)
@@ -219,8 +215,9 @@ internal sealed partial class ArtifactIngestService(
             var writeStarted = timeProvider.GetTimestamp();
             try
             {
-                await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(stagingKey).WithStreamData(verifyingPayload)
-                    .WithObjectSize(manifest.ByteLength).WithContentType(manifest.MediaType), cancellationToken).ConfigureAwait(false);
+                await objectStore.PutAsync(
+                    Bucket, stagingKey, verifyingPayload, manifest.ByteLength, manifest.MediaType, cancellationToken)
+                    .ConfigureAwait(false);
                 telemetry.RecordObjectWrite("staging", "completed", timeProvider.GetElapsedTime(writeStarted));
             }
             catch
@@ -621,7 +618,7 @@ internal sealed partial class ArtifactIngestService(
         }
 
         var storageReference = CreateCanonicalStorageReference(devicePublicId, manifest, Bucket);
-        var objectKey = storageReference[$"minio://{Bucket}/".Length..];
+        var objectKey = storageReference[_storageNames.ArtifactPrefix.Length..];
         var now = timeProvider.GetUtcNow();
         var persisted = false;
         try
@@ -669,7 +666,7 @@ internal sealed partial class ArtifactIngestService(
             try
             {
                 if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                        dbContext, storageReference, CancellationToken.None, $"minio://{Bucket}/").ConfigureAwait(false))
+                        dbContext, storageReference, CancellationToken.None, _storageNames.ArtifactPrefix).ConfigureAwait(false))
                 {
                     await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
                 }
@@ -724,12 +721,10 @@ internal sealed partial class ArtifactIngestService(
                 await ExpireRejectedIntentAsync(manifest, storageReference).ConfigureAwait(false);
                 throw;
             }
-            var source = new CopySourceObjectArgs().WithBucket(Bucket).WithObject(stagingKey);
             var copyStarted = timeProvider.GetTimestamp();
             try
             {
-                await minio.CopyObjectAsync(new CopyObjectArgs().WithBucket(Bucket).WithObject(objectKey)
-                    .WithCopyObjectSource(source), cancellationToken).ConfigureAwait(false);
+                await objectStore.CopyAsync(Bucket, stagingKey, objectKey, cancellationToken).ConfigureAwait(false);
                 telemetry.RecordObjectWrite("canonical-copy", "completed", timeProvider.GetElapsedTime(copyStarted));
             }
             catch
@@ -749,17 +744,9 @@ internal sealed partial class ArtifactIngestService(
 
     private async Task EnsureBucketAsync(CancellationToken cancellationToken)
     {
-        await BucketInitialization.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        if (!await objectStore.BucketExistsAsync(Bucket, cancellationToken).ConfigureAwait(false))
         {
-            if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket), cancellationToken).ConfigureAwait(false))
-            {
-                await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(Bucket), cancellationToken).ConfigureAwait(false);
-            }
-        }
-        finally
-        {
-            BucketInitialization.Release();
+            throw new ObjectStoreException(ObjectStoreFailureKind.MissingBucket, "bucket-exists");
         }
     }
 
@@ -769,7 +756,7 @@ internal sealed partial class ArtifactIngestService(
         string bucket = Configuration.CentralObjectStorageOptions.DefaultArtifactBucket)
     {
         var mediaTypeKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(manifest.MediaType)));
-        return $"minio://{bucket}/artifacts/{devicePublicId:N}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}-{mediaTypeKey}.bin";
+        return $"s3://{bucket}/artifacts/{devicePublicId:N}/{manifest.CapturedAtUtc:yyyy/MM/dd}/{manifest.IdempotencyKey}-{manifest.ChecksumSha256.ToUpperInvariant()}-{mediaTypeKey}.bin";
     }
 
     private async Task EnsureV2IntentAsync(
@@ -1228,7 +1215,7 @@ internal sealed partial class ArtifactIngestService(
             }
             if (existing.ObjectState == CentralArtifactObjectState.Expired
                 || await CentralObjectOwnershipFence.IsRetiredAsync(
-                    dbContext, reservation.StorageReference, cancellationToken, $"minio://{Bucket}/").ConfigureAwait(false))
+                    dbContext, reservation.StorageReference, cancellationToken, _storageNames.ArtifactPrefix).ConfigureAwait(false))
             {
                 throw new ExistingArtifactVerificationStaleException("retired");
             }
@@ -1322,19 +1309,18 @@ internal sealed partial class ArtifactIngestService(
         CentralArtifact artifact,
         CancellationToken cancellationToken)
     {
-        var prefix = $"minio://{Bucket}/";
+        var prefix = _storageNames.ArtifactPrefix;
         if (!artifact.StorageReference.StartsWith(prefix, StringComparison.Ordinal))
         {
             return false;
         }
         try
         {
-            _ = await minio.StatObjectAsync(new StatObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(artifact.StorageReference[prefix.Length..]), cancellationToken).ConfigureAwait(false);
+            _ = await objectStore.StatAsync(
+                Bucket, artifact.StorageReference[prefix.Length..], cancellationToken).ConfigureAwait(false);
             return false;
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             return true;
         }
@@ -1505,7 +1491,7 @@ internal sealed partial class ArtifactIngestService(
         CancellationToken cancellationToken)
     {
         if (await CentralObjectOwnershipFence.IsRetiredAsync(
-                dbContext, storageReference, cancellationToken, $"minio://{Bucket}/").ConfigureAwait(false))
+                dbContext, storageReference, cancellationToken, _storageNames.ArtifactPrefix).ConfigureAwait(false))
         {
             throw new ArtifactIngestConflictException(
                 "The immutable artifact object key has been permanently retired.");
@@ -2581,9 +2567,9 @@ internal sealed partial class ArtifactIngestService(
 
         try
         {
-            await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket(Bucket).WithObject(objectKey), CancellationToken.None).ConfigureAwait(false);
+            await objectStore.DeleteAsync(Bucket, objectKey, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (MinioException)
+        catch (ObjectStoreException)
         {
             // Cleanup is compensating; preserve the original ingest failure.
         }
@@ -2612,10 +2598,10 @@ internal sealed partial class ArtifactIngestService(
         {
             try
             {
-                await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket(Bucket).WithObject(objectKey), CancellationToken.None).ConfigureAwait(false);
+                await objectStore.DeleteAsync(Bucket, objectKey, CancellationToken.None).ConfigureAwait(false);
                 return;
             }
-            catch (MinioException)
+            catch (ObjectStoreException)
             {
             }
             catch (HttpRequestException)

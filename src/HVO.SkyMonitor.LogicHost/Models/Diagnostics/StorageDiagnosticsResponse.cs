@@ -1,7 +1,7 @@
 namespace HVO.SkyMonitor.LogicHost.Models.Diagnostics;
 
 /// <summary>
-/// Response describing the stored object echoed back from MinIO.
+/// Response describing the stored object echoed back from object storage.
 /// </summary>
 public sealed class StorageDiagnosticsResponse
 {

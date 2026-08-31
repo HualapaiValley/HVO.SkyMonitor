@@ -493,6 +493,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(handler, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
 
     private static async Task<Guid> ReadIssue249ArtifactIdAsync(
@@ -729,7 +730,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             Assert.IsNull(artifact.ObjectVerificationRequestedAtUtc);
             Assert.AreEqual(0, artifact.ObjectVerificationRetryCount);
             Assert.IsNull(artifact.ObjectVerificationRetryAtUtc);
-            var objectKey = artifact.StorageReference[$"minio://{ArtifactBucket}/".Length..];
+            var objectKey = artifact.StorageReference[$"s3://{ArtifactBucket}/".Length..];
             var stat = await minio.StatObjectAsync(new StatObjectArgs()
                 .WithBucket(ArtifactBucket)
                 .WithObject(objectKey)).ConfigureAwait(false);
@@ -845,7 +846,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             fixture.SqlServerConnectionString,
             "Authorization",
             "AccessToken",
-            "minio://skymonitor-artifacts/"
+            "s3://skymonitor-artifacts/"
         };
         foreach (var value in forbidden.Where(static value => !string.IsNullOrEmpty(value)))
         {

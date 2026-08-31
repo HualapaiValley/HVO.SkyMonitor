@@ -131,10 +131,10 @@ public sealed class CentralTransientReviewPerformanceTests
             if (await db.Database.CanConnectAsync().ConfigureAwait(false))
             {
                 var derivativeReferences = await db.CentralTransientDerivativeOutputIntents.AsNoTracking()
-                    .Where(item => item.StorageReference.StartsWith("minio://skymonitor-artifacts/"))
+                    .Where(item => item.StorageReference.StartsWith("s3://skymonitor-artifacts/"))
                     .Select(item => item.StorageReference).ToArrayAsync().ConfigureAwait(false);
                 publishedKeys.AddRange(derivativeReferences.Select(item =>
-                    item["minio://skymonitor-artifacts/".Length..]));
+                    item["s3://skymonitor-artifacts/".Length..]));
             }
             foreach (var objectKey in publishedKeys)
             {
@@ -230,7 +230,7 @@ public sealed class CentralTransientReviewPerformanceTests
             .ConfigureAwait(false);
         foreach (var artifact in seeded.Artifacts)
         {
-            var objectKey = artifact.StorageReference["minio://skymonitor-artifacts/".Length..];
+            var objectKey = artifact.StorageReference["s3://skymonitor-artifacts/".Length..];
             var payload = fixture.Payloads[artifact.ArtifactId];
             await using var stream = new MemoryStream(payload, writable: false);
             await minio.PutObjectAsync(new PutObjectArgs().WithBucket(Bucket).WithObject(objectKey)
@@ -241,7 +241,8 @@ public sealed class CentralTransientReviewPerformanceTests
 
         using var retrievalTelemetry = new CentralArtifactRetrievalTelemetry();
         var reader = new CountingArtifactObjectReader(new CentralArtifactObjectReader(
-            minio, retrievalTelemetry, TimeProvider.System, NullLogger<CentralArtifactObjectReader>.Instance));
+            ObjectStoreTestClient.Create(minio), retrievalTelemetry, TimeProvider.System,
+            NullLogger<CentralArtifactObjectReader>.Instance));
         var jobService = new CentralDerivativeJobService(db, TimeProvider.System);
         var scheduler = new CentralTransientDerivativeScheduler(db);
         using var workerTelemetry = new CentralDerivativeWorkerTelemetry();
@@ -250,7 +251,7 @@ public sealed class CentralTransientReviewPerformanceTests
         var derivativeExecutor = new CentralTransientDerivativeExecutor(
             new CentralTransientDerivativeBundleFactory(db, inputReader, new FixtureMaskFactory()),
             new CentralTransientDerivativeOutputWriter(
-                db, minio, new CentralTransientEventVersionAppender(db), TimeProvider.System),
+                db, ObjectStoreTestClient.Create(minio), new CentralTransientEventVersionAppender(db), TimeProvider.System),
             jobService);
         var executor = new CentralTransientReprocessingExecutor(
             db,

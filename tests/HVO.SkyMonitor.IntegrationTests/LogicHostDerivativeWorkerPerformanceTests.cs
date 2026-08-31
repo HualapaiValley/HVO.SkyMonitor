@@ -841,7 +841,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 .ConfigureAwait(false);
             return true;
         }
-        catch (Minio.Exceptions.MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (Minio.Exceptions.MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception))
         {
             return false;
         }
@@ -1145,7 +1145,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 MediaType = "application/octet-stream",
                 ByteLength = workload.ByteLength,
                 ChecksumSha256 = workload.ChecksumSha256,
-                StorageReference = $"minio://{ArtifactBucket}/{workload.ObjectKey}",
+                StorageReference = $"s3://{ArtifactBucket}/{workload.ObjectKey}",
                 ReceivedAtUtc = captured,
                 IdempotencyKey = HashText($"{scenario}-source-{index}"),
                 SourceId = "issue-100-performance",
@@ -1278,7 +1278,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                     MediaType = "application/octet-stream",
                     ByteLength = queuePayload.LongLength,
                     ChecksumSha256 = queueChecksum,
-                    StorageReference = $"minio://{ArtifactBucket}/{queueObjectKey}",
+                    StorageReference = $"s3://{ArtifactBucket}/{queueObjectKey}",
                     ReceivedAtUtc = captured,
                     IdempotencyKey = HashText($"{scenario}-queue-source-{index}"),
                     SourceId = "issue-100-queue",
@@ -1570,7 +1570,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             Assert.AreEqual(CentralArtifactObjectState.Available, artifact.ObjectState);
             Assert.AreEqual(CentralReconstructionState.Complete, artifact.ReconstructionState);
             string? checksum = null;
-            var objectKey = artifact.StorageReference[$"minio://{ArtifactBucket}/".Length..];
+            var objectKey = artifact.StorageReference[$"s3://{ArtifactBucket}/".Length..];
             await minio.GetObjectAsync(new GetObjectArgs()
                 .WithBucket(ArtifactBucket)
                 .WithObject(objectKey)
@@ -1756,6 +1756,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(outage, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
 
     private static WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> CreateProtocolFactory(
@@ -1778,6 +1779,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 .WithCredentials(IntegrationTestFixture.MinioAccessKey, IntegrationTestFixture.MinioSecretKey)
                 .WithHttpClient(new HttpClient(protocol.Http, disposeHandler: false), disposeHttpClient: true)
                 .Build());
+            ObjectStoreTestClient.Replace(services);
         }));
 
     private static WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> CreatePublicationFaultFactory(
@@ -1799,6 +1801,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                         new HttpClient(provider.GetRequiredService<PublicationFaultHandler>(), disposeHandler: false),
                         disposeHttpClient: true)
                     .Build());
+                ObjectStoreTestClient.Replace(services);
             }
             if (boundary == PublicationBoundary.CompletionPreCommit)
             {

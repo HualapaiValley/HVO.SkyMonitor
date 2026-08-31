@@ -349,11 +349,15 @@ public sealed class IntegrationTestFixture : IDisposable
                         ["ConnectionStrings:DefaultConnection"] = SqlServerConnectionString,
                         ["Redis:Configuration"] = RedisConnectionString,
                         ["Redis:InstanceName"] = "integration-tests",
-                        ["Minio:Endpoint"] = _minioHost,
-                        ["Minio:Port"] = minioPort.ToString(CultureInfo.InvariantCulture),
-                        ["Minio:AccessKey"] = MinioAccessKey,
-                        ["Minio:SecretKey"] = MinioSecretKey,
-                        ["Minio:DefaultBucket"] = "skymonitor-diagnostics",
+                        ["ObjectStorage:ServiceEndpoint"] = $"{_minioHost}:{minioPort.ToString(CultureInfo.InvariantCulture)}",
+                        ["ObjectStorage:Region"] = "us-east-1",
+                        ["ObjectStorage:UseTls"] = "false",
+                        ["ObjectStorage:AddressingStyle"] = "Path",
+                        ["ObjectStorage:CredentialMode"] = "Static",
+                        ["ObjectStorage:AccessKey"] = MinioAccessKey,
+                        ["ObjectStorage:SecretKey"] = MinioSecretKey,
+                        ["ObjectStorage:ArtifactBucket"] = "skymonitor-artifacts",
+                        ["ObjectStorage:DiagnosticsBucket"] = "skymonitor-diagnostics",
                         ["Smtp:Host"] = _smtpHost,
                         ["Smtp:Port"] = smtpPort.ToString(CultureInfo.InvariantCulture),
                         ["Smtp:From"] = TestEmail.FromAddress,
@@ -384,6 +388,10 @@ public sealed class IntegrationTestFixture : IDisposable
 
                 builder.ConfigureTestServices(services =>
                 {
+                    services.AddSingleton<IMinioClient>(_ => new MinioClient()
+                        .WithEndpoint(_minioHost, minioPort)
+                        .WithCredentials(MinioAccessKey, MinioSecretKey)
+                        .Build());
                     foreach (var descriptor in services.Where(static descriptor =>
                              descriptor.ServiceType == typeof(IHostedService)
                               && (descriptor.ImplementationType == typeof(CentralArtifactReconciliationService)
@@ -440,16 +448,18 @@ public sealed class IntegrationTestFixture : IDisposable
     /// </summary>
     private async Task SeedTestDataAsync()
     {
-        // Ensure default diagnostics bucket exists
+        // Deployment owns provisioning; the fixture provides both required private buckets.
         using var client = new MinioClient()
             .WithEndpoint(_minioHost, _minioHostPort)
             .WithCredentials(MinioAccessKey, MinioSecretKey)
             .Build();
 
-        var bucketExists = await client.BucketExistsAsync(new BucketExistsArgs().WithBucket("skymonitor-diagnostics")).ConfigureAwait(false);
-        if (!bucketExists)
+        foreach (var bucket in new[] { "skymonitor-artifacts", "skymonitor-diagnostics" })
         {
-            await client.MakeBucketAsync(new MakeBucketArgs().WithBucket("skymonitor-diagnostics")).ConfigureAwait(false);
+            if (!await client.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket)).ConfigureAwait(false))
+            {
+                await client.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket)).ConfigureAwait(false);
+            }
         }
     }
 

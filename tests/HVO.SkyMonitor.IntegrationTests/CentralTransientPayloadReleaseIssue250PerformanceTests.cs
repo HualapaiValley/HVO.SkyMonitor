@@ -56,7 +56,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
     private const string AcceptedBaselineCompatibilityProtocolSha256 = "5C88E596C0802D624F7A5017416EFB5E7EE10DB4E03B2CB7651CB9EEA639811C";
     private const string AcceptedBaselineSemanticWorkloadSha256 = "F02F56D059143F6B1AC37AEAD5D027F438AE74BCB876AC7666E575320A04D02B";
     private const string Bucket = "skymonitor-artifacts";
-    private const string BucketPrefix = "minio://skymonitor-artifacts/";
+    private const string BucketPrefix = "s3://skymonitor-artifacts/";
     private const int FullWidth = 3_096;
     private const int FullHeight = 2_080;
     private const int SourceBytes = 12_879_360;
@@ -2766,7 +2766,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 SELECT [RecordId], @history_frame_id, [ArtifactId], @history_device_public_id,
                        N'Raw', N'issue-250-w3m-history-v1', N'evidence-v1', N'application/octet-stream',
                        1, REPLICATE('C', 64),
-                       CONCAT(N'minio://skymonitor-artifacts/issue-250/w3m-metadata/', [TargetSequence]),
+                       CONCAT(N's3://skymonitor-artifacts/issue-250/w3m-metadata/', [TargetSequence]),
                        '2025-01-02T00:00:00+00:00',
                        RIGHT(REPLICATE('0', 64) + CONVERT(varchar(20), [TargetSequence]), 64),
                        CONCAT(N'ordinal-', [Ordinal]), '2025-01-02T00:00:00+00:00', N'Expired',
@@ -4997,7 +4997,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 .WaitAsync(TimeSpan.FromMinutes(2), cancellationToken).ConfigureAwait(false);
             Assert.Fail("Released object remains present.");
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception)
+        catch (MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception)
                                                 && exception is not BucketNotFoundException)
         {
         }
@@ -5074,7 +5074,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
         => new(
             db,
             new CentralArtifactRetentionReferences(db),
-            minio,
+            ObjectStoreTestClient.Create(minio),
             Options.Create(new CentralTransientPayloadReleaseOptions { Enabled = true }),
             TimeProvider.System,
             telemetry);
@@ -5244,7 +5244,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
 
     private static Issue250ObjectLockContract AuthenticateObjectLockContract(string repositoryRoot)
     {
-        const string probe = "minio://skymonitor-artifacts/issue-250/lock-contract-probe.bin";
+        const string probe = "s3://skymonitor-artifacts/issue-250/lock-contract-probe.bin";
         var expected = CreateExpectedObjectLockResource(probe);
         Assert.AreEqual(expected, CentralObjectApplicationLock.CreateResource(probe));
         var sourcePath = Path.Combine(repositoryRoot,
@@ -5469,7 +5469,7 @@ public sealed class CentralTransientPayloadReleaseIssue250PerformanceTests
                 Purpose = "Payload-release fixture only; not CentralTransientDerivativeOutputWriter conformance.",
                 OutputKinds = ExpectedDerivativeOutputKinds,
                 MinioBackedReleaseKinds = MinioBackedDerivativeKinds,
-                StoragePattern = "minio://skymonitor-artifacts/issue-250/<case-token>/derivative-<0|1>.rgb",
+                StoragePattern = "s3://skymonitor-artifacts/issue-250/<case-token>/derivative-<0|1>.rgb",
                 ProductionSchemaDisposition = "ExpectedOutputCount remains schema-required 5, but CommittedAtUtc is null and exactly two valid intents/records exist; no canonical bundle commit is claimed.",
                 Holds = FixtureHolds
             },
@@ -7900,7 +7900,7 @@ internal static partial class Issue250Regex
     [GeneratedRegex("""issue-250[^"\\\s,}\]]+""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     internal static partial Regex PrivateIssueToken();
 
-    [GeneratedRegex("""(?:minio://skymonitor-artifacts/issue-250/|"issue-250/)[^"\\\s]+""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex("""(?:s3://skymonitor-artifacts/issue-250/|"issue-250/)[^"\\\s]+""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     internal static partial Regex PrivateObjectReference();
 
     [GeneratedRegex(@"(?:password|secret|access[_-]?key|connection(?:string)?)\s*[:=]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
