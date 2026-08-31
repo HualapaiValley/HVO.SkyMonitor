@@ -69,6 +69,32 @@ public sealed class PresentationProjectionGeometryTests
         Assert.AreNotEqual(basisPayload.ContentIdentitySha256, partialPayload.ContentIdentitySha256);
     }
 
+    [TestMethod]
+    public async Task SceneGroupsKeepStarsCardinalsCircleAndConstellationsIndependent()
+    {
+        var scene = await SceneAsync(Transform(ProjectedSceneQuarterRotation.Degrees90)).ConfigureAwait(false);
+
+        var circleOnly = PresentationLayerProducers.FromProjectedSceneGroupsV2(
+            scene, includeMarkers: false, includeLabels: false, includeConstellations: false,
+            includeImageCircle: true, includeCardinalDirections: false);
+        var cardinalsOnly = PresentationLayerProducers.FromProjectedSceneGroupsV2(
+            scene, includeMarkers: false, includeLabels: false, includeConstellations: false,
+            includeImageCircle: false, includeCardinalDirections: true);
+        var neither = PresentationLayerProducers.FromProjectedSceneGroupsV2(
+            scene, includeMarkers: false, includeLabels: false, includeConstellations: false,
+            includeImageCircle: false, includeCardinalDirections: false);
+
+        Assert.HasCount(1, circleOnly.ImageCircle.Ellipses);
+        Assert.IsEmpty(circleOnly.CardinalDirections.TextBlocks);
+        Assert.IsEmpty(cardinalsOnly.ImageCircle.Ellipses);
+        AssertCardinals(scene, cardinalsOnly.CardinalDirections);
+        Assert.IsEmpty(neither.ImageCircle.Ellipses);
+        Assert.IsEmpty(neither.CardinalDirections.TextBlocks);
+        Assert.IsEmpty(circleOnly.StarAnnotations.Markers);
+        Assert.IsEmpty(circleOnly.StarAnnotations.TextBlocks);
+        Assert.IsEmpty(circleOnly.Constellations.Segments);
+    }
+
     private static void AssertEllipse(PresentationLayerPayloadV1 payload, PixelPoint center, double radiusX, double radiusY)
     {
         Assert.HasCount(1, payload.Ellipses);

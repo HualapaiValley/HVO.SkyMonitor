@@ -162,6 +162,16 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
     private static string PreviewUrl(Guid artifactId) =>
         FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/preview");
 
+    private static string LayerLabel(string kind) => kind switch
+    {
+        "scene-annotation" or "star-annotations" => "Star annotations",
+        "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
+        "scene-image-circle" or "image-circle" => "Image circle",
+        "scene-constellations" or "constellations" => "Constellations",
+        "environment" or "corner-annotations" => "Corner annotations",
+        _ => OperationsPage.SplitWords(kind)
+    };
+
     private CameraAgentPresentationSlot? SelectedSlot => _capturePresentation?.Stages
         .SingleOrDefault(slot => slot.Stage == _selectedStage &&
             slot.Availability == CameraAgentPresentationSlotAvailability.Available);

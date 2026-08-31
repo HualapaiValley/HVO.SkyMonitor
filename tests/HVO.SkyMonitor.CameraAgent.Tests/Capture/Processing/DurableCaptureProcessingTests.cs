@@ -29,7 +29,7 @@ public sealed partial class DurableCaptureProcessingTests
 {
     private const string Pre433CloudPlanSha256 = "C3937D26381FB9343A0C2439548D718B62CAA7778FE965B9E48D5E8C7BBD620E";
     private static readonly string[] ExpectedProductionLayerOrder =
-        ["scene-constellations", "scene-annotation", "cloud-mask", "cloud-labels", "environment"];
+        ["scene-constellations", "scene-image-circle", "scene-annotation", "scene-cardinals", "cloud-mask", "cloud-labels", "environment"];
     private static readonly JsonSerializerOptions WebEnumJsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
@@ -585,7 +585,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(beforeIdentity, after.OutputIdentitySha256);
             CollectionAssert.AreEqual(beforePayload, afterPayload);
             CollectionAssert.AreEqual(beforeSources, after.Artifact.SourceArtifactIds.ToArray());
-            Assert.HasCount(7, beforeSources);
+            Assert.HasCount(9, beforeSources);
             foreach (var node in replayGraph.Nodes)
             {
                 Assert.AreEqual(1, (await restartedStore.ReadNodeAsync(
@@ -3133,6 +3133,8 @@ public sealed partial class DurableCaptureProcessingTests
             new ScenePresentationLayerProcessingStepOptions
             {
                 AnnotationOutputVariant = "scene-layer",
+                CardinalOutputVariant = "cardinal-layer",
+                ImageCircleOutputVariant = "image-circle-layer",
                 ConstellationOutputVariant = "constellation-layer"
             });
         var cloudLayer = new CloudPresentationLayerCaptureProcessingStep(
@@ -3167,6 +3169,8 @@ public sealed partial class DurableCaptureProcessingTests
                 OutputVariant = "overlay-manifest",
                 BasePreviewVariant = "combined-preview",
                 SceneAnnotationVariant = "scene-layer",
+                SceneCardinalVariant = "cardinal-layer",
+                SceneImageCircleVariant = "image-circle-layer",
                 SceneConstellationVariant = "constellation-layer",
                 CloudMaskVariant = "cloud-mask",
                 CloudLabelVariant = "cloud-label",
@@ -3180,6 +3184,8 @@ public sealed partial class DurableCaptureProcessingTests
                 OutputVariant = "annotated-preview",
                 BasePreviewVariant = "combined-preview",
                 SceneAnnotationVariant = "scene-layer",
+                SceneCardinalVariant = "cardinal-layer",
+                SceneImageCircleVariant = "image-circle-layer",
                 SceneConstellationVariant = "constellation-layer",
                 CloudMaskVariant = "cloud-mask",
                 CloudLabelVariant = "cloud-label",

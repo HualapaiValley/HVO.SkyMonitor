@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -36,7 +37,7 @@ public sealed class StandaloneW6ProfileTests
             rigSha256);
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
-            "8F9EC413736CCF95026581287D8FFA6C8B05BAF1174420D95A3E49B185A3E18D",
+            "FE3EA5C9A5FB0605FA7522C7271E39FE32B0C8B44178BFF6A5625956C3AFAACE",
             processingSha256,
             processingSha256);
         Assert.AreEqual(
@@ -45,15 +46,15 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "966C360EA52CDCE8AC150A138D94903587B56B2D2F0EC2618AE5E6506259388C",
+            "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(
-            "13DBCBB11F6FBF633B2259FFC668F5109E33F664501ED38B03F6F7ED4AE3F363",
+            "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069",
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "40D49A5166B07FACECA41173263DA75DA8A9A7E28480CB361BDA34191994DB61",
+            "01BDA19E83DB375F0A87CE13A1A8395BAFFDC31A8AEAF17BD72001A36B437386",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -138,6 +139,52 @@ public sealed class StandaloneW6ProfileTests
                 configuration with { Pipeline = configuration.Pipeline with { Steps = steps } }));
 
         StringAssert.Contains(exception.Message, "required dependency inputs", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task LayeredGraphAcceptsOmittedCloudProcessingAndLegacyLayerKinds()
+    {
+        var configuration = await LoadAsync("cameraagent.standalone-w6.json").ConfigureAwait(false);
+        var removed = new HashSet<string>(["cloud", "cloud-presentation"], StringComparer.Ordinal);
+        var steps = configuration.Pipeline!.Steps
+            .Where(step => !removed.Contains(step.Id ?? string.Empty))
+            .Select(step => step with
+            {
+                DependsOn = (step.DependsOn ?? []).Where(dependency => !removed.Contains(dependency)).ToArray()
+            })
+            .ToArray();
+        using var provider = CreateProvider();
+
+        var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(
+            configuration with { Pipeline = configuration.Pipeline with { Steps = steps } });
+
+        Assert.HasCount(12, graph.Nodes);
+        Assert.IsFalse(graph.Nodes.Any(node => removed.Contains(node.Id)));
+        Assert.IsTrue(PresentationLayerKinds.Matches("scene-annotation", "star-annotations"));
+        Assert.IsTrue(PresentationLayerKinds.Matches("scene-annotation", "scene-cardinals"));
+        Assert.IsTrue(PresentationLayerKinds.Matches("scene-annotation", "scene-image-circle"));
+        Assert.IsTrue(PresentationLayerKinds.Matches("scene-cardinals", "cardinal-directions"));
+        Assert.IsTrue(PresentationLayerKinds.Matches("scene-image-circle", "image-circle"));
+        Assert.IsFalse(PresentationLayerKinds.Matches("cardinal-directions", "scene-annotation"));
+        Assert.IsTrue(PresentationLayerKinds.Matches("constellations", "scene-constellations"));
+        Assert.IsTrue(PresentationLayerKinds.Matches("corner-annotations", "environment"));
+        Assert.IsFalse(PresentationLayerKinds.Matches("environment", "constellations"));
+        Assert.AreEqual(19, PresentationLayerKinds.ResolveZOrder("scene-annotation", "scene-image-circle", 20));
+        Assert.AreEqual(20, PresentationLayerKinds.ResolveZOrder("scene-annotation", "scene-annotation", 20));
+        Assert.AreEqual(21, PresentationLayerKinds.ResolveZOrder("scene-annotation", "scene-cardinals", 20));
+        Assert.AreEqual(-1025, PresentationLayerKinds.ResolveZOrder("scene-annotation", "scene-image-circle", -1024));
+        Assert.AreEqual(-1024, PresentationLayerKinds.ResolveZOrder("scene-annotation", "scene-annotation", -1024));
+        Assert.AreEqual(1024, PresentationLayerKinds.ResolveZOrder("scene-annotation", "scene-annotation", 1024));
+        Assert.AreEqual(1025, PresentationLayerKinds.ResolveZOrder("scene-annotation", "scene-cardinals", 1024));
+        Assert.IsTrue(new OverlayManifestProcessingStepOptions
+        {
+            Layers =
+            [
+                new() { Kind = "scene-cardinals" },
+                new() { Kind = "cardinal-directions" }
+            ]
+        }.Validate(new ValidationContext(new object())).Any());
+        graph.DisposeSteps();
     }
 
     [TestMethod]
