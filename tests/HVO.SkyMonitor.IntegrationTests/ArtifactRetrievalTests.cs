@@ -725,7 +725,7 @@ public sealed class ArtifactRetrievalTests
                 MediaType = "application/octet-stream",
                 ByteLength = payload.LongLength,
                 ChecksumSha256 = checksum,
-                StorageReference = $"minio://skymonitor-artifacts/{key}",
+                StorageReference = $"s3://skymonitor-artifacts/{key}",
                 ReceivedAtUtc = now,
                 IdempotencyKey = Guid.NewGuid().ToString("N"),
                 ObjectState = CentralArtifactObjectState.Available,

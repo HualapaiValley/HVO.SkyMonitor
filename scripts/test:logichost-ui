@@ -139,7 +139,7 @@ sha256sum "$baseline_root"/home-trial-*.json \
     > "$evidence_root/baseline-evidence.sha256"
 
 if rg -n -i \
-    'minio://|connectionstrings:|password=|downloadtoken=|invitationtoken=|operator@skymonitor\.local|19\.812345|-155\.412345|/tmp/opencode/' \
+    's3://|minio://|connectionstrings:|password=|downloadtoken=|invitationtoken=|operator@skymonitor\.local|19\.812345|-155\.412345|/tmp/opencode/' \
     "${leak_scan_files[@]}"; then
     printf 'Issue #107 evidence leakage scan failed.\n' >&2
     exit 1

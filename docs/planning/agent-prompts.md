@@ -143,7 +143,7 @@ CPU, allocations, scan bytes, cadence, control latency, and backlog effects.
 ## 7. Central Persistence and Worker Prompt
 
 Recommended primary: GPT-5.6 Sol
-Recommended reviewer: Terra for SQL/MinIO concurrency and Luna for API/output tests
+Recommended reviewer: Terra for SQL/S3 concurrency and Luna for API/output tests
 
 Use for #98, #99, #100, #101, the central parts of #60, and the SQL Server parts of #243.
 
@@ -151,7 +151,7 @@ Use for #98, #99, #100, #101, the central parts of #60, and the SQL Server parts
 Before first release, generate one canonical initial SQL migration from the
 current model and initialize an empty database; do not preserve unreleased EF
 history or add upgrade, downgrade, backfill, or convergence tests for it. Bind
-capture-time profiles, never current registration state. Stream MinIO payloads
+capture-time profiles, never current registration state. Stream object-store payloads
 and verify length/checksum. Keep SQL authoritative for jobs and lineage. Make
 claim, renewal, output persistence, completion, retry, quarantine, and
 reprocessing idempotent under concurrent workers and crashes. Resolve windows
@@ -220,7 +220,7 @@ Use for #90, #108, #109, and the cross-store evidence/disposition work in #243.
 
 ```text
 Exercise actual production adapters where possible: real outbox drain, auth,
-multipart ingest, SQL, Redis, MinIO, worker, retrieval, and durable read models.
+multipart ingest, SQL, Redis, the configured S3 service, worker, retrieval, and durable read models.
 Inject failures at every commit boundary. Verify checksums, numerical outputs,
 lineage, journal/database/object state, logs, metrics, traces, and health. Keep
 external, soak, Stellarium, and future hardware workflows separately labeled.

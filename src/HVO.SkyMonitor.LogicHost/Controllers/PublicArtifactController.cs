@@ -4,7 +4,6 @@ using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.LogicHost.Controllers;
 
@@ -29,7 +28,7 @@ internal sealed class PublicArtifactController(
         {
             snapshot = await objectReader.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is MinioException
+        catch (Exception exception) when (exception is ObjectStoreException
             or CentralArtifactStorageException
             or CentralArtifactIntegrityException)
         {

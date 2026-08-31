@@ -837,7 +837,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
                  [RecoveryGeneration], [ReferenceRetryCount])
             SELECT [ArtifactRowId], [FrameId], [ArtifactId], {{devicePublicId}}, N'Raw', N'phase10-raw-v1',
                    N'v2', N'application/x-hvo-linear-frame', 8,
-                   REPLICATE('0', 64), N'minio://skymonitor-artifacts/performance/not-read',
+                   REPLICATE('0', 64), N's3://skymonitor-artifacts/performance/not-read',
                    CAST('2026-01-01T00:00:00+00:00' AS datetimeoffset),
                    REPLACE(CONVERT(varchar(36), [ArtifactRowId]), '-', '')
                      + REPLACE(CONVERT(varchar(36), [ArtifactRowId]), '-', ''),
@@ -1006,7 +1006,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
         {
             delayedSources = (await SeedWindowSourcesAsync(
                 db, delayedAgent, 4, 2, 2, CameraPixelFormat.Mono16,
-                "minio://skymonitor-artifacts/performance/issue-101/not-read", 8).ConfigureAwait(false)).Values.ToArray();
+                "s3://skymonitor-artifacts/performance/issue-101/not-read", 8).ConfigureAwait(false)).Values.ToArray();
             delayedJobId = (await AddJobsAsync(db, delayedAgent, [3]).ConfigureAwait(false)).Single();
             var resolver = CreateResolver(db, telemetry);
             var started = Stopwatch.GetTimestamp();
@@ -1047,7 +1047,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
         {
             var arrived = await SeedWindowSourcesAsync(
                 restartedDb, delayedAgent, 1, 2, 2, CameraPixelFormat.Mono16,
-                "minio://skymonitor-artifacts/performance/issue-101/not-read", 8,
+                "s3://skymonitor-artifacts/performance/issue-101/not-read", 8,
                 firstSequence: 5).ConfigureAwait(false);
             delayedSources = [.. delayedSources, arrived[5]];
             var started = Stopwatch.GetTimestamp();
@@ -1089,7 +1089,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
         {
             missingSources = (await SeedWindowSourcesAsync(
                 db, missingAgent, 5, 2, 2, CameraPixelFormat.Mono16,
-                "minio://skymonitor-artifacts/performance/issue-101/not-read", 8).ConfigureAwait(false)).Values.ToArray();
+                "s3://skymonitor-artifacts/performance/issue-101/not-read", 8).ConfigureAwait(false)).Values.ToArray();
             await db.CentralArtifacts.Where(artifact => missingSources.Contains(artifact.Id)
                     && artifact.Frame!.CaptureSequence != 3)
                 .ExecuteUpdateAsync(setters => setters
@@ -1174,7 +1174,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
         {
             var sources = await SeedWindowSourcesAsync(
                 db, agentId, 5, 2, 2, CameraPixelFormat.Mono16,
-                $"minio://{ArtifactBucket}/{objectKey}", payload.LongLength,
+                $"s3://{ArtifactBucket}/{objectKey}", payload.LongLength,
                 Convert.ToHexString(SHA256.HashData(payload))).ConfigureAwait(false);
             sourceId = sources[3];
             notificationSourceId = sources[5];
@@ -1340,7 +1340,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             _ = await SeedWindowSourcesAsync(
                 db, agentId, warmups + measurements + 4, width, height, pixelFormat,
-                $"minio://{ArtifactBucket}/{objectKey}", payload.LongLength, checksum).ConfigureAwait(false);
+                $"s3://{ArtifactBucket}/{objectKey}", payload.LongLength, checksum).ConfigureAwait(false);
             jobIds = await AddJobsAsync(db, agentId, Enumerable.Range(3, warmups + measurements).Select(value => (long)value))
                 .ConfigureAwait(false);
             using var telemetry = new CentralDerivativeWorkerTelemetry();
@@ -1426,7 +1426,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
             foreach (var artifact in jobs.Select(job => job.ResultArtifact!))
             {
                 string? observedChecksum = null;
-                var outputKey = artifact.StorageReference[$"minio://{ArtifactBucket}/".Length..];
+                var outputKey = artifact.StorageReference[$"s3://{ArtifactBucket}/".Length..];
                 await minio.GetObjectAsync(new GetObjectArgs()
                     .WithBucket(ArtifactBucket)
                     .WithObject(outputKey)
@@ -1979,7 +1979,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 sourceIds = (await SeedWindowSourcesAsync(
                     db, agentId, 5, 2, 2, CameraPixelFormat.Mono16,
-                    $"minio://{ArtifactBucket}/{objectKey}", payload.LongLength,
+                    $"s3://{ArtifactBucket}/{objectKey}", payload.LongLength,
                     Convert.ToHexString(SHA256.HashData(payload))).ConfigureAwait(false)).Values.ToArray();
                 predecessorJobId = (await AddJobsAsync(db, agentId, [3]).ConfigureAwait(false)).Single();
                 using var telemetry = new CentralDerivativeWorkerTelemetry();
@@ -2443,7 +2443,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
         IntegrationTestFixture fixture,
         string storageReference)
     {
-        var prefix = $"minio://{ArtifactBucket}/";
+        var prefix = $"s3://{ArtifactBucket}/";
         Assert.IsTrue(storageReference.StartsWith(prefix, StringComparison.Ordinal));
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
@@ -2454,7 +2454,7 @@ public sealed class CentralDerivativeWindowPerformanceTests
                 .WithObject(storageReference[prefix.Length..])).ConfigureAwait(false);
             return true;
         }
-        catch (Minio.Exceptions.MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (Minio.Exceptions.MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception))
         {
             return false;
         }

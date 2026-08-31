@@ -1,15 +1,11 @@
 using System.Buffers;
 using System.Data.Common;
 using System.Diagnostics;
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Query;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -29,7 +25,7 @@ internal sealed partial class CentralArtifactReconciliationService(
     private const string BinaryCollation = "Latin1_General_100_BIN2";
     private const int MaximumPendingArtifactsPerCycle = 100;
     internal const int MaximumSqlInventoryArtifactsPerCycle = 25;
-    internal const int MaximumMinioInventoryObjectsPerCycle = 100;
+    internal const int MaximumObjectStoreInventoryObjectsPerCycle = 100;
     internal const int MaximumRecoveryDispositionsPerCycle = 25;
     internal const int MaximumStagingObjectsPerCycle = 1000;
     internal static readonly TimeSpan StagingObjectGracePeriod = TimeSpan.FromMinutes(15);
@@ -100,12 +96,12 @@ internal sealed partial class CentralArtifactReconciliationService(
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
-            await CleanupStagingObjectsAsync(db, minio, token, cancellationToken).ConfigureAwait(false);
-            await ProcessRecoveryDispositionsAsync(db, minio, token, statistics, cancellationToken).ConfigureAwait(false);
+            var objectStore = scope.ServiceProvider.GetRequiredService<IObjectStore>();
+            await CleanupStagingObjectsAsync(db, objectStore, token, cancellationToken).ConfigureAwait(false);
+            await ProcessRecoveryDispositionsAsync(db, objectStore, token, statistics, cancellationToken).ConfigureAwait(false);
             var attemptedArtifacts = await ReconcilePendingArtifactsAsync(db, token, statistics, cancellationToken)
                 .ConfigureAwait(false);
-            await RunInventoryAsync(db, minio, token, statistics, attemptedArtifacts, cancellationToken)
+            await RunInventoryAsync(db, objectStore, token, statistics, attemptedArtifacts, cancellationToken)
                 .ConfigureAwait(false);
             await RecordBacklogAsync(db, cancellationToken).ConfigureAwait(false);
             var immediateWork = await HasImmediateWorkAsync(db, cancellationToken).ConfigureAwait(false);
@@ -380,7 +376,7 @@ internal sealed partial class CentralArtifactReconciliationService(
 
     private async Task RunInventoryAsync(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore objectStore,
         Guid token,
         RecoveryStatistics statistics,
         IReadOnlyList<Guid> attemptedArtifacts,
@@ -424,27 +420,27 @@ internal sealed partial class CentralArtifactReconciliationService(
                 .ConfigureAwait(false);
             return;
         }
-        if (checkpoint.Phase == CentralRecoveryPhases.MinioArtifacts)
+        if (checkpoint.Phase == CentralRecoveryPhases.ObjectStoreArtifacts)
         {
-            await InventoryMinioPrefixAsync(db, minio, token, checkpoint, "artifacts/",
-                CentralRecoveryPhases.MinioArtifactsCatchAll, statistics, cancellationToken).ConfigureAwait(false);
+            await InventoryObjectStorePrefixAsync(db, objectStore, token, checkpoint, "artifacts/",
+                CentralRecoveryPhases.ObjectStoreArtifactsCatchAll, statistics, cancellationToken).ConfigureAwait(false);
             return;
         }
-        if (checkpoint.Phase == CentralRecoveryPhases.MinioArtifactsCatchAll)
+        if (checkpoint.Phase == CentralRecoveryPhases.ObjectStoreArtifactsCatchAll)
         {
-            await InventoryMinioCatchAllAsync(db, minio, token, "artifacts/",
-                CentralRecoveryPhases.MinioDerivatives, statistics, cancellationToken).ConfigureAwait(false);
+            await InventoryObjectStoreCatchAllAsync(db, objectStore, token, "artifacts/",
+                CentralRecoveryPhases.ObjectStoreDerivatives, statistics, cancellationToken).ConfigureAwait(false);
             return;
         }
-        if (checkpoint.Phase == CentralRecoveryPhases.MinioDerivatives)
+        if (checkpoint.Phase == CentralRecoveryPhases.ObjectStoreDerivatives)
         {
-            await InventoryMinioPrefixAsync(db, minio, token, checkpoint, "derivatives/",
-                CentralRecoveryPhases.MinioDerivativesCatchAll, statistics, cancellationToken).ConfigureAwait(false);
+            await InventoryObjectStorePrefixAsync(db, objectStore, token, checkpoint, "derivatives/",
+                CentralRecoveryPhases.ObjectStoreDerivativesCatchAll, statistics, cancellationToken).ConfigureAwait(false);
             return;
         }
-        if (checkpoint.Phase == CentralRecoveryPhases.MinioDerivativesCatchAll)
+        if (checkpoint.Phase == CentralRecoveryPhases.ObjectStoreDerivativesCatchAll)
         {
-            await InventoryMinioCatchAllAsync(db, minio, token, "derivatives/",
+            await InventoryObjectStoreCatchAllAsync(db, objectStore, token, "derivatives/",
                 CentralRecoveryPhases.Idle, statistics, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -484,7 +480,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         {
             var now = timeProvider.GetUtcNow();
             await UpdateCheckpointAsync(db, token, setters => setters
-                .SetProperty(item => item.Phase, CentralRecoveryPhases.MinioArtifacts)
+                .SetProperty(item => item.Phase, CentralRecoveryPhases.ObjectStoreArtifacts)
                 .SetProperty(item => item.ObjectPartition, 0)
                 .SetProperty(item => item.ObjectCursor, (string?)null)
                 .SetProperty(item => item.LastProgressAtUtc, now), cancellationToken).ConfigureAwait(false);
@@ -495,9 +491,9 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
     }
 
-    private async Task InventoryMinioPrefixAsync(
+    private async Task InventoryObjectStorePrefixAsync(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore objectStore,
         Guid token,
         CentralRecoveryCheckpoint checkpoint,
         string prefix,
@@ -505,36 +501,30 @@ internal sealed partial class CentralArtifactReconciliationService(
         RecoveryStatistics statistics,
         CancellationToken cancellationToken)
     {
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket), cancellationToken)
-                .ConfigureAwait(false))
+        if (!await objectStore.BucketExistsAsync(Bucket, cancellationToken).ConfigureAwait(false))
         {
             throw new InvalidOperationException("The central artifact bucket is unavailable.");
         }
         var processed = 0;
         var pageBytes = 0L;
         var hasMore = false;
-        // MinIO .NET 7 does not expose S3 continuation/start-after tokens. Restrict replay to one
-        // generated device-key partition instead of repeatedly skipping the entire object namespace.
+        // Restrict replay to one generated device-key partition instead of repeatedly skipping the
+        // entire object namespace before the durable ordinal cursor.
         var partitionPrefix = $"{prefix}{checkpoint.ObjectPartition:x2}";
-        var args = new ListObjectsArgs().WithBucket(Bucket).WithPrefix(partitionPrefix).WithRecursive(true);
-        await foreach (var item in minio.ListObjectsEnumAsync(args, cancellationToken).ConfigureAwait(false))
+        await foreach (var item in objectStore.ListAsync(
+            Bucket, partitionPrefix, cancellationToken, checkpoint.ObjectCursor).ConfigureAwait(false))
         {
-            if (checkpoint.ObjectCursor is not null
-                && string.CompareOrdinal(item.Key, checkpoint.ObjectCursor) <= 0)
-            {
-                continue;
-            }
-            if (processed >= MaximumMinioInventoryObjectsPerCycle)
+            if (processed >= MaximumObjectStoreInventoryObjectsPerCycle)
             {
                 hasMore = true;
                 break;
             }
             await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
             processed++;
-            pageBytes += checked((long)item.Size);
+            pageBytes += item.ContentLength;
             statistics.Scanned++;
-            statistics.ScannedBytes += checked((long)item.Size);
-            await InventoryMinioObjectAsync(db, token, item.Key, checked((long)item.Size), statistics, cancellationToken)
+            statistics.ScannedBytes += item.ContentLength;
+            await InventoryObjectStoreObjectAsync(db, token, item.Key, item.ContentLength, statistics, cancellationToken)
                 .ConfigureAwait(false);
             var cursor = item.Key;
             await UpdateCheckpointAsync(db, token, setters => setters
@@ -577,28 +567,25 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
     }
 
-    private async Task InventoryMinioCatchAllAsync(
+    private async Task InventoryObjectStoreCatchAllAsync(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore objectStore,
         Guid token,
         string prefix,
         string nextPhase,
         RecoveryStatistics statistics,
         CancellationToken cancellationToken)
     {
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket), cancellationToken)
-                .ConfigureAwait(false))
+        if (!await objectStore.BucketExistsAsync(Bucket, cancellationToken).ConfigureAwait(false))
         {
             throw new InvalidOperationException("The central artifact bucket is unavailable.");
         }
         long examined = 0;
         var examinedBytes = 0L;
-        // MinIO .NET 7 exposes no caller-supplied continuation token. Audit the prefix exactly once per
-        // recovery generation in one O(namespace) streaming pass. Deployments must size the 30-minute lease
-        // for a complete artifacts/ or derivatives/ listing; canonical generated-key work remains partitioned.
-        var args = new ListObjectsArgs().WithBucket(Bucket).WithPrefix(prefix).WithRecursive(true);
+        // Audit the prefix exactly once per recovery generation in one O(namespace) streaming pass.
+        // Deployments must size the lease for a complete listing; canonical generated-key work remains partitioned.
         var leaseRenewedAt = timeProvider.GetTimestamp();
-        await foreach (var item in minio.ListObjectsEnumAsync(args, cancellationToken).ConfigureAwait(false))
+        await foreach (var item in objectStore.ListAsync(Bucket, prefix, cancellationToken).ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (examined % CatchAllLeaseRenewalInterval == 0
@@ -608,13 +595,13 @@ internal sealed partial class CentralArtifactReconciliationService(
                 leaseRenewedAt = timeProvider.GetTimestamp();
             }
             examined++;
-            examinedBytes += checked((long)item.Size);
+            examinedBytes += item.ContentLength;
             if (!IsCanonicalGeneratedObjectKey(item.Key, prefix))
             {
                 statistics.Scanned++;
-                statistics.ScannedBytes += checked((long)item.Size);
-                await InventoryMinioObjectAsync(
-                    db, token, item.Key, checked((long)item.Size), statistics, cancellationToken).ConfigureAwait(false);
+                statistics.ScannedBytes += item.ContentLength;
+                await InventoryObjectStoreObjectAsync(
+                    db, token, item.Key, item.ContentLength, statistics, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -641,7 +628,7 @@ internal sealed partial class CentralArtifactReconciliationService(
         }
     }
 
-    private async Task InventoryMinioObjectAsync(
+    private async Task InventoryObjectStoreObjectAsync(
         ApplicationDbContext db,
         Guid token,
         string objectKey,
@@ -877,7 +864,7 @@ internal sealed partial class CentralArtifactReconciliationService(
 
     private async Task ProcessRecoveryDispositionsAsync(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore objectStore,
         Guid token,
         RecoveryStatistics statistics,
         CancellationToken cancellationToken)
@@ -921,9 +908,9 @@ internal sealed partial class CentralArtifactReconciliationService(
                     {
                         continue;
                     }
-                    var sourceFingerprint = await TryGetObjectFingerprintAsync(minio, disposition.SourceObjectKey, cancellationToken)
+                    var sourceFingerprint = await TryGetObjectFingerprintAsync(objectStore, disposition.SourceObjectKey, cancellationToken)
                         .ConfigureAwait(false);
-                    var targetFingerprint = await TryGetObjectFingerprintAsync(minio, disposition.TargetObjectKey!, cancellationToken)
+                    var targetFingerprint = await TryGetObjectFingerprintAsync(objectStore, disposition.TargetObjectKey!, cancellationToken)
                         .ConfigureAwait(false);
                     if (sourceFingerprint is null)
                     {
@@ -958,11 +945,11 @@ internal sealed partial class CentralArtifactReconciliationService(
                         {
                             continue;
                         }
-                        var copySource = new CopySourceObjectArgs().WithBucket(Bucket).WithObject(disposition.SourceObjectKey);
-                        await minio.CopyObjectAsync(new CopyObjectArgs().WithBucket(Bucket)
-                            .WithObject(disposition.TargetObjectKey!).WithCopyObjectSource(copySource), cancellationToken)
+                        await objectStore.CopyAsync(
+                            Bucket, disposition.SourceObjectKey, disposition.TargetObjectKey!, cancellationToken)
                             .ConfigureAwait(false);
-                        targetFingerprint = await TryGetObjectFingerprintAsync(minio, disposition.TargetObjectKey!, cancellationToken)
+                        targetFingerprint = await TryGetObjectFingerprintAsync(
+                            objectStore, disposition.TargetObjectKey!, cancellationToken)
                             .ConfigureAwait(false);
                     }
                     await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
@@ -982,7 +969,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                     continue;
                 }
 
-                var target = await TryGetObjectFingerprintAsync(minio, disposition.TargetObjectKey!, cancellationToken)
+                var target = await TryGetObjectFingerprintAsync(objectStore, disposition.TargetObjectKey!, cancellationToken)
                     .ConfigureAwait(false);
                 if (target is null || disposition.ContentChecksumSha256 is null
                     || target.ByteLength != disposition.ByteLength
@@ -995,7 +982,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                     await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
                     continue;
                 }
-                var source = await TryGetObjectFingerprintAsync(minio, disposition.SourceObjectKey, cancellationToken)
+                var source = await TryGetObjectFingerprintAsync(objectStore, disposition.SourceObjectKey, cancellationToken)
                     .ConfigureAwait(false);
                 if (source is not null
                     && (source.ByteLength != disposition.ByteLength
@@ -1015,14 +1002,8 @@ internal sealed partial class CentralArtifactReconciliationService(
                 {
                     continue;
                 }
-                try
-                {
-                    await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket(Bucket)
-                        .WithObject(disposition.SourceObjectKey), cancellationToken).ConfigureAwait(false);
-                }
-                catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
-                {
-                }
+                await objectStore.DeleteAsync(Bucket, disposition.SourceObjectKey, cancellationToken)
+                    .ConfigureAwait(false);
                 await RenewLeaseAsync(db, token, cancellationToken).ConfigureAwait(false);
                 disposition.State = CentralObjectRecoveryStates.Completed;
                 disposition.ReasonCode = null;
@@ -1088,7 +1069,7 @@ internal sealed partial class CentralArtifactReconciliationService(
 
     private async Task CleanupStagingObjectsAsync(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore objectStore,
         Guid token,
         CancellationToken cancellationToken)
     {
@@ -1096,8 +1077,7 @@ internal sealed partial class CentralArtifactReconciliationService(
             .SingleAsync(item => item.Id == CentralRecoveryCheckpoint.SingletonId, cancellationToken)
             .ConfigureAwait(false);
         var nextPartition = (checkpoint.StagingPartition + 1) % StagingPartitionCount;
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(Bucket), cancellationToken)
-                .ConfigureAwait(false))
+        if (!await objectStore.BucketExistsAsync(Bucket, cancellationToken).ConfigureAwait(false))
         {
             await UpdateCheckpointAsync(db, token, setters => setters
                 .SetProperty(item => item.StagingPartition, nextPartition)
@@ -1113,14 +1093,9 @@ internal sealed partial class CentralArtifactReconciliationService(
         var deletedBytes = 0L;
         var hasMore = false;
         var prefix = GetStagingPartitionPrefix(checkpoint.StagingPartition);
-        var args = new ListObjectsArgs().WithBucket(Bucket).WithPrefix(prefix).WithRecursive(true);
-        await foreach (var item in minio.ListObjectsEnumAsync(args, cancellationToken).ConfigureAwait(false))
+        await foreach (var item in objectStore.ListAsync(
+            Bucket, prefix, cancellationToken, checkpoint.StagingCursor).ConfigureAwait(false))
         {
-            if (checkpoint.StagingCursor is not null
-                && string.CompareOrdinal(item.Key, checkpoint.StagingCursor) <= 0)
-            {
-                continue;
-            }
             if (scanned >= MaximumStagingObjectsPerCycle)
             {
                 hasMore = true;
@@ -1134,20 +1109,18 @@ internal sealed partial class CentralArtifactReconciliationService(
             var stagingCursor = item.Key;
             await UpdateCheckpointAsync(db, token, setters => setters
                 .SetProperty(candidate => candidate.StagingCursor, stagingCursor), cancellationToken).ConfigureAwait(false);
-            var lastModifiedUtc = item.LastModifiedDateTime;
-            if (!lastModifiedUtc.HasValue || new DateTimeOffset(lastModifiedUtc.Value.ToUniversalTime()) > cutoffUtc)
+            if (item.LastModifiedUtc == DateTimeOffset.MinValue || item.LastModifiedUtc > cutoffUtc)
             {
                 retained++;
                 continue;
             }
             try
             {
-                await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket(Bucket)
-                    .WithObject(item.Key), cancellationToken).ConfigureAwait(false);
+                await objectStore.DeleteAsync(Bucket, item.Key, cancellationToken).ConfigureAwait(false);
                 deleted++;
-                deletedBytes += checked((long)item.Size);
+                deletedBytes += item.ContentLength;
             }
-            catch (Exception exception) when (exception is MinioException or HttpRequestException or IOException)
+            catch (ObjectStoreException exception)
             {
                 failed++;
                 LogStagingDeleteFailed(GetFailureCategory(exception));
@@ -1243,7 +1216,7 @@ internal sealed partial class CentralArtifactReconciliationService(
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
+        var objectStore = scope.ServiceProvider.GetRequiredService<IObjectStore>();
         var objectReader = scope.ServiceProvider.GetRequiredService<ICentralArtifactObjectReader>();
         var scheduler = scope.ServiceProvider.GetRequiredService<ICentralDerivativeJobScheduler>();
         var artifact = await db.CentralArtifacts
@@ -1353,7 +1326,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                 db, objectLock, artifact, token, reconciledAtUtc, cancellationToken).ConfigureAwait(false);
             retryFence.ObjectVerificationToken = artifact.ObjectVerificationToken;
             result = await VerifyAndApplyAsync(
-                db, minio, objectReader, objectLock, artifact, reconciledAtUtc, recoveryGeneration, token, cancellationToken)
+                db, objectStore, objectReader, objectLock, artifact, reconciledAtUtc, recoveryGeneration, token, cancellationToken)
                 .ConfigureAwait(false);
             retryFence.CommittedVerifiedAtUtc = result.Outcome == "matched" ? artifact.ObjectVerifiedAtUtc : null;
             if (result.Outcome == "matched")
@@ -1418,7 +1391,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                     db, objectLock, artifact, token, reconciledAtUtc, cancellationToken).ConfigureAwait(false);
                 retryFence.ObjectVerificationToken = artifact.ObjectVerificationToken;
                 result = await VerifyAndApplyAsync(
-                    db, minio, objectReader, objectLock, artifact, reconciledAtUtc, recoveryGeneration, token, cancellationToken)
+                    db, objectStore, objectReader, objectLock, artifact, reconciledAtUtc, recoveryGeneration, token, cancellationToken)
                     .ConfigureAwait(false);
                 retryFence.CommittedVerifiedAtUtc = result.Outcome == "matched" ? artifact.ObjectVerifiedAtUtc : null;
                 if (result.Outcome == "matched")
@@ -1554,7 +1527,7 @@ internal sealed partial class CentralArtifactReconciliationService(
 
     private async Task<RecoveryArtifactResult> VerifyAndApplyAsync(
         ApplicationDbContext db,
-        IMinioClient minio,
+        IObjectStore objectStore,
         ICentralArtifactObjectReader objectReader,
         CentralObjectApplicationLock objectLock,
         CentralArtifact artifact,
@@ -1588,7 +1561,7 @@ internal sealed partial class CentralArtifactReconciliationService(
                 "The artifact object generation changed during recovery verification.");
         }
         if (verification == "missing"
-            && !await IsObjectMissingAsync(minio, artifact, cancellationToken).ConfigureAwait(false))
+            && !await IsObjectMissingAsync(objectStore, artifact, cancellationToken).ConfigureAwait(false))
         {
             throw new CentralArtifactStorageException(
                 "The missing artifact object appeared during recovery verification.");
@@ -1743,18 +1716,17 @@ internal sealed partial class CentralArtifactReconciliationService(
     }
 
     private async Task<bool> IsObjectMissingAsync(
-        IMinioClient minio,
+        IObjectStore objectStore,
         CentralArtifact artifact,
         CancellationToken cancellationToken)
     {
         try
         {
-            _ = await minio.StatObjectAsync(new StatObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(artifact.StorageReference[BucketPrefix.Length..]), cancellationToken).ConfigureAwait(false);
+            _ = await objectStore.StatAsync(
+                Bucket, artifact.StorageReference[BucketPrefix.Length..], cancellationToken).ConfigureAwait(false);
             return false;
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             return true;
         }
@@ -1903,7 +1875,7 @@ internal sealed partial class CentralArtifactReconciliationService(
     }
 
     private async Task<ObjectFingerprint?> TryGetObjectFingerprintAsync(
-        IMinioClient minio,
+        IObjectStore objectStore,
         string objectKey,
         CancellationToken cancellationToken)
     {
@@ -1911,23 +1883,20 @@ internal sealed partial class CentralArtifactReconciliationService(
         byte[]? checksum = null;
         try
         {
-            await minio.GetObjectAsync(new GetObjectArgs()
-                .WithBucket(Bucket)
-                .WithObject(objectKey)
-                .WithCallbackStream(stream =>
+            await objectStore.ReadAsync(Bucket, objectKey, null, async (stream, token) =>
+            {
+                using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var buffer = new byte[81920];
+                int read;
+                while ((read = await stream.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
                 {
-                    using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-                    var buffer = new byte[81920];
-                    int read;
-                    while ((read = stream.Read(buffer)) > 0)
-                    {
-                        hash.AppendData(buffer, 0, read);
-                        length += read;
-                    }
-                    checksum = hash.GetHashAndReset();
-                }), cancellationToken).ConfigureAwait(false);
+                    hash.AppendData(buffer, 0, read);
+                    length += read;
+                }
+                checksum = hash.GetHashAndReset();
+            }, cancellationToken).ConfigureAwait(false);
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             return null;
         }
@@ -1935,17 +1904,17 @@ internal sealed partial class CentralArtifactReconciliationService(
     }
 
     private static bool IsRecoverable(Exception exception)
-        => exception is DbException or DbUpdateConcurrencyException or MinioException
+        => exception is DbException or DbUpdateConcurrencyException or ObjectStoreException
             or CentralArtifactStorageException or HttpRequestException or IOException or InvalidOperationException;
 
     private static bool MayContainObjectLocation(Exception exception)
-        => exception is MinioException or CentralArtifactStorageException or HttpRequestException or IOException;
+        => exception is ObjectStoreException or CentralArtifactStorageException or HttpRequestException or IOException;
 
     private static string GetFailureCategory(Exception exception)
         => exception switch
         {
             CentralArtifactStorageException => "object-store",
-            MinioException => "object-store",
+            ObjectStoreException => "object-store",
             HttpRequestException => "network",
             IOException => "io",
             _ => "other"
@@ -2142,7 +2111,7 @@ internal sealed partial class CentralArtifactReconciliationService(
     private partial void LogRecordFailed(Exception exception);
 
     [LoggerMessage(2125, LogLevel.Warning,
-        "Failed to remove one stale MinIO staging object: FailureCategory={FailureCategory}")]
+        "Failed to remove one stale object-storage staging object: FailureCategory={FailureCategory}")]
     private partial void LogStagingDeleteFailed(string failureCategory);
 
     [LoggerMessage(2126, LogLevel.Information,
@@ -2160,19 +2129,4 @@ internal sealed partial class CentralArtifactReconciliationService(
     [LoggerMessage(2129, LogLevel.Error,
         "Central artifact recovery failed for one object-store record: FailureCategory={FailureCategory}")]
     private partial void LogObjectStoreRecordFailed(string failureCategory);
-}
-
-internal static class MinioObjectVerification
-{
-    public static bool IsNotFound(MinioException exception)
-    {
-        ArgumentNullException.ThrowIfNull(exception);
-        if (exception is ObjectNotFoundException)
-        {
-            return true;
-        }
-        var errorCode = exception.Response?.Code;
-        return errorCode is "NoSuchKey" or "NoSuchObject"
-            && exception.ServerResponse?.StatusCode == HttpStatusCode.NotFound;
-    }
 }

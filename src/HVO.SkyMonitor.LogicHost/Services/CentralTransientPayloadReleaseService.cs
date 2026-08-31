@@ -1,6 +1,5 @@
 using System.Data;
 using System.Data.Common;
-using System.Net;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -8,9 +7,6 @@ using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using Minio;
-using Minio.DataModel.Args;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -129,7 +125,7 @@ internal interface ICentralTransientPayloadReleaseFaultInjector
 internal sealed class CentralTransientPayloadReleaseService(
     ApplicationDbContext dbContext,
     ICentralArtifactRetentionReferences retentionReferences,
-    IMinioClient minio,
+    IObjectStore objectStore,
     IOptions<CentralTransientPayloadReleaseOptions> options,
     TimeProvider timeProvider,
     CentralTransientLifecycleTelemetry? telemetry = null,
@@ -753,12 +749,9 @@ internal sealed class CentralTransientPayloadReleaseService(
                     }
                     try
                     {
-                        await minio.RemoveObjectAsync(new RemoveObjectArgs().WithBucket(Bucket)
-                            .WithObject(canonicalStorageReference[BucketPrefix.Length..]), cancellationToken)
+                        await objectStore.DeleteAsync(
+                            Bucket, canonicalStorageReference[BucketPrefix.Length..], cancellationToken)
                             .ConfigureAwait(false);
-                    }
-                    catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
-                    {
                     }
                     catch (Exception exception) when (IsRetryableStorageFailure(exception))
                     {
@@ -1434,24 +1427,22 @@ internal sealed class CentralTransientPayloadReleaseService(
         }
         try
         {
-            _ = await minio.StatObjectAsync(new StatObjectArgs().WithBucket(Bucket)
-                .WithObject(canonicalStorageReference[BucketPrefix.Length..]), cancellationToken).ConfigureAwait(false);
+            _ = await objectStore.StatAsync(
+                Bucket, canonicalStorageReference[BucketPrefix.Length..], cancellationToken).ConfigureAwait(false);
             return ObjectExistence.Present;
         }
-        catch (MinioException exception) when (MinioObjectVerification.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             return ObjectExistence.Absent;
         }
-        catch (Exception exception) when (exception is MinioException or HttpRequestException or IOException
-            or TimeoutException)
+        catch (ObjectStoreException)
         {
             return ObjectExistence.Unknown;
         }
     }
 
     private static bool IsRetryableStorageFailure(Exception exception)
-        => !IsTerminalStorageFailure(exception) &&
-           exception is MinioException or HttpRequestException or IOException or TimeoutException;
+        => exception is ObjectStoreException { IsRetryable: true };
 
     private static bool IsTerminalStorageFailure(Exception exception)
     {
@@ -1459,29 +1450,19 @@ internal sealed class CentralTransientPayloadReleaseService(
         {
             return true;
         }
-        if (exception is not MinioException minioException)
-        {
-            return false;
-        }
-        var status = minioException.ServerResponse?.StatusCode;
-        var code = minioException.Response?.Code;
-        return status is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
-            or HttpStatusCode.MethodNotAllowed or HttpStatusCode.NotImplemented
-            || code is "AccessDenied" or "InvalidAccessKeyId" or "SignatureDoesNotMatch"
-                or "InvalidRequest" or "InvalidBucketName" or "NoSuchBucket" or "NotImplemented";
+        return exception is ObjectStoreException { IsTerminal: true };
     }
 
     private static string GetStorageFailureReason(Exception exception)
     {
-        if (exception is MinioException minioException)
+        if (exception is ObjectStoreException objectStoreException)
         {
-            return minioException.Response?.Code switch
+            return objectStoreException.Kind switch
             {
-                "AccessDenied" => "transient-retention.storage-authorization",
-                "InvalidAccessKeyId" or "SignatureDoesNotMatch" => "transient-retention.storage-authentication",
-                "InvalidRequest" or "InvalidBucketName" => "transient-retention.invalid-storage-reference",
-                "NoSuchBucket" => "transient-retention.storage-configuration",
-                "NotImplemented" => "transient-retention.storage-unsupported",
+                ObjectStoreFailureKind.Authorization => "transient-retention.storage-authorization",
+                ObjectStoreFailureKind.Authentication => "transient-retention.storage-authentication",
+                ObjectStoreFailureKind.MissingBucket => "transient-retention.storage-configuration",
+                ObjectStoreFailureKind.Unsupported => "transient-retention.storage-unsupported",
                 _ => "transient-retention.storage-terminal"
             };
         }
@@ -1596,7 +1577,7 @@ internal sealed class CentralTransientPayloadReleaseWorker(
             {
                 break;
             }
-            catch (Exception exception) when (exception is DbException or MinioException or InvalidOperationException)
+            catch (Exception exception) when (exception is DbException or ObjectStoreException or InvalidOperationException)
             {
                 telemetry.RecordRetention("failed", 0, TimeSpan.Zero);
                 await Task.Delay(options.Value.PollInterval, stoppingToken).ConfigureAwait(false);

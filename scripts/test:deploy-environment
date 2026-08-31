@@ -1741,7 +1741,7 @@ write_inventory() {
         transient:{mode:"Off"},
         workload:{kind:"W0",durationSeconds:120,sustainedArmOptIn:true},
         secretMappings:[{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb"},{reference:"SQL_PASSWORD",key:"ConnectionStrings__skymonitordb-migrations"},
-          {reference:"SQL_PASSWORD",key:"Minio__AccessKey"},{reference:"SQL_PASSWORD",key:"Minio__SecretKey"}],
+          {reference:"SQL_PASSWORD",key:"ObjectStorage__AccessKey"},{reference:"SQL_PASSWORD",key:"ObjectStorage__SecretKey"}],
           limits:{cpus:null,memory:null,sqlMemory:null,sqlMemoryLimitMb:null}}
     }' > "$INVENTORY"
     cp "$INVENTORY" "$BASE_INVENTORY"
@@ -2238,7 +2238,7 @@ done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentityS
   done
   jq '.catalogs[0].version="catalog:v1"' "$BASE_INVENTORY" > "$TEMP_DIR/catalog.json"
   if deploy_validate_inventory "$TEMP_DIR/catalog.json" isolated >/dev/null 2>&1; then exit 93; fi
-  jq '.deployment.secretMappings |= map(select(.key != "Minio__AccessKey"))' "$BASE_INVENTORY" > "$TEMP_DIR/mapping-invalid.json"
+  jq '.deployment.secretMappings |= map(select(.key != "ObjectStorage__AccessKey"))' "$BASE_INVENTORY" > "$TEMP_DIR/mapping-invalid.json"
   if deploy_validate_inventory "$TEMP_DIR/mapping-invalid.json" isolated >/dev/null 2>&1; then exit 96; fi
 )
 runtime_pattern="$(jq -r '."$defs".runtimeRoot.pattern' "$REPO_ROOT/deploy/split-host/inventory.schema.json")"
@@ -5354,8 +5354,23 @@ jq -e '.phaseStatus == "failed"' "$TEMP_DIR/output/$deploy_services-evidence/up.
 run_deploy_mode up "$deploy_services" isolated >/dev/null
 jq -e '.phaseStatus == "passed" and ([.resources[].kind] | sort) == ["logic-initializer","runtime-role","shared-services"] and (.targets | length) == 3' \
   "$TEMP_DIR/output/$deploy_services-state/up-ledger.json" >/dev/null
-test "$(<"$logic_runtime_root/config/runtime-secrets/Minio__AccessKey")" = generated-minio-access
-test "$(<"$logic_runtime_root/config/runtime-secrets/Minio__SecretKey")" = 'generated:/@"minio-secret-never-print'
+object_storage_endpoint="$(jq -r '.deployment.services.minio.host + ":" + (.deployment.services.minio.port | tostring)' "$INVENTORY")"
+object_storage_tls="$(jq -r '.deployment.services.minio.useSsl' "$INVENTORY")"
+for object_storage_config in "$logic_runtime_root/config/initializer-secrets" "$logic_runtime_root/config/runtime-secrets"; do
+  test "$(<"$object_storage_config/ObjectStorage__ServiceEndpoint")" = "$object_storage_endpoint"
+  test "$(<"$object_storage_config/ObjectStorage__Region")" = us-east-1
+  test "$(<"$object_storage_config/ObjectStorage__UseTls")" = "$object_storage_tls"
+  test "$(<"$object_storage_config/ObjectStorage__AddressingStyle")" = Path
+  test "$(<"$object_storage_config/ObjectStorage__CredentialMode")" = Static
+  test "$(<"$object_storage_config/ObjectStorage__ArtifactBucket")" = hvo-deploy-services-artifacts
+  test "$(<"$object_storage_config/ObjectStorage__DiagnosticsBucket")" = hvo-deploy-services-diagnostics
+  test ! -e "$object_storage_config/ObjectStorage__SessionToken"
+done
+test ! -e "$logic_runtime_root/config/initializer-secrets/ObjectStorage__AccessKey"
+test ! -e "$logic_runtime_root/config/initializer-secrets/ObjectStorage__SecretKey"
+test ! -e "$logic_runtime_root/config/initializer-secrets/ObjectStorage__SessionToken"
+test "$(<"$logic_runtime_root/config/runtime-secrets/ObjectStorage__AccessKey")" = generated-minio-access
+test "$(<"$logic_runtime_root/config/runtime-secrets/ObjectStorage__SecretKey")" = 'generated:/@"minio-secret-never-print'
 test "$(<"$logic_runtime_root/config/runtime-secrets/CentralTransient__Mode")" = Off
 test "$(<"$logic_runtime_root/config/runtime-secrets/TransientPayloadRelease__Enabled")" = false
 test "$(<"$east_runtime_root/config/secrets/CameraAgent__TransientDetection__Mode")" = Off

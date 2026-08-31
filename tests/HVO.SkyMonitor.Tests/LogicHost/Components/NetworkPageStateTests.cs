@@ -31,13 +31,13 @@ public sealed class NetworkPageStateTests
     {
         using var context = CreateContext(out var service);
         service.ObservatoryPage = _ => Task.FromException<PublicObservatoryPage>(
-            new InvalidOperationException("minio://private-object /tmp/private-stack"));
+            new InvalidOperationException("s3://private-object /tmp/private-stack"));
 
         var cut = context.Render<PublicObservatories>();
 
         cut.WaitForAssertion(() => cut.Markup.Should()
             .Contain("temporarily unavailable")
-            .And.NotContain("minio://")
+            .And.NotContain("s3://")
             .And.NotContain("/tmp/"));
     }
 

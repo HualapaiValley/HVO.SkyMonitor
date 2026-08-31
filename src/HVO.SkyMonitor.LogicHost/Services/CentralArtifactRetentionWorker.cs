@@ -188,7 +188,7 @@ internal sealed partial class CentralArtifactRetentionWorker(
     private static bool IsRecoverable(Exception exception)
         => exception is Microsoft.Data.SqlClient.SqlException
             or Microsoft.EntityFrameworkCore.DbUpdateException
-            or Minio.Exceptions.MinioException
+            or ObjectStoreException
             or HttpRequestException
             or IOException
             or TimeoutException

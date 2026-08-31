@@ -24,7 +24,7 @@ ownership, invalidation, migration, and operational burden must be documented.
 An unexplained material regression blocks merge.
 
 SQLite WAL for indexed CameraAgent work state, reference-based fan-out,
-streaming MinIO transfers, and normalized SQL dependency rows are architecture
+streaming object-store transfers, and normalized SQL dependency rows are architecture
 decisions justified first by durability, bounded ownership, or query
 correctness. They still require implementation measurements. Ownership-safe or
 pooled full-frame buffers are justified only where profiling confirms the LOH
@@ -121,7 +121,7 @@ child evidence rather than repeating it.
 | Environment | OS, architecture, CPU, memory, storage type, SDK/runtime, Release configuration, container/native mode, and service versions |
 | Workload | Workload ID, dimensions, formats, frame/object/job count, recipe, concurrency, total bytes, and fixture seed/version |
 | Method | Harness/command, warm-up, repetitions, sampling interval, and counters/tools |
-| I/O | Bytes and operations by filesystem, SQLite, SQL, MinIO, and network; transaction, checkpoint, fsync, batching, and object-request behavior where relevant |
+| I/O | Bytes and operations by filesystem, SQLite, SQL, object storage, and network; transaction, checkpoint, fsync, batching, and object-request behavior where relevant |
 | CPU | Process and operation time, hot paths when useful, and algorithmic complexity |
 | Memory | Allocated bytes, allocation rate, LOH where applicable, working set, peak temporary memory, retained buffers, and queue/window size |
 | Latency | Median and p95, plus p99 or bounded worst case when tail behavior matters |
@@ -154,7 +154,7 @@ requires a durable baseline.
 - Include waits introduced by bounded channels, locks, leases, storage, and
   backpressure; do not stop timing before the new work begins.
 - Sample process CPU and working set for host or soak changes. Allocation-only
-  evidence is insufficient for native buffers, SkiaSharp, SQLite, and MinIO.
+  evidence is insufficient for native buffers, SkiaSharp, SQLite, and object storage.
 - Count full-frame copies and maximum simultaneously retained full-frame
   buffers for image paths.
 - Use durable queue state for backlog metrics, never only in-memory channel
@@ -181,7 +181,7 @@ recording a baseline.
 | 5: local graph | `W1`, `W2`, representative DAG | Validation and per-step latency, CPU, I/O, output size, temporary and retained memory, restart recovery | Sustained cadence meets the issue budget; restart creates no duplicate logical output; full-resolution memory is bounded |
 | 6: cadence/fleet | `W1`, `W2`, `W5` | Start jitter, readout/ingress gaps, metering bytes/CPU/allocation, heartbeat bytes/retry/latency, segment histograms | Disabled control does no scan; sparse metering does not scan a whole frame; optional work does not control next-start timing |
 | 7: outbox | `W2`, `W3M`, `W3P`, outage/recovery | List/claim/ack I/O and latency, requests/bytes per capture, retry recovery, drain rate, backlog age | Indexed claims replace repeated directory scans; default upload is one raw payload; finite outage backlog drains faster than the issue-manifest arrival rate |
-| 8: ingest/retrieval | `W1`, `W2`, `W4` | Upload/read latency, network and MinIO requests/bytes, SQL commands, CPU, allocations/RSS, time to first byte | Memory is bounded by stream buffers and concurrency, not object size; exact bytes/ranges and checksums pass |
+| 8: ingest/retrieval | `W1`, `W2`, `W4` | Upload/read latency, network and object-store requests/bytes, SQL commands, CPU, allocations/RSS, time to first byte | Memory is bounded by stream buffers and concurrency, not object size; exact bytes/ranges and checksums pass |
 | 9: central worker | `W2`, `W3M`, `W4` | Claim latency/statements/collisions, object I/O, recipe cost, jobs/s, queue age, crash recovery | One logical output under retry/crash; queue recovery exceeds the issue-manifest arrival rate where required |
 | 10: windows | 1K/10K/100K history, `N-2..N+2` | Resolution latency, SQL statements/rows/plans, pinned bytes, object reads, wait age | Selection cost follows window size, not history size; restart/out-of-order work remains bounded and idempotent |
 | 11: weather/cloud | `W1`, `W2`, temporal fixtures | Render/assessment CPU, allocations, peak memory, mask/output bytes, frames/s | Edge/central outputs match; deterministic checksums/ranges pass; more complex mask storage requires measured benefit |
@@ -189,6 +189,7 @@ recording a baseline.
 | 12A: standalone CameraAgent | `W6`, ASI174 Mono8 ROI/bin conformance, schedule/environment/calibration/transient faults | Per-stage/end-to-end CPU, RSS/LOH, allocations, filesystem/SQLite I/O, latency, throughput, backlog/drain, storage growth, rendered outputs, central-attempt count | Complete local flow meets declared cadence/retention budgets, recovers without loss/duplicates, and makes zero central attempts |
 | 13: UI | 1K/10K history, 1/10/50 clients | SQL statements/rows, API latency/bytes, encoding CPU, render latency, per-session memory | Paging is bounded; unchanged images are not repeatedly re-encoded when evidence justifies caching; no unbounded polling/query behavior |
 | 14: E2E/readiness | Normal, outage, each fault, recovery | Stage and end-to-end latency, exact bytes/counts, per-host CPU/RSS/LOH, backlog age/drain, trace coverage, metric cardinality | Every fault converges; no acknowledged loss/duplicate logical output; recovery drains finite backlog; no unexplained regression |
+| `RM-016`: S3 replacement | `W1`, `W2`, `W3M`, `W3P`, `W4`; one non-seekable 100 MiB conformance upload | Put/stat/conditional-get/copy/delete/list requests and bytes, application/provider CPU and RSS, managed allocations, median/p95 latency, throughput, active streams, backlog count/bytes/age/drain, restart time, and restore time | Exact lengths/SHA-256 and strong visibility pass; memory follows stream buffers and concurrency rather than object size; listings have no gaps or duplicates; no unexplained material regression |
 
 ## 6. Output and Runtime Correlation
 
@@ -200,7 +201,7 @@ relevant output and durable state:
   assessment values.
 - Capture, artifact, profile, recipe, parameter, and algorithm identity.
 - Ordered source lineage and retention pins.
-- Filesystem, SQLite, SQL, MinIO, lease, retry, quarantine, and completion state.
+- Filesystem, SQLite, SQL, object-storage, lease, retry, quarantine, and completion state.
 - Expected logs, bounded metric dimensions, connected traces, and health
   transitions without secret, payload, unsafe path, or personal-data leakage.
 

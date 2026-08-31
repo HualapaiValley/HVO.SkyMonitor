@@ -416,7 +416,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 MediaType = JpegImageCodec.MediaType,
                 ByteLength = baseBytes.LongLength,
                 ChecksumSha256 = baseChecksum,
-                StorageReference = $"minio://{ArtifactBucket}/issues-437-432/{baseArtifactId:D}.jpg",
+                StorageReference = $"s3://{ArtifactBucket}/issues-437-432/{baseArtifactId:D}.jpg",
                 ReceivedAtUtc = DateTimeOffset.UtcNow,
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(baseArtifactId.ToByteArray())),
                 SourceId = "issues-437-432",

@@ -1,7 +1,6 @@
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using Minio.Exceptions;
 using System.Data.Common;
 using System.Runtime.ExceptionServices;
 
@@ -204,13 +203,16 @@ internal sealed partial class CentralDerivativeWorker(
                 Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
                     "RetryableFailure", "storage.unavailable");
             }
-            catch (MinioException exception)
+            catch (ObjectStoreException exception)
             {
-                telemetry.RecordAttempt(lease.RecipeName, "retryable", "storage", timeProvider.GetUtcNow());
+                var retryable = !exception.IsTerminal;
+                var outcome = retryable ? "retryable" : "terminal";
+                telemetry.RecordAttempt(lease.RecipeName, outcome, "storage", timeProvider.GetUtcNow());
                 telemetry.RecordDependencyFailure("storage", timeProvider.GetUtcNow());
-                await TryFailAsync(lease, exception.GetType().Name, retryable: true, stoppingToken).ConfigureAwait(false);
+                await TryFailAsync(lease, exception.GetType().Name, retryable, stoppingToken).ConfigureAwait(false);
                 Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
-                    "RetryableFailure", "storage.unavailable");
+                    retryable ? "RetryableFailure" : "TerminalFailure",
+                    retryable ? "storage.unavailable" : "storage.terminal");
             }
             catch (CentralArtifactIntegrityException exception)
             {

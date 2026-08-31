@@ -138,8 +138,8 @@ require_source_reference 'options.AddSigningCertificate(signing).AddEncryptionCe
 require_source_reference '"api.artifacts.read"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Program.cs
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
-require_source_reference 'Unit=2392' docs/runbooks/ci-pipeline.md
-require_source_reference 'Integration=562' docs/runbooks/ci-pipeline.md
+require_source_reference 'Unit=2407' docs/runbooks/ci-pipeline.md
+require_source_reference 'Integration=567' docs/runbooks/ci-pipeline.md
 require_source_reference "merge of $coverage_report_count expected reports" docs/runbooks/ci-pipeline.md
 require_source_reference "report count other than the expected $coverage_report_count" docs/runbooks/ci-pipeline.md
 require_source_reference "each of the $coverage_report_count category/project slots" docs/runbooks/ci-pipeline.md
@@ -147,8 +147,8 @@ require_source_reference "Merge those $coverage_report_count explicit reports" d
 require_source_reference "The Coverlet 10.0.1 baseline is $coverage_line_percent% line and $coverage_branch_percent% branch coverage." docs/runbooks/ci-pipeline.md
 require_source_reference "aggregate baseline is $coverage_line_percent percent line and $coverage_branch_percent percent branch" docs/planning/performance-validation.md
 require_source_reference "CI collects $coverage_report_count explicit" docs/planning/performance-validation.md
-require_source_reference 'public string AccessKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
-require_source_reference 'public string SecretKey' src/HVO.SkyMonitor.LogicHost/Configuration/MinioOptions.cs
+require_source_reference 'public string? AccessKey' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
+require_source_reference 'public string? SecretKey' src/HVO.SkyMonitor.LogicHost/Configuration/CentralObjectStorageOptions.cs
 # shellcheck disable=SC2016 # Backticks are literal Markdown.
 require_source_reference 'canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on' docs/catalog/production-install.md
 require_source_reference 'ARM64 operators must install the' docs/catalog/production-install.md

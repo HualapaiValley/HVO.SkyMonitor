@@ -586,7 +586,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 ByteLength = 2,
                 ChecksumSha256 = checksum,
                 OutputIdentitySha256 = outputIdentity,
-                StorageReference = $"minio://skymonitor-artifacts/events/{outputIdentity}.bin",
+                StorageReference = $"s3://skymonitor-artifacts/events/{outputIdentity}.bin",
                 StorageETag = "fixture-etag",
                 ObjectState = CentralArtifactObjectState.Available,
                 CreatedAtUtc = now,
@@ -748,7 +748,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             derivativeJob.Job.CanonicalInputs.Should().ContainSingle(item =>
                 item.SchemaVersion == CentralTransientDerivativeRuntime.RequestSchemaVersion &&
                 item.IdentitySha256 == derivativeJob.CanonicalRequestSha256);
-            derivativeJob.CanonicalRequestJson.Should().NotContain("minio://");
+            derivativeJob.CanonicalRequestJson.Should().NotContain("s3://");
             derivativeJob.CanonicalRequestJson.Should().NotContain("StorageReference");
             derivativeJob.CanonicalRequestJson.Should()
                 .Contain(fixture.Event.Observations.Single().Provenance.MaskIdentity);
@@ -788,7 +788,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                     ({Guid.NewGuid()}, {derivativeJob.CentralDerivativeJobId}, {derivativeJob.CentralTransientEventId},
                      N'Reconstruction', {Guid.NewGuid()}, {Guid.NewGuid()}, N'Combined', N'event-reconstruction',
                      N'application/x-hvo-frame', 2, {new string('A', 64)}, {new string('B', 64)},
-                     N'minio://skymonitor-artifacts/events/closed.bin', N'Pending', {DateTimeOffset.UtcNow});
+                     N's3://skymonitor-artifacts/events/closed.bin', N'Pending', {DateTimeOffset.UtcNow});
                 """).ConfigureAwait(false);
             await insertAfterCommit.Should().ThrowAsync<SqlException>().ConfigureAwait(false);
         }
@@ -874,7 +874,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 ByteLength = 2,
                 ChecksumSha256 = new string('A', 64),
                 OutputIdentitySha256 = new string('B', 64),
-                StorageReference = "minio://skymonitor-artifacts/events/cross-owner.bin",
+                StorageReference = "s3://skymonitor-artifacts/events/cross-owner.bin",
                 ObjectState = CentralArtifactObjectState.Pending,
                 CreatedAtUtc = DateTimeOffset.UtcNow
             });
@@ -1051,7 +1051,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var disabled = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
-                minio,
+                ObjectStoreTestClient.Create(minio),
                 Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions()),
                 TimeProvider.System);
             (await disabled.ReleaseAsync(
@@ -1141,7 +1141,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var enabled = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
-                minio,
+                ObjectStoreTestClient.Create(minio),
                 Microsoft.Extensions.Options.Options.Create(new CentralTransientPayloadReleaseOptions
                 {
                     Enabled = true,
@@ -1334,7 +1334,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var processor = new CentralTransientPayloadReleaseService(
                 database.Context,
                 new CentralArtifactRetentionReferences(database.Context),
-                minio,
+                ObjectStoreTestClient.Create(minio),
                 Microsoft.Extensions.Options.Options.Create(
                     new CentralTransientPayloadReleaseOptions { Enabled = true }),
                 TimeProvider.System);
@@ -1806,7 +1806,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             var retentionProcessor = new CentralArtifactRetentionProcessor(
                 releaseContext,
                 retentionReferences,
-                minio,
+                ObjectStoreTestClient.Create(minio),
                 TimeProvider.System,
                 telemetry,
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<CentralArtifactRetentionProcessor>.Instance);
@@ -1949,7 +1949,7 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
                 MediaType = "application/x-hvo-frame",
                 ByteLength = fixture.Payloads[reference.ArtifactId].Length,
                 ChecksumSha256 = reference.ChecksumSha256,
-                StorageReference = $"minio://skymonitor-artifacts/{Guid.NewGuid():N}.bin",
+                StorageReference = $"s3://skymonitor-artifacts/{Guid.NewGuid():N}.bin",
                 ReceivedAtUtc = source.Source.ObservationEndedUtc,
                 IdempotencyKey = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray())),
                 Variant = reference.Variant,

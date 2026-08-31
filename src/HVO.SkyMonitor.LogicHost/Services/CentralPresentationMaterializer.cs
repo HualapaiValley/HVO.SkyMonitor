@@ -6,7 +6,6 @@ using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
-using Minio.Exceptions;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -316,7 +315,7 @@ internal sealed class CentralPresentationMaterializer(
             return new(CentralPresentationMaterializationStatus.DependencyUnavailable);
         }
         catch (Exception exception) when (exception is CentralArtifactMissingException or CentralArtifactStorageException or
-            MinioException or HttpRequestException or TimeoutException or IOException)
+            ObjectStoreException or HttpRequestException or TimeoutException or IOException)
         {
             telemetry.RecordMaterialization("unavailable", timeProvider.GetElapsedTime(started));
             return new(CentralPresentationMaterializationStatus.DependencyUnavailable);

@@ -15,7 +15,7 @@ internal static class CentralObjectOwnershipFence
         CancellationToken cancellationToken,
         string? bucketPrefix = null)
     {
-        bucketPrefix ??= $"minio://{Configuration.CentralObjectStorageOptions.DefaultArtifactBucket}/";
+        bucketPrefix ??= $"s3://{Configuration.CentralObjectStorageOptions.DefaultArtifactBucket}/";
         if (await db.CentralArtifacts.AsNoTracking().AnyAsync(artifact =>
                 (artifact.RetentionDeletionToken != null
                     || artifact.ObjectState == CentralArtifactObjectState.Expired)

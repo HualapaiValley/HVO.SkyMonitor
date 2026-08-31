@@ -373,7 +373,7 @@ public sealed class CentralArtifactRetrievalServiceTests
             Role = FrameArtifactRole.Raw,
             ObjectState = CentralArtifactObjectState.Available,
             ReconstructionState = CentralReconstructionState.Complete,
-            StorageReference = "minio://skymonitor-artifacts/test",
+            StorageReference = "s3://skymonitor-artifacts/test",
             MediaType = "application/octet-stream",
             ByteLength = 4,
             ChecksumSha256 = new string('A', 64),

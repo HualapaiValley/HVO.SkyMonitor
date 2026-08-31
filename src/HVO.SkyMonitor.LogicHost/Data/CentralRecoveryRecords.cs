@@ -27,10 +27,10 @@ internal static class CentralRecoveryPhases
 {
     public const string Idle = "Idle";
     public const string SqlArtifacts = "SqlArtifacts";
-    public const string MinioArtifacts = "MinioArtifacts";
-    public const string MinioArtifactsCatchAll = "MinioArtifactsCatchAll";
-    public const string MinioDerivatives = "MinioDerivatives";
-    public const string MinioDerivativesCatchAll = "MinioDerivativesCatchAll";
+    public const string ObjectStoreArtifacts = "ObjectStoreArtifacts";
+    public const string ObjectStoreArtifactsCatchAll = "ObjectStoreArtifactsCatchAll";
+    public const string ObjectStoreDerivatives = "ObjectStoreDerivatives";
+    public const string ObjectStoreDerivativesCatchAll = "ObjectStoreDerivativesCatchAll";
 }
 
 internal static class CentralObjectRecoveryKinds

@@ -22,6 +22,7 @@ using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.Common.Configuration;
 using HVO.SkyMonitor.LogicHost.HealthChecks;
 using HVO.SkyMonitor.LogicHost.Hosting;
+using HVO.SkyMonitor.LogicHost.Infrastructure.ObjectStorage;
 using HVO.SkyMonitor.LogicHost.Middleware;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -42,7 +43,6 @@ using OpenTelemetry.Metrics;
 using Scalar.AspNetCore;
 using OpenIddict.Validation.AspNetCore;
 using OpenIddict.Server.AspNetCore;
-using Minio;
 using Microsoft.Extensions.Options;
 using static OpenIddict.Abstractions.OpenIddictConstants;
 
@@ -103,7 +103,8 @@ public sealed partial class Program
 
         // Common configuration values reused across services
         var redisConfiguration = builder.Configuration.GetValue<string>("Redis:Configuration");
-        var minioEndpoint = builder.Configuration.GetValue<string>("Minio:Endpoint");
+        var objectStorageConfigured = builder.Configuration
+            .GetSection(CentralObjectStorageOptions.SectionName).Exists();
         var smtpHost = builder.Configuration.GetValue<string>("Smtp:Host");
 
         var centralIdentitySection = builder.Configuration.GetSection("CentralIdentity");
@@ -204,9 +205,9 @@ public sealed partial class Program
             healthChecks.AddCheck<RedisHealthCheck>("redis", tags: ["dependency"]);
         }
 
-        if (!string.IsNullOrWhiteSpace(minioEndpoint))
+        if (objectStorageConfigured)
         {
-            healthChecks.AddCheck<MinioHealthCheck>("minio", tags: ["dependency"]);
+            healthChecks.AddCheck<ObjectStoreHealthCheck>("s3-object-store", tags: ["dependency"]);
         }
 
         if (!string.IsNullOrWhiteSpace(smtpHost))
@@ -253,13 +254,15 @@ public sealed partial class Program
                 metrics.AddMeter(EnvironmentalObservationTelemetry.MeterName);
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
                 metrics.AddMeter(OperatorUiTelemetry.MeterName);
+                metrics.AddMeter(ObjectStoreTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             })
             .WithTracing(tracing => tracing
                 .AddSource(CentralIngestTelemetry.ActivitySourceName)
                 .AddSource(CentralTransientLifecycleTelemetry.ActivitySourceName)
                 .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
-                .AddSource(OperatorUiTelemetry.ActivitySourceName));
+                .AddSource(OperatorUiTelemetry.ActivitySourceName)
+                .AddSource(ObjectStoreTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -354,16 +357,18 @@ public sealed partial class Program
         builder.Services.AddRazorComponents()
             .AddInteractiveServerComponents();
 
-        builder.Services.AddOptions<MinioOptions>()
-            .Bind(builder.Configuration.GetSection("Minio"))
-            .ValidateOnStart();
         builder.Services.AddOptions<CentralObjectStorageOptions>()
             .Bind(builder.Configuration.GetSection(CentralObjectStorageOptions.SectionName))
             .ValidateDataAnnotations()
             .Validate(options => !string.Equals(options.ArtifactBucket, options.DiagnosticsBucket, StringComparison.Ordinal),
                 "Artifact and diagnostics buckets must be distinct.")
+            .Validate(HasValidObjectStorageEndpoint,
+                "ObjectStorage:ServiceEndpoint must be a host name with an optional port and no URI scheme.")
+            .Validate(HasValidObjectStorageCredentials,
+                "ObjectStorage credentials do not match the configured CredentialMode.")
             .ValidateOnStart();
         builder.Services.AddSingleton<CentralObjectStorageNames>();
+        builder.Services.AddSingleton<ObjectStoreTelemetry>();
 
         builder.Services.AddOptions<SmtpOptions>()
             .Bind(builder.Configuration.GetSection("Smtp"))
@@ -394,32 +399,9 @@ public sealed partial class Program
             });
         }
 
-        if (!string.IsNullOrWhiteSpace(minioEndpoint))
+        if (objectStorageConfigured)
         {
-            builder.Services.AddSingleton<IMinioClient>(sp =>
-            {
-                var options = sp.GetRequiredService<IOptions<MinioOptions>>().Value;
-                var client = new MinioClient()
-                    .WithEndpoint(options.Endpoint, options.Port)
-                    .WithCredentials(options.AccessKey, options.SecretKey);
-
-                if (options.UseSsl)
-                {
-                    client = client.WithSSL();
-                }
-
-                if (!string.IsNullOrWhiteSpace(options.Region))
-                {
-                    client = client.WithRegion(options.Region);
-                }
-
-                return client.Build();
-            });
-
-            builder.Services.AddHttpClient<MinioHealthCheck>(client =>
-            {
-                client.Timeout = TimeSpan.FromSeconds(5);
-            });
+            builder.Services.AddObjectStorageInfrastructure();
         }
 
         builder.Services.AddSingleton<IEmailNotificationService, SmtpEmailNotificationService>();
@@ -1117,6 +1099,38 @@ public sealed partial class Program
     private static bool HasBearerWriteScope(System.Security.Claims.ClaimsPrincipal principal)
         => CentralArtifactCredentialAccess.HasScope(principal, "api.owner.write")
             || CentralArtifactCredentialAccess.HasScope(principal, "api.admin");
+
+    internal static bool HasValidObjectStorageEndpoint(CentralObjectStorageOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(options.ServiceEndpoint))
+        {
+            return true;
+        }
+        return !options.ServiceEndpoint.Contains("://", StringComparison.Ordinal)
+            && Uri.TryCreate(
+                $"{(options.UseTls ? "https" : "http")}://{options.ServiceEndpoint}",
+                UriKind.Absolute,
+                out var endpoint)
+            && string.IsNullOrEmpty(endpoint.UserInfo)
+            && endpoint.AbsolutePath == "/"
+            && string.IsNullOrEmpty(endpoint.Query)
+            && string.IsNullOrEmpty(endpoint.Fragment);
+    }
+
+    internal static bool HasValidObjectStorageCredentials(CentralObjectStorageOptions options)
+        => options.CredentialMode switch
+        {
+            ObjectStorageCredentialMode.DefaultChain => string.IsNullOrWhiteSpace(options.AccessKey)
+                && string.IsNullOrWhiteSpace(options.SecretKey)
+                && string.IsNullOrWhiteSpace(options.SessionToken),
+            ObjectStorageCredentialMode.Static => !string.IsNullOrWhiteSpace(options.AccessKey)
+                && !string.IsNullOrWhiteSpace(options.SecretKey)
+                && string.IsNullOrWhiteSpace(options.SessionToken),
+            ObjectStorageCredentialMode.Session => !string.IsNullOrWhiteSpace(options.AccessKey)
+                && !string.IsNullOrWhiteSpace(options.SecretKey)
+                && !string.IsNullOrWhiteSpace(options.SessionToken),
+            _ => false
+        };
 
     private static partial class Log
     {

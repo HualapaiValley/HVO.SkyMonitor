@@ -110,8 +110,8 @@
     "secretMappings": [
       { "reference": "SQL_RUNTIME_CONNECTION", "key": "ConnectionStrings__skymonitordb" },
       { "reference": "SQL_INIT_CONNECTION", "key": "ConnectionStrings__skymonitordb-migrations" },
-      { "reference": "MINIO_ACCESS_KEY", "key": "Minio__AccessKey" },
-      { "reference": "MINIO_SECRET_KEY", "key": "Minio__SecretKey" },
+      { "reference": "MINIO_ACCESS_KEY", "key": "ObjectStorage__AccessKey" },
+      { "reference": "MINIO_SECRET_KEY", "key": "ObjectStorage__SecretKey" },
       { "reference": "SMTP_USERNAME", "key": "Smtp__Username" },
       { "reference": "SMTP_PASSWORD", "key": "Smtp__Password" },
       { "reference": "OIDC_SIGNING_PASSWORD", "key": "OpenIddictCertificates__SigningPassword" },

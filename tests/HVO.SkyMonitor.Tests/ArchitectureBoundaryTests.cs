@@ -145,6 +145,37 @@ public sealed class ArchitectureBoundaryTests
 
     [TestMethod]
     [TestCategory("Integration")]
+    public void LogicHostProviderSdkUsageIsConfinedToObjectStorageInfrastructure()
+    {
+        var logicHostRoot = Path.Combine(Repository.Value.Root, "src", LogicHost);
+        var providerRoot = Path.Combine(logicHostRoot, "Infrastructure", "ObjectStorage")
+            + Path.DirectorySeparatorChar;
+        var violations = Directory.EnumerateFiles(logicHostRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.StartsWith(providerRoot, StringComparison.Ordinal))
+            .Where(path =>
+            {
+                var source = File.ReadAllText(path);
+                return source.Contains("using Minio", StringComparison.Ordinal)
+                    || source.Contains("using Amazon.S3", StringComparison.Ordinal)
+                    || source.Contains("using Amazon.Runtime", StringComparison.Ordinal)
+                    || source.Contains("IAmazonS3", StringComparison.Ordinal)
+                    || source.Contains("AmazonS3Client", StringComparison.Ordinal)
+                    || source.Contains("IMinioClient", StringComparison.Ordinal)
+                    || source.Contains("MinioClient", StringComparison.Ordinal)
+                    || source.Contains("MinioException", StringComparison.Ordinal)
+                    || source.Contains("AWSCredentials", StringComparison.Ordinal)
+                    || source.Contains("FallbackCredentialsFactory", StringComparison.Ordinal);
+            })
+            .Select(path => Path.GetRelativePath(Repository.Value.Root, path))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.IsEmpty(violations,
+            $"Provider SDK usage must remain under LogicHost/Infrastructure/ObjectStorage:{Environment.NewLine}{string.Join(Environment.NewLine, violations)}");
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
     public void EvaluatedGraphIncludesImportedReferencesAndExcludesDisabledConditions()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-evaluation-{Guid.NewGuid():N}");

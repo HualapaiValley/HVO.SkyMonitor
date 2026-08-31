@@ -304,7 +304,7 @@ public sealed partial class DeploymentLocationAuthorityPerformanceTests
                     MediaType = "application/octet-stream",
                     ByteLength = 4,
                     ChecksumSha256 = new string('D', 64),
-                    StorageReference = $"minio://skymonitor-artifacts/issue-243/{index:D5}",
+                    StorageReference = $"s3://skymonitor-artifacts/issue-243/{index:D5}",
                     ReceivedAtUtc = captured,
                     IdempotencyKey = Guid.NewGuid().ToString("N"),
                     ObjectState = CentralArtifactObjectState.Available,
