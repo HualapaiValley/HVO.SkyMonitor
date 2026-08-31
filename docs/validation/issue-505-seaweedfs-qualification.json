@@ -1,0 +1,253 @@
+{
+  "schema": "hvo-seaweedfs-qualification-v1",
+  "issue": 505,
+  "requirement": "S3-002",
+  "qualificationBaseRevision": "fe3bdc82a68dd7ed0d86d308bb46801de88f8681",
+  "assessedAtUtc": "2026-08-31T08:05:35Z",
+  "rawEvidenceRoot": "TestResults/issue-505/fe3bdc82a68dd7ed0d86d308bb46801de88f8681/20260831T073126Z-supply-chain/",
+  "retainedEvidenceArchive": {
+    "path": "docs/validation/issue-505-seaweedfs-supply-chain.tar.gz",
+    "mediaType": "application/gzip",
+    "sha256": "242707b374af24238a30da3bb2e7233581e2c1f0d5138a6f73ea3f49668ae17f",
+    "sizeBytes": 102914,
+    "creation": "GNU tar sorted by path with owner and group 0, mtime 2026-08-31T07:31:26Z, and gzip -n; archive paths start at supply-chain/.",
+    "retention": "Tracked with this compact decision record so the digest-bound scanner reports and SBOMs remain independently reviewable after ignored local TestResults are removed."
+  },
+  "candidate": {
+    "release": "4.44",
+    "releaseUrl": "https://github.com/seaweedfs/seaweedfs/releases/tag/4.44",
+    "releasedAtUtc": "2026-08-22T07:41:07Z",
+    "releaseMetadataImmutable": false,
+    "sourceRepository": "https://github.com/seaweedfs/seaweedfs",
+    "sourceCommit": "3563738699f29fd1c9efde6fcbf4ba253439cac8",
+    "sourceTree": "2e965080910dac6c5230efceb751d5036c7ba2e7",
+    "sourceCommitVerification": "unsigned",
+    "license": {
+      "spdx": "Apache-2.0",
+      "url": "https://raw.githubusercontent.com/seaweedfs/seaweedfs/4.44/LICENSE",
+      "sha256": "d789d433cc11da163273d1e39be2e8fa67642f9a58ef220d3f258fa9c14ef613"
+    },
+    "image": {
+      "reference": "ghcr.io/chrislusf/seaweedfs@sha256:e67e8c385484120b78bff47ba5f4debbca47fbd27ed1a39f016f47e8baea615b",
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "indexDigest": "sha256:e67e8c385484120b78bff47ba5f4debbca47fbd27ed1a39f016f47e8baea615b",
+      "platforms": [
+        {
+          "platform": "linux/amd64",
+          "manifestDigest": "sha256:c927ea0755b1d7dd5a3101081e4717126d00e75e89d3142e21df374b0a90acad",
+          "configDigest": "sha256:8fc7729947c1786300b4ad9b86d1ef047e7f21acc1d5d46d7ccdbde20224f55a",
+          "sourceRevisionLabel": "3563738699f29fd1c9efde6fcbf4ba253439cac8"
+        },
+        {
+          "platform": "linux/arm64",
+          "manifestDigest": "sha256:48ef310500b5b4123d49952b414fea569c45d588af28cacbff9f82d614c84b29",
+          "configDigest": "sha256:575750515663a37858f40023c776e4b71102486af902c35185f65319549f6b07",
+          "sourceRevisionLabel": "3563738699f29fd1c9efde6fcbf4ba253439cac8"
+        }
+      ]
+    }
+  },
+  "supplyChain": {
+    "upstreamBuildWorkflow": {
+      "url": "https://github.com/seaweedfs/seaweedfs/blob/4.44/.github/workflows/container_release_unified.yml",
+      "sha256": "40ba973a098d6468d85b86d0a69a2df6ccfbb3f9c917e5362825b45a1aa51855",
+      "releaseRunUrl": "https://github.com/seaweedfs/seaweedfs/actions/runs/32560256408",
+      "releaseRunHeadCommit": "3563738699f29fd1c9efde6fcbf4ba253439cac8",
+      "releaseRunConclusion": "success",
+      "provenance": "disabled by provenance: false",
+      "sbom": "No upstream release SBOM was found.",
+      "signature": "No release or OCI signature was found.",
+      "attestation": "No GitHub artifact attestation was found.",
+      "sourceToImageBinding": "Both immutable platform configs self-assert source revision 3563738699f29fd1c9efde6fcbf4ba253439cac8 and the upstream release workflow succeeded on that exact head. No signature, provenance, or attestation independently proves that the OCI bytes were produced from it, so source findings are release-source qualification failures rather than runtime reproduction against the image.",
+      "vulnerabilityGate": "Report-only, native-platform, ignore-unfixed HIGH/CRITICAL scan with exit code 0."
+    },
+    "independentScanner": {
+      "name": "Trivy",
+      "version": "0.70.0",
+      "binarySha256": "379d59f24a4a828c55de5f0b91b6805cc35d13580180b658820e648611256166",
+      "databaseSchemaVersion": 2,
+      "databaseUpdatedAtUtc": "2026-08-31T07:08:27.708070973Z",
+      "databaseDownloadedAtUtc": "2026-08-31T07:31:19.674583567Z",
+      "databaseSha256": "81fa5a3c02b6979490e15efba814f30a377681b95c8bb3b3c326a7d50a7cee46",
+      "databaseMetadataSha256": "23d04c09a6b3c47d3607d5f07934b6ac4500bc25c197a935ccee499878e6c099",
+      "commands": [
+        "/tmp/opencode/issue-505-tools/trivy-0.70.0/trivy image --quiet --cache-dir /tmp/opencode/issue-505-tools/trivy-cache --skip-db-update --platform linux/amd64 --scanners vuln --severity HIGH,CRITICAL --format json --output <raw-root>/supply-chain/seaweedfs-4.44-amd64-vuln.json ghcr.io/chrislusf/seaweedfs@sha256:e67e8c385484120b78bff47ba5f4debbca47fbd27ed1a39f016f47e8baea615b",
+        "/tmp/opencode/issue-505-tools/trivy-0.70.0/trivy image --quiet --cache-dir /tmp/opencode/issue-505-tools/trivy-cache --skip-db-update --platform linux/arm64 --scanners vuln --severity HIGH,CRITICAL --format json --output <raw-root>/supply-chain/seaweedfs-4.44-arm64-vuln.json ghcr.io/chrislusf/seaweedfs@sha256:e67e8c385484120b78bff47ba5f4debbca47fbd27ed1a39f016f47e8baea615b",
+        "/tmp/opencode/issue-505-tools/trivy-0.70.0/trivy image --quiet --cache-dir /tmp/opencode/issue-505-tools/trivy-cache --skip-db-update --platform linux/amd64 --scanners vuln --format cyclonedx --output <raw-root>/supply-chain/seaweedfs-4.44-amd64.cdx.json ghcr.io/chrislusf/seaweedfs@sha256:e67e8c385484120b78bff47ba5f4debbca47fbd27ed1a39f016f47e8baea615b",
+        "/tmp/opencode/issue-505-tools/trivy-0.70.0/trivy image --quiet --cache-dir /tmp/opencode/issue-505-tools/trivy-cache --skip-db-update --platform linux/arm64 --scanners vuln --format cyclonedx --output <raw-root>/supply-chain/seaweedfs-4.44-arm64.cdx.json ghcr.io/chrislusf/seaweedfs@sha256:e67e8c385484120b78bff47ba5f4debbca47fbd27ed1a39f016f47e8baea615b"
+      ]
+    },
+    "rawEvidence": [
+      {
+        "path": "supply-chain/seaweedfs-4.44-amd64-vuln.json",
+        "sha256": "a367e8ce46a5e27871673fe7a70f0bd1aec0e5be1bfa7fe7cdf86b4efaa4772e",
+        "mediaType": "application/json"
+      },
+      {
+        "path": "supply-chain/seaweedfs-4.44-arm64-vuln.json",
+        "sha256": "9d83c26654d87762e0ddf52fabbab9357e84a240cb60defafb2d77c22e075fce",
+        "mediaType": "application/json"
+      },
+      {
+        "path": "supply-chain/seaweedfs-4.44-amd64.cdx.json",
+        "sha256": "a729c3cd2542f9e09bda96660d93f141e1b3a82295a3d50e965835e32ad8f784",
+        "mediaType": "application/vnd.cyclonedx+json",
+        "components": 281
+      },
+      {
+        "path": "supply-chain/seaweedfs-4.44-arm64.cdx.json",
+        "sha256": "135d9661702cb4982f8b043f1380b9e2ecd7bc750522e488959b2de74ea0daf5",
+        "mediaType": "application/vnd.cyclonedx+json",
+        "components": 281
+      }
+    ],
+    "vulnerabilities": {
+      "criticalPerPlatform": 0,
+      "highPackageFindingsPerPlatform": 2,
+      "uniqueHighCves": 1,
+      "findings": [
+        {
+          "id": "CVE-2026-14456",
+          "decisionReasonId": "unexcepted-high-vulnerability",
+          "severity": "HIGH",
+          "severityBasis": "Trivy selected HIGH; its retained vendor severities record Red Hat and Photon as HIGH and Ubuntu as MEDIUM, while the OpenSSL advisory rates the issue Low.",
+          "packages": ["libcrypto3 3.5.7-r0", "libssl3 3.5.7-r0"],
+          "fixedVersion": "3.5.8-r0",
+          "reachability": "The advisory requires an application-created OpenSSL QUIC server. The proposed weed mini topology would publish only TCP port 8333 and no UDP listener, but topology and runtime reachability were not executed for this no-go candidate.",
+          "disposition": "Policy failure: an exception may be technically eligible, but no explicit reviewed exception was requested or accepted for this candidate.",
+          "requiredMitigationsIfReassessed": [
+            "Publish only S3 TCP port 8333.",
+            "Do not run an application-created OpenSSL QUIC listener and assert that no UDP listener or UDP port exposure exists.",
+            "Expire the exception on any digest or topology change or when a rebuilt stable image is available."
+          ]
+        }
+      ]
+    }
+  },
+  "sourceReview": {
+    "assessedUpstreamCommit": "d3b8030a69de22ac06cd8e90dad0eeddb194fc45",
+    "assessedUpstreamCommitUrl": "https://github.com/seaweedfs/seaweedfs/commit/d3b8030a69de22ac06cd8e90dad0eeddb194fc45",
+    "compareUrl": "https://github.com/seaweedfs/seaweedfs/compare/3563738699f29fd1c9efde6fcbf4ba253439cac8...d3b8030a69de22ac06cd8e90dad0eeddb194fc45",
+    "commitsAheadAtAssessment": 101,
+    "applicability": "The exact OCI configs self-assert the assessed release source revision, but absent signed provenance these findings fail release-source qualification and are not claims that the source defects were reproduced against the image. The independently scanned vulnerability policy failure remains sufficient for the exact-image no-go.",
+    "blockingFindings": [
+      {
+        "id": "prefix-key-object-loss",
+        "requirement": "Opaque exact S3 keys and complete ordinal listing",
+        "description": "Release 4.44 cannot reliably preserve an object whose key is also a prefix of another key. Depending on write order it rejects the prefix object or loses or hides it during exact reads and listing.",
+        "fixedBy": "863fec6c3f7417b0e621c998fb33124a0d2e8b76",
+        "fixedAtUtc": "2026-08-24T22:10:34Z",
+        "url": "https://github.com/seaweedfs/seaweedfs/commit/863fec6c3f7417b0e621c998fb33124a0d2e8b76",
+        "mitigation": "None without restricting the unrestricted key accepted by the provider-neutral interface, weakening exact-key integrity and listing, or rebuilding the provider."
+      },
+      {
+        "id": "cross-request-upload-cancellation",
+        "requirement": "Partial-request isolation and W4 concurrent upload behavior",
+        "description": "An abandoned request can close the shared filer connection and cancel unrelated concurrent multipart uploads.",
+        "fixedBy": "50b388771aec3f9c5f1b3c0b10180e2845a40c78",
+        "fixedAtUtc": "2026-08-25T17:15:47Z",
+        "url": "https://github.com/seaweedfs/seaweedfs/commit/50b388771aec3f9c5f1b3c0b10180e2845a40c78",
+        "mitigation": "None at the deployment boundary without weakening the required concurrency and fault gates."
+      },
+      {
+        "id": "conditional-missing-misclassification",
+        "requirement": "Normalized missing-object and precondition semantics",
+        "description": "Release 4.44 returns PreconditionFailed for a conditional GET or HEAD of a missing object instead of preserving missing-object semantics.",
+        "fixedBy": "d8a189f07f9d6c11fef5f12131355d6cff740806",
+        "fixedAtUtc": "2026-08-27T18:56:33Z",
+        "url": "https://github.com/seaweedfs/seaweedfs/commit/d8a189f07f9d6c11fef5f12131355d6cff740806",
+        "mitigation": "A second HEAD would be racy and would weaken the merged provider-neutral failure contract."
+      },
+      {
+        "id": "streamed-read-success-before-first-byte",
+        "requirement": "Conditional streamed get, normalized failures, integrity, and accurate runtime signals",
+        "description": "Release 4.44 commits HTTP 200 or 206 and records time-to-first-byte before the first volume read succeeds. A missing or corrupt first needle therefore surfaces as a broken success body instead of a clean provider failure.",
+        "fixedBy": "d9d5fab35b819db37dfec007d217dd278f628e7c",
+        "fixedAtUtc": "2026-08-24T23:14:52Z",
+        "url": "https://github.com/seaweedfs/seaweedfs/commit/d9d5fab35b819db37dfec007d217dd278f628e7c",
+        "mitigation": "None at the deployment boundary; the application cannot replace an already committed provider success response with the required normalized failure."
+      },
+      {
+        "id": "configured-fsync-not-propagated",
+        "requirement": "Pinned durability behavior and process-kill/restart recovery",
+        "description": "Release 4.44 computes a storage rule's fsync setting in the filer but does not propagate it to S3 PUT, multipart, or copy uploads. S3 writes configured for fsync are acknowledged to the client without requesting fsync from the volume server.",
+        "fixedBy": "c80664ec21a5e4217e0255e46f6cd315e500a1d3",
+        "fixedAtUtc": "2026-08-24T05:11:08Z",
+        "url": "https://github.com/seaweedfs/seaweedfs/commit/c80664ec21a5e4217e0255e46f6cd315e500a1d3",
+        "mitigation": "Release 4.44 source cannot define a topology that enforces configured fsync for S3 writes without rebuilding the provider or weakening the required durability gate; impact was not reproduced against the exact image."
+      }
+    ],
+    "boundedFindings": [
+      {
+        "id": "empty-identity-config-fails-open",
+        "description": "A named static identity file that parses to zero identities leaves release 4.44 open to anonymous S3 operations.",
+        "fixedBy": "368b2035b226ffed84ee0d9721b8c4657f66f52d",
+        "url": "https://github.com/seaweedfs/seaweedfs/commit/368b2035b226ffed84ee0d9721b8c4657f66f52d",
+        "requiredMitigationIfReassessed": "Semantically validate an exact non-empty bucket-scoped identity document before startup, mount it read-only, reject environment-admin credentials, keep S3 private, and require anonymous-denial plus signed-access readiness probes."
+      },
+      {
+        "id": "ambiguous-delete-provider-replay",
+        "description": "Release 4.44 can surface a filer transport failure after a delete was committed instead of replaying it internally.",
+        "fixedBy": "7bb0a1c127a0e82667c405036334ecefdf1c28a4",
+        "url": "https://github.com/seaweedfs/seaweedfs/commit/7bb0a1c127a0e82667c405036334ecefdf1c28a4",
+        "disposition": "Not independently blocking because the merged application boundary classifies ambiguous mutations and requires caller convergence, but a later candidate must still pass the fault gate."
+      }
+    ]
+  },
+  "gates": [
+    { "name": "source-license-identity", "status": "passed" },
+    { "name": "immutable-index-and-platform-digests", "status": "passed" },
+    { "name": "source-to-image-provenance", "status": "bounded-absence", "reason": "Immutable config labels and exact-head workflow metadata associate source and image, but no upstream signature, provenance, or attestation independently proves the binding." },
+    { "name": "independent-amd64-arm64-sbom-and-scan", "status": "passed" },
+    { "name": "vulnerability-policy", "status": "failed", "reason": "Both platforms contain HIGH CVE-2026-14456 and no explicit reviewed exception was accepted." },
+    { "name": "provider-neutral-contract-source-review", "status": "failed" },
+    { "name": "runtime-conformance", "status": "not-run", "reason": "Fail-fast after the exact image failed vulnerability policy; release-source contract findings could not reverse that no-go." },
+    { "name": "least-privilege-non-root-topology", "status": "not-run", "reason": "Cannot reverse the no-go decision." },
+    { "name": "fault-and-restart-matrix", "status": "not-run", "reason": "Cannot reverse the no-go decision." },
+    { "name": "backup-destructive-loss-restore", "status": "not-run", "reason": "Cannot reverse the no-go decision." },
+    { "name": "runtime-signals", "status": "not-run", "reason": "The candidate was not started; issue 504 remains the application signal contract." },
+    { "name": "W1-W2-W3M-W3P-W4-performance", "status": "not-run", "reason": "A candidate that fails correctness cannot produce admissible performance evidence." },
+    { "name": "native-amd64-arm64-startup", "status": "not-run", "reason": "Cannot reverse the no-go decision." }
+  ],
+  "performance": {
+    "status": "not-run",
+    "workload": "N/A: source-level correctness failed before candidate execution.",
+    "environment": "N/A: the candidate was not started.",
+    "io": "N/A: correctness failure blocks comparative I/O evidence.",
+    "cpu": "N/A: correctness failure blocks comparative CPU evidence.",
+    "memory": "N/A: correctness failure blocks comparative memory evidence.",
+    "latency": "N/A: correctness failure blocks comparative latency evidence.",
+    "throughput": "N/A: correctness failure blocks comparative throughput evidence.",
+    "backlog": "N/A: correctness failure blocks backlog and drain evidence.",
+    "result": "No performance claim is made for SeaweedFS 4.44."
+  },
+  "decision": {
+    "outcome": "no-go",
+    "decisiveGates": [
+      "vulnerability-policy"
+    ],
+    "decisiveReasonIds": [
+      "unexcepted-high-vulnerability"
+    ],
+    "additionalFailedGate": "provider-neutral-contract-source-review",
+    "releaseSourceFindingIds": [
+      "prefix-key-object-loss",
+      "cross-request-upload-cancellation",
+      "conditional-missing-misclassification",
+      "streamed-read-success-before-first-byte",
+      "configured-fsync-not-propagated"
+    ],
+    "adoptionAuthorized": false,
+    "automaticFallbackAuthorized": false,
+    "downstreamIssue506": "blocked",
+    "operationalOwner": "RM-016 roadmap coordinator recorded in epic #499",
+    "releaseAndAdvisoryMonitoringPolicy": "Before another candidate claim, select a new exact stable release and OCI index, confirm disposition of every cited source fix and current advisory, and repeat digest-bound SBOM, vulnerability, provenance, conformance, topology, recovery, performance, and native-platform qualification from a fresh evidence root.",
+    "investigatedFallback": "VersityGW",
+    "residualRisks": [
+      "The exact image was not started, so topology, contract, fault, restore, runtime signal, performance, and native-platform behavior remain unqualified.",
+      "The source revision labels and release workflow metadata are not signed source-to-image provenance.",
+      "A later SeaweedFS release or VersityGW requires a complete independent qualification; no fallback is automatic."
+    ],
+    "nextAction": "Return to epic #499 for an explicit decision to wait for a stable SeaweedFS release containing the required fixes or approve VersityGW, the investigated alternative, for a separate qualification."
+  }
+}
