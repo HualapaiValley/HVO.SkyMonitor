@@ -41,11 +41,11 @@ The planning horizons are:
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
 | --- | --- | --- | --- | --- |
-| `RM-016` | Provider-neutral S3 object storage | Replace archived MinIO coupling with a LogicHost-owned S3 contract, qualify one exact maintained local backend, and adopt it across supported deployment, tests, CI, and operations. | [Epic #499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499); children [#504](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/504)-[#506](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/506) inherit this ID. | Execute `#504 -> #505 -> #506`. Fresh state only: no legacy MinIO migration, compatibility aliases, automatic fallback, or cloud requirement. Completion unblocks authoritative `RM-005` central-runner evidence. |
+| `RM-005` | Local-first processing graphs and distributed runners | Generalize immutable graphs, durable CameraAgent jobs and replay, central graph execution, self-hosted runners, fairness, and optional elastic providers. | [Epic #421](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/421); [#422](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/422)-[#430](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/430) | Consumes `RM-004` product semantics and the delivered provider-neutral S3 application boundary. Current MinIO deployment and test infrastructure is an accepted temporary baseline; any backend change invalidates affected central evidence. Live CameraAgent processing remains immediate and in-process; only explicit archived replay or central work may use external runners. |
 
-`RM-016` is the approved initiative on the current execution path. Epic #499
-owns its coordinator, sequential child claims, evidence windows, and go/no-go
-decision.
+`RM-005` is the approved initiative on the current execution path. Epic #421
+owns its coordinator, dependency-ordered child claims, evidence windows, and
+local-first execution boundary.
 
 ## Next
 
@@ -61,7 +61,6 @@ naming-only residual is not approved for automatic start.
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
 | --- | --- | --- | --- | --- |
-| `RM-005` | Local-first processing graphs and distributed runners | Generalize immutable graphs, durable CameraAgent jobs and replay, central graph execution, self-hosted runners, fairness, and optional elastic providers. | [Epic #421](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/421); [#422](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/422)-[#430](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/430) | Consumes `RM-004` product semantics and remains blocked until `RM-016` child #506 supplies the supported object-storage baseline. Live CameraAgent processing remains immediate and in-process; only explicit archived replay or central work may use external runners. |
 | `RM-006` | Certified processing extension platform | Add signed, versioned extension lifecycle and a bounded external-processing bridge without exposing host infrastructure or weakening reproducibility. | [#140](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/140) | Consumes layered producer/compositor/encoder contracts from `RM-004` and complements, but does not duplicate, `RM-005` runners. |
 | `RM-007` | Native camera artifacts and pluggable formats | Preserve camera-native and proprietary source bytes, decode them into canonical processing frames, and produce versioned scientific, display, and export formats. | [#141](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/141) | Builds on certified extensions and layered composition. It does not identify demosaiced, corrected, or lossy data as raw evidence. |
 | `RM-015` | Production multichannel notifications | Add production transactional email and SMS delivery, durable LogicHost in-app notifications, and optional bounded CameraAgent notifications. | [Epic #455](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/455) | Selects providers and CameraAgent delivery topology through an explicit decision checkpoint. Mailpit remains development/test-only and is excluded from official release installation; standalone CameraAgent correctness never depends on notifications, LogicHost, or an external provider. |
@@ -77,6 +76,7 @@ naming-only residual is not approved for automatic start.
 
 | ID | Initiative | Retained outcome | Owning issue | Reason deferred |
 | --- | --- | --- | --- | --- |
+| `RM-016` | Provider-neutral S3 object storage | Retain the delivered LogicHost-owned S3 contract while deferring qualification and adoption of a maintained local backend. | [Epic #499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499); deferred child [#506](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/506) | SeaweedFS 4.44 failed qualification. MinIO remains the pinned temporary deployment/test incumbent behind `IObjectStore`; no new application coupling is allowed. Reactivate before production release or on a security or compatibility trigger, and requalify affected central evidence after any backend change. |
 | `RM-010` | Production profiling and observability operations | Add bounded always-on signals and a secure escalation path to short .NET/Linux profiling with measured telemetry overhead. | [#244](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/244) | Existing evidence is sufficient for current delivery; broad profiling remains low priority unless an active defect requires a focused prerequisite. |
 | `RM-012` | Physical camera soak and USB qualification | Produce sustained matched ARM64/x64 acquisition and multi-camera USB isolation evidence or a deterministic failing-layer diagnosis. | [#288](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/288) | Requires suitable physical hardware, stable power/cooling, and controlled USB topology. |
 | `RM-013` | Native ARM64 CI evidence | Add advisory native Linux ARM64 build, publish, container, catalog, and VirtualSky smoke evidence before deciding whether it becomes required. | [#381](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/381) | Depends on available native runner capacity and remains advisory until measured evidence supports a required gate. |
@@ -115,7 +115,8 @@ RM-004 layered capture products
 RM-009 environmental source research is independently plannable.
 RM-010, RM-012, and RM-013 remain trigger- or capacity-dependent.
 RM-015 follows the RM-003 deployment foundation but is independently plannable.
-RM-016 provider-neutral S3 storage -> RM-005 readiness recalculation.
+RM-016 backend adoption is deferred; RM-005 proceeds against the delivered S3
+application boundary and temporary MinIO deployment/test baseline.
 ```
 
 Dependencies in this summary show portfolio direction only. Formal issue
