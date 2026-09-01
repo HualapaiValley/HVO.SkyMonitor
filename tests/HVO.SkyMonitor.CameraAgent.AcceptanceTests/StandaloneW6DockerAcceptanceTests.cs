@@ -4357,7 +4357,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(1, await page.Locator("main").CountAsync().ConfigureAwait(false));
         }
         await page.GotoAsync($"/gallery/{capture.CaptureId:D}").ConfigureAwait(false);
-        await page.GetByText("Capture detail", new() { Exact = true }).WaitForAsync().ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Heading, new() { Name = "Capture detail", Level = 1 })
+            .WaitForAsync().ConfigureAwait(false);
         var primaryImage = page.Locator(".detail-capture-image img");
         await primaryImage.WaitForAsync().ConfigureAwait(false);
         Assert.IsGreaterThan(0, await page.Locator(".stage-selector__button:not(:disabled)").CountAsync().ConfigureAwait(false));
