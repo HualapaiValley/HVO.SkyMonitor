@@ -36,7 +36,7 @@ const dashboardStages = {
 const galleryCaptures = [
     {
         id: "84220",
-        image: "assets/w6-current.jpg",
+        image: "assets/asi174-20260831-045406-utc.jpg",
         captured: "03:13:55",
         timestamp: "2026-09-01T03:13:55Z",
         outcome: "success",
@@ -128,6 +128,20 @@ const galleryCaptures = [
     }
 ];
 
+const sceneLayerDescriptions = {
+    Stars: "Measured associations for Deneb at 31.8 SNR, Vega at 42.6 SNR, and Altair at 28.4 SNR.",
+    "Deep sky": "Measured illustrative associations for M31 at 7.8 SNR and M13.",
+    Constellations: "Expected Summer Triangle and Cassiopeia geometry.",
+    Bodies: "A five-pixel expected Moon footprint inside an eighteen-pixel minimum marker, with the Sun below the geometric horizon.",
+    Cardinals: "Configured north, east, south, and west directions.",
+    Expected: "Expected but undetected positions for HD 198478 and NGC 7000.",
+    Residuals: "Forty-one astrometric inliers at 0.74 pixel RMS, with residual vectors exaggerated twenty times.",
+    Satellites: "A predicted track for object 48274 from a one-hour-fourteen-minute-old snapshot; geometry does not establish optical visibility.",
+    Cloud: "A measured clear fraction of ninety-two percent.",
+    Boundary: "The native 1936 by 1216 image geometry and calibrated image circle.",
+    Environment: "ASI174 reference-frame and native-coordinate provenance."
+};
+
 function initializeDashboard() {
     const figure = document.querySelector(".sky-figure");
     if (!figure) return;
@@ -167,8 +181,17 @@ function initializeDashboard() {
     }
 
     function updateLayerCount(layersVisible = !figure.classList.contains("layers-suppressed")) {
-        const selected = layerInputs.filter(input => input.checked).length;
-        layerCount.textContent = layersVisible ? `${selected} selected` : `${selected} retained / hidden at this stage`;
+        const summary = document.getElementById("sceneEvidenceSummary");
+        if (figure.classList.contains("scene-evidence-unavailable")) {
+            layerCount.textContent = "Not loaded for this capture";
+            summary.textContent = `Scene evidence was not loaded for archived capture ${selectedCapture.id}; current-capture associations are not substituted.`;
+            return;
+        }
+        const selected = layerInputs.filter(input => input.checked);
+        layerCount.textContent = layersVisible ? `${selected.length} selected` : `${selected.length} retained / hidden at this stage`;
+        summary.textContent = selected.length
+            ? `${layersVisible ? "Selected scene evidence." : "Scene evidence is retained but visually hidden at this image stage."} ${selected.map(input => sceneLayerDescriptions[input.dataset.layer]).join(" ")} These are illustrative design fixtures, not a scientific reduction of this JPEG.`
+            : "No scene-evidence layers are selected.";
     }
 
     function updateLayer(input) {
@@ -188,9 +211,40 @@ function initializeDashboard() {
         layerInputs.forEach(input => { input.checked = true; updateLayer(input); });
     });
     document.getElementById("fullScreenImage")?.addEventListener("click", () => figure.requestFullscreen?.());
+    initializeAstrometryCalculator();
 
     const initialStage = presentDashboardCapture(selectedCapture, stageButtons);
     selectStage(initialStage);
+}
+
+function initializeAstrometryCalculator() {
+    const calculator = document.getElementById("pixelSkyCalculator");
+    if (!calculator) return;
+    calculator.addEventListener("submit", event => {
+        event.preventDefault();
+        const x = document.getElementById("calculatorX").valueAsNumber;
+        const y = document.getElementById("calculatorY").valueAsNumber;
+        const result = document.getElementById("calculatorResult");
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            result.innerHTML = "<strong>Enter a valid image pixel</strong><span>Both coordinates are required.</span>";
+            return;
+        }
+        const deltaX = x - 976;
+        const deltaY = 615 - y;
+        const radius = Math.hypot(deltaX, deltaY);
+        if (radius > 490) {
+            result.innerHTML = "<strong>Outside calibrated image circle</strong><span>No sky coordinate is published for this pixel.</span>";
+            return;
+        }
+        const altitude = 90 - radius / 490 * 90;
+        if (radius < .001) {
+            result.innerHTML = "<strong>Az undefined / Alt 90.0 deg</strong><span>Azimuth is undefined at the zenith / +/- 0.06 deg.</span>";
+            return;
+        }
+        const azimuth = (Math.atan2(deltaX, deltaY) * 180 / Math.PI + 360) % 360;
+        const uncertainty = .06 + radius / 490 * .12;
+        result.innerHTML = `<strong>Az ${azimuth.toFixed(1)} deg / Alt ${altitude.toFixed(1)} deg</strong><span>+/- ${uncertainty.toFixed(2)} deg / midpoint 03:13:57.500 UTC</span>`;
+    });
 }
 
 function presentDashboardCapture(capture, stageButtons) {
@@ -210,6 +264,19 @@ function presentDashboardCapture(capture, stageButtons) {
     setText("exposureMidpoint", `${midpointFor(capture.captured)} UTC`);
     dashboardStages.calibrated.subtitle = `Capture #${capture.id} after calibration, before temporal combination or presentation layers.`;
     dashboardStages.raw.subtitle = `Capture #${capture.id} as acquired. Display conversion does not modify retained sensor evidence.`;
+    const figure = document.querySelector(".sky-figure");
+    figure.classList.toggle("scene-evidence-unavailable", !isCurrent);
+    document.getElementById("sceneEvidenceControls").classList.toggle("evidence-unavailable", !isCurrent);
+    document.getElementById("sceneEvidenceIntroduction").textContent = isCurrent
+        ? "Measured image evidence, expected sky context, and predicted diagnostics remain distinct from the base image."
+        : "Scene evidence was not loaded for this bounded archived capture; current-capture associations are never substituted.";
+    document.querySelectorAll("[data-target]").forEach(input => { input.disabled = !isCurrent; });
+    document.getElementById("resetLayers").disabled = !isCurrent;
+    document.getElementById("astrometryCard").hidden = !isCurrent;
+    setText("captureDimensions", isCurrent ? "1936 x 1216" : "3552 x 3552");
+    setText("capturePresentation", isCurrent ? "Monochrome JPEG" : "Bayer preview");
+    setText("captureCamera", isCurrent ? "ASI174 reference asset" : "VirtualSky ASI676MC");
+    setText("captureProjection", isCurrent ? "Equidistant / measured fit" : "Equidistant / calibration v3");
 
     if (!isCurrent) {
         setText("dashboardContext", "Archive capture / retained local evidence");

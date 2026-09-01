@@ -20,8 +20,9 @@ font dependencies. Included image assets are local.
 ## Pages
 
 - `dashboard.html`: proposed Current Sky dashboard with stage switching,
-  independently selectable presentation layers, stack lineage, acquisition and
-  rig facts, and a link to the capture pipeline run.
+  independently selectable measured, expected, and predicted scene layers,
+  astrometric fit/calculator evidence, stack lineage, acquisition and rig facts,
+  and a link to the capture pipeline run.
 - `gallery.html`: Archive capture results with explicit single-frame,
   causal-stack, registered-stack, and raw-only product labels.
 - `calendar.html` and `day.html`: local-noon observing-day calendar and detail
@@ -30,9 +31,11 @@ font dependencies. Included image assets are local.
   immutable product lineage for timelapses, star trails, keograms, and daily
   summaries.
 - `events.html` and `event.html`: detected-event review, centered evidence, and
-  scientific values with single-camera limits kept explicit.
+  scientific values with single-camera limits and ranked orbital-correlation
+  evidence kept explicit.
 - `operations.html`: routeable local administration workspace with grouped
-  setup, capture, processing, automation, data, and system sections.
+  setup, capture, processing, automation, data, and system sections, including
+  immutable celestial-package selection and separate orbital-data freshness.
 - `index.html`: detailed per-capture pipeline execution graph.
 
 ## Interactions
@@ -64,9 +67,21 @@ font dependencies. Included image assets are local.
 - Filter capture history by text or outcome.
 - Select graph nodes or the stage list to inspect status, timing, dependencies,
   outputs, attempts, and sanitized events.
-- Inspect stars and labels, constellation lines, cardinal corners, image
-  boundary, cloud mask, and environment facts as separately timed overlay
-  producers with independent artifacts.
+- Inspect source associations, deep-sky extents, constellation context,
+  Sun/Moon footprints, expected-but-undetected objects, astrometric residuals,
+  predicted satellite tracks, image geometry, cloud state, and frame facts as
+  independently selectable layers. `Measured`, `Expected`, and `Predicted`
+  semantics remain visually distinct.
+- Enter native image pixels in the Current Sky astrometry card to preview a
+  bounded pixel-to-horizontal-coordinate calculation without changing the rig
+  calibration.
+- Compare the exact selected HYG/OpenNGC package with side-by-side retained
+  packages and an availability check that does not download or activate data.
+- Inspect orbital snapshot identity, age, scheduler state, and last-known-good
+  semantics separately from immutable celestial packages.
+- Compare measured event geometry with ranked predicted satellite tracks. A
+  likely match remains append-only assessment evidence and never deletes or
+  automatically rejects the event.
 - Compare the normal per-capture presentation path with the independent V1
   Hybrid fireball track: linear detector input, causal `N-2,N-1,N` scan,
   restart-safe candidate evidence, central `N-2..N+2` window resolution,
@@ -77,6 +92,23 @@ font dependencies. Included image assets are local.
   acquisition semantics. Prototype actions do not mutate data.
 
 ## Deliberate Boundaries
+
+- `assets/asi174-20260831-045406-utc.jpg` is the supplied real `1936 x 1216`
+  ASI174 frame used to prove native-coordinate overlay alignment. Marker
+  coordinates are anchored to image features, while catalog names, astrometric
+  fit values, orbital identities, and capture metadata remain illustrative UI
+  fixtures rather than a scientific reduction of the JPEG.
+- HYG 4.4, OpenNGC, measured source association, astrometric fitting, resolved
+  body footprints, orbital acquisition, and satellite correlation are shown as
+  coordinated design targets. The prototype does not claim those runtime
+  capabilities are delivered.
+- Celestial packages are modeled as immutable official assets installed side by
+  side with explicit per-instance selection. Availability checks never imply
+  unattended upstream download, target-side rebuild, or automatic activation.
+- Orbital data is modeled as a separate stale-aware snapshot lifecycle. The
+  example provider-neutral snapshot does not select the source or staleness
+  policy still owned by orbital-source research, and predicted geometry never
+  claims optical visibility.
 
 - The processing branches are shown as dependency-independent. The current
   `FrameProcessingWorker` executes its topologically sorted nodes sequentially;

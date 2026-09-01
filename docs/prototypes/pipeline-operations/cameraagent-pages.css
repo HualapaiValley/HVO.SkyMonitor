@@ -102,51 +102,75 @@
 
 .sky-figure {
     position: relative;
-    display: grid;
-    min-height: 27rem;
     margin: 0;
-    place-items: center;
     overflow: hidden;
     background: #000;
 }
 
-.sky-figure > img {
+.sky-image-stage {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1936 / 1216;
+    overflow: hidden;
+    background: #000;
+}
+
+.sky-image-stage > img {
     display: block;
     width: 100%;
-    max-height: min(68vh, 52rem);
-    object-fit: contain;
+    height: 100%;
+    object-fit: cover;
     transition: filter .2s, opacity .2s;
 }
 
-.sky-figure.stage-live > img { filter: contrast(1.02) brightness(.92); }
-.sky-figure.stage-calibrated > img { filter: grayscale(1) contrast(.9) brightness(.72); }
-.sky-figure.stage-raw > img { filter: grayscale(1) contrast(.68) brightness(.54); }
+.sky-figure.stage-live .sky-image-stage > img { filter: contrast(1.02) brightness(.92); }
+.sky-figure.stage-calibrated .sky-image-stage > img { filter: grayscale(1) contrast(.9) brightness(.72); }
+.sky-figure.stage-raw .sky-image-stage > img { filter: grayscale(1) contrast(.68) brightness(.54); }
 
 .visual-layer { position: absolute; z-index: 2; pointer-events: none; transition: opacity .18s; }
-.visual-layer.layer-hidden { opacity: 0; }
-.sky-figure.layers-suppressed .visual-layer { opacity: 0; }
-.image-circle-layer { inset: 6% 13%; border: 1px solid rgba(116, 209, 255, .38); border-radius: 50%; box-shadow: 0 0 26px rgba(88, 166, 255, .05) inset; }
-.cardinal-layer { inset: 6% 13%; color: #c3ecff; font: 700 .72rem ui-monospace, monospace; }
-.cardinal-layer span { position: absolute; padding: .14rem .28rem; border: 1px solid rgba(116, 209, 255, .2); background: rgba(2, 8, 14, .72); }
-.cardinal-layer .north { top: -.6rem; left: 50%; transform: translateX(-50%); }
-.cardinal-layer .east { top: 50%; right: -.7rem; transform: translateY(-50%); }
-.cardinal-layer .south { bottom: -.6rem; left: 50%; transform: translateX(-50%); }
-.cardinal-layer .west { top: 50%; left: -.7rem; transform: translateY(-50%); }
-.star-layer { inset: 8% 15%; }
-.star-layer i { position: absolute; width: .42rem; height: .42rem; border: 1px solid rgba(107, 213, 255, .85); border-radius: 50%; box-shadow: 0 0 8px rgba(107, 213, 255, .65); }
-.star-layer i::after { position: absolute; top: -.9rem; left: .5rem; color: #b7eaff; font: 600 .5rem ui-monospace, monospace; white-space: nowrap; }
-.star-layer i:nth-child(1) { top: 22%; left: 29%; }.star-layer i:nth-child(1)::after { content: "POLARIS"; }
-.star-layer i:nth-child(2) { top: 39%; left: 66%; }.star-layer i:nth-child(2)::after { content: "CAPELLA"; }
-.star-layer i:nth-child(3) { top: 61%; left: 49%; }.star-layer i:nth-child(3)::after { content: "JUPITER"; }
-.star-layer i:nth-child(4) { top: 72%; left: 72%; }.star-layer i:nth-child(4)::after { content: "RIGEL"; }
-.star-layer i:nth-child(5) { top: 47%; left: 18%; }.star-layer i:nth-child(5)::after { content: "ARCTURUS"; }
-.star-layer i:nth-child(6) { top: 30%; left: 81%; }.star-layer i:nth-child(6)::after { content: "ALMACH"; }
-.constellation-layer { inset: 7% 14%; width: 72%; height: 86%; }
-.constellation-layer path { fill: none; stroke: rgba(188, 140, 255, .72); stroke-width: 2; stroke-dasharray: 6 4; }
+.visual-layer.layer-hidden, .svg-layer.layer-hidden { opacity: 0; }
+.sky-figure.layers-suppressed :is(.visual-layer, .svg-layer, .scene-semantics) { opacity: 0; }
+.sky-figure.scene-evidence-unavailable :is(.visual-layer, .svg-layer, .scene-semantics) { opacity: 0; }
+
+.scene-overlay { position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.svg-layer { transition: opacity .18s; }
+.scene-overlay text { fill: #d8eafa; paint-order: stroke; stroke: rgba(3, 8, 14, .95); stroke-width: 5px; stroke-linejoin: round; font: 700 18px ui-monospace, monospace; letter-spacing: .04em; }
+.scene-overlay .source-detail { fill: #8fa5bd; font-size: 14px; font-weight: 600; letter-spacing: .02em; }
+.geometry-layer .image-aperture { fill: none; stroke: rgba(116, 209, 255, .45); stroke-width: 2; }
+.geometry-layer .geometry-axis { fill: none; stroke: rgba(116, 209, 255, .12); stroke-width: 1; stroke-dasharray: 4 12; }
+.cardinal-layer rect { fill: rgba(2, 8, 14, .84); stroke: rgba(116, 209, 255, .38); }
+.cardinal-layer text { fill: #c3ecff; stroke-width: 4px; text-anchor: middle; dominant-baseline: middle; }
+.constellation-layer path { fill: none; stroke: rgba(188, 140, 255, .78); stroke-width: 3; stroke-dasharray: 10 8; }
+.constellation-layer text { fill: #cfb4f5; font-size: 14px; }
+.measured-source circle { fill: rgba(5, 13, 20, .65); stroke: #78dbff; stroke-width: 2; filter: url(#markerGlow); }
+.measured-source path { fill: none; stroke: rgba(120, 219, 255, .92); stroke-width: 1.5; }
+.measured-source text, .deep-sky-layer text { fill: #bcecff; }
+.measured-source.compact text { font-size: 14px; }
+.deep-sky-layer :is(ellipse, circle) { fill: rgba(57, 197, 207, .09); stroke: #73d9e1; stroke-width: 2; }
+.deep-sky-layer .measured-core { fill: rgba(115, 217, 225, .58); }
+.deep-sky-layer path { fill: none; stroke: rgba(115, 217, 225, .72); stroke-width: 1.5; }
+.resolved-body-layer :is(.minimum-marker, .below-horizon) { fill: none; stroke: #d2b8f4; stroke-width: 2; stroke-dasharray: 7 5; }
+.resolved-body-layer .physical-footprint { fill: rgba(216, 229, 240, .22); stroke: #eef7ff; stroke-width: 1.5; }
+.resolved-body-layer .phase-limb { fill: none; stroke: #eef7ff; stroke-width: 1.5; }
+.resolved-body-layer text { fill: #d2b8f4; font-size: 15px; }
+.expected-layer circle { fill: rgba(210, 153, 34, .08); stroke: #d29922; stroke-width: 2; stroke-dasharray: 5 4; }
+.expected-layer path { stroke: #d29922; stroke-width: 2; }
+.expected-layer text { fill: #f1c96f; }
+.astrometry-layer circle { fill: rgba(210, 153, 34, .16); stroke: #f1c96f; stroke-width: 1.5; }
+.astrometry-layer path { fill: none; stroke: #f1c96f; stroke-width: 3; }
+.astrometry-layer rect { fill: rgba(5, 10, 17, .86); stroke: rgba(210, 153, 34, .48); }
+.astrometry-layer text { fill: #f1c96f; font-size: 15px; }
+.satellite-layer .predicted-track { fill: none; stroke: #ff9f43; stroke-width: 4; stroke-dasharray: 14 10; filter: url(#markerGlow); }
+.satellite-layer circle { fill: rgba(5, 10, 17, .9); stroke: #ff9f43; stroke-width: 2; }
+.satellite-layer rect { fill: rgba(5, 10, 17, .88); stroke: rgba(255, 159, 67, .58); }
+.satellite-layer text { fill: #ffc078; font-size: 15px; }
 .cloud-layer { top: 13%; right: 9%; width: 28%; height: 29%; border-radius: 50%; background: radial-gradient(circle at 58% 46%, rgba(65, 189, 211, .24), transparent 58%); }
 .cloud-layer span { position: absolute; top: 0; right: 0; padding: .25rem .4rem; border: 1px solid rgba(57, 197, 207, .32); border-radius: .3rem; color: #a4eff2; background: rgba(5, 18, 24, .75); font-size: .53rem; }
 .environment-layer { right: 1rem; bottom: 3.9rem; display: grid; min-width: 10.8rem; gap: .12rem; padding: .48rem .6rem; border-left: 2px solid var(--blue); color: #d8e5f6; background: rgba(5, 10, 17, .78); backdrop-filter: blur(5px); font: .55rem ui-monospace, monospace; }
 .environment-layer strong { color: white; font-size: .65rem; }
+.scene-semantics { position: absolute; z-index: 3; bottom: 3.9rem; left: 1rem; display: flex; gap: .35rem; transition: opacity .18s; }
+.scene-semantics span { padding: .22rem .38rem; border: 1px solid currentColor; border-radius: 999px; background: rgba(5, 10, 17, .82); font: 700 .5rem ui-monospace, monospace; text-transform: uppercase; }
+.scene-semantics .measured { color: #78dbff; }.scene-semantics .expected { color: #d2b8f4; }.scene-semantics .predicted { color: #ffc078; }
 
 .sky-figure figcaption { position: absolute; z-index: 4; right: 0; bottom: 0; left: 0; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .65rem .8rem; background: linear-gradient(90deg, rgba(7, 12, 20, .96), rgba(7, 12, 20, .72)); backdrop-filter: blur(7px); }
 .sky-figure figcaption > div { display: flex; align-items: center; gap: .55rem; }
@@ -190,24 +214,47 @@
 .inspector-card { padding: .9rem; }
 .inspector-card > header > span { color: var(--muted); font-size: .62rem; }
 .overlay-controls > p { margin: .55rem 0 .8rem; color: var(--muted); font-size: .65rem; line-height: 1.45; }
-.overlay-list { display: grid; gap: .3rem; }
+.overlay-list { display: grid; gap: .55rem; }
+.overlay-group { display: grid; gap: .18rem; }
+.overlay-group > p { display: flex; align-items: baseline; justify-content: space-between; gap: .45rem; margin: 0; padding: 0 .15rem .25rem; border-bottom: 1px solid var(--border); }
+.overlay-group > p strong { color: var(--muted-strong); font-size: .57rem; letter-spacing: .08em; text-transform: uppercase; }
+.overlay-group > p span { color: var(--muted); font-size: .51rem; text-align: right; }
 .overlay-list label { display: grid; grid-template-columns: auto auto 1fr; gap: .55rem; align-items: center; padding: .52rem; border: 1px solid transparent; border-radius: .38rem; cursor: pointer; }
 .overlay-list label:hover { border-color: var(--border); background: var(--surface-hover); }
 .overlay-list input { accent-color: var(--blue-strong); }
+.overlay-controls.evidence-unavailable .overlay-list { opacity: .48; }
+.overlay-controls.evidence-unavailable .overlay-list label { cursor: not-allowed; }
 .overlay-list strong, .overlay-list small { display: block; }
 .overlay-list strong { font-size: .68rem; }
 .overlay-list small { margin-top: .12rem; color: var(--muted); font: .54rem ui-monospace, monospace; }
 .layer-swatch { width: .6rem; height: .6rem; border-radius: 2px; background: var(--blue); }
+.layer-swatch.deep-sky { border: 1px solid var(--cyan); border-radius: 50%; background: transparent; }
 .layer-swatch.constellations { background: var(--purple); }
+.layer-swatch.bodies { border: 1px dashed var(--purple); border-radius: 50%; background: transparent; }
 .layer-swatch.cardinals { background: #c3ecff; }
 .layer-swatch.boundary { border: 1px solid var(--blue); border-radius: 50%; background: transparent; }
 .layer-swatch.cloud { background: var(--cyan); }
 .layer-swatch.environment { background: var(--amber); }
+.layer-swatch.expected { border: 1px dashed var(--amber); background: transparent; }
+.layer-swatch.residuals { background: #f1c96f; }
+.layer-swatch.satellites { background: #ff9f43; }
 .text-button, .inline-action { display: inline-flex; min-height: 2.2rem; align-items: center; margin-top: .65rem; padding: .35rem 0; border: 0; color: var(--blue); background: transparent; cursor: pointer; font-size: .63rem; font-weight: 700; text-decoration: none; }
-.capture-facts dl, .rig-facts dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: .7rem 0 0; }
-.capture-facts dl > div, .rig-facts dl > div { padding: .55rem 0; border-top: 1px solid var(--border); }
-.capture-facts dl > div:nth-child(odd), .rig-facts dl > div:nth-child(odd) { padding-right: .5rem; }
+.text-button:disabled { color: var(--muted); opacity: .45; cursor: not-allowed; }
+.capture-facts dl, .rig-facts dl, .astrometry-card > dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: .7rem 0 0; }
+.capture-facts dl > div, .rig-facts dl > div, .astrometry-card > dl > div { padding: .55rem 0; border-top: 1px solid var(--border); }
+.capture-facts dl > div:nth-child(odd), .rig-facts dl > div:nth-child(odd), .astrometry-card > dl > div:nth-child(odd) { padding-right: .5rem; }
 .rig-facts dl > div:last-child { grid-column: 1 / -1; }
+.astrometry-card dt { color: var(--muted); font-size: .52rem; text-transform: uppercase; }
+.astrometry-card dd { margin: .2rem 0 0; font-size: .62rem; font-weight: 700; }
+.pixel-sky-calculator { margin-top: .65rem; padding-top: .65rem; border-top: 1px solid var(--border); }
+.pixel-sky-calculator > p { margin: 0 0 .55rem; }
+.pixel-sky-calculator > p strong, .pixel-sky-calculator > p span { display: block; }
+.pixel-sky-calculator > p strong { font-size: .63rem; }.pixel-sky-calculator > p span { margin-top: .15rem; color: var(--muted); font-size: .52rem; line-height: 1.4; }
+.pixel-sky-calculator > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; gap: .4rem; align-items: end; }
+.pixel-sky-calculator label { display: grid; gap: .2rem; color: var(--muted); font-size: .5rem; }
+.pixel-sky-calculator input { width: 100%; min-height: 2rem; padding: .35rem .45rem; border: 1px solid var(--border); border-radius: .35rem; color: var(--text); background: var(--surface); }
+.pixel-sky-calculator output { display: grid; gap: .12rem; margin-top: .5rem; padding: .5rem; border-left: 2px solid var(--blue); color: var(--muted); background: var(--blue-soft); font-size: .52rem; }
+.pixel-sky-calculator output strong { color: var(--text); font-size: .62rem; }
 
 .operations-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .7rem; margin-top: 1rem; }
 .operations-strip article { display: flex; align-items: center; gap: .7rem; padding: .75rem; }
@@ -328,8 +375,12 @@
     .dashboard-status dl > div { border-top: 1px solid var(--border); border-left: 0; padding: .5rem; }
     .image-heading { display: grid; }
     .image-heading-actions { justify-content: space-between; }
-    .sky-figure { min-height: 18rem; }
     .environment-layer { display: none; }
+    .scene-overlay text { font-size: 50px; }
+    .scene-overlay .source-detail { display: none; }
+    .measured-source.compact, .resolved-body-layer .below-horizon, .resolved-body-layer text, .astrometry-layer rect, .astrometry-layer text, .satellite-layer rect, .satellite-layer text { display: none; }
+    .scene-semantics { bottom: 3.4rem; left: .55rem; }
+    .scene-semantics span { font-size: .42rem; }
     .stage-switcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .stage-switcher button:nth-child(2) { border-right: 0; }
     .stage-switcher button:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
@@ -347,4 +398,10 @@
     .prototype-gallery-grid.compact .capture-image { min-height: 12rem; }
     .prototype-gallery-grid.compact .capture-image img { height: auto; aspect-ratio: 16 / 10; }
     .gallery-pagination { align-items: flex-start; flex-direction: column; }
+    .pixel-sky-calculator > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .pixel-sky-calculator .button { grid-column: 1 / -1; }
+}
+
+@media (max-width: 430px) {
+    .scene-overlay text { font-size: 68px; }
 }

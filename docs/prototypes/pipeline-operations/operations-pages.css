@@ -303,6 +303,14 @@
 .ops-note-banner { display: flex; align-items: flex-start; gap: .65rem; margin-bottom: .8rem; padding: .7rem .8rem; color: var(--muted-strong); font-size: .6rem; line-height: 1.45; }
 .ops-note-banner .status-icon { flex: 0 0 auto; }
 .ops-note-banner strong { color: var(--text); }
+.ops-note-banner.compact { margin: .7rem 0 0; box-shadow: none; }
+.orbital-freshness { display: grid; grid-template-columns: minmax(10rem, .8fr) minmax(12rem, 1.5fr) auto; gap: .7rem; align-items: center; margin-bottom: .55rem; padding: .65rem; border: 1px solid var(--border); border-radius: .42rem; background: rgba(13, 20, 32, .58); }
+.orbital-freshness strong, .orbital-freshness small { display: block; }
+.orbital-freshness strong { font-size: .68rem; }.orbital-freshness small { margin-top: .14rem; color: var(--muted); font-size: .51rem; }
+.orbital-freshness > span:last-child { color: var(--muted-strong); font: .53rem ui-monospace, monospace; white-space: nowrap; }
+.orbital-freshness-track { position: relative; height: .4rem; border-radius: 999px; background: linear-gradient(90deg, var(--green-soft) 0 55%, var(--amber-soft) 55% 82%, var(--red-soft) 82%); overflow: hidden; }
+.orbital-freshness-track i { position: absolute; top: -.18rem; bottom: -.18rem; left: 8%; width: 2px; background: #d9f5dc; box-shadow: 0 0 7px var(--green); }
+.lifecycle-comparison td small { display: block; margin-top: .15rem; color: var(--muted); font-size: .49rem; }
 .ops-action-list { display: grid; gap: .45rem; }
 .ops-action-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .7rem; align-items: center; padding: .65rem; border: 1px solid var(--border); border-radius: .42rem; background: rgba(13, 20, 32, .58); }
 .ops-action-icon { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: .4rem; color: var(--blue); background: var(--blue-soft); }
@@ -434,6 +442,8 @@
     .ops-progress-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .automation-day-track { overflow-x: auto; }
     .automation-run-marker { width: 7rem; }
+    .orbital-freshness { grid-template-columns: 1fr; }
+    .orbital-freshness > span:last-child { white-space: normal; }
 }
 
 @media (max-width: 480px) {
