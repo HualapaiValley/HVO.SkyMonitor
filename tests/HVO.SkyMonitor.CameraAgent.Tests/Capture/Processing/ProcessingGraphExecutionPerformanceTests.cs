@@ -25,8 +25,17 @@ public sealed class ProcessingGraphExecutionPerformanceTests
 {
     private const int WarmupCount = 5;
     private const int MeasuredCount = 30;
-    private const int ReplayCount = 5;
-    private const int GraphNodeCount = 3;
+    private const int ReplayWarmupCount = 5;
+    private const int ReplayMeasuredCount = 30;
+    private const int SimultaneousReplayCount = 240;
+    private const int SimultaneousLiveCount = 30;
+    private const int GraphNodeCount = 4;
+    private const int PayloadScanNodeCount = 3;
+    private const double LiveLatencyBudgetMilliseconds = 2_000;
+    private const double SimultaneousLiveCadenceMilliseconds = 100;
+    private const double CadenceStartToleranceMilliseconds = 10;
+    private static readonly TimeSpan DurableStateSamplingInterval = TimeSpan.FromMilliseconds(25);
+    private static readonly TimeSpan ResourceSamplingInterval = TimeSpan.FromMilliseconds(10);
     private static readonly DateTimeOffset FixtureUtc = new(2026, 8, 31, 1, 0, 0, TimeSpan.Zero);
     private static readonly JsonSerializerOptions EvidenceOptions = new(JsonSerializerDefaults.Web)
     {
@@ -44,6 +53,14 @@ public sealed class ProcessingGraphExecutionPerformanceTests
     [TestMethod]
     public async Task W1W2W6LiveExecutionAndReplayEvidence()
     {
+        var repositoryRoot = GetRepositoryRoot();
+        var revision = new RevisionEvidence(
+            RequireEvidenceValue("HVO_EVIDENCE_BASE_REVISION"),
+            RequireEvidenceValue("HVO_EVIDENCE_REVISION"),
+            RequireEvidenceValue("HVO_EVIDENCE_BRANCH"),
+            RequireEvidenceValue("HVO_EVIDENCE_DIRTY_STATE"));
+        VerifyRevisionEvidence(repositoryRoot, revision);
+        var storage = RequireEvidenceValue("HVO_EVIDENCE_STORAGE");
         var outputRoot = Environment.GetEnvironmentVariable("HVO_ISSUE423_424_EVIDENCE_ROOT")
             ?? Path.Combine(GetRepositoryRoot(), "TestResults", "issues-423-424", "working-tree");
         var workRoot = Path.Combine(outputRoot, "performance-work");
@@ -62,20 +79,26 @@ public sealed class ProcessingGraphExecutionPerformanceTests
                 var candidate = await MeasureLiveAsync(
                     Path.Combine(workRoot, $"{workload.Id}-candidate"), workload, payload, durableExecutions: true)
                     .ConfigureAwait(false);
+                var replay = candidate.Replay
+                    ?? throw new InvalidOperationException("The durable candidate did not produce replay evidence.");
                 measurements.Add(new(
                     workload,
                     baseline.Live,
                     candidate.Live,
-                    candidate.Replay!,
+                    replay,
                     PercentChange(baseline.Live.MedianMilliseconds, candidate.Live.MedianMilliseconds),
-                    PercentChange(baseline.Live.P95Milliseconds, candidate.Live.P95Milliseconds)));
+                    PercentChange(baseline.Live.P95Milliseconds, candidate.Live.P95Milliseconds),
+                    PercentChange(candidate.Live.MedianMilliseconds, replay.SimultaneousLive.MedianMilliseconds),
+                    PercentChange(candidate.Live.P95Milliseconds, replay.SimultaneousLive.P95Milliseconds),
+                    PercentChange(
+                        candidate.Live.CapturesPerSecond,
+                        replay.SimultaneousLive.ServiceCapturesPerSecond)));
             }
 
             var evidence = new
             {
-                SchemaVersion = "issues-423-424-processing-execution-performance-v1",
-                Revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION") ?? "candidate-working-tree",
-                DirtyState = "The harness records candidate working-tree evidence before the first push.",
+                SchemaVersion = "issues-423-424-processing-execution-performance-v2",
+                Revision = revision,
                 RecordedUtc = DateTimeOffset.UtcNow,
                 Environment = new
                 {
@@ -84,22 +107,47 @@ public sealed class ProcessingGraphExecutionPerformanceTests
                     Framework = RuntimeInformation.FrameworkDescription,
                     Configuration = "Release",
                     ProcessorCount = Environment.ProcessorCount,
+                    ProcessorModel = ReadLinuxValue("/proc/cpuinfo", "model name"),
+                    TotalMemoryBytes = ReadLinuxMemoryBytes(),
                     ServerGc = System.Runtime.GCSettings.IsServerGC,
-                    Storage = "local filesystem and SQLite WAL",
+                    Storage = new
+                    {
+                        DeclaredType = storage,
+                        FileSystem = ReadFileSystemType(outputRoot)
+                    },
+                    SqliteVersion = ReadSqliteVersion(),
+                    SqliteProviderVersion = typeof(SqliteConnection).Assembly.GetName().Version?.ToString(),
                     Topology = "in-process CameraAgent service-provider harness with central integration and upload disabled"
+                },
+                Provenance = new
+                {
+                    HarnessSha256 = ComputeFileSha256(Path.Combine(
+                        repositoryRoot,
+                        "tests/HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/ProcessingGraphExecutionPerformanceTests.cs")),
+                    TestAssemblySha256 = ComputeFileSha256(typeof(ProcessingGraphExecutionPerformanceTests).Assembly.Location),
+                    ReproductionCommandTemplate = "HVO_EVIDENCE_BASE_REVISION=<base> HVO_EVIDENCE_REVISION=<candidate> HVO_EVIDENCE_BRANCH=<branch> HVO_EVIDENCE_DIRTY_STATE=clean HVO_EVIDENCE_STORAGE=<storage> HVO_ISSUE423_424_EVIDENCE_ROOT=<output> dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --configuration Release --filter FullyQualifiedName~ProcessingGraphExecutionPerformanceTests.W1W2W6LiveExecutionAndReplayEvidence"
                 },
                 Method = new
                 {
                     WarmupCount,
                     MeasuredCount,
-                    ReplayCount,
+                    ReplayWarmupCount,
+                    ReplayMeasuredCount,
+                    SimultaneousReplayCount,
+                    SimultaneousLiveCount,
                     Concurrency = 1,
+                    LiveLatencyBudgetMilliseconds,
+                    SimultaneousLiveCadenceMilliseconds,
+                    CadenceStartToleranceMilliseconds,
+                    DurableStateSamplingIntervalMilliseconds = DurableStateSamplingInterval.TotalMilliseconds,
+                    ResourceSamplingIntervalMilliseconds = ResourceSamplingInterval.TotalMilliseconds,
                     Scope = "Supplemental durable-checkpoint isolation at canonical W1/W2/W6 frame dimensions; this is not the standalone production-graph W6 campaign.",
-                    Baseline = "Feature-isolation baseline using the same candidate binary with ProcessingGraphOperationsCoordinator removed; an exact base-revision campaign remains separate evidence.",
-                    Candidate = "Durable live execution enabled through normal CameraAgent dependency injection and the same three-node graph.",
-                    Replay = "Five sequential replay operations use an exact retained artifact, active immutable revision, local replay worker, and three full-payload scans. The first operation includes deliberate live preemption; median/min/max are reported without inferring p95.",
+                    Baseline = "Feature-isolation baseline using the same candidate binary with ProcessingGraphOperationsCoordinator removed. The code baseline commit is provenance, not a second executable comparator, because the harness and execution contracts do not exist there.",
+                    Candidate = "Durable live execution enabled through normal CameraAgent dependency injection and the same four-node graph, consisting of one descriptor-only timing barrier and three full-payload probes.",
+                    Replay = "After five warm-ups, 30 replay operations are durably queued behind a controlled worker block and drained without live work for isolated resource and I/O measurements. A separate 8:1 backlog of 240 queued replays drains while 30 live captures arrive on a paced 100 ms accelerated schedule; the first replay is deliberately preempted by live acceptance.",
                     Sample = "Raw acceptance through the real ordered standard-lane handler and acknowledgement; replay submission through terminal graph execution.",
-                    RegressionMethod = "Report absolute feature-off/feature-on values and percentage changes without a universal pass threshold; canonical base-revision and standalone-host evidence determine merge disposition."
+                    Counters = "Process CPU, managed allocation and retained LOH after full collections, 10 ms process working-set samples, Linux /proc/self/io logical/physical bytes and syscall counts, SQLite database/WAL sizes, and 25 ms durable queue count/bytes/oldest-age samples. Submission I/O combines source resolution and frozen-input validation; execution I/O is measured separately. Observer poll counts are reported.",
+                    RegressionMethod = "Report absolute feature-off/feature-on live values, percentage changes, absolute replay baselines, and simultaneous-live percentage changes without a universal pass threshold; canonical standalone-host evidence determines merge disposition."
                 },
                 Measurements = measurements,
                 Correctness = new
@@ -107,13 +155,14 @@ public sealed class ProcessingGraphExecutionPerformanceTests
                     Checks = new[]
                     {
                         "raw payload byte length and SHA-256",
-                        "three-node graph completion and full payload scan count",
+                        "four-node graph completion and three full-payload scans",
                         "one durable live execution per accepted candidate capture",
                         "zero unfinished standard-lane and replay backlog after drain",
                         "terminal completed replay identity for the exact archived artifact",
-                        "live acknowledgement while a full-resolution replay execution is durably running"
+                        "30 live acknowledgements while a full-resolution replay backlog is durably draining",
+                        "durable peak replay count/bytes and completed terminal-count convergence"
                     },
-                    Result = "The harness fails on raw checksum, graph-node count, payload-scan count, execution-count, terminal-state, or final-backlog divergence."
+                    Result = "The harness fails on raw checksum, graph-node count, payload-scan count, execution-count, terminal-state, peak/final backlog, source-read, or simultaneous-live divergence."
                 }
             };
             var outputPath = Path.Combine(outputRoot, "processing-execution-performance.json");
@@ -200,7 +249,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         Assert.AreEqual(durableExecutions ? (long)(WarmupCount + MeasuredCount) : 0L, state.LiveExecutions);
         Assert.AreEqual((long)(WarmupCount + MeasuredCount) * GraphNodeCount, state.CompletedGraphNodes);
         Assert.AreEqual(
-            (long)(WarmupCount + MeasuredCount) * GraphNodeCount * workload.PayloadBytes,
+            (long)(WarmupCount + MeasuredCount) * PayloadScanNodeCount * workload.PayloadBytes,
             probe.PayloadBytesScanned);
         var live = new LiveMeasurement(
             samples[MeasuredCount / 2],
@@ -222,13 +271,16 @@ public sealed class ProcessingGraphExecutionPerformanceTests
             state.LiveExecutions,
             state.LiveBacklog,
             state.CompletedGraphNodes,
-            probe.PayloadBytesScanned);
+            probe.PayloadBytesScanned,
+            LiveLatencyBudgetMilliseconds,
+            samples.Count(sample => sample > LiveLatencyBudgetMilliseconds),
+            LiveLatencyBudgetMilliseconds - samples[^1]);
         ReplayMeasurement? replay = null;
         if (durableExecutions)
         {
             replay = await MeasureReplayAsync(
                 provider, operations!, configuration, ingress, laneStore, standard, workload, payload,
-                WarmupCount + MeasuredCount, lastReceipt).ConfigureAwait(false);
+                WarmupCount + MeasuredCount, lastReceipt, databasePath).ConfigureAwait(false);
         }
         return new(live, replay);
     }
@@ -243,89 +295,406 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         Workload workload,
         byte[] payload,
         int sequence,
-        RawCaptureReceipt source)
+        RawCaptureReceipt source,
+        string databasePath)
     {
         var registry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
         var worker = provider.GetRequiredService<ProcessingReplayWorker>();
         var laneHandler = provider.GetServices<ICaptureLaneHandler>().Single(
             static handler => handler.Lane == "standard");
         var probe = provider.GetRequiredService<PerformanceProbeObservation>();
-        var scannedBefore = probe.PayloadBytesScanned;
-        var samples = new double[ReplayCount];
-        var liveWhileReplayMilliseconds = 0d;
-        var replayWasRunning = false;
         await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            for (var index = 0; index < ReplayCount; index++)
+            for (var index = 0; index < ReplayWarmupCount; index++)
             {
-                if (index == 0) probe.BlockNextReplayUntilLivePreemption();
-                var started = Stopwatch.GetTimestamp();
-                var replay = await operations.SubmitReplayAsync(
-                    new ProcessingReplaySubmission(
-                        source.Manifest.Descriptor.Capture.CaptureId,
-                        registry.ActiveRevisionId,
-                        source.Manifest.Descriptor.Artifact.ArtifactId,
-                        TriggerReference: $"performance-{workload.Id}-{index}"),
-                    $"performance-{workload.Id}-{index}",
-                    "performance-harness",
-                    CancellationToken.None).ConfigureAwait(false);
-                if (index == 0)
-                {
-                    replayWasRunning = await WaitForRunningAsync(operations, replay.Execution.ExecutionId)
-                        .ConfigureAwait(false);
-                    Assert.IsTrue(replayWasRunning);
-                    using (var replayStarted = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
-                        await probe.WaitForReplayBlockAsync(replayStarted.Token).ConfigureAwait(false);
-                    var liveStarted = Stopwatch.GetTimestamp();
-                    _ = await AcceptAndAcknowledgeAsync(
-                        ingress, laneStore, laneHandler, standard, configuration, workload, payload, sequence++,
-                        operations)
-                        .ConfigureAwait(false);
-                    liveWhileReplayMilliseconds = Stopwatch.GetElapsedTime(liveStarted).TotalMilliseconds;
-                }
+                var replay = await SubmitReplayAsync(
+                    operations, registry.ActiveRevisionId, source, workload.Id, "warmup", index)
+                    .ConfigureAwait(false);
                 var terminal = await WaitForTerminalAsync(operations, replay.Execution.ExecutionId).ConfigureAwait(false);
                 Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, terminal.Status);
-                samples[index] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             }
+
+            var isolated = await MeasureReplayOnlyAsync(
+                operations, registry.ActiveRevisionId, source, workload, probe, databasePath)
+                .ConfigureAwait(false);
+            var simultaneous = await MeasureSimultaneousLiveAsync(
+                operations, registry.ActiveRevisionId, source, workload, payload, probe, databasePath,
+                ingress, laneStore, laneHandler, standard, configuration, sequence)
+                .ConfigureAwait(false);
+            return new(isolated, simultaneous);
         }
         finally
         {
             await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
         }
-        Array.Sort(samples);
-        var state = await ReadStateAsync(
-            Path.Combine(provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<CameraAgentHostOptions>>()
-                .Value.RawIngressRoot, "journal", "raw-ingress.db"),
-            durableExecutions: true).ConfigureAwait(false);
-        Assert.AreEqual(0L, state.ReplayBacklog);
-        var minimumReplayBytesScanned = (long)ReplayCount * GraphNodeCount * workload.PayloadBytes;
-        Assert.IsGreaterThanOrEqualTo(minimumReplayBytesScanned, probe.PayloadBytesScanned - scannedBefore);
-        return new(
-            samples[ReplayCount / 2],
-            samples[0],
-            samples[^1],
-            ReplayCount / (samples.Sum() / 1000d),
-            minimumReplayBytesScanned,
-            state.ReplayBacklog,
-            replayWasRunning,
-            replayWasRunning ? liveWhileReplayMilliseconds : null);
     }
 
-    private static async Task<bool> WaitForRunningAsync(
+    private static async Task<ReplayResourceMeasurement> MeasureReplayOnlyAsync(
         ProcessingGraphOperationsCoordinator operations,
-        Guid executionId)
+        string revisionId,
+        RawCaptureReceipt source,
+        Workload workload,
+        PerformanceProbeObservation probe,
+        string databasePath)
     {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        var beforeState = await ReadReplayQueueStateAsync(databasePath).ConfigureAwait(false);
+        Assert.AreEqual(0L, beforeState.PendingCount);
+        var scannedBefore = probe.PayloadBytesScanned;
+        var databaseBytesBefore = GetFileLength(databasePath);
+        var walBytesBefore = GetFileLength($"{databasePath}-wal");
+        var processIoBefore = ReadProcessIo();
+        using var process = Process.GetCurrentProcess();
+        process.Refresh();
+        var cpuBefore = process.TotalProcessorTime;
+        var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+        var workingSetBefore = process.WorkingSet64;
+        var lohBefore = GetLohSize();
+        using var sampleCancellation = new CancellationTokenSource();
+        var peakWorkingSetTask = SamplePeakWorkingSetAsync(process, workingSetBefore, sampleCancellation.Token);
+        ReplayBatch? completedBatch = null;
+        ReplayDrainObservation? completedDrain = null;
+        var measurementStarted = Stopwatch.GetTimestamp();
+        var drainMilliseconds = 0d;
+        try
+        {
+            completedBatch = await SubmitBlockedReplayBatchAsync(
+                operations, revisionId, source, workload, probe, "isolated", ReplayMeasuredCount, databasePath)
+                .ConfigureAwait(false);
+            var processIoAfterSubmission = ReadProcessIo();
+            var drainStarted = Stopwatch.GetTimestamp();
+            probe.ReleaseReplayBlock();
+            completedDrain = await WaitForReplayBacklogDrainAsync(databasePath).ConfigureAwait(false);
+            drainMilliseconds = Stopwatch.GetElapsedTime(drainStarted).TotalMilliseconds;
+            completedBatch = completedBatch with { ProcessIoAfterSubmission = processIoAfterSubmission };
+        }
+        finally
+        {
+            await sampleCancellation.CancelAsync().ConfigureAwait(false);
+        }
+        var maximumWorkingSet = await peakWorkingSetTask.ConfigureAwait(false);
+        var batch = completedBatch
+            ?? throw new InvalidOperationException("The isolated replay batch was not submitted.");
+        var drainObservation = completedDrain
+            ?? throw new InvalidOperationException("The isolated replay batch did not drain.");
+        var totalMilliseconds = Stopwatch.GetElapsedTime(measurementStarted).TotalMilliseconds;
+        process.Refresh();
+        var cpuMilliseconds = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
+        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+        var workingSetAfter = process.WorkingSet64;
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        var lohAfter = GetLohSize();
+        var processIoAfter = ReadProcessIo();
+        var finalState = drainObservation.FinalState;
+        Assert.AreEqual(0L, finalState.PendingCount);
+        Assert.AreEqual((long)ReplayMeasuredCount, finalState.CompletedCount - beforeState.CompletedCount);
+        Assert.AreEqual(0L, finalState.TerminalFailureCount - beforeState.TerminalFailureCount);
+        var durations = await ReadCompletedReplayDurationsAsync(operations, batch.Executions).ConfigureAwait(false);
+        Array.Sort(durations);
+        var submissionDurations = batch.Executions.Select(static item => item.SubmissionMilliseconds).ToArray();
+        Array.Sort(submissionDurations);
+        var inMemoryPayloadBytesScanned = probe.PayloadBytesScanned - scannedBefore;
+        var expectedPayloadBytesScanned = (long)ReplayMeasuredCount * PayloadScanNodeCount * workload.PayloadBytes;
+        Assert.AreEqual(expectedPayloadBytesScanned, inMemoryPayloadBytesScanned);
+        var processIo = CalculateProcessIoDelta(processIoBefore, processIoAfter);
+        var submissionProcessIo = CalculateProcessIoDelta(processIoBefore, batch.ProcessIoAfterSubmission);
+        var executionProcessIo = CalculateProcessIoDelta(batch.ProcessIoAfterSubmission, processIoAfter);
+        var expectedSourceResolutionPayloadBytes =
+            (long)ReplayMeasuredCount * workload.PayloadBytes;
+        var expectedInputFreezeValidationPayloadBytes =
+            (long)ReplayMeasuredCount * workload.PayloadBytes;
+        var expectedExecutionSourcePayloadBytes = (long)ReplayMeasuredCount * workload.PayloadBytes;
+        var minimumSourcePayloadBytesRead =
+            expectedSourceResolutionPayloadBytes +
+            expectedInputFreezeValidationPayloadBytes +
+            expectedExecutionSourcePayloadBytes;
+        var minimumFullFrameLohBytesAllocated =
+            expectedSourceResolutionPayloadBytes + expectedExecutionSourcePayloadBytes;
+        var minimumSubmissionPayloadBytesRead =
+            expectedSourceResolutionPayloadBytes + expectedInputFreezeValidationPayloadBytes;
+        if (submissionProcessIo is not null)
+        {
+            Assert.IsGreaterThanOrEqualTo(minimumSubmissionPayloadBytesRead, submissionProcessIo.LogicalReadBytes);
+        }
+        if (executionProcessIo is not null)
+        {
+            Assert.IsGreaterThanOrEqualTo(expectedExecutionSourcePayloadBytes, executionProcessIo.LogicalReadBytes);
+        }
+        if (processIo is not null)
+        {
+            Assert.IsGreaterThanOrEqualTo(minimumSourcePayloadBytesRead, processIo.LogicalReadBytes);
+        }
+
+        var databaseBytesAfter = GetFileLength(databasePath);
+        var walBytesAfter = GetFileLength($"{databasePath}-wal");
+        return new(
+            durations[ReplayMeasuredCount / 2],
+            Percentile(durations, 0.95),
+            durations[0],
+            durations[^1],
+            submissionDurations[ReplayMeasuredCount / 2],
+            Percentile(submissionDurations, 0.95),
+            totalMilliseconds,
+            drainMilliseconds,
+            ReplayMeasuredCount / (totalMilliseconds / 1000d),
+            batch.PeakState.PendingBytes / (totalMilliseconds / 1000d),
+            cpuMilliseconds,
+            cpuMilliseconds / ReplayMeasuredCount,
+            allocatedBytes,
+            allocatedBytes / (double)ReplayMeasuredCount,
+            workingSetBefore,
+            maximumWorkingSet,
+            workingSetAfter,
+            lohBefore,
+            lohAfter,
+            expectedSourceResolutionPayloadBytes,
+            expectedInputFreezeValidationPayloadBytes,
+            expectedExecutionSourcePayloadBytes,
+            minimumSourcePayloadBytesRead,
+            minimumFullFrameLohBytesAllocated,
+            inMemoryPayloadBytesScanned,
+            processIo,
+            submissionProcessIo,
+            executionProcessIo,
+            databaseBytesBefore,
+            databaseBytesAfter,
+            databaseBytesAfter - databaseBytesBefore,
+            walBytesBefore,
+            walBytesAfter,
+            walBytesAfter - walBytesBefore,
+            batch.QueueFillMilliseconds,
+            batch.PeakState.PendingCount,
+            batch.PeakState.PendingBytes,
+            drainObservation.MaximumOldestAgeMilliseconds,
+            ReplayMeasuredCount / (drainMilliseconds / 1000d),
+            batch.PeakState.PendingBytes / (drainMilliseconds / 1000d),
+            drainObservation.SampleCount,
+            finalState.PendingCount,
+            finalState.PendingBytes,
+            finalState.CompletedCount - beforeState.CompletedCount,
+            finalState.TerminalFailureCount - beforeState.TerminalFailureCount);
+    }
+
+    private static async Task<SimultaneousLiveMeasurement> MeasureSimultaneousLiveAsync(
+        ProcessingGraphOperationsCoordinator operations,
+        string revisionId,
+        RawCaptureReceipt source,
+        Workload workload,
+        byte[] payload,
+        PerformanceProbeObservation probe,
+        string databasePath,
+        IRawCaptureIngress ingress,
+        ICaptureLaneStore laneStore,
+        ICaptureLaneHandler laneHandler,
+        CaptureLaneDefinition standard,
+        CameraModuleConfig configuration,
+        int sequence)
+    {
+        var beforeState = await ReadReplayQueueStateAsync(databasePath).ConfigureAwait(false);
+        Assert.AreEqual(0L, beforeState.PendingCount);
+        var scannedBefore = probe.PayloadBytesScanned;
+        var preemptionsBefore = probe.ReplayBlockCancellationCount;
+        var batch = await SubmitBlockedReplayBatchAsync(
+            operations, revisionId, source, workload, probe, "simultaneous", SimultaneousReplayCount, databasePath)
+            .ConfigureAwait(false);
+        var replayDrainStarted = Stopwatch.GetTimestamp();
+        var replayDrain = WaitForReplayBacklogDrainAsync(databasePath);
+        var scheduleStarted = Stopwatch.GetTimestamp();
+        var liveSamples = new double[SimultaneousLiveCount];
+        var startJitterSamples = new double[SimultaneousLiveCount];
+        var liveOperationsStartedBeforeReplayDrain = 0;
+        var lastStartMilliseconds = 0d;
+        for (var index = 0; index < SimultaneousLiveCount; index++)
+        {
+            var targetStartMilliseconds = index * SimultaneousLiveCadenceMilliseconds;
+            var untilTarget = targetStartMilliseconds - Stopwatch.GetElapsedTime(scheduleStarted).TotalMilliseconds;
+            if (untilTarget > 0)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(untilTarget)).ConfigureAwait(false);
+            }
+            lastStartMilliseconds = Stopwatch.GetElapsedTime(scheduleStarted).TotalMilliseconds;
+            startJitterSamples[index] = Math.Max(0, lastStartMilliseconds - targetStartMilliseconds);
+            if (!replayDrain.IsCompleted) liveOperationsStartedBeforeReplayDrain++;
+            var operationStarted = Stopwatch.GetTimestamp();
+            _ = await AcceptAndAcknowledgeAsync(
+                ingress, laneStore, laneHandler, standard, configuration, workload, payload, sequence++, operations)
+                .ConfigureAwait(false);
+            liveSamples[index] = Stopwatch.GetElapsedTime(operationStarted).TotalMilliseconds;
+        }
+        var liveDurationMilliseconds = Stopwatch.GetElapsedTime(scheduleStarted).TotalMilliseconds;
+        var replayDrainObservation = await replayDrain.ConfigureAwait(false);
+        var replayDrainMilliseconds = Stopwatch.GetElapsedTime(replayDrainStarted).TotalMilliseconds;
+        Assert.AreEqual(SimultaneousLiveCount, liveOperationsStartedBeforeReplayDrain);
+        var finalReplayState = replayDrainObservation.FinalState;
+        Assert.AreEqual(0L, finalReplayState.PendingCount);
+        Assert.AreEqual((long)SimultaneousReplayCount, finalReplayState.CompletedCount - beforeState.CompletedCount);
+        Assert.AreEqual(0L, finalReplayState.TerminalFailureCount - beforeState.TerminalFailureCount);
+        Assert.AreEqual(preemptionsBefore + 1, probe.ReplayBlockCancellationCount);
+        var finalState = await ReadStateAsync(databasePath, durableExecutions: true).ConfigureAwait(false);
+        Assert.AreEqual((long)(WarmupCount + MeasuredCount + SimultaneousLiveCount), finalState.LiveExecutions);
+        Assert.AreEqual(0L, finalState.LiveBacklog);
+        Assert.AreEqual(
+            (long)(WarmupCount + MeasuredCount + SimultaneousLiveCount) * GraphNodeCount,
+            finalState.CompletedGraphNodes);
+        var replayDurations = await ReadCompletedReplayDurationsAsync(operations, batch.Executions).ConfigureAwait(false);
+        Array.Sort(replayDurations);
+        var expectedMinimumScanned =
+            (long)(SimultaneousReplayCount + SimultaneousLiveCount) * PayloadScanNodeCount * workload.PayloadBytes;
+        Assert.IsGreaterThanOrEqualTo(expectedMinimumScanned, probe.PayloadBytesScanned - scannedBefore);
+        Array.Sort(liveSamples);
+        Array.Sort(startJitterSamples);
+        return new(
+            liveSamples[SimultaneousLiveCount / 2],
+            Percentile(liveSamples, 0.95),
+            liveSamples[0],
+            liveSamples[^1],
+            liveDurationMilliseconds,
+            SimultaneousLiveCount / (liveSamples.Sum() / 1000d),
+            SimultaneousLiveCount / (liveDurationMilliseconds / 1000d),
+            (SimultaneousLiveCount - 1) / (lastStartMilliseconds / 1000d),
+            SimultaneousLiveCadenceMilliseconds,
+            CadenceStartToleranceMilliseconds,
+            startJitterSamples[SimultaneousLiveCount / 2],
+            Percentile(startJitterSamples, 0.95),
+            startJitterSamples[^1],
+            startJitterSamples.Count(sample => sample > CadenceStartToleranceMilliseconds),
+            liveOperationsStartedBeforeReplayDrain,
+            batch.PeakState.PendingCount,
+            batch.PeakState.PendingBytes,
+            replayDrainObservation.MaximumOldestAgeMilliseconds,
+            replayDrainMilliseconds,
+            SimultaneousReplayCount / (replayDrainMilliseconds / 1000d),
+            replayDrainObservation.SampleCount,
+            finalReplayState.PendingCount,
+            finalReplayState.PendingBytes,
+            probe.ReplayBlockCancellationCount == preemptionsBefore + 1);
+    }
+
+    private static ValueTask<ProcessingReplaySubmissionResult> SubmitReplayAsync(
+        ProcessingGraphOperationsCoordinator operations,
+        string revisionId,
+        RawCaptureReceipt source,
+        string workloadId,
+        string phase,
+        int index)
+        => operations.SubmitReplayAsync(
+            new ProcessingReplaySubmission(
+                source.Manifest.Descriptor.Capture.CaptureId,
+                revisionId,
+                source.Manifest.Descriptor.Artifact.ArtifactId,
+                TriggerReference: $"performance-{workloadId}-{phase}-{index}"),
+            $"performance-{workloadId}-{phase}-{index}",
+            "performance-harness",
+            CancellationToken.None);
+
+    private static async Task<ReplayBatch> SubmitBlockedReplayBatchAsync(
+        ProcessingGraphOperationsCoordinator operations,
+        string revisionId,
+        RawCaptureReceipt source,
+        Workload workload,
+        PerformanceProbeObservation probe,
+        string phase,
+        int count,
+        string databasePath)
+    {
+        var queueFillStarted = Stopwatch.GetTimestamp();
+        probe.BlockNextReplay();
+        var executions = new List<ReplayBatchItem>(count);
+        var firstSubmittedUtc = DateTimeOffset.UtcNow;
+        var firstSubmissionStarted = Stopwatch.GetTimestamp();
+        var first = await SubmitReplayAsync(operations, revisionId, source, workload.Id, phase, 0)
+            .ConfigureAwait(false);
+        executions.Add(new(
+            first.Execution,
+            firstSubmittedUtc,
+            Stopwatch.GetElapsedTime(firstSubmissionStarted).TotalMilliseconds));
+        using (var replayStarted = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            _ = await probe.WaitForReplayBlockAsync(replayStarted.Token).ConfigureAwait(false);
+        for (var index = 1; index < count; index++)
+        {
+            var submittedUtc = DateTimeOffset.UtcNow;
+            var submissionStarted = Stopwatch.GetTimestamp();
+            var replay = await SubmitReplayAsync(operations, revisionId, source, workload.Id, phase, index)
+                .ConfigureAwait(false);
+            executions.Add(new(
+                replay.Execution,
+                submittedUtc,
+                Stopwatch.GetElapsedTime(submissionStarted).TotalMilliseconds));
+        }
+
+        var queueFillMilliseconds = Stopwatch.GetElapsedTime(queueFillStarted).TotalMilliseconds;
+        var peakState = await ReadReplayQueueStateAsync(databasePath).ConfigureAwait(false);
+        Assert.AreEqual((long)count, peakState.PendingCount);
+        Assert.AreEqual((long)count * workload.PayloadBytes, peakState.PendingBytes);
+        Assert.IsNotNull(peakState.OldestPendingUtc);
+        Assert.IsTrue(executions.All(item =>
+            item.Execution.CaptureId == source.Manifest.Descriptor.Capture.CaptureId &&
+            item.Execution.PrimaryArtifactId == source.Manifest.Descriptor.Artifact.ArtifactId &&
+            string.Equals(item.Execution.GraphRevisionId, revisionId, StringComparison.Ordinal)));
+        return new(executions, queueFillMilliseconds, peakState);
+    }
+
+    private static async Task<ReplayDrainObservation> WaitForReplayBacklogDrainAsync(string databasePath)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(10);
+        var maximumOldestAgeMilliseconds = 0d;
+        var sampleCount = 0;
         while (DateTimeOffset.UtcNow < deadline)
         {
-            var execution = await operations.ReadExecutionAsync(executionId, CancellationToken.None).ConfigureAwait(false);
-            if (execution?.Status == ProcessingGraphExecutionStatus.Running) return true;
-            if (execution?.Status is ProcessingGraphExecutionStatus.Completed or ProcessingGraphExecutionStatus.Failed)
-                return false;
-            await Task.Delay(1).ConfigureAwait(false);
+            var state = await ReadReplayQueueStateAsync(databasePath).ConfigureAwait(false);
+            sampleCount++;
+            if (state.OldestPendingUtc is { } oldest)
+            {
+                maximumOldestAgeMilliseconds = Math.Max(
+                    maximumOldestAgeMilliseconds,
+                    (DateTimeOffset.UtcNow - oldest).TotalMilliseconds);
+            }
+            if (state.PendingCount == 0)
+            {
+                return new(state, maximumOldestAgeMilliseconds, sampleCount);
+            }
+            await Task.Delay(DurableStateSamplingInterval).ConfigureAwait(false);
         }
-        return false;
+        throw new TimeoutException("The replay backlog did not drain within ten minutes.");
+    }
+
+    private static async Task<double[]> ReadCompletedReplayDurationsAsync(
+        ProcessingGraphOperationsCoordinator operations,
+        IReadOnlyList<ReplayBatchItem> executions)
+    {
+        var durations = new double[executions.Count];
+        for (var index = 0; index < executions.Count; index++)
+        {
+            var execution = await operations.ReadExecutionAsync(
+                executions[index].Execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(execution);
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, execution.Status, execution.FailureReason);
+            Assert.IsNotNull(execution.CompletedUtc);
+            durations[index] = (execution.CompletedUtc.Value - executions[index].SubmittedUtc).TotalMilliseconds;
+        }
+        return durations;
+    }
+
+    private static async Task<long> SamplePeakWorkingSetAsync(
+        Process process,
+        long initialWorkingSet,
+        CancellationToken cancellationToken)
+    {
+        var maximumWorkingSet = initialWorkingSet;
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                process.Refresh();
+                maximumWorkingSet = Math.Max(maximumWorkingSet, process.WorkingSet64);
+                await Task.Delay(ResourceSamplingInterval, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        return maximumWorkingSet;
     }
 
     private static async Task<ProcessingGraphExecutionState> WaitForTerminalAsync(
@@ -386,7 +755,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
                 ["CameraAgent:RawIngressReserveBytes"] = "0",
                 ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
                 ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1",
-                ["CameraAgent:ProcessingGraphs:ReplayMaximumPendingBytes"] = (2L * 1024 * 1024 * 1024).ToString(
+                ["CameraAgent:ProcessingGraphs:ReplayMaximumPendingBytes"] = (8L * 1024 * 1024 * 1024).ToString(
                     System.Globalization.CultureInfo.InvariantCulture)
             }).Build());
         services.AddSingleton<PerformanceProbeObservation>();
@@ -394,6 +763,11 @@ public sealed class ProcessingGraphExecutionPerformanceTests
             "ExecutionPerformanceProbe",
             typeof(PerformanceProbeStep),
             typeof(PerformanceProbeOptions),
+            AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            "ExecutionPerformanceBarrier",
+            typeof(PerformanceReplayBarrierStep),
+            typeof(PerformanceReplayBarrierOptions),
             AutoInclude: false));
         if (!durableExecutions)
         {
@@ -420,7 +794,12 @@ public sealed class ProcessingGraphExecutionPerformanceTests
                     TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 1)),
             new CapturePipelineConfig(
                 [
-                    CreateProbeNode("decode", FrameArtifactRole.Preview, ["$raw"], workload.PayloadBytes),
+                    new CaptureProcessingStepConfig(
+                        "ExecutionPerformanceBarrier",
+                        "barrier",
+                        Options: JsonSerializer.SerializeToElement(new { }),
+                        DependsOn: ["$raw"]),
+                    CreateProbeNode("decode", FrameArtifactRole.Preview, ["barrier"], workload.PayloadBytes),
                     CreateProbeNode("analyze", FrameArtifactRole.AnnotatedPreview, ["decode"], workload.PayloadBytes),
                     CreateProbeNode("checkpoint", FrameArtifactRole.Metadata, ["analyze"], workload.PayloadBytes)
                 ], CapturePipelineSchemaVersions.ExplicitV2,
@@ -499,6 +878,33 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         return new(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
     }
 
+    private static async Task<ReplayQueueState> ReadReplayQueueStateAsync(string databasePath)
+    {
+        using var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END),
+                MIN(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN work.updated_unix_ms END),
+                SUM(CASE WHEN work.state = 'Completed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state IN ('Failed', 'Cancelled', 'Expired') THEN 1 ELSE 0 END)
+            FROM processing_replay_work work
+            JOIN processing_executions execution ON execution.execution_id = work.execution_id;
+            """;
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+        return new(
+            await reader.IsDBNullAsync(0).ConfigureAwait(false) ? 0 : reader.GetInt64(0),
+            await reader.IsDBNullAsync(1).ConfigureAwait(false) ? 0 : reader.GetInt64(1),
+            await reader.IsDBNullAsync(2).ConfigureAwait(false)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
+            await reader.IsDBNullAsync(3).ConfigureAwait(false) ? 0 : reader.GetInt64(3),
+            await reader.IsDBNullAsync(4).ConfigureAwait(false) ? 0 : reader.GetInt64(4));
+    }
+
     private static double Percentile(double[] sorted, double percentile)
         => sorted[Math.Clamp((int)Math.Ceiling(sorted.Length * percentile) - 1, 0, sorted.Length - 1)];
 
@@ -509,6 +915,155 @@ public sealed class ProcessingGraphExecutionPerformanceTests
     {
         var generations = GC.GetGCMemoryInfo().GenerationInfo;
         return generations.Length > 3 ? generations[3].SizeAfterBytes : 0;
+    }
+
+    private static long GetFileLength(string path) => File.Exists(path) ? new FileInfo(path).Length : 0;
+
+    private static ProcessIoCounters? ReadProcessIo()
+    {
+        const string processIoPath = "/proc/self/io";
+        if (!OperatingSystem.IsLinux() || !File.Exists(processIoPath)) return null;
+        var values = File.ReadLines(processIoPath)
+            .Select(static line => line.Split(':', 2, StringSplitOptions.TrimEntries))
+            .Where(static parts => parts.Length == 2)
+            .ToDictionary(
+                static parts => parts[0],
+                static parts => long.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+                StringComparer.Ordinal);
+        return new(
+            values.GetValueOrDefault("rchar"),
+            values.GetValueOrDefault("wchar"),
+            values.GetValueOrDefault("syscr"),
+            values.GetValueOrDefault("syscw"),
+            values.GetValueOrDefault("read_bytes"),
+            values.GetValueOrDefault("write_bytes"),
+            values.GetValueOrDefault("cancelled_write_bytes"));
+    }
+
+    private static ProcessIoCounters? CalculateProcessIoDelta(
+        ProcessIoCounters? before,
+        ProcessIoCounters? after)
+        => before is null || after is null
+            ? null
+            : new(
+                after.LogicalReadBytes - before.LogicalReadBytes,
+                after.LogicalWriteBytes - before.LogicalWriteBytes,
+                after.ReadSystemCalls - before.ReadSystemCalls,
+                after.WriteSystemCalls - before.WriteSystemCalls,
+                after.PhysicalReadBytes - before.PhysicalReadBytes,
+                after.PhysicalWriteBytes - before.PhysicalWriteBytes,
+                after.CancelledWriteBytes - before.CancelledWriteBytes);
+
+    private static string RequireEvidenceValue(string name)
+        => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
+            ? value
+            : throw new InvalidOperationException($"The merge-grade performance harness requires {name}.");
+
+    private static void VerifyRevisionEvidence(string repositoryRoot, RevisionEvidence revision)
+    {
+        if (!string.Equals(revision.DirtyStateDisposition, "clean", StringComparison.Ordinal))
+            throw new InvalidOperationException("Merge-grade performance evidence requires a clean worktree disposition.");
+        var actualCandidate = RunGit(repositoryRoot, "rev-parse", "HEAD");
+        if (!string.Equals(actualCandidate, revision.CandidateCommit, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"HVO_EVIDENCE_REVISION is {revision.CandidateCommit}, but the checked-out commit is {actualCandidate}.");
+        }
+        var actualBranch = RunGit(repositoryRoot, "branch", "--show-current");
+        if (!string.Equals(actualBranch, revision.Branch, StringComparison.Ordinal))
+            throw new InvalidOperationException($"HVO_EVIDENCE_BRANCH is {revision.Branch}, but the branch is {actualBranch}.");
+        var actualBaseline = RunGit(repositoryRoot, "rev-parse", $"{revision.CodeBaselineCommit}^{{commit}}");
+        if (!string.Equals(actualBaseline, revision.CodeBaselineCommit, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("HVO_EVIDENCE_BASE_REVISION must be the full baseline commit SHA.");
+        var mergeBase = RunGit(repositoryRoot, "merge-base", revision.CodeBaselineCommit, revision.CandidateCommit);
+        if (!string.Equals(mergeBase, revision.CodeBaselineCommit, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The declared baseline is not an ancestor of the candidate commit.");
+        var status = RunGit(repositoryRoot, "status", "--porcelain");
+        if (status.Length != 0)
+            throw new InvalidOperationException($"The worktree is not clean: {status}");
+    }
+
+    private static string RunGit(string repositoryRoot, params string[] arguments)
+    {
+        var startInfo = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = repositoryRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Git could not be started for evidence verification.");
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed: {standardError.Trim()}");
+        return standardOutput.Trim();
+    }
+
+    private static string ReadFileSystemType(string path)
+    {
+        if (!OperatingSystem.IsLinux())
+            return new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).DriveFormat;
+        var startInfo = new ProcessStartInfo("stat")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        startInfo.ArgumentList.Add("--file-system");
+        startInfo.ArgumentList.Add("--format=%T");
+        startInfo.ArgumentList.Add(Path.GetFullPath(path));
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("stat could not be started for storage evidence.");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"stat failed for evidence storage: {error.Trim()}");
+        return output.Trim();
+    }
+
+    private static string? ReadLinuxValue(string path, string key)
+    {
+        if (!OperatingSystem.IsLinux() || !File.Exists(path)) return null;
+        foreach (var line in File.ReadLines(path))
+        {
+            var separator = line.IndexOf(':', StringComparison.Ordinal);
+            if (separator < 0 || !string.Equals(line[..separator].Trim(), key, StringComparison.Ordinal)) continue;
+            return line[(separator + 1)..].Trim();
+        }
+        return null;
+    }
+
+    private static long? ReadLinuxMemoryBytes()
+    {
+        var value = ReadLinuxValue("/proc/meminfo", "MemTotal");
+        if (value is null) return null;
+        var fields = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return fields.Length > 0 && long.TryParse(
+            fields[0], System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var kibibytes)
+            ? kibibytes * 1024
+            : null;
+    }
+
+    private static string ReadSqliteVersion()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT sqlite_version();";
+        return Convert.ToString(
+            command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
+    }
+
+    private static string ComputeFileSha256(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream));
     }
 
     private static string GetRepositoryRoot()
@@ -526,6 +1081,12 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         CameraPixelFormat PixelFormat,
         int PayloadBytes);
 
+    private sealed record RevisionEvidence(
+        string CodeBaselineCommit,
+        string CandidateCommit,
+        string Branch,
+        string DirtyStateDisposition);
+
     private sealed record PathMeasurement(LiveMeasurement Live, ReplayMeasurement? Replay);
 
     private sealed record WorkloadMeasurement(
@@ -534,7 +1095,10 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         LiveMeasurement Candidate,
         ReplayMeasurement Replay,
         double LiveMedianChangePercent,
-        double LiveP95ChangePercent);
+        double LiveP95ChangePercent,
+        double SimultaneousLiveMedianChangePercent,
+        double SimultaneousLiveP95ChangePercent,
+        double SimultaneousLiveThroughputChangePercent);
 
     private sealed record LiveMeasurement(
         double MedianMilliseconds,
@@ -556,17 +1120,119 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         long LiveExecutionCount,
         long LiveBacklogCount,
         long CompletedGraphNodeCount,
-        long PayloadBytesScanned);
+        long PayloadBytesScanned,
+        double LatencyBudgetMilliseconds,
+        int LatencyBudgetMissCount,
+        double MinimumLatencyBudgetHeadroomMilliseconds);
 
     private sealed record ReplayMeasurement(
+        ReplayResourceMeasurement Isolated,
+        SimultaneousLiveMeasurement SimultaneousLive);
+
+    private sealed record ReplayResourceMeasurement(
         double MedianMilliseconds,
+        double P95Milliseconds,
         double MinimumMilliseconds,
         double MaximumMilliseconds,
+        double SubmissionMedianMilliseconds,
+        double SubmissionP95Milliseconds,
+        double TotalMeasurementMilliseconds,
+        double DrainMilliseconds,
         double ReplaysPerSecond,
-        long MinimumPayloadBytesRead,
-        long ReplayBacklogCount,
-        bool ReplayWasRunningAtLiveStart,
-        double? LiveLatencyWhileReplayRunningMilliseconds);
+        double FullOperationPayloadBytesPerSecond,
+        double CpuMilliseconds,
+        double CpuMillisecondsPerReplay,
+        long AllocatedBytes,
+        double AllocatedBytesPerReplay,
+        long WorkingSetBeforeBytes,
+        long MaximumWorkingSetBytes,
+        long WorkingSetAfterBytes,
+        long LohRetainedBeforeFullCollectionBytes,
+        long LohRetainedAfterFullCollectionBytes,
+        long ExpectedSourceResolutionPayloadBytes,
+        long ExpectedInputFreezeValidationPayloadBytes,
+        long ExpectedExecutionSourcePayloadBytes,
+        long MinimumSourcePayloadBytesRead,
+        long MinimumFullFrameLohBytesAllocated,
+        long InMemoryPayloadBytesScanned,
+        ProcessIoCounters? OverallProcessIo,
+        ProcessIoCounters? SubmissionProcessIo,
+        ProcessIoCounters? ExecutionProcessIo,
+        long DatabaseBytesBefore,
+        long DatabaseBytesAfter,
+        long DatabaseBytesChange,
+        long WalBytesBefore,
+        long WalBytesAfter,
+        long WalBytesChange,
+        double QueueFillMilliseconds,
+        long PeakBacklogCount,
+        long PeakBacklogBytes,
+        double MaximumOldestBacklogAgeMilliseconds,
+        double BacklogItemsDrainedPerSecond,
+        double BacklogBytesDrainedPerSecond,
+        int DurableStateSampleCount,
+        long FinalBacklogCount,
+        long FinalBacklogBytes,
+        long CompletedReplayCount,
+        long TerminalFailureCount);
+
+    private sealed record SimultaneousLiveMeasurement(
+        double MedianMilliseconds,
+        double P95Milliseconds,
+        double MinimumMilliseconds,
+        double MaximumMilliseconds,
+        double TotalLiveDurationMilliseconds,
+        double ServiceCapturesPerSecond,
+        double EndToEndCampaignCapturesPerSecond,
+        double AchievedStartRatePerSecond,
+        double ArrivalIntervalMilliseconds,
+        double StartToleranceMilliseconds,
+        double MedianStartJitterMilliseconds,
+        double P95StartJitterMilliseconds,
+        double MaximumStartJitterMilliseconds,
+        int MissedStartCount,
+        int LiveOperationsStartedBeforeReplayDrain,
+        long PeakReplayBacklogCount,
+        long PeakReplayBacklogBytes,
+        double MaximumOldestReplayAgeMilliseconds,
+        double ReplayDrainMilliseconds,
+        double ReplaysPerSecond,
+        int DurableStateSampleCount,
+        long FinalReplayBacklogCount,
+        long FinalReplayBacklogBytes,
+        bool FirstReplayWasPreemptedByLiveAcceptance);
+
+    private sealed record ReplayBatch(
+        IReadOnlyList<ReplayBatchItem> Executions,
+        double QueueFillMilliseconds,
+        ReplayQueueState PeakState,
+        ProcessIoCounters? ProcessIoAfterSubmission = null);
+
+    private sealed record ReplayBatchItem(
+        ProcessingGraphExecutionState Execution,
+        DateTimeOffset SubmittedUtc,
+        double SubmissionMilliseconds);
+
+    private sealed record ReplayDrainObservation(
+        ReplayQueueState FinalState,
+        double MaximumOldestAgeMilliseconds,
+        int SampleCount);
+
+    private sealed record ReplayQueueState(
+        long PendingCount,
+        long PendingBytes,
+        DateTimeOffset? OldestPendingUtc,
+        long CompletedCount,
+        long TerminalFailureCount);
+
+    private sealed record ProcessIoCounters(
+        long LogicalReadBytes,
+        long LogicalWriteBytes,
+        long ReadSystemCalls,
+        long WriteSystemCalls,
+        long PhysicalReadBytes,
+        long PhysicalWriteBytes,
+        long CancelledWriteBytes);
 
     private sealed record DurableState(
         long LiveExecutions,
@@ -578,31 +1244,85 @@ public sealed class ProcessingGraphExecutionPerformanceTests
     private sealed class PerformanceProbeObservation
     {
         private TaskCompletionSource<bool> _replayBlockEntered = CreateReplayBlockSignal();
+        private TaskCompletionSource<bool> _replayBlockRelease = CreateReplayBlockSignal();
         private long _payloadBytesScanned;
+        private int _replayBlockCancellationCount;
         private int _blockNextReplay;
 
         public long PayloadBytesScanned => Interlocked.Read(ref _payloadBytesScanned);
 
+        public int ReplayBlockCancellationCount => Volatile.Read(ref _replayBlockCancellationCount);
+
         public void Record(int payloadBytes) => Interlocked.Add(ref _payloadBytesScanned, payloadBytes);
 
-        public void BlockNextReplayUntilLivePreemption()
+        public void BlockNextReplay()
         {
             Volatile.Write(ref _replayBlockEntered, CreateReplayBlockSignal());
+            Volatile.Write(ref _replayBlockRelease, CreateReplayBlockSignal());
             Interlocked.Exchange(ref _blockNextReplay, 1);
         }
 
         public Task<bool> WaitForReplayBlockAsync(CancellationToken cancellationToken) =>
             Volatile.Read(ref _replayBlockEntered).Task.WaitAsync(cancellationToken);
 
-        public bool ConsumeReplayBlock()
+        public void ReleaseReplayBlock() => Volatile.Read(ref _replayBlockRelease).TrySetResult(true);
+
+        public async Task WaitForReplayReleaseIfRequestedAsync(CancellationToken cancellationToken)
         {
-            if (Interlocked.Exchange(ref _blockNextReplay, 0) != 1) return false;
+            if (Interlocked.Exchange(ref _blockNextReplay, 0) != 1) return;
             Volatile.Read(ref _replayBlockEntered).TrySetResult(true);
-            return true;
+            try
+            {
+                _ = await Volatile.Read(ref _replayBlockRelease).Task.WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Interlocked.Increment(ref _replayBlockCancellationCount);
+                throw;
+            }
         }
 
         private static TaskCompletionSource<bool> CreateReplayBlockSignal() =>
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "The processing pipeline factory deserializes this test options type.")]
+    private sealed class PerformanceReplayBarrierOptions;
+
+    [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "The processing pipeline factory creates this test step through ActivatorUtilities.")]
+    private sealed class PerformanceReplayBarrierStep(
+        CaptureProcessingStepMetadata metadata,
+        PerformanceReplayBarrierOptions options,
+        PerformanceProbeObservation observation)
+        : ConfigurableCaptureProcessingStep<PerformanceReplayBarrierOptions>(metadata, options),
+          IDescriptorOnlyCaptureProcessingStep,
+          ICaptureProcessingGraphStep
+    {
+        public bool Enabled => true;
+
+        public string RecipeName => "execution-performance-barrier";
+
+        public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
+
+        public string OutputVariant => Metadata.Id;
+
+        public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+            new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+
+        public override ValueTask ProcessAsync(
+            CaptureProcessingContext context,
+            CancellationToken cancellationToken)
+            => ((IDescriptorOnlyCaptureProcessingStep)this).ProcessAsync(
+                new CaptureDescriptorProcessingContext(context), cancellationToken);
+
+        public async ValueTask ProcessAsync(
+            CaptureDescriptorProcessingContext context,
+            CancellationToken cancellationToken)
+        {
+            await observation.WaitForReplayReleaseIfRequestedAsync(cancellationToken).ConfigureAwait(false);
+            context.AddProcessingOutcome(ProcessingOutcome.Produced());
+        }
     }
 
     [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "The processing pipeline factory deserializes this test options type.")]
@@ -652,10 +1372,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
             Interlocked.Exchange(ref _lastChecksum, checksum);
             observation.Record(payload.Length);
             context.AddProcessingOutcome(ProcessingOutcome.Produced());
-            return context.ProcessingExecution?.ExecutionClass == ProcessingGraphExecutionClass.Replay &&
-                   observation.ConsumeReplayBlock()
-                ? new ValueTask(Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken))
-                : ValueTask.CompletedTask;
+            return ValueTask.CompletedTask;
         }
     }
 }
