@@ -674,13 +674,13 @@ EOF
         "hvo.transient.operator.query.duration": "ms",
         "hvo.transient.operator.response.bytes": "By"
       };
-      def allowed_metric_keys: ["action", "association_status", "boundary", "cadence", "command", "kind",
+      def allowed_metric_keys: ["action", "association_status", "boundary", "cadence", "command", "execution.class", "kind",
         "lane", "mode", "observation_kind", "operation", "outcome", "phase", "reason", "recipe", "regime",
         "required", "result", "role", "root", "schema", "segment", "source", "stage", "state", "step",
         "target", "trigger", "variant"];
       (if $strict then
         ["capture-cycle", "capture-control", "capture-ingress-handoff",
-         "raw-ingress.migrate", "raw-ingress.reconcile", "raw-ingress.accept", "payload.publish",
+         "raw-ingress.initialize", "raw-ingress.reconcile", "raw-ingress.accept", "payload.publish",
          "sidecar.publish", "sqlite.commit", "capture-lanes.initialize", "capture-lanes.claim",
          "capture-lanes.process", "capture-lanes.ack",
          "processing-graph.validate", "processing-graph.execute", "processing-step.execute",
