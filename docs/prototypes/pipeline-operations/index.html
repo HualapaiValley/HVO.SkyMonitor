@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="hvo-dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Pipeline Runs | HVO SkyMonitor Prototype</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to pipeline run</a>
+
+    <header class="app-header">
+        <a class="brand" href="dashboard.html" aria-label="HVO SkyMonitor current sky">
+            <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 40 40" role="img"><circle cx="20" cy="20" r="17"></circle><path d="M9 23c5-8 15-12 23-8M13 29c4-6 11-10 19-9"></path><circle cx="14" cy="13" r="1.8"></circle><circle cx="25" cy="10" r="1.3"></circle></svg>
+            </span>
+            <span><strong>HVO SkyMonitor</strong><small>HVO Main Fisheye</small></span>
+        </a>
+        <nav id="primaryNavigation" aria-label="Primary navigation">
+            <a href="dashboard.html">Current sky</a>
+            <a href="gallery.html">Archive</a>
+            <a href="events.html">Events</a>
+            <a class="active" href="operations.html" aria-current="page">Operations</a>
+        </nav>
+        <button class="icon-button agent-menu" type="button" aria-label="Open CameraAgent menu" aria-controls="primaryNavigation" aria-expanded="false">
+            <span class="agent-dot" aria-hidden="true"></span>
+            <span>Main Fisheye online</span>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
+        </button>
+    </header>
+
+    <div class="app-layout">
+        <aside class="run-sidebar" aria-label="Pipeline navigation">
+            <div class="sidebar-title">
+                <div>
+                    <p class="eyebrow">Local operations</p>
+                    <h1>Pipeline runs</h1>
+                </div>
+                <button class="icon-button" type="button" aria-label="Refresh prototype data">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 6V2m0 0h-4m4 0-3 3a7 7 0 1 0 1.7 7"></path></svg>
+                </button>
+            </div>
+
+            <div class="sidebar-controls">
+                <label class="search-field">
+                    <span class="visually-hidden">Search captures</span>
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"></circle><path d="m13 13 4 4"></path></svg>
+                    <input id="runSearch" type="search" placeholder="Filter captures">
+                </label>
+                <label>
+                    <span class="visually-hidden">Filter by outcome</span>
+                    <select id="outcomeFilter">
+                        <option value="all">All outcomes</option>
+                        <option value="success">Succeeded</option>
+                        <option value="warning">Warnings</option>
+                        <option value="failure">Failed</option>
+                        <option value="running">In progress</option>
+                    </select>
+                </label>
+            </div>
+
+            <section class="sidebar-section" aria-labelledby="recent-runs-heading">
+                <div class="section-label">
+                    <h2 id="recent-runs-heading">Recent captures</h2>
+                    <span>UTC</span>
+                </div>
+                <div id="runList" class="run-list"></div>
+                <p id="noRuns" class="empty-state" hidden>No captures match this filter.</p>
+            </section>
+
+            <section class="sidebar-section stage-section" aria-labelledby="stages-heading">
+                <div class="section-label">
+                    <h2 id="stages-heading">All stages</h2>
+                    <button id="requiredToggle" class="filter-button" type="button" aria-pressed="false">
+                        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M6 10h8m-5 5h2"></path></svg>
+                        Required only
+                    </button>
+                </div>
+                <div id="stageList" class="stage-list"></div>
+            </section>
+        </aside>
+
+        <main id="main-content" class="main-content">
+            <header class="run-heading">
+                <div>
+                    <p class="breadcrumb"><a href="operations.html">Operations</a><span>/</span><a href="operations.html?section=pipeline">Pipeline</a><span>/</span> Run</p>
+                    <div class="title-row">
+                        <span id="titleStatus" class="large-status" aria-hidden="true"></span>
+                        <div>
+                            <h2 id="runTitle">Capture #84220</h2>
+                            <p id="runSubtitle">Succeeded / related 31 August Fireball</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="heading-actions">
+                    <button id="reprocessButton" class="button secondary" type="button">
+                        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 6V2m0 0h-4m4 0-3 3a7 7 0 1 0 1.7 7"></path></svg>
+                        Reprocess
+                    </button>
+                    <button class="icon-button more-button" type="button" aria-label="More run actions">
+                        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1"></circle><circle cx="10" cy="10" r="1"></circle><circle cx="16" cy="10" r="1"></circle></svg>
+                    </button>
+                </div>
+            </header>
+
+            <section class="run-summary" aria-label="Run summary">
+                <div class="summary-origin">
+                    <span class="camera-glyph" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M4 7h3l1.5-2h7L17 7h3a2 2 0 0 1 2 2v9H2V9a2 2 0 0 1 2-2Z"></path><circle cx="12" cy="12.5" r="4"></circle></svg>
+                    </span>
+                    <div><span>Triggered by schedule</span><strong id="summaryTrigger">Hualapai Night Schedule at 03:13:55</strong></div>
+                </div>
+                <dl>
+                    <div><dt>Status</dt><dd id="summaryStatus">Succeeded</dd></div>
+                    <div><dt>Total duration</dt><dd id="summaryDuration">8.03s</dd></div>
+                    <div><dt>Artifacts</dt><dd id="summaryArtifacts">22</dd></div>
+                    <div><dt>LogicHost</dt><dd id="summaryDelivery">Acknowledged</dd></div>
+                </dl>
+            </section>
+
+            <section id="runNotice" class="run-notice warning" aria-live="polite">
+                <span class="notice-icon" aria-hidden="true"></span>
+                <div><strong id="noticeTitle">31 August Fireball confirmed from a five-frame window</strong><p id="noticeText">The image pipeline completed independently. LogicHost validated the causal candidate with N-2 through N+2 and retained reviewable event evidence.</p></div>
+                <button id="noticeAction" type="button">View validation</button>
+            </section>
+
+            <section class="graph-card" aria-labelledby="graph-heading">
+                <header class="graph-toolbar">
+                    <div>
+                        <p class="eyebrow">Capture-time dependency graph</p>
+                        <h2 id="graph-heading">Layered All-Sky Processing</h2>
+                    </div>
+                    <div class="graph-controls" role="group" aria-label="Graph controls">
+                        <div class="legend" role="group" aria-label="Status legend">
+                            <span><i class="status-dot success"></i>Succeeded</span>
+                            <span><i class="status-dot running"></i>Running</span>
+                            <span><i class="status-dot warning"></i>Attention</span>
+                            <span><i class="status-dot skipped"></i>Skipped</span>
+                        </div>
+                        <div class="zoom-controls">
+                            <button id="fitGraph" class="icon-button" type="button" aria-label="Fit graph to viewport" title="Fit graph">
+                                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M7 17H3v-4m10 4h4v-4"></path></svg>
+                            </button>
+                            <button id="zoomOut" class="icon-button" type="button" aria-label="Zoom out">-</button>
+                            <output id="zoomValue" for="zoomOut zoomIn">100%</output>
+                            <button id="zoomIn" class="icon-button" type="button" aria-label="Zoom in">+</button>
+                        </div>
+                    </div>
+                </header>
+
+                <div id="graphViewport" class="graph-viewport" tabindex="0" aria-label="Scrollable pipeline dependency graph">
+                    <div id="graphScale" class="graph-scale">
+                        <div id="graphCanvas" class="graph-canvas">
+                            <div class="ownership-zone acquisition-zone"><span>Camera and acquisition</span></div>
+                            <div class="ownership-zone processing-zone"><span>Edge processing</span></div>
+                            <div class="ownership-zone delivery-zone"><span>Durable publication</span></div>
+                            <div class="ownership-zone central-zone"><span>LogicHost</span></div>
+                            <div class="transient-track-band"><span><strong>Fireball / transient track</strong><small>V1 still-frame Hybrid mode / independent durable lane</small></span></div>
+                            <svg id="graphEdges" class="graph-edges" viewBox="0 0 2670 1180" aria-hidden="true">
+                                <defs>
+                                    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                        <path d="M 0 0 L 10 5 L 0 10 z"></path>
+                                    </marker>
+                                </defs>
+                            </svg>
+                            <div id="graphNodes"></div>
+                        </div>
+                    </div>
+                </div>
+                <footer class="graph-footer">
+                    <p><span class="required-line"></span>Required dependency <span class="optional-line"></span>Optional contribution</p>
+                    <p id="graphHint">Select a stage to inspect its execution evidence.</p>
+                </footer>
+            </section>
+
+            <section class="detail-card" aria-labelledby="detail-heading">
+                <nav class="detail-tabs" role="tablist" aria-label="Run detail views">
+                    <button id="summaryTab" class="active" type="button" role="tab" data-tab="summary" aria-controls="summaryPanel" aria-selected="true">Stage summary</button>
+                    <button id="artifactsTab" type="button" role="tab" data-tab="artifacts" aria-controls="artifactsPanel" aria-selected="false" tabindex="-1">Artifacts <span id="artifactBadge">22</span></button>
+                    <button id="attemptsTab" type="button" role="tab" data-tab="attempts" aria-controls="attemptsPanel" aria-selected="false" tabindex="-1">Attempts</button>
+                </nav>
+
+                <div id="summaryPanel" class="tab-panel" role="tabpanel" aria-labelledby="summaryTab">
+                    <header class="detail-heading">
+                        <div>
+                            <p id="detailEyebrow" class="eyebrow">Edge processing / Required</p>
+                            <h2 id="detail-heading">Causal candidate scan</h2>
+                            <p id="detailDescription">Builds a provisional background from N-2 and N-1, then extracts bounded candidates from target frame N.</p>
+                        </div>
+                        <span id="detailStatus" class="state-chip success">Succeeded</span>
+                    </header>
+                    <div class="detail-grid">
+                        <div class="stage-facts">
+                            <h3>Execution</h3>
+                            <dl>
+                                <div><dt>Started</dt><dd id="detailStarted">03:13:56.06 UTC</dd></div>
+                                <div><dt>Duration</dt><dd id="detailDuration">1.26s</dd></div>
+                                <div><dt>Attempt</dt><dd id="detailAttempt">1 of 3</dd></div>
+                                <div><dt>Runner</dt><dd id="detailRunner">CameraAgent / in-process</dd></div>
+                            </dl>
+                            <h3>Dependencies</h3>
+                            <div id="detailDependencies" class="token-list"></div>
+                            <h3>Outputs</h3>
+                            <div id="detailOutputs" class="token-list outputs"></div>
+                        </div>
+                        <div class="event-log">
+                            <div class="event-heading"><h3>Stage events</h3><span>Sanitized operator evidence</span></div>
+                            <ol id="eventList"></ol>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="artifactsPanel" class="tab-panel" role="tabpanel" aria-labelledby="artifactsTab" hidden>
+                    <header class="panel-heading">
+                        <div><p class="eyebrow">Immutable run evidence</p><h2>Produced artifacts</h2></div>
+                        <button class="button secondary small" type="button">Download manifest</button>
+                    </header>
+                    <div class="artifact-table-wrap">
+                        <table>
+                            <thead><tr><th>Artifact</th><th>Producer</th><th>Size</th><th>Retention</th><th>Delivery</th></tr></thead>
+                            <tbody id="artifactRows"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="attemptsPanel" class="tab-panel" role="tabpanel" aria-labelledby="attemptsTab" hidden>
+                    <header class="panel-heading">
+                        <div><p class="eyebrow">Immutable execution history</p><h2 id="attemptsHeading">Calibration attempts</h2></div>
+                        <span class="quiet-label">Newest first</span>
+                    </header>
+                    <ol id="attemptList" class="attempt-list"></ol>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <dialog id="reprocessDialog" class="action-dialog">
+        <form method="dialog">
+            <div class="dialog-header">
+                <div><p class="eyebrow">Create a successor execution</p><h2>Run recovery action</h2></div>
+                <button class="icon-button" type="submit" value="cancel" aria-label="Close dialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            <p class="dialog-intro">Historical evidence remains immutable. Choose what should happen next for <strong id="dialogRunId">capture #84219</strong>.</p>
+            <fieldset id="reprocessOptions">
+                <legend class="visually-hidden">Recovery action</legend>
+                <label class="action-option selected">
+                    <input type="radio" name="action" value="delivery" checked>
+                    <span class="option-icon delivery" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h13m-5-5 5 5-5 5M4 6v12"></path></svg></span>
+                    <span><strong>Retry delivery</strong><small>Send the same durable artifacts with their existing identities.</small></span>
+                </label>
+                <label class="action-option">
+                    <input type="radio" name="action" value="reprocess">
+                    <span class="option-icon processing" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M19 8V4m0 0h-4m4 0-3 3a8 8 0 1 0 2 8"></path></svg></span>
+                    <span><strong>Reprocess from calibration</strong><small>Create new derived artifacts linked to the retained source.</small></span>
+                </label>
+                <label class="action-option">
+                    <input type="radio" name="action" value="acquire">
+                    <span class="option-icon acquisition" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h3l2-2h6l2 2h3v11H4V7Z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg></span>
+                    <span><strong>Repeat acquisition</strong><small>Take a new exposure and create a separate capture run.</small></span>
+                </label>
+            </fieldset>
+            <div class="dialog-note"><strong>Operator note</strong><span id="actionExplanation">Delivery retry is idempotent and does not rerun image processing.</span></div>
+            <footer>
+                <button class="button secondary" type="submit" value="cancel">Cancel</button>
+                <button id="confirmAction" class="button primary" type="submit" value="confirm">Review retry</button>
+            </footer>
+        </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+        <span class="status-icon success" aria-hidden="true"></span>
+        <div><strong>Prototype action recorded</strong><p>No runtime data was changed.</p></div>
+    </div>
+
+    <script src="cameraagent-pages.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

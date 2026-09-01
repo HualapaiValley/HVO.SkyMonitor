@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="hvo-dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Current Sky | HVO SkyMonitor Prototype</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="cameraagent-pages.css">
+</head>
+<body data-page="dashboard">
+    <a class="skip-link" href="#main-content">Skip to current sky</a>
+
+    <header class="app-header">
+        <a class="brand" href="dashboard.html" aria-label="HVO SkyMonitor current sky">
+            <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17"></circle><path d="M9 23c5-8 15-12 23-8M13 29c4-6 11-10 19-9"></path><circle cx="14" cy="13" r="1.8"></circle><circle cx="25" cy="10" r="1.3"></circle></svg>
+            </span>
+            <span><strong>HVO SkyMonitor</strong><small>HVO Main Fisheye</small></span>
+        </a>
+        <nav id="primaryNavigation" aria-label="Primary navigation">
+            <a class="active" href="dashboard.html" aria-current="page">Current sky</a>
+            <a href="gallery.html">Archive</a>
+            <a href="events.html">Events</a>
+            <a href="operations.html">Operations</a>
+        </nav>
+        <button class="icon-button agent-menu" type="button" aria-label="Open CameraAgent menu" aria-controls="primaryNavigation" aria-expanded="false">
+            <span class="agent-dot" aria-hidden="true"></span>
+            <span>Main Fisheye online</span>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
+        </button>
+    </header>
+
+    <main id="main-content" class="site-main">
+        <header class="site-heading">
+            <div>
+                <p id="dashboardContext" class="eyebrow">Authenticated local observatory</p>
+                <h1 id="dashboardHeading">Current sky</h1>
+                <p id="dashboardIntroduction">The latest durable presentation from HVO Main Fisheye, with its source capture and processing state kept explicit.</p>
+            </div>
+            <div class="site-heading-actions">
+                <span id="captureCadence" class="live-indicator"><i></i>Next capture in 6s</span>
+                <a id="dashboardRefresh" class="button secondary" href="dashboard.html">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 6V2m0 0h-4m4 0-3 3a7 7 0 1 0 1.7 7"></path></svg>
+                    Refresh image
+                </a>
+            </div>
+        </header>
+
+        <section class="dashboard-status" aria-label="CameraAgent status">
+            <div><span id="dashboardStatusIcon" class="status-icon success" aria-hidden="true"></span><span><strong id="dashboardStatusTitle">Capture loop healthy</strong><small id="dashboardStatusSubtitle">Minimum-start cadence / 10 seconds</small></span></div>
+            <dl>
+                <div><dt id="captureIdentityLabel">Current capture</dt><dd id="captureIdentity">#84220</dd></div>
+                <div><dt id="captureAgeLabel">Image age</dt><dd id="captureAge">4 seconds</dd></div>
+                <div><dt>LogicHost</dt><dd id="captureDelivery">Acknowledged</dd></div>
+                <div><dt>Storage</dt><dd>38% used</dd></div>
+            </dl>
+        </section>
+
+        <section class="sky-workspace" aria-label="Current image workspace">
+            <article class="sky-viewer-card">
+                <header class="card-heading image-heading">
+                    <div>
+                        <p id="captureEyebrow" class="eyebrow">Capture #84220 / sequence 84220</p>
+                        <h2 id="viewTitle">Processed presentation</h2>
+                        <p id="viewSubtitle">Unregistered causal mean with six selected presentation layers.</p>
+                    </div>
+                    <div class="image-heading-actions">
+                        <span id="productBadge" class="product-badge current">Current baseline</span>
+                        <a id="pipelineRunLink" class="button secondary small" href="index.html?run=84220">
+                            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="10" r="2"></circle><circle cx="15" cy="5" r="2"></circle><circle cx="15" cy="15" r="2"></circle><path d="m7 9 6-3m-6 5 6 3"></path></svg>
+                            View pipeline run
+                        </a>
+                    </div>
+                </header>
+
+                <figure class="sky-figure">
+                    <img id="skyImage" src="assets/w6-current.jpg" alt="Processed all-sky image from HVO Main Fisheye">
+                    <div id="layerImageCircle" class="visual-layer image-circle-layer" aria-hidden="true"></div>
+                    <div id="layerCardinals" class="visual-layer cardinal-layer" aria-hidden="true"><span class="north">N</span><span class="east">E</span><span class="south">S</span><span class="west">W</span></div>
+                    <div id="layerStars" class="visual-layer star-layer" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                    <svg id="layerConstellations" class="visual-layer constellation-layer" viewBox="0 0 1000 620" aria-hidden="true"><path d="M280 190 340 150 395 205 455 170M340 150 360 95M600 365 650 315 710 345 735 285M650 315 625 255"></path></svg>
+                    <div id="layerCloud" class="visual-layer cloud-layer" aria-hidden="true"><span>Cloud estimate 8%</span></div>
+                    <div id="layerEnvironment" class="visual-layer environment-layer" aria-hidden="true"><strong>HVO Main Fisheye</strong><span>5.0s / Gain 82</span><span>Sensor -4.8 C</span><span id="environmentTimestamp">2026-09-01 03:13:55 UTC</span></div>
+                    <figcaption>
+                        <div><span id="captureOutcomeIcon" class="status-icon warning" aria-hidden="true"></span><span><strong id="captureOutcomeTitle">31 August Fireball</strong><small id="captureOutcomeSubtitle">Event E-1042 / validated independently from the display stack</small></span></div>
+                        <button id="fullScreenImage" class="image-tool" type="button" aria-label="Open full screen image"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M7 17H3v-4m10 4h4v-4"></path></svg></button>
+                    </figcaption>
+                </figure>
+
+                <div class="stage-switcher" role="group" aria-label="Image stage">
+                    <button class="active" type="button" data-stage="processed" aria-pressed="true"><span>Processed</span><small>Layers applied</small></button>
+                    <button type="button" data-stage="live" aria-pressed="false"><span>Live mean</span><small>5-frame causal mean</small></button>
+                    <button type="button" data-stage="calibrated" aria-pressed="false"><span>Calibrated</span><small>Reference capture N</small></button>
+                    <button type="button" data-stage="raw" aria-pressed="false"><span>Raw</span><small>Immutable source</small></button>
+                </div>
+
+                <section id="stackLineage" class="stack-lineage" aria-labelledby="stack-heading">
+                    <header>
+                        <div><p class="eyebrow">Multi-source image lineage</p><h3 id="stack-heading">Unregistered live mean ending at capture #84220</h3></div>
+                        <span id="registrationQuality" class="registration-quality">No registration</span>
+                    </header>
+                    <div id="sourceStrip" class="source-strip">
+                        <a href="dashboard.html?capture=84216"><img src="assets/hualapai-night.jpg" alt="Capture 84216"><span>N-4</span><small>#84216</small></a>
+                        <a href="dashboard.html?capture=84217"><img src="assets/w6-current.jpg" alt="Capture 84217"><span>N-3</span><small>#84217</small></a>
+                        <a href="dashboard.html?capture=84218"><img src="assets/hualapai-night.jpg" alt="Capture 84218"><span>N-2</span><small>#84218</small></a>
+                        <a href="dashboard.html?capture=84219"><img src="assets/w6-current.jpg" alt="Capture 84219"><span>N-1</span><small>#84219</small></a>
+                        <a class="reference" href="dashboard.html?capture=84220"><img src="assets/w6-current.jpg" alt="Window endpoint capture 84220"><span>Endpoint N</span><small>#84220</small></a>
+                    </div>
+                    <dl class="lineage-facts">
+                        <div><dt>Included</dt><dd>5 of 5 frames</dd></div>
+                        <div><dt>Total integration</dt><dd>25.0 seconds</dd></div>
+                        <div><dt>Observation span</dt><dd>40.0 seconds</dd></div>
+                        <div><dt id="referenceGeometryLabel">Window endpoint</dt><dd id="referenceGeometry">Capture #84220</dd></div>
+                    </dl>
+                    <p id="designDisclosure" class="design-disclosure"><strong>Current baseline:</strong> this causal arithmetic mean has no geometric registration. Registered stacking remains a separate design target.</p>
+                </section>
+            </article>
+
+            <aside class="sky-inspector">
+                <section class="inspector-card overlay-controls" aria-labelledby="overlays-heading">
+                    <header><div><p class="eyebrow">Reproducible presentation</p><h2 id="overlays-heading">Overlay layers</h2></div><span id="layerCount">6 selected</span></header>
+                    <p>Toggle retained layer artifacts without changing the base image or detector evidence.</p>
+                    <div class="overlay-list">
+                        <label><input type="checkbox" data-layer="Stars" data-target="layerStars" checked><span class="layer-swatch stars"></span><span><strong>Stars and labels</strong><small>star-label-layer / .18s</small></span></label>
+                        <label><input type="checkbox" data-layer="Constellations" data-target="layerConstellations" checked><span class="layer-swatch constellations"></span><span><strong>Constellation lines</strong><small>constellation-layer / .09s</small></span></label>
+                        <label><input type="checkbox" data-layer="Cardinals" data-target="layerCardinals" checked><span class="layer-swatch cardinals"></span><span><strong>Cardinal corners</strong><small>cardinal-corner-layer / .04s</small></span></label>
+                        <label><input type="checkbox" data-layer="Boundary" data-target="layerImageCircle" checked><span class="layer-swatch boundary"></span><span><strong>Image boundary</strong><small>image-boundary-layer / .03s</small></span></label>
+                        <label><input type="checkbox" data-layer="Cloud" data-target="layerCloud" checked><span class="layer-swatch cloud"></span><span><strong>Cloud mask</strong><small>cloud-mask-layer / .11s</small></span></label>
+                        <label><input type="checkbox" data-layer="Environment" data-target="layerEnvironment" checked><span class="layer-swatch environment"></span><span><strong>Environment facts</strong><small>environment-facts-layer / .06s</small></span></label>
+                    </div>
+                    <button id="resetLayers" class="text-button" type="button">Restore profile defaults</button>
+                </section>
+
+                <section class="inspector-card capture-facts" aria-labelledby="acquisition-heading">
+                    <header><div><p class="eyebrow">Reference capture N</p><h2 id="acquisition-heading">Acquisition</h2></div><span class="state-chip success">Durable</span></header>
+                    <dl>
+                        <div><dt>Exposure</dt><dd>5.000s</dd></div>
+                        <div><dt>Gain</dt><dd>82.0</dd></div>
+                        <div><dt>Exposure midpoint</dt><dd id="exposureMidpoint">03:13:57.500 UTC</dd></div>
+                        <div><dt>Sensor temperature</dt><dd>-4.8 C</dd></div>
+                        <div><dt>Dimensions</dt><dd>3552 x 3552</dd></div>
+                        <div><dt>Pixel format</dt><dd>Bayer RGGB16</dd></div>
+                    </dl>
+                    <a class="inline-action" href="#" data-select-stage="raw">View immutable raw source</a>
+                </section>
+
+                <section class="inspector-card rig-facts" aria-labelledby="rig-heading">
+                    <header><div><p class="eyebrow">Capture-time profile</p><h2 id="rig-heading">Rig and location</h2></div><span>HVO Main Fisheye</span></header>
+                    <dl>
+                        <div><dt>Camera</dt><dd>VirtualSky ASI676MC</dd></div>
+                        <div><dt>Optics</dt><dd>180-degree fisheye</dd></div>
+                        <div><dt>Projection</dt><dd>Equidistant / calibration v3</dd></div>
+                        <div><dt>Site</dt><dd>Hualapai Valley Observatory</dd></div>
+                        <div><dt>Profile</dt><dd>Night Fisheye Capture / rev 17</dd></div>
+                    </dl>
+                </section>
+            </aside>
+        </section>
+
+        <section class="operations-strip" aria-label="Current CameraAgent operations">
+            <article><span class="metric-icon capture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3v11H4V7Z"></path><circle cx="12" cy="12.5" r="3.5"></circle></svg></span><div><small>Acquisition</small><strong>Ready</strong><span>Next boundary 6s</span></div></article>
+            <article><span class="metric-icon processing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2 4 4 .5-3 3 .8 4.5-3.8-2-3.8 2 .8-4.5-3-3L10 7l2-4Z"></path></svg></span><div><small>Processing</small><strong>17 stages</strong><span>Last run 8.03s</span></div></article>
+            <article><span class="metric-icon transient"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 5-6 3 2 6-10M6 6l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2Z"></path></svg></span><div><small>Transient lane</small><strong>Hybrid</strong><span>1 confirmed event</span></div></article>
+            <article><span class="metric-icon delivery"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12m-5-5 5 5-5 5M5 5v14"></path></svg></span><div><small>Central delivery</small><strong>Acknowledged</strong><span>0 pending artifacts</span></div></article>
+        </section>
+    </main>
+
+    <script src="cameraagent-pages.js"></script>
+</body>
+</html>

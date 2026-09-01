@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="hvo-dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Operations | HVO SkyMonitor Prototype</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="operations-pages.css">
+</head>
+<body data-page="operations">
+    <a class="skip-link" href="#main-content">Skip to Operations</a>
+
+    <header class="app-header" aria-label="Site header">
+        <a class="brand" href="dashboard.html" aria-label="HVO SkyMonitor current sky">
+            <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17"></circle><path d="M9 23c5-8 15-12 23-8M13 29c4-6 11-10 19-9"></path><circle cx="14" cy="13" r="1.8"></circle><circle cx="25" cy="10" r="1.3"></circle></svg>
+            </span>
+            <span><strong>HVO SkyMonitor</strong><small>HVO Main Fisheye</small></span>
+        </a>
+        <nav id="primaryNavigation" aria-label="Primary navigation">
+            <a href="dashboard.html">Current sky</a>
+            <a href="gallery.html">Archive</a>
+            <a href="events.html">Events</a>
+            <a class="active" href="operations.html" aria-current="page">Operations</a>
+        </nav>
+        <button class="icon-button agent-menu" type="button" aria-label="Open CameraAgent menu" aria-controls="primaryNavigation" aria-expanded="false">
+            <span class="agent-dot" aria-hidden="true"></span>
+            <span>Main Fisheye online</span>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
+        </button>
+    </header>
+
+    <div id="operationsLayout" class="operations-layout">
+        <aside id="operationsSidebar" class="operations-sidebar" aria-label="Operations sections">
+            <header class="operations-sidebar-head">
+                <div>
+                    <p class="eyebrow">Local administration</p>
+                    <h1>Operations</h1>
+                </div>
+                <span class="state-chip success">Healthy</span>
+                <button id="operationsSidebarClose" class="icon-button operations-sidebar-close" type="button" aria-label="Close Operations sections"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg></button>
+            </header>
+
+            <nav id="operationsNavigation" class="operations-navigation" aria-label="Operations navigation">
+                <a href="operations.html" data-operations-section="overview">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="5" height="5"></rect><rect x="12" y="3" width="5" height="5"></rect><rect x="3" y="12" width="5" height="5"></rect><rect x="12" y="12" width="5" height="5"></rect></svg></span>
+                    <span>Overview</span>
+                </a>
+
+                <p class="ops-nav-group">Setup</p>
+                <a href="operations.html?section=site" data-operations-section="site">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 17V8m0 0 4 4m-4-4-4 4"></path><circle cx="10" cy="5" r="2"></circle><path d="M4 17h12"></path></svg></span>
+                    <span>Observatory &amp; location</span><span class="ops-nav-badge attention">1</span>
+                </a>
+                <a href="operations.html?section=camera" data-operations-section="camera">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="6" width="14" height="10" rx="2"></rect><circle cx="10" cy="11" r="3"></circle><path d="m6 6 1-2h6l1 2"></path></svg></span>
+                    <span>Camera &amp; rig</span>
+                </a>
+                <a href="operations.html?section=registration" data-operations-section="registration">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2"></rect><path d="M7 8h6m-6 4h3"></path></svg></span>
+                    <span>Registration</span>
+                </a>
+
+                <p class="ops-nav-group">Capture</p>
+                <a href="operations.html?section=schedule" data-operations-section="schedule">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="13" rx="2"></rect><path d="M6 2v4m8-4v4M3 8h14"></path></svg></span>
+                    <span>Schedule</span>
+                </a>
+                <a href="operations.html?section=focus" data-operations-section="focus">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="3"></circle><path d="M7 3H3v4m10-4h4v4M7 17H3v-4m10 4h4v-4"></path></svg></span>
+                    <span>Focus</span><span class="ops-nav-badge neutral">Manual</span>
+                </a>
+                <a href="operations.html?section=calibration" data-operations-section="calibration">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M6 3h8v4l3 6a3 3 0 0 1-3 4H6a3 3 0 0 1-3-4l3-6V3Z"></path><path d="M6 10h8"></path></svg></span>
+                    <span>Calibration</span>
+                </a>
+
+                <p class="ops-nav-group">Processing</p>
+                <a href="operations.html?section=pipeline" data-operations-section="pipeline">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="4" cy="10" r="2"></circle><circle cx="10" cy="5" r="2"></circle><circle cx="16" cy="10" r="2"></circle><circle cx="10" cy="15" r="2"></circle><path d="m6 9 2.5-2.5M11.5 6.5 14 9m-8 2 2.5 2.5m3-1L14 11"></path></svg></span>
+                    <span>Pipeline</span>
+                </a>
+                <a href="operations.html?section=environment" data-operations-section="environment">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M7 12a4 4 0 1 1 6-3 3 3 0 1 1 1 6H7a3 3 0 1 1 0-6"></path></svg></span>
+                    <span>Environment</span>
+                </a>
+                <a href="operations.html?section=transients" data-operations-section="transients">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m12 2-1 6 5-2-7 12 1-7-5 2 7-11Z"></path></svg></span>
+                    <span>Transients</span>
+                </a>
+
+                <p class="ops-nav-group">Automation</p>
+                <a href="operations.html?section=automations" data-operations-section="automations">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 5h8m-8 5h12M4 15h6"></path><circle cx="15" cy="5" r="2"></circle><circle cx="7" cy="15" r="2"></circle></svg></span>
+                    <span>Automations</span><span class="ops-nav-badge neutral">5</span>
+                </a>
+
+                <p class="ops-nav-group">Data</p>
+                <a href="operations.html?section=delivery" data-operations-section="delivery">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 10h11m-4-4 4 4-4 4"></path><path d="M17 4v12"></path></svg></span>
+                    <span>Delivery</span><span class="ops-nav-badge attention">1</span>
+                </a>
+                <a href="operations.html?section=storage" data-operations-section="storage">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="3"></ellipse><path d="M4 5v5c0 1.7 2.7 3 6 3s6-1.3 6-3V5M4 10v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"></path></svg></span>
+                    <span>Storage &amp; retention</span>
+                </a>
+
+                <p class="ops-nav-group">System</p>
+                <a href="operations.html?section=health" data-operations-section="health">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 10h3l2-5 4 10 2-5h3"></path></svg></span>
+                    <span>Health &amp; diagnostics</span>
+                </a>
+                <a href="operations.html?section=control" data-operations-section="control">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2v7"></path><path d="M6 4a7 7 0 1 0 8 0"></path></svg></span>
+                    <span>System control</span>
+                </a>
+                <a href="operations.html?section=software" data-operations-section="software">
+                    <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m10 2 7 4-7 4-7-4 7-4Z"></path><path d="m3 10 7 4 7-4m-14 4 7 4 7-4"></path></svg></span>
+                    <span>Software &amp; catalog</span>
+                </a>
+            </nav>
+
+            <footer class="operations-scope">
+                <span class="agent-dot" aria-hidden="true"></span>
+                <span><strong>Local authority</strong><small>HVO Main Fisheye / VirtualSky ASI676MC</small></span>
+                <a href="operations.html?section=registration" aria-label="View registration"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 6 6-6 6"></path></svg></a>
+            </footer>
+        </aside>
+
+        <button id="operationsSidebarBackdrop" class="operations-sidebar-backdrop" type="button" aria-label="Close Operations sections" tabindex="-1" hidden></button>
+
+        <main id="main-content" class="operations-content">
+            <button id="operationsNavToggle" class="operations-nav-toggle button secondary" type="button" aria-controls="operationsSidebar" aria-expanded="false">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"></path></svg>
+                Operations sections
+            </button>
+            <div id="operationsPage" aria-live="polite"></div>
+        </main>
+    </div>
+
+    <dialog id="operationsConfirmDialog" class="action-dialog operations-dialog" aria-labelledby="operationsDialogTitle">
+        <form method="dialog">
+            <header aria-label="Confirmation dialog header"><div><p class="eyebrow">Authenticated local action</p><h2 id="operationsDialogTitle">Confirm action</h2></div><button class="dialog-close" type="submit" value="cancel" aria-label="Close dialog">&times;</button></header>
+            <p id="operationsDialogText">This action changes local CameraAgent state.</p>
+            <div class="operations-dialog-note"><strong>Local authority only</strong><span>The prototype records intent but does not mutate runtime state.</span></div>
+            <footer><button class="button secondary" type="submit" value="cancel">Cancel</button><button id="operationsDialogConfirm" class="button primary" type="submit" value="confirm">Confirm</button></footer>
+        </form>
+    </dialog>
+
+    <div id="operationsToast" class="toast" role="status" aria-live="polite" hidden>
+        <span class="status-icon success" aria-hidden="true"></span>
+        <div><strong>Prototype action recorded</strong><p id="operationsToastText">No runtime data was changed.</p></div>
+    </div>
+
+    <script src="cameraagent-pages.js"></script>
+    <script src="operations-pages.js"></script>
+</body>
+</html>
