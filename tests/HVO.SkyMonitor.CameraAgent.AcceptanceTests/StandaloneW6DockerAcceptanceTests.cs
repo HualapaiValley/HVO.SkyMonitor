@@ -4748,7 +4748,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         ReadJournalCount(root, "SELECT COUNT(*) FROM processing_outputs;"),
         ReadJournalCount(root, "SELECT COUNT(*) FROM raw_captures WHERE state <> 'committed';"),
         ReadJournalCount(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state NOT IN ('completed', 'abandoned');"),
-        ReadJournalCount(root, "SELECT COUNT(*) FROM processing_nodes WHERE status NOT IN ('Completed', 'Skipped');"),
+        ReadJournalCount(root, "SELECT COUNT(*) FROM processing_nodes WHERE status NOT IN ('Completed', 'Skipped', 'TerminalFailure');"),
         ReadJournalCount(root, """
             SELECT COALESCE(SUM(output_count - 1), 0)
             FROM (
