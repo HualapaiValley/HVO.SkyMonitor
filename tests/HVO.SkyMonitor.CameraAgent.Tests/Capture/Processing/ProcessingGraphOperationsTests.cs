@@ -1,7 +1,9 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
@@ -18,6 +20,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [DoNotParallelize]
 public sealed class ProcessingGraphOperationsTests
 {
+    private static readonly string[] PreemptionAttemptStatuses = ["Interrupted", "Completed"];
+
     [TestMethod]
     public async Task LiveAcceptanceAndReplayLifecycleAreDurableAndIsolated()
     {
@@ -579,6 +583,342 @@ public sealed class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
+    public async Task ExpiredLiveExecutionCannotPublishNodeOutputs()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-publication-deadline-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+            using var provider = CreateProvider(root, new Dictionary<string, string?>
+            {
+                ["CameraAgent:ProcessingGraphs:LiveDeadlineSeconds"] = "10"
+            }, clock, services => services.AddSingleton<ICaptureProcessingFaultInjector>(
+                new AdvanceClockAtFaultPoint(
+                    clock,
+                    CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit,
+                    TimeSpan.FromSeconds(11))));
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var configuration = CreateConfiguration() with
+            {
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig("Preview", "preview", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var receipt = await ingress.AcceptAsync(
+                configuration, CreateSubmission(capturedUtc: clock.GetUtcNow().AddMinutes(-1)), CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+
+            var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+            var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+                static definition => definition.Name == "standard");
+            var lease = await laneStore.ClaimAsync(
+                standard, "deadline-publication-test", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            var handler = provider.GetServices<ICaptureLaneHandler>().Single(static value => value.Lane == "standard");
+            var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            StringAssert.Contains(exception.Message, "expired", StringComparison.Ordinal);
+            await Assert.ThrowsExactlyAsync<CaptureLaneLeaseLostException>(async () =>
+                await laneStore.FailAsync(
+                    lease, CaptureLaneHandlerResult.Retry("handler-exception"), CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+
+            var execution = (await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
+                .ReadExecutionsAsync(ProcessingGraphExecutionClass.Live, 10, CancellationToken.None)
+                .ConfigureAwait(false)).Single();
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Expired, execution.Status);
+            Assert.AreEqual("processing.live-deadline", execution.FailureReason);
+            using var connection = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT
+                    (SELECT COUNT(*) FROM processing_outputs WHERE capture_id = $capture),
+                    (SELECT COUNT(*) FROM processing_execution_outputs WHERE execution_id = $execution),
+                    (SELECT COUNT(*) FROM processing_nodes WHERE capture_id = $capture);
+                """;
+            command.Parameters.AddWithValue("$capture", receipt.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+            command.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
+            using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+            Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+            Assert.AreEqual(0L, reader.GetInt64(0));
+            Assert.AreEqual(0L, reader.GetInt64(1));
+            Assert.AreEqual(0L, reader.GetInt64(2));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task LiveCompletionCrossingDeadlineExpiresWithoutPublishing()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-live-completion-deadline-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+            using var provider = CreateProvider(root, new Dictionary<string, string?>
+            {
+                ["CameraAgent:ProcessingGraphs:LiveDeadlineSeconds"] = "10"
+            }, clock, services => services.AddSingleton<ICaptureLaneFaultInjector>(
+                new AdvanceClockAtLaneFaultPoint(
+                    clock, CaptureLaneFaultPoint.BeforeCompletionCommit, TimeSpan.FromSeconds(11))));
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var configuration = CreateConfiguration() with
+            {
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig("Preview", "preview", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var receipt = await ingress.AcceptAsync(
+                configuration, CreateSubmission(capturedUtc: clock.GetUtcNow().AddMinutes(-1)), CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+            var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+                static definition => definition.Name == "standard");
+            var lease = await laneStore.ClaimAsync(
+                standard, "completion-deadline-test", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            var handler = provider.GetServices<ICaptureLaneHandler>().Single(static value => value.Lane == "standard");
+            Assert.AreEqual(
+                CaptureLaneHandlerOutcome.Completed,
+                (await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false)).Outcome);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var staged = await operations.ReadExecutionDetailAsync(
+                lease.Context.Execution!.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(staged);
+            var artifactId = staged.Nodes.Single().Outputs.Single().ArtifactId;
+
+            await Assert.ThrowsExactlyAsync<CaptureLaneLeaseLostException>(async () =>
+                await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false))
+                .ConfigureAwait(false);
+
+            var expired = await operations.ReadExecutionAsync(
+                lease.Context.Execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(expired);
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Expired, expired.Status);
+            Assert.AreEqual("processing.live-deadline", expired.FailureReason);
+            Assert.AreEqual(
+                CameraAgentArtifactReadStatus.NotFound,
+                (await provider.GetRequiredService<ICameraAgentArtifactService>()
+                    .OpenContentAsync(artifactId, CancellationToken.None).ConfigureAwait(false)).Status);
+            using var connection = new SqliteConnection(
+                $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT work.state, association.published_flag
+                FROM capture_lane_work work
+                JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+                JOIN processing_executions execution ON execution.capture_id = raw.capture_id
+                JOIN processing_execution_outputs association ON association.execution_id = execution.execution_id
+                WHERE work.work_id = $work;
+                """;
+            command.Parameters.AddWithValue("$work", lease.WorkId);
+            using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+            Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+            Assert.AreEqual("quarantined", reader.GetString(0));
+            Assert.AreEqual(0L, reader.GetInt64(1));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task LivePriorityPreemptionDoesNotConsumeReplayAttempt()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-preemption-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var barrier = new ReplayBarrierObservation();
+            using var provider = CreateProvider(root, new Dictionary<string, string?>
+            {
+                ["CameraAgent:ProcessingGraphs:ReplayMaximumAttempts"] = "1",
+                ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1"
+            }, configureServices: services =>
+            {
+                services.AddSingleton(barrier);
+                services.AddSingleton(new CaptureProcessingStepRegistration(
+                    "ReplayPreemptionBarrier", typeof(ReplayPreemptionBarrierStep),
+                    typeof(ReplayPreemptionBarrierOptions), AutoInclude: false));
+            });
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var configuration = CreateConfiguration() with
+            {
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig("ReplayPreemptionBarrier", "barrier", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
+                .ConfigureAwait(false);
+            var original = await ingress.AcceptAsync(
+                configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(original);
+            var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+            await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
+            var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+                static definition => definition.Name == "standard");
+            var handler = provider.GetServices<ICaptureLaneHandler>().Single(static value => value.Lane == "standard");
+            var originalLease = await laneStore.ClaimAsync(
+                standard, "preemption-live-original", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(originalLease);
+            Assert.AreEqual(
+                CaptureLaneHandlerOutcome.Completed,
+                (await handler.HandleAsync(originalLease.Context, CancellationToken.None).ConfigureAwait(false)).Outcome);
+            await laneStore.CompleteAsync(originalLease, CancellationToken.None).ConfigureAwait(false);
+
+            var replay = await operations.SubmitReplayAsync(
+                new ProcessingReplaySubmission(
+                    original.Manifest.Descriptor.Capture.CaptureId,
+                    registry.ActiveRevisionId,
+                    original.Manifest.Descriptor.Artifact.ArtifactId),
+                "preemption-replay-key", "owner-test", CancellationToken.None).ConfigureAwait(false);
+            barrier.BlockNextReplay();
+            var worker = provider.GetRequiredService<ProcessingReplayWorker>();
+            await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await barrier.WaitUntilBlockedAsync(timeout.Token).ConfigureAwait(false);
+                var liveReceipt = await ingress.AcceptAsync(
+                    configuration, CreateSubmission(sequenceOffset: 1), timeout.Token).ConfigureAwait(false);
+                Assert.IsNotNull(liveReceipt);
+
+                ProcessingGraphExecutionState? preempted = null;
+                while (!timeout.IsCancellationRequested)
+                {
+                    preempted = await operations.ReadExecutionAsync(
+                        replay.Execution.ExecutionId, timeout.Token).ConfigureAwait(false);
+                    if (barrier.CancellationCount == 1 && preempted?.AttemptCount == 0) break;
+                    await Task.Delay(25, timeout.Token).ConfigureAwait(false);
+                }
+                Assert.IsNotNull(preempted);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Pending, preempted.Status);
+                Assert.AreEqual(0, preempted.AttemptCount);
+                var preemptedDetail = await operations.ReadExecutionDetailAsync(
+                    replay.Execution.ExecutionId, timeout.Token).ConfigureAwait(false);
+                Assert.IsNotNull(preemptedDetail);
+                Assert.AreEqual("Pending", preemptedDetail.Nodes.Single().Status);
+                Assert.HasCount(1, preemptedDetail.Nodes.Single().Attempts);
+                Assert.AreEqual("Interrupted", preemptedDetail.Nodes.Single().Attempts[0].Status);
+                Assert.AreEqual(
+                    "processing.replay-live-priority",
+                    preemptedDetail.Nodes.Single().Attempts[0].Reason);
+
+                var liveLease = await laneStore.ClaimAsync(
+                    standard, "preemption-live-priority", configuration, timeout.Token).ConfigureAwait(false);
+                Assert.IsNotNull(liveLease);
+                Assert.AreEqual(
+                    CaptureLaneHandlerOutcome.Completed,
+                    (await handler.HandleAsync(liveLease.Context, timeout.Token).ConfigureAwait(false)).Outcome);
+                await laneStore.CompleteAsync(liveLease, timeout.Token).ConfigureAwait(false);
+                operations.NotifyLiveWorkChanged();
+
+                ProcessingGraphExecutionState? completed = null;
+                while (!timeout.IsCancellationRequested)
+                {
+                    completed = await operations.ReadExecutionAsync(
+                        replay.Execution.ExecutionId, timeout.Token).ConfigureAwait(false);
+                    if (completed?.Status == ProcessingGraphExecutionStatus.Completed) break;
+                    await Task.Delay(25, timeout.Token).ConfigureAwait(false);
+                }
+                Assert.IsNotNull(completed);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, completed.Status);
+                Assert.AreEqual(1, completed.AttemptCount);
+                var completedDetail = await operations.ReadExecutionDetailAsync(
+                    replay.Execution.ExecutionId, timeout.Token).ConfigureAwait(false);
+                Assert.IsNotNull(completedDetail);
+                Assert.HasCount(2, completedDetail.Nodes.Single().Attempts);
+                CollectionAssert.AreEqual(
+                    PreemptionAttemptStatuses,
+                    completedDetail.Nodes.Single().Attempts.Select(static attempt => attempt.Status).ToArray());
+            }
+            finally
+            {
+                barrier.Release();
+                await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayOldestAgeUsesImmutableAcceptanceTime()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-oldest-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+            using var provider = CreateProvider(root, timeProvider: clock);
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var configuration = CreateConfiguration();
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
+                .ConfigureAwait(false);
+            var receipt = await ingress.AcceptAsync(
+                configuration, CreateSubmission(capturedUtc: clock.GetUtcNow().AddMinutes(-1)), CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+            var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+                static definition => definition.Name == "standard");
+            var liveLease = await laneStore.ClaimAsync(
+                standard, "oldest-live", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(liveLease);
+            await laneStore.CompleteAsync(liveLease, CancellationToken.None).ConfigureAwait(false);
+            var replay = await operations.SubmitReplayAsync(
+                new ProcessingReplaySubmission(
+                    receipt.Manifest.Descriptor.Capture.CaptureId,
+                    registry.ActiveRevisionId,
+                    receipt.Manifest.Descriptor.Artifact.ArtifactId),
+                "oldest-replay-key", "owner-test", CancellationToken.None).ConfigureAwait(false);
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+
+            clock.Advance(TimeSpan.FromMinutes(5));
+            var lease = await store.ClaimReplayAsync("oldest-worker", CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            Assert.AreEqual(
+                replay.Execution.AcceptedUtc,
+                (await store.ReadOperationalStateAsync(CancellationToken.None).ConfigureAwait(false)).OldestReplayPendingUtc);
+            await store.CompleteReplayAsync(
+                lease, CaptureLaneHandlerResult.Wait("environment.association-pending"), CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.AreEqual(
+                replay.Execution.AcceptedUtc,
+                (await store.ReadOperationalStateAsync(CancellationToken.None).ConfigureAwait(false)).OldestReplayPendingUtc);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task ReconciledRawEvidenceIsBoundToFrozenLiveExecutionBeforeClaim()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-recovery-{Guid.NewGuid():N}");
@@ -685,7 +1025,20 @@ public sealed class ProcessingGraphOperationsTests
                 static handler => handler.Lane == "standard");
             var liveResult = await liveHandler.HandleAsync(liveLease.Context, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, liveResult.Outcome);
+            var artifactService = provider.GetRequiredService<ICameraAgentArtifactService>();
+            var stagedLive = await operations.ReadExecutionDetailAsync(
+                liveLease.Context.Execution!.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(stagedLive);
+            var liveOutputArtifactId = stagedLive.Nodes.Single().Outputs.Single().ArtifactId;
+            Assert.AreEqual(
+                CameraAgentArtifactReadStatus.NotFound,
+                (await artifactService.OpenContentAsync(liveOutputArtifactId, CancellationToken.None)
+                    .ConfigureAwait(false)).Status);
             await laneStore.CompleteAsync(liveLease, CancellationToken.None).ConfigureAwait(false);
+            var publishedLive = await artifactService.OpenContentAsync(
+                liveOutputArtifactId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, publishedLive.Status);
+            await publishedLive.Content!.DisposeAsync().ConfigureAwait(false);
 
             var replayPipeline = new CapturePipelineConfig(
                 [new CaptureProcessingStepConfig(
@@ -739,10 +1092,10 @@ public sealed class ProcessingGraphOperationsTests
                 "owner-test",
                 CancellationToken.None).ConfigureAwait(false);
             var worker = provider.GetRequiredService<ProcessingReplayWorker>();
+            ProcessingGraphExecutionDetail? detail = null;
             await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
             try
             {
-                ProcessingGraphExecutionDetail? detail = null;
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 while (!timeout.IsCancellationRequested)
                 {
@@ -763,6 +1116,40 @@ public sealed class ProcessingGraphOperationsTests
             {
                 await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
             }
+
+            var replayOutput = detail!.Nodes.Single().Outputs.Single();
+            Assert.AreEqual(
+                CameraAgentArtifactReadStatus.NotFound,
+                (await artifactService.OpenContentAsync(replayOutput.ArtifactId, CancellationToken.None)
+                    .ConfigureAwait(false)).Status);
+            var openedReplay = await artifactService.OpenReplayOutputContentAsync(
+                replay.Execution.ExecutionId, replayOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, openedReplay.Status);
+            var replayContent = openedReplay.Content!;
+            await using (replayContent.ConfigureAwait(false))
+            {
+                using var contentBytes = new MemoryStream();
+                await replayContent.CopyToAsync(contentBytes).ConfigureAwait(false);
+                Assert.IsNotEmpty(contentBytes.ToArray());
+                Assert.AreEqual(
+                    replayContent.ChecksumSha256,
+                    PayloadChecksum.ComputeSha256(contentBytes.ToArray()),
+                    ignoreCase: true);
+            }
+            Assert.AreEqual(
+                CameraAgentArtifactReadStatus.NotFound,
+                (await artifactService.OpenReplayOutputContentAsync(
+                    liveLease.Context.Execution!.ExecutionId, replayOutput.ArtifactId, CancellationToken.None)
+                    .ConfigureAwait(false)).Status);
+            Assert.AreEqual(
+                CameraAgentArtifactReadStatus.NotFound,
+                (await artifactService.OpenReplayOutputContentAsync(
+                    Guid.NewGuid(), replayOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false)).Status);
+            Assert.AreEqual(
+                CameraAgentArtifactReadStatus.NotFound,
+                (await artifactService.OpenReplayOutputContentAsync(
+                    renamedReplay.Execution.ExecutionId, replayOutput.ArtifactId, CancellationToken.None)
+                    .ConfigureAwait(false)).Status);
 
             var deferredReplay = await operations.SubmitReplayAsync(
                 new ProcessingReplaySubmission(
@@ -908,7 +1295,8 @@ public sealed class ProcessingGraphOperationsTests
     private static ServiceProvider CreateProvider(
         string root,
         IReadOnlyDictionary<string, string?>? overrides = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Action<IServiceCollection>? configureServices = null)
     {
         var values = new Dictionary<string, string?>
         {
@@ -924,6 +1312,7 @@ public sealed class ProcessingGraphOperationsTests
         if (timeProvider is not null) services.AddSingleton(timeProvider);
         services.AddCameraAgentInfrastructure(
             new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        configureServices?.Invoke(services);
         return services.BuildServiceProvider();
     }
 
@@ -962,5 +1351,116 @@ public sealed class ProcessingGraphOperationsTests
         public override DateTimeOffset GetUtcNow() => _utcNow;
 
         public void Advance(TimeSpan duration) => _utcNow += duration;
+    }
+
+    private sealed class AdvanceClockAtFaultPoint(
+        MutableTimeProvider clock,
+        CaptureProcessingFaultPoint target,
+        TimeSpan advance)
+        : ICaptureProcessingFaultInjector
+    {
+        private int _advanced;
+
+        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
+        {
+            if (point == target &&
+                Interlocked.Exchange(ref _advanced, 1) == 0)
+            {
+                clock.Advance(advance);
+            }
+        }
+    }
+
+    private sealed class AdvanceClockAtLaneFaultPoint(
+        MutableTimeProvider clock,
+        CaptureLaneFaultPoint target,
+        TimeSpan advance)
+        : ICaptureLaneFaultInjector
+    {
+        private int _advanced;
+
+        public void Inject(CaptureLaneFaultPoint point)
+        {
+            if (point == target && Interlocked.Exchange(ref _advanced, 1) == 0)
+            {
+                clock.Advance(advance);
+            }
+        }
+    }
+
+    private sealed class ReplayBarrierObservation
+    {
+        private readonly TaskCompletionSource<bool> _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _blockNextReplay;
+        private int _cancellationCount;
+
+        public int CancellationCount => Volatile.Read(ref _cancellationCount);
+
+        public void BlockNextReplay() => Interlocked.Exchange(ref _blockNextReplay, 1);
+
+        public Task<bool> WaitUntilBlockedAsync(CancellationToken cancellationToken) =>
+            _entered.Task.WaitAsync(cancellationToken);
+
+        public void Release() => _release.TrySetResult(true);
+
+        public async ValueTask WaitAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref _blockNextReplay, 0) != 1) return;
+            _entered.TrySetResult(true);
+            try
+            {
+                await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Interlocked.Increment(ref _cancellationCount);
+                throw;
+            }
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Performance", "CA1812:Avoid uninstantiated internal classes",
+        Justification = "The processing pipeline factory deserializes this test options type.")]
+    private sealed class ReplayPreemptionBarrierOptions;
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Performance", "CA1812:Avoid uninstantiated internal classes",
+        Justification = "The processing pipeline factory creates this test step through ActivatorUtilities.")]
+    private sealed class ReplayPreemptionBarrierStep(
+        CaptureProcessingStepMetadata metadata,
+        ReplayPreemptionBarrierOptions options,
+        ReplayBarrierObservation observation)
+        : ConfigurableCaptureProcessingStep<ReplayPreemptionBarrierOptions>(metadata, options),
+          IDescriptorOnlyCaptureProcessingStep,
+          ICaptureProcessingGraphStep
+    {
+        public bool Enabled => true;
+
+        public string RecipeName => "replay-preemption-barrier";
+
+        public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
+
+        public string OutputVariant => Metadata.Id;
+
+        public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+            new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
+
+        public override ValueTask ProcessAsync(
+            CaptureProcessingContext context,
+            CancellationToken cancellationToken) =>
+            ((IDescriptorOnlyCaptureProcessingStep)this).ProcessAsync(
+                new CaptureDescriptorProcessingContext(context), cancellationToken);
+
+        public async ValueTask ProcessAsync(
+            CaptureDescriptorProcessingContext context,
+            CancellationToken cancellationToken)
+        {
+            await observation.WaitAsync(cancellationToken).ConfigureAwait(false);
+            context.AddProcessingOutcome(ProcessingOutcome.Produced());
+        }
     }
 }

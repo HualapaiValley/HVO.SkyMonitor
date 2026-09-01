@@ -691,6 +691,12 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
             CancellationToken cancellationToken)
             => ValueTask.FromResult(new CameraAgentArtifactContentResult(CameraAgentArtifactReadStatus.NotFound));
 
+        public ValueTask<CameraAgentArtifactContentResult> OpenReplayOutputContentAsync(
+            Guid executionId,
+            Guid artifactId,
+            CancellationToken cancellationToken)
+            => ValueTask.FromResult(new CameraAgentArtifactContentResult(CameraAgentArtifactReadStatus.NotFound));
+
         public ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(
             Guid artifactId,
             CancellationToken cancellationToken)

@@ -179,7 +179,8 @@ public sealed record ProcessingExecutionContext(
     bool AllowAutomaticPublication,
     long WorkId,
     string? LeaseToken,
-    string? LeaseOwner = null);
+    string? LeaseOwner = null,
+    DateTimeOffset? DeadlineUtc = null);
 
 internal sealed record ProcessingReplayLease(
     long WorkId,
@@ -190,7 +191,8 @@ internal sealed record ProcessingReplayLease(
     RawIngress.RawCaptureReceipt RawCapture,
     string LeaseToken,
     string LeaseOwner,
-    DateTimeOffset LeaseExpiresUtc);
+    DateTimeOffset LeaseExpiresUtc,
+    int ClaimCount);
 
 internal sealed record ProcessingReplaySource(
     long RawCaptureRowId,

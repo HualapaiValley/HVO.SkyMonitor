@@ -502,7 +502,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             var inserted = await InsertOutputAsync(
                 connection, transaction, captureId, node.Id, outputs[index], execution is not null, cancellationToken)
                 .ConfigureAwait(false);
-            outputPublication[index] = execution?.AllowAutomaticPublication != false ||
+            outputPublication[index] = execution is null ||
+                execution.ExecutionClass != ProcessingGraphExecutionClass.Live && execution.AllowAutomaticPublication ||
                 !inserted && await IsOutputPublishedAsync(
                     connection, transaction, outputs[index].OutputIdentitySha256, cancellationToken)
                     .ConfigureAwait(false);
@@ -2233,7 +2234,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 SUM(CASE WHEN state IN ('Pending', 'Leased', 'RetryWait') THEN 1 ELSE 0 END),
                 SUM(CASE WHEN state = 'RetryWait' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN state IN ('Failed', 'Expired') THEN 1 ELSE 0 END),
-                MIN(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN work.updated_unix_ms END),
+                MIN(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.accepted_unix_ms END),
                 SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END)
             FROM processing_replay_work work
             JOIN processing_executions execution ON execution.execution_id = work.execution_id;
@@ -3218,6 +3219,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             lease_token TEXT NULL,
             lease_owner TEXT NULL,
             lease_expires_unix_ms INTEGER NULL,
+            claim_count INTEGER NOT NULL DEFAULT 0 CHECK(claim_count >= 0),
             updated_unix_ms INTEGER NOT NULL,
             FOREIGN KEY(execution_id) REFERENCES processing_executions(execution_id) ON DELETE CASCADE
         ) STRICT;

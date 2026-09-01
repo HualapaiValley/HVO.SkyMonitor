@@ -112,13 +112,22 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     public ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(
         Guid artifactId,
         CancellationToken cancellationToken)
-        => OpenContentCoreAsync(artifactId, forPreview: false, cancellationToken);
+        => OpenContentCoreAsync(artifactId, replayExecutionId: null, forPreview: false, cancellationToken);
+
+    public ValueTask<CameraAgentArtifactContentResult> OpenReplayOutputContentAsync(
+        Guid executionId,
+        Guid artifactId,
+        CancellationToken cancellationToken)
+        => executionId == Guid.Empty
+            ? ValueTask.FromResult(new CameraAgentArtifactContentResult(CameraAgentArtifactReadStatus.NotFound))
+            : OpenContentCoreAsync(artifactId, executionId, forPreview: false, cancellationToken);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated retrieval boundary must fail closed without exposing storage or parser exceptions.")]
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The opened immutable payload handle is intentionally transferred to the returned stream lease.")]
     [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The payload may be assigned when asynchronous validation fails and must then be disposed by this boundary.")]
     private async ValueTask<CameraAgentArtifactContentResult> OpenContentCoreAsync(
         Guid artifactId,
+        Guid? replayExecutionId,
         bool forPreview,
         CancellationToken cancellationToken)
     {
@@ -134,7 +143,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         {
             await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
             using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
-            var evidence = await FindEvidenceAsync(connection, artifactId, cancellationToken).ConfigureAwait(false);
+            var evidence = replayExecutionId is { } executionId
+                ? await FindReplayOutputEvidenceAsync(connection, executionId, artifactId, cancellationToken)
+                    .ConfigureAwait(false)
+                : await FindEvidenceAsync(connection, artifactId, cancellationToken).ConfigureAwait(false);
             if (evidence.Status != CameraAgentArtifactReadStatus.Found)
             {
                 return new(evidence.Status);
@@ -285,6 +297,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         {
             var opened = await OpenContentCoreAsync(
                 artifactId,
+                replayExecutionId: null,
                 forPreview: true,
                 cancellationToken).ConfigureAwait(false);
             if (opened.Status != CameraAgentArtifactReadStatus.Found || opened.Content is null)
@@ -686,6 +699,60 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                     facts.ChecksumSha256,
                     null));
             }
+        }
+        return rows.Count switch
+        {
+            0 => new(CameraAgentArtifactReadStatus.NotFound),
+            1 => new(CameraAgentArtifactReadStatus.Found, rows[0]),
+            _ => new(CameraAgentArtifactReadStatus.Conflict)
+        };
+    }
+
+    private static async ValueTask<ArtifactEvidenceLookup> FindReplayOutputEvidenceAsync(
+        SqliteConnection connection,
+        Guid executionId,
+        Guid artifactId,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<ArtifactEvidenceRow>(2);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT output.capture_id, output.artifact_id, output.payload_relative_path,
+                   output.sidecar_relative_path, output.descriptor_json, output.availability_state
+            FROM processing_executions execution
+            JOIN processing_execution_outputs association
+              ON association.execution_id = execution.execution_id
+            JOIN processing_outputs output
+              ON output.output_identity_sha256 = association.output_identity_sha256
+            WHERE execution.execution_id = $execution_id
+              AND execution.execution_class = 'Replay'
+              AND execution.allow_automatic_publication = 0
+              AND output.capture_id = execution.capture_id
+              AND output.artifact_id = $artifact_id;
+            """;
+        command.Parameters.AddWithValue("$execution_id", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$artifact_id", artifactId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!string.Equals(reader.GetString(5), "Available", StringComparison.Ordinal))
+            {
+                return new(CameraAgentArtifactReadStatus.Unavailable);
+            }
+            var evidence = await reader.GetFieldValueAsync<byte[]>(4, cancellationToken).ConfigureAwait(false);
+            var facts = ParseProcessingFacts(evidence);
+            rows.Add(new ArtifactEvidenceRow(
+                ArtifactEvidenceKind.Processing,
+                Guid.ParseExact(reader.GetString(0), "N"),
+                Guid.ParseExact(reader.GetString(1), "N"),
+                reader.GetString(2),
+                reader.GetString(3),
+                evidence,
+                null,
+                facts.MediaType,
+                facts.ByteLength,
+                facts.ChecksumSha256,
+                null));
         }
         return rows.Count switch
         {

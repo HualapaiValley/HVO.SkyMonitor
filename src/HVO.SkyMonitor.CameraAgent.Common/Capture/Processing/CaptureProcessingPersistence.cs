@@ -589,6 +589,10 @@ internal sealed class CaptureProcessingPersistence(
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (execution is not null)
+            {
+                await _store.EnsureExecutionLeaseAsync(execution, cancellationToken).ConfigureAwait(false);
+            }
             var outputs = new List<DurableProcessingOutput>(products.Count);
             foreach (var product in products)
             {

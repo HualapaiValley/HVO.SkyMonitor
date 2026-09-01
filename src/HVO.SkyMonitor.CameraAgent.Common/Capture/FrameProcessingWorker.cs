@@ -114,11 +114,14 @@ internal sealed class FrameProcessingWorker
         CancellationToken cancellationToken,
         int maximumAttempts = int.MaxValue,
         TimeProvider? timeProvider = null,
-        ICaptureProcessingFaultInjector? faultInjector = null)
+        ICaptureProcessingFaultInjector? faultInjector = null,
+        int? durableAttempt = null,
+        Func<CaptureLaneHandlerResult>? cancellationDisposition = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(telemetry);
         timeProvider ??= TimeProvider.System;
+        var persistedAttempt = durableAttempt ?? attempt;
         var graphStopwatch = Stopwatch.StartNew();
         using var graphActivity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.execute");
         var executionClass = item.Execution?.ExecutionClass.ToString() ?? "Ephemeral";
@@ -198,11 +201,11 @@ internal sealed class FrameProcessingWorker
                         if (item.Execution is not null)
                         {
                             await persistence.BeginExecutionNodeAttemptAsync(
-                                item.Execution, node, attempt, timeProvider.GetUtcNow(), cancellationToken)
+                                item.Execution, node, persistedAttempt, timeProvider.GetUtcNow(), cancellationToken)
                                 .ConfigureAwait(false);
                         }
                         await persistence.WriteNodeAsync(
-                            rawCapture, node, DurableProcessingNodeStatus.Skipped, dependencyReason, attempt,
+                            rawCapture, node, DurableProcessingNodeStatus.Skipped, dependencyReason, persistedAttempt,
                             null, timeProvider.GetUtcNow(), null, ProcessingOutcomeStatus.Skipped,
                             item.WorkId, item.LeaseToken,
                             [], context, item.Execution, cancellationToken).ConfigureAwait(false);
@@ -315,13 +318,13 @@ internal sealed class FrameProcessingWorker
                 dependencyStopwatch.Stop();
                 telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
                 using var nodeActivity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-step.execute");
-                logger.CaptureProcessingNodeStarted(node.Id, attempt);
+                logger.CaptureProcessingNodeStarted(node.Id, persistedAttempt);
                 try
                 {
                     if (persistence is not null && item.Execution is not null)
                     {
                         await persistence.BeginExecutionNodeAttemptAsync(
-                            item.Execution, node, attempt, startedUtc, cancellationToken).ConfigureAwait(false);
+                            item.Execution, node, persistedAttempt, startedUtc, cancellationToken).ConfigureAwait(false);
                     }
                     faultInjector?.Inject(CaptureProcessingFaultPoint.BeforeNodeExecution, node.Id);
                     await node.Step.ProcessAsync(context, cancellationToken).ConfigureAwait(false);
@@ -393,7 +396,7 @@ internal sealed class FrameProcessingWorker
                                 node,
                                 status,
                                 reason,
-                                attempt,
+                                persistedAttempt,
                                 completedUtc,
                                 duration,
                                 outcome?.Status,
@@ -410,7 +413,7 @@ internal sealed class FrameProcessingWorker
                     else
                     {
                         await persistence.WriteNodeAsync(
-                            rawCapture, node, status, reason, attempt,
+                            rawCapture, node, status, reason, persistedAttempt,
                             startedUtc, completedUtc, duration,
                             outcome?.Status,
                             item.WorkId, item.LeaseToken,
@@ -452,7 +455,7 @@ internal sealed class FrameProcessingWorker
         {
             if (!graphFinished)
             {
-                Finish(CaptureLaneHandlerResult.Retry("processing.cancelled"));
+                Finish(cancellationDisposition?.Invoke() ?? CaptureLaneHandlerResult.Retry("processing.cancelled"));
             }
             throw;
         }

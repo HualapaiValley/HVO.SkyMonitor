@@ -483,9 +483,6 @@ internal sealed partial class SqliteCaptureProcessingStore
                     reason = $reason, duration_ticks = $duration
                 WHERE execution_id = $execution AND node_id = $node
                   AND attempt_number = $attempt AND status = 'Running';
-                UPDATE processing_executions
-                SET attempt_count = MAX(attempt_count, $attempt)
-                WHERE execution_id = $execution;
                 """;
             update.Parameters.AddWithValue("$status", status.ToString());
             update.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
@@ -869,16 +866,46 @@ internal sealed partial class SqliteCaptureProcessingStore
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    internal async ValueTask EnsureExecutionLeaseAsync(
+        ProcessingExecutionContext execution,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureExecutionLeaseAsync(connection, null, execution, cancellationToken).ConfigureAwait(false);
+    }
+
     private async ValueTask EnsureExecutionLeaseAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         ProcessingExecutionContext execution,
         CancellationToken cancellationToken)
     {
         if (execution.ExecutionClass == ProcessingGraphExecutionClass.Live)
         {
-            await EnsureLeaseAsync(connection, transaction, execution.WorkId, execution.LeaseToken, cancellationToken)
-                .ConfigureAwait(false);
+            using var liveCommand = connection.CreateCommand();
+            liveCommand.Transaction = transaction;
+            liveCommand.CommandText = """
+                SELECT COUNT(*)
+                FROM capture_lane_work work
+                JOIN processing_executions execution ON execution.execution_id = $execution
+                WHERE work.work_id = $work AND work.state = 'leased'
+                  AND work.lease_token = $token AND work.lease_owner = $owner
+                  AND work.lease_expires_unix_ms > $now
+                  AND execution.execution_class = 'Live' AND execution.status = 'Running'
+                  AND execution.started_unix_ms IS NOT NULL AND execution.deadline_unix_ms > $now;
+                """;
+            liveCommand.Parameters.AddWithValue("$work", execution.WorkId);
+            liveCommand.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
+            liveCommand.Parameters.AddWithValue("$token", execution.LeaseToken ?? string.Empty);
+            liveCommand.Parameters.AddWithValue("$owner", execution.LeaseOwner ?? string.Empty);
+            liveCommand.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+            if (Convert.ToInt64(await liveCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture) != 1)
+            {
+                throw new InvalidOperationException(
+                    "Live processing execution is stale, terminal, or expired and cannot publish durable state.");
+            }
             return;
         }
         using var command = connection.CreateCommand();

@@ -172,10 +172,11 @@ internal sealed class SqliteCaptureLaneStore(
                             ProcessingGraphExecutionClass.Live,
                             candidate.GraphRevisionId!,
                             candidate.LocalPlanIdentitySha256!,
-                            candidate.AllowAutomaticPublication,
-                            candidate.WorkId,
-                            token,
-                            owner)
+                             candidate.AllowAutomaticPublication,
+                             candidate.WorkId,
+                             token,
+                             owner,
+                             ResolveExecutionDeadline(candidate, now))
                         : null);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
@@ -282,9 +283,9 @@ internal sealed class SqliteCaptureLaneStore(
             connection, transaction, candidate.RawRowId, cancellationToken).ConfigureAwait(false);
         if (candidate.ExecutionId is { } executionId)
         {
-            await UpdateLiveExecutionAsync(
+            _ = await UpdateLiveExecutionAsync(
                 connection, transaction, executionId, ProcessingGraphExecutionStatus.Failed,
-                $"processing.{reason}", terminal: true, cancellationToken).ConfigureAwait(false);
+                $"processing.{reason}", terminal: true, observedUtc: null, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -343,8 +344,20 @@ internal sealed class SqliteCaptureLaneStore(
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 throw new CaptureLaneLeaseLostException($"Capture lane '{lease.Lane}' lease ownership was lost.");
             }
-            EnsureOwned(lease, current, _timeProvider.GetUtcNow());
             _faultInjector.Inject(CaptureLaneFaultPoint.BeforeCompletionCommit);
+            var completedUtc = _timeProvider.GetUtcNow();
+            EnsureOwned(lease, current, completedUtc);
+            if (lease.Context.Execution is { } execution &&
+                !await UpdateLiveExecutionAsync(
+                    connection, transaction, execution.ExecutionId, ProcessingGraphExecutionStatus.Completed,
+                    null, terminal: true, completedUtc, cancellationToken).ConfigureAwait(false))
+            {
+                await ExpireLiveExecutionsAsync(
+                    connection, transaction, completedUtc, cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                throw new CaptureLaneLeaseLostException(
+                    $"Capture lane '{lease.Lane}' crossed its processing deadline before completion.");
+            }
             using (var command = connection.CreateCommand())
             {
                 command.Transaction = transaction;
@@ -356,7 +369,7 @@ internal sealed class SqliteCaptureLaneStore(
                     WHERE work_id = $work AND state = 'leased'
                       AND lease_token = $token AND lease_owner = $owner;
                     """;
-                command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+                command.Parameters.AddWithValue("$now", completedUtc.ToUnixTimeMilliseconds());
                 AddLeaseParameters(command, lease);
                 if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 {
@@ -364,13 +377,6 @@ internal sealed class SqliteCaptureLaneStore(
                 }
             }
             await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
-            if (lease.Context.Execution is { } execution)
-            {
-                await UpdateLiveExecutionAsync(
-                    connection, transaction, execution.ExecutionId, ProcessingGraphExecutionStatus.Completed,
-                    null, terminal: true, cancellationToken).ConfigureAwait(false);
-                await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
-            }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(CaptureLaneFaultPoint.AfterCompletionCommit);
         }
@@ -434,13 +440,14 @@ internal sealed class SqliteCaptureLaneStore(
             await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
             if (lease.Context.Execution is { } execution)
             {
-                await UpdateLiveExecutionAsync(
+                _ = await UpdateLiveExecutionAsync(
                     connection,
                     transaction,
                     execution.ExecutionId,
                     retry ? ProcessingGraphExecutionStatus.Pending : ProcessingGraphExecutionStatus.Failed,
                     result.Reason,
                     terminal: !retry,
+                    observedUtc: null,
                     cancellationToken).ConfigureAwait(false);
                 await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
             }
@@ -494,9 +501,9 @@ internal sealed class SqliteCaptureLaneStore(
             await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
             if (lease.Context.Execution is { } execution)
             {
-                await UpdateLiveExecutionAsync(
+                _ = await UpdateLiveExecutionAsync(
                     connection, transaction, execution.ExecutionId, ProcessingGraphExecutionStatus.Pending,
-                    null, terminal: false, cancellationToken).ConfigureAwait(false);
+                    null, terminal: false, observedUtc: null, cancellationToken).ConfigureAwait(false);
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -529,8 +536,8 @@ internal sealed class SqliteCaptureLaneStore(
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         var executionColumns = _hasExecutionSchema
-            ? ", e.execution_id, e.graph_revision_id, e.local_plan_identity_sha256, e.allow_automatic_publication"
-            : ", NULL, NULL, NULL, NULL";
+            ? ", e.execution_id, e.graph_revision_id, e.local_plan_identity_sha256, e.allow_automatic_publication, e.accepted_unix_ms, e.deadline_unix_ms, e.started_unix_ms"
+            : ", NULL, NULL, NULL, NULL, NULL, NULL, NULL";
         var executionJoin = _hasExecutionSchema
             ? "LEFT JOIN processing_executions e ON e.capture_id = r.capture_id AND e.execution_class = 'Live'"
             : string.Empty;
@@ -585,7 +592,16 @@ LIMIT 1;
                 : Guid.ParseExact(reader.GetString(13), "N"),
             await reader.IsDBNullAsync(14, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(14),
             await reader.IsDBNullAsync(15, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(15),
-            !await reader.IsDBNullAsync(16, cancellationToken).ConfigureAwait(false) && reader.GetBoolean(16));
+            !await reader.IsDBNullAsync(16, cancellationToken).ConfigureAwait(false) && reader.GetBoolean(16),
+            await reader.IsDBNullAsync(17, cancellationToken).ConfigureAwait(false)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(17)),
+            await reader.IsDBNullAsync(18, cancellationToken).ConfigureAwait(false)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(18)),
+            await reader.IsDBNullAsync(19, cancellationToken).ConfigureAwait(false)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(19)));
     }
 
     private static async ValueTask<bool> HasExecutionSchemaAsync(
@@ -608,6 +624,13 @@ LIMIT 1;
         "leased" => candidate.LeaseExpiresUtc <= now,
         _ => false
     };
+
+    private static DateTimeOffset? ResolveExecutionDeadline(Candidate candidate, DateTimeOffset claimedUtc)
+        => candidate.ExecutionAcceptedUtc is { } acceptedUtc && candidate.ExecutionDeadlineUtc is { } deadlineUtc
+            ? candidate.ExecutionStartedUtc is null
+                ? claimedUtc + (deadlineUtc - acceptedUtc)
+                : deadlineUtc
+            : null;
 
     private static async Task<CaptureLaneBacklog> ReadBacklogAsync(
         SqliteConnection connection,
@@ -972,15 +995,35 @@ LIMIT 1;
         }
     }
 
-    private async Task UpdateLiveExecutionAsync(
+    private async Task<bool> UpdateLiveExecutionAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         Guid executionId,
         ProcessingGraphExecutionStatus status,
         string? reason,
         bool terminal,
+        DateTimeOffset? observedUtc,
         CancellationToken cancellationToken)
     {
+        var now = observedUtc ?? _timeProvider.GetUtcNow();
+        if (status == ProcessingGraphExecutionStatus.Completed)
+        {
+            using var completionGuard = connection.CreateCommand();
+            completionGuard.Transaction = transaction;
+            completionGuard.CommandText = """
+                SELECT COUNT(*) FROM processing_executions
+                WHERE execution_id = $execution AND execution_class = 'Live'
+                  AND status = 'Running' AND deadline_unix_ms > $now;
+                """;
+            completionGuard.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+            completionGuard.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+            if (Convert.ToInt64(
+                    await completionGuard.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture) != 1)
+            {
+                return false;
+            }
+        }
         var rawRows = new List<long>();
         if (terminal)
         {
@@ -1000,10 +1043,20 @@ LIMIT 1;
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
+            UPDATE processing_execution_outputs
+            SET published_flag = 1
+            WHERE execution_id = $execution AND $status = 'Completed'
+              AND EXISTS (
+                  SELECT 1 FROM processing_executions execution
+                  WHERE execution.execution_id = $execution
+                    AND execution.execution_class = 'Live'
+                    AND execution.status = 'Running'
+                    AND execution.deadline_unix_ms > $now);
             UPDATE processing_executions
             SET status = $status, failure_reason = $reason,
                 completed_unix_ms = CASE WHEN $terminal = 1 THEN $now ELSE NULL END
-            WHERE execution_id = $execution AND execution_class = 'Live';
+            WHERE execution_id = $execution AND execution_class = 'Live'
+              AND ($status != 'Completed' OR (status = 'Running' AND deadline_unix_ms > $now));
             UPDATE processing_execution_input_pins
             SET released_flag = 1, released_unix_ms = $now
             WHERE execution_id = $execution AND released_flag = 0 AND $terminal = 1;
@@ -1025,13 +1078,14 @@ LIMIT 1;
         command.Parameters.AddWithValue("$status", status.ToString());
         command.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
         command.Parameters.AddWithValue("$terminal", terminal ? 1 : 0);
-        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         foreach (var rawRow in rawRows)
         {
             await RecomputeRetentionHoldAsync(connection, transaction, rawRow, cancellationToken).ConfigureAwait(false);
         }
+        return true;
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The optional clause is a fixed internal schema capability and all data remains parameterized.")]
@@ -1258,7 +1312,10 @@ LIMIT 1;
         Guid? ExecutionId,
         string? GraphRevisionId,
         string? LocalPlanIdentitySha256,
-        bool AllowAutomaticPublication);
+        bool AllowAutomaticPublication,
+        DateTimeOffset? ExecutionAcceptedUtc,
+        DateTimeOffset? ExecutionDeadlineUtc,
+        DateTimeOffset? ExecutionStartedUtc);
 
     private sealed record Ownership(
         long RawRowId,

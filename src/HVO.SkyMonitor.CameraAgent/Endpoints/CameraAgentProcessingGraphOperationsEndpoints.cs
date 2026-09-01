@@ -3,6 +3,7 @@ using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Mvc;
@@ -41,6 +42,20 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         graphs.MapGet("/executions/{executionId:guid}", ReadExecutionAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
             .WithName("GetCameraAgentProcessingExecution");
+        graphs.MapMethods(
+                "/executions/{executionId:guid}/outputs/{artifactId:guid}/content",
+                [HttpMethods.Get, HttpMethods.Head],
+                WriteReplayOutputContentAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
+            .WithName("GetCameraAgentProcessingExecutionOutputContent")
+            .Produces(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status206PartialContent)
+            .Produces(StatusCodes.Status304NotModified)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status410Gone)
+            .Produces(StatusCodes.Status416RangeNotSatisfiable)
+            .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
         graphs.MapPost("/replays", SubmitReplayAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance)
@@ -168,6 +183,19 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         {
             return Problem(StatusCodes.Status500InternalServerError, "Processing execution data is unavailable.");
         }
+    }
+
+    private static async Task WriteReplayOutputContentAsync(
+        Guid executionId,
+        Guid artifactId,
+        HttpContext context,
+        ICameraAgentArtifactService artifacts,
+        CancellationToken cancellationToken)
+    {
+        var opened = await artifacts.OpenReplayOutputContentAsync(
+            executionId, artifactId, cancellationToken).ConfigureAwait(false);
+        await CameraAgentArtifactEndpoints.WriteOpenedContentAsync(context, opened, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static Task<IResult> SubmitReplayAsync(

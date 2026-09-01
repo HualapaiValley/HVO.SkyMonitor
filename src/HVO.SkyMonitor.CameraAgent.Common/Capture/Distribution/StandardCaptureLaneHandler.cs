@@ -17,12 +17,14 @@ internal sealed class StandardCaptureLaneHandler(
     ILogger<StandardCaptureLaneHandler> logger,
     IRawCaptureIngress rawCaptureIngress,
     IOptions<CameraAgentHostOptions>? hostOptions = null,
-    ICaptureProcessingFaultInjector? faultInjector = null) : ICaptureLaneHandler, IDisposable
+    ICaptureProcessingFaultInjector? faultInjector = null,
+    TimeProvider? timeProvider = null) : ICaptureLaneHandler, IDisposable
 {
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory = pipelineFactory;
     private readonly CaptureProcessingPersistence? _processingPersistence = processingPersistence;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The telemetry singleton is owned and disposed by the dependency injection container.")]
     private readonly CaptureProcessingTelemetry _processingTelemetry = processingTelemetry;
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ILogger<StandardCaptureLaneHandler> _logger = logger;
     private readonly IRawIngressRecoveryControl? _rawIngressControl = rawCaptureIngress as IRawIngressRecoveryControl;
     private readonly int _maximumAttempts = hostOptions?.Value.CaptureDistribution.MaximumAttempts ?? 5;
@@ -66,6 +68,7 @@ internal sealed class StandardCaptureLaneHandler(
         CancellationToken cancellationToken)
         => ProcessAsync(new FrameProcessingItem(configuration, submission), 1, cancellationToken);
 
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The optional deadline source is owned and disposed by the using declaration.")]
     private async ValueTask<CaptureLaneHandlerResult> ProcessAsync(
         FrameProcessingItem item,
         int attempt,
@@ -74,6 +77,12 @@ internal sealed class StandardCaptureLaneHandler(
         await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            using var deadlineCancellation = CreateDeadlineCancellation(item.Execution?.DeadlineUtc);
+            using var processingCancellation = deadlineCancellation is null
+                ? null
+                : CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken, deadlineCancellation.Token);
+            var processingToken = processingCancellation?.Token ?? cancellationToken;
             var pipelineKey = item.Execution?.LocalPlanIdentitySha256 ?? ComputePipelineKey(item.Config);
             CaptureProcessingGraph graph;
             lock (_pipelineGate)
@@ -96,9 +105,15 @@ internal sealed class StandardCaptureLaneHandler(
                     _processingTelemetry,
                     attempt,
                     _logger,
-                    cancellationToken,
+                    processingToken,
                     _maximumAttempts,
                     faultInjector: _faultInjector).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                deadlineCancellation?.IsCancellationRequested == true &&
+                !cancellationToken.IsCancellationRequested)
+            {
+                result = CaptureLaneHandlerResult.Retry("processing.live-deadline");
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {
@@ -111,6 +126,22 @@ internal sealed class StandardCaptureLaneHandler(
         {
             _executionGate.Release();
         }
+    }
+
+    private CancellationTokenSource? CreateDeadlineCancellation(DateTimeOffset? deadlineUtc)
+    {
+        if (deadlineUtc is null)
+        {
+            return null;
+        }
+        var remaining = deadlineUtc.Value - _timeProvider.GetUtcNow();
+        if (remaining > TimeSpan.Zero)
+        {
+            return new CancellationTokenSource(remaining, _timeProvider);
+        }
+        var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        return cancellation;
     }
 
     internal static string ComputePipelineKey(CameraModuleConfig configuration)

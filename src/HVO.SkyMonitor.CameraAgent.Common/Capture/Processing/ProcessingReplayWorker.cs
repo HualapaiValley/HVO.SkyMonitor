@@ -103,7 +103,8 @@ internal sealed class ProcessingReplayWorker(
                 false,
                 lease.WorkId,
                 lease.LeaseToken,
-                lease.LeaseOwner);
+                lease.LeaseOwner,
+                lease.Execution.DeadlineUtc);
             result = await FrameProcessingWorker.ProcessGraphItemAsync(
                 new FrameProcessingItem(
                     lease.Configuration,
@@ -119,14 +120,14 @@ internal sealed class ProcessingReplayWorker(
                 logger,
                 processingCancellation.Token,
                 _options.ReplayMaximumAttempts,
-                timeProvider).ConfigureAwait(false);
+                timeProvider,
+                durableAttempt: lease.ClaimCount,
+                cancellationDisposition: () => ReplayCancellationResult(livePreemptionToken))
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (processingCancellation.IsCancellationRequested)
         {
-            result = CaptureLaneHandlerResult.Retry(
-                livePreemptionToken.IsCancellationRequested
-                    ? "processing.replay-live-priority"
-                    : "processing.replay-interrupted");
+            result = ReplayCancellationResult(livePreemptionToken);
         }
         catch (Exception exception)
         {
@@ -198,6 +199,11 @@ internal sealed class ProcessingReplayWorker(
     private ValueTask WaitAsync(CancellationToken cancellationToken)
         => wakeup.WaitAsync(
             TimeSpan.FromSeconds(_options.ReplayRecoveryPollSeconds), timeProvider, cancellationToken);
+
+    private static CaptureLaneHandlerResult ReplayCancellationResult(CancellationToken livePreemptionToken)
+        => livePreemptionToken.IsCancellationRequested
+            ? CaptureLaneHandlerResult.Wait("processing.replay-live-priority")
+            : CaptureLaneHandlerResult.Retry("processing.replay-interrupted");
 
     private static void VerifyFrozenPlan(
         CaptureProcessingGraph graph,

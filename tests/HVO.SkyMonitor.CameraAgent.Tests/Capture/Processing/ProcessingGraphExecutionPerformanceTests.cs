@@ -887,7 +887,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
             SELECT
                 SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END),
-                MIN(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN work.updated_unix_ms END),
+                MIN(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.accepted_unix_ms END),
                 SUM(CASE WHEN work.state = 'Completed' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state IN ('Failed', 'Cancelled', 'Expired') THEN 1 ELSE 0 END)
             FROM processing_replay_work work

@@ -714,7 +714,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             claim.CommandText = """
                 UPDATE processing_replay_work
                 SET state = 'Leased', lease_token = $token, lease_owner = $owner,
-                    lease_expires_unix_ms = $expires, updated_unix_ms = $now
+                    lease_expires_unix_ms = $expires, claim_count = claim_count + 1,
+                    updated_unix_ms = $now
                 WHERE work_id = $work AND state IN ('Pending', 'RetryWait');
                 UPDATE processing_executions
                 SET status = 'Running',
@@ -731,6 +732,16 @@ internal sealed partial class SqliteCaptureProcessingStore
             claim.Parameters.AddWithValue("$work", workId);
             claim.Parameters.AddWithValue("$execution", executionId.ToString("N"));
             await claim.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        int claimCount;
+        using (var readClaimCount = connection.CreateCommand())
+        {
+            readClaimCount.Transaction = transaction;
+            readClaimCount.CommandText = "SELECT claim_count FROM processing_replay_work WHERE work_id = $work;";
+            readClaimCount.Parameters.AddWithValue("$work", workId);
+            claimCount = Convert.ToInt32(
+                await readClaimCount.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture);
         }
         var execution = await ReadExecutionAsync(connection, transaction, executionId, cancellationToken)
             .ConfigureAwait(false) ?? throw new InvalidDataException("The claimed replay execution is missing.");
@@ -782,7 +793,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             receipt,
             token,
             owner,
-            expires);
+            expires,
+            claimCount);
     }
 
     internal async ValueTask<bool> RenewReplayAsync(
@@ -911,7 +923,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             false,
             lease.WorkId,
             lease.LeaseToken,
-            lease.LeaseOwner);
+            lease.LeaseOwner,
+            lease.Execution.DeadlineUtc);
         await EnsureExecutionLeaseAsync(connection, transaction, context, cancellationToken).ConfigureAwait(false);
         var current = await ReadExecutionAsync(connection, transaction, lease.Execution.ExecutionId, cancellationToken)
             .ConfigureAwait(false) ?? throw new InvalidDataException("The replay execution is missing.");
@@ -952,7 +965,11 @@ internal sealed partial class SqliteCaptureProcessingStore
                 SET status = 'Interrupted', completed_unix_ms = $now,
                     reason = COALESCE($reason, 'processing.execution-terminal')
                 WHERE execution_id = $execution AND status = 'Running'
-                  AND $terminal = 1 AND $status != 'Completed';
+                  AND (($terminal = 1 AND $status != 'Completed') OR $deferred = 1);
+                UPDATE processing_execution_nodes
+                SET status = 'Pending', reason = $reason,
+                    started_unix_ms = NULL, completed_unix_ms = NULL
+                WHERE execution_id = $execution AND status = 'Running' AND $deferred = 1;
                 UPDATE processing_execution_nodes
                 SET status = 'TerminalFailure', completed_unix_ms = $now,
                     reason = COALESCE($reason, 'processing.execution-terminal')
