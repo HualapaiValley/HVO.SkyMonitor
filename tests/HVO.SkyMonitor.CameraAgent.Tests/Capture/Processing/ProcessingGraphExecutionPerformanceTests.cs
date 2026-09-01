@@ -27,13 +27,13 @@ public sealed class ProcessingGraphExecutionPerformanceTests
     private const int MeasuredCount = 30;
     private const int ReplayWarmupCount = 5;
     private const int ReplayMeasuredCount = 30;
-    private const int SimultaneousReplayCount = 240;
+    private const int SimultaneousReplayCount = 300;
     private const int SimultaneousLiveCount = 30;
     private const int GraphNodeCount = 4;
     private const int PayloadScanNodeCount = 3;
     private const double LiveLatencyBudgetMilliseconds = 2_000;
-    private const double SimultaneousLiveCadenceMilliseconds = 100;
-    private const double CadenceStartToleranceMilliseconds = 10;
+    private const double SimultaneousLiveCadenceMilliseconds = 500;
+    private const double CadenceStartToleranceMilliseconds = 50;
     private static readonly TimeSpan DurableStateSamplingInterval = TimeSpan.FromMilliseconds(25);
     private static readonly TimeSpan ResourceSamplingInterval = TimeSpan.FromMilliseconds(10);
     private static readonly DateTimeOffset FixtureUtc = new(2026, 8, 31, 1, 0, 0, TimeSpan.Zero);
@@ -144,7 +144,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
                     Scope = "Supplemental durable-checkpoint isolation at canonical W1/W2/W6 frame dimensions; this is not the standalone production-graph W6 campaign.",
                     Baseline = "Feature-isolation baseline using the same candidate binary with ProcessingGraphOperationsCoordinator removed. The code baseline commit is provenance, not a second executable comparator, because the harness and execution contracts do not exist there.",
                     Candidate = "Durable live execution enabled through normal CameraAgent dependency injection and the same four-node graph, consisting of one descriptor-only timing barrier and three full-payload probes.",
-                    Replay = "After five warm-ups, 30 replay operations are durably queued behind a controlled worker block and drained without live work for isolated resource and I/O measurements. A separate 8:1 backlog of 240 queued replays drains while 30 live captures arrive on a paced 100 ms accelerated schedule; the first replay is deliberately preempted by live acceptance.",
+                    Replay = "After five warm-ups, 30 replay operations are durably queued behind a controlled worker block and drained without live work for isolated resource and I/O measurements. A separate 10:1 backlog of 300 queued replays drains while 30 live captures arrive on a paced 500 ms schedule, ten times faster than the canonical W6 cadence; the first replay is deliberately preempted by live acceptance.",
                     Sample = "Raw acceptance through the real ordered standard-lane handler and acknowledgement; replay submission through terminal graph execution.",
                     Counters = "Process CPU, managed allocation and retained LOH after full collections, 10 ms process working-set samples, Linux /proc/self/io logical/physical bytes and syscall counts, SQLite database/WAL sizes, and 25 ms durable queue count/bytes/oldest-age samples. Submission I/O combines source resolution and frozen-input validation; execution I/O is measured separately. Observer poll counts are reported.",
                     RegressionMethod = "Report absolute feature-off/feature-on live values, percentage changes, absolute replay baselines, and simultaneous-live percentage changes without a universal pass threshold; canonical standalone-host evidence determines merge disposition."
