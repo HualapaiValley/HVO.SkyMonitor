@@ -4,6 +4,10 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.Processing;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -22,6 +26,7 @@ internal sealed class SqliteRawCaptureJournal(
     internal const int CurrentSchemaVersion = 12;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
+    private static readonly JsonSerializerOptions ProcessingSerializerOptions = CreateProcessingSerializerOptions();
     private static readonly HashSet<string> SharedSchemaObjectNames = new(StringComparer.Ordinal)
     {
         "capture_processing_schema",
@@ -32,6 +37,17 @@ internal sealed class SqliteRawCaptureJournal(
         "processing_lifecycle_operations",
         "processing_reconciliation_state",
         "processing_output_diagnostics",
+        "processing_graph_revisions",
+        "processing_graph_registry_state",
+        "processing_graph_commands",
+        "processing_executions",
+        "processing_execution_nodes",
+        "processing_node_attempts",
+        "processing_execution_inputs",
+        "processing_execution_input_pins",
+        "processing_execution_output_input_pins",
+        "processing_execution_outputs",
+        "processing_replay_work",
         "ix_processing_outputs_capture_node",
         "ix_processing_outputs_window",
         "ix_processing_nodes_status",
@@ -43,6 +59,16 @@ internal sealed class SqliteRawCaptureJournal(
         "ix_processing_outputs_retention_unavailable",
         "ix_processing_output_sources_artifact",
         "ix_processing_node_inputs_artifact",
+        "ix_processing_graph_revisions_active",
+        "ix_processing_graph_revisions_name",
+        "ix_processing_executions_live_capture",
+        "ix_processing_executions_status",
+        "ix_processing_replay_work_claim",
+        "ix_processing_node_attempts_history",
+        "ix_processing_execution_inputs_window",
+        "ix_processing_execution_pins_active",
+        "ix_processing_execution_output_pins_active",
+        "ix_processing_execution_outputs_publication",
         "transient_worker_frames",
         "ix_transient_worker_frames_ready",
         "transient_worker_candidates",
@@ -62,6 +88,13 @@ internal sealed class SqliteRawCaptureJournal(
     internal string DatabasePath => _databasePath;
 
     private static DateTimeOffset SystemUtcNow() => DateTimeOffset.UtcNow;
+
+    private static JsonSerializerOptions CreateProcessingSerializerOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false));
+        return options;
+    }
 
     internal Task InitializeAsync(CancellationToken cancellationToken)
         => InitializeAsync(DefaultLaneDefinitions, cancellationToken);
@@ -372,16 +405,26 @@ internal sealed class SqliteRawCaptureJournal(
         byte[]? contextJson,
         string? contextSha256,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
+        ProcessingLiveExecutionSeed? liveExecution,
         CancellationToken cancellationToken)
         => TrackTransactionAsync(
             "commit",
-            () => CommitCoreAsync(entry, contextJson, contextSha256, laneDefinitions, cancellationToken));
+            () => CommitCoreAsync(entry, contextJson, contextSha256, laneDefinitions, liveExecution, cancellationToken));
+
+    internal Task<RawIngressOutcome> CommitAsync(
+        RawIngressJournalEntry entry,
+        byte[]? contextJson,
+        string? contextSha256,
+        IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
+        CancellationToken cancellationToken)
+        => CommitAsync(entry, contextJson, contextSha256, laneDefinitions, null, cancellationToken);
 
     private async Task<RawIngressOutcome> CommitCoreAsync(
         RawIngressJournalEntry entry,
         byte[]? contextJson,
         string? contextSha256,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
+        ProcessingLiveExecutionSeed? liveExecution,
         CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -412,6 +455,11 @@ internal sealed class SqliteRawCaptureJournal(
             connection, transaction, rawRowId, contextJson, contextSha256, cancellationToken).ConfigureAwait(false);
         await InsertLaneWorkAsync(
             connection, transaction, rawRowId, entry, laneDefinitions, cancellationToken).ConfigureAwait(false);
+        if (liveExecution is not null)
+        {
+            await InsertLiveExecutionAsync(
+                connection, transaction, rawRowId, entry, liveExecution, cancellationToken).ConfigureAwait(false);
+        }
         _laneFaultInjector.Inject(CaptureLaneFaultPoint.AfterWorkRowsInserted);
         _faultInjector.Inject(RawIngressFaultPoint.AfterJournalRowInserted);
         _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalTransactionCommit);
@@ -456,6 +504,94 @@ internal sealed class SqliteRawCaptureJournal(
         return entries;
     }
 
+    internal async Task<IReadOnlyList<RawIngressJournalEntry>> ReadUnboundLiveCapturesAsync(
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT raw.agent_id, raw.capture_sequence, raw.capture_id, raw.raw_artifact_id,
+                   raw.descriptor_sha256, raw.manifest_sha256, raw.payload_sha256, raw.payload_length,
+                   raw.payload_relative_path, raw.sidecar_relative_path, raw.manifest_json,
+                   raw.exposure_started_unix_ms, raw.durable_ingress_unix_ms, raw.state,
+                   raw.retention_hold, raw.evidence_origin
+            FROM raw_captures raw
+            JOIN capture_lane_work work ON work.raw_capture_row_id = raw.raw_capture_row_id
+                                         AND work.lane_name = 'standard'
+            LEFT JOIN processing_executions execution ON execution.capture_id = raw.capture_id
+                                                       AND execution.execution_class = 'Live'
+            WHERE raw.state = 'committed' AND work.state IN ('pending', 'leased', 'retry_wait')
+              AND execution.execution_id IS NULL
+            ORDER BY raw.agent_id, raw.capture_sequence;
+            """;
+        var entries = new List<RawIngressJournalEntry>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) entries.Add(ReadEntry(reader));
+        return entries;
+    }
+
+    internal async Task<CaptureLaneEnvelope?> ReadRecoveredLaneEnvelopeAsync(
+        RawIngressJournalEntry entry,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT context.context_json, context.context_sha256
+            FROM raw_captures raw
+            JOIN capture_lane_contexts context ON context.raw_capture_row_id = raw.raw_capture_row_id
+            WHERE raw.capture_id = $capture AND raw.raw_artifact_id = $artifact;
+            """;
+        command.Parameters.AddWithValue("$capture", entry.CaptureId.ToString("N"));
+        command.Parameters.AddWithValue("$artifact", entry.ArtifactId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        return CaptureLaneEnvelopeSerializer.Deserialize(
+            await reader.GetFieldValueAsync<byte[]>(0, cancellationToken).ConfigureAwait(false),
+            reader.GetString(1));
+    }
+
+    internal async Task BindRecoveredLiveExecutionAsync(
+        RawIngressJournalEntry entry,
+        byte[] contextJson,
+        string contextSha256,
+        ProcessingLiveExecutionSeed execution,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginImmediate(connection);
+        long rawRowId;
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = """
+                SELECT raw_capture_row_id FROM raw_captures raw
+                WHERE capture_id = $capture AND raw_artifact_id = $artifact AND state = 'committed'
+                  AND EXISTS (SELECT 1 FROM capture_lane_work work
+                              WHERE work.raw_capture_row_id = raw.raw_capture_row_id
+                                AND work.lane_name = 'standard'
+                                AND work.state IN ('pending', 'leased', 'retry_wait'))
+                  AND NOT EXISTS (SELECT 1 FROM processing_executions existing
+                                  WHERE existing.capture_id = raw.capture_id
+                                    AND existing.execution_class = 'Live');
+                """;
+            read.Parameters.AddWithValue("$capture", entry.CaptureId.ToString("N"));
+            read.Parameters.AddWithValue("$artifact", entry.ArtifactId.ToString("N"));
+            var result = await read.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (result is null)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            rawRowId = Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
+        }
+        await UpsertRecoveredContextAsync(
+            connection, transaction, rawRowId, contextJson, contextSha256, cancellationToken).ConfigureAwait(false);
+        await InsertLiveExecutionAsync(
+            connection, transaction, rawRowId, entry, execution, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     internal async Task<IReadOnlyList<RawIngressRetentionHold>> ReadRetentionHoldsAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -478,6 +614,7 @@ internal sealed class SqliteRawCaptureJournal(
         return holds;
     }
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The optional clause is selected from a fixed internal schema capability and values remain parameterized.")]
     private async Task SynchronizeLaneDefinitionsAsync(
         SqliteConnection connection,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
@@ -527,10 +664,13 @@ internal sealed class SqliteRawCaptureJournal(
                 abandonDisabled.Parameters.AddWithValue("$now", _utcNow().ToUnixTimeMilliseconds());
                 await abandonDisabled.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
+            var executionPinClause = await HasExecutionPinsAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+                ? "OR EXISTS (SELECT 1 FROM processing_execution_input_pins WHERE raw_capture_row_id = raw_captures.raw_capture_row_id AND released_flag = 0)"
+                : string.Empty;
             await ExecuteNonQueryAsync(
                 connection,
                 transaction,
-                """
+                $"""
                 UPDATE raw_captures
                 SET retention_hold = CASE WHEN
                     EXISTS (
@@ -547,6 +687,7 @@ internal sealed class SqliteRawCaptureJournal(
                         SELECT 1 FROM transient_capture_work
                         WHERE raw_capture_row_id = raw_captures.raw_capture_row_id
                           AND state = 'pending')
+                    {executionPinClause}
                     THEN 1 ELSE 0 END;
                 """,
                 cancellationToken).ConfigureAwait(false);
@@ -558,6 +699,19 @@ internal sealed class SqliteRawCaptureJournal(
             _transactionRecorder?.Invoke("lane-policy", false);
             throw;
         }
+    }
+
+    private static async ValueTask<bool> HasExecutionPinsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'processing_execution_input_pins';";
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
     private async Task SynchronizeTransientPolicyAsync(
@@ -708,6 +862,202 @@ internal sealed class SqliteRawCaptureJournal(
             System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    private static async Task InsertLiveExecutionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long rawRowId,
+        RawIngressJournalEntry entry,
+        ProcessingLiveExecutionSeed execution,
+        CancellationToken cancellationToken)
+    {
+        if (execution.CaptureId != entry.CaptureId || execution.PrimaryArtifactId != entry.ArtifactId)
+        {
+            throw new RawIngressConflictException(
+                "The live processing execution identity differs from the raw capture identity.");
+        }
+        var parsedManifest = CaptureContractJson.ParseManifest(entry.ManifestJson);
+        if (!parsedManifest.IsValid || parsedManifest.Document?.Manifest.Descriptor is not { } currentDescriptor)
+        {
+            throw new InvalidDataException("The live processing execution source manifest is invalid.");
+        }
+        var primaryInput = new ProcessingFrozenRawInput(
+            rawRowId,
+            0,
+            currentDescriptor,
+            entry.DescriptorSha256,
+            entry.PayloadSha256,
+            entry.PayloadRelativePath);
+        var pinnedInputs = new Dictionary<long, ProcessingFrozenRawInput> { [rawRowId] = primaryInput };
+
+        using (var active = connection.CreateCommand())
+        {
+            active.Transaction = transaction;
+            active.CommandText = """
+                SELECT COUNT(*)
+                FROM processing_graph_registry_state registry
+                JOIN processing_graph_revisions revision
+                  ON revision.revision_id = registry.active_revision_id
+                WHERE registry.state_key = 1
+                  AND revision.revision_id = $revision
+                  AND revision.definition_identity_sha256 = $definition
+                  AND revision.shared_plan_identity_sha256 = $shared_plan
+                  AND revision.local_plan_identity_sha256 = $local_plan;
+                """;
+            active.Parameters.AddWithValue("$revision", execution.Revision.State.RevisionId);
+            active.Parameters.AddWithValue("$definition", execution.Revision.State.DefinitionIdentitySha256);
+            active.Parameters.AddWithValue("$shared_plan", execution.Revision.State.SharedPlanIdentitySha256);
+            active.Parameters.AddWithValue("$local_plan", execution.Revision.State.LocalPlanIdentitySha256);
+            if (Convert.ToInt64(
+                    await active.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                    System.Globalization.CultureInfo.InvariantCulture) != 1)
+            {
+                throw new ProcessingGraphStoreConflictException(
+                    "The active processing graph revision changed during raw capture acceptance.");
+            }
+        }
+
+        using (var insert = connection.CreateCommand())
+        {
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO processing_executions(
+                    execution_id, execution_class, status, capture_id, primary_artifact_id,
+                    graph_revision_id, definition_identity_sha256, shared_plan_identity_sha256,
+                    local_plan_identity_sha256, frozen_plan_json, configuration_json,
+                    trigger_kind, trigger_reference, priority, payload_bytes,
+                    accepted_unix_ms, available_unix_ms, deadline_unix_ms, maximum_age_unix_ms,
+                    allow_automatic_publication)
+                VALUES ($execution, 'Live', 'Pending', $capture, $artifact,
+                        $revision, $definition, $shared_plan, $local_plan, $frozen_plan, $configuration,
+                        'capture', $trigger, 0, $bytes, $accepted, $available, $deadline, $maximum_age, 1);
+                """;
+            insert.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
+            insert.Parameters.AddWithValue("$capture", execution.CaptureId.ToString("N"));
+            insert.Parameters.AddWithValue("$artifact", execution.PrimaryArtifactId.ToString("N"));
+            insert.Parameters.AddWithValue("$revision", execution.Revision.State.RevisionId);
+            insert.Parameters.AddWithValue("$definition", execution.Revision.State.DefinitionIdentitySha256);
+            insert.Parameters.AddWithValue("$shared_plan", execution.Revision.State.SharedPlanIdentitySha256);
+            insert.Parameters.AddWithValue("$local_plan", execution.Revision.State.LocalPlanIdentitySha256);
+            insert.Parameters.AddWithValue("$frozen_plan", execution.Revision.FrozenPlanJson);
+            insert.Parameters.AddWithValue("$configuration", execution.ConfigurationJson);
+            insert.Parameters.AddWithValue("$trigger", entry.CaptureSequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            insert.Parameters.AddWithValue("$bytes", entry.PayloadLength);
+            insert.Parameters.AddWithValue("$accepted", execution.AcceptedUtc.ToUnixTimeMilliseconds());
+            insert.Parameters.AddWithValue("$available", execution.AvailableUtc.ToUnixTimeMilliseconds());
+            insert.Parameters.AddWithValue("$deadline", execution.DeadlineUtc.ToUnixTimeMilliseconds());
+            insert.Parameters.AddWithValue("$maximum_age", execution.MaximumAgeUtc.ToUnixTimeMilliseconds());
+            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var node in execution.Revision.Nodes)
+        {
+            using var insertNode = connection.CreateCommand();
+            insertNode.Transaction = transaction;
+            insertNode.CommandText = """
+                INSERT INTO processing_execution_nodes(
+                    execution_id, node_id, required, plan_sha256, shared_plan_node_identity_sha256,
+                    dependencies_json, inputs_json, outputs_json, window_json, status)
+                VALUES ($execution, $node, $required, $plan, $shared_node,
+                        $dependencies, $inputs, $outputs, $window, 'Pending');
+                """;
+            insertNode.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
+            insertNode.Parameters.AddWithValue("$node", node.NodeId);
+            insertNode.Parameters.AddWithValue("$required", node.Required ? 1 : 0);
+            insertNode.Parameters.AddWithValue("$plan", node.PlanSha256);
+            insertNode.Parameters.AddWithValue("$shared_node", node.SharedPlanNodeIdentitySha256);
+            insertNode.Parameters.AddWithValue("$dependencies", node.DependenciesJson);
+            insertNode.Parameters.AddWithValue("$inputs", node.InputsJson);
+            insertNode.Parameters.AddWithValue("$outputs", node.OutputsJson);
+            insertNode.Parameters.AddWithValue("$window", (object?)node.WindowJson ?? DBNull.Value);
+            await insertNode.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!node.DependenciesJson.Contains("$raw", StringComparison.Ordinal))
+            {
+                if (node.WindowJson is { } outputWindowJson &&
+                    ProcessingOutputWindowSelector.ReadFirstProducerId(node.DependenciesJson) is { } producerId)
+                {
+                    var requirement = JsonSerializer.Deserialize<ProcessingGraphWindowRequirement>(
+                        outputWindowJson, ProcessingSerializerOptions)
+                        ?? throw new InvalidDataException($"Processing graph node '{node.NodeId}' has an invalid window.");
+                    var frozenOutputs = await ProcessingOutputWindowSelector.SelectAsync(
+                        connection, transaction, currentDescriptor, producerId,
+                        execution.Revision.State.RevisionId,
+                        execution.Revision.Nodes.Single(candidate => string.Equals(
+                            candidate.NodeId, producerId, StringComparison.OrdinalIgnoreCase)).PlanSha256,
+                        node.InputsJson,
+                        requirement, 128, includeUnpublishedRevisionOutputs: false, cancellationToken).ConfigureAwait(false);
+                    for (var ordinal = 0; ordinal < frozenOutputs.Count; ordinal++)
+                    {
+                        using var outputPin = connection.CreateCommand();
+                        outputPin.Transaction = transaction;
+                        outputPin.CommandText = """
+                            INSERT INTO processing_execution_output_input_pins(
+                                execution_id, node_id, input_ordinal, window_position,
+                                output_identity_sha256, released_flag)
+                            VALUES ($execution, $node, $ordinal, $position, $output, 0);
+                            """;
+                        outputPin.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
+                        outputPin.Parameters.AddWithValue("$node", node.NodeId);
+                        outputPin.Parameters.AddWithValue("$ordinal", ordinal);
+                        outputPin.Parameters.AddWithValue("$position", frozenOutputs[ordinal].WindowPosition);
+                        outputPin.Parameters.AddWithValue("$output", frozenOutputs[ordinal].OutputIdentitySha256);
+                        await outputPin.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                continue;
+            }
+            var frozenInputs = node.WindowJson is null
+                ? [primaryInput]
+                : await ProcessingRawWindowSelector.SelectAsync(
+                    connection,
+                    transaction,
+                    currentDescriptor,
+                    JsonSerializer.Deserialize<ProcessingGraphWindowRequirement>(
+                        node.WindowJson, ProcessingSerializerOptions)
+                        ?? throw new InvalidDataException($"Processing graph node '{node.NodeId}' has an invalid window."),
+                    128,
+                    cancellationToken).ConfigureAwait(false);
+            for (var ordinal = 0; ordinal < frozenInputs.Count; ordinal++)
+            {
+                var frozen = frozenInputs[ordinal];
+                using var insertInput = connection.CreateCommand();
+                insertInput.Transaction = transaction;
+                insertInput.CommandText = """
+                    INSERT INTO processing_execution_inputs(
+                        execution_id, node_id, input_ordinal, window_position, capture_id, artifact_id,
+                        descriptor_sha256, payload_sha256, selected_flag)
+                    VALUES ($execution, $node, $ordinal, $position, $capture, $artifact, $descriptor, $payload, 1);
+                    """;
+                insertInput.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
+                insertInput.Parameters.AddWithValue("$node", node.NodeId);
+                insertInput.Parameters.AddWithValue("$ordinal", ordinal);
+                insertInput.Parameters.AddWithValue("$position", frozen.WindowPosition);
+                insertInput.Parameters.AddWithValue("$capture", frozen.Descriptor.Capture.CaptureId.ToString("N"));
+                insertInput.Parameters.AddWithValue("$artifact", frozen.Descriptor.Artifact.ArtifactId.ToString("N"));
+                insertInput.Parameters.AddWithValue("$descriptor", frozen.DescriptorSha256);
+                insertInput.Parameters.AddWithValue("$payload", frozen.PayloadSha256);
+                await insertInput.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                pinnedInputs[frozen.RawCaptureRowId] = frozen;
+            }
+        }
+
+        foreach (var frozen in pinnedInputs.Values)
+        {
+            using var pin = connection.CreateCommand();
+            pin.Transaction = transaction;
+            pin.CommandText = """
+                INSERT INTO processing_execution_input_pins(
+                    execution_id, raw_capture_row_id, artifact_id, released_flag)
+                VALUES ($execution, $raw, $artifact, 0);
+                UPDATE raw_captures SET retention_hold = 1 WHERE raw_capture_row_id = $raw;
+                """;
+            pin.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
+            pin.Parameters.AddWithValue("$raw", frozen.RawCaptureRowId);
+            pin.Parameters.AddWithValue("$artifact", frozen.Descriptor.Artifact.ArtifactId.ToString("N"));
+            await pin.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private static async Task InsertContextAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -744,6 +1094,30 @@ internal sealed class SqliteRawCaptureJournal(
         {
             throw new RawIngressConflictException("Capture lane context differs from the committed retry context.");
         }
+    }
+
+    private static async Task UpsertRecoveredContextAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long rawRowId,
+        byte[] contextJson,
+        string contextSha256,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO capture_lane_contexts(raw_capture_row_id, context_json, context_sha256, context_source)
+            VALUES ($raw, $json, $sha, 'capture')
+            ON CONFLICT(raw_capture_row_id) DO UPDATE SET
+                context_json = excluded.context_json,
+                context_sha256 = excluded.context_sha256,
+                context_source = excluded.context_source;
+            """;
+        command.Parameters.AddWithValue("$raw", rawRowId);
+        command.Parameters.AddWithValue("$json", contextJson);
+        command.Parameters.AddWithValue("$sha", contextSha256);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task InsertLaneWorkAsync(

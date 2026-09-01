@@ -78,7 +78,7 @@ public sealed class CaptureProcessingTelemetryTests
         var names = snapshot.Select(static measurement => measurement.Name).ToHashSet(StringComparer.Ordinal);
         CollectionAssert.IsSubsetOf(ExpectedInstruments, names.ToArray());
         var allowedTags = new HashSet<string>(
-            ["step", "recipe", "role", "variant", "required", "outcome", "reason"],
+            ["step", "recipe", "role", "variant", "required", "outcome", "reason", "execution.class"],
             StringComparer.Ordinal);
         Assert.IsTrue(snapshot.SelectMany(static measurement => measurement.Tags).All(allowedTags.Contains));
     }

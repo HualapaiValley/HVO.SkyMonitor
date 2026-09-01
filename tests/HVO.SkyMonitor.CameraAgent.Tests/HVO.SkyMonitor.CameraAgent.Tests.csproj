@@ -46,6 +46,9 @@
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.standalone-production-smoke.json" Link="cameraagent.standalone-production-smoke.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\appsettings.StandaloneW6.json" Link="appsettings.StandaloneW6.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\..\src\HVO.SkyMonitor.CameraAgent\cameraagent.zwo-asi676mc.sample.json" Link="cameraagent.zwo-asi676mc.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

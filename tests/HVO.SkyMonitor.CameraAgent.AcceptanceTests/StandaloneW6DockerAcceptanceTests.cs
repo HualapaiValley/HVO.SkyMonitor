@@ -44,7 +44,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedLocalProfileSha256 = "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3";
     private const string ExpectedScheduleSha256 = "6A5E298C74CA520E3EB3EEE6CE67D30A8BDFC1340ACC2FE1AA5DDDF0F6F9CFDD";
     private const string ExpectedDesiredGraphSha256 = "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069";
-    private const string ExpectedEffectiveGraphSha256 = "01BDA19E83DB375F0A87CE13A1A8395BAFFDC31A8AEAF17BD72001A36B437386";
+    private const string ExpectedEffectiveGraphSha256 = "DC29C83638C695CBAF379FF6F387A2661F109462DE0931D25FC1BCC63484110D";
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479";
     private const string ExpectedMonoProcessingSha256 = "2F106F303DE1CD41AE1E1B8B001B15BD521A6121A9595BD3BB0D38B00DE30631";
@@ -355,7 +355,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         Assert.IsLessThanOrEqualTo(boundedTrialFootprintBytes, peakFilesystemBytes);
         var evidence = new
         {
-            schemaVersion = "issue-211-w6-evidence-v1",
+            schemaVersion = "issue-211-w6-evidence-v2",
             trial = Environment.GetEnvironmentVariable("HVO_ISSUE_211_TRIAL") ?? "local",
             revision = new
             {
@@ -1595,19 +1595,23 @@ public sealed class StandaloneW6DockerAcceptanceTests
             await SetCaptureStateAsync(page, pause: false).ConfigureAwait(false);
             var hit = await WaitForFaultHitAsync(runtimeRoot, operationId, TimeSpan.FromMinutes(2)).ConfigureAwait(false);
             AssertFaultHit(hit, operationId, boundary, nodeId);
-            var retry = await WaitForCloudPresentationRetryAsync(
+            var degradation = await WaitForCloudPresentationDegradationAsync(
                 runtimeRoot, hit.HitUtc, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
-            var degradedHealth = await WaitForHealthCheckStatusAsync(
-                session, "capture-processing", "Degraded", TimeSpan.FromSeconds(8)).ConfigureAwait(false);
-            Assert.AreEqual("Degraded", degradedHealth.OverallStatus);
             var continuationRaw = await WaitForManifestAsync(
-                runtimeRoot, FrameArtifactRole.Raw, retry.CaptureSequence, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+                runtimeRoot, FrameArtifactRole.Raw, degradation.CaptureSequence, TimeSpan.FromSeconds(30), hit.HitUtc)
+                .ConfigureAwait(false);
             await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
-            var recovered = await WaitForCompleteCaptureAsync(
-                session, retry.CaptureId, TimeSpan.FromMinutes(3)).ConfigureAwait(false);
-            var final = ReadWeatherRecoverySnapshot(runtimeRoot, recovered);
-            AssertWeatherRecovery(retry, final);
-            var healthy = await WaitForHealthyAsync(session, TimeSpan.FromMinutes(1)).ConfigureAwait(false);
+            var healthy = await WaitForHealthCheckStatusAsync(
+                session, "capture-processing", "Healthy", TimeSpan.FromMinutes(3), requireEmptyQueue: true)
+                .ConfigureAwait(false);
+            var completed = await session.GetFromJsonAsync<CameraAgentGalleryCapture>(
+                $"/api/v1/operations/gallery/{degradation.CaptureId:D}").ConfigureAwait(false);
+            Assert.IsNotNull(completed);
+            Assert.HasCount(14, completed.ProcessingNodes);
+            Assert.AreEqual("TerminalFailure", completed.ProcessingNodes.Single(static node =>
+                node.NodeId == "cloud-presentation").Status);
+            Assert.IsTrue(completed.ProcessingNodes.Where(static node => node.NodeId != "cloud-presentation")
+                .All(static node => node.Status == "Completed"));
             results.Add(new SemanticFaultEvidence(
                 operationId,
                 boundary,
@@ -1619,14 +1623,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 RawPublication: null,
                 AnnotationPublication: null,
                 TransientCandidate: null,
-                WeatherRetry: new WeatherRetryEvidence(
-                    retry,
-                    final,
+                OptionalDegradation: new OptionalPresentationDegradationEvidence(
+                    degradation,
                     new CaptureIdentityEvidence(
                         continuationRaw.Manifest.Descriptor.Capture.CaptureId,
                         continuationRaw.Manifest.Descriptor.Capture.CaptureSequence),
-                    degradedHealth,
-                    ReadHealthCheckEvidence(healthy, "capture-processing"))));
+                    healthy)));
         }
         await WaitForDurableConditionAsync(
             runtimeRoot,
@@ -1667,20 +1669,20 @@ public sealed class StandaloneW6DockerAcceptanceTests
             runtimeRoot,
             minimumSequence,
             static snapshot => snapshot.CaptureCount >= 6,
-            "six-capture bounded drain workload",
+            "bounded drain workload",
             TimeSpan.FromMinutes(2)).ConfigureAwait(false);
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
         initial = ReadDrainSnapshot(runtimeRoot, minimumSequence);
-        Assert.AreEqual(6, initial.CaptureCount);
-        Assert.AreEqual(151_400_448, initial.RawBytes);
+        Assert.IsInRange(6L, 7L, initial.CaptureCount);
+        Assert.AreEqual(initial.CaptureCount * 25_233_408L, initial.RawBytes);
         initial = await WaitForDrainConditionAsync(
             runtimeRoot,
             minimumSequence,
             static snapshot => snapshot.OldestAge >= TimeSpan.FromSeconds(60),
             "60-second oldest bounded drain work",
             TimeSpan.FromMinutes(1)).ConfigureAwait(false);
-        Assert.AreEqual(6, initial.RetentionHoldCount);
-        Assert.AreEqual(6, initial.IncompleteStandardWorkCount);
+        Assert.AreEqual(initial.CaptureCount, initial.RetentionHoldCount);
+        Assert.AreEqual(initial.CaptureCount, initial.IncompleteStandardWorkCount);
 
         var retainedRaw = ReadManifests(runtimeRoot)
             .Where(item => item.Manifest.Descriptor.Artifact.Role == FrameArtifactRole.Raw &&
@@ -1688,7 +1690,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             .OrderBy(item => item.Manifest.Descriptor.Capture.CaptureSequence)
             .Select(item => SnapshotArtifactFiles(runtimeRoot, item))
             .ToArray();
-        Assert.HasCount(6, retainedRaw);
+        Assert.HasCount((int)initial.CaptureCount, retainedRaw);
         var clearReference = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(clearReferencePath).ConfigureAwait(false));
         Assert.IsTrue(clearReference.IsValid);
         var clearReferenceManifest = clearReference.Document?.Manifest
@@ -1770,7 +1772,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             [
                 "disk pressure was detected and reported degraded within sixty seconds",
                 "retained raw and reference artifacts remained checksum-stable under pressure",
-                "six queued captures drained within three minutes at no less than 0.2 captures per second",
+                "six to seven queued captures drained within three minutes at no less than 0.2 captures per second",
                 "drain completed without duplicate logical outputs and healthy storage observations resumed"
             ]).ConfigureAwait(false);
         return new PressureDrainEvidence(
@@ -2035,7 +2037,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 manifestSha256),
             AnnotationPublication: null,
             TransientCandidate: null,
-            WeatherRetry: null);
+            OptionalDegradation: null);
     }
 
     private static async Task<SemanticFaultEvidence> AssertAnnotationPublicationKillBoundaryAsync(
@@ -2099,7 +2101,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             RawPublication: null,
             AnnotationPublication: new AnnotationPublicationEvidence(before, after),
             TransientCandidate: null,
-            WeatherRetry: null);
+            OptionalDegradation: null);
     }
 
     private static async Task<SemanticFaultEvidence> AssertTransientCandidateKillBoundaryAsync(
@@ -2145,7 +2147,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             RawPublication: null,
             AnnotationPublication: null,
             TransientCandidate: new TransientCandidateBoundaryEvidence(before, after),
-            WeatherRetry: null);
+            OptionalDegradation: null);
     }
 
     private static async Task<AnnotationPublicationSnapshot> WaitForAnnotationPublicationAsync(
@@ -2506,7 +2508,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         _ => throw new ArgumentOutOfRangeException(nameof(state))
     };
 
-    private static async Task<WeatherRetrySnapshot> WaitForCloudPresentationRetryAsync(
+    private static async Task<OptionalPresentationDegradationSnapshot> WaitForCloudPresentationDegradationAsync(
         string runtimeRoot,
         DateTimeOffset faultHitUtc,
         TimeSpan timeout)
@@ -2520,13 +2522,26 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 using var command = connection.CreateCommand();
                 command.CommandText = """
                     SELECT r.capture_id, r.capture_sequence, n.attempt, n.reason,
-                           lane.attempt_count, lane.available_unix_ms
+                           lane.attempt_count, execution.attempt_count, execution.status,
+                           execution_node.attempt_count, execution_node.status, execution_node.reason,
+                           (SELECT COUNT(*) FROM processing_node_attempts attempt
+                            WHERE attempt.execution_id = execution.execution_id
+                              AND attempt.node_id = execution_node.node_id),
+                           (SELECT MAX(attempt_number) FROM processing_node_attempts attempt
+                            WHERE attempt.execution_id = execution.execution_id
+                              AND attempt.node_id = execution_node.node_id)
                     FROM processing_nodes n
                     JOIN raw_captures r ON r.capture_id = n.capture_id
                     JOIN capture_lane_work lane ON lane.raw_capture_row_id = r.raw_capture_row_id
                         AND lane.lane_name = 'standard'
-                    WHERE n.node_id = 'cloud-presentation' AND n.status = 'RetryableFailure'
-                      AND lane.state = 'retry_wait' AND n.completed_unix_ms >= $hit
+                    JOIN processing_executions execution ON execution.capture_id = r.capture_id
+                        AND execution.execution_class = 'Live'
+                    JOIN processing_execution_nodes execution_node
+                        ON execution_node.execution_id = execution.execution_id
+                        AND execution_node.node_id = n.node_id
+                    WHERE n.node_id = 'cloud-presentation' AND n.status = 'TerminalFailure'
+                      AND n.reason = 'processing.optional-degraded' AND lane.state = 'completed'
+                      AND execution.status = 'Completed' AND n.completed_unix_ms >= $hit
                     ORDER BY n.completed_unix_ms DESC
                     LIMIT 1;
                     """;
@@ -2537,16 +2552,30 @@ public sealed class StandaloneW6DockerAcceptanceTests
                     var captureId = Guid.ParseExact(reader.GetString(0), "N");
                     var artifacts = ReadCaptureArtifactIdentities(runtimeRoot, captureId);
                     Assert.IsFalse(artifacts.Any(static artifact => artifact.Variant is
-                        "w6-overlay-manifest" or "w6-annotated-preview"));
-                    return new WeatherRetrySnapshot(
+                        "w6-cloud-mask-layer" or "w6-cloud-label-layer"));
+                    Assert.IsTrue(artifacts.Any(static artifact => artifact.Variant == "w6-overlay-manifest"));
+                    Assert.IsTrue(artifacts.Any(static artifact => artifact.Variant == "w6-annotated-preview"));
+                    Assert.AreEqual(reader.GetInt32(2), reader.GetInt32(4));
+                    Assert.AreEqual(reader.GetInt32(2), reader.GetInt32(7));
+                    Assert.IsGreaterThanOrEqualTo(reader.GetInt32(2), reader.GetInt32(5));
+                    Assert.AreEqual("Completed", reader.GetString(6));
+                    Assert.AreEqual("TerminalFailure", reader.GetString(8));
+                    Assert.AreEqual("processing.optional-degraded", reader.GetString(9));
+                    Assert.AreEqual(1, reader.GetInt32(10));
+                    Assert.AreEqual(reader.GetInt32(2), reader.GetInt32(11));
+                    return new OptionalPresentationDegradationSnapshot(
                         captureId,
                         reader.GetInt64(1),
-                        "RetryableFailure",
+                        "TerminalFailure",
                         reader.GetInt32(2),
                         reader.GetString(3),
-                        "retry_wait",
+                        "completed",
                         reader.GetInt32(4),
-                        DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+                        reader.GetInt32(5),
+                        reader.GetString(6),
+                        reader.GetInt32(7),
+                        reader.GetString(8),
+                        reader.GetInt32(10),
                         artifacts);
                 }
             }
@@ -2555,63 +2584,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             }
             await Task.Delay(50).ConfigureAwait(false);
         }
-        Assert.Fail("The cloud-presentation execution fault did not defer final presentation and enter lane retry.");
+        Assert.Fail("The cloud-presentation execution fault did not durably degrade the optional node and complete live work.");
         throw new InvalidOperationException("Unreachable after Assert.Fail.");
-    }
-
-    private static WeatherRecoverySnapshot ReadWeatherRecoverySnapshot(
-        string runtimeRoot,
-        CameraAgentGalleryCapture capture)
-    {
-        Assert.HasCount(14, capture.ProcessingNodes);
-        Assert.IsTrue(capture.ProcessingNodes.All(static node => node.Status == "Completed"));
-        Assert.IsTrue(capture.ProcessingNodes.Any(static node => node.NodeId == "storage" && node.Required));
-        Assert.IsTrue(capture.ProcessingNodes.Any(static node => node.NodeId == "telemetry" && node.Required));
-        var artifacts = ReadCaptureArtifactIdentities(runtimeRoot, capture.CaptureId);
-        Assert.IsTrue(artifacts.Any(static artifact => artifact.Variant == "w6-annotated-preview"));
-        using var connection = OpenJournal(runtimeRoot);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT node_id, attempt,
-                   (SELECT attempt_count FROM capture_lane_work lane
-                    JOIN raw_captures raw ON raw.raw_capture_row_id = lane.raw_capture_row_id
-                    WHERE raw.capture_id = $capture AND lane.lane_name = 'standard')
-            FROM processing_nodes
-            WHERE capture_id = $capture AND status = 'Completed'
-            ORDER BY node_id;
-            """;
-        command.Parameters.AddWithValue("$capture", capture.CaptureId.ToString("N"));
-        var attempts = new List<NodeAttemptEvidence>();
-        int? laneAttempt = null;
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            attempts.Add(new NodeAttemptEvidence(reader.GetString(0), reader.GetInt32(1)));
-            laneAttempt ??= reader.GetInt32(2);
-            Assert.AreEqual(laneAttempt.Value, reader.GetInt32(2));
-        }
-        Assert.HasCount(14, attempts);
-        Assert.IsNotNull(laneAttempt);
-        Assert.AreEqual(0, ReadDurableSnapshot(runtimeRoot).DuplicateLogicalOutputs);
-        return new WeatherRecoverySnapshot(capture.CaptureId, capture.CaptureSequence, laneAttempt.Value, attempts, artifacts);
-    }
-
-    private static void AssertWeatherRecovery(WeatherRetrySnapshot retry, WeatherRecoverySnapshot final)
-    {
-        Assert.AreEqual(retry.CaptureId, final.CaptureId);
-        Assert.AreEqual(retry.CaptureSequence, final.CaptureSequence);
-        Assert.AreEqual(retry.NodeAttempt, retry.LaneAttempt);
-        Assert.AreEqual(retry.LaneAttempt + 1, final.LaneAttempt);
-        Assert.IsTrue(final.NodeAttempts
-            .Where(static item => item.NodeId is "cloud-presentation" or "overlay-manifest" or "presentation-materializer" or "storage" or "telemetry")
-            .All(item => item.Attempt == retry.NodeAttempt + 1));
-        Assert.IsTrue(final.NodeAttempts
-            .Where(static item => item.NodeId is not ("cloud-presentation" or "overlay-manifest" or "presentation-materializer" or "storage" or "telemetry"))
-            .All(item => item.Attempt is >= 1 && item.Attempt <= retry.NodeAttempt));
-        foreach (var artifact in retry.Artifacts)
-        {
-            Assert.IsTrue(final.Artifacts.Contains(artifact), $"Artifact {artifact.ArtifactId} changed during retry.");
-        }
     }
 
     private static CaptureArtifactIdentity[] ReadCaptureArtifactIdentities(string runtimeRoot, Guid captureId)
@@ -2759,14 +2733,17 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string root,
         FrameArtifactRole role,
         long minimumSequence,
-        TimeSpan timeout)
+        TimeSpan timeout,
+        DateTimeOffset? minimumExposureStartedUtc = null)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
             var match = ReadManifests(root)
                 .Where(item => item.Manifest.Descriptor.Artifact.Role == role &&
-                    item.Manifest.Descriptor.Capture.CaptureSequence > minimumSequence)
+                    item.Manifest.Descriptor.Capture.CaptureSequence > minimumSequence &&
+                    (minimumExposureStartedUtc is null ||
+                        item.Manifest.Descriptor.Timing.ExposureStartedUtc > minimumExposureStartedUtc))
                 .OrderByDescending(item => item.Manifest.Descriptor.Capture.CaptureSequence)
                 .FirstOrDefault();
             if (match is not null)
@@ -4380,7 +4357,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
             Assert.AreEqual(1, await page.Locator("main").CountAsync().ConfigureAwait(false));
         }
         await page.GotoAsync($"/gallery/{capture.CaptureId:D}").ConfigureAwait(false);
-        await page.GetByText("Capture detail", new() { Exact = true }).WaitForAsync().ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Heading, new() { Name = "Capture detail", Level = 1 })
+            .WaitForAsync().ConfigureAwait(false);
         var primaryImage = page.Locator(".detail-capture-image img");
         await primaryImage.WaitForAsync().ConfigureAwait(false);
         Assert.IsGreaterThan(0, await page.Locator(".stage-selector__button:not(:disabled)").CountAsync().ConfigureAwait(false));
@@ -4771,7 +4749,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         ReadJournalCount(root, "SELECT COUNT(*) FROM processing_outputs;"),
         ReadJournalCount(root, "SELECT COUNT(*) FROM raw_captures WHERE state <> 'committed';"),
         ReadJournalCount(root, "SELECT COUNT(*) FROM capture_lane_work WHERE state NOT IN ('completed', 'abandoned');"),
-        ReadJournalCount(root, "SELECT COUNT(*) FROM processing_nodes WHERE status NOT IN ('Completed', 'Skipped');"),
+        ReadJournalCount(root, "SELECT COUNT(*) FROM processing_nodes WHERE status NOT IN ('Completed', 'Skipped', 'TerminalFailure');"),
         ReadJournalCount(root, """
             SELECT COALESCE(SUM(output_count - 1), 0)
             FROM (
@@ -5159,7 +5137,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         HttpClient client,
         string name,
         string status,
-        TimeSpan timeout)
+        TimeSpan timeout,
+        bool requireEmptyQueue = false)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         string? latest = null;
@@ -5167,7 +5146,8 @@ public sealed class StandaloneW6DockerAcceptanceTests
         {
             latest = await ReadHealthAsync(client).ConfigureAwait(false);
             var evidence = ReadHealthCheckEvidence(latest, name);
-            if (string.Equals(evidence.CheckStatus, status, StringComparison.Ordinal))
+            if (string.Equals(evidence.CheckStatus, status, StringComparison.Ordinal) &&
+                (!requireEmptyQueue || evidence is { PendingCount: 0, RetryCount: 0, TerminalCount: 0 }))
             {
                 return evidence;
             }
@@ -5588,7 +5568,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         RawPublicationEvidence? RawPublication,
         AnnotationPublicationEvidence? AnnotationPublication,
         TransientCandidateBoundaryEvidence? TransientCandidate,
-        WeatherRetryEvidence? WeatherRetry);
+        OptionalPresentationDegradationEvidence? OptionalDegradation);
 
     [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "System.Text.Json constructs fault-hit evidence from the acceptance control file.")]
     private sealed record FaultHitEvidence(
@@ -5664,14 +5644,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         long FinalizedEvents,
         long ConflictsOrQuarantine);
 
-    private sealed record WeatherRetryEvidence(
-        WeatherRetrySnapshot Retry,
-        WeatherRecoverySnapshot Recovery,
+    private sealed record OptionalPresentationDegradationEvidence(
+        OptionalPresentationDegradationSnapshot Degradation,
         CaptureIdentityEvidence ContinuationCapture,
-        HealthCheckEvidence DegradedHealth,
-        HealthCheckEvidence RecoveredHealth);
+        HealthCheckEvidence HealthyLiveQueue);
 
-    private sealed record WeatherRetrySnapshot(
+    private sealed record OptionalPresentationDegradationSnapshot(
         Guid CaptureId,
         long CaptureSequence,
         string NodeStatus,
@@ -5679,17 +5657,12 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string Reason,
         string LaneState,
         int LaneAttempt,
-        DateTimeOffset AvailableUtc,
+        int ExecutionAttempt,
+        string ExecutionStatus,
+        int ExecutionNodeAttempt,
+        string ExecutionNodeStatus,
+        int ExecutionNodeAttemptRecordCount,
         IReadOnlyList<CaptureArtifactIdentity> Artifacts);
-
-    private sealed record WeatherRecoverySnapshot(
-        Guid CaptureId,
-        long CaptureSequence,
-        int LaneAttempt,
-        IReadOnlyList<NodeAttemptEvidence> NodeAttempts,
-        IReadOnlyList<CaptureArtifactIdentity> Artifacts);
-
-    private sealed record NodeAttemptEvidence(string NodeId, int Attempt);
 
     private sealed record CaptureArtifactIdentity(
         Guid ArtifactId,

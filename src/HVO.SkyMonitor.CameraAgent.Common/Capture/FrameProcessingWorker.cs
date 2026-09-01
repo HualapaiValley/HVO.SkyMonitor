@@ -114,14 +114,18 @@ internal sealed class FrameProcessingWorker
         CancellationToken cancellationToken,
         int maximumAttempts = int.MaxValue,
         TimeProvider? timeProvider = null,
-        ICaptureProcessingFaultInjector? faultInjector = null)
+        ICaptureProcessingFaultInjector? faultInjector = null,
+        int? durableAttempt = null,
+        Func<CaptureLaneHandlerResult>? cancellationDisposition = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(telemetry);
         timeProvider ??= TimeProvider.System;
+        var persistedAttempt = durableAttempt ?? attempt;
         var graphStopwatch = Stopwatch.StartNew();
         using var graphActivity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.execute");
-        telemetry.GraphStarted();
+        var executionClass = item.Execution?.ExecutionClass.ToString() ?? "Ephemeral";
+        telemetry.GraphStarted(executionClass);
         var graphFinished = false;
         CaptureLaneHandlerResult Finish(CaptureLaneHandlerResult result)
         {
@@ -134,7 +138,7 @@ internal sealed class FrameProcessingWorker
                 CaptureLaneHandlerOutcome.RetryableFailure => "retry",
                 _ => "terminal"
             };
-            telemetry.RecordGraph(outcome, graphStopwatch.Elapsed);
+            telemetry.RecordGraph(outcome, graphStopwatch.Elapsed, executionClass);
             graphActivity?.SetStatus(
                 result.Outcome is CaptureLaneHandlerOutcome.Completed or CaptureLaneHandlerOutcome.Deferred
                     ? ActivityStatusCode.Ok
@@ -156,8 +160,11 @@ internal sealed class FrameProcessingWorker
             {
                 foreach (var node in graph.Nodes)
                 {
-                    var persistedNode = await persistence.ReadNodeAsync(
-                        persistedCaptureId, node.Id, cancellationToken).ConfigureAwait(false);
+                    var persistedNode = item.Execution is null
+                        ? await persistence.ReadNodeAsync(
+                            persistedCaptureId, node.Id, cancellationToken).ConfigureAwait(false)
+                        : await persistence.ReadExecutionNodeAsync(
+                            item.Execution, persistedCaptureId, node.Id, cancellationToken).ConfigureAwait(false);
                     if (persistedNode is not null && !string.Equals(
                         persistedNode.PlanSha256, node.PlanSha256, StringComparison.Ordinal))
                     {
@@ -191,11 +198,17 @@ internal sealed class FrameProcessingWorker
                     const string dependencyReason = "processing.dependency-unavailable";
                     if (persistence is not null && rawCapture is not null)
                     {
+                        if (item.Execution is not null)
+                        {
+                            await persistence.BeginExecutionNodeAttemptAsync(
+                                item.Execution, node, persistedAttempt, timeProvider.GetUtcNow(), cancellationToken)
+                                .ConfigureAwait(false);
+                        }
                         await persistence.WriteNodeAsync(
-                            rawCapture, node, DurableProcessingNodeStatus.Skipped, dependencyReason, attempt,
+                            rawCapture, node, DurableProcessingNodeStatus.Skipped, dependencyReason, persistedAttempt,
                             null, timeProvider.GetUtcNow(), null, ProcessingOutcomeStatus.Skipped,
                             item.WorkId, item.LeaseToken,
-                            [], context, cancellationToken).ConfigureAwait(false);
+                            [], context, item.Execution, cancellationToken).ConfigureAwait(false);
                     }
                     statuses[node.Id] = DurableProcessingNodeStatus.Skipped;
                     dependencyStopwatch.Stop();
@@ -209,10 +222,16 @@ internal sealed class FrameProcessingWorker
 
                 if (persistence is not null && captureId is { } durableCaptureId)
                 {
-                    _ = await persistence.ResolveUnavailableNodeAsync(
-                        durableCaptureId, node.Id, node.PlanSha256, cancellationToken).ConfigureAwait(false);
-                    var durable = await persistence.ReadNodeAsync(
-                        durableCaptureId, node.Id, cancellationToken).ConfigureAwait(false);
+                    if (item.Execution is null)
+                    {
+                        _ = await persistence.ResolveUnavailableNodeAsync(
+                            durableCaptureId, node.Id, node.PlanSha256, cancellationToken).ConfigureAwait(false);
+                    }
+                    var durable = item.Execution is null
+                        ? await persistence.ReadNodeAsync(
+                            durableCaptureId, node.Id, cancellationToken).ConfigureAwait(false)
+                        : await persistence.ReadExecutionNodeAsync(
+                            item.Execution, durableCaptureId, node.Id, cancellationToken).ConfigureAwait(false);
                     var memoryOnly = node.Publication?.Persistence == CaptureProcessingPersistenceMode.MemoryOnly;
                     if (!memoryOnly && durable?.Status is
                         (DurableProcessingNodeStatus.Completed or DurableProcessingNodeStatus.Skipped))
@@ -220,7 +239,8 @@ internal sealed class FrameProcessingWorker
                         if (durable.Status == DurableProcessingNodeStatus.Completed)
                         {
                             await persistence.RestoreNodeAsync(durable, context, cancellationToken).ConfigureAwait(false);
-                            if (node.Step is IDurableCaptureProcessingPostCommit restoredCommit)
+                            if (item.Execution?.AllowAutomaticPublication != false &&
+                                node.Step is IDurableCaptureProcessingPostCommit restoredCommit)
                             {
                                 await RunPostCommitCleanupAsync(
                                     restoredCommit, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
@@ -264,21 +284,27 @@ internal sealed class FrameProcessingWorker
                     node.Dependencies.Count > 0 && graph.Nodes.FirstOrDefault(candidate =>
                         string.Equals(candidate.Id, node.Dependencies[0], StringComparison.OrdinalIgnoreCase)) is { OutputRole: { } sourceRole })
                 {
-                    context.SetHistoricalInputs(await persistence.ReadRecentInputsAsync(
-                        rawCapture!.Manifest.Descriptor,
-                        node.Dependencies[0], sourceRole, window.MaximumInputCount, cancellationToken).ConfigureAwait(false));
+                    context.SetHistoricalInputs(item.Execution is not null
+                        ? await persistence.ReadFrozenExecutionInputsAsync(
+                            item.Execution.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false)
+                        : await persistence.ReadRecentInputsAsync(
+                            rawCapture!.Manifest.Descriptor,
+                            node.Dependencies[0], sourceRole, window.MaximumInputCount, cancellationToken).ConfigureAwait(false));
                 }
                 else if (persistence is not null && rawCapture is not null &&
                     node.Step is IWindowCaptureProcessingGraphStep rawWindow &&
                     context.Artifacts?.Raw is { } rawArtifact)
                 {
-                    context.SetHistoricalInputs(await persistence.ReadRecentRawInputsAsync(
-                        rawCapture.Manifest.Descriptor,
-                        CameraAgentRecipeExecutionAdapter.CreateArtifact(
-                            context.Config, rawArtifact, "source", context.AcquisitionTiming,
-                            context.ReconstructionDescriptor),
-                        rawWindow.MaximumInputCount,
-                        cancellationToken).ConfigureAwait(false));
+                    context.SetHistoricalInputs(item.Execution is not null
+                        ? await persistence.ReadFrozenExecutionRawInputsAsync(
+                            item.Execution.ExecutionId, node.Id, cancellationToken).ConfigureAwait(false)
+                        : await persistence.ReadRecentRawInputsAsync(
+                            rawCapture.Manifest.Descriptor,
+                            CameraAgentRecipeExecutionAdapter.CreateArtifact(
+                                context.Config, rawArtifact, "source", context.AcquisitionTiming,
+                                context.ReconstructionDescriptor),
+                            rawWindow.MaximumInputCount,
+                            cancellationToken).ConfigureAwait(false));
                 }
                 else
                 {
@@ -292,9 +318,14 @@ internal sealed class FrameProcessingWorker
                 dependencyStopwatch.Stop();
                 telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
                 using var nodeActivity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-step.execute");
-                logger.CaptureProcessingNodeStarted(node.Id, attempt);
+                logger.CaptureProcessingNodeStarted(node.Id, persistedAttempt);
                 try
                 {
+                    if (persistence is not null && item.Execution is not null)
+                    {
+                        await persistence.BeginExecutionNodeAttemptAsync(
+                            item.Execution, node, persistedAttempt, startedUtc, cancellationToken).ConfigureAwait(false);
+                    }
                     faultInjector?.Inject(CaptureProcessingFaultPoint.BeforeNodeExecution, node.Id);
                     await node.Step.ProcessAsync(context, cancellationToken).ConfigureAwait(false);
                 }
@@ -318,6 +349,12 @@ internal sealed class FrameProcessingWorker
                     status = DurableProcessingNodeStatus.TerminalFailure;
                     reason = "processing.optional-exhausted";
                 }
+                if (!node.Required && status == DurableProcessingNodeStatus.RetryableFailure &&
+                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live)
+                {
+                    status = DurableProcessingNodeStatus.TerminalFailure;
+                    reason = "processing.optional-degraded";
+                }
                 var products = exception is null
                     ? outcomes.SelectMany(static value => value.Products).ToArray()
                     : [];
@@ -325,7 +362,7 @@ internal sealed class FrameProcessingWorker
                 {
                     context.RegisterProcessingProduct(product);
                 }
-                telemetry.RecordNode(node, status, reason, duration);
+                telemetry.RecordNode(node, status, reason, duration, executionClass);
                 if (logger.IsEnabled(LogLevel.Debug))
                 {
                     logger.CaptureProcessingNodeOutcome(node.Id, status.ToString());
@@ -343,13 +380,30 @@ internal sealed class FrameProcessingWorker
                     if (status == DurableProcessingNodeStatus.Completed &&
                         node.Publication?.Persistence == CaptureProcessingPersistenceMode.MemoryOnly)
                     {
-                        await persistence.DeleteOutputlessNodeAsync(
-                            rawCapture.Manifest.Descriptor.Capture.CaptureId,
-                            node.Id,
-                            item.WorkId,
-                            item.LeaseToken,
-                            cancellationToken).ConfigureAwait(false);
-                        if (node.Step is IDurableCaptureProcessingPostCommit memoryOnlyCleanup)
+                        if (item.Execution?.AllowAutomaticPublication != false)
+                        {
+                            await persistence.DeleteOutputlessNodeAsync(
+                                rawCapture.Manifest.Descriptor.Capture.CaptureId,
+                                node.Id,
+                                item.WorkId,
+                                item.LeaseToken,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        if (item.Execution is not null)
+                        {
+                            await persistence.CompleteOutputlessExecutionNodeAsync(
+                                item.Execution,
+                                node,
+                                status,
+                                reason,
+                                persistedAttempt,
+                                completedUtc,
+                                duration,
+                                outcome?.Status,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        if (item.Execution?.AllowAutomaticPublication != false &&
+                            node.Step is IDurableCaptureProcessingPostCommit memoryOnlyCleanup)
                         {
                             await RunPostCommitCleanupAsync(
                                 memoryOnlyCleanup, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
@@ -359,12 +413,13 @@ internal sealed class FrameProcessingWorker
                     else
                     {
                         await persistence.WriteNodeAsync(
-                            rawCapture, node, status, reason, attempt,
+                            rawCapture, node, status, reason, persistedAttempt,
                             startedUtc, completedUtc, duration,
                             outcome?.Status,
                             item.WorkId, item.LeaseToken,
-                            products, context, cancellationToken).ConfigureAwait(false);
-                        if (status == DurableProcessingNodeStatus.Completed &&
+                            products, context, item.Execution, cancellationToken).ConfigureAwait(false);
+                        if (item.Execution?.AllowAutomaticPublication != false &&
+                            status == DurableProcessingNodeStatus.Completed &&
                             node.Step is IDurableCaptureProcessingPostCommit committed)
                         {
                             await RunPostCommitCleanupAsync(
@@ -400,7 +455,7 @@ internal sealed class FrameProcessingWorker
         {
             if (!graphFinished)
             {
-                Finish(CaptureLaneHandlerResult.Retry("processing.cancelled"));
+                Finish(cancellationDisposition?.Invoke() ?? CaptureLaneHandlerResult.Retry("processing.cancelled"));
             }
             throw;
         }
@@ -511,8 +566,9 @@ internal sealed class FrameProcessingWorker
                 return submission.Result with { Frame = frame, Artifacts = new FrameArtifactSet(artifact) };
             }
             submission = submission with { Result = submission.Result with { Frame = null, Artifacts = null } };
-            return new CaptureProcessingContext(item.Config, submission, rawCapture, LoadRawFrameAsync);
+            return new CaptureProcessingContext(
+                item.Config, submission, rawCapture, LoadRawFrameAsync, item.Execution);
         }
-        return new CaptureProcessingContext(item.Config, submission, rawCapture);
+        return new CaptureProcessingContext(item.Config, submission, rawCapture, null, item.Execution);
     }
 }

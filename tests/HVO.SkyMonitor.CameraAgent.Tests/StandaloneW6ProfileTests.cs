@@ -37,6 +37,14 @@ public sealed class StandaloneW6ProfileTests
             "7191D84F4BA368482546AB6A09FBFEDD2F273BD626FABE6F3156C55C54DFCA9B",
             rigSha256,
             rigSha256);
+        var hostOptions = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.StandaloneW6.json"))
+            .Build()
+            .GetSection("CameraAgent")
+            .Get<CameraAgentHostOptions>();
+        var sensorTemperature = hostOptions!.EnvironmentalAcquisition.Sources.Single(static source =>
+            source.Kind == EnvironmentalObservationKind.CameraSensorTemperature);
+        Assert.AreEqual($"rig-{rigSha256[..16]}", sensorTemperature.RigId);
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
             "FE3EA5C9A5FB0605FA7522C7271E39FE32B0C8B44178BFF6A5625956C3AFAACE",
@@ -56,7 +64,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "01BDA19E83DB375F0A87CE13A1A8395BAFFDC31A8AEAF17BD72001A36B437386",
+            "DC29C83638C695CBAF379FF6F387A2661F109462DE0931D25FC1BCC63484110D",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);

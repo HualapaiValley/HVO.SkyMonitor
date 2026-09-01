@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
@@ -846,6 +847,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
     internal ValueTask QuarantineAsync(long rawCaptureRowId, string reason, CancellationToken cancellationToken)
         => SetFrameStateAsync(rawCaptureRowId, "quarantined", reason, null, false, cancellationToken);
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The optional clause is selected from a fixed internal schema capability and values remain parameterized.")]
     internal async ValueTask RetireBeforeAsync(
         string agentId,
         long exclusiveSequence,
@@ -853,6 +855,9 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
+        var executionPinClause = await HasExecutionPinsAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+            ? "OR EXISTS (SELECT 1 FROM processing_execution_input_pins WHERE raw_capture_row_id = $raw AND released_flag = 0)"
+            : string.Empty;
         var rows = new List<long>();
         using (var read = connection.CreateCommand())
         {
@@ -875,7 +880,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         {
             using var update = connection.CreateCommand();
             update.Transaction = transaction;
-            update.CommandText = """
+            update.CommandText = $"""
                 UPDATE transient_worker_frames SET state = 'completed', updated_unix_ms = $now WHERE raw_capture_row_id = $raw;
                 UPDATE transient_capture_work SET state = 'completed', updated_unix_ms = $now
                     WHERE raw_capture_row_id = $raw AND state IN ('pending', 'candidate_persisted');
@@ -884,6 +889,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                         AND ((required = 1 AND state != 'completed') OR state = 'leased'))
                     OR EXISTS (SELECT 1 FROM transient_candidate_sources s JOIN transient_candidates c
                         ON c.candidate_id = s.candidate_id WHERE s.raw_capture_row_id = $raw AND c.source_hold_released = 0)
+                    {executionPinClause}
                     THEN 1 ELSE 0 END WHERE raw_capture_row_id = $raw;
                 """;
             update.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
@@ -950,6 +956,7 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         return new TransientRuntimeQuarantinePage(items, next);
     }
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The optional clause is selected from a fixed internal schema capability and values remain parameterized.")]
     public async ValueTask<TransientRuntimeOperationReceipt> AbandonQuarantinedCaptureAsync(
         TransientRuntimeOperationTarget target,
         string idempotencyKey,
@@ -1050,14 +1057,19 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
                 .ConfigureAwait(false);
             using (var hold = connection.CreateCommand())
             {
+                var executionPinClause = await HasExecutionPinsAsync(
+                    connection, transaction, cancellationToken).ConfigureAwait(false)
+                    ? "OR EXISTS (SELECT 1 FROM processing_execution_input_pins WHERE raw_capture_row_id = $raw AND released_flag = 0)"
+                    : string.Empty;
                 hold.Transaction = transaction;
-                hold.CommandText = """
+                hold.CommandText = $"""
                     UPDATE raw_captures SET retention_hold = CASE WHEN
                         EXISTS (SELECT 1 FROM capture_lane_work WHERE raw_capture_row_id = $raw
                             AND ((required = 1 AND state != 'completed') OR state = 'leased'))
                         OR EXISTS (SELECT 1 FROM transient_candidate_sources s JOIN transient_candidates c
                             ON c.candidate_id = s.candidate_id
                             WHERE s.raw_capture_row_id = $raw AND c.source_hold_released = 0)
+                        {executionPinClause}
                         THEN 1 ELSE 0 END WHERE raw_capture_row_id = $raw;
                     """;
                 hold.Parameters.AddWithValue("$raw", target.RawCaptureRowId);
@@ -1081,6 +1093,19 @@ internal sealed class SqliteTransientRuntimeStore : ITransientRuntimeManagement,
         {
             lifecycleGate.Release();
         }
+    }
+
+    private static async ValueTask<bool> HasExecutionPinsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'processing_execution_input_pins';";
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
     internal async ValueTask MarkCandidateRetryAsync(

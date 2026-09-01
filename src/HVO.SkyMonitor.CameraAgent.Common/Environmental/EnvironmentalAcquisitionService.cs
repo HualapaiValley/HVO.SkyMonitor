@@ -138,9 +138,11 @@ public sealed partial class EnvironmentalAcquisitionService(
     private async Task RunRetentionAsync(CancellationToken cancellationToken)
     {
         var journalUnavailable = false;
+        var consecutiveFailures = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
             var configured = options.Value.EnvironmentalAcquisition;
+            var nextDelay = TimeSpan.FromHours(1);
             try
             {
                 var result = await retentionStore.RetainLocalAsync(
@@ -153,6 +155,7 @@ public sealed partial class EnvironmentalAcquisitionService(
                     JournalRecovered(logger, "retention");
                     journalUnavailable = false;
                 }
+                consecutiveFailures = 0;
                 RetentionCompleted(logger, result.RemovedCount, result.RemovedBytes);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -161,13 +164,15 @@ public sealed partial class EnvironmentalAcquisitionService(
             }
             catch (Exception)
             {
-                if (!journalUnavailable)
+                consecutiveFailures++;
+                if (consecutiveFailures >= 2 && !journalUnavailable)
                 {
                     JournalUnavailable(logger, "retention");
                     journalUnavailable = true;
                 }
+                nextDelay = TimeSpan.FromSeconds(1);
             }
-            await Task.Delay(TimeSpan.FromHours(1), timeProvider, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(nextDelay, timeProvider, cancellationToken).ConfigureAwait(false);
         }
     }
 

@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -47,6 +48,7 @@ internal sealed class RawCaptureIngress :
     private FileStream? _processLock;
     private readonly IProjectedSceneStagingReconciler? _projectedSceneStaging;
     private readonly ProjectedSceneStageLifecycleCoordinator? _projectedSceneLifecycle;
+    private readonly ProcessingGraphOperationsCoordinator? _graphOperations;
 
     public RawCaptureIngress(
         IOptions<CameraAgentHostOptions> options,
@@ -62,7 +64,8 @@ internal sealed class RawCaptureIngress :
         CaptureLaneTelemetry? laneTelemetry = null,
         CapturePipelineTraceStore? captureTraceStore = null,
         IProjectedSceneStagingReconciler? projectedSceneStaging = null,
-        ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null)
+        ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
+        ProcessingGraphOperationsCoordinator? graphOperations = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -77,6 +80,7 @@ internal sealed class RawCaptureIngress :
         _captureTraceStore = captureTraceStore;
         _projectedSceneStaging = projectedSceneStaging;
         _projectedSceneLifecycle = projectedSceneLifecycle;
+        _graphOperations = graphOperations;
         var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
         var root = Path.GetFullPath(_options.RawIngressRoot);
         _journal = new SqliteRawCaptureJournal(
@@ -415,13 +419,27 @@ internal sealed class RawCaptureIngress :
                 {
                     SetpointAppliedUtc = committedDescriptor.Timing.SetpointAppliedUtc
                 };
+            var committedSubmission = submission with
+            {
+                CycleEvidence = committedDescriptor.CycleEvidence,
+                Result = submission.Result with { AcquisitionTiming = committedTiming }
+            };
+            ProcessingLiveExecutionSeed? liveExecution = null;
+            var durableConfiguration = configuration;
+            if (_graphOperations is not null)
+            {
+                var prepared = await _graphOperations.PrepareLiveExecutionAsync(
+                    configuration,
+                    identity.CaptureId,
+                    identity.ArtifactId,
+                    committedDescriptor.Timing.DurableIngressUtc,
+                    CancellationToken.None).ConfigureAwait(false);
+                liveExecution = prepared.Seed;
+                durableConfiguration = prepared.Configuration;
+            }
             var context = CaptureLaneEnvelopeSerializer.Serialize(
-                configuration,
-                submission with
-                {
-                    CycleEvidence = committedDescriptor.CycleEvidence,
-                    Result = submission.Result with { AcquisitionTiming = committedTiming }
-                });
+                durableConfiguration,
+                committedSubmission);
             RawIngressOutcome outcome;
             using (var commitActivity = RawIngressTelemetry.ActivitySource.StartActivity("sqlite.commit"))
             {
@@ -431,7 +449,12 @@ internal sealed class RawCaptureIngress :
                     context.Json,
                     context.Sha256,
                     _lanePolicy.Definitions,
+                    liveExecution,
                     CancellationToken.None).ConfigureAwait(false);
+                if (outcome == RawIngressOutcome.Committed)
+                {
+                    _graphOperations?.NotifyLiveWorkAccepted();
+                }
                 if (outcome == RawIngressOutcome.Committed && _laneTelemetry is not null)
                 {
                     foreach (var laneOutcome in await _journal.ReadLaneOutcomesAsync(
@@ -573,6 +596,86 @@ internal sealed class RawCaptureIngress :
         {
             return RawCapturePublicationState.Unknown;
         }
+    }
+
+    async ValueTask IRawCaptureIngress.BindRecoveredLiveExecutionsAsync(
+        CameraModuleConfig configuration,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (_graphOperations is null) return;
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var lifecycleGate = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (var entry in await _journal.ReadUnboundLiveCapturesAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
+                if (!parsed.IsValid || parsed.Document?.Manifest.Descriptor is not { } descriptor)
+                    throw new InvalidDataException("A recovered raw capture has an invalid committed manifest.");
+                var existingEnvelope = await _journal.ReadRecoveredLaneEnvelopeAsync(entry, cancellationToken)
+                    .ConfigureAwait(false);
+                var prepared = await _graphOperations.PrepareLiveExecutionAsync(
+                    (existingEnvelope?.Configuration ?? configuration) with { AgentId = descriptor.Capture.AgentId },
+                    descriptor.Capture.CaptureId,
+                    descriptor.Artifact.ArtifactId,
+                    descriptor.Timing.DurableIngressUtc,
+                    cancellationToken).ConfigureAwait(false);
+                var envelope = existingEnvelope is null
+                    ? CreateRecoveredEnvelope(prepared.Configuration, descriptor)
+                    : existingEnvelope with { Configuration = prepared.Configuration };
+                var context = CaptureLaneEnvelopeSerializer.Serialize(envelope.Configuration, envelope.Submission);
+                await _journal.BindRecoveredLiveExecutionAsync(
+                    entry, context.Json, context.Sha256, prepared.Seed, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
+    private static CaptureLaneEnvelope CreateRecoveredEnvelope(
+        CameraModuleConfig configuration,
+        ReconstructionDescriptor descriptor)
+    {
+        var requested = new CaptureSetpoint(
+            descriptor.Controls.RequestedExposure,
+            descriptor.Controls.RequestedGain,
+            null,
+            null);
+        var effective = new CaptureSetpoint(
+            descriptor.Controls.EffectiveExposure,
+            descriptor.Controls.EffectiveGain,
+            null,
+            null);
+        var request = new CaptureRequest(
+            descriptor.Timing.RequestedStartUtc,
+            configuration.Rig.Pipeline.CaptureInterval,
+            CaptureMode.Still,
+            requested);
+        var result = new CaptureResult(null, effective, TimeSpan.Zero, CaptureMode.Still, false)
+        {
+            AcquisitionTiming = new CaptureAcquisitionTiming(
+                descriptor.Timing.ExposureStartedUtc,
+                descriptor.Timing.ExposureEndedUtc,
+                descriptor.Timing.ReadoutCompletedUtc)
+            {
+                SetpointAppliedUtc = descriptor.Timing.SetpointAppliedUtc
+            }
+        };
+        return new CaptureLaneEnvelope(
+            configuration with { AgentId = descriptor.Capture.AgentId },
+            new CaptureLoopSubmission(
+                request,
+                result,
+                descriptor.CycleEvidence?.ModuleCallStartedUtc ?? descriptor.Timing.RequestedStartUtc,
+                configuration.Rig.Pipeline.CaptureInterval,
+                TimeSpan.Zero)
+            {
+                CycleEvidence = descriptor.CycleEvidence
+            });
     }
 
     private static bool DurablePathExists(string path)

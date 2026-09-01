@@ -439,7 +439,16 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
         }
         if (query.ProcessingRole is { } processingRole)
         {
-            sql.AppendLine("AND EXISTS (SELECT 1 FROM processing_outputs output WHERE output.capture_id = raw.capture_id AND output.role = $processing_role)");
+            sql.AppendLine("""
+                AND EXISTS (
+                    SELECT 1 FROM processing_outputs output
+                    WHERE output.capture_id = raw.capture_id AND output.role = $processing_role
+                      AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association
+                                       WHERE association.output_identity_sha256 = output.output_identity_sha256)
+                           OR EXISTS (SELECT 1 FROM processing_execution_outputs association
+                                      WHERE association.output_identity_sha256 = output.output_identity_sha256
+                                        AND association.published_flag = 1)))
+                """);
             command.Parameters.AddWithValue("$processing_role", processingRole.ToString());
         }
         if (query.Recipe is not null)
@@ -448,8 +457,13 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery
                 AND (
                     EXISTS (SELECT 1 FROM processing_nodes node
                             WHERE node.capture_id = raw.capture_id AND upper(node.recipe_name) = $recipe)
-                    OR EXISTS (SELECT 1 FROM processing_outputs output
-                               WHERE output.capture_id = raw.capture_id AND output.recipe_identity_sha256 = $recipe_identity)
+                     OR EXISTS (SELECT 1 FROM processing_outputs output
+                                  WHERE output.capture_id = raw.capture_id AND output.recipe_identity_sha256 = $recipe_identity
+                                    AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association
+                                                     WHERE association.output_identity_sha256 = output.output_identity_sha256)
+                                         OR EXISTS (SELECT 1 FROM processing_execution_outputs association
+                                                    WHERE association.output_identity_sha256 = output.output_identity_sha256
+                                                      AND association.published_flag = 1)))
                 )
                 """);
             command.Parameters.AddWithValue("$recipe", query.Recipe);

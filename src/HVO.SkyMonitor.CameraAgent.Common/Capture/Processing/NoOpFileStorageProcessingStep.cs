@@ -50,6 +50,7 @@ internal sealed class NoOpFileStorageProcessingStep(
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
+        var allowAutomaticPublication = context.ProcessingExecution?.AllowAutomaticPublication != false;
         ArgumentException.ThrowIfNullOrWhiteSpace(context.Config.AgentId);
         var artifacts = context.Artifacts;
         if (artifacts is null)
@@ -88,7 +89,8 @@ internal sealed class NoOpFileStorageProcessingStep(
                 var publication = context.GetDependencyPublicationPolicy(artifact.ArtifactId);
                 if (publication is not null)
                 {
-                    if (_centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload))
+                    if (allowAutomaticPublication && _centralIntegrationEnabled &&
+                        (policy?.QueueForUpload ?? Options.QueueForUpload))
                     {
                         if (product is null || context.RawCapture is not { } rawCapture)
                         {
@@ -167,7 +169,8 @@ internal sealed class NoOpFileStorageProcessingStep(
                             "File storage requires a reconstruction descriptor for every artifact.");
                     }
                 }
-                if (_centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload))
+                if (allowAutomaticPublication && _centralIntegrationEnabled &&
+                    (policy?.QueueForUpload ?? Options.QueueForUpload))
                 {
                     if (uploadManifest is null)
                     {
@@ -183,7 +186,8 @@ internal sealed class NoOpFileStorageProcessingStep(
                 var producerStepId = context.GetDependencyProducerStepId(artifactId);
                 var publication = context.GetDependencyPublicationPolicy(artifactId);
                 var policy = ResolvePolicy(producerStepId, product);
-                var queueForUpload = _centralIntegrationEnabled && (policy?.QueueForUpload ?? Options.QueueForUpload);
+                var queueForUpload = allowAutomaticPublication && _centralIntegrationEnabled &&
+                    (policy?.QueueForUpload ?? Options.QueueForUpload);
                 if (publication is not null)
                 {
                     if (!queueForUpload)
@@ -252,7 +256,7 @@ internal sealed class NoOpFileStorageProcessingStep(
             lifecycleGate.Release();
         }
 
-        if (Options.UpdateLatestFrame)
+        if (allowAutomaticPublication && Options.UpdateLatestFrame)
         {
             var raw = selectedArtifacts.LastOrDefault(static artifact => artifact.Role == FrameArtifactRole.Raw);
             if (raw is not null)

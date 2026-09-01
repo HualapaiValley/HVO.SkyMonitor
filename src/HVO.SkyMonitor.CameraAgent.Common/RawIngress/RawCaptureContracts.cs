@@ -30,6 +30,11 @@ public interface IRawCaptureIngress
         CaptureLoopSubmission submission,
         CancellationToken cancellationToken)
         => ValueTask.FromResult(RawCapturePublicationState.Unknown);
+
+    internal ValueTask BindRecoveredLiveExecutionsAsync(
+        CameraModuleConfig configuration,
+        CancellationToken cancellationToken)
+        => ValueTask.CompletedTask;
 }
 
 internal enum RawCapturePublicationState

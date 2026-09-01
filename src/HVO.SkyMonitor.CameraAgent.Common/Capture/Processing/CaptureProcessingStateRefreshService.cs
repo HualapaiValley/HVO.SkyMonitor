@@ -22,6 +22,12 @@ internal sealed class CaptureProcessingStateRefreshService(
             durable.RetryCount,
             durable.TerminalCount,
             durable.OldestPendingUtc);
+        state.SetReplayDurable(
+            durable.ReplayPendingCount,
+            durable.ReplayRetryCount,
+            durable.ReplayTerminalCount,
+            durable.OldestReplayPendingUtc,
+            durable.ReplayPendingBytes);
         state.SetProcessingEvidence(inventory.MissingCount, inventory.QuarantinedCount);
     }
 

@@ -94,6 +94,52 @@ public sealed class ArtifactEndpointTests
     }
 
     [TestMethod]
+    public async Task ReplayOutputContentEnforcesOwnerAndExactExecutionScopeAsync()
+    {
+        var service = new StubArtifactService();
+        using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
+        {
+            services.RemoveAll<ICameraAgentArtifactService>();
+            services.AddSingleton<ICameraAgentArtifactService>(service);
+        });
+        var (ownerId, nonOwnerId) = await GetUsersAsync(factory.Services).ConfigureAwait(false);
+        var uri = new Uri(
+            $"/api/v1/operations/processing-graphs/executions/{service.ExecutionId:D}/outputs/{service.ArtifactId:D}/content",
+            UriKind.Relative);
+
+        using var anonymous = factory.CreateClient();
+        using var anonymousResponse = await anonymous.GetAsync(uri).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+
+        using var nonOwner = factory.CreateClient();
+        nonOwner.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
+        using var nonOwnerResponse = await nonOwner.GetAsync(uri).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerResponse.StatusCode);
+
+        using var owner = factory.CreateClient();
+        owner.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, ownerId);
+        using var exact = await owner.GetAsync(uri).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, exact.StatusCode);
+        CollectionAssert.AreEqual(service.Content, await exact.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+
+        using var wrongExecution = await owner.GetAsync(new Uri(
+            $"/api/v1/operations/processing-graphs/executions/{Guid.NewGuid():D}/outputs/{service.ArtifactId:D}/content",
+            UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.NotFound, wrongExecution.StatusCode);
+
+        using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, uri);
+        rangeRequest.Headers.Range = new RangeHeaderValue(1, 3);
+        using var range = await owner.SendAsync(rangeRequest).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.PartialContent, range.StatusCode);
+        CollectionAssert.AreEqual(service.Content[1..4], await range.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, uri);
+        using var head = await owner.SendAsync(headRequest).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, head.StatusCode);
+        Assert.IsEmpty(await head.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task PreviewHeadAndFailuresDoNotDiscloseStorageDetailsAsync()
     {
         var comparisonOutputBytes = new List<(long Bytes, string? Outcome)>();
@@ -199,6 +245,8 @@ public sealed class ArtifactEndpointTests
 
         internal Guid ArtifactId { get; } = Guid.Parse("10000000-0000-0000-0000-000000000003");
 
+        internal Guid ExecutionId { get; } = Guid.Parse("10000000-0000-0000-0000-000000000004");
+
         internal byte[] Content { get; } = [1, 2, 3, 4, 5, 6, 7, 8];
 
         internal byte[] Preview { get; } = [0xFF, 0xD8, 1, 2, 3, 0xFF, 0xD9];
@@ -235,6 +283,14 @@ public sealed class ArtifactEndpointTests
                 null);
             return new CameraAgentArtifactContentResult(CameraAgentArtifactReadStatus.Found, content);
         }
+
+        public ValueTask<CameraAgentArtifactContentResult> OpenReplayOutputContentAsync(
+            Guid executionId,
+            Guid artifactId,
+            CancellationToken cancellationToken)
+            => executionId == ExecutionId
+                ? OpenContentAsync(artifactId, cancellationToken)
+                : ValueTask.FromResult(new CameraAgentArtifactContentResult(CameraAgentArtifactReadStatus.NotFound));
 
         public ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(
             Guid artifactId,

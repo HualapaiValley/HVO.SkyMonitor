@@ -48,6 +48,14 @@ internal static class CameraAgentArtifactEndpoints
         CancellationToken cancellationToken)
     {
         var opened = await artifacts.OpenContentAsync(artifactId, cancellationToken).ConfigureAwait(false);
+        await WriteOpenedContentAsync(context, opened, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task WriteOpenedContentAsync(
+        HttpContext context,
+        CameraAgentArtifactContentResult opened,
+        CancellationToken cancellationToken)
+    {
         if (opened.Status != CameraAgentArtifactReadStatus.Found || opened.Content is null)
         {
             await WriteFailureAsync(context, opened.Status, cancellationToken).ConfigureAwait(false);

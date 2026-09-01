@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 
@@ -25,6 +26,7 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
     private readonly CaptureLaneTelemetry _telemetry;
     private readonly CaptureLaneState _state;
     private readonly ILogger<CaptureDistributionService> _logger;
+    private readonly ProcessingGraphOperationsCoordinator? _graphOperations;
     private readonly Dictionary<string, Channel<bool>> _signals = new(StringComparer.Ordinal);
     private readonly Channel<FrameProcessingItem> _ephemeral = Channel.CreateBounded<FrameProcessingItem>(
         new BoundedChannelOptions(4)
@@ -63,7 +65,8 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
         ICaptureLaneFaultInjector faultInjector,
         CaptureLaneTelemetry telemetry,
         CaptureLaneState state,
-        ILogger<CaptureDistributionService> logger)
+        ILogger<CaptureDistributionService> logger,
+        ProcessingGraphOperationsCoordinator? graphOperations = null)
     {
         _configurationAccessor = configurationAccessor;
         _rawIngress = rawIngress;
@@ -76,6 +79,7 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
         _telemetry = telemetry;
         _state = state;
         _logger = logger;
+        _graphOperations = graphOperations;
         _handlers = handlers.ToDictionary(static handler => handler.Lane, StringComparer.Ordinal);
     }
 
@@ -91,6 +95,12 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
             }
         }
         await _rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        if (_graphOperations is not null)
+        {
+            _ = await _graphOperations.EnsureConfiguredBasicAsync(_configuration, cancellationToken)
+                .ConfigureAwait(false);
+            await _rawIngress.BindRecoveredLiveExecutionsAsync(_configuration, cancellationToken).ConfigureAwait(false);
+        }
         await _store.InitializeLanesAsync(cancellationToken).ConfigureAwait(false);
         foreach (var lane in _policy.Definitions.Where(static lane => lane.Enabled))
         {
@@ -270,6 +280,10 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
                 using var ack = CaptureLaneTelemetry.ActivitySource.StartActivity("capture-lanes.ack");
                 await _store.FailAsync(lease, result, CancellationToken.None).ConfigureAwait(false);
                 ack?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+            }
+            if (string.Equals(lease.Lane, "standard", StringComparison.Ordinal))
+            {
+                _graphOperations?.NotifyLiveWorkChanged();
             }
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
         }

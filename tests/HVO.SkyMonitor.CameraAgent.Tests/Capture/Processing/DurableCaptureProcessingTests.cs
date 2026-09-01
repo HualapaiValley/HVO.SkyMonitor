@@ -2608,6 +2608,36 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task OptionalRetryableNode_InLiveExecutionDegradesWithoutRetryingLane()
+    {
+        using var telemetry = new CaptureProcessingTelemetry();
+        var optional = new OutcomeStep(ProcessingOutcome.RetryableFailure("test.optional-retry"));
+        var required = new CountingStep();
+        var graph = new CaptureProcessingGraph([
+            new CaptureProcessingGraphNode("optional", optional, [], false, "optional", FrameArtifactRole.Metadata, "optional"),
+            new CaptureProcessingGraphNode("required", required, [], true, null, null, null)
+        ]);
+        var item = CreateEphemeralItem() with
+        {
+            Execution = new ProcessingExecutionContext(
+                Guid.NewGuid(),
+                ProcessingGraphExecutionClass.Live,
+                "basic@1",
+                new string('A', 64),
+                AllowAutomaticPublication: true,
+                WorkId: 1,
+                LeaseToken: "lease")
+        };
+
+        var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+            item, graph, null, telemetry, 1, NullLogger.Instance, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+        Assert.AreEqual(1, required.ExecutionCount);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task OptionalRetryableNode_OnLastAttemptDoesNotQuarantineRequiredWork()
     {
         using var telemetry = new CaptureProcessingTelemetry();

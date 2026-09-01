@@ -213,6 +213,7 @@ public class Program
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
                 metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
+                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
             })
             .WithTracing(tracing =>
             {
@@ -358,6 +359,7 @@ public class Program
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
+        app.MapCameraAgentProcessingGraphOperationsEndpoints();
         app.MapCameraAgentCalibrationOperationsEndpoints();
         app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapCameraAgentEnvironmentalOperationsEndpoints();

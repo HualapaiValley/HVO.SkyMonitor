@@ -30,6 +30,11 @@ public interface ICameraAgentArtifactService
         Guid artifactId,
         CancellationToken cancellationToken);
 
+    ValueTask<CameraAgentArtifactContentResult> OpenReplayOutputContentAsync(
+        Guid executionId,
+        Guid artifactId,
+        CancellationToken cancellationToken);
+
     ValueTask<CameraAgentArtifactPreviewResult> GetPreviewAsync(
         Guid artifactId,
         CancellationToken cancellationToken);

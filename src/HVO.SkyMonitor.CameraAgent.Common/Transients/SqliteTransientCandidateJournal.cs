@@ -2125,15 +2125,19 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
         }
     }
 
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The optional clause is selected from a fixed internal schema capability and values remain parameterized.")]
     private static async Task RecomputeRawHoldAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         long rawRowId,
         CancellationToken cancellationToken)
     {
+        var executionPinClause = await HasExecutionPinsAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+            ? "OR EXISTS (SELECT 1 FROM processing_execution_input_pins WHERE raw_capture_row_id = $raw AND released_flag = 0)"
+            : string.Empty;
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
+        command.CommandText = $"""
             UPDATE raw_captures
             SET retention_hold = CASE WHEN
                 EXISTS (
@@ -2148,11 +2152,25 @@ internal sealed class SqliteTransientCandidateJournal : ITransientCandidateJourn
                 OR EXISTS (
                     SELECT 1 FROM transient_capture_work
                     WHERE raw_capture_row_id = $raw AND state = 'pending')
+                {executionPinClause}
                 THEN 1 ELSE 0 END
             WHERE raw_capture_row_id = $raw;
             """;
         command.Parameters.AddWithValue("$raw", rawRowId);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<bool> HasExecutionPinsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'processing_execution_input_pins';";
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
     private static async Task<IReadOnlyList<long>> ReadSourceRawRowsAsync(

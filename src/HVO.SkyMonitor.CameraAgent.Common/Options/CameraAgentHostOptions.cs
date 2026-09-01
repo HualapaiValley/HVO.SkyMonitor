@@ -33,6 +33,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public CaptureDistributionOptions CaptureDistribution { get; init; } = new();
 
     [Required]
+    public ProcessingGraphExecutionOptions ProcessingGraphs { get; init; } = new();
+
+    [Required]
     public ProvisioningStartupGateOptions ProvisioningStartupGate { get; init; } = new();
 
     [Required]
@@ -133,6 +136,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             distributionResults,
             validateAllProperties: true);
         foreach (var result in distributionResults)
+        {
+            yield return result;
+        }
+
+        var processingGraphResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            ProcessingGraphs,
+            new ValidationContext(ProcessingGraphs),
+            processingGraphResults,
+            validateAllProperties: true);
+        foreach (var result in processingGraphResults)
         {
             yield return result;
         }
@@ -617,6 +631,43 @@ public sealed class EnvironmentalSourceConfiguration : IValidatableObject
             StaleAfterSeconds,
             RigId,
             resolvedOptions ?? Options);
+}
+
+public sealed class ProcessingGraphExecutionOptions
+{
+    [Range(1, 4)]
+    public int ReplayMaximumConcurrency { get; init; } = 1;
+
+    [Range(1, 86400)]
+    public int LiveDeadlineSeconds { get; init; } = 300;
+
+    [Range(1, 604800)]
+    public int LiveMaximumQueueAgeSeconds { get; init; } = 900;
+
+    [Range(1, 100000)]
+    public int ReplayMaximumPendingCount { get; init; } = 1000;
+
+    [Range(1, long.MaxValue)]
+    public long ReplayMaximumPendingBytes { get; init; } = 16L * 1024 * 1024 * 1024;
+
+    [Range(1, 86400)]
+    public int ReplayDeadlineSeconds { get; init; } = 3600;
+
+    [Range(1, 2592000)]
+    public int ReplayMaximumQueueAgeSeconds { get; init; } = 86400;
+
+    [Range(3, 300)]
+    public int ReplayLeaseSeconds { get; init; } = 30;
+
+    [Range(1, 3600)]
+    public int ReplayRecoveryPollSeconds { get; init; } = 30;
+
+    [Range(1, 20)]
+    public int ReplayMaximumAttempts { get; init; } = 5;
+
+    [Range(1, 128)]
+    public int MaximumWindowInputs { get; init; } = 32;
+
 }
 
 public sealed class CaptureDistributionOptions : IValidatableObject

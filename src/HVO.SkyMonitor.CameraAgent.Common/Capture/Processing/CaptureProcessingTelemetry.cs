@@ -14,6 +14,7 @@ public sealed class CaptureProcessingTelemetry : IDisposable
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
     private readonly Meter _meter = new(MeterName);
     private readonly Counter<long> _graphs;
+    private readonly Counter<long> _executionStarts;
     private readonly Counter<long> _nodes;
     private readonly Counter<long> _outcomes;
     private readonly Counter<long> _outputs;
@@ -22,11 +23,13 @@ public sealed class CaptureProcessingTelemetry : IDisposable
     private readonly Counter<long> _postCommitCleanupFailures;
     private readonly Counter<long> _reconciliationOutcomes;
     private readonly Counter<long> _reconciliationBytes;
+    private readonly Counter<long> _replayDispositions;
     private readonly Histogram<double> _validationDuration;
     private readonly Histogram<double> _dependencyWaitDuration;
     private readonly Histogram<double> _recipeDuration;
     private readonly Histogram<double> _persistenceDuration;
     private readonly Histogram<double> _graphDuration;
+    private readonly Histogram<double> _replayQueueWaitDuration;
     private readonly CaptureProcessingState _state;
     private readonly FleetRuntimeState? _fleetRuntimeState;
 
@@ -35,6 +38,7 @@ public sealed class CaptureProcessingTelemetry : IDisposable
         _state = state ?? new CaptureProcessingState();
         _fleetRuntimeState = fleetRuntimeState;
         _graphs = _meter.CreateCounter<long>("camera_agent.processing.graphs", "{graph}");
+        _executionStarts = _meter.CreateCounter<long>("camera_agent.processing.execution.starts", "{execution}");
         _nodes = _meter.CreateCounter<long>("camera_agent.processing.nodes", "{node}");
         _outcomes = _meter.CreateCounter<long>("camera_agent.processing.outcomes", "{outcome}");
         _outputs = _meter.CreateCounter<long>("camera_agent.processing.outputs", "{output}");
@@ -43,14 +47,21 @@ public sealed class CaptureProcessingTelemetry : IDisposable
         _postCommitCleanupFailures = _meter.CreateCounter<long>("camera_agent.processing.postcommit_cleanup.failures", "{failure}");
         _reconciliationOutcomes = _meter.CreateCounter<long>("camera_agent.processing.reconciliation.outcomes", "{evidence}");
         _reconciliationBytes = _meter.CreateCounter<long>("camera_agent.processing.reconciliation.bytes", "By");
+        _replayDispositions = _meter.CreateCounter<long>("camera_agent.processing.replay.dispositions", "{execution}");
         _validationDuration = _meter.CreateHistogram<double>("camera_agent.processing.validation.duration", "s");
         _dependencyWaitDuration = _meter.CreateHistogram<double>("camera_agent.processing.dependency_wait.duration", "s");
         _recipeDuration = _meter.CreateHistogram<double>("camera_agent.processing.recipe.duration", "s");
         _persistenceDuration = _meter.CreateHistogram<double>("camera_agent.processing.persistence.duration", "s");
         _graphDuration = _meter.CreateHistogram<double>("camera_agent.processing.graph.duration", "s");
+        _replayQueueWaitDuration = _meter.CreateHistogram<double>("camera_agent.processing.replay.queue_wait.duration", "s");
         _meter.CreateObservableGauge("camera_agent.processing.pending", () => _state.Snapshot.PendingCount, "{graph}");
         _meter.CreateObservableGauge("camera_agent.processing.retry", () => _state.Snapshot.RetryCount, "{node}");
         _meter.CreateObservableGauge("camera_agent.processing.oldest.age", ObserveOldestAge, "s");
+        _meter.CreateObservableGauge("camera_agent.processing.replay.pending", () => _state.Snapshot.ReplayPendingCount, "{execution}");
+        _meter.CreateObservableGauge("camera_agent.processing.replay.retry", () => _state.Snapshot.ReplayRetryCount, "{execution}");
+        _meter.CreateObservableGauge("camera_agent.processing.replay.terminal", () => _state.Snapshot.ReplayTerminalCount, "{execution}");
+        _meter.CreateObservableGauge("camera_agent.processing.replay.oldest.age", ObserveOldestReplayAge, "s");
+        _meter.CreateObservableGauge("camera_agent.processing.replay.pending.bytes", () => _state.Snapshot.ReplayPendingBytes, "By");
     }
 
     internal void RecordValidation(int nodeCount, TimeSpan duration)
@@ -60,17 +71,19 @@ public sealed class CaptureProcessingTelemetry : IDisposable
         _nodes.Add(nodeCount, new KeyValuePair<string, object?>("outcome", "validated"));
     }
 
-    internal void GraphStarted()
+    internal void GraphStarted(string executionClass = "Ephemeral")
     {
         _state.GraphStarted();
+        _executionStarts.Add(1, new KeyValuePair<string, object?>("execution.class", executionClass));
     }
 
-    internal void RecordGraph(string outcome, TimeSpan duration)
+    internal void RecordGraph(string outcome, TimeSpan duration, string executionClass = "Ephemeral")
     {
         _state.GraphCompleted(outcome);
         _fleetRuntimeState?.ProcessingCompleted(duration);
-        _graphs.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
-        _graphDuration.Record(duration.TotalSeconds, new KeyValuePair<string, object?>("outcome", outcome));
+        var tags = new TagList { { "outcome", outcome }, { "execution.class", executionClass } };
+        _graphs.Add(1, tags);
+        _graphDuration.Record(duration.TotalSeconds, tags);
     }
 
     internal void RecordDependencyWait(CaptureProcessingGraphNode node, TimeSpan duration)
@@ -80,10 +93,12 @@ public sealed class CaptureProcessingTelemetry : IDisposable
         CaptureProcessingGraphNode node,
         DurableProcessingNodeStatus status,
         string? reason,
-        TimeSpan duration)
+        TimeSpan duration,
+        string executionClass = "Ephemeral")
     {
         var outcome = Outcome(status);
         var tags = NodeTags(node, outcome, reason);
+        tags.Add("execution.class", executionClass);
         _nodes.Add(1, tags);
         _outcomes.Add(1, tags);
         if (node.RecipeName is not null)
@@ -118,12 +133,28 @@ public sealed class CaptureProcessingTelemetry : IDisposable
         _reconciliationBytes.Add(summary.QuarantineBytes, new KeyValuePair<string, object?>("outcome", "quarantined"));
     }
 
+    internal void RecordReplayClaim(DateTimeOffset acceptedUtc, DateTimeOffset claimedUtc)
+        => _replayQueueWaitDuration.Record(Math.Max(0, (claimedUtc - acceptedUtc).TotalSeconds));
+
+    internal void RecordReplayDisposition(ProcessingGraphExecutionState execution)
+        => _replayDispositions.Add(1, new TagList
+        {
+            { "outcome", execution.Status.ToString() },
+            { "reason", execution.FailureReason ?? "completed" }
+        });
+
     private Measurement<double> ObserveOldestAge()
     {
         var started = _state.Snapshot.OldestPendingUtc;
         return new(started is null ? 0 : Math.Max(
             0,
             (DateTimeOffset.UtcNow - started.Value).TotalSeconds));
+    }
+
+    private Measurement<double> ObserveOldestReplayAge()
+    {
+        var started = _state.Snapshot.OldestReplayPendingUtc;
+        return new(started is null ? 0 : Math.Max(0, (DateTimeOffset.UtcNow - started.Value).TotalSeconds));
     }
 
     private static TagList NodeTags(
