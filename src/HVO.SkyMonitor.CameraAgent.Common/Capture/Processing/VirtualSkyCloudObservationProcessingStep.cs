@@ -34,7 +34,8 @@ internal sealed class VirtualSkyCloudObservationProcessingStep(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (!Options.Enabled || context.Frame?.Metadata.Scene?.CloudScenario is not { } provenance)
+        if (!Options.Enabled || context.ProcessingExecution?.AllowAutomaticPublication == false ||
+            context.Frame?.Metadata.Scene?.CloudScenario is not { } provenance)
         {
             return;
         }

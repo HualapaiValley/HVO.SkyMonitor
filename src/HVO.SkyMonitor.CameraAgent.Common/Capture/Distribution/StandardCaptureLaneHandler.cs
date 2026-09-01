@@ -55,7 +55,8 @@ internal sealed class StandardCaptureLaneHandler(
                 context.Submission,
                 context.RawCapture,
                 context.WorkId,
-                context.LeaseToken),
+                context.LeaseToken,
+                context.Execution),
             context.Attempt,
             cancellationToken);
 
@@ -73,7 +74,7 @@ internal sealed class StandardCaptureLaneHandler(
         await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var pipelineKey = ComputePipelineKey(item.Config);
+            var pipelineKey = item.Execution?.LocalPlanIdentitySha256 ?? ComputePipelineKey(item.Config);
             CaptureProcessingGraph graph;
             lock (_pipelineGate)
             {
@@ -85,9 +86,10 @@ internal sealed class StandardCaptureLaneHandler(
                 }
                 graph = _graph;
             }
+            CaptureLaneHandlerResult result;
             try
             {
-                return await FrameProcessingWorker.ProcessGraphItemAsync(
+                result = await FrameProcessingWorker.ProcessGraphItemAsync(
                     item,
                     graph,
                     item.RawCapture is null ? null : _processingPersistence,
@@ -101,8 +103,9 @@ internal sealed class StandardCaptureLaneHandler(
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {
                 _rawIngressControl?.InvalidateEvidence();
-                return CaptureLaneHandlerResult.Terminal("evidence-unavailable");
+                result = CaptureLaneHandlerResult.Terminal("evidence-unavailable");
             }
+            return result;
         }
         finally
         {

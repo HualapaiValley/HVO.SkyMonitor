@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 
@@ -12,7 +13,8 @@ internal sealed record FrameProcessingItem(
     CaptureLoopSubmission Submission,
     RawCaptureReceipt? RawCapture = null,
     long WorkId = 0,
-    string? LeaseToken = null);
+    string? LeaseToken = null,
+    ProcessingExecutionContext? Execution = null);
 
 internal sealed class FrameProcessingChannel
 {

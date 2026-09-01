@@ -258,14 +258,11 @@ public sealed class FileSystemFrameStorageService(
             var existing = parsed.Document?.Manifest;
             if (!parsed.IsValid || existing is null ||
                 !string.Equals(existing.IdempotencyKey, CaptureContractJson.ComputeDescriptorSha256(descriptor), StringComparison.Ordinal) ||
-                !string.Equals(existing.RelativeArtifactPath, relativePayloadPath, StringComparison.Ordinal) ||
-                existing.ProducerStepId is not null && producerStepId is not null &&
-                !string.Equals(existing.ProducerStepId, producerStepId, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(existing.RelativeArtifactPath, relativePayloadPath, StringComparison.Ordinal))
             {
                 throw new InvalidDataException("Existing derivative sidecar conflicts with the requested output identity.");
             }
-            upgradeProducerSidecar = producerStepId is not null &&
-                !string.Equals(existing.ProducerStepId, producerStepId, StringComparison.OrdinalIgnoreCase);
+            upgradeProducerSidecar = existing.ProducerStepId is null && producerStepId is not null;
         }
         return upgradeProducerSidecar;
     }

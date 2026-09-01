@@ -745,10 +745,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 output.SharedAlgorithms?.ToImmutableArray() ?? [])).ToImmutableArray();
         var window = item.Step is IWindowCaptureProcessingGraphStep windowStep
             ? new ProcessingGraphWindowRequirement(
-                ProcessingGraphWindowKind.Trailing,
-                1,
+                windowStep.WindowKind,
+                windowStep.MinimumInputCount,
                 windowStep.MaximumInputCount,
-                [],
+                windowStep.RequiredPositions.ToImmutableArray(),
                 [
                     "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
                     "sensor", "setpoint", "processing-profile", "location"

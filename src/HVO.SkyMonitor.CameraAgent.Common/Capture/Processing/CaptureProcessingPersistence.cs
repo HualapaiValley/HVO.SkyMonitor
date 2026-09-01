@@ -206,6 +206,7 @@ internal sealed class CaptureProcessingPersistence(
                 0,
                 null,
                 [durableOutput],
+                null,
                 cancellationToken).ConfigureAwait(false);
             _logger.PresentationMaterializationCompleted(
                 actor, product.OutputIdentitySha256, captureId, artifactId, replayed: false);
@@ -233,6 +234,34 @@ internal sealed class CaptureProcessingPersistence(
         string? leaseToken,
         CancellationToken cancellationToken)
         => _store.DeleteOutputlessNodeAsync(captureId, nodeId, workId, leaseToken, cancellationToken);
+
+    internal ValueTask<DurableProcessingNode?> ReadExecutionNodeAsync(
+        ProcessingExecutionContext execution,
+        Guid captureId,
+        string nodeId,
+        CancellationToken cancellationToken)
+        => _store.ReadExecutionNodeAsync(execution.ExecutionId, captureId, nodeId, cancellationToken);
+
+    internal ValueTask BeginExecutionNodeAttemptAsync(
+        ProcessingExecutionContext execution,
+        CaptureProcessingGraphNode node,
+        int attempt,
+        DateTimeOffset startedUtc,
+        CancellationToken cancellationToken)
+        => _store.BeginNodeAttemptAsync(execution, node, attempt, startedUtc, cancellationToken);
+
+    internal ValueTask CompleteOutputlessExecutionNodeAsync(
+        ProcessingExecutionContext execution,
+        CaptureProcessingGraphNode node,
+        DurableProcessingNodeStatus status,
+        string? reason,
+        int attempt,
+        DateTimeOffset completedUtc,
+        TimeSpan? duration,
+        ProcessingOutcomeStatus? outcome,
+        CancellationToken cancellationToken)
+        => _store.CompleteOutputlessExecutionNodeAsync(
+            execution, node, status, reason, attempt, completedUtc, duration, outcome, cancellationToken);
 
     public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,
@@ -383,6 +412,45 @@ internal sealed class CaptureProcessingPersistence(
         return artifacts;
     }
 
+    internal async ValueTask<IReadOnlyList<ProcessingArtifact>> ReadFrozenExecutionInputsAsync(
+        Guid executionId,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
+        var outputs = await _store.ReadFrozenExecutionOutputsAsync(executionId, nodeId, cancellationToken)
+            .ConfigureAwait(false);
+        var artifacts = new List<ProcessingArtifact>(outputs.Count);
+        foreach (var output in outputs)
+        {
+            var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
+            var observationStartedUtc = output.Descriptor?.Timing.ExposureStartedUtc;
+            DateTimeOffset? observationEndedUtc = observationStartedUtc is { } startedUtc && output.Descriptor is { } descriptor
+                ? ProcessingArtifact.ResolveObservationEndedUtc(
+                    startedUtc, descriptor.Timing.ExposureEndedUtc, restored.Product.TotalIntegration)
+                : null;
+            artifacts.Add(new ProcessingArtifact(
+                restored.ArtifactId,
+                restored.Product.Role,
+                restored.Product.Variant,
+                restored.Product.Recipe.IdentitySha256,
+                restored.Product.MediaType,
+                restored.Product.Layout,
+                restored.Product.Payload,
+                restored.CreatedUtc,
+                restored.Product.TotalIntegration,
+                restored.Product.Compatibility,
+                CaptureSequence: output.CaptureSequence,
+                ObservationStartedUtc: observationStartedUtc,
+                ObservationEndedUtc: observationEndedUtc)
+            {
+                ProductKind = restored.Product.Kind,
+                SchemaVersion = restored.Product.SchemaVersion,
+                ContentIdentitySha256 = restored.Product.ContentIdentitySha256
+            });
+        }
+        return artifacts;
+    }
+
     internal async ValueTask<IReadOnlyList<ProcessingArtifact>> ReadRecentRawInputsAsync(
         ReconstructionDescriptor currentDescriptor,
         ProcessingArtifact current,
@@ -436,6 +504,66 @@ internal sealed class CaptureProcessingPersistence(
         return artifacts;
     }
 
+    internal async ValueTask<IReadOnlyList<ProcessingArtifact>> ReadFrozenExecutionRawInputsAsync(
+        Guid executionId,
+        string nodeId,
+        CancellationToken cancellationToken)
+    {
+        var entries = await _store.ReadFrozenExecutionRawInputsAsync(executionId, nodeId, cancellationToken).ConfigureAwait(false);
+        var artifacts = new List<ProcessingArtifact>(entries.Count);
+        foreach (var entry in entries)
+        {
+            var payloadPath = ResolveSafePath(entry.PayloadRelativePath);
+            if (!File.Exists(payloadPath))
+                throw new FileNotFoundException("A frozen replay input is no longer retained.", payloadPath);
+            var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(
+                ProcessingIdentity.ComputePayloadSha256(payload),
+                entry.PayloadSha256,
+                StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("A frozen replay input checksum is invalid.");
+            }
+            artifacts.Add(new ProcessingArtifact(
+                entry.Descriptor.Artifact.ArtifactId,
+                FrameArtifactRole.Raw,
+                entry.Descriptor.Artifact.Variant,
+                ProcessingIdentity.CreateRecipeIdentity(entry.Descriptor.Artifact.Recipe).IdentitySha256,
+                entry.Descriptor.Artifact.MediaType,
+                entry.Descriptor.Layout,
+                payload,
+                entry.Descriptor.Artifact.CreatedUtc,
+                entry.Descriptor.Controls.EffectiveExposure,
+                CameraAgentRecipeExecutionAdapter.CreateCompatibility(entry.Descriptor),
+                CaptureSequence: entry.Descriptor.Capture.CaptureSequence,
+                ObservationStartedUtc: entry.Descriptor.Timing.ExposureStartedUtc,
+                ObservationEndedUtc: ProcessingArtifact.ResolveObservationEndedUtc(
+                    entry.Descriptor.Timing.ExposureStartedUtc,
+                    entry.Descriptor.Timing.ExposureEndedUtc,
+                    entry.Descriptor.Controls.EffectiveExposure)));
+        }
+        return artifacts;
+    }
+
+    internal ValueTask WriteNodeAsync(
+        RawCaptureReceipt rawCapture,
+        CaptureProcessingGraphNode node,
+        DurableProcessingNodeStatus status,
+        string? reason,
+        int attempt,
+        DateTimeOffset? startedUtc,
+        DateTimeOffset completedUtc,
+        TimeSpan? duration,
+        ProcessingOutcomeStatus? outcome,
+        long workId,
+        string? leaseToken,
+        IReadOnlyList<ProcessingProduct> products,
+        CaptureProcessingContext context,
+        CancellationToken cancellationToken)
+        => WriteNodeAsync(
+            rawCapture, node, status, reason, attempt, startedUtc, completedUtc, duration,
+            outcome, workId, leaseToken, products, context, null, cancellationToken);
+
     internal async ValueTask WriteNodeAsync(
         RawCaptureReceipt rawCapture,
         CaptureProcessingGraphNode node,
@@ -450,6 +578,7 @@ internal sealed class CaptureProcessingPersistence(
         string? leaseToken,
         IReadOnlyList<ProcessingProduct> products,
         CaptureProcessingContext context,
+        ProcessingExecutionContext? execution,
         CancellationToken cancellationToken)
     {
         foreach (var product in products)
@@ -535,6 +664,7 @@ internal sealed class CaptureProcessingPersistence(
                 workId,
                 leaseToken,
                 outputs,
+                execution,
                 cancellationToken).ConfigureAwait(false);
             if (outputs.Count > 0 && _logger.IsEnabled(LogLevel.Debug))
             {
@@ -768,7 +898,6 @@ internal sealed class CaptureProcessingPersistence(
                 encodedImage.PixelFormat,
                 sourceId);
         var evidenceJson = DurableProcessingProductManifestJson.Serialize(manifest);
-        var typedManifest = manifest as DurableTypedMetadataProductManifestV3;
 
         var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
@@ -777,8 +906,13 @@ internal sealed class CaptureProcessingPersistence(
         {
             RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
         }
-        await ValidateExistingMetadataEvidenceAsync(
+        var existingEvidence = await ValidateExistingMetadataEvidenceAsync(
             payloadPath, sidecarPath, product.Payload, product.ChecksumSha256, evidenceJson, cancellationToken).ConfigureAwait(false);
+        if (existingEvidence is not null)
+        {
+            evidenceJson = existingEvidence;
+            manifest = DurableProcessingProductManifestJson.Parse(existingEvidence);
+        }
         if (!File.Exists(payloadPath))
         {
             await WriteAtomicallyAsync(storageRoot, payloadPath, product.Payload, cancellationToken).ConfigureAwait(false);
@@ -788,6 +922,7 @@ internal sealed class CaptureProcessingPersistence(
             await WriteAtomicallyAsync(storageRoot, sidecarPath, evidenceJson, cancellationToken).ConfigureAwait(false);
         }
 
+        var typedManifest = manifest as DurableTypedMetadataProductManifestV3;
         return new DurableProcessingOutput(
             product.OutputIdentitySha256,
             artifactId,
@@ -806,7 +941,7 @@ internal sealed class CaptureProcessingPersistence(
             typedManifest?.ContentIdentitySha256);
     }
 
-    private static async ValueTask ValidateExistingMetadataEvidenceAsync(
+    private static async ValueTask<byte[]?> ValidateExistingMetadataEvidenceAsync(
         string payloadPath,
         string sidecarPath,
         ReadOnlyMemory<byte> expectedPayload,
@@ -832,12 +967,44 @@ internal sealed class CaptureProcessingPersistence(
         if (sidecarExists)
         {
             var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
-            if (!sidecar.AsSpan().SequenceEqual(expectedSidecar.Span))
+            if (!sidecar.AsSpan().SequenceEqual(expectedSidecar.Span) &&
+                !ProducerAliasEquivalent(sidecar, expectedSidecar))
             {
                 throw new InvalidDataException("Existing metadata sidecar conflicts with the requested output identity.");
             }
+            return sidecar;
         }
+        return null;
     }
+
+    private static bool ProducerAliasEquivalent(
+        ReadOnlyMemory<byte> existing,
+        ReadOnlyMemory<byte> requested)
+    {
+        var existingManifest = DurableProcessingProductManifestJson.Parse(existing);
+        var requestedManifest = DurableProcessingProductManifestJson.Parse(requested);
+        return NormalizeProducerAlias(existingManifest).AsSpan().SequenceEqual(
+            NormalizeProducerAlias(requestedManifest));
+    }
+
+    private static byte[] NormalizeProducerAlias(IDurableProcessingProductManifest manifest)
+        => DurableProcessingProductManifestJson.Serialize(manifest switch
+        {
+            DurableProcessingProductManifestV1 value => value with
+            {
+                Artifact = value.Artifact with { SourceId = "producer-alias" }
+            },
+            DurableEncodedProductManifestV2 value => value with
+            {
+                Artifact = value.Artifact with { SourceId = "producer-alias" },
+                ProducerStepId = "producer-alias"
+            },
+            DurableTypedMetadataProductManifestV3 value => value with
+            {
+                Artifact = value.Artifact with { SourceId = "producer-alias" }
+            },
+            _ => throw new InvalidDataException("Durable processing product manifest type is unsupported.")
+        });
 
     private static async ValueTask<RestoredProcessingOutput> RestoreMetadataProductAsync(
         DurableProcessingOutput output,

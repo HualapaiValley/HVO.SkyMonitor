@@ -738,8 +738,6 @@ public sealed class SqliteCameraAgentGalleryTests
                 }
                 using var downgrade = connection.CreateCommand();
                 downgrade.CommandText = """
-                    DELETE FROM capture_processing_schema;
-                    INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 5);
                     DROP TABLE capture_processing_schema;
                     CREATE TABLE capture_processing_schema(
                         schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),

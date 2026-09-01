@@ -656,7 +656,12 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 FROM processing_outputs AS output
                 INNER JOIN processing_nodes AS node
                     ON node.capture_id = output.capture_id AND node.node_id = output.node_id
-                WHERE output.artifact_id = $artifact_id;
+                WHERE output.artifact_id = $artifact_id
+                  AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association
+                                   WHERE association.output_identity_sha256 = output.output_identity_sha256)
+                       OR EXISTS (SELECT 1 FROM processing_execution_outputs association
+                                  WHERE association.output_identity_sha256 = output.output_identity_sha256
+                                    AND association.published_flag = 1));
                 """;
             output.Parameters.AddWithValue("$artifact_id", artifactId.ToString("N"));
             using var reader = await output.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);

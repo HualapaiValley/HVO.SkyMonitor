@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 
@@ -39,7 +40,8 @@ public sealed record CaptureLaneHandlerContext(
     CaptureLoopSubmission Submission,
     RawCaptureReceipt RawCapture,
     long WorkId = 0,
-    string? LeaseToken = null);
+    string? LeaseToken = null,
+    ProcessingExecutionContext? Execution = null);
 
 public readonly record struct CaptureLaneHandlerResult(
     CaptureLaneHandlerOutcome Outcome,

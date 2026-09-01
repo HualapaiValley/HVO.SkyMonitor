@@ -26,7 +26,7 @@ internal sealed class TelemetryCaptureProcessingStep(
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        if (!Options.Enabled)
+        if (!Options.Enabled || context.ProcessingExecution?.AllowAutomaticPublication == false)
         {
             return ValueTask.CompletedTask;
         }

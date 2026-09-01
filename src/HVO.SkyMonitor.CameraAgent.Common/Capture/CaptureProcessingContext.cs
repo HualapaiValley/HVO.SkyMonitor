@@ -32,7 +32,7 @@ public sealed class CaptureProcessingContext
         CameraModuleConfig config,
         CaptureLoopSubmission submission,
         RawCaptureReceipt? rawCapture = null)
-        : this(config, submission, rawCapture, null)
+        : this(config, submission, rawCapture, null, null)
     {
     }
 
@@ -40,7 +40,8 @@ public sealed class CaptureProcessingContext
         CameraModuleConfig config,
         CaptureLoopSubmission submission,
         RawCaptureReceipt? rawCapture,
-        Func<CancellationToken, ValueTask<CaptureResult>>? rawFrameLoader)
+        Func<CancellationToken, ValueTask<CaptureResult>>? rawFrameLoader,
+        ProcessingExecutionContext? processingExecution)
     {
         Config = config ?? throw new ArgumentNullException(nameof(config));
         _submission = submission ?? throw new ArgumentNullException(nameof(submission));
@@ -53,6 +54,7 @@ public sealed class CaptureProcessingContext
         }
         RawCapture = rawCapture;
         _rawFrameLoader = rawFrameLoader;
+        ProcessingExecution = processingExecution;
     }
 
     public CameraModuleConfig Config { get; }
@@ -66,6 +68,8 @@ public sealed class CaptureProcessingContext
     public FrameArtifactSet? Artifacts => _artifacts;
 
     public RawCaptureReceipt? RawCapture { get; }
+
+    public ProcessingExecutionContext? ProcessingExecution { get; }
 
     public ReconstructionDescriptor? ReconstructionDescriptor => RawCapture?.Manifest.Descriptor;
 

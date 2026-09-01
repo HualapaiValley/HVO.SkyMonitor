@@ -13,7 +13,12 @@ public sealed record CaptureProcessingSnapshot(
     long ProcessingQuarantineCount = 0,
     long MissingProductCount = 0,
     bool DurableStateUnavailable = false,
-    bool ReconciliationFailed = false);
+    bool ReconciliationFailed = false,
+    long ReplayPendingCount = 0,
+    long ReplayRetryCount = 0,
+    long ReplayTerminalCount = 0,
+    DateTimeOffset? OldestReplayPendingUtc = null,
+    long ReplayPendingBytes = 0);
 
 public sealed class CaptureProcessingState
 {
@@ -27,6 +32,11 @@ public sealed class CaptureProcessingState
     private bool _durableUnavailable;
     private bool _reconciliationFailed;
     private bool _hasDurableSnapshot;
+    private long _replayPending;
+    private long _replayRetry;
+    private long _replayTerminal;
+    private long _replayPendingBytes;
+    private DateTimeOffset? _oldestReplay;
 
     public CaptureProcessingSnapshot Snapshot { get { lock (_gate) return Compose(); } }
 
@@ -64,6 +74,22 @@ public sealed class CaptureProcessingState
     }
 
     internal void SetRefreshFailure() { lock (_gate) _durableUnavailable = true; }
+    internal void SetReplayDurable(
+        long pending,
+        long retry,
+        long terminal,
+        DateTimeOffset? oldestPendingUtc,
+        long pendingBytes)
+    {
+        lock (_gate)
+        {
+            _replayPending = pending;
+            _replayRetry = retry;
+            _replayTerminal = terminal;
+            _oldestReplay = oldestPendingUtc;
+            _replayPendingBytes = pendingBytes;
+        }
+    }
     internal void SetReconciliationFailure(bool failed) { lock (_gate) _reconciliationFailed = failed; }
     internal void SetProcessingEvidence(long missing, long quarantined) { lock (_gate) { _missing = missing; _quarantine = quarantined; } }
     internal void SetProcessingQuarantine(long count) => SetProcessingEvidence(_missing, count);
@@ -77,10 +103,13 @@ public sealed class CaptureProcessingState
         if (_missing > 0) reasons.Add("processing-missing");
         if (_durableUnavailable) reasons.Add("durable-state-unavailable");
         if (_reconciliationFailed) reasons.Add("reconciliation-failed");
+        if (_replayTerminal > 0) reasons.Add("replay-terminal");
+        if (_replayRetry > 0) reasons.Add("replay-retry");
         var availability = _terminal > 0 ? CaptureProcessingAvailability.Unhealthy :
             reasons.Count > 0 ? CaptureProcessingAvailability.Degraded : CaptureProcessingAvailability.Healthy;
         return new(availability, _pending, _retry, _terminal,
             reasons.Count == 0 ? "completed" : string.Join(';', reasons), _oldest, DateTimeOffset.UtcNow,
-            _quarantine, _missing, _durableUnavailable, _reconciliationFailed);
+            _quarantine, _missing, _durableUnavailable, _reconciliationFailed,
+            _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes);
     }
 }

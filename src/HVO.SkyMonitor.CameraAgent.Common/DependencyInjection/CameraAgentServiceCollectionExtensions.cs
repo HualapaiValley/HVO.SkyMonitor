@@ -18,6 +18,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using Microsoft.Extensions.Hosting;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -212,6 +213,10 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingState>();
         services.AddSingleton<CaptureProcessingTelemetry>();
         services.AddSingleton<SqliteCaptureProcessingStore>();
+        services.AddSingleton<ProcessingReplayWakeup>();
+        services.AddSingleton<ProcessingGraphOperationsCoordinator>();
+        services.AddSingleton<IProcessingGraphOperations>(provider =>
+            provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
         services.AddSingleton<ICameraAgentGallery, SqliteCameraAgentGallery>();
         services.AddSingleton<ICameraAgentCapturePresentationProjector, CameraAgentCapturePresentationProjector>();
         services.AddSingleton<ICameraAgentPresentationRuntime, CameraAgentPresentationRuntime>();
@@ -312,6 +317,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<CalibrationLibraryValidationService>();
         services.AddHostedService<VirtualCalibrationAcquisitionRecoveryService>();
         services.AddHostedService(provider => provider.GetRequiredService<CaptureDistributionService>());
+        services.AddSingleton<ProcessingReplayWorker>();
+        services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<ProcessingReplayWorker>());
         services.AddHostedService<CameraCaptureService>();
         services.AddHostedService<RetentionBackgroundService>();
         services.AddHostedService<ArtifactOutboxDrainService>();

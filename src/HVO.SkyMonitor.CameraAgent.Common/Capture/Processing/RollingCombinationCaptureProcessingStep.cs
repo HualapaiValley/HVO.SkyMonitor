@@ -29,6 +29,16 @@ internal sealed class RollingCombinationCaptureProcessingStep(
 
     public int MaximumInputCount => Options.WindowSize;
 
+    public ProcessingGraphWindowKind WindowKind => Options.WindowKind;
+
+    public int MinimumInputCount => Options.WindowKind == ProcessingGraphWindowKind.Centered
+        ? Options.WindowSize
+        : 1;
+
+    public IReadOnlyList<int> RequiredPositions => Options.WindowKind == ProcessingGraphWindowKind.Centered
+        ? Enumerable.Range(-(Options.WindowSize / 2), Options.WindowSize).ToArray()
+        : [];
+
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -57,16 +67,20 @@ internal sealed class RollingCombinationCaptureProcessingStep(
             Payload = sourceArtifact.Frame.PixelData.ToArray()
         };
         var durableHistory = context.GetHistoricalInputs();
-        IEnumerable<ProcessingArtifact> priorInputs = durableHistory.Count > 0 ? durableHistory : _window;
+        IEnumerable<ProcessingArtifact> priorInputs = context.ProcessingExecution is not null
+            ? durableHistory
+            : durableHistory.Count > 0 ? durableHistory : _window;
         var compatibleHistory = priorInputs
             .Where(source => source.ArtifactId != current.ArtifactId)
             .Reverse()
             .TakeWhile(source => IsCompatible(source, current))
             .Reverse();
-        var candidateWindow = compatibleHistory
-            .Append(current)
-            .TakeLast(Options.WindowSize)
-            .ToList();
+        var candidateWindow = context.ProcessingExecution is null
+            ? compatibleHistory.Append(current).TakeLast(Options.WindowSize).ToList()
+            : compatibleHistory.Append(current)
+                .OrderBy(static artifact => artifact.CaptureSequence ?? long.MaxValue)
+                .Take(Options.WindowSize)
+                .ToList();
 
         var outcome = await adapter.ExecuteAsync(context, CreateRequest(candidateWindow), cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
@@ -129,6 +143,8 @@ public sealed class RollingCombinationProcessingStepOptions
 
     [Range(1, 100)]
     public int WindowSize { get; init; } = 5;
+
+    public ProcessingGraphWindowKind WindowKind { get; init; } = ProcessingGraphWindowKind.Trailing;
 
     [Range(double.Epsilon, double.MaxValue)]
     public double? MaximumIntegrationMilliseconds { get; init; }

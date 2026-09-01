@@ -43,6 +43,12 @@ internal interface IMultiOutputCaptureProcessingGraphStep
 internal interface IWindowCaptureProcessingGraphStep
 {
     int MaximumInputCount { get; }
+
+    ProcessingGraphWindowKind WindowKind => ProcessingGraphWindowKind.Trailing;
+
+    int MinimumInputCount => 1;
+
+    IReadOnlyList<int> RequiredPositions => [];
 }
 
 internal interface ICompoundCaptureProcessingGraphStep

@@ -20,6 +20,12 @@ public sealed class CaptureProcessingHealthCheck(CaptureProcessingState state) :
             ["MissingProductCount"] = snapshot.MissingProductCount,
             ["DurableStateUnavailable"] = snapshot.DurableStateUnavailable,
             ["ReconciliationFailed"] = snapshot.ReconciliationFailed,
+            ["ReplayPendingCount"] = snapshot.ReplayPendingCount,
+            ["ReplayRetryCount"] = snapshot.ReplayRetryCount,
+            ["ReplayTerminalCount"] = snapshot.ReplayTerminalCount,
+            ["OldestReplayPendingAgeSeconds"] = snapshot.OldestReplayPendingUtc is null
+                ? 0
+                : Math.Max(0, (DateTimeOffset.UtcNow - snapshot.OldestReplayPendingUtc.Value).TotalSeconds),
             ["OldestPendingAgeSeconds"] = snapshot.OldestPendingUtc is null
                 ? 0
                 : Math.Max(0, (DateTimeOffset.UtcNow - snapshot.OldestPendingUtc.Value).TotalSeconds),
