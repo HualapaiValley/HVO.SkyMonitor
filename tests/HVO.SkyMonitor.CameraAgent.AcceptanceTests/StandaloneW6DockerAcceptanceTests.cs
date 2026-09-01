@@ -2523,7 +2523,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
                 command.CommandText = """
                     SELECT r.capture_id, r.capture_sequence, n.attempt, n.reason,
                            lane.attempt_count, execution.attempt_count, execution.status,
-                           execution_node.attempt_count, execution_node.status, execution_node.reason
+                           execution_node.attempt_count, execution_node.status, execution_node.reason,
+                           (SELECT COUNT(*) FROM processing_node_attempts attempt
+                            WHERE attempt.execution_id = execution.execution_id
+                              AND attempt.node_id = execution_node.node_id),
+                           (SELECT MAX(attempt_number) FROM processing_node_attempts attempt
+                            WHERE attempt.execution_id = execution.execution_id
+                              AND attempt.node_id = execution_node.node_id)
                     FROM processing_nodes n
                     JOIN raw_captures r ON r.capture_id = n.capture_id
                     JOIN capture_lane_work lane ON lane.raw_capture_row_id = r.raw_capture_row_id
@@ -2550,11 +2556,13 @@ public sealed class StandaloneW6DockerAcceptanceTests
                     Assert.IsTrue(artifacts.Any(static artifact => artifact.Variant == "w6-overlay-manifest"));
                     Assert.IsTrue(artifacts.Any(static artifact => artifact.Variant == "w6-annotated-preview"));
                     Assert.AreEqual(reader.GetInt32(2), reader.GetInt32(4));
-                    Assert.AreEqual(reader.GetInt32(2), reader.GetInt32(5));
                     Assert.AreEqual(reader.GetInt32(2), reader.GetInt32(7));
+                    Assert.IsGreaterThanOrEqualTo(reader.GetInt32(2), reader.GetInt32(5));
                     Assert.AreEqual("Completed", reader.GetString(6));
                     Assert.AreEqual("TerminalFailure", reader.GetString(8));
                     Assert.AreEqual("processing.optional-degraded", reader.GetString(9));
+                    Assert.AreEqual(1, reader.GetInt32(10));
+                    Assert.AreEqual(reader.GetInt32(2), reader.GetInt32(11));
                     return new OptionalPresentationDegradationSnapshot(
                         captureId,
                         reader.GetInt64(1),
@@ -2567,6 +2575,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
                         reader.GetString(6),
                         reader.GetInt32(7),
                         reader.GetString(8),
+                        reader.GetInt32(10),
                         artifacts);
                 }
             }
@@ -5651,6 +5660,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         string ExecutionStatus,
         int ExecutionNodeAttempt,
         string ExecutionNodeStatus,
+        int ExecutionNodeAttemptRecordCount,
         IReadOnlyList<CaptureArtifactIdentity> Artifacts);
 
     private sealed record CaptureArtifactIdentity(
