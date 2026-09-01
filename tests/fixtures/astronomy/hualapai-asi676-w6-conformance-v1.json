@@ -15,7 +15,7 @@
     "height": 3552,
     "principalPoint": { "x": 1776.0, "y": 1776.0 },
     "imageCircleRadiusPixels": 1627.5,
-    "rigSha256": "7B395B8DD577024944C263E1EA642BB472E3144110FF3FE75DBBCE67B187F172"
+    "rigSha256": "7191D84F4BA368482546AB6A09FBFEDD2F273BD626FABE6F3156C55C54DFCA9B"
   },
   "tolerances": {
     "projectedSensorPixels": 0.35,
