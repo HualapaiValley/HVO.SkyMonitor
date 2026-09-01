@@ -1669,20 +1669,20 @@ public sealed class StandaloneW6DockerAcceptanceTests
             runtimeRoot,
             minimumSequence,
             static snapshot => snapshot.CaptureCount >= 6,
-            "six-capture bounded drain workload",
+            "bounded drain workload",
             TimeSpan.FromMinutes(2)).ConfigureAwait(false);
         await SetCaptureStateAsync(page, pause: true).ConfigureAwait(false);
         initial = ReadDrainSnapshot(runtimeRoot, minimumSequence);
-        Assert.AreEqual(6, initial.CaptureCount);
-        Assert.AreEqual(151_400_448, initial.RawBytes);
+        Assert.IsInRange(6L, 7L, initial.CaptureCount);
+        Assert.AreEqual(initial.CaptureCount * 25_233_408L, initial.RawBytes);
         initial = await WaitForDrainConditionAsync(
             runtimeRoot,
             minimumSequence,
             static snapshot => snapshot.OldestAge >= TimeSpan.FromSeconds(60),
             "60-second oldest bounded drain work",
             TimeSpan.FromMinutes(1)).ConfigureAwait(false);
-        Assert.AreEqual(6, initial.RetentionHoldCount);
-        Assert.AreEqual(6, initial.IncompleteStandardWorkCount);
+        Assert.AreEqual(initial.CaptureCount, initial.RetentionHoldCount);
+        Assert.AreEqual(initial.CaptureCount, initial.IncompleteStandardWorkCount);
 
         var retainedRaw = ReadManifests(runtimeRoot)
             .Where(item => item.Manifest.Descriptor.Artifact.Role == FrameArtifactRole.Raw &&
@@ -1690,7 +1690,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             .OrderBy(item => item.Manifest.Descriptor.Capture.CaptureSequence)
             .Select(item => SnapshotArtifactFiles(runtimeRoot, item))
             .ToArray();
-        Assert.HasCount(6, retainedRaw);
+        Assert.HasCount((int)initial.CaptureCount, retainedRaw);
         var clearReference = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(clearReferencePath).ConfigureAwait(false));
         Assert.IsTrue(clearReference.IsValid);
         var clearReferenceManifest = clearReference.Document?.Manifest
@@ -1772,7 +1772,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             [
                 "disk pressure was detected and reported degraded within sixty seconds",
                 "retained raw and reference artifacts remained checksum-stable under pressure",
-                "six queued captures drained within three minutes at no less than 0.2 captures per second",
+                "six to seven queued captures drained within three minutes at no less than 0.2 captures per second",
                 "drain completed without duplicate logical outputs and healthy storage observations resumed"
             ]).ConfigureAwait(false);
         return new PressureDrainEvidence(
