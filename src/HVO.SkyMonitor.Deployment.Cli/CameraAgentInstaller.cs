@@ -359,6 +359,7 @@ internal sealed class CameraAgentInstaller
                     $"installer-{instanceId:D}",
                     manifest.DeploymentLocationVersion,
                     manifest.DeploymentLocationSha256,
+                    (ContractReplayProfile)request.ReplayProfile,
                     catalog),
                 cancellationToken).ConfigureAwait(false);
 

@@ -105,6 +105,22 @@ public sealed class JpegImageCodecTests
     }
 
     [TestMethod]
+    public void DecodeJpeg_RejectsTruncatedScanDataAcceptedByInspection()
+    {
+        var encoded = JpegImageCodec.EncodeMono8ToJpeg(
+            8,
+            8,
+            Enumerable.Range(0, 64).Select(static value => (byte)(value * 4)).ToArray());
+        var truncated = encoded[..^2];
+
+        var info = JpegImageCodec.InspectJpeg(truncated);
+
+        Assert.AreEqual(8, info.Width);
+        Assert.AreEqual(8, info.Height);
+        Assert.Throws<InvalidOperationException>(() => JpegImageCodec.DecodeJpeg(truncated));
+    }
+
+    [TestMethod]
     public void EncodeAndDecode_PreCanceledTokenThrows()
     {
         using var cancellation = new CancellationTokenSource();

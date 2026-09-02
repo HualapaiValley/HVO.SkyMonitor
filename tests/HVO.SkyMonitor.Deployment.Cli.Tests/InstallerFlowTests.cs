@@ -257,6 +257,7 @@ public sealed class InstallerFlowTests
             cancellationToken.ThrowIfCancellationRequested();
             Assert.AreEqual("hyg-v42-production", expectation.Catalog.CatalogId);
             Assert.AreEqual(64, expectation.ConfigurationSha256.Length);
+            Assert.AreEqual(HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, expectation.ReplayProfile);
             return Task.CompletedTask;
         }
     }

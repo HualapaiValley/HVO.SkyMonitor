@@ -73,7 +73,7 @@ internal static class ReplayProjection
             !ReplayProtocol.IsBoundedIdentifier(request.OutputVariant) ||
             request.Options.ValueKind is not (System.Text.Json.JsonValueKind.Object or System.Text.Json.JsonValueKind.Null) ||
             request.Input is null || !Enum.IsDefined(request.Input.Kind) || !Enum.IsDefined(request.Input.Role) ||
-            !OptionalIdentifier(request.Input.Variant) || !OptionalSha256(request.Input.RecipeIdentitySha256) ||
+            !OptionalIdentifier(request.Input.Variant) || !OptionalSemanticSha256(request.Input.RecipeIdentitySha256) ||
             request.Inputs is null || request.Inputs.Count is < 1 or > ReplayProtocolLimits.MaximumInputs ||
             request.InputArtifactId == Guid.Empty)
         {
@@ -156,7 +156,8 @@ internal static class ReplayProjection
         ReplayRunnerJobContext context,
         ProcessingExecutionRequest request,
         ProcessingOutcome outcome,
-        LocalReplayRunnerOptions options)
+        LocalReplayRunnerOptions options,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(outcome);
         var payloads = new List<ReadOnlyMemory<byte>>();
@@ -169,7 +170,7 @@ internal static class ReplayProjection
             outcome.ReasonCode,
             outcome.Field,
             products);
-        ValidateOutcomeMetadata(envelope, context, request, payloads, options.MaxTotalTransferBytes);
+        ValidateOutcomeMetadata(envelope, context, request, payloads, options.MaxTotalTransferBytes, cancellationToken);
         return new ReplayResponseProjection(envelope, payloads);
     }
 
@@ -178,10 +179,11 @@ internal static class ReplayProjection
         IReadOnlyList<byte[]> payloads,
         ReplayRunnerJobContext context,
         ProcessingExecutionRequest request,
-        long maximumTransferBytes)
+        long maximumTransferBytes,
+        CancellationToken cancellationToken = default)
     {
         var memories = payloads.Select(static payload => (ReadOnlyMemory<byte>)payload).ToArray();
-        ValidateOutcomeMetadata(envelope, context, request, memories, maximumTransferBytes);
+        ValidateOutcomeMetadata(envelope, context, request, memories, maximumTransferBytes, cancellationToken);
         var products = envelope.Products.Select(product => new ProcessingProduct(
             product.Role,
             product.Variant,
@@ -348,12 +350,12 @@ internal static class ReplayProjection
         if (artifact is null || artifact.ArtifactId == Guid.Empty || !artifactIds.Add(artifact.ArtifactId) ||
             !Enum.IsDefined(artifact.Role) || !Enum.IsDefined(artifact.ProductKind) ||
             !ReplayProtocol.IsBoundedIdentifier(artifact.Variant) ||
-            !ReplayProtocol.IsUppercaseSha256(artifact.RecipeIdentitySha256) ||
+            !ReplayProtocol.IsSha256(artifact.RecipeIdentitySha256) ||
             !ReplayProtocol.IsBoundedIdentifier(artifact.MediaType) ||
             artifact.CreatedUtc.Offset != TimeSpan.Zero || artifact.Integration < TimeSpan.Zero ||
             artifact.Compatibility is null || !OptionalIdentifier(artifact.SchemaVersion) ||
-            !OptionalSha256(artifact.ContentIdentitySha256) || artifact.CaptureId == Guid.Empty ||
-            !OptionalSha256(artifact.DescriptorIdentitySha256))
+            !OptionalSemanticSha256(artifact.ContentIdentitySha256) || artifact.CaptureId == Guid.Empty ||
+            !OptionalSemanticSha256(artifact.DescriptorIdentitySha256))
         {
             throw new LocalReplayRunnerProtocolException("Replay artifact metadata is invalid.");
         }
@@ -383,14 +385,14 @@ internal static class ReplayProjection
         List<ReplayPayloadDeclaration> declarations)
     {
         if (input is null || !ReplayProtocol.IsBoundedIdentifier(input.Name) || !Enum.IsDefined(input.Kind) ||
-            !OptionalIdentifier(input.SchemaVersion) || !OptionalSha256(input.IdentitySha256) ||
-            !OptionalSha256(input.ChecksumSha256) || input.ArtifactId == Guid.Empty)
+            !OptionalIdentifier(input.SchemaVersion) || !OptionalSemanticSha256(input.IdentitySha256) ||
+            !OptionalSemanticSha256(input.ChecksumSha256) || input.ArtifactId == Guid.Empty)
         {
             throw new LocalReplayRunnerProtocolException("Replay auxiliary input metadata is invalid.");
         }
         if (input.Selector is { } selector &&
             (!Enum.IsDefined(selector.Kind) || !Enum.IsDefined(selector.Role) ||
-             !OptionalIdentifier(selector.Variant) || !OptionalSha256(selector.RecipeIdentitySha256)))
+             !OptionalIdentifier(selector.Variant) || !OptionalSemanticSha256(selector.RecipeIdentitySha256)))
         {
             throw new LocalReplayRunnerProtocolException("Replay auxiliary selector metadata is invalid.");
         }
@@ -405,7 +407,7 @@ internal static class ReplayProjection
         }
         if (annotation.Objects is null || annotation.Objects.Count > ReplayProtocolLimits.MaximumAnnotationItems ||
             annotation.Segments is null || annotation.Segments.Count > ReplayProtocolLimits.MaximumAnnotationItems ||
-            !ReplayProtocol.IsUppercaseSha256(annotation.ProvenanceSha256) ||
+            !ReplayProtocol.IsSha256(annotation.ProvenanceSha256) ||
             annotation.Objects.Any(static item => item is null || !ReplayProtocol.IsBoundedIdentifier(item.Id) ||
                 item.DisplayName is null || item.DisplayName.Length > ReplayProtocolLimits.MaximumIdentifierLength) ||
             annotation.Segments.Any(static item => item is null || !ReplayProtocol.IsBoundedIdentifier(item.ConstellationId)) ||
@@ -423,7 +425,8 @@ internal static class ReplayProjection
         ReplayRunnerJobContext context,
         ProcessingExecutionRequest request,
         IReadOnlyList<ReadOnlyMemory<byte>> payloads,
-        long maximumTransferBytes)
+        long maximumTransferBytes,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -476,7 +479,7 @@ internal static class ReplayProjection
                 : null;
             foreach (var product in envelope.Products)
             {
-                ValidateProduct(product, payloads, request, expectedProduct!, expectedRecipe!);
+                ValidateProduct(product, payloads, request, expectedProduct!, expectedRecipe!, cancellationToken);
             }
         }
         catch (LocalReplayRunnerOutputValidationException)
@@ -498,7 +501,8 @@ internal static class ReplayProjection
         IReadOnlyList<ReadOnlyMemory<byte>> payloads,
         ProcessingExecutionRequest request,
         ProcessingProductContract expectedProduct,
-        ProcessingRecipeIdentity expectedRecipe)
+        ProcessingRecipeIdentity expectedRecipe,
+        CancellationToken cancellationToken)
     {
         if (product is null || !Enum.IsDefined(product.Role) || !Enum.IsDefined(product.Kind) ||
             product.Role != expectedProduct.Role ||
@@ -575,7 +579,8 @@ internal static class ReplayProjection
             payload,
             product.ContentIdentitySha256,
             product.Recipe.IdentitySha256,
-            product.Algorithms))
+            product.Algorithms,
+            cancellationToken))
         {
             throw new LocalReplayRunnerOutputValidationException(
                 "Replay product payload does not match its recipe contract.");
@@ -591,7 +596,7 @@ internal static class ReplayProjection
             !ReplayProtocol.IsBoundedIdentifier(compatibility.Sensor) ||
             !ReplayProtocol.IsBoundedIdentifier(compatibility.SetpointRegime) ||
             !ReplayProtocol.IsBoundedIdentifier(compatibility.ProcessingProfile) ||
-            !OptionalSha256(compatibility.LocationIdentitySha256))
+            !OptionalSemanticSha256(compatibility.LocationIdentitySha256))
         {
             throw new LocalReplayRunnerProtocolException("Replay compatibility identity is invalid.");
         }
@@ -677,4 +682,6 @@ internal static class ReplayProjection
     private static bool OptionalIdentifier(string? value) => value is null || ReplayProtocol.IsBoundedIdentifier(value);
 
     private static bool OptionalSha256(string? value) => value is null || ReplayProtocol.IsUppercaseSha256(value);
+
+    private static bool OptionalSemanticSha256(string? value) => value is null || ReplayProtocol.IsSha256(value);
 }

@@ -75,7 +75,8 @@ public static class BuiltInProcessingRecipes
         ReadOnlyMemory<byte> payload,
         string? contentIdentitySha256,
         string recipeIdentitySha256,
-        IReadOnlyList<ProcessingAlgorithmIdentity> algorithms)
+        IReadOnlyList<ProcessingAlgorithmIdentity> algorithms,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(contract);
@@ -87,7 +88,8 @@ public static class BuiltInProcessingRecipes
             payload,
             contentIdentitySha256,
             recipeIdentitySha256,
-            algorithms);
+            algorithms,
+            cancellationToken);
     }
 
     internal static IProcessingRecipe[] CreateAll() =>

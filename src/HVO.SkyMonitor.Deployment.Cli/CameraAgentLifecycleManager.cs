@@ -445,8 +445,20 @@ internal sealed class CameraAgentLifecycleManager
                 {
                     operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Restoring }, recovery.Token)
                         .ConfigureAwait(false);
-                    var logs = await docker.ReadContainerLogsAsync(compose.ContainerName, recovery.Token).ConfigureAwait(false);
-                    SafeFileSystem.WriteTextAtomic(Path.Combine(operationRoot, "candidate-diagnostics.txt"), logs);
+                    var diagnostics = new StringBuilder();
+                    foreach (var containerName in new[]
+                             {
+                                 candidateCompose.ContainerName,
+                                 candidateCompose.ReplayRunnerContainerName
+                             }.OfType<string>())
+                    {
+                        diagnostics.Append("container=").AppendLine(containerName);
+                        diagnostics.AppendLine(
+                            await docker.ReadContainerLogsAsync(containerName, recovery.Token).ConfigureAwait(false));
+                    }
+                    SafeFileSystem.WriteTextAtomic(
+                        Path.Combine(operationRoot, "candidate-diagnostics.txt"),
+                        diagnostics.ToString());
                     if (mutationStarted)
                     {
                         SafeFileSystem.WriteTextAtomic(compose.ComposeFile, originalCompose);
@@ -734,6 +746,7 @@ internal sealed class CameraAgentLifecycleManager
                 manifest.InstanceId.ToString("D"), manifest.OwnerEmail, result.OwnerBootstrapState,
                 manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256,
                 manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
+                manifest.ReplayProfile,
                 manifest.Catalog),
             cancellationToken).ConfigureAwait(false);
         await docker.VerifyContainerAsync(compose, paths, image, uid, gid, cancellationToken).ConfigureAwait(false);

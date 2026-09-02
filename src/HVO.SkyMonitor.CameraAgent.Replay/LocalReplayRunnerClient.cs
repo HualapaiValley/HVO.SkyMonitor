@@ -193,7 +193,8 @@ public sealed class LocalReplayRunnerClient : IDisposable, IAsyncDisposable
                 payloads,
                 jobContext,
                 request,
-                _options.MaxTotalTransferBytes);
+                _options.MaxTotalTransferBytes,
+                executionCancellation.Token);
             RecordTransfer("response", responseFrame.Payload.Length, payloads);
             var executionDuration = Stopwatch.GetElapsedTime(executionStarted);
             Volatile.Write(ref _lastExecutionEvidence, new LocalReplayRunnerExecutionEvidence(

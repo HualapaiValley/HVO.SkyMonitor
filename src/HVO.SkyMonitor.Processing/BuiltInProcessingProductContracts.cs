@@ -72,7 +72,8 @@ internal static class BuiltInProcessingProductContracts
         ReadOnlyMemory<byte> payload,
         string? contentIdentitySha256,
         string recipeIdentitySha256,
-        IReadOnlyList<ProcessingAlgorithmIdentity> algorithms)
+        IReadOnlyList<ProcessingAlgorithmIdentity> algorithms,
+        CancellationToken cancellationToken)
     {
         if (contract.ExpectedPayloadSha256 is not null && !string.Equals(
             ProcessingIdentity.ComputePayloadSha256(payload),
@@ -91,8 +92,14 @@ internal static class BuiltInProcessingProductContracts
                 {
                     return false;
                 }
+                var decoded = JpegImageCodec.DecodeJpeg(payload, cancellationToken);
+                if (decoded.Width != encodedLayout.Width || decoded.Height != encodedLayout.Height ||
+                    decoded.PixelFormat != encodedLayout.PixelFormat)
+                {
+                    return false;
+                }
             }
-            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or OverflowException)
             {
                 return false;
             }
@@ -110,14 +117,50 @@ internal static class BuiltInProcessingProductContracts
                 {
                     return false;
                 }
-                var expected = ImageStatisticsCalculator.Calculate(
-                    layout.Width,
-                    layout.Height,
-                    layout.StrideBytes,
-                    layout.PixelFormat,
-                    input.Payload,
-                    layout.WhiteLevel is { } whiteLevel ? checked((ushort)Math.Round(whiteLevel)) : null);
-                if (statistics != expected) return false;
+                var pixelCount = checked((long)layout.Width * layout.Height);
+                var channelCount = layout.PixelFormat == CameraPixelFormat.Rgb24 ? 3 : 1;
+                var sampleCount = checked(pixelCount * channelCount);
+                var formatMaximum = layout.PixelFormat is CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24
+                    ? byte.MaxValue
+                    : ushort.MaxValue;
+                var saturationLevel = layout.WhiteLevel is { } whiteLevel
+                    ? checked((ushort)Math.Round(whiteLevel))
+                    : (ushort)formatMaximum;
+                var count = checked((ulong)sampleCount);
+                var minimumSum = statistics.Minimum == statistics.Maximum
+                    ? checked((ulong)statistics.Minimum * count)
+                    : checked((ulong)statistics.Minimum * (count - 1) + statistics.Maximum);
+                var maximumSum = statistics.Minimum == statistics.Maximum
+                    ? minimumSum
+                    : checked((ulong)statistics.Maximum * (count - 1) + statistics.Minimum);
+                var minimumSquare = checked((ulong)statistics.Minimum * statistics.Minimum);
+                var maximumSquare = checked((ulong)statistics.Maximum * statistics.Maximum);
+                var minimumSumOfSquares = statistics.Minimum == statistics.Maximum
+                    ? checked(minimumSquare * count)
+                    : checked(minimumSquare * (count - 1) + maximumSquare);
+                var maximumSumOfSquares = statistics.Minimum == statistics.Maximum
+                    ? minimumSumOfSquares
+                    : checked(maximumSquare * (count - 1) + minimumSquare);
+                if (statistics.PixelCount != pixelCount || statistics.ChannelCount != channelCount ||
+                    statistics.SampleCount != sampleCount || statistics.Minimum > statistics.Maximum ||
+                    statistics.Maximum > formatMaximum || statistics.Sum < minimumSum || statistics.Sum > maximumSum ||
+                    statistics.SumOfSquares < minimumSumOfSquares || statistics.SumOfSquares > maximumSumOfSquares ||
+                    statistics.ZeroCount is < 0 || statistics.ZeroCount > sampleCount ||
+                    statistics.SaturatedCount is < 0 || statistics.SaturatedCount > sampleCount ||
+                    (statistics.Minimum == 0) != (statistics.ZeroCount > 0) ||
+                    (statistics.Maximum < saturationLevel || statistics.Minimum > saturationLevel) &&
+                    statistics.SaturatedCount != 0 ||
+                    (statistics.Minimum == saturationLevel || statistics.Maximum == saturationLevel) &&
+                    statistics.SaturatedCount == 0 ||
+                    statistics.Minimum == statistics.Maximum && statistics.Minimum == saturationLevel &&
+                    statistics.SaturatedCount != sampleCount ||
+                    !string.Equals(
+                        statistics.AlgorithmVersion,
+                        ImageStatisticsCalculator.AlgorithmVersion,
+                        StringComparison.Ordinal))
+                {
+                    return false;
+                }
                 var canonical = Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(
                     JsonSerializer.SerializeToElement(statistics, ProcessingRecipeSupport.SerializerOptions)).GetRawText());
                 if (!payload.Span.SequenceEqual(canonical))

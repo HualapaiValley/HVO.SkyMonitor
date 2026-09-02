@@ -25,6 +25,7 @@ internal sealed record InstallationVerificationExpectation(
     string DeploymentLocationId,
     long DeploymentLocationVersion,
     string DeploymentLocationSha256,
+    HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile ReplayProfile,
     HVO.SkyMonitor.Deployment.Contracts.CatalogInstallationIdentity Catalog);
 
 internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapClient
@@ -98,6 +99,9 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
         response.EnsureSuccessStatusCode();
         using var json = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false));
         var value = json.RootElement;
+        var replayProfileMatches = value.TryGetProperty("replayProfile", out var replayProfile)
+            ? replayProfile.GetString() == expectation.ReplayProfile.ToString()
+            : expectation.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess;
         var matches = value.GetProperty("agentId").GetString() == expectation.AgentId &&
                       value.GetProperty("ownerEmail").GetString() == expectation.OwnerEmail &&
                       value.GetProperty("ownerBootstrapState").GetString() == expectation.OwnerBootstrapState &&
@@ -105,10 +109,11 @@ internal sealed class OwnerBootstrapClient(Uri baseAddress) : IOwnerBootstrapCli
                       Lower(value, "rigProfileSha256") == expectation.RigProfileSha256 &&
                       Lower(value, "scheduleSha256") == expectation.ScheduleSha256 &&
                       value.GetProperty("deploymentLocationId").GetString() == expectation.DeploymentLocationId &&
-                      value.GetProperty("deploymentLocationVersion").GetInt64() == expectation.DeploymentLocationVersion &&
-                      Lower(value, "deploymentLocationSha256") == expectation.DeploymentLocationSha256 &&
-                      value.GetProperty("rawIngressRoot").GetString() == "/app/data/raw" &&
-                      value.GetProperty("catalogId").GetString() == expectation.Catalog.CatalogId &&
+                       value.GetProperty("deploymentLocationVersion").GetInt64() == expectation.DeploymentLocationVersion &&
+                       Lower(value, "deploymentLocationSha256") == expectation.DeploymentLocationSha256 &&
+                       value.GetProperty("rawIngressRoot").GetString() == "/app/data/raw" &&
+                       replayProfileMatches &&
+                       value.GetProperty("catalogId").GetString() == expectation.Catalog.CatalogId &&
                       value.GetProperty("packageVersion").GetString() == expectation.Catalog.PackageVersion &&
                       value.GetProperty("schemaVersion").GetString() == expectation.Catalog.SchemaVersion &&
                       value.GetProperty("preprocessingVersion").GetString() == expectation.Catalog.PreprocessingVersion &&

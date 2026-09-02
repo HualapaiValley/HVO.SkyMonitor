@@ -410,7 +410,12 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
 
         try
         {
-            var projection = ReplayProjection.ProjectResponse(context, request, outcome, _options);
+            var projection = ReplayProjection.ProjectResponse(
+                context,
+                request,
+                outcome,
+                _options,
+                executionCancellation.Token);
             var metadata = ReplayProtocol.SerializeMetadata(projection.Metadata, _options.MaxMetadataBytes);
             long transferBytes = metadata.Length;
             foreach (var payload in projection.Payloads)

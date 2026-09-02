@@ -368,6 +368,71 @@ public sealed class LocalReplayRunnerTests
     }
 
     [TestMethod]
+    public async Task Projection_AcceptsLowercaseSemanticHashesButRejectsLowercasePayloadDigest()
+    {
+        var options = CreateOptions(CreateSocketPath());
+        var semanticSha256 = Convert.ToHexStringLower(Convert.FromHexString(
+            ProcessingConformanceFixture.CreateProcessingArtifact().RecipeIdentitySha256));
+        var auxiliaryPayload = "{}"u8.ToArray();
+        var auxiliarySha256 = Convert.ToHexStringLower(Convert.FromHexString(
+            ReplayProtocol.ComputeSha256(auxiliaryPayload)));
+        var artifact = ProcessingConformanceFixture.CreateProcessingArtifact() with
+        {
+            RecipeIdentitySha256 = semanticSha256,
+            Compatibility = ProcessingConformanceFixture.Compatibility with
+            {
+                LocationIdentitySha256 = semanticSha256
+            },
+            ContentIdentitySha256 = semanticSha256,
+            DescriptorIdentitySha256 = semanticSha256
+        };
+        var request = ProcessingConformanceFixture.CreateRequest(artifact) with
+        {
+            Input = ProcessingInputSelector.RecipeResult(FrameArtifactRole.Raw, "source", semanticSha256),
+            AuxiliaryInputs =
+            [
+                new ProcessingAuxiliaryInput(
+                    "context",
+                    ProcessingAuxiliaryInputKind.CanonicalJson,
+                    ProcessingInputSelector.RecipeResult(FrameArtifactRole.Metadata, "context", semanticSha256),
+                    "context-v1",
+                    auxiliarySha256,
+                    auxiliaryPayload,
+                    Guid.NewGuid())
+                {
+                    ChecksumSha256 = auxiliarySha256
+                }
+            ]
+        };
+
+        var projection = ReplayProjection.ProjectRequest(
+            AuthenticationKey,
+            CreateJobContext(),
+            request,
+            options,
+            DateTimeOffset.UtcNow);
+        var input = projection.Metadata.Request.Inputs.Single();
+        var lowercasePayloadDigest = input with
+        {
+            PayloadSha256 = Convert.ToHexStringLower(Convert.FromHexString(input.PayloadSha256))
+        };
+        var invalidEnvelope = projection.Metadata with
+        {
+            Request = projection.Metadata.Request with { Inputs = [lowercasePayloadDigest] }
+        };
+
+        Assert.Throws<LocalReplayRunnerProtocolException>(() => ReplayProjection.ValidateRequestEnvelope(
+            invalidEnvelope,
+            options,
+            DateTimeOffset.UtcNow,
+            validateAuthorizationTime: false));
+
+        var executableRequest = ProcessingConformanceFixture.CreateRequest(artifact);
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(executableRequest).ConfigureAwait(false);
+        _ = ReplayProjection.ProjectResponse(CreateJobContext(), executableRequest, outcome, options);
+    }
+
+    [TestMethod]
     public void DescriptorOnlyFrameLayoutDoesNotRequirePixelPayloadTransfer()
     {
         var options = CreateOptions(CreateSocketPath());
@@ -418,6 +483,31 @@ public sealed class LocalReplayRunnerTests
 
         Assert.IsNotEmpty(Validate(missing));
         Assert.IsNotEmpty(Validate(duplicate));
+    }
+
+    [TestMethod]
+    public void ProcessingOptions_LocalRunnerProfileRejectsAggregateTransferReservation()
+    {
+        var runner = new LocalReplayRunnerHostOptions
+        {
+            AuthorizationKey = Encoding.UTF8.GetString(AuthenticationKey)
+        };
+        var valid = new ProcessingGraphExecutionOptions
+        {
+            ReplayProfile = ReplayExecutionProfile.LocalRunner,
+            ReplayMaximumConcurrency = 2,
+            LocalRunner = runner
+        };
+        var invalid = new ProcessingGraphExecutionOptions
+        {
+            ReplayProfile = ReplayExecutionProfile.LocalRunner,
+            ReplayMaximumConcurrency = 3,
+            LocalRunner = runner
+        };
+
+        Assert.IsEmpty(Validate(valid));
+        Assert.IsTrue(Validate(invalid).Any(result =>
+            result.MemberNames.Contains(nameof(ProcessingGraphExecutionOptions.ReplayMaximumConcurrency), StringComparer.Ordinal)));
     }
 
     [TestMethod]
@@ -552,7 +642,20 @@ public sealed class LocalReplayRunnerTests
         };
         var jpegOutcome = await new ProcessingRecipeExecutor().ExecuteAsync(jpegRequest).ConfigureAwait(false);
         var jpegProjection = ReplayProjection.ProjectResponse(context, jpegRequest, jpegOutcome, options);
-        var invalidJpegPayload = new byte[] { 1, 2, 3, 4 };
+        using var jpegCancellation = new CancellationTokenSource();
+        await jpegCancellation.CancelAsync().ConfigureAwait(false);
+        Assert.Throws<OperationCanceledException>(() => ReplayProjection.ReconstructOutcome(
+            jpegProjection.Metadata,
+            jpegProjection.Payloads.Select(static payload => payload.ToArray()).ToArray(),
+            context,
+            jpegRequest,
+            options.MaxTotalTransferBytes,
+            jpegCancellation.Token));
+        var validJpegPayload = jpegProjection.Payloads.Single().ToArray();
+        var invalidJpegPayload = validJpegPayload[..^2];
+        var inspectedJpeg = JpegImageCodec.InspectJpeg(invalidJpegPayload);
+        Assert.AreEqual(ProcessingConformanceFixture.Layout.Width, inspectedJpeg.Width);
+        Assert.Throws<InvalidOperationException>(() => JpegImageCodec.DecodeJpeg(invalidJpegPayload));
         var invalidJpegSha256 = ReplayProtocol.ComputeSha256(invalidJpegPayload);
         var invalidJpeg = jpegProjection.Metadata with
         {
@@ -617,7 +720,7 @@ public sealed class LocalReplayRunnerTests
             imageQualityOutcome.Products.Single().Payload.Span,
             serializerOptions)!;
         var invalidStatisticsPayload = Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(
-            JsonSerializer.SerializeToElement(statistics with { Sum = statistics.Sum + 1 }, serializerOptions))
+            JsonSerializer.SerializeToElement(statistics with { SampleCount = statistics.SampleCount + 1 }, serializerOptions))
             .GetRawText());
         var invalidStatisticsSha256 = ReplayProtocol.ComputeSha256(invalidStatisticsPayload);
         var invalidStatistics = imageQualityProjection.Metadata with

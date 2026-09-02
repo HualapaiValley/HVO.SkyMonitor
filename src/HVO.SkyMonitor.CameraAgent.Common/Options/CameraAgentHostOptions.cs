@@ -705,6 +705,14 @@ public sealed class ProcessingGraphExecutionOptions : IValidatableObject
             {
                 yield return result;
             }
+            if (ReplayMaximumConcurrency >= 1 &&
+                LocalRunner.MaximumTransferBytes >
+                LocalReplayRunnerOptions.MaximumAggregateTransferBytes / (ReplayMaximumConcurrency * 2L))
+            {
+                yield return new ValidationResult(
+                    "Local replay runner concurrent request and response buffers exceed the aggregate transfer limit.",
+                    [nameof(ReplayMaximumConcurrency), nameof(LocalRunner.MaximumTransferBytes)]);
+            }
         }
     }
 }

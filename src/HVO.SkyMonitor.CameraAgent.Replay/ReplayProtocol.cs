@@ -262,6 +262,10 @@ internal static class ReplayProtocol
         value is { Length: SHA256.HashSizeInBytes * 2 } &&
         value.All(static character => character is >= '0' and <= '9' or >= 'A' and <= 'F');
 
+    internal static bool IsSha256(string? value) =>
+        value is { Length: SHA256.HashSizeInBytes * 2 } &&
+        value.All(static character => character is >= '0' and <= '9' or >= 'A' and <= 'F' or >= 'a' and <= 'f');
+
     internal static void ValidateJobContext(ReplayRunnerJobContext context, DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(context);

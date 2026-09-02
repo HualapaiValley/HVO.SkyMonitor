@@ -745,6 +745,60 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    public async Task UpgradeAsync_FailedLocalRunnerCandidateCapturesBothContainerLogsBeforeRollback()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        var candidateReference = $"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}";
+        var candidateImageId = $"sha256:{new string('5', 64)}";
+        fixture.Runner.ConfigureRuntime(
+            fixture.Paths,
+            fixture.Manifest.Image.ImmutableReference,
+            fixture.Manifest.Image.ImageId,
+            candidateReference,
+            candidateImageId,
+            fixture.Uid,
+            fixture.Gid);
+        var owner = new FakeOwnerClient { RejectNextVerification = true };
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                ImageReference = candidateReference,
+                NoDownload = true,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner,
+            _ => new FakeLifecycleClient(),
+            _ => owner,
+            fixture.Uid,
+            fixture.Gid,
+            CancellationToken.None));
+
+        var compact = fixture.InstanceId.ToString("N");
+        var cameraAgentContainer = $"hvo-skymonitor-{compact}";
+        var replayRunnerContainer = $"{cameraAgentContainer}-replay";
+        CollectionAssert.AreEqual(
+            new[] { cameraAgentContainer, replayRunnerContainer },
+            fixture.Runner.LoggedContainers.ToArray());
+        var firstRecoveryUp = fixture.Runner.Events.FindLastIndex(static value => value == "compose-up");
+        Assert.IsGreaterThan(fixture.Runner.Events.IndexOf($"logs:{cameraAgentContainer}"), firstRecoveryUp);
+        Assert.IsGreaterThan(fixture.Runner.Events.IndexOf($"logs:{replayRunnerContainer}"), firstRecoveryUp);
+
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(
+            fixture.Paths.LifecycleStatePath,
+            CancellationToken.None);
+        var diagnostics = await File.ReadAllTextAsync(Path.Combine(
+            fixture.Paths.OperationsRoot,
+            "lifecycle",
+            retained!.OperationId.ToString("D"),
+            "candidate-diagnostics.txt"));
+        StringAssert.Contains(diagnostics, $"container={cameraAgentContainer}", StringComparison.Ordinal);
+        StringAssert.Contains(diagnostics, $"container={replayRunnerContainer}", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     [DataRow("stop")]
     [DataRow("backup")]
     public async Task UpgradeAsync_InterruptedPreRecreateBoundaryRestoresOriginalRuntime(string failurePoint)
@@ -911,7 +965,10 @@ public sealed class LifecycleContractTests
         public uint Uid { get; }
         public uint Gid { get; }
 
-        public static async Task<LifecycleFixture> CreateAsync(InstanceLifecycleCondition condition)
+        public static async Task<LifecycleFixture> CreateAsync(
+            InstanceLifecycleCondition condition,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile =
+                HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess)
         {
             var previous = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
             Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
@@ -931,11 +988,16 @@ public sealed class LifecycleContractTests
                 ProductionCatalog.CatalogId, ProductionCatalog.PackageVersion, "2", "3",
                 ProductionCatalog.DatabaseSha256, ProductionCatalog.DatabaseLength, ProductionCatalog.RowCount,
                 paths.CatalogRoot, new string('a', 64), "local-offline");
+            var localRunner = replayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner;
+            var composeTemplateVersion = localRunner
+                ? ComposeDeployment.LocalRunnerTemplateVersion
+                : ComposeDeployment.TemplateVersion;
             var image = new ImageInstallationIdentity(
                 "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}",
                 "amd64", null, UpgradeCompatibility: "backward-compatible", SourceRevision: new string('8', 40),
                 Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1",
-                CatalogContract: "hyg-v42-production-p3-s2");
+                CatalogContract: "hyg-v42-production-p3-s2",
+                ReplayRunnerContract: localRunner ? "local-replay-runner-v1" : null);
             var installationId = Guid.NewGuid();
             var applicationIdentity = instanceId;
             const string composeModel = "services: {}\n";
@@ -943,20 +1005,21 @@ public sealed class LifecycleContractTests
                 1, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent,
                 instanceId, "Test Camera", applicationIdentity, $"installer-{instanceId:D}", 1,
                 new string('d', 64), "owner@example.test", 0, 0, 0, "UTC", installationId, uid, gid,
-                paths.ProductRoot, paths.ConfigRoot, paths.StateRoot, ComposeDeployment.TemplateVersion,
+                paths.ProductRoot, paths.ConfigRoot, paths.StateRoot, composeTemplateVersion,
                 new string('e', 64), new string('f', 64), new string('1', 64), "default", "1", "1", "active",
                 ComposeDeployment.ComputeSha256("verification-token"), ComposeDeployment.ComputeSha256(composeModel),
                 catalog, image, null, daemon, "backward-compatible",
                 DateTimeOffset.UtcNow, LifecycleCondition: condition, Port: 5130,
-                LifecycleControlTokenSha256: ComposeDeployment.ComputeSha256("lifecycle-token"));
+                LifecycleControlTokenSha256: ComposeDeployment.ComputeSha256("lifecycle-token"),
+                ReplayProfile: replayProfile);
             var result = new InstallationResult(
                 1, InstallationOutcome.Installed, installationId, instanceId, applicationIdentity, "Test Camera",
                 new Uri("http://127.0.0.1:5130"), "owner@example.test", "/tmp/password", paths.ProductRoot,
-                paths.InstanceRoot, paths.ConfigRoot, paths.StateRoot, uid, gid, ComposeDeployment.TemplateVersion,
+                paths.InstanceRoot, paths.ConfigRoot, paths.StateRoot, uid, gid, composeTemplateVersion,
                 0, 0, 0, "UTC", manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256,
                 manifest.RigProfileName, manifest.RigProfileVersion, manifest.ScheduleSchemaVersion,
                 manifest.ScheduleState, manifest.ComposeModelSha256, catalog, image, daemon, true, true,
-                "owner-password-change-required", DateTimeOffset.UtcNow);
+                "owner-password-change-required", DateTimeOffset.UtcNow, replayProfile);
             await SafeFileSystem.WriteJsonAtomicAsync(
                 paths.ManifestPath, manifest, DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
             await SafeFileSystem.WriteJsonAtomicAsync(
@@ -971,7 +1034,7 @@ public sealed class LifecycleContractTests
                 Path.Combine(paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion"), catalog.PackageVersion);
             foreach (var directory in Directory.EnumerateDirectories(paths.InstanceRoot, "*", SearchOption.AllDirectories).Prepend(paths.InstanceRoot))
                 File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            return new LifecycleFixture(root, instanceId, paths, manifest, new FakeRunner(daemon), uid, gid, previous);
+            return new LifecycleFixture(root, instanceId, paths, manifest, new FakeRunner(daemon, localRunner), uid, gid, previous);
         }
 
         public LifecycleRequest Request(LifecycleOperationKind? operation)
@@ -988,8 +1051,12 @@ public sealed class LifecycleContractTests
         }
     }
 
-    private sealed class FakeRunner(DockerDaemonIdentity daemon) : IProcessRunner
+    private sealed class FakeRunner(DockerDaemonIdentity daemon, bool localRunner = false) : IProcessRunner
     {
+        private static readonly string[] ReplayRunnerEntrypoint =
+            ["/app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner"];
+        private static readonly string[] DroppedCapabilities = ["ALL"];
+        private static readonly string[] ReplayRunnerSecurityOptions = ["no-new-privileges:true"];
         private InstallationPaths? paths;
         private string? initialReference;
         private string? initialImageId;
@@ -1011,6 +1078,8 @@ public sealed class LifecycleContractTests
         public bool OmitOwnershipLabel { get; set; }
         public bool RejectNextStop { get; set; }
         public bool RejectNextBackup { get; set; }
+        public List<string> Events { get; } = [];
+        public List<string> LoggedContainers { get; } = [];
 
         public void ConfigureRuntime(
             InstallationPaths installationPaths,
@@ -1084,6 +1153,10 @@ public sealed class LifecycleContractTests
                     ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
                     ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2"
                 };
+                if (localRunner)
+                {
+                    labels["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1";
+                }
                 return Task.FromResult(new ProcessResult(0, JsonSerializer.Serialize(new[]
                 {
                     new
@@ -1115,6 +1188,7 @@ public sealed class LifecycleContractTests
                 if (arguments.Contains("up", StringComparer.Ordinal))
                 {
                     ComposeUpCount++;
+                    Events.Add("compose-up");
                     var environmentPath = arguments[arguments.ToList().IndexOf("--env-file") + 1];
                     activeImageId = File.ReadLines(environmentPath)
                         .Single(line => line.StartsWith("CAMERAAGENT_IMAGE=", StringComparison.Ordinal))["CAMERAAGENT_IMAGE=".Length..];
@@ -1152,21 +1226,76 @@ public sealed class LifecycleContractTests
                     }
                 }), string.Empty));
             }
-            if (arguments is ["container", "logs", ..]) return Task.FromResult(new ProcessResult(0, "candidate logs", string.Empty));
+            if (arguments is ["container", "logs", "--tail", "200", var loggedContainer])
+            {
+                LoggedContainers.Add(loggedContainer);
+                Events.Add($"logs:{loggedContainer}");
+                return Task.FromResult(new ProcessResult(0, $"{loggedContainer} candidate logs", string.Empty));
+            }
             if (arguments is ["container", "inspect", _, ..] && activeImageId is not null && paths is not null)
             {
+                var containerName = arguments[2];
                 var labels = new Dictionary<string, string>
                 {
                     ["com.docker.compose.project"] = $"hvo-skymonitor-{paths.InstanceRoot.Split(Path.DirectorySeparatorChar).Last().Replace("-", string.Empty, StringComparison.Ordinal)}"
                 };
                 if (!OmitOwnershipLabel)
                     labels["io.hvo.skymonitor.instance-id"] = paths.InstanceRoot.Split(Path.DirectorySeparatorChar).Last();
-                var mounts = new[]
+                if (localRunner && containerName.EndsWith("-replay", StringComparison.Ordinal))
+                {
+                    return Task.FromResult(new ProcessResult(0, JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            State = new { Running = running, Health = new { Status = "healthy" } },
+                            Image = activeImageId,
+                            Config = new
+                            {
+                                User = $"{uid}:{gid}",
+                                Labels = labels,
+                                Entrypoint = ReplayRunnerEntrypoint
+                            },
+                            HostConfig = new
+                            {
+                                ReadonlyRootfs = true,
+                                Privileged = false,
+                                CapDrop = DroppedCapabilities,
+                                SecurityOpt = ReplayRunnerSecurityOptions,
+                                NetworkMode = "none"
+                            },
+                            Mounts = new[]
+                            {
+                                new
+                                {
+                                    Source = Path.Combine(paths.ConfigRoot, "secrets", "replay-runner-auth-key"),
+                                    Destination = "/run/hvo-secrets/replay-runner-auth-key",
+                                    RW = false
+                                },
+                                new
+                                {
+                                    Source = Path.Combine(paths.StateRoot, "replay-runner"),
+                                    Destination = "/run/hvo-replay",
+                                    RW = true
+                                }
+                            }
+                        }
+                    }), string.Empty));
+                }
+                var mounts = new List<object>
                 {
                     new { Source = Path.Combine(paths.ConfigRoot, "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
                     new { Source = paths.CatalogRoot, Destination = "/app/catalog", RW = false },
                     new { Source = Path.Combine(paths.StateRoot, "identity"), Destination = "/app/App_Data", RW = true }
                 };
+                if (localRunner)
+                {
+                    mounts.Add(new
+                    {
+                        Source = Path.Combine(paths.StateRoot, "replay-runner"),
+                        Destination = "/run/hvo-replay",
+                        RW = true
+                    });
+                }
                 return Task.FromResult(new ProcessResult(0, JsonSerializer.Serialize(new[]
                 {
                     new
