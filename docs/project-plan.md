@@ -129,6 +129,8 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.Catalog.Sqlite` | Shared read-only SQLite catalog adapter | Shared SQL schema, mutable catalog state |
 | `HVO.SkyMonitor.Common` | Reusable ASP.NET security, identity, API, middleware, and observability infrastructure used by either host | Camera acquisition, recipes/image algorithms, central/edge workflow ownership, or shared domain persistence |
 | `HVO.SkyMonitor.CameraAgent.Common` | Edge acquisition orchestration, SQLite WAL journal, durable lanes, local storage, outbox, retention, telemetry, and configuration | LogicHost references or central persistence |
+| `HVO.SkyMonitor.CameraAgent.Replay` | CameraAgent-local authenticated bounded transport, immutable request/result projection, capabilities, and per-dispatch transport evidence for explicitly requested archived replay | Durable job or lease authority, live/new-capture execution, cross-host evidence export, host persistence, UI, central scheduling, or provider placement |
+| `HVO.SkyMonitor.CameraAgent.ReplayRunner` | Self-contained local replay executable, warmup/probe behavior, and server composition for configured archived replay | Acquisition, durable replay state, publication authority, global scheduling, LogicHost/cloud dependencies, or host UI/API |
 | `HVO.SkyMonitor.CameraAgent.Modules.Zwo` | Linux ZWO ASI SDK interop and full-frame bin-1 color RAW16 acquisition for the ASI676MC and ASI178MC | Host orchestration, processing, persistence, vendor artifacts, unsupported ZWO modes, or non-ZWO cameras |
 | `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
 | `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/provider-neutral S3 object-storage services, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
@@ -148,8 +150,13 @@ AgentCore
 
 Astronomy --> Catalog.Sqlite
 
-AgentCore + Astronomy + Imaging + Processing
+AgentCore + Processing --> CameraAgent.Replay
+Processing + CameraAgent.Replay --> CameraAgent.ReplayRunner
+
+AgentCore + Astronomy + Imaging + Processing + Fleet.Contracts + CameraAgent.Replay
   +--> CameraAgent.Common --> CameraAgent
+
+AgentCore + Astronomy + Imaging + Processing + Fleet.Contracts
   +--> LogicHost
 
 AgentCore --> CameraAgent.Modules.Zwo --> CameraAgent
