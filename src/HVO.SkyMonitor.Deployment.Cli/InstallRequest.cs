@@ -13,6 +13,12 @@ internal enum DistributionChannel
     Prerelease
 }
 
+internal enum CameraAgentReplayProfile
+{
+    InProcess,
+    LocalRunner
+}
+
 internal sealed record InstallRequest
 {
     public const string DefaultProductRoot = "/var/lib/hvo/skymonitor";
@@ -43,9 +49,14 @@ internal sealed record InstallRequest
     public bool Json { get; init; }
     public bool GeneratePassword { get; init; }
     public bool NoDownload { get; init; }
+    public CameraAgentReplayProfile ReplayProfile { get; init; } = CameraAgentReplayProfile.InProcess;
 
     public void Validate()
     {
+        if (!Enum.IsDefined(ReplayProfile))
+        {
+            throw new InstallUsageException("--replay-profile must be in-process or local-runner.");
+        }
         if (string.IsNullOrWhiteSpace(FriendlyName))
         {
             throw new InstallUsageException("--friendly-name is required.");

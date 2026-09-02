@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.InteropServices;
 using HVO.SkyMonitor.AgentCore;
 using SkiaSharp;
 
@@ -15,7 +16,11 @@ public sealed record DecodedImage(
     string AlgorithmVersion);
 
 /// <summary>Bounded JPEG header facts read without decoding a pixel buffer.</summary>
-public sealed record EncodedImageInfo(int Width, int Height, string MediaType);
+public sealed record EncodedImageInfo(
+    int Width,
+    int Height,
+    CameraPixelFormat PixelFormat,
+    string MediaType);
 
 /// <summary>Encodes and decodes JPEG display images without exposing native codec objects.</summary>
 public static class JpegImageCodec
@@ -38,7 +43,142 @@ public static class JpegImageCodec
         {
             throw new ArgumentException("The supplied data is not a valid JPEG image.", nameof(encodedData));
         }
-        return new(codec.Info.Width, codec.Info.Height, MediaType);
+        var pixelFormat = codec.Info.ColorType == SKColorType.Gray8
+            ? CameraPixelFormat.Mono8
+            : CameraPixelFormat.Rgb24;
+        return new(codec.Info.Width, codec.Info.Height, pixelFormat, MediaType);
+    }
+
+    /// <summary>Fully decodes a JPEG through a bounded scanline buffer and returns its encoded layout.</summary>
+    [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The native codec factory can return null for malformed input despite its managed nullability annotation.")]
+    public static EncodedImageInfo ValidateJpeg(
+        ReadOnlyMemory<byte> encodedData,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (encodedData.Length < 2 || encodedData.Span[^2] != 0xff || encodedData.Span[^1] != 0xd9)
+        {
+            throw new ArgumentException("JPEG data is incomplete.", nameof(encodedData));
+        }
+        if (!HasBaselineSequentialFrame(encodedData.Span))
+        {
+            throw new ArgumentException("JPEG validation supports only baseline sequential images.", nameof(encodedData));
+        }
+
+        using var data = SKData.CreateCopy(encodedData.Span);
+        using var codec = SKCodec.Create(data);
+        if (codec is null || codec.EncodedFormat != SKEncodedImageFormat.Jpeg ||
+            codec.Info.Width <= 0 || codec.Info.Height <= 0)
+        {
+            throw new ArgumentException("The supplied data is not a valid JPEG image.", nameof(encodedData));
+        }
+
+        var pixelFormat = codec.Info.ColorType == SKColorType.Gray8
+            ? CameraPixelFormat.Mono8
+            : CameraPixelFormat.Rgb24;
+        var targetInfo = new SKImageInfo(
+            codec.Info.Width,
+            codec.Info.Height,
+            pixelFormat == CameraPixelFormat.Mono8 ? SKColorType.Gray8 : SKColorType.Rgba8888,
+            SKAlphaType.Opaque);
+        // JPEG dimensions are 16-bit, so even an RGBA scanline remains below 256 KiB.
+        var row = new byte[targetInfo.RowBytes];
+        var pinned = GCHandle.Alloc(row, GCHandleType.Pinned);
+        try
+        {
+            var result = codec.StartScanlineDecode(targetInfo);
+            if (result != SKCodecResult.Success)
+            {
+                throw new InvalidOperationException($"JPEG scanline decoding failed with result {result}.");
+            }
+            for (var line = 0; line < targetInfo.Height; line++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (codec.GetScanlines(pinned.AddrOfPinnedObject(), 1, targetInfo.RowBytes) != 1)
+                {
+                    throw new InvalidOperationException("JPEG scanline decoding encountered incomplete image data.");
+                }
+            }
+        }
+        finally
+        {
+            pinned.Free();
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return new(codec.Info.Width, codec.Info.Height, pixelFormat, MediaType);
+    }
+
+    private static bool HasBaselineSequentialFrame(ReadOnlySpan<byte> encodedData)
+    {
+        if (encodedData.Length < 4 || encodedData[0] != 0xff || encodedData[1] != 0xd8)
+        {
+            return false;
+        }
+
+        var offset = 2;
+        var foundBaselineFrame = false;
+        var frameComponentCount = 0;
+        while (offset < encodedData.Length)
+        {
+            if (encodedData[offset++] != 0xff)
+            {
+                return false;
+            }
+            while (offset < encodedData.Length && encodedData[offset] == 0xff)
+            {
+                offset++;
+            }
+            if (offset >= encodedData.Length)
+            {
+                return false;
+            }
+
+            var marker = encodedData[offset++];
+            if (marker == 0xd9)
+            {
+                return false;
+            }
+            if (marker is 0x01 or >= 0xd0 and <= 0xd8)
+            {
+                continue;
+            }
+            if (offset > encodedData.Length - 2)
+            {
+                return false;
+            }
+
+            var segmentLength = (encodedData[offset] << 8) | encodedData[offset + 1];
+            if (segmentLength < 2 || segmentLength > encodedData.Length - offset)
+            {
+                return false;
+            }
+            if (marker is >= 0xc0 and <= 0xcf and not (0xc4 or 0xc8 or 0xcc))
+            {
+                if (marker != 0xc0 || foundBaselineFrame)
+                {
+                    return false;
+                }
+                foundBaselineFrame = true;
+                if (segmentLength < 8)
+                {
+                    return false;
+                }
+                frameComponentCount = encodedData[offset + 7];
+                if (frameComponentCount == 0 || segmentLength != 8 + (3 * frameComponentCount))
+                {
+                    return false;
+                }
+            }
+            if (marker == 0xda)
+            {
+                var scanComponentCount = segmentLength >= 6 ? encodedData[offset + 2] : 0;
+                return foundBaselineFrame && scanComponentCount == frameComponentCount &&
+                    segmentLength == 6 + (2 * scanComponentCount) &&
+                    offset + segmentLength < encodedData.Length - 2;
+            }
+            offset += segmentLength;
+        }
+        return false;
     }
 
     /// <summary>Encodes a supported Mono8 or RGB24 image as JPEG.</summary>

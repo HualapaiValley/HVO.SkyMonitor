@@ -14,6 +14,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.CameraAgent.Replay;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
@@ -28,6 +29,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 
@@ -241,7 +243,26 @@ public static class CameraAgentServiceCollectionExtensions
                 provider.GetRequiredService<SqliteCalibrationLibraryStore>(),
                 provider.GetService<IAcceptanceRetentionControl>()));
         services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
-        services.AddSingleton<CameraAgentRecipeExecutionAdapter>();
+        var replayProfile = configuration.GetValue(
+            "CameraAgent:ProcessingGraphs:ReplayProfile",
+            ReplayExecutionProfile.InProcess);
+        services.AddSingleton(provider =>
+        {
+            var graphOptions = provider.GetRequiredService<IOptions<CameraAgentHostOptions>>()
+                .Value.ProcessingGraphs;
+            return new LocalReplayRunnerClient(
+                graphOptions.LocalRunner.ToTransportOptions(graphOptions.ReplayMaximumConcurrency));
+        });
+        services.AddSingleton(provider =>
+        {
+            var runner = replayProfile == ReplayExecutionProfile.LocalRunner
+                ? provider.GetRequiredService<LocalReplayRunnerClient>()
+                : null;
+            return new CameraAgentRecipeExecutionAdapter(
+                provider.GetRequiredService<IProcessingRecipeExecutor>(),
+                replayProfile,
+                runner);
+        });
         services.AddSingleton<ArtifactOutboxState>();
         services.AddSingleton<ArtifactOutboxTelemetry>();
         services.AddSingleton<IArtifactOutbox, SqliteArtifactOutbox>();

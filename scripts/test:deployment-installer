@@ -15,6 +15,7 @@ instance_id="$(tr -d '\n' </proc/sys/kernel/random/uuid)"
 
 cleanup() {
   docker rm --force "hvo-skymonitor-${instance_id//-/}" >/dev/null 2>&1 || true
+  docker rm --force "hvo-skymonitor-${instance_id//-/}-replay" >/dev/null 2>&1 || true
   docker network rm "hvo-skymonitor-${instance_id//-/}_default" >/dev/null 2>&1 || true
   docker image rm --force "$tag" >/dev/null 2>&1 || true
   chmod -R u+w "$root" >/dev/null 2>&1 || true
@@ -50,6 +51,7 @@ common_arguments=(
   --elevation 800
   --time-zone America/Phoenix
   --generate-password
+  --replay-profile local-runner
   --json
 )
 
@@ -57,13 +59,18 @@ export HVO_INSTALLER_ALLOW_TEST_ROOT=1
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" >"$root/first.json"
 test "$(jq -er '.instanceId' "$root/first.json")" = "$instance_id"
 container="hvo-skymonitor-${instance_id//-/}"
+runner_container="$container-replay"
 test "$(jq -er '.healthy' "$root/first.json")" = true
+test "$(jq -er '.replayProfile' "$root/first.json")" = LocalRunner
 test "$(jq -er '.image.imageId' "$root/first.json")" = "$image_id"
 test "$(jq -er '.image.archiveSha256' "$root/first.json")" = "$archive_sha256"
+test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")" = healthy
+test "$(docker inspect --format '{{.Config.User}}' "$runner_container")" = "$(id -u):$(id -g)"
 
 docker stop "$container" >/dev/null
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" >"$root/rerun.json"
 test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")" = healthy
 test "$(jq -er '.installationId' "$root/first.json")" = "$(jq -er '.installationId' "$root/rerun.json")"
 test "$(jq -er '.configurationSha256' "$root/first.json")" = "$(jq -er '.configurationSha256' "$root/rerun.json")"
 test "$(jq -er '.catalog.databaseSha256' "$root/first.json")" = "$(jq -er '.catalog.databaseSha256' "$root/rerun.json")"

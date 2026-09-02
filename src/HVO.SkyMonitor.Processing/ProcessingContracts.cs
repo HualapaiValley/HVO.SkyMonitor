@@ -151,6 +151,23 @@ public sealed record ProcessingProduct(
     public string? ContentIdentitySha256 { get; init; }
 }
 
+/// <summary>The deterministic semantic contract for a produced built-in recipe output.</summary>
+public sealed record ProcessingProductContract(
+    FrameArtifactRole Role,
+    IReadOnlyList<Guid> SourceArtifactIds,
+    string MediaType,
+    bool RequiresLayout,
+    FrameLayoutDescriptor? ExactLayout,
+    FrameLayoutDescriptor? EncodedLayout,
+    ProcessingProductKind Kind,
+    string? SchemaVersion,
+    bool RequiresContentIdentity,
+    string? ContentIdentitySha256,
+    IReadOnlyList<ProcessingAlgorithmIdentity> Algorithms,
+    TimeSpan TotalIntegration,
+    ProcessingCompatibilityIdentity Compatibility,
+    string? ExpectedPayloadSha256);
+
 /// <summary>Explicit projected geometry; hosts remain responsible for catalog and scene acquisition.</summary>
 public sealed record ProcessingAnnotationInput(
     IReadOnlyList<ProjectedAnnotationObject> Objects,

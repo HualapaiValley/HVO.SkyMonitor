@@ -18,6 +18,8 @@ public sealed class ArchitectureBoundaryTests
     private const string Common = "HVO.SkyMonitor.Common";
     private const string CameraAgentCommon = "HVO.SkyMonitor.CameraAgent.Common";
     private const string CameraAgentZwo = "HVO.SkyMonitor.CameraAgent.Modules.Zwo";
+    private const string CameraAgentReplay = "HVO.SkyMonitor.CameraAgent.Replay";
+    private const string CameraAgentReplayRunner = "HVO.SkyMonitor.CameraAgent.ReplayRunner";
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
     private const string LogicHost = "HVO.SkyMonitor.LogicHost";
     private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
@@ -54,8 +56,10 @@ public sealed class ArchitectureBoundaryTests
             [Processing] = Set(AgentCore, Astronomy, Imaging),
             [Catalog] = Set(Astronomy),
             [Common] = Set(),
-            [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts),
+            [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, CameraAgentReplay),
             [CameraAgentZwo] = Set(AgentCore),
+            [CameraAgentReplay] = Set(AgentCore, Processing),
+            [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
             [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, Catalog, Common),
             [DeploymentContracts] = Set(),
@@ -241,11 +245,16 @@ public sealed class ArchitectureBoundaryTests
             .Select(project => project.AssemblyName)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var hostName in new[] { CameraAgent, LogicHost })
+        foreach (var hostName in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner })
         {
             var output = string.IsNullOrWhiteSpace(evidenceRoot)
                 ? Path.Combine(Path.GetTempPath(), $"skymonitor-architecture-{hostName}-{Guid.NewGuid():N}")
-                : Path.Combine(evidenceRoot, hostName == CameraAgent ? "cameraagent" : "logichost");
+                : hostName switch
+                {
+                    CameraAgent => Path.Combine(evidenceRoot, "cameraagent"),
+                    LogicHost => Path.Combine(evidenceRoot, "logichost"),
+                    _ => Path.Combine(evidenceRoot, "replay-runner", "linux-x64")
+                };
             if (Directory.Exists(output))
             {
                 Directory.Delete(output, recursive: true);
@@ -254,9 +263,17 @@ public sealed class ArchitectureBoundaryTests
 
             try
             {
-                await PublishAsync(repository.Root, repository.Projects[hostName].Path, output).ConfigureAwait(false);
+                await PublishAsync(
+                    repository.Root,
+                    repository.Projects[hostName].Path,
+                    output,
+                    hostName == CameraAgentReplayRunner ? "linux-x64" : null).ConfigureAwait(false);
                 var forbiddenAssemblies = testAssemblies.ToHashSet(StringComparer.OrdinalIgnoreCase);
-                forbiddenAssemblies.Add(repository.Projects[hostName == CameraAgent ? LogicHost : CameraAgent].AssemblyName);
+                foreach (var forbiddenHost in new[] { CameraAgent, LogicHost, CameraAgentReplayRunner }.Where(
+                    candidate => candidate != hostName))
+                {
+                    forbiddenAssemblies.Add(repository.Projects[forbiddenHost].AssemblyName);
+                }
                 var violations = FindForbiddenPublishArtifacts(output, forbiddenAssemblies);
                 Assert.IsEmpty(violations,
                     $"ARCH-PUBLISH: Release publish for '{hostName}' contains test or opposite-host artifacts:{Environment.NewLine}{string.Join(Environment.NewLine, violations)}");
@@ -357,7 +374,11 @@ public sealed class ArchitectureBoundaryTests
     private static ProjectInfo Project(string name, ProjectKind kind, params string[] references) =>
         new(name, name, $"{name}.csproj", kind, references, [], []);
 
-    private static async Task PublishAsync(string root, string projectPath, string output)
+    private static async Task PublishAsync(
+        string root,
+        string projectPath,
+        string output,
+        string? runtimeIdentifier = null)
     {
         using var process = new Process
         {
@@ -374,6 +395,11 @@ public sealed class ArchitectureBoundaryTests
         process.StartInfo.ArgumentList.Add("--configuration");
         process.StartInfo.ArgumentList.Add("Release");
         process.StartInfo.ArgumentList.Add("--no-restore");
+        if (runtimeIdentifier is not null)
+        {
+            process.StartInfo.ArgumentList.Add("--runtime");
+            process.StartInfo.ArgumentList.Add(runtimeIdentifier);
+        }
         process.StartInfo.ArgumentList.Add("--output");
         process.StartInfo.ArgumentList.Add(output);
 
@@ -395,7 +421,11 @@ public sealed class ArchitectureBoundaryTests
             foreach (var assembly in forbiddenAssemblies)
             {
                 if (string.Equals(fileName, assembly, StringComparison.OrdinalIgnoreCase) ||
-                    fileName.StartsWith($"{assembly}.", StringComparison.OrdinalIgnoreCase))
+                    string.Equals(fileName, $"{assembly}.dll", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fileName, $"{assembly}.pdb", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fileName, $"{assembly}.deps.json", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fileName, $"{assembly}.runtimeconfig.json", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fileName, $"{assembly}.xml", StringComparison.OrdinalIgnoreCase))
                 {
                     violations.Add($"File '{Path.GetRelativePath(output, file)}' is produced by forbidden project '{assembly}'.");
                 }

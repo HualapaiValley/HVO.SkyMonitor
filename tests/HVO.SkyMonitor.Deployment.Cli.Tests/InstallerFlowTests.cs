@@ -46,8 +46,10 @@ public sealed class InstallerFlowTests
                 CancellationToken.None);
             var passwordSha256 = await SafeFileSystem.ComputeSha256Async(first.PasswordFile, CancellationToken.None);
             var manifestPath = Path.Combine(first.InstanceRoot, "instance-manifest.json");
+            var resultPath = Path.Combine(first.InstanceRoot, "state", "deployment", "installation-result.json");
             var statePath = Path.Combine(first.InstanceRoot, "state", "deployment", "installation-state.json");
             var retainedManifest = await File.ReadAllTextAsync(manifestPath);
+            var retainedResult = await File.ReadAllTextAsync(resultPath);
             var retainedState = await File.ReadAllTextAsync(statePath);
             var legacyManifest = JsonNode.Parse(retainedManifest)?.AsObject()
                 ?? throw new AssertFailedException("The retained manifest was not valid JSON.");
@@ -84,6 +86,17 @@ public sealed class InstallerFlowTests
             await File.WriteAllTextAsync(manifestPath, retainedManifest);
             await File.WriteAllTextAsync(statePath, retainedState);
 
+            var legacyInProcessManifest = JsonNode.Parse(retainedManifest)?.AsObject()
+                ?? throw new AssertFailedException("The retained manifest was not valid JSON.");
+            var legacyInProcessResult = JsonNode.Parse(retainedResult)?.AsObject()
+                ?? throw new AssertFailedException("The retained result was not valid JSON.");
+            legacyInProcessManifest["image"]!.AsObject().Remove("replayRunnerContract");
+            legacyInProcessResult["image"]!.AsObject().Remove("replayRunnerContract");
+            var legacyInProcessManifestJson = legacyInProcessManifest.ToJsonString();
+            var legacyInProcessResultJson = legacyInProcessResult.ToJsonString();
+            await File.WriteAllTextAsync(manifestPath, legacyInProcessManifestJson);
+            await File.WriteAllTextAsync(resultPath, legacyInProcessResultJson);
+
             var second = await CameraAgentInstaller.InstallAsync(
                 request,
                 runner,
@@ -101,7 +114,9 @@ public sealed class InstallerFlowTests
             Assert.AreEqual(first.RigProfileSha256, second.RigProfileSha256);
             Assert.AreEqual(first.ScheduleSha256, second.ScheduleSha256);
             Assert.AreEqual(first.Catalog, second.Catalog);
-            Assert.AreEqual(first.Image, second.Image);
+            Assert.AreEqual(first.Image with { ReplayRunnerContract = null }, second.Image);
+            Assert.AreEqual(legacyInProcessManifestJson, await File.ReadAllTextAsync(manifestPath));
+            Assert.AreEqual(legacyInProcessResultJson, await File.ReadAllTextAsync(resultPath));
             Assert.AreEqual(passwordSha256, await SafeFileSystem.ComputeSha256Async(second.PasswordFile, CancellationToken.None));
             Assert.IsFalse(File.Exists(Path.Combine(
                 first.InstanceRoot,
@@ -118,9 +133,7 @@ public sealed class InstallerFlowTests
             Assert.AreEqual("Completed", state.RootElement.GetProperty("status").GetString());
             Assert.AreEqual(3, runner.ComposeUpCount);
 
-            var resultPath = Path.Combine(first.InstanceRoot, "state", "deployment", "installation-result.json");
-            var retainedResult = await File.ReadAllTextAsync(resultPath);
-            var driftedResult = JsonNode.Parse(retainedResult)?.AsObject()
+            var driftedResult = JsonNode.Parse(legacyInProcessResultJson)?.AsObject()
                 ?? throw new AssertFailedException("The retained result was not valid JSON.");
             driftedResult["friendlyName"] = "Drifted Result";
             await File.WriteAllTextAsync(resultPath, driftedResult.ToJsonString());
@@ -133,7 +146,7 @@ public sealed class InstallerFlowTests
                 CancellationToken.None));
             StringAssert.Contains(resultDrift.Message, "retained result", StringComparison.Ordinal);
             Assert.AreEqual(3, runner.ComposeUpCount);
-            await File.WriteAllTextAsync(resultPath, retainedResult);
+            await File.WriteAllTextAsync(resultPath, legacyInProcessResultJson);
 
             var unsupportedState = JsonNode.Parse(await File.ReadAllTextAsync(statePath))?.AsObject()
                 ?? throw new AssertFailedException("The retained state was not valid JSON.");
@@ -257,6 +270,7 @@ public sealed class InstallerFlowTests
             cancellationToken.ThrowIfCancellationRequested();
             Assert.AreEqual("hyg-v42-production", expectation.Catalog.CatalogId);
             Assert.AreEqual(64, expectation.ConfigurationSha256.Length);
+            Assert.AreEqual(HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, expectation.ReplayProfile);
             return Task.CompletedTask;
         }
     }
@@ -300,9 +314,10 @@ public sealed class InstallerFlowTests
                             Labels = new Dictionary<string, string>
                             {
                                 ["org.opencontainers.image.revision"] = new string('a', 40),
-                                ["io.hvo.skymonitor.component"] = "CameraAgent",
-                                ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
-                                ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2"
+                                 ["io.hvo.skymonitor.component"] = "CameraAgent",
+                                 ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
+                                ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2",
+                                ["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1"
                             }
                         }
                     }

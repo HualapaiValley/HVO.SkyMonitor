@@ -180,7 +180,8 @@ public sealed record ProcessingExecutionContext(
     long WorkId,
     string? LeaseToken,
     string? LeaseOwner = null,
-    DateTimeOffset? DeadlineUtc = null);
+    DateTimeOffset? DeadlineUtc = null,
+    int DurableAttempt = 0);
 
 internal sealed record ProcessingReplayLease(
     long WorkId,

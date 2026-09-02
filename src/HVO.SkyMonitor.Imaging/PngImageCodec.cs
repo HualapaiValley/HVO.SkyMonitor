@@ -27,7 +27,7 @@ public static class PngImageCodec
                 $"The supplied data must be a static, opaque, top-left-oriented PNG image " +
                 $"(frames: {codec?.FrameCount}, origin: {codec?.EncodedOrigin}).", nameof(encodedData));
         }
-        return new(codec.Info.Width, codec.Info.Height, MediaType);
+        return new(codec.Info.Width, codec.Info.Height, CameraPixelFormat.Rgb24, MediaType);
     }
 
     [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The native codec factory can return null for malformed input despite its managed nullability annotation.")]

@@ -116,6 +116,7 @@ public static class SkyMonitorObservabilityExtensions
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.CaptureLanes");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.DeploymentLocation");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
+            options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.ReplayRunner");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.CameraAgent.Outbox");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Ingest");
             options.AdditionalMeterNames.Add("HVO.SkyMonitor.LogicHost.Retrieval");
@@ -153,6 +154,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureLanes")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.DeploymentLocation")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.ProcessingGraph")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.ReplayRunner")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Outbox")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Ingest")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Retrieval")

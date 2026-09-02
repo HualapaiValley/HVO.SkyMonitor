@@ -6,12 +6,40 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Replay;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor executor)
+public sealed class CameraAgentRecipeExecutionAdapter
 {
-    private readonly IProcessingRecipeExecutor _executor = executor;
+    private readonly IProcessingRecipeExecutor _executor;
+    private readonly ReplayExecutionProfile _replayProfile;
+    private readonly LocalReplayRunnerClient? _localRunner;
+
+    public CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor executor)
+        : this(executor, ReplayExecutionProfile.InProcess, null)
+    {
+    }
+
+    internal CameraAgentRecipeExecutionAdapter(
+        IProcessingRecipeExecutor executor,
+        IOptions<CameraAgentHostOptions> options,
+        LocalReplayRunnerClient? localRunner)
+        : this(executor, options.Value.ProcessingGraphs.ReplayProfile, localRunner)
+    {
+    }
+
+    internal CameraAgentRecipeExecutionAdapter(
+        IProcessingRecipeExecutor executor,
+        ReplayExecutionProfile replayProfile,
+        LocalReplayRunnerClient? localRunner)
+    {
+        _executor = executor ?? throw new ArgumentNullException(nameof(executor));
+        _replayProfile = replayProfile;
+        _localRunner = localRunner;
+    }
 
     public ValueTask<ProcessingOutcome> ExecuteAsync(
         ProcessingExecutionRequest request,
@@ -25,9 +53,54 @@ public sealed class CameraAgentRecipeExecutionAdapter(IProcessingRecipeExecutor 
     {
         ArgumentNullException.ThrowIfNull(context);
         context.RecordExecutionRequest(request);
-        var outcome = await _executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        ProcessingOutcome outcome;
+        if (context.ProcessingExecution is
+            { ExecutionClass: ProcessingGraphExecutionClass.Replay } execution &&
+            _replayProfile == ReplayExecutionProfile.LocalRunner)
+        {
+            var deadlineUtc = execution.DeadlineUtc
+                ?? throw new LocalReplayRunnerProtocolException("The replay execution has no deadline.");
+            outcome = await ExecuteLocalReplayAsync(
+                context,
+                execution,
+                deadlineUtc,
+                request,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            outcome = await _executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+        }
         context.RecordExecutionOutcome(outcome);
         return outcome;
+    }
+
+    private Task<ProcessingOutcome> ExecuteLocalReplayAsync(
+        CaptureProcessingContext context,
+        ProcessingExecutionContext execution,
+        DateTimeOffset deadlineUtc,
+        ProcessingExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (_localRunner is null)
+        {
+            throw new LocalReplayRunnerUnavailableException("The local replay runner client is not configured.");
+        }
+        if (context.CurrentNodeId is not { } nodeId || execution.DurableAttempt < 1 ||
+            string.IsNullOrWhiteSpace(execution.LeaseToken))
+        {
+            throw new LocalReplayRunnerProtocolException("The replay recipe has no durable node or lease identity.");
+        }
+
+        var job = ReplayRunnerJobContext.Create(
+            execution.ExecutionId.ToString("N"),
+            execution.GraphRevisionId,
+            execution.LocalPlanIdentitySha256,
+            nodeId,
+            execution.DurableAttempt,
+            execution.LeaseToken,
+            deadlineUtc);
+        return _localRunner.ExecuteAsync(job, request, cancellationToken);
     }
 
     public static ProcessingArtifact CreateArtifact(

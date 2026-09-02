@@ -4,6 +4,8 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Replay;
+using System.Text;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Options;
 
@@ -633,8 +635,19 @@ public sealed class EnvironmentalSourceConfiguration : IValidatableObject
             resolvedOptions ?? Options);
 }
 
-public sealed class ProcessingGraphExecutionOptions
+public enum ReplayExecutionProfile
 {
+    InProcess,
+    LocalRunner
+}
+
+public sealed class ProcessingGraphExecutionOptions : IValidatableObject
+{
+    public ReplayExecutionProfile ReplayProfile { get; init; } = ReplayExecutionProfile.InProcess;
+
+    [Required]
+    public LocalReplayRunnerHostOptions LocalRunner { get; init; } = new();
+
     [Range(1, 4)]
     public int ReplayMaximumConcurrency { get; init; } = 1;
 
@@ -668,6 +681,146 @@ public sealed class ProcessingGraphExecutionOptions
     [Range(1, 128)]
     public int MaximumWindowInputs { get; init; } = 32;
 
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (!Enum.IsDefined(ReplayProfile))
+        {
+            yield return new ValidationResult("Replay execution profile is invalid.", [nameof(ReplayProfile)]);
+        }
+
+        var runnerResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            LocalRunner,
+            new ValidationContext(LocalRunner),
+            runnerResults,
+            validateAllProperties: true);
+        foreach (var result in runnerResults)
+        {
+            yield return result;
+        }
+
+        if (ReplayProfile == ReplayExecutionProfile.LocalRunner)
+        {
+            foreach (var result in LocalRunner.ValidateForExternalProfile())
+            {
+                yield return result;
+            }
+            if (ReplayMaximumConcurrency >= 1 &&
+                LocalRunner.MaximumTransferBytes >
+                LocalReplayRunnerOptions.MaximumAggregateTransferBytes / (ReplayMaximumConcurrency * 2L))
+            {
+                yield return new ValidationResult(
+                    "Local replay runner concurrent request and response buffers exceed the aggregate transfer limit.",
+                    [nameof(ReplayMaximumConcurrency), nameof(LocalRunner.MaximumTransferBytes)]);
+            }
+        }
+    }
+}
+
+public sealed class LocalReplayRunnerHostOptions : IValidatableObject
+{
+    public ReplayRunnerTransport Transport { get; init; } = ReplayRunnerTransport.UnixDomainSocket;
+
+    [Required]
+    public string SocketPath { get; init; } = LocalReplayRunnerOptions.DefaultSocketPath;
+
+    [Range(0, 65535)]
+    public int LoopbackPort { get; init; }
+
+    public string? AuthorizationKey { get; init; }
+
+    public string? AuthorizationKeyFile { get; init; }
+
+    [Range(1, 300)]
+    public int ConnectTimeoutSeconds { get; init; } = 10;
+
+    [Range(1, 300)]
+    public int HeartbeatIntervalSeconds { get; init; } = 5;
+
+    [Range(2, 600)]
+    public int HeartbeatTimeoutSeconds { get; init; } = 20;
+
+    [Range(4096, 16 * 1024 * 1024)]
+    public int MaximumMetadataBytes { get; init; } = 1024 * 1024;
+
+    [Range(4096, LocalReplayRunnerOptions.MaximumTransferBytes)]
+    public long MaximumTransferBytes { get; init; } = LocalReplayRunnerOptions.MaximumTransferBytes;
+
+    [Range(0, 86400)]
+    public int IdleShutdownSeconds { get; init; }
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (!Enum.IsDefined(Transport))
+        {
+            yield return new ValidationResult("Local replay runner transport is invalid.", [nameof(Transport)]);
+        }
+        if (HeartbeatTimeoutSeconds <= HeartbeatIntervalSeconds)
+        {
+            yield return new ValidationResult(
+                "Local replay runner heartbeat timeout must exceed its interval.",
+                [nameof(HeartbeatTimeoutSeconds), nameof(HeartbeatIntervalSeconds)]);
+        }
+        if (MaximumTransferBytes < MaximumMetadataBytes)
+        {
+            yield return new ValidationResult(
+                "Local replay runner transfer limit must include its metadata limit.",
+                [nameof(MaximumTransferBytes), nameof(MaximumMetadataBytes)]);
+        }
+    }
+
+    internal IEnumerable<ValidationResult> ValidateForExternalProfile()
+    {
+        if (Transport == ReplayRunnerTransport.UnixDomainSocket &&
+            (string.IsNullOrWhiteSpace(SocketPath) || SocketPath.Contains('\0', StringComparison.Ordinal) ||
+             !Path.IsPathFullyQualified(SocketPath) || Encoding.UTF8.GetByteCount(SocketPath) > 100))
+        {
+            yield return new ValidationResult(
+                "Local replay runner Unix socket path must be absolute, contain no NUL, and be no more than 100 UTF-8 bytes.",
+                [nameof(SocketPath)]);
+        }
+        if (Transport == ReplayRunnerTransport.LoopbackTcp && LoopbackPort == 0)
+        {
+            yield return new ValidationResult(
+                "Local replay runner loopback mode requires a port.",
+                [nameof(LoopbackPort)]);
+        }
+
+        var directKey = string.IsNullOrEmpty(AuthorizationKey)
+            ? 0
+            : Encoding.UTF8.GetByteCount(AuthorizationKey);
+        var hasKeyFile = !string.IsNullOrWhiteSpace(AuthorizationKeyFile);
+        if ((directKey == 0) == !hasKeyFile)
+        {
+            yield return new ValidationResult(
+                "Configure exactly one local replay runner authorization key or owner-only key file.",
+                [nameof(AuthorizationKey), nameof(AuthorizationKeyFile)]);
+        }
+        else if (directKey is > 0 and < 32 or > 4096)
+        {
+            yield return new ValidationResult(
+                "Local replay runner authorization key must contain between 32 and 4096 UTF-8 bytes.",
+                [nameof(AuthorizationKey)]);
+        }
+    }
+
+    internal LocalReplayRunnerOptions ToTransportOptions(int maximumConcurrency) => new()
+    {
+        Transport = Transport,
+        SocketPath = SocketPath,
+        LoopbackPort = LoopbackPort,
+        PreSharedAuthKey = string.IsNullOrEmpty(AuthorizationKey)
+            ? ReadOnlyMemory<byte>.Empty
+            : Encoding.UTF8.GetBytes(AuthorizationKey),
+        OwnerOnlyAuthKeyFile = AuthorizationKeyFile,
+        MaxConcurrency = maximumConcurrency,
+        ConnectTimeout = TimeSpan.FromSeconds(ConnectTimeoutSeconds),
+        HeartbeatInterval = TimeSpan.FromSeconds(HeartbeatIntervalSeconds),
+        HeartbeatTimeout = TimeSpan.FromSeconds(HeartbeatTimeoutSeconds),
+        MaxMetadataBytes = MaximumMetadataBytes,
+        MaxTotalTransferBytes = MaximumTransferBytes,
+        IdleShutdownSeconds = IdleShutdownSeconds
+    };
 }
 
 public sealed class CaptureDistributionOptions : IValidatableObject

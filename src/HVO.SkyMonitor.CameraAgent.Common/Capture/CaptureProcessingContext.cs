@@ -247,6 +247,8 @@ public sealed class CaptureProcessingContext
 
     internal IReadOnlyList<DurableProcessingNodeInput> GetCurrentInputEvidence() => _currentInputs.ToArray();
 
+    internal string? CurrentNodeId => _currentNodeId;
+
     internal void RecordExecutionRequest(ProcessingExecutionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -473,9 +475,7 @@ internal sealed class CaptureDescriptorProcessingContext(CaptureProcessingContex
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(adapter);
-        context.RecordExecutionRequest(request);
-        var outcome = await adapter.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
-        context.RecordExecutionOutcome(outcome);
+        var outcome = await adapter.ExecuteAsync(context, request, cancellationToken).ConfigureAwait(false);
         return outcome;
     }
 

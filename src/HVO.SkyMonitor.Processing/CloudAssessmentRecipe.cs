@@ -21,8 +21,8 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
 {
     private const string ClearReferenceInputName = "clear-reference";
     private const string EnvironmentInputName = "environment";
-    private static readonly ProcessingAlgorithmIdentity PolicyAlgorithm = new("cloud-assessment-policy", "v1");
-    private static readonly ProcessingAlgorithmIdentity TransmissionAlgorithm =
+    internal static readonly ProcessingAlgorithmIdentity PolicyAlgorithm = new("cloud-assessment-policy", "v1");
+    internal static readonly ProcessingAlgorithmIdentity TransmissionAlgorithm =
         new("cloud-transmission", Linear16CloudTransmissionEstimator.AlgorithmVersion);
     private static readonly JsonSerializerOptions EnvironmentSerializerOptions = CreateEnvironmentSerializerOptions();
 
@@ -307,7 +307,7 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
                : environment.PrecipitationObservationId is not null &&
                  environment.PrecipitationContentSha256 is { Length: 64 } checksum && checksum.All(Uri.IsHexDigit));
 
-    private static bool InputsAreCompatible(
+    internal static bool InputsAreCompatible(
         ProcessingArtifact current,
         FrameLayoutDescriptor currentLayout,
         ProcessingArtifact clearReference)
@@ -334,7 +334,7 @@ internal sealed class CloudAssessmentRecipe : IProcessingRecipe
             currentLayout.Readout == referenceLayout.Readout;
     }
 
-    private static CloudAssessmentCalibrationV1? CreateCalibration(
+    internal static CloudAssessmentCalibrationV1? CreateCalibration(
         FrameLayoutDescriptor layout,
         ProcessingCompatibilityIdentity compatibility)
     {

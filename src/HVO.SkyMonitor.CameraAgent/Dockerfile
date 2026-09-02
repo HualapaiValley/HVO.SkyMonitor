@@ -23,23 +23,31 @@ COPY src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj src/HVO.SkyMonitor
 COPY src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj src/HVO.SkyMonitor.Processing/
 COPY src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj src/HVO.SkyMonitor.Common/
 COPY src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj src/HVO.SkyMonitor.CameraAgent.Common/
+COPY src/HVO.SkyMonitor.CameraAgent.Replay/HVO.SkyMonitor.CameraAgent.Replay.csproj src/HVO.SkyMonitor.CameraAgent.Replay/
+COPY src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj src/HVO.SkyMonitor.CameraAgent.ReplayRunner/
 COPY src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/
 COPY src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj src/HVO.SkyMonitor.CameraAgent/
 
 # Restore project dependencies into a source-independent cache layer.
 RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
+RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
 
 # Copy source code
 COPY src/ src/
 
 # Restore again after Razor sources are present so implicit framework assets are discovered.
 RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
+RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
 
 # Build and publish
 WORKDIR /src/src/HVO.SkyMonitor.CameraAgent
 RUN dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o /app/publish \
     && test "$(wc -c < /app/publish/wwwroot/_framework/blazor.web.js)" -gt 10000 \
     && grep -q 'window.Blazor' /app/publish/wwwroot/_framework/blazor.web.js
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; *) exit 64 ;; esac \
+    && dotnet publish ../HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj \
+        --no-restore -c Release -r "${rid}" -o /app/replay-runner
 
 # Stage 2: Runtime
 FROM ${DOTNET_ASPNET_IMAGE}
@@ -50,6 +58,7 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="backward-compatible" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.catalog-contract="hyg-v42-production-p3-s2" \
+      io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}"
 
 # Install health-check and ASI SDK runtime dependencies. The proprietary SDK is mounted separately.
@@ -57,6 +66,7 @@ RUN apt-get update && apt-get install -y curl libusb-1.0-0 && rm -rf /var/lib/ap
 
 # Copy published application
 COPY --from=build /app/publish .
+COPY --from=build /app/replay-runner /app/replay-runner
 RUN chmod -R a+rX /app
 
 # Set environment

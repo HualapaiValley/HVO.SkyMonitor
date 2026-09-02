@@ -11,6 +11,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Replay;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging;
 
@@ -343,6 +344,26 @@ internal sealed class FrameProcessingWorker
 
                 var outcomes = context.ProcessingOutcomes.Skip(outcomeStart).ToArray();
                 var outcome = outcomes.LastOrDefault();
+                if (exception is LocalReplayRunnerUnavailableException unavailable &&
+                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay)
+                {
+                    const string unavailableReason = "processing.replay-runner-unavailable";
+                    telemetry.RecordNode(
+                        node,
+                        DurableProcessingNodeStatus.RetryableFailure,
+                        unavailableReason,
+                        duration,
+                        executionClass);
+                    context.AddStepTelemetry(new CaptureProcessingStepTelemetry(
+                        node.Id,
+                        duration,
+                        false,
+                        unavailableReason));
+                    return Finish(CaptureLaneHandlerResult.Wait(unavailableReason) with
+                    {
+                        DiscardExecutionAttempt = !unavailable.RequestAccepted
+                    });
+                }
                 var (status, reason) = ResolveStatus(node, outcome, exception);
                 if (!node.Required && status == DurableProcessingNodeStatus.RetryableFailure && attempt >= maximumAttempts)
                 {

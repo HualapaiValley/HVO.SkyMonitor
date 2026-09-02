@@ -961,6 +961,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                     attempt_count = CASE WHEN $deferred = 1 AND attempt_count > 0
                         THEN attempt_count - 1 ELSE attempt_count END
                 WHERE execution_id = $execution;
+                DELETE FROM processing_node_attempts
+                WHERE execution_id = $execution AND attempt_number = $claim
+                  AND status = 'Running' AND $discard_attempt = 1;
                 UPDATE processing_node_attempts
                 SET status = 'Interrupted', completed_unix_ms = $now,
                     reason = COALESCE($reason, 'processing.execution-terminal')
@@ -968,6 +971,12 @@ internal sealed partial class SqliteCaptureProcessingStore
                   AND (($terminal = 1 AND $status != 'Completed') OR $deferred = 1);
                 UPDATE processing_execution_nodes
                 SET status = 'Pending', reason = $reason,
+                    attempt_count = CASE WHEN $discard_attempt = 1 THEN COALESCE((
+                        SELECT MAX(attempt.attempt_number)
+                        FROM processing_node_attempts attempt
+                        WHERE attempt.execution_id = $execution
+                          AND attempt.node_id = processing_execution_nodes.node_id), 0)
+                        ELSE attempt_count END,
                     started_unix_ms = NULL, completed_unix_ms = NULL
                 WHERE execution_id = $execution AND status = 'Running' AND $deferred = 1;
                 UPDATE processing_execution_nodes
@@ -991,6 +1000,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                         : result.Reason);
             update.Parameters.AddWithValue("$terminal", retry ? 0 : 1);
             update.Parameters.AddWithValue("$deferred", deferred ? 1 : 0);
+            update.Parameters.AddWithValue("$claim", lease.ClaimCount);
+            update.Parameters.AddWithValue("$discard_attempt", result.DiscardExecutionAttempt ? 1 : 0);
             update.Parameters.AddWithValue("$execution", lease.Execution.ExecutionId.ToString("N"));
             await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }

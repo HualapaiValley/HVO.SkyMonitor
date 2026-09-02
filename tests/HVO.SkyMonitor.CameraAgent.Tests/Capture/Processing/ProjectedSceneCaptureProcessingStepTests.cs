@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -8,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Replay;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,6 +22,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [DoNotParallelize]
 public sealed class ProjectedSceneCaptureProcessingStepTests
 {
+    private static readonly byte[] ReplayAuthenticationKey = Encoding.UTF8.GetBytes(
+        "projected-scene-replay-key-00001");
+
     [TestMethod]
     public async Task PhysicalCaptureStagesOnceBeforeRawIdentityAndPreservesPayload()
     {
@@ -174,6 +179,86 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task DescriptorOnlyProjectedSceneExecutesThroughLocalRunner()
+    {
+        var root = CreateRoot();
+        var socketPath = Path.Combine(root, "runner.sock");
+        try
+        {
+            using var staging = CreateStaging(root);
+            var scene = await CreateSceneAsync().ConfigureAwait(false);
+            var stageKey = new string('1', 64);
+            var sceneId = new string('A', 64);
+            await staging.StageAsync(stageKey, sceneId, scene, CancellationToken.None).ConfigureAwait(false);
+            var execution = new ProcessingExecutionContext(
+                Guid.NewGuid(),
+                ProcessingGraphExecutionClass.Replay,
+                "basic@1",
+                new string('B', 64),
+                false,
+                1,
+                "projected-scene-lease",
+                "test-owner",
+                DateTimeOffset.UtcNow.AddMinutes(5),
+                1);
+            var fixture = CreateContext(root, new SceneProvenance(
+                sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
+                "projection-v1", "astronomy-v1", "sensor-v1",
+                ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
+                ProjectedSceneStageKey: stageKey), execution);
+            File.Delete(fixture.PayloadPath);
+            var runnerOptions = new LocalReplayRunnerOptions
+            {
+                SocketPath = socketPath,
+                PreSharedAuthKey = ReplayAuthenticationKey,
+                HeartbeatInterval = TimeSpan.FromMilliseconds(100),
+                HeartbeatTimeout = TimeSpan.FromSeconds(2)
+            };
+            using var stopping = new CancellationTokenSource();
+            var server = new LocalReplayRunnerServer(runnerOptions);
+            await using var serverLifetime = server.ConfigureAwait(false);
+            var serverTask = server.RunAsync(stopping.Token);
+            using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                while (!Path.Exists(socketPath))
+                {
+                    await Task.Delay(10, timeout.Token).ConfigureAwait(false);
+                }
+            }
+            var client = new LocalReplayRunnerClient(runnerOptions);
+            await using var clientLifetime = client.ConfigureAwait(false);
+            var hostOptions = Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                ProcessingGraphs = new ProcessingGraphExecutionOptions
+                {
+                    ReplayProfile = ReplayExecutionProfile.LocalRunner,
+                    LocalRunner = new LocalReplayRunnerHostOptions
+                    {
+                        AuthorizationKey = Encoding.UTF8.GetString(ReplayAuthenticationKey)
+                    }
+                }
+            });
+            var adapter = new CameraAgentRecipeExecutionAdapter(
+                new ProcessingRecipeExecutor(),
+                hostOptions,
+                client);
+            fixture.Context.BeginNode("projected-scene", [], ["$raw"]);
+            var step = CreateStep(staging, adapter: adapter);
+
+            await step.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, fixture.Context.ProcessingOutcomes.Single().Status);
+            await stopping.CancelAsync().ConfigureAwait(false);
+            await serverTask.ConfigureAwait(false);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
 
@@ -454,17 +539,19 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
 
     private static ProjectedSceneCaptureProcessingStep CreateStep(
         ProjectedSceneStagingStore staging,
-        IProjectedSceneStagingStore? stagingStore = null)
+        IProjectedSceneStagingStore? stagingStore = null,
+        CameraAgentRecipeExecutionAdapter? adapter = null)
     {
         return new ProjectedSceneCaptureProcessingStep(
             new CaptureProcessingStepMetadata("projected-scene", "ProjectedScene", 0),
             new ProjectedSceneCaptureProcessingStepOptions(), stagingStore ?? staging, staging,
-            new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()));
+            adapter ?? new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()));
     }
 
     private static (CaptureProcessingContext Context, ReconstructionDescriptor Descriptor, string PayloadPath) CreateContext(
         string root,
-        SceneProvenance provenance)
+        SceneProvenance provenance,
+        ProcessingExecutionContext? execution = null)
     {
         var payload = new byte[8];
         var original = ReconstructableCaptureContractTests.CreateManifest(
@@ -486,7 +573,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             new CaptureResult(null, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null),
                 TimeSpan.Zero, CaptureMode.Still, false),
             descriptor.Timing.RequestedStartUtc, TimeSpan.FromSeconds(1), TimeSpan.Zero);
-        return (new CaptureProcessingContext(CreateConfig(), submission, receipt), descriptor, payloadPath);
+        return (new CaptureProcessingContext(CreateConfig(), submission, receipt, null, execution), descriptor, payloadPath);
     }
 
     private static CameraModuleConfig CreateConfig() => new(

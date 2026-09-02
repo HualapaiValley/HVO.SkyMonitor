@@ -53,6 +53,7 @@ public sealed class OwnerBootstrapRestartAcceptanceTests
             Assert.AreEqual(CameraAgentKestrelFixture.OwnerEmail, json.RootElement.GetProperty("ownerEmail").GetString());
             Assert.AreEqual(OwnerBootstrapStates.PasswordChangeRequired, json.RootElement.GetProperty("ownerBootstrapState").GetString());
             Assert.AreEqual(64, json.RootElement.GetProperty("configurationSha256").GetString()?.Length);
+            Assert.AreEqual("InProcess", json.RootElement.GetProperty("replayProfile").GetString());
             Assert.AreEqual("hyg-v42-fixture", json.RootElement.GetProperty("catalogId").GetString());
         }
         using (var healthClient = new HttpClient { BaseAddress = host.BaseAddress })

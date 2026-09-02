@@ -16,6 +16,13 @@ public enum DeploymentComponent
     CameraAgent
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter<CameraAgentReplayProfile>))]
+public enum CameraAgentReplayProfile
+{
+    InProcess,
+    LocalRunner
+}
+
 [JsonConverter(typeof(JsonStringEnumConverter<InstallationPhase>))]
 public enum InstallationPhase
 {
@@ -115,7 +122,8 @@ public sealed record ImageInstallationIdentity(
     string? SourceRevision = null,
     string? Component = null,
     string? ConfigurationContract = null,
-    string? CatalogContract = null);
+    string? CatalogContract = null,
+    string? ReplayRunnerContract = null);
 
 public sealed record DockerDaemonIdentity(
     string Id,
@@ -168,7 +176,8 @@ public sealed record InstanceManifest(
     Guid? LastLifecycleOperationId = null,
     DateTimeOffset? UpdatedUtc = null,
     string? LifecycleControlTokenSha256 = null,
-    string? PreviousComposeModelSha256 = null);
+    string? PreviousComposeModelSha256 = null,
+    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess);
 
 public sealed record LifecycleOperationState(
     int SchemaVersion,
@@ -292,4 +301,5 @@ public sealed record InstallationResult(
     bool Alive,
     bool Healthy,
     string OwnerBootstrapState,
-    DateTimeOffset CompletedUtc);
+    DateTimeOffset CompletedUtc,
+    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess);

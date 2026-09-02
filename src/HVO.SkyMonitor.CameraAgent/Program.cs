@@ -417,6 +417,7 @@ public class Program
                     deploymentLocationVersion = configuration.DeploymentLocation?.Version,
                     deploymentLocationSha256 = configuration.DeploymentLocation?.CanonicalSha256,
                     rawIngressRoot = options.Value.RawIngressRoot,
+                    replayProfile = options.Value.ProcessingGraphs.ReplayProfile.ToString(),
                     catalogId = catalog.CatalogId,
                     packageVersion = catalog.SnapshotVersion,
                     schemaVersion = catalog.SchemaVersion,
