@@ -45,13 +45,14 @@ The planning horizons are:
 | `RM-017` | Standalone CameraAgent product completion | Advance the delivered standalone foundation into independently testable, installable, operable, recoverable, observable, and releasable CameraAgent software, including coherent authenticated local workflows, named graph and replay operation, bounded immutable execution-evidence export, component-scoped quality gates, and signed multi-architecture distribution. | [Epic #513](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/513); [Standalone CameraAgent Product Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/2) | The independent product, test, and CI tranche starts with #532 after the delivered `RM-005` CameraAgent edge checkpoint through #425. The export contract and release convergence also require #426-#428; #429 and #430 do not block completion. LogicHost product work is excluded, and existing optional integration remains compatibility and regression evidence only. Separately managed extensions, formats, notifications, hardware qualification, environmental-source acquisition, profiling, and native-CI evidence remain outside this completion claim. |
 
 `RM-005` remains Current but is partially paused after #425 delivered the
-CameraAgent edge checkpoint. Do not automatically claim #426-#430. Keep that
-central and scale tail open and unclaimed while the initial `RM-017` tranche
-proceeds. Before #536 can begin, pause new `RM-017` claims and resume #426-#428;
-#429 and #430 do not block `RM-017` and remain outside its automatic path.
+CameraAgent edge checkpoint. Do not automatically claim #426-#430, but the
+operator may deliberately resume that central and scale tail within the shared
+capacity when it does not overlap active `RM-017` files or evidence windows.
+#426-#428 must complete before #536 can begin; #429 and #430 do not block
+`RM-017` and remain outside its automatic path.
 
-`RM-017` is Current beside the partially paused `RM-005` and begins with #532.
-One coordinator owns both queues and the shared two-issue global capacity.
+`RM-017` is Current beside the partially paused `RM-005`; its first candidate is
+#532. One coordinator owns both queues and the shared two-issue global capacity.
 `RM-018` remains Future and blocked by completed `RM-017`.
 
 ## Next

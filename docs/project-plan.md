@@ -182,7 +182,7 @@ requirements:
 | ID | Requirement |
 | --- | --- |
 | `REPLAY-LOCAL-001` | Only explicitly requested archived `Replay` executions may use the local runner. Newly acquired and live graph work always executes in the ordered CameraAgent in-process lane. |
-| `REPLAY-LOCAL-002` | In-process replay remains supported. Local-runner selection is explicit retained installation state; runner absence, saturation, authentication/capability mismatch, heartbeat loss, or disconnect never falls back in process, returns the replay to bounded pending state, and consumes no durable attempt. |
+| `REPLAY-LOCAL-002` | In-process replay remains supported. Local-runner selection is explicitly retained installation state; runner absence, saturation, authentication/capability mismatch, heartbeat loss, or disconnect never falls back in process, returns the replay to bounded pending state, and consumes no durable attempt. |
 | `REPLAY-LOCAL-003` | The runner is a long-lived process prestarted and warmed once rather than per capture or job. Capability output records runtime/native/catalog/calibration/model/GPU warmup disposition; the installed default keeps the runner warm, while any nonzero idle shutdown remains bounded to 24 hours. |
 | `REPLAY-LOCAL-004` | The default transport is an owner-only authenticated Unix socket. Explicit non-Compose loopback TCP remains local-only, and every transport enforces bounded metadata, transfer, heartbeat, deadline, concurrency, and authentication limits. |
 | `REPLAY-LOCAL-005` | The runner receives immutable declared inputs and bounded binary payloads, never broad CameraAgent database, identity, catalog, archive, or raw-storage access. Pixel payloads are not base64/JSON encoded; input and output lengths and checksums are verified. |
