@@ -1,6 +1,6 @@
 # HVO SkyMonitor Product Roadmap
 
-Status date: 2026-08-31
+Status date: 2026-09-02
 
 This document is the repository-visible portfolio roadmap. It owns stable
 roadmap initiative IDs, planning horizons, and the mapping from initiatives to
@@ -45,12 +45,22 @@ The planning horizons are:
 
 `RM-005` is the approved initiative on the current execution path. Epic #421
 owns its coordinator, dependency-ordered child claims, evidence windows, and
-local-first execution boundary.
+local-first execution boundary. After the CameraAgent edge checkpoint through
+#425 merges, do not automatically claim #426-#430. Keep that central and scale
+tail open and unclaimed while the initial `RM-017` tranche proceeds. Before #536
+can begin, pause new `RM-017` claims and resume #426-#428; #429 and #430 do not
+block `RM-017` and remain outside its automatic path.
 
 ## Next
 
-No initiative is approved for automatic start. Recompute this horizon before
-beginning another roadmap initiative.
+| ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
+| --- | --- | --- | --- | --- |
+| `RM-017` | Standalone CameraAgent product completion | Advance the delivered standalone foundation into independently testable, installable, operable, recoverable, observable, and releasable CameraAgent software, including coherent authenticated local workflows, named graph and replay operation, bounded immutable execution-evidence export, component-scoped quality gates, and signed multi-architecture distribution. | [Epic #513](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/513); [Standalone CameraAgent Product Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/2) | The independent product, test, and CI tranche may begin after `RM-005` issue #425 merges. The export contract and release convergence also require #426-#428; #429 and #430 do not block completion. LogicHost product work is excluded, and existing optional integration remains compatibility and regression evidence only. Separately managed extensions, formats, notifications, hardware qualification, environmental-source acquisition, profiling, and native-CI evidence remain outside this completion claim. |
+
+`RM-017` is the approved CameraAgent-first successor tranche. It remains Next
+until #425 and the roadmap transition merge. It may then become Current beside
+the partially paused `RM-005`; one coordinator owns the shared two-issue global
+capacity. `RM-018` remains Future and blocked by completed `RM-017`.
 
 The deferred CameraAgent storage/upload naming cleanup
 [#142](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/142) inherits
@@ -64,6 +74,7 @@ naming-only residual is not approved for automatic start.
 | `RM-006` | Certified processing extension platform | Add signed, versioned extension lifecycle and a bounded external-processing bridge without exposing host infrastructure or weakening reproducibility. | [#140](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/140) | Consumes layered producer/compositor/encoder contracts from `RM-004` and complements, but does not duplicate, `RM-005` runners. |
 | `RM-007` | Native camera artifacts and pluggable formats | Preserve camera-native and proprietary source bytes, decode them into canonical processing frames, and produce versioned scientific, display, and export formats. | [#141](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/141) | Builds on certified extensions and layered composition. It does not identify demosaiced, corrected, or lossy data as raw evidence. |
 | `RM-015` | Production multichannel notifications | Add production transactional email and SMS delivery, durable LogicHost in-app notifications, and optional bounded CameraAgent notifications. | [Epic #455](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/455) | Selects providers and CameraAgent delivery topology through an explicit decision checkpoint. Mailpit remains development/test-only and is excluded from official release installation; standalone CameraAgent correctness never depends on notifications, LogicHost, or an external provider. |
+| `RM-018` | LogicHost network operations and distribution | Complete LogicHost as an independently validated and released central multi-observatory product, including immutable CameraAgent execution-evidence import, protected observatory and logical-camera workspaces, signed LogicHost lifecycle distribution, and exact-digest optional two-host acceptance. | [Epic #531](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/531) | Starts only after `RM-017` and its standalone completion milestone close. It consumes stable CameraAgent and shared contracts without reopening CameraAgent features or making LogicHost part of acquisition correctness. The `RM-016` disposition must complete and its owning epic #499 must close before #540 publishes a production LogicHost release; `RM-016` is not absorbed into this initiative. |
 
 ## Research
 
@@ -76,7 +87,7 @@ naming-only residual is not approved for automatic start.
 
 | ID | Initiative | Retained outcome | Owning issue | Reason deferred |
 | --- | --- | --- | --- | --- |
-| `RM-016` | Provider-neutral S3 object storage | Retain the delivered LogicHost-owned S3 contract while deferring qualification and adoption of a maintained local backend. | [Epic #499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499); deferred child [#506](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/506) | SeaweedFS 4.44 failed qualification. MinIO remains the pinned temporary deployment/test incumbent behind `IObjectStore`; no new application coupling is allowed. Reactivate before production release or on a security or compatibility trigger, and requalify affected central evidence after any backend change. |
+| `RM-016` | Provider-neutral S3 object storage | Retain the delivered LogicHost-owned S3 contract while deferring qualification and adoption of a maintained local backend. | [Epic #499](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/499); deferred child [#506](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/506) | SeaweedFS 4.44 failed qualification. MinIO remains the pinned temporary deployment/test incumbent behind `IObjectStore`; no new application coupling is allowed. Reactivate before the first production LogicHost release or on a security or compatibility trigger, and requalify affected central evidence after any backend change. |
 | `RM-010` | Production profiling and observability operations | Add bounded always-on signals and a secure escalation path to short .NET/Linux profiling with measured telemetry overhead. | [#244](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/244) | Existing evidence is sufficient for current delivery; broad profiling remains low priority unless an active defect requires a focused prerequisite. |
 | `RM-012` | Physical camera soak and USB qualification | Produce sustained matched ARM64/x64 acquisition and multi-camera USB isolation evidence or a deterministic failing-layer diagnosis. | [#288](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/288) | Requires suitable physical hardware, stable power/cooling, and controlled USB topology. |
 | `RM-013` | Native ARM64 CI evidence | Add advisory native Linux ARM64 build, publish, container, catalog, and VirtualSky smoke evidence before deciding whether it becomes required. | [#381](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/381) | Depends on available native runner capacity and remains advisory until measured evidence supports a required gate. |
@@ -112,11 +123,27 @@ RM-004 layered capture products
   +-> RM-007 native artifacts and formats
   +-> RM-008 stream transient research
 
+RM-005 #422-#425 CameraAgent edge checkpoint
+  +-> RM-017 independent product, test, CI, and operator-workflow tranche
+
+RM-005 #426-#428 central graph and reusable runner contracts
+  +-> RM-017 immutable execution-evidence export and release convergence
+
+RM-017 standalone CameraAgent product completion
+  +-> RM-018 LogicHost network operations and distribution
+
+RM-005 #429-#430 fairness and optional provider work does not block RM-017.
+
+RM-003 deployment, RM-011 direct ZWO enablement, and RM-014 CameraAgent
+presentation are delivered inputs to RM-017; RM-017 extends rather than
+reopens them.
+
 RM-009 environmental source research is independently plannable.
 RM-010, RM-012, and RM-013 remain trigger- or capacity-dependent.
-RM-015 follows the RM-003 deployment foundation but is independently plannable.
-RM-016 backend adoption is deferred; RM-005 proceeds against the delivered S3
-application boundary and temporary MinIO deployment/test baseline.
+RM-015 follows the RM-003 deployment foundation but remains separate.
+RM-016 backend adoption is deferred and does not block standalone RM-017. Its
+owning epic #499 blocks RM-018 issue #540 and must close before the first
+production LogicHost release.
 ```
 
 Dependencies in this summary show portfolio direction only. Formal issue

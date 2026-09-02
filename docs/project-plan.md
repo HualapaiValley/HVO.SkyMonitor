@@ -299,16 +299,20 @@ named parameterized SQL Server-specific operations, CameraAgent workflow state
 uses direct SQLite, local CameraAgent Identity uses isolated EF Core SQLite, and
 catalog snapshots remain immutable read-only SQLite.
 
-Before the first product release, supported installation starts from empty
-databases and newly generated files and artifacts. Repository history and prior
-development environments do not create compatibility requirements. Each EF
-context therefore has one canonical initial migration matching its current
-model; changes replace that baseline rather than adding upgrade, downgrade,
-backfill, or convergence behavior for an unreleased schema. Version identities
-remain where current validation, hashing, provenance, reconstruction, external
-protocols, or reproducibility require them; an identity does not promise support
-for an earlier unreleased state. Issue #458 coordinates non-EF compatibility and
-hand-written operational SQLite cleanup.
+Before each component's first product release, supported installation of that
+component starts from empty databases and newly generated files and artifacts.
+Repository history and prior development environments do not create
+compatibility requirements. Each EF context owned by an unreleased component
+therefore has one canonical initial migration matching its current model;
+changes replace that baseline rather than adding upgrade, downgrade, backfill,
+or convergence behavior for an unreleased schema. After a component ships, its
+persisted state follows that component's published compatibility and disposition
+contract; another component remaining unreleased does not reopen released state.
+Version identities remain where current validation, hashing, provenance,
+reconstruction, external protocols, or reproducibility require them; an identity
+does not promise support for an earlier unreleased state. Issue #458 coordinates
+non-EF compatibility and hand-written operational SQLite cleanup; #507 owns the
+CameraAgent pre-release state disposition for its independent release.
 
 Before production rollout, current-head evidence must disposition SQL
 transactions that span external object I/O, SQLite immediate transactions that
