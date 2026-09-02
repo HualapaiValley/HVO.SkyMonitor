@@ -1267,7 +1267,11 @@ public sealed class LifecycleContractTests
                                 Privileged = false,
                                 CapDrop = DroppedCapabilities,
                                 SecurityOpt = ReplayRunnerSecurityOptions,
-                                NetworkMode = "none"
+                                NetworkMode = "none",
+                                Tmpfs = new Dictionary<string, string>
+                                {
+                                    ["/tmp"] = "rw,nosuid,nodev,noexec,mode=1777,size=67108864"
+                                }
                             },
                             Mounts = new[]
                             {
@@ -1285,13 +1289,6 @@ public sealed class LifecycleContractTests
                                     Destination = "/run/hvo-replay",
                                     RW = true
                                 },
-                                new
-                                {
-                                    Type = "tmpfs",
-                                    Source = string.Empty,
-                                    Destination = "/tmp",
-                                    RW = true
-                                }
                             }
                         }
                     }), string.Empty));

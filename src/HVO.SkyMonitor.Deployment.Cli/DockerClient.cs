@@ -318,6 +318,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                 ["runner-no-new-privileges"] = host.GetProperty("SecurityOpt").EnumerateArray()
                     .Any(static item => item.GetString() == "no-new-privileges:true"),
                 ["runner-network-disabled"] = host.GetProperty("NetworkMode").GetString() == "none",
+                ["runner-tmpfs"] = ReplayRunnerTmpfsMatches(host),
                 ["runner-auth-key-only"] = restrictedMounts.Length == 2 && restrictedMounts.Any(mount => MountMatches(
                     mount,
                     Path.Combine(paths.ConfigRoot, "secrets", "replay-runner-auth-key"),
@@ -469,6 +470,27 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     private static bool IsReplayRunnerTmpfs(JsonElement mount) =>
         mount.TryGetProperty("Type", out var type) && type.GetString() == "tmpfs" &&
         mount.TryGetProperty("Destination", out var destination) && destination.GetString() == "/tmp";
+
+    private static bool ReplayRunnerTmpfsMatches(JsonElement host)
+    {
+        if (!host.TryGetProperty("Tmpfs", out var tmpfs) || tmpfs.ValueKind != JsonValueKind.Object ||
+            tmpfs.EnumerateObject().Count() != 1 || !tmpfs.TryGetProperty("/tmp", out var value))
+        {
+            return false;
+        }
+
+        var options = (value.GetString() ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return options.Length == 6 &&
+               options.Count(static option => option.Equals("rw", StringComparison.OrdinalIgnoreCase)) == 1 &&
+               options.Count(static option => option.Equals("nosuid", StringComparison.OrdinalIgnoreCase)) == 1 &&
+               options.Count(static option => option.Equals("nodev", StringComparison.OrdinalIgnoreCase)) == 1 &&
+               options.Count(static option => option.Equals("noexec", StringComparison.OrdinalIgnoreCase)) == 1 &&
+               options.Count(static option => option.Equals("mode=1777", StringComparison.OrdinalIgnoreCase)) == 1 &&
+               options.Count(static option => option.Equals("size=64m", StringComparison.OrdinalIgnoreCase) ||
+                                              option.Equals("size=65536k", StringComparison.OrdinalIgnoreCase) ||
+                                              option.Equals("size=67108864", StringComparison.OrdinalIgnoreCase)) == 1;
+    }
 
     private static string? Label(JsonElement labels, string name)
         => labels.ValueKind == JsonValueKind.Object && labels.TryGetProperty(name, out var value)
