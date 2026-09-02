@@ -89,7 +89,8 @@ internal static class CommandLine
                 LatitudeDegrees = ParseDouble(Get(values, "--latitude"), 0, "--latitude"),
                 LongitudeDegrees = ParseDouble(Get(values, "--longitude"), 0, "--longitude"),
                 ElevationMeters = ParseDouble(Get(values, "--elevation"), 0, "--elevation"),
-                TimeZoneId = Get(values, "--time-zone") ?? "UTC"
+                TimeZoneId = Get(values, "--time-zone") ?? "UTC",
+                ReplayProfile = ParseReplayProfile(Get(values, "--replay-profile"))
             };
         }
 
@@ -113,7 +114,7 @@ internal static class CommandLine
             "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
             "--product-root", "--catalog-bundle", "--catalog-manifest", "--catalog-index", "--catalog-version", "--asset-base-url", "--channel", "--image-ref", "--image-archive",
             "--image-archive-sha256", "--password-file", "--latitude", "--longitude",
-            "--elevation", "--time-zone"
+            "--elevation", "--time-zone", "--replay-profile"
         };
         var unknown = options.FirstOrDefault(option => !known.Contains(option));
         if (unknown is not null)
@@ -168,6 +169,14 @@ internal static class CommandLine
             "nightly" => DistributionChannel.Nightly,
             "prerelease" => DistributionChannel.Prerelease,
             _ => throw new InstallUsageException("--channel must be stable, nightly, prerelease, or local.")
+        };
+
+    private static CameraAgentReplayProfile ParseReplayProfile(string? value)
+        => value switch
+        {
+            null or "in-process" => CameraAgentReplayProfile.InProcess,
+            "local-runner" => CameraAgentReplayProfile.LocalRunner,
+            _ => throw new InstallUsageException("--replay-profile must be in-process or local-runner.")
         };
 
     private static LifecycleRequest ParseLifecycle(string[] args)

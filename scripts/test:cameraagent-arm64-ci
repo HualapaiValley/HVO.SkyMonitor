@@ -393,6 +393,7 @@ printf 'timestamp_utc,temperature_millic,throttle,mem_available_kib,load_1m,temp
 SAMPLER_PID=$!
 
 readonly CAMERA_PROJECT="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj"
+readonly REPLAY_RUNNER_PROJECT="$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj"
 readonly CAMERA_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj"
 readonly ACCEPTANCE_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj"
 readonly CATALOG_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj"
@@ -406,7 +407,7 @@ printf 'phase,elapsed_seconds\n' > "$RESULTS/phase-durations.csv"
 phase_started=$SECONDS
 
 dotnet tool restore
-for project in "$CAMERA_PROJECT" "$CAMERA_TESTS" "$ACCEPTANCE_TESTS" "$CATALOG_TESTS"; do
+for project in "$CAMERA_PROJECT" "$REPLAY_RUNNER_PROJECT" "$CAMERA_TESTS" "$ACCEPTANCE_TESTS" "$CATALOG_TESTS"; do
     dotnet restore "$project"
     dotnet build "$project" --no-restore --configuration Release -warnaserror
 done
@@ -437,9 +438,23 @@ phase_started=$SECONDS
 dotnet restore "$CAMERA_PROJECT" --runtime linux-arm64
 dotnet publish "$CAMERA_PROJECT" --no-restore --configuration Release --runtime linux-arm64 \
     --self-contained false -p:UseAppHost=true --output "$TEMP_ROOT/publish"
+dotnet restore "$REPLAY_RUNNER_PROJECT" --runtime linux-arm64
+dotnet publish "$REPLAY_RUNNER_PROJECT" --no-restore --configuration Release --runtime linux-arm64 \
+    --output "$TEMP_ROOT/replay-runner-publish"
 file "$TEMP_ROOT/publish/HVO.SkyMonitor.CameraAgent" | tee "$RESULTS/publish-elf.txt"
 readelf -h "$TEMP_ROOT/publish/HVO.SkyMonitor.CameraAgent" >> "$RESULTS/publish-elf.txt"
 grep -q 'AArch64' "$RESULTS/publish-elf.txt" || fail "published apphost is not AArch64"
+file "$TEMP_ROOT/replay-runner-publish/HVO.SkyMonitor.CameraAgent.ReplayRunner" \
+    | tee "$RESULTS/replay-runner-publish-elf.txt"
+readelf -h "$TEMP_ROOT/replay-runner-publish/HVO.SkyMonitor.CameraAgent.ReplayRunner" \
+    >> "$RESULTS/replay-runner-publish-elf.txt"
+grep -q 'AArch64' "$RESULTS/replay-runner-publish-elf.txt" || fail "published replay runner is not AArch64"
+"$TEMP_ROOT/replay-runner-publish/HVO.SkyMonitor.CameraAgent.ReplayRunner" --capabilities \
+    > "$RESULTS/replay-runner-capabilities.json"
+grep -q '"protocolVersion":1' "$RESULTS/replay-runner-capabilities.json" \
+    || fail "replay runner capability self-test did not report protocol v1"
+grep -q '"status":"Completed"' "$RESULTS/replay-runner-capabilities.json" \
+    || fail "replay runner capability self-test did not complete warmup"
 for library in libSkiaSharp.so libe_sqlite3.so; do
     path="$(find "$TEMP_ROOT/publish" -name "$library" -print -quit)"
     [[ -n "$path" ]] || fail "published native library is missing: $library"
@@ -454,6 +469,10 @@ fi
 (
     cd "$TEMP_ROOT/publish"
     find . -type f -print0 | sort -z | xargs -0 sha256sum > "$RESULTS/cameraagent-linux-arm64.sha256"
+)
+(
+    cd "$TEMP_ROOT/replay-runner-publish"
+    find . -type f -print0 | sort -z | xargs -0 sha256sum > "$RESULTS/replay-runner-linux-arm64.sha256"
 )
 printf 'publish,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
 
@@ -506,8 +525,15 @@ jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
     '.[0].Id | startswith("sha256:")' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image is not content addressed"
 jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
-    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-compatibility"] == "backward-compatible" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hyg-v42-production-p3-s2"' \
+    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-compatibility"] == "backward-compatible" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hyg-v42-production-p3-s2" and .[0].Config.Labels["io.hvo.skymonitor.replay-runner-contract"] == "local-replay-runner-v1"' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image identity or revision is incorrect"
+docker run --rm --label "$OWNERSHIP_LABEL" \
+    --entrypoint /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner \
+    "$IMAGE_ID" --capabilities > "$RESULTS/replay-runner-image-capabilities.json"
+grep -q '"protocolVersion":1' "$RESULTS/replay-runner-image-capabilities.json" \
+    || fail "embedded replay runner did not report protocol v1"
+grep -q '"status":"Completed"' "$RESULTS/replay-runner-image-capabilities.json" \
+    || fail "embedded replay runner did not complete warmup"
 docker history --no-trunc "$IMAGE_ID" > "$RESULTS/image-history.txt"
 printf 'image-build,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-durations.csv"
 

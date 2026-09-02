@@ -15,7 +15,11 @@ public sealed record DecodedImage(
     string AlgorithmVersion);
 
 /// <summary>Bounded JPEG header facts read without decoding a pixel buffer.</summary>
-public sealed record EncodedImageInfo(int Width, int Height, string MediaType);
+public sealed record EncodedImageInfo(
+    int Width,
+    int Height,
+    CameraPixelFormat PixelFormat,
+    string MediaType);
 
 /// <summary>Encodes and decodes JPEG display images without exposing native codec objects.</summary>
 public static class JpegImageCodec
@@ -38,7 +42,10 @@ public static class JpegImageCodec
         {
             throw new ArgumentException("The supplied data is not a valid JPEG image.", nameof(encodedData));
         }
-        return new(codec.Info.Width, codec.Info.Height, MediaType);
+        var pixelFormat = codec.Info.ColorType == SKColorType.Gray8
+            ? CameraPixelFormat.Mono8
+            : CameraPixelFormat.Rgb24;
+        return new(codec.Info.Width, codec.Info.Height, pixelFormat, MediaType);
     }
 
     /// <summary>Encodes a supported Mono8 or RGB24 image as JPEG.</summary>

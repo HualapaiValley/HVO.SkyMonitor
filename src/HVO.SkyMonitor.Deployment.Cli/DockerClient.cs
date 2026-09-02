@@ -92,6 +92,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         var component = Label(labels, "io.hvo.skymonitor.component");
         var configurationContract = Label(labels, "io.hvo.skymonitor.configuration-contract");
         var catalogContract = Label(labels, "io.hvo.skymonitor.catalog-contract");
+        var replayRunnerContract = Label(labels, "io.hvo.skymonitor.replay-runner-contract");
 
         return (identity, new ImageInstallationIdentity(
             request.ImageArchive is null ? "registry" : "archive",
@@ -103,7 +104,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             SourceRevision: sourceRevision,
             Component: component,
             ConfigurationContract: configurationContract,
-            CatalogContract: catalogContract));
+            CatalogContract: catalogContract,
+            ReplayRunnerContract: replayRunnerContract));
     }
 
     private async Task<HashSet<string>> ReadLoadedImageIdsAsync(string output, CancellationToken cancellationToken)
@@ -196,6 +198,11 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             ["identity-mount"] = mounts.Any(mount => MountMatches(
                 mount, Path.Combine(paths.StateRoot, "identity"), "/app/App_Data", writable: true))
         };
+        if (compose.ReplayRunnerContainerName is not null)
+        {
+            checks["replay-socket-mount"] = mounts.Any(mount => MountMatches(
+                mount, Path.Combine(paths.StateRoot, "replay-runner"), "/run/hvo-replay", writable: true));
+        }
         var failed = checks.Where(static check => !check.Value).Select(static check => check.Key).ToArray();
         if (failed.Length > 0)
             throw new InstallerException(
@@ -239,9 +246,24 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                 ["identity-mount"] = mounts.Any(mount => MountMatches(
                     mount, Path.Combine(paths.StateRoot, "identity"), "/app/App_Data", writable: true))
             };
+            if (compose.ReplayRunnerContainerName is not null)
+            {
+                checks["replay-socket-mount"] = mounts.Any(mount => MountMatches(
+                    mount, Path.Combine(paths.StateRoot, "replay-runner"), "/run/hvo-replay", writable: true));
+            }
             var failed = checks.Where(static check => !check.Value).Select(static check => check.Key).ToArray();
             if (failed.Length == 0)
             {
+                if (compose.ReplayRunnerContainerName is not null)
+                {
+                    await VerifyReplayRunnerAsync(
+                        compose,
+                        paths,
+                        imageIdentity,
+                        uid,
+                        gid,
+                        cancellationToken).ConfigureAwait(false);
+                }
                 return;
             }
             if (failed is ["healthy"] && DateTimeOffset.UtcNow < deadline)
@@ -251,6 +273,74 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             }
             throw new InstallerException(
                 $"The running CameraAgent container does not match the installation manifest: {string.Join(", ", failed)}.");
+        }
+    }
+
+    private async Task VerifyReplayRunnerAsync(
+        ComposeFiles compose,
+        InstallationPaths paths,
+        ImageInstallationIdentity imageIdentity,
+        uint uid,
+        uint gid,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
+        while (true)
+        {
+            var result = await RunDockerAsync(
+                ["container", "inspect", compose.ReplayRunnerContainerName!],
+                cancellationToken).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var container = document.RootElement[0];
+            var state = container.GetProperty("State");
+            var config = container.GetProperty("Config");
+            var host = container.GetProperty("HostConfig");
+            var mounts = container.GetProperty("Mounts").EnumerateArray().ToArray();
+            var expectedInstance = paths.InstanceRoot.Split(Path.DirectorySeparatorChar).Last();
+            var checks = new Dictionary<string, bool>(StringComparer.Ordinal)
+            {
+                ["runner-running"] = state.GetProperty("Running").GetBoolean(),
+                ["runner-healthy"] = state.TryGetProperty("Health", out var health) &&
+                                     health.GetProperty("Status").GetString() == "healthy",
+                ["runner-image"] = container.GetProperty("Image").GetString() == imageIdentity.ImageId,
+                ["runner-user"] = config.GetProperty("User").GetString() == $"{uid}:{gid}",
+                ["runner-entrypoint"] = config.GetProperty("Entrypoint").EnumerateArray().Select(static item => item.GetString())
+                    .SequenceEqual(["/app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner"], StringComparer.Ordinal),
+                ["runner-project"] = config.GetProperty("Labels").GetProperty("com.docker.compose.project").GetString() == compose.ProjectName,
+                ["runner-ownership"] = config.GetProperty("Labels").TryGetProperty(
+                    "io.hvo.skymonitor.instance-id",
+                    out var instanceLabel) && instanceLabel.GetString() == expectedInstance,
+                ["runner-read-only-root"] = host.GetProperty("ReadonlyRootfs").GetBoolean(),
+                ["runner-unprivileged"] = !host.GetProperty("Privileged").GetBoolean(),
+                ["runner-capabilities-dropped"] = host.GetProperty("CapDrop").EnumerateArray()
+                    .Any(static item => item.GetString() == "ALL"),
+                ["runner-no-new-privileges"] = host.GetProperty("SecurityOpt").EnumerateArray()
+                    .Any(static item => item.GetString() == "no-new-privileges:true"),
+                ["runner-network-disabled"] = host.GetProperty("NetworkMode").GetString() == "none",
+                ["runner-auth-key-only"] = mounts.Length == 2 && mounts.Any(mount => MountMatches(
+                    mount,
+                    Path.Combine(paths.ConfigRoot, "secrets", "replay-runner-auth-key"),
+                    "/run/hvo-secrets/replay-runner-auth-key",
+                    writable: false)),
+                ["runner-socket-mount"] = mounts.Any(mount => MountMatches(
+                    mount,
+                    Path.Combine(paths.StateRoot, "replay-runner"),
+                    "/run/hvo-replay",
+                    writable: true))
+            };
+            var failed = checks.Where(static check => !check.Value).Select(static check => check.Key).ToArray();
+            if (failed.Length == 0)
+            {
+                return;
+            }
+            if (failed.All(static check => check is "runner-running" or "runner-healthy") &&
+                DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            throw new InstallerException(
+                $"The local replay runner does not match the installation manifest: {string.Join(", ", failed)}.");
         }
     }
 

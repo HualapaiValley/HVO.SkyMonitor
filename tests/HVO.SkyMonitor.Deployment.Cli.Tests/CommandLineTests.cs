@@ -26,6 +26,25 @@ public sealed class CommandLineTests
         Assert.AreEqual("127.0.0.1", request.BindAddress);
         Assert.AreEqual(5130, request.Port);
         Assert.AreEqual(InstallRequest.DefaultProductRoot, request.ProductRoot);
+        Assert.AreEqual(CameraAgentReplayProfile.InProcess, request.ReplayProfile);
+    }
+
+    [TestMethod]
+    public void Parse_LocalReplayRunnerProfile_IsExplicitlySelectable()
+    {
+        var request = CommandLine.Parse(ValidArguments.Concat([
+            "--replay-profile", "local-runner"
+        ]).ToArray());
+
+        Assert.AreEqual(CameraAgentReplayProfile.LocalRunner, request.ReplayProfile);
+    }
+
+    [TestMethod]
+    public void Parse_UnknownReplayProfile_IsRejected()
+    {
+        var arguments = ValidArguments.Concat(["--replay-profile", "remote"]).ToArray();
+
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(arguments));
     }
 
     [TestMethod]

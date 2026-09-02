@@ -17,11 +17,20 @@ internal sealed record ComposeFiles(
     string RigProfileName,
     string RigProfileVersion,
     string ScheduleSchemaVersion,
-    string ScheduleState);
+    string ScheduleState,
+    string? ReplayRunnerContainerName);
 
 internal static class ComposeDeployment
 {
     public const string TemplateVersion = "cameraagent-compose-v2";
+    public const string LocalRunnerTemplateVersion = "cameraagent-compose-v3";
+
+    public static string TemplateVersionFor(CameraAgentReplayProfile replayProfile) => replayProfile switch
+    {
+        CameraAgentReplayProfile.InProcess => TemplateVersion,
+        CameraAgentReplayProfile.LocalRunner => LocalRunnerTemplateVersion,
+        _ => throw new ArgumentOutOfRangeException(nameof(replayProfile))
+    };
 
     private const string Template = """
 services:
@@ -74,6 +83,53 @@ services:
         max-file: "3"
 """;
 
+    private const string ReplayRunnerTemplate = """
+
+  replay-runner:
+    container_name: ${HVO_CONTAINER_NAME:?container name required}-replay
+    hostname: ${HVO_CONTAINER_NAME}-replay
+    image: ${CAMERAAGENT_IMAGE:?immutable image required}
+    pull_policy: never
+    labels:
+      io.hvo.skymonitor.product: HVO.SkyMonitor
+      io.hvo.skymonitor.component: CameraAgentReplayRunner
+      io.hvo.skymonitor.instance-id: ${HVO_INSTANCE_ID:?instance id required}
+    user: "${HVO_RUNTIME_UID:?uid required}:${HVO_RUNTIME_GID:?gid required}"
+    entrypoint: [/app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner]
+    environment:
+      HVO_REPLAY_TRANSPORT: unix
+      HVO_REPLAY_SOCKET_PATH: /run/hvo-replay/runner.sock
+      HVO_REPLAY_AUTH_KEY_FILE: /run/hvo-secrets/replay-runner-auth-key
+      HVO_REPLAY_MAX_CONCURRENCY: "1"
+      HVO_REPLAY_MAX_TRANSFER_BYTES: "134217728"
+      HVO_REPLAY_IDLE_SHUTDOWN_SECONDS: "0"
+    volumes:
+      - ${HVO_CONFIG_ROOT:?config root required}/secrets/replay-runner-auth-key:/run/hvo-secrets/replay-runner-auth-key:ro
+      - ${HVO_STATE_ROOT:?state root required}/replay-runner:/run/hvo-replay
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777,size=64m
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: [CMD, /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner, --probe]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    cpus: "0.5"
+    mem_limit: 2G
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+""";
+
     public static ComposeFiles Write(
         InstallRequest request,
         InstallationPaths paths,
@@ -98,7 +154,8 @@ services:
             outputPaths.ConfigRoot, composeRoot, secretsRoot, outputPaths.StateRoot,
             Path.Combine(outputPaths.StateRoot, "identity"), Path.Combine(outputPaths.StateRoot, "data-protection"),
             Path.Combine(outputPaths.StateRoot, "provisioning"), Path.Combine(outputPaths.StateRoot, "raw"),
-            Path.Combine(outputPaths.StateRoot, "archive"), outputPaths.DeploymentStateRoot
+            Path.Combine(outputPaths.StateRoot, "archive"), Path.Combine(outputPaths.StateRoot, "replay-runner"),
+            outputPaths.DeploymentStateRoot
         })
         {
             SafeFileSystem.CreateOwnerDirectory(path);
@@ -134,6 +191,10 @@ services:
             ["LifecycleControl__Token"] = lifecycleControlToken,
             ["DeviceProvisioning__StateDirectory"] = "/app/data/provisioning"
         };
+        settings["CameraAgent__ProcessingGraphs__ReplayProfile"] = request.ReplayProfile.ToString();
+        settings["CameraAgent__ProcessingGraphs__LocalRunner__SocketPath"] = "/run/hvo-replay/runner.sock";
+        settings["CameraAgent__ProcessingGraphs__LocalRunner__AuthorizationKeyFile"] =
+            "/run/hvo-secrets/replay-runner-auth-key";
         if (passwordAuthorityEnabled)
         {
             settings["LocalIdentity__AdminPasswordFile"] = "/run/hvo-private/owner-password";
@@ -142,6 +203,28 @@ services:
         foreach (var setting in settings)
         {
             SafeFileSystem.WriteTextAtomic(Path.Combine(secretsRoot, setting.Key), setting.Value);
+        }
+        var replayKeyPath = Path.Combine(secretsRoot, "replay-runner-auth-key");
+        if (request.ReplayProfile == CameraAgentReplayProfile.LocalRunner)
+        {
+            if (File.Exists(replayKeyPath))
+            {
+                SafeFileSystem.ValidateOwnerFile(replayKeyPath);
+                if (new FileInfo(replayKeyPath).Length is < 32 or > 4096)
+                {
+                    throw new InstallerException("The local replay runner authorization key length is invalid.");
+                }
+            }
+            else
+            {
+                SafeFileSystem.WriteTextAtomic(
+                    replayKeyPath,
+                    Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
+            }
+        }
+        else
+        {
+            File.Delete(replayKeyPath);
         }
         var obsoletePasswordSetting = Path.Combine(secretsRoot, "LocalIdentity__AdminPasswordFile");
         if (!passwordAuthorityEnabled)
@@ -156,6 +239,14 @@ services:
                 "      - ${HVO_PASSWORD_FILE:?password file required}:/run/hvo-private/owner-password:ro\n",
                 string.Empty,
                 StringComparison.Ordinal);
+        if (request.ReplayProfile == CameraAgentReplayProfile.LocalRunner)
+        {
+            template = template.Replace(
+                "      - ${HVO_STATE_ROOT}/archive:/app/data/archive\n",
+                "      - ${HVO_STATE_ROOT}/archive:/app/data/archive\n      - ${HVO_STATE_ROOT}/replay-runner:/run/hvo-replay\n",
+                StringComparison.Ordinal);
+            template += ReplayRunnerTemplate;
+        }
         SafeFileSystem.WriteTextAtomic(composeFile, template);
         var environmentFile = Path.Combine(composeRoot, "instance.env");
         var environment = string.Join('\n', new[]
@@ -187,7 +278,10 @@ services:
             configuration.RigProfileName,
             configuration.RigProfileVersion,
             configuration.ScheduleSchemaVersion,
-            configuration.ScheduleState);
+            configuration.ScheduleState,
+            request.ReplayProfile == CameraAgentReplayProfile.LocalRunner
+                ? $"hvo-skymonitor-{compactId}-replay"
+                : null);
     }
 
     public static string ComputeSha256(string content)

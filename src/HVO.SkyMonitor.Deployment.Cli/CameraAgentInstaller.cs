@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.Deployment.Contracts;
+using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
 using HVO.SkyMonitor.Deployment.Distribution;
 using System.Net;
 using System.Net.Sockets;
@@ -84,7 +85,11 @@ internal sealed class CameraAgentInstaller
         var requestSha256 = ComputeRequestSha256(identityRequest, instanceId, acquiredCatalog.Evidence);
         var existingState = await ReadStateAsync(paths.StatePath, cancellationToken).ConfigureAwait(false);
         EnsureInstanceRootCanBeOwned(paths, existingState is not null);
-        if (existingState is not null && !string.Equals(existingState.RequestSha256, requestSha256, StringComparison.Ordinal))
+        if (existingState is not null && !RequestIdentityMatches(
+                existingState.RequestSha256,
+                identityRequest,
+                instanceId,
+                acquiredCatalog.Evidence))
         {
             throw new InstallerException("The retained installation state belongs to different immutable inputs.");
         }
@@ -185,7 +190,7 @@ internal sealed class CameraAgentInstaller
                 allowMutation: retainedCompletedResult is null,
                 cancellationToken)
                 .ConfigureAwait(false);
-            if (!IsValid(image))
+            if (!IsValid(image, request.ReplayProfile))
                 throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
             if (daemon != preflightDaemon)
             {
@@ -453,7 +458,7 @@ internal sealed class CameraAgentInstaller
             };
             var (daemon, image) = await docker.PrepareImageAsync(request, allowMutation: false, cancellationToken)
                 .ConfigureAwait(false);
-            if (!IsValid(image))
+            if (!IsValid(image, request.ReplayProfile))
                 throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
             var compose = ComposeDeployment.Write(
                 request,
@@ -490,7 +495,7 @@ internal sealed class CameraAgentInstaller
                 finalPaths.StateRoot,
                 NativeLinux.getuid(),
                 NativeLinux.getgid(),
-                ComposeDeployment.TemplateVersion,
+                ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
                 request.LatitudeDegrees,
                 request.LongitudeDegrees,
                 request.ElevationMeters,
@@ -509,7 +514,8 @@ internal sealed class CameraAgentInstaller
                 Alive: false,
                 Healthy: false,
                 "planned",
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow,
+                (ContractReplayProfile)request.ReplayProfile);
         }
         finally
         {
@@ -699,7 +705,7 @@ internal sealed class CameraAgentInstaller
             paths.ProductRoot,
             paths.ConfigRoot,
             paths.StateRoot,
-            ComposeDeployment.TemplateVersion,
+            ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
             compose.ConfigurationSha256,
             compose.RigProfileSha256,
             compose.ScheduleSha256,
@@ -722,7 +728,8 @@ internal sealed class CameraAgentInstaller
             previous?.LastLifecycleOperationId,
             previous?.UpdatedUtc,
             ComposeDeployment.ComputeSha256(lifecycleControlToken),
-            previous?.PreviousComposeModelSha256);
+            previous?.PreviousComposeModelSha256,
+            (ContractReplayProfile)request.ReplayProfile);
     }
 
     private static InstallationResult CreateInstalledResult(
@@ -757,7 +764,7 @@ internal sealed class CameraAgentInstaller
             paths.StateRoot,
             uid,
             gid,
-            ComposeDeployment.TemplateVersion,
+            ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
             request.LatitudeDegrees,
             request.LongitudeDegrees,
             request.ElevationMeters,
@@ -776,7 +783,8 @@ internal sealed class CameraAgentInstaller
             Alive: true,
             Healthy: true,
             ownerState,
-            completedUtc);
+            completedUtc,
+            (ContractReplayProfile)request.ReplayProfile);
 
     private static async Task<string> ReadOwnerSecretAsync(string path, CancellationToken cancellationToken)
     {
@@ -873,7 +881,7 @@ internal sealed class CameraAgentInstaller
             value.Distribution.ReleaseTrain == "catalog" && value.Distribution.ReleaseVersion == value.PackageVersion &&
              value.Distribution.ReleaseTag == $"catalog-{value.PackageVersion}");
 
-    private static bool IsValid(ImageInstallationIdentity? value)
+    internal static bool IsValid(ImageInstallationIdentity? value, CameraAgentReplayProfile replayProfile)
         => value is not null && HasValue(value.Source) && HasValue(value.ImmutableReference) &&
            System.Text.RegularExpressions.Regex.IsMatch(
                value.ImmutableReference,
@@ -882,7 +890,9 @@ internal sealed class CameraAgentInstaller
            value.ImageId is not null && value.ImageId.StartsWith("sha256:", StringComparison.Ordinal) &&
            IsSha256(value.ImageId["sha256:".Length..]) && value.Architecture is "amd64" or "arm64" &&
             value.Component == "CameraAgent" && value.ConfigurationContract == "cameraagent-install-v1" &&
-            value.CatalogContract == "hyg-v42-production-p3-s2" && IsSourceRevision(value.SourceRevision) &&
+             value.CatalogContract == "hyg-v42-production-p3-s2" && IsSourceRevision(value.SourceRevision) &&
+             (replayProfile == CameraAgentReplayProfile.InProcess ||
+              value.ReplayRunnerContract == "local-replay-runner-v1") &&
             (value.ArchiveSha256 is null || IsSha256(value.ArchiveSha256)) &&
             (value.Distribution is null || IsValid(value.Distribution) &&
              value.Distribution.ManifestKind == DistributionManifestKind.InstallerRelease.ToString() &&
@@ -1026,7 +1036,60 @@ internal sealed class CameraAgentInstaller
         }
     }
 
-    private static string ComputeRequestSha256(
+    internal static string ComputeRequestSha256(
+        InstallRequest request,
+        Guid instanceId,
+        DistributionVerificationEvidence? catalogDistribution = null)
+    {
+        var identity = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            instanceId,
+            request.FriendlyName,
+            request.OwnerEmail,
+            request.BindAddress,
+            request.Port,
+            request.ProductRoot,
+            CatalogBundle = catalogDistribution is null ? request.CatalogBundle : null,
+            CatalogRelease = catalogDistribution is null ? null : new
+            {
+                catalogDistribution.ReleaseTrain,
+                catalogDistribution.ReleaseVersion,
+                catalogDistribution.ReleaseTag,
+                catalogDistribution.ManifestSha256,
+                catalogDistribution.AssetName,
+                catalogDistribution.AssetSha256,
+                catalogDistribution.AssetLength,
+                catalogDistribution.SigningKeyId
+            },
+            request.ImageReference,
+            request.ImageArchive,
+            request.ImageArchiveSha256,
+            request.PasswordFile,
+            request.LatitudeDegrees,
+            request.LongitudeDegrees,
+            request.ElevationMeters,
+            request.TimeZoneId,
+            request.AcknowledgePlaintextHttp,
+            request.ReplayProfile
+        });
+        return Convert.ToHexStringLower(SHA256.HashData(identity));
+    }
+
+    internal static bool RequestIdentityMatches(
+        string retainedSha256,
+        InstallRequest request,
+        Guid instanceId,
+        DistributionVerificationEvidence? catalogDistribution = null)
+        => string.Equals(
+               retainedSha256,
+               ComputeRequestSha256(request, instanceId, catalogDistribution),
+               StringComparison.Ordinal) ||
+           request.ReplayProfile == CameraAgentReplayProfile.InProcess && string.Equals(
+               retainedSha256,
+               ComputeLegacyRequestSha256(request, instanceId, catalogDistribution),
+               StringComparison.Ordinal);
+
+    internal static string ComputeLegacyRequestSha256(
         InstallRequest request,
         Guid instanceId,
         DistributionVerificationEvidence? catalogDistribution = null)

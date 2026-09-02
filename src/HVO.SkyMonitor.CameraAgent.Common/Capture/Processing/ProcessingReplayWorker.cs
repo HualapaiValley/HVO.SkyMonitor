@@ -104,7 +104,8 @@ internal sealed class ProcessingReplayWorker(
                 lease.WorkId,
                 lease.LeaseToken,
                 lease.LeaseOwner,
-                lease.Execution.DeadlineUtc);
+                lease.Execution.DeadlineUtc,
+                lease.ClaimCount);
             result = await FrameProcessingWorker.ProcessGraphItemAsync(
                 new FrameProcessingItem(
                     lease.Configuration,

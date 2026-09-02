@@ -802,7 +802,7 @@ public sealed class LifecycleContractTests
 
     [TestMethod]
     [DataRow("cameraagent-compose-v1")]
-    [DataRow("cameraagent-compose-v3")]
+    [DataRow("cameraagent-compose-v4")]
     public async Task ExecuteAsync_UnsupportedPreviousComposePropertyIsRejectedBeforeDockerOrJournalMutation(
         string previousComposeVersion)
     {

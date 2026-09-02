@@ -24,6 +24,7 @@ public sealed class JpegImageCodecTests
         Assert.AreEqual(JpegImageCodec.AlgorithmVersion, decoded.AlgorithmVersion);
         Assert.AreEqual(8, info.Width);
         Assert.AreEqual(8, info.Height);
+        Assert.AreEqual(CameraPixelFormat.Mono8, info.PixelFormat);
         Assert.AreEqual(JpegImageCodec.MediaType, info.MediaType);
         Assert.AreEqual(CameraPixelFormat.Mono8, decoded.PixelFormat);
         Assert.AreEqual(8, decoded.Width);
@@ -59,9 +60,11 @@ public sealed class JpegImageCodecTests
         var packedJpeg = JpegImageCodec.EncodeRgb24ToJpeg(width, height, packed);
         var paddedJpeg = JpegImageCodec.EncodeRgb24ToJpeg(
             width, height, padded, paddedStride);
+        var info = JpegImageCodec.InspectJpeg(paddedJpeg);
         var decoded = JpegImageCodec.DecodeJpeg(paddedJpeg);
 
         CollectionAssert.AreEqual(packedJpeg, paddedJpeg);
+        Assert.AreEqual(CameraPixelFormat.Rgb24, info.PixelFormat);
         Assert.AreEqual(CameraPixelFormat.Rgb24, decoded.PixelFormat);
         Assert.AreEqual(packedStride, decoded.StrideBytes);
         Assert.HasCount(packedStride * height, decoded.PixelData.ToArray());

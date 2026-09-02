@@ -2,6 +2,8 @@
     <Project Path="src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj" />
     <Project Path="src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj" />
+    <Project Path="src/HVO.SkyMonitor.CameraAgent.Replay/HVO.SkyMonitor.CameraAgent.Replay.csproj" />
+    <Project Path="src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj" />
     <Project Path="src/HVO.SkyMonitor.AgentCore/HVO.SkyMonitor.AgentCore.csproj" />
     <Project Path="src/HVO.SkyMonitor.Astronomy/HVO.SkyMonitor.Astronomy.csproj" />
     <Project Path="src/HVO.SkyMonitor.Catalog.Sqlite/HVO.SkyMonitor.Catalog.Sqlite.csproj" />

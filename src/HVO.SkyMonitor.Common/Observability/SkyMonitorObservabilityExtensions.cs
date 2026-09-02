@@ -153,6 +153,7 @@ public static class SkyMonitorObservabilityExtensions
                     .AddMeter("HVO.SkyMonitor.CameraAgent.CaptureLanes")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.DeploymentLocation")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.ProcessingGraph")
+                    .AddMeter("HVO.SkyMonitor.CameraAgent.ReplayRunner")
                     .AddMeter("HVO.SkyMonitor.CameraAgent.Outbox")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Ingest")
                     .AddMeter("HVO.SkyMonitor.LogicHost.Retrieval")

@@ -64,6 +64,32 @@ public static class BuiltInProcessingRecipes
         return recipe.NormalizeOptions(options);
     }
 
+    public static ProcessingProductContract CreateProductContract(
+        ProcessingExecutionRequest request,
+        ProcessingRecipeIdentity identity) =>
+        BuiltInProcessingProductContracts.Create(request, identity);
+
+    public static bool ProductPayloadMatchesContract(
+        ProcessingExecutionRequest request,
+        ProcessingProductContract contract,
+        ReadOnlyMemory<byte> payload,
+        string? contentIdentitySha256,
+        string recipeIdentitySha256,
+        IReadOnlyList<ProcessingAlgorithmIdentity> algorithms)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(contract);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recipeIdentitySha256);
+        ArgumentNullException.ThrowIfNull(algorithms);
+        return BuiltInProcessingProductContracts.PayloadMatches(
+            request,
+            contract,
+            payload,
+            contentIdentitySha256,
+            recipeIdentitySha256,
+            algorithms);
+    }
+
     internal static IProcessingRecipe[] CreateAll() =>
     [
         new LinearNormalizationRecipe(),
@@ -931,7 +957,7 @@ internal sealed class RollingMeanRecipe : IProcessingRecipe
         return ValueTask.FromResult(ProcessingOutcome.Produced(product));
     }
 
-    private static List<ProcessingArtifact> SelectWindow(
+    internal static List<ProcessingArtifact> SelectWindow(
         IReadOnlyList<ProcessingArtifact> candidates,
         RollingMeanOptions options)
     {

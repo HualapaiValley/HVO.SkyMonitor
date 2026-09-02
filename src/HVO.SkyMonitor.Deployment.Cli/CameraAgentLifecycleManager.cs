@@ -74,8 +74,22 @@ internal sealed class CameraAgentLifecycleManager
         {
             await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
             var runtime = await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false);
-            var outcome = runtime.Exists && runtime.ImageId != manifest.Image.ImageId ? "drifted" : "status";
-            return Result(null, outcome, null, paths, manifest, daemon, runtime.Running, runtime.Healthy);
+            var runnerRuntime = compose.ReplayRunnerContainerName is null
+                ? null
+                : await docker.InspectContainerAsync(compose.ReplayRunnerContainerName, cancellationToken).ConfigureAwait(false);
+            var outcome = runtime.Exists && runtime.ImageId != manifest.Image.ImageId ||
+                          runnerRuntime is { Exists: true } && runnerRuntime.ImageId != manifest.Image.ImageId
+                ? "drifted"
+                : "status";
+            return Result(
+                null,
+                outcome,
+                null,
+                paths,
+                manifest,
+                daemon,
+                runtime.Running && (runnerRuntime?.Running ?? true),
+                runtime.Healthy && (runnerRuntime?.Healthy ?? true));
         }
         SafeFileSystem.CreateOwnerDirectory(paths.OperationsRoot);
         using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
@@ -215,7 +229,11 @@ internal sealed class CameraAgentLifecycleManager
             }
             throw new InstallerException("The candidate image is already active.");
         }
-        if (!IsCanonicalImage(candidate, manifest.ComponentSchemaVersion, manifest.DockerDaemon.Architecture))
+        if (!IsCanonicalImage(
+                candidate,
+                manifest.ComponentSchemaVersion,
+                manifest.DockerDaemon.Architecture,
+                manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner))
         {
             throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
         }
@@ -952,7 +970,8 @@ internal sealed class CameraAgentLifecycleManager
             {
                 if (document.RootElement.TryGetProperty("previousComposeTemplateVersion", out var previousVersion) &&
                     (previousVersion.ValueKind != JsonValueKind.String ||
-                     previousVersion.GetString() != ComposeDeployment.TemplateVersion))
+                     previousVersion.GetString() is not (
+                         ComposeDeployment.TemplateVersion or ComposeDeployment.LocalRunnerTemplateVersion)))
                 {
                     throw new InstallerException("The retained instance manifest declares an unsupported previous Compose contract.");
                 }
@@ -988,7 +1007,8 @@ internal sealed class CameraAgentLifecycleManager
             !HasValue(result.FriendlyName) || result.Url is not { IsAbsoluteUri: true } || !HasValue(result.OwnerEmail) ||
             !HasValue(result.PasswordFile) || !HasValue(result.ProductRoot) || !HasValue(result.InstanceRoot) ||
             !HasValue(result.ConfigRoot) || !HasValue(result.StateRoot) || result.RuntimeUid == 0 ||
-            result.ComposeTemplateVersion != ComposeDeployment.TemplateVersion ||
+            !Enum.IsDefined(result.ReplayProfile) ||
+            result.ComposeTemplateVersion != ComposeDeployment.TemplateVersionFor((CameraAgentReplayProfile)result.ReplayProfile) ||
             !double.IsFinite(result.LatitudeDegrees) || !double.IsFinite(result.LongitudeDegrees) ||
             !double.IsFinite(result.ElevationMeters) || !HasValue(result.TimeZoneId) ||
             !IsSha256(result.ConfigurationSha256) || !IsSha256(result.RigProfileSha256) ||
@@ -997,7 +1017,11 @@ internal sealed class CameraAgentLifecycleManager
             !HasValue(result.ScheduleState) || !IsSha256(result.ComposeModelSha256) ||
             !IsValidCatalog(result.Catalog) ||
             result.Catalog.InstallRoot != Path.Combine(result.ProductRoot, "catalogs", result.Catalog.CatalogId) ||
-            !IsCanonicalImage(result.Image, "cameraagent-install-v1", result.DockerDaemon?.Architecture) ||
+            !IsCanonicalImage(
+                result.Image,
+                "cameraagent-install-v1",
+                result.DockerDaemon?.Architecture,
+                result.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner) ||
             !IsValidDaemon(result.DockerDaemon) || !result.Alive || !result.Healthy ||
             result.OwnerBootstrapState != "owner-password-change-required" || result.CompletedUtc == default)
         {
@@ -1108,7 +1132,9 @@ internal sealed class CameraAgentLifecycleManager
             !double.IsFinite(manifest.LatitudeDegrees) || !double.IsFinite(manifest.LongitudeDegrees) ||
             !double.IsFinite(manifest.ElevationMeters) || manifest.RuntimeUid == 0 ||
             !HasValue(manifest.ProductRoot) || !HasValue(manifest.ConfigRoot) || !HasValue(manifest.StateRoot) ||
-            manifest.ComposeTemplateVersion != ComposeDeployment.TemplateVersion ||
+            !Enum.IsDefined(manifest.ReplayProfile) ||
+            manifest.ComposeTemplateVersion != ComposeDeployment.TemplateVersionFor(
+                (CameraAgentReplayProfile)manifest.ReplayProfile) ||
             !IsSha256(manifest.ConfigurationSha256) || !IsSha256(manifest.RigProfileSha256) ||
             !IsSha256(manifest.ScheduleSha256) || !HasValue(manifest.RigProfileName) ||
             !HasValue(manifest.RigProfileVersion) || !HasValue(manifest.ScheduleSchemaVersion) ||
@@ -1116,9 +1142,17 @@ internal sealed class CameraAgentLifecycleManager
             !IsSha256(manifest.ComposeModelSha256) || !IsValidCatalog(manifest.Catalog) ||
             manifest.Catalog.InstallRoot != Path.Combine(manifest.ProductRoot, "catalogs", manifest.Catalog.CatalogId) ||
             !IsSha256(manifest.LifecycleControlTokenSha256) ||
-            !IsCanonicalImage(manifest.Image, manifest.ComponentSchemaVersion, manifest.DockerDaemon?.Architecture) ||
+            !IsCanonicalImage(
+                manifest.Image,
+                manifest.ComponentSchemaVersion,
+                manifest.DockerDaemon?.Architecture,
+                manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner) ||
             manifest.PreviousImage is not null &&
-            !IsCanonicalImage(manifest.PreviousImage, manifest.ComponentSchemaVersion, manifest.DockerDaemon?.Architecture) ||
+            !IsCanonicalImage(
+                manifest.PreviousImage,
+                manifest.ComponentSchemaVersion,
+                manifest.DockerDaemon?.Architecture,
+                manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner) ||
             (manifest.PreviousImage is null) != (manifest.PreviousComposeModelSha256 is null) ||
             manifest.PreviousComposeModelSha256 is not null && !IsSha256(manifest.PreviousComposeModelSha256) ||
             manifest.PreviousCatalog is not null && !IsValidCatalog(manifest.PreviousCatalog) ||
@@ -1154,6 +1188,7 @@ internal sealed class CameraAgentLifecycleManager
             manifest.RigProfileName != result.RigProfileName || manifest.RigProfileVersion != result.RigProfileVersion ||
             manifest.ScheduleSchemaVersion != result.ScheduleSchemaVersion || manifest.ScheduleState != result.ScheduleState ||
             manifest.ComposeTemplateVersion != result.ComposeTemplateVersion ||
+            manifest.ReplayProfile != result.ReplayProfile ||
             manifest.ConfigurationSha256 != result.ConfigurationSha256 ||
             manifest.RigProfileSha256 != result.RigProfileSha256 || manifest.ScheduleSha256 != result.ScheduleSha256 ||
             manifest.DeploymentLocationId != $"installer-{instanceId:D}" || manifest.DockerDaemon != result.DockerDaemon ||
@@ -1215,7 +1250,10 @@ internal sealed class CameraAgentLifecycleManager
             manifest.RigProfileName,
             manifest.RigProfileVersion,
             manifest.ScheduleSchemaVersion,
-            manifest.ScheduleState);
+            manifest.ScheduleState,
+            manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner
+                ? $"hvo-skymonitor-{compact}-replay"
+                : null);
     }
 
     private static string ReplaceEnvironmentValue(string environment, string key, string value)
@@ -1235,7 +1273,8 @@ internal sealed class CameraAgentLifecycleManager
     private static bool IsCanonicalImage(
         ImageInstallationIdentity? image,
         string configurationContract,
-        string? daemonArchitecture)
+        string? daemonArchitecture,
+        bool requireReplayRunner = false)
         => image is not null && HasValue(image.Source) && HasValue(image.ImmutableReference) &&
            System.Text.RegularExpressions.Regex.IsMatch(
                image.ImmutableReference,
@@ -1246,7 +1285,8 @@ internal sealed class CameraAgentLifecycleManager
            image.Architecture == daemonArchitecture &&
            (image.ArchiveSha256 is null || IsSha256(image.ArchiveSha256)) &&
            image.Component == "CameraAgent" && image.ConfigurationContract == configurationContract &&
-           image.CatalogContract == "hyg-v42-production-p3-s2" && IsSourceRevision(image.SourceRevision) &&
+            image.CatalogContract == "hyg-v42-production-p3-s2" && IsSourceRevision(image.SourceRevision) &&
+            (!requireReplayRunner || image.ReplayRunnerContract == "local-replay-runner-v1") &&
            (image.Distribution is null || IsValidDistribution(image.Distribution) &&
             image.Distribution.ManifestKind == DistributionManifestKind.InstallerRelease.ToString() &&
             image.Distribution.ReleaseTrain == "installer" &&
