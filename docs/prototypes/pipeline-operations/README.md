@@ -126,6 +126,10 @@ font dependencies. Included image assets are local.
 
 ## Blazor Handoff
 
+- Read the [LogicHost implementation handoff](LOGICHOST-HANDOFF.md) before
+  translating this design into production pages. It maps the prototype to
+  current services, identifies missing contracts, and records where issue
+  ownership is established or still requires a coordinator decision.
 - The static query routes represent separate Blazor pages, not one intended
   production component: network home, observatory selection/detail, camera
   current sky, camera processing, camera archive, events, and scoped operations.
@@ -166,10 +170,11 @@ font dependencies. Included image assets are local.
   delivery without delaying raw ingest.
 - A future remote-management workflow may let LogicHost prepare an immutable
   proposal bound to an exact agent, installation, expected base revision,
-  capabilities, and expiry. CameraAgent must initiate any communication,
-  validate and admit the proposal locally, and report retrieval, acceptance,
-  staging, and activation separately. Heartbeat never proves proposal-channel
-  availability, and this prototype intentionally does not design the transport.
+  capabilities, and expiry. The prototype assumes an agent-initiated channel,
+  local validation and admission, and separate retrieval, acceptance, staging,
+  and activation facts. Heartbeat never proves proposal-channel availability.
+  These are candidate requirements for the owning issue; this prototype does
+  not authorize a topology or design the transport.
 - CameraAgent-only controls include focus, physical calibration acquisition,
   camera/readout controls, and local capture admission. LogicHost may configure
   central successor recipes and presentation policy but cannot relabel those as
