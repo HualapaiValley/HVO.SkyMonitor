@@ -188,9 +188,15 @@ requirements:
 | `REPLAY-LOCAL-005` | The runner receives immutable declared inputs and bounded binary payloads, never broad CameraAgent database, identity, catalog, archive, or raw-storage access. Pixel payloads are not base64/JSON encoded; input and output lengths and checksums are verified. |
 | `REPLAY-LOCAL-006` | CameraAgent remains authoritative for durable jobs, claims, attempts, leases, cancellation, deadlines, orchestration, and completion. Lease loss, stale completion, timeout, cancellation, crash, disconnect, and restart are fenced and recover idempotently. |
 | `REPLAY-LOCAL-007` | In-process and local-runner execution preserve equivalent canonical output identity, role, recipe identity, ordered lineage, layout, checksum, and provenance. Returned products are validated before commit and cannot publish/upload or replace current views without explicit CameraAgent policy. |
-| `REPLAY-LOCAL-008` | The runner has lower CPU/I/O priority and explicit concurrency, memory, transfer, scratch, network, mount, and privilege bounds relative to acquisition/live processing. Runner memory and locality are never authoritative recovery state. |
+| `REPLAY-LOCAL-008` | The runner uses below-normal process priority. Its only data I/O is bounded local-socket traffic; it has no network or CameraAgent data mounts. Explicit concurrency, memory, transfer, tmpfs scratch, network, mount, and privilege bounds isolate it from acquisition/live processing, and runner memory/locality are never authoritative recovery state. Any future direct persistent-storage or network I/O requires explicit I/O-priority and bandwidth controls plus new evidence. |
 | `REPLAY-LOCAL-009` | Runner health, capabilities, warmup, backlog, deferral, transfer, heartbeat, failure, resource, and lifecycle state are observable. Failed lifecycle candidates retain separately bounded and redacted CameraAgent and runner diagnostics before rollback. |
-| `REPLAY-LOCAL-010` | Current-head evidence covers Linux x64/ARM64 publish/probe, cold/warm startup, dispatch and transfer, CPU, allocation/RSS, I/O, latency, throughput, backlog/drain, outage and crash recovery, cancellation, restart, and simultaneous canonical W6 live-cadence impact. |
+| `REPLAY-LOCAL-010` | Release evidence must cover Linux x64/ARM64 publish/probe, cold/warm startup, dispatch and transfer, CPU, allocation/RSS, I/O, latency, throughput, backlog/drain, outage and crash recovery, cancellation, restart, and simultaneous canonical W6 live-cadence impact for both supported replay profiles. |
+
+PR #542 delivered the runner implementation, architecture probes, lifecycle and
+fault evidence, and a supplemental LocalRunner W1/W2/W6-sized single-recipe
+campaign. It did not run the canonical 14-node W6 graph under LocalRunner; #535
+owns that remaining release-evidence profile alongside the canonical InProcess
+control. This evidence handoff does not reopen the delivered #425 implementation.
 
 ### 3.3 Acquisition and raw evidence
 
