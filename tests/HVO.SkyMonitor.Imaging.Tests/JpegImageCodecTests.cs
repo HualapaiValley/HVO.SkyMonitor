@@ -15,6 +15,7 @@ public sealed class JpegImageCodecTests
         var first = JpegImageCodec.EncodeMono8ToJpeg(8, 8, pixels);
         var second = JpegImageCodec.EncodeMono8ToJpeg(8, 8, pixels);
         var info = JpegImageCodec.InspectJpeg(first);
+        var validated = JpegImageCodec.ValidateJpeg(first);
         var decoded = JpegImageCodec.DecodeJpeg(first);
 
         CollectionAssert.AreEqual(first, second);
@@ -26,6 +27,7 @@ public sealed class JpegImageCodecTests
         Assert.AreEqual(8, info.Height);
         Assert.AreEqual(CameraPixelFormat.Mono8, info.PixelFormat);
         Assert.AreEqual(JpegImageCodec.MediaType, info.MediaType);
+        Assert.AreEqual(info, validated);
         Assert.AreEqual(CameraPixelFormat.Mono8, decoded.PixelFormat);
         Assert.AreEqual(8, decoded.Width);
         Assert.AreEqual(8, decoded.Height);
@@ -61,10 +63,12 @@ public sealed class JpegImageCodecTests
         var paddedJpeg = JpegImageCodec.EncodeRgb24ToJpeg(
             width, height, padded, paddedStride);
         var info = JpegImageCodec.InspectJpeg(paddedJpeg);
+        var validated = JpegImageCodec.ValidateJpeg(paddedJpeg);
         var decoded = JpegImageCodec.DecodeJpeg(paddedJpeg);
 
         CollectionAssert.AreEqual(packedJpeg, paddedJpeg);
         Assert.AreEqual(CameraPixelFormat.Rgb24, info.PixelFormat);
+        Assert.AreEqual(info, validated);
         Assert.AreEqual(CameraPixelFormat.Rgb24, decoded.PixelFormat);
         Assert.AreEqual(packedStride, decoded.StrideBytes);
         Assert.HasCount(packedStride * height, decoded.PixelData.ToArray());
@@ -105,7 +109,7 @@ public sealed class JpegImageCodecTests
     }
 
     [TestMethod]
-    public void DecodeJpeg_RejectsTruncatedScanDataAcceptedByInspection()
+    public void ValidateJpeg_RejectsTruncatedOrProgressiveDataAcceptedByInspection()
     {
         var encoded = JpegImageCodec.EncodeMono8ToJpeg(
             8,
@@ -117,7 +121,30 @@ public sealed class JpegImageCodecTests
 
         Assert.AreEqual(8, info.Width);
         Assert.AreEqual(8, info.Height);
+        Assert.Throws<ArgumentException>(() => JpegImageCodec.ValidateJpeg(truncated));
         Assert.Throws<InvalidOperationException>(() => JpegImageCodec.DecodeJpeg(truncated));
+
+        var scanMarker = Enumerable.Range(1, encoded.Length - 1)
+            .First(index => encoded[index - 1] == 0xff && encoded[index] == 0xda);
+        var scanHeaderLength = (encoded[scanMarker + 1] << 8) | encoded[scanMarker + 2];
+        var entropyStart = scanMarker + 1 + scanHeaderLength;
+        var noEntropy = encoded[..entropyStart].Concat(encoded[^2..]).ToArray();
+        Assert.Throws<ArgumentException>(() => JpegImageCodec.ValidateJpeg(noEntropy));
+
+        var progressiveFrame = encoded.ToArray();
+        var frameMarker = Enumerable.Range(1, progressiveFrame.Length - 1)
+            .First(index => progressiveFrame[index - 1] == 0xff && progressiveFrame[index] == 0xc0);
+        progressiveFrame[frameMarker] = 0xc2;
+        Assert.Throws<ArgumentException>(() => JpegImageCodec.ValidateJpeg(progressiveFrame));
+
+        var rgb = JpegImageCodec.EncodeRgb24ToJpeg(8, 8, new byte[8 * 8 * 3]);
+        scanMarker = Enumerable.Range(1, rgb.Length - 1)
+            .First(index => rgb[index - 1] == 0xff && rgb[index] == 0xda);
+        var splitScan = rgb[..(scanMarker + 6)].Concat(rgb[(scanMarker + 10)..]).ToArray();
+        splitScan[scanMarker + 1] = 0;
+        splitScan[scanMarker + 2] = 8;
+        splitScan[scanMarker + 3] = 1;
+        Assert.Throws<ArgumentException>(() => JpegImageCodec.ValidateJpeg(splitScan));
     }
 
     [TestMethod]
@@ -132,5 +159,7 @@ public sealed class JpegImageCodecTests
             1, 1, new byte[3], cancellationToken: cancellation.Token));
         Assert.Throws<OperationCanceledException>(() =>
             JpegImageCodec.DecodeJpeg(new byte[] { 1 }, cancellation.Token));
+        Assert.Throws<OperationCanceledException>(() =>
+            JpegImageCodec.ValidateJpeg(new byte[] { 1 }, cancellation.Token));
     }
 }

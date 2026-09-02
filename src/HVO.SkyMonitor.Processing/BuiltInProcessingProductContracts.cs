@@ -92,12 +92,7 @@ internal static class BuiltInProcessingProductContracts
                 {
                     return false;
                 }
-                var decoded = JpegImageCodec.DecodeJpeg(payload, cancellationToken);
-                if (decoded.Width != encodedLayout.Width || decoded.Height != encodedLayout.Height ||
-                    decoded.PixelFormat != encodedLayout.PixelFormat)
-                {
-                    return false;
-                }
+                JpegImageCodec.ValidateJpeg(payload, cancellationToken);
             }
             catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or OverflowException)
             {

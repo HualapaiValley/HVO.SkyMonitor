@@ -113,5 +113,32 @@ public sealed class FilePolicyTests
         Assert.IsFalse(safe.Contains("abc", StringComparison.Ordinal));
         Assert.IsFalse(safe.Contains("xyz", StringComparison.Ordinal));
         Assert.IsTrue(safe.Length <= 256);
+
+        var lines = Enumerable.Range(0, 202)
+            .Select(index => $"line-{index} token=secret-{index} {new string('x', 300)}");
+        var multiline = Redaction.SafeDiagnostics(string.Join('\n', lines)).Split(Environment.NewLine);
+        Assert.HasCount(200, multiline);
+        StringAssert.StartsWith(multiline[0], "line-2", StringComparison.Ordinal);
+        StringAssert.StartsWith(multiline[^1], "line-201", StringComparison.Ordinal);
+        Assert.IsTrue(multiline.All(static line => line.Length <= 256));
+        Assert.IsFalse(multiline.Any(static line => line.Contains("secret-", StringComparison.Ordinal)));
+
+        var structured = Redaction.SafeDiagnostics(
+            "{\"token\":\"json-value\"}\nAuthorization: Bearer bearer-value\npassword plain-value");
+        Assert.IsFalse(structured.Contains("json-value", StringComparison.Ordinal));
+        Assert.IsFalse(structured.Contains("bearer-value", StringComparison.Ordinal));
+        Assert.IsFalse(structured.Contains("plain-value", StringComparison.Ordinal));
+
+        var extended = Redaction.SafeDiagnostics(
+            "Authorization: Basic basic-value\npassword \"correct horse battery staple\"\n" +
+            "{\"password\":\"abc'def ghi\"}");
+        Assert.IsFalse(extended.Contains("basic-value", StringComparison.Ordinal));
+        Assert.IsFalse(extended.Contains("correct", StringComparison.Ordinal));
+        Assert.IsFalse(extended.Contains("horse", StringComparison.Ordinal));
+        Assert.IsFalse(extended.Contains("battery", StringComparison.Ordinal));
+        Assert.IsFalse(extended.Contains("staple", StringComparison.Ordinal));
+        Assert.IsFalse(extended.Contains("abc", StringComparison.Ordinal));
+        Assert.IsFalse(extended.Contains("def", StringComparison.Ordinal));
+        Assert.IsFalse(extended.Contains("ghi", StringComparison.Ordinal));
     }
 }

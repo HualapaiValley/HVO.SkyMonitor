@@ -457,7 +457,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     {
         var result = await RunDockerRawAsync(
             ["container", "logs", "--tail", "200", containerName], cancellationToken).ConfigureAwait(false);
-        return Redaction.SafeDiagnostic(string.Concat(result.StandardOutput, "\n", result.StandardError));
+        return Redaction.SafeDiagnostics(string.Concat(result.StandardOutput, "\n", result.StandardError));
     }
 
     private static bool MountMatches(JsonElement mount, string source, string destination, bool writable)

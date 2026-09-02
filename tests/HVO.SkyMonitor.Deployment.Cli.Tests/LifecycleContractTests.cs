@@ -796,6 +796,9 @@ public sealed class LifecycleContractTests
             "candidate-diagnostics.txt"));
         StringAssert.Contains(diagnostics, $"container={cameraAgentContainer}", StringComparison.Ordinal);
         StringAssert.Contains(diagnostics, $"container={replayRunnerContainer}", StringComparison.Ordinal);
+        StringAssert.Contains(diagnostics, $"{replayRunnerContainer} startup", StringComparison.Ordinal);
+        StringAssert.Contains(diagnostics, $"{replayRunnerContainer} failure", StringComparison.Ordinal);
+        Assert.IsFalse(diagnostics.Contains("runner-secret", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -1230,7 +1233,10 @@ public sealed class LifecycleContractTests
             {
                 LoggedContainers.Add(loggedContainer);
                 Events.Add($"logs:{loggedContainer}");
-                return Task.FromResult(new ProcessResult(0, $"{loggedContainer} candidate logs", string.Empty));
+                return Task.FromResult(new ProcessResult(
+                    0,
+                    $"{loggedContainer} startup\n{loggedContainer} failure token=runner-secret",
+                    string.Empty));
             }
             if (arguments is ["container", "inspect", _, ..] && activeImageId is not null && paths is not null)
             {
