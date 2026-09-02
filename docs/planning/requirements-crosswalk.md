@@ -1,9 +1,9 @@
 # Requirements Crosswalk
 
-This crosswalk maps normative sources to the authoritative virtual-first phases,
-GitHub issues, and retained specifications. It prevents planning consolidation
-from dropping detailed behavior and prevents subsystem documents from becoming
-competing status authorities.
+This crosswalk maps normative sources to the authoritative project phases,
+roadmap initiatives, GitHub issues, and retained specifications. It prevents
+planning consolidation from dropping detailed behavior and prevents subsystem
+documents from becoming competing status authorities.
 
 `docs/roadmap.md` owns portfolio initiative IDs, horizons, and top-level epic
 mappings. `docs/project-plan.md` owns virtual-first scope, architecture, phase
@@ -28,6 +28,8 @@ state and evidence.
 | `SEC-001`-`SEC-008` | Layered configuration, no committed secrets, scoped credentials, provider-neutral secure production storage, key overlap, persistent data protection, TLS, and leakage review | `docs/security/secrets.md` | Cross-cutting; #120, #499 |
 | `OPS-001`-`OPS-004` | Fixture/full catalog distinction, persistent CameraAgent state, product/component/UUID instance and named catalog roots, and self-contained installation from signed immutable online, mirrored, cached, or offline inputs with resumable redacted evidence | `docs/project-plan.md`; `docs/runbooks/*.md`; `docs/runbooks/deployment-installer.md`; `docs/runbooks/release-distribution.md` | #111, #114, #120, #243, #108, #414, #415, #417 |
 | `OPS-005`-`OPS-010` | SQL/Redis/S3-compatible object-storage/Mailpit ownership, names/prefixes/buckets, safe migration/reset, backup/restore, and reconciliation | `docs/project-plan.md`; `docs/runbooks/*.md` | #111, #114, #120, #243, #108, #499, #505, #506 |
+| `STATE-001`-`STATE-004` | Per-component first-release boundary, replaceable unreleased schema baselines, released-state compatibility and explicit disposition, and no reopening of one component's state by another component remaining unreleased | `docs/project-plan.md` section 3.11; component database and lifecycle runbooks | `RM-017`, `RM-018`; #507, #534, #535, #540 |
+| `COMPONENT-001`-`COMPONENT-006` | Exclusive shared, CameraAgent, LogicHost, and combined test ownership; independently selectable build, test, coverage, publish, and release gates; preserved architecture boundaries; and exact-digest combined compatibility | `docs/roadmap.md` `RM-017` and `RM-018`; epics #513 and #531 plus child acceptance criteria | #532, #533, #535, #540, #541 |
 
 ## 2. Astronomy, VirtualSky, and Catalog Requirements
 
@@ -66,6 +68,8 @@ state and evidence.
 | `CALIB-001`-`CALIB-002` | Additive immutable compatible local reference library, virtual acquisition/master generation, fail-closed selection, correction residuals, migration/reconciliation, and ordered lineage | `docs/contracts/reference-calibration-v1.md`; standalone course correction | #208 |
 | `ENV-LOCAL-001`-`ENV-LOCAL-002` | Source-scheduled virtual environmental acquisition, durable targetless local history, provenance/freshness/failure, temporal association, and optional delivery | `docs/contracts/environmental-observation-v1.md`; standalone course correction | #103, #157, #209 |
 | `PIPE-LOCAL-001`-`PIPE-LOCAL-002` | Explicit effective graph/toggle behavior, complete local adapters, reconstructable annotations, edge transient visibility, artifact comparison, and operator controls | `docs/planning/standalone-cameraagent-course-correction.md` | #210 |
+| `CA-PRODUCT-001`-`CA-PRODUCT-008` | Guarded incompatible-state disposition, authenticated shell and account recovery, coherent Current Sky/archive/setup/operations workflows, named-graph and archived-replay operation, signed multi-architecture offline distribution, and final standalone proof with zero required central dependencies | `docs/roadmap.md` `RM-017`; epic #513 and child acceptance criteria | #507, #514, #515, #516, #517, #534, #535 |
+| `CA-EXPORT-001`-`CA-EXPORT-008` | Transport-neutral immutable graph-execution evidence, canonical identity and hashing, bounded payloads and sequencing, durable retry and retention, gap detection and resynchronization, exact acknowledgement, deny-sink conformance, and no dependency from local correctness on export | `docs/roadmap.md` `RM-017`; epic #513 and child acceptance criteria | #536, #537 |
 | `FLEET-001`-`FLEET-003` | Durable heartbeat, bounded central history, and truthful segmented timing | `docs/project-plan.md` phase 6 | #102 |
 | `OUTBOX-001`-`OUTBOX-008` | Manifest v2, equality on idempotency collision, durable attempts, HTTP classification, quarantine/abandonment, structured acknowledgement, raw-only default, and working auth | `docs/project-plan.md` phase 7 | #97 |
 | `COMPAT-EDGE-V1-001`-`COMPAT-EDGE-V1-006` | Preserve current JSONL/outbox history, pending-upload holds, fail-closed retention, torn-line handling, ordering/restart discovery, and idempotent upload during migration | `docs/runbooks/cameraagent-retention.md` | #94-#97 |
@@ -89,6 +93,7 @@ state and evidence.
 | `EVENT-001`-`EVENT-010` | Scenario matrix, simulation stage, event separation, structured contracts, linear detection, severity, edge/central execution, persistence, and review/reconstruction | `docs/project-plan.md` phase 12 | #61-#65 and transient child issues |
 | `UI-001`-`UI-008` | Durable read models, authorization, local operations/gallery/config validation, central fleet/jobs/artifacts/weather/events, and audited mutation | `docs/project-plan.md` phase 13 | #106, #107 |
 | `UI-LOCAL-001`-`UI-LOCAL-008` | Authenticated image-led current view, independent image/system freshness, truthful stage availability, accessible large-image viewing, presentation-first capture detail, approachable bounded archive, responsive layouts, and separate technical operations | `docs/design/cameraagent-presentation/README.md`; `docs/roadmap.md` `RM-014`; epic #438 and its child acceptance criteria | #440, #443, #439, #442, #441 |
+| `CENTRAL-PRODUCT-001`-`CENTRAL-PRODUCT-008` | Immutable CameraAgent evidence import and reconciliation, protected observatory and logical-camera workspaces, independent signed LogicHost lifecycle distribution after object-storage disposition, and optional exact-digest two-host acceptance without making LogicHost part of CameraAgent correctness | `docs/roadmap.md` `RM-018`; epic #531 and child acceptance criteria | #538, #539, #540, #541 |
 | `E2E-001`-`E2E-007` | Real outbox two-host path through current object storage, complete feature flow, fault injection, output/state validation, observability review, separate long/external/hardware gates, and current-head database critical-section/access-plan disposition | `docs/project-plan.md` phase 14 | #243, #108, #506 |
 | `EVIDENCE-P14-001`-`EVIDENCE-P14-007` | Post-milestone scenario disposition, executable workload manifests, sanitized revision-bound imports, immutable artifact admissibility, explicit deferment/exclusion, aggregation, and measured optimization follow-ups | `docs/planning/phase14-evidence-campaign.md` | #305, #318 |
 | `STANDALONE-001`-`STANDALONE-003` | Full-catalog ASI676MC five-second calibrated standalone operation, real local UI/fault evidence, zero central attempts, and ASI174 Mono8 ROI/bin conformance | `docs/project-plan.md` phase 12A; course-correction plan | #211; epic #205 |

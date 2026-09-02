@@ -8,16 +8,16 @@ authority before serving requests.
 
 ## Pre-Release Support Boundary
 
-Until the first product release, this procedure supports only a precreated empty
-LogicHost database. Prior unreleased schemas and data are disposable;
-initialization does not upgrade, downgrade, backfill, or converge them. The
-candidate contains one canonical initial EF migration. Its migration ID and
-`DatabaseInitializationState` target identify the exact current schema and
-initialization provenance; they do not promise compatibility with an earlier
-unreleased database. Same-revision retries, idempotent SQL, locking, seed
-convergence, role separation, and runtime fail-closed validation remain required.
-Recreate a superseded pre-release database instead of editing EF migration
-history.
+Until the first LogicHost product release, this procedure supports only a
+precreated empty LogicHost database. Prior unreleased schemas and data are
+disposable; initialization does not upgrade, downgrade, backfill, or converge
+them. The candidate contains one canonical initial EF migration. Its migration
+ID and `DatabaseInitializationState` target identify the exact current schema
+and initialization provenance; they do not promise compatibility with an
+earlier unreleased database. Same-revision retries, idempotent SQL, locking,
+seed convergence, role separation, and runtime fail-closed validation remain
+required. Recreate a superseded pre-release database instead of editing EF
+migration history.
 
 ## Principals And Configuration
 
