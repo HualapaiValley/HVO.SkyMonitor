@@ -772,10 +772,11 @@ public sealed class LocalReplayRunnerHostOptions : IValidatableObject
     internal IEnumerable<ValidationResult> ValidateForExternalProfile()
     {
         if (Transport == ReplayRunnerTransport.UnixDomainSocket &&
-            (!Path.IsPathFullyQualified(SocketPath) || Encoding.UTF8.GetByteCount(SocketPath) > 100))
+            (string.IsNullOrWhiteSpace(SocketPath) || SocketPath.Contains('\0', StringComparison.Ordinal) ||
+             !Path.IsPathFullyQualified(SocketPath) || Encoding.UTF8.GetByteCount(SocketPath) > 100))
         {
             yield return new ValidationResult(
-                "Local replay runner Unix socket path must be absolute and no more than 100 UTF-8 bytes.",
+                "Local replay runner Unix socket path must be absolute, contain no NUL, and be no more than 100 UTF-8 bytes.",
                 [nameof(SocketPath)]);
         }
         if (Transport == ReplayRunnerTransport.LoopbackTcp && LoopbackPort == 0)

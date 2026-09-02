@@ -480,9 +480,20 @@ public sealed class LocalReplayRunnerTests
                 AuthorizationKeyFile = "/run/hvo-secrets/replay-runner-auth-key"
             }
         };
+        var invalidSocket = new ProcessingGraphExecutionOptions
+        {
+            ReplayProfile = ReplayExecutionProfile.LocalRunner,
+            LocalRunner = new LocalReplayRunnerHostOptions
+            {
+                SocketPath = "/run/hvo-replay/runner\0.sock",
+                AuthorizationKey = Encoding.UTF8.GetString(AuthenticationKey)
+            }
+        };
 
         Assert.IsNotEmpty(Validate(missing));
         Assert.IsNotEmpty(Validate(duplicate));
+        Assert.IsTrue(Validate(invalidSocket).Any(result =>
+            result.MemberNames.Contains(nameof(LocalReplayRunnerHostOptions.SocketPath), StringComparer.Ordinal)));
     }
 
     [TestMethod]

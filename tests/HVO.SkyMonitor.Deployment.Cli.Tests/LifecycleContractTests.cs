@@ -1273,14 +1273,23 @@ public sealed class LifecycleContractTests
                             {
                                 new
                                 {
+                                    Type = "bind",
                                     Source = Path.Combine(paths.ConfigRoot, "secrets", "replay-runner-auth-key"),
                                     Destination = "/run/hvo-secrets/replay-runner-auth-key",
                                     RW = false
                                 },
                                 new
                                 {
+                                    Type = "bind",
                                     Source = Path.Combine(paths.StateRoot, "replay-runner"),
                                     Destination = "/run/hvo-replay",
+                                    RW = true
+                                },
+                                new
+                                {
+                                    Type = "tmpfs",
+                                    Source = string.Empty,
+                                    Destination = "/tmp",
                                     RW = true
                                 }
                             }

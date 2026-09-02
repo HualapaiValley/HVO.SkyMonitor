@@ -296,6 +296,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             var config = container.GetProperty("Config");
             var host = container.GetProperty("HostConfig");
             var mounts = container.GetProperty("Mounts").EnumerateArray().ToArray();
+            var restrictedMounts = mounts.Where(static mount => !IsReplayRunnerTmpfs(mount)).ToArray();
             var expectedInstance = paths.InstanceRoot.Split(Path.DirectorySeparatorChar).Last();
             var checks = new Dictionary<string, bool>(StringComparer.Ordinal)
             {
@@ -317,12 +318,12 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                 ["runner-no-new-privileges"] = host.GetProperty("SecurityOpt").EnumerateArray()
                     .Any(static item => item.GetString() == "no-new-privileges:true"),
                 ["runner-network-disabled"] = host.GetProperty("NetworkMode").GetString() == "none",
-                ["runner-auth-key-only"] = mounts.Length == 2 && mounts.Any(mount => MountMatches(
+                ["runner-auth-key-only"] = restrictedMounts.Length == 2 && restrictedMounts.Any(mount => MountMatches(
                     mount,
                     Path.Combine(paths.ConfigRoot, "secrets", "replay-runner-auth-key"),
                     "/run/hvo-secrets/replay-runner-auth-key",
                     writable: false)),
-                ["runner-socket-mount"] = mounts.Any(mount => MountMatches(
+                ["runner-socket-mount"] = restrictedMounts.Any(mount => MountMatches(
                     mount,
                     Path.Combine(paths.StateRoot, "replay-runner"),
                     "/run/hvo-replay",
@@ -464,6 +465,10 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         => mount.GetProperty("Source").GetString() == source &&
            mount.GetProperty("Destination").GetString() == destination &&
            mount.GetProperty("RW").GetBoolean() == writable;
+
+    private static bool IsReplayRunnerTmpfs(JsonElement mount) =>
+        mount.TryGetProperty("Type", out var type) && type.GetString() == "tmpfs" &&
+        mount.TryGetProperty("Destination", out var destination) && destination.GetString() == "/tmp";
 
     private static string? Label(JsonElement labels, string name)
         => labels.ValueKind == JsonValueKind.Object && labels.TryGetProperty(name, out var value)
