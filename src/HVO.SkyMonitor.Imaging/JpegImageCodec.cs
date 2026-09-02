@@ -28,7 +28,6 @@ public static class JpegImageCodec
     public const string MediaType = "image/jpeg";
     public const string AlgorithmVersion = "skia-jpeg-v1";
     public const int DefaultQuality = 80;
-    private const int MaximumValidationRowBytes = 16 * 1024 * 1024;
 
     [SuppressMessage("Maintainability", "CA1508:Avoid dead conditional code", Justification = "The native codec factory can return null for malformed input despite its managed nullability annotation.")]
     public static EncodedImageInfo InspectJpeg(ReadOnlyMemory<byte> encodedData)
@@ -82,11 +81,7 @@ public static class JpegImageCodec
             codec.Info.Height,
             pixelFormat == CameraPixelFormat.Mono8 ? SKColorType.Gray8 : SKColorType.Rgba8888,
             SKAlphaType.Opaque);
-        if (targetInfo.RowBytes > MaximumValidationRowBytes)
-        {
-            throw new InvalidOperationException("The JPEG scanline exceeds the validation memory limit.");
-        }
-
+        // JPEG dimensions are 16-bit, so even an RGBA scanline remains below 256 KiB.
         var row = new byte[targetInfo.RowBytes];
         var pinned = GCHandle.Alloc(row, GCHandleType.Pinned);
         try

@@ -145,6 +145,31 @@ public sealed class JpegImageCodecTests
         splitScan[scanMarker + 2] = 8;
         splitScan[scanMarker + 3] = 1;
         Assert.Throws<ArgumentException>(() => JpegImageCodec.ValidateJpeg(splitScan));
+
+        byte[][] malformedStructures =
+        [
+            [0xff, 0xd9],
+            [0xff, 0xd8, 0, 0xff, 0xd9],
+            [0xff, 0xd8, 0xff, 0xff, 0xd9],
+            [0xff, 0xd8, 0xff, 0x01, 0xff, 0xd9],
+            [0xff, 0xd8, 0xff, 0xe0, 0, 1, 0xff, 0xd9],
+            [0xff, 0xd8, 0xff, 0xc0, 0, 2, 0xff, 0xd9],
+            [0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 0, 1, 0, 1, 0, 0xff, 0xd9],
+            [0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 0, 1, 0, 1, 1, 0xff, 0xd9],
+            [0xff, 0xd8, 0xff, 0xe0, 0, 4, 0xff, 0xd9],
+            [
+                0xff, 0xd8,
+                0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0,
+                0xff, 0xda, 0, 8, 1, 1, 0, 0, 0x3f, 0,
+                0,
+                0xff, 0xd9
+            ]
+        ];
+        foreach (var malformed in malformedStructures)
+        {
+            var exception = Assert.Throws<Exception>(() => JpegImageCodec.ValidateJpeg(malformed));
+            Assert.IsTrue(exception is ArgumentException or InvalidOperationException);
+        }
     }
 
     [TestMethod]
