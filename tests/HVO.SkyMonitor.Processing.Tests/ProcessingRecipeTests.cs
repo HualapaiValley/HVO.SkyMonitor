@@ -174,6 +174,15 @@ public sealed class ProcessingRecipeTests
         Assert.AreNotEqual(product.ContentIdentitySha256, product.ChecksumSha256);
         Assert.AreNotEqual(product.Recipe.IdentitySha256, changed.Products.Single().Recipe.IdentitySha256);
         Assert.AreNotEqual(product.OutputIdentitySha256, changed.Products.Single().OutputIdentitySha256);
+        var lowercaseRequest = CreateProjectedSceneRequest(source, predicted, lowercaseIdentity: true);
+        var lowercaseRecipe = BuiltInProcessingRecipes.CreateExecutionIdentity(
+            lowercaseRequest.RecipeName,
+            lowercaseRequest.Options,
+            lowercaseRequest.Input,
+            lowercaseRequest.Annotation,
+            lowercaseRequest.AuxiliaryInputs);
+        var lowercaseContract = BuiltInProcessingRecipes.CreateProductContract(lowercaseRequest, lowercaseRecipe);
+        Assert.AreEqual(predicted.SceneIdentitySha256, lowercaseContract.ContentIdentitySha256);
 
         var projectedArtifact = new ProcessingArtifact(
             ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), product.Role, product.Variant,
@@ -1504,9 +1513,15 @@ public sealed class ProcessingRecipeTests
     private static async Task<ProcessingOutcome> ExecuteProjectedSceneAsync(
         ProcessingArtifact source,
         ProjectedSceneV1 scene)
+        => await new ProcessingRecipeExecutor().ExecuteAsync(CreateProjectedSceneRequest(source, scene)).ConfigureAwait(false);
+
+    private static ProcessingExecutionRequest CreateProjectedSceneRequest(
+        ProcessingArtifact source,
+        ProjectedSceneV1 scene,
+        bool lowercaseIdentity = false)
     {
         var payload = ProjectedSceneJson.Serialize(scene);
-        return await new ProcessingRecipeExecutor().ExecuteAsync(new ProcessingExecutionRequest(
+        return new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.ProjectedScene,
             EmptyOptions(),
             ProcessingInputSelector.Raw("source"),
@@ -1518,12 +1533,14 @@ public sealed class ProcessingRecipeTests
                     "scene",
                     ProcessingAuxiliaryInputKind.CanonicalJson,
                     SchemaVersion: ProjectedSceneV1.CurrentSchemaVersion,
-                    IdentitySha256: scene.SceneIdentitySha256,
+                    IdentitySha256: lowercaseIdentity
+                        ? Convert.ToHexStringLower(Convert.FromHexString(scene.SceneIdentitySha256))
+                        : scene.SceneIdentitySha256,
                     Payload: payload)
                 {
                     ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(payload)
                 }
-            ])).ConfigureAwait(false);
+            ]);
     }
 
     private static async Task<ProjectedSceneV1> CreateProjectedSceneAsync(

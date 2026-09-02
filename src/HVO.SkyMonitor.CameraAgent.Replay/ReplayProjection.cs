@@ -25,13 +25,15 @@ internal static class ReplayProjection
         ReplayRunnerJobContext context,
         ProcessingExecutionRequest request,
         LocalReplayRunnerOptions options,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
         var payloads = new List<ReadOnlyMemory<byte>>();
-        var inputs = request.Inputs?.Select(input => ProjectArtifact(input, payloads)).ToArray()
+        var inputs = request.Inputs?.Select(input => ProjectArtifact(input, payloads, cancellationToken)).ToArray()
             ?? throw new LocalReplayRunnerProtocolException("Processing inputs are required.");
-        var auxiliaryInputs = request.AuxiliaryInputs?.Select(input => ProjectAuxiliaryInput(input, payloads)).ToArray();
+        var auxiliaryInputs = request.AuxiliaryInputs?.Select(input => ProjectAuxiliaryInput(input, payloads, cancellationToken)).ToArray();
         var requestMetadata = new ReplayExecutionRequestMetadata(
             request.RecipeName,
             request.Options,
@@ -42,7 +44,8 @@ internal static class ReplayProjection
             auxiliaryInputs,
             request.InputArtifactId);
         var requestSha256 = ReplayProtocol.ComputeSha256(
-            ReplayProtocol.SerializeMetadata(requestMetadata, options.MaxMetadataBytes));
+            ReplayProtocol.SerializeMetadata(requestMetadata, options.MaxMetadataBytes),
+            cancellationToken);
         var authorization = ReplayAuthorization.Create(authenticationKey, context, requestSha256, now);
         var metadata = new ReplayRequestEnvelope(
             ReplayProtocol.Version,
@@ -161,7 +164,8 @@ internal static class ReplayProjection
     {
         ArgumentNullException.ThrowIfNull(outcome);
         var payloads = new List<ReadOnlyMemory<byte>>();
-        var products = outcome.Products?.Select(product => ProjectProduct(product, payloads)).ToArray()
+        cancellationToken.ThrowIfCancellationRequested();
+        var products = outcome.Products?.Select(product => ProjectProduct(product, payloads, cancellationToken)).ToArray()
             ?? throw new LocalReplayRunnerProtocolException("Processing outcome products are required.");
         var envelope = new ReplayResponseEnvelope(
             ReplayProtocol.Version,
@@ -216,7 +220,8 @@ internal static class ReplayProjection
 
     internal static void ValidatePayload(
         ReplayPayloadDeclaration declaration,
-        ReplayFrame frame)
+        ReplayFrame frame,
+        CancellationToken cancellationToken = default)
     {
         if (frame.Type == ReplayFrameType.Cancel)
         {
@@ -225,7 +230,10 @@ internal static class ReplayProjection
         }
         if (frame.Type is not (ReplayFrameType.RequestPayload or ReplayFrameType.ResponsePayload) ||
             frame.Ordinal != declaration.Ordinal || frame.Payload.LongLength != declaration.Length ||
-            !string.Equals(ReplayProtocol.ComputeSha256(frame.Payload), declaration.Sha256, StringComparison.Ordinal))
+            !string.Equals(
+                ReplayProtocol.ComputeSha256(frame.Payload, cancellationToken),
+                declaration.Sha256,
+                StringComparison.Ordinal))
         {
             throw new LocalReplayRunnerProtocolException("Replay binary payload does not match its ordinal, length, or SHA-256 declaration.");
         }
@@ -257,7 +265,8 @@ internal static class ReplayProjection
 
     private static ReplayArtifactMetadata ProjectArtifact(
         ProcessingArtifact artifact,
-        List<ReadOnlyMemory<byte>> payloads)
+        List<ReadOnlyMemory<byte>> payloads,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         var ordinal = AddPayload(artifact.Payload, payloads);
@@ -270,7 +279,7 @@ internal static class ReplayProjection
             artifact.Layout,
             ordinal,
             artifact.Payload.Length,
-            ReplayProtocol.ComputeSha256(artifact.Payload),
+            ReplayProtocol.ComputeSha256(artifact.Payload, cancellationToken),
             artifact.CreatedUtc,
             artifact.Integration,
             artifact.Compatibility,
@@ -288,7 +297,8 @@ internal static class ReplayProjection
 
     private static ReplayAuxiliaryInputMetadata ProjectAuxiliaryInput(
         ProcessingAuxiliaryInput input,
-        List<ReadOnlyMemory<byte>> payloads)
+        List<ReadOnlyMemory<byte>> payloads,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
         var ordinal = AddPayload(input.Payload, payloads);
@@ -300,14 +310,15 @@ internal static class ReplayProjection
             input.IdentitySha256,
             ordinal,
             input.Payload.Length,
-            ReplayProtocol.ComputeSha256(input.Payload),
+            ReplayProtocol.ComputeSha256(input.Payload, cancellationToken),
             input.ArtifactId,
             input.ChecksumSha256);
     }
 
     private static ReplayProductMetadata ProjectProduct(
         ProcessingProduct product,
-        List<ReadOnlyMemory<byte>> payloads)
+        List<ReadOnlyMemory<byte>> payloads,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(product);
         var ordinal = AddPayload(product.Payload, payloads);
@@ -319,7 +330,7 @@ internal static class ReplayProjection
             product.Layout,
             ordinal,
             product.Payload.Length,
-            ReplayProtocol.ComputeSha256(product.Payload),
+            ReplayProtocol.ComputeSha256(product.Payload, cancellationToken),
             product.ChecksumSha256,
             product.Recipe,
             product.Algorithms,
@@ -458,7 +469,7 @@ internal static class ReplayProjection
             {
                 var payload = payloads[declaration.Ordinal];
                 if (payload.Length != declaration.Length ||
-                    !string.Equals(ReplayProtocol.ComputeSha256(payload), declaration.Sha256, StringComparison.Ordinal))
+                    !string.Equals(ReplayProtocol.ComputeSha256(payload, cancellationToken), declaration.Sha256, StringComparison.Ordinal))
                 {
                     throw new LocalReplayRunnerOutputValidationException("Replay response payload length or SHA-256 is invalid.");
                 }
@@ -544,7 +555,7 @@ internal static class ReplayProjection
             expectedProduct.ExactLayout is not null && product.Layout != expectedProduct.ExactLayout ||
             product.Layout is { } layout && (!layout.Validate().IsValid || layout.ByteLength != payload.Length) ||
             product.PayloadLength != payload.Length ||
-            !string.Equals(product.ChecksumSha256, ReplayProtocol.ComputeSha256(payload), StringComparison.Ordinal) ||
+            !string.Equals(product.ChecksumSha256, ReplayProtocol.ComputeSha256(payload, cancellationToken), StringComparison.Ordinal) ||
             !string.Equals(product.PayloadSha256, product.ChecksumSha256, StringComparison.Ordinal))
         {
             throw new LocalReplayRunnerOutputValidationException("Replay product layout, payload length, or checksum is invalid.");

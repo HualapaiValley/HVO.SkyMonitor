@@ -47,6 +47,8 @@ public readonly record struct CaptureLaneHandlerResult(
     CaptureLaneHandlerOutcome Outcome,
     string Reason)
 {
+    internal bool DiscardExecutionAttempt { get; init; }
+
     public static CaptureLaneHandlerResult Success { get; } = new(CaptureLaneHandlerOutcome.Completed, "completed");
 
     public static CaptureLaneHandlerResult Retry(string reason)

@@ -196,6 +196,11 @@ internal sealed class CameraAgentInstaller
             {
                 throw new InstallerException("The Docker daemon identity changed after preflight.");
             }
+            if (retainedCompletedResult is not null && request.ReplayProfile == CameraAgentReplayProfile.InProcess &&
+                existingManifest!.Image.ReplayRunnerContract is null && retainedCompletedResult.Image.ReplayRunnerContract is null)
+            {
+                image = image with { ReplayRunnerContract = null };
+            }
 
             if (retainedCompletedResult is null)
             {

@@ -1,6 +1,10 @@
 using System.Globalization;
 using HVO.SkyMonitor.Common.Observability;
+using HVO.Enterprise.Telemetry.OpenTelemetry;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Serilog;
 using Serilog.Core;
 using Serilog.Events;
@@ -43,6 +47,21 @@ public sealed class SkyMonitorObservabilityExtensionsTests
 
         Assert.HasCount(1, sink.Events);
         Assert.AreEqual(LogEventLevel.Debug, sink.Events[0].Level);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void AddSkyMonitorObservability_RegistersReplayRunnerMeter()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.AddSkyMonitorObservability();
+        using var host = builder.Build();
+
+        var options = host.Services.GetRequiredService<IOptions<OtlpExportOptions>>().Value;
+
+        Assert.IsTrue(options.AdditionalMeterNames.Contains(
+            "HVO.SkyMonitor.CameraAgent.ReplayRunner",
+            StringComparer.Ordinal));
     }
 
     private sealed class CollectingSink : ILogEventSink

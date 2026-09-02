@@ -32,6 +32,8 @@ public sealed class LocalReplayRunnerOptions
 
     public TimeSpan HeartbeatTimeout { get; init; } = TimeSpan.FromSeconds(20);
 
+    public TimeSpan ExecutionCancellationGrace { get; init; } = TimeSpan.FromSeconds(5);
+
     public int MaxMetadataBytes { get; init; } = 1024 * 1024;
 
     public long MaxTotalTransferBytes { get; init; } = MaximumTransferBytes;
@@ -71,6 +73,10 @@ public sealed class LocalReplayRunnerOptions
         if (HeartbeatTimeout <= HeartbeatInterval || HeartbeatTimeout > TimeSpan.FromMinutes(10))
         {
             throw new InvalidOperationException("Replay heartbeat timeout must be greater than the interval and no more than 10 minutes.");
+        }
+        if (ExecutionCancellationGrace < TimeSpan.FromMilliseconds(100) || ExecutionCancellationGrace > TimeSpan.FromSeconds(30))
+        {
+            throw new InvalidOperationException("Replay execution cancellation grace must be between 100 milliseconds and 30 seconds.");
         }
         if (MaxMetadataBytes is < 4096 or > 16 * 1024 * 1024)
         {

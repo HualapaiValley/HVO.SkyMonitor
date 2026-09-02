@@ -423,7 +423,7 @@ internal static class BuiltInProcessingProductContracts
             null,
             scene.SchemaVersion,
             true,
-            scene.IdentitySha256,
+            scene.IdentitySha256?.ToUpperInvariant(),
             [new("projected-scene-contract", "1.0.0")],
             primary.Integration,
             primary.Compatibility,

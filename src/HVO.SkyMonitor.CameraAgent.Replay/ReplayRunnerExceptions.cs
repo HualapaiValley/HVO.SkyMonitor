@@ -16,13 +16,20 @@ public sealed class LocalReplayRunnerUnavailableException : Exception
     {
     }
 
-    public LocalReplayRunnerUnavailableException(string message, TimeSpan? retryAfter = null, Exception? innerException = null)
+    public LocalReplayRunnerUnavailableException(
+        string message,
+        TimeSpan? retryAfter = null,
+        Exception? innerException = null,
+        bool requestAccepted = false)
         : base(message, innerException)
     {
         RetryAfter = retryAfter;
+        RequestAccepted = requestAccepted;
     }
 
     public TimeSpan? RetryAfter { get; }
+
+    public bool RequestAccepted { get; }
 }
 
 public class LocalReplayRunnerProtocolException : Exception

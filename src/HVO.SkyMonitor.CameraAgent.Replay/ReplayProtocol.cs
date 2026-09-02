@@ -255,8 +255,20 @@ internal static class ReplayProtocol
         _ => throw new ArgumentOutOfRangeException(nameof(transport))
     };
 
-    internal static string ComputeSha256(ReadOnlyMemory<byte> payload) =>
-        Convert.ToHexString(SHA256.HashData(payload.Span));
+    internal static string ComputeSha256(
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken = default)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        const int chunkLength = 64 * 1024;
+        for (var offset = 0; offset < payload.Length; offset += chunkLength)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            hash.AppendData(payload.Span.Slice(offset, Math.Min(chunkLength, payload.Length - offset)));
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
 
     internal static bool IsUppercaseSha256(string? value) =>
         value is { Length: SHA256.HashSizeInBytes * 2 } &&

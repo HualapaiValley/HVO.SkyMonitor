@@ -344,7 +344,7 @@ internal sealed class FrameProcessingWorker
 
                 var outcomes = context.ProcessingOutcomes.Skip(outcomeStart).ToArray();
                 var outcome = outcomes.LastOrDefault();
-                if (exception is LocalReplayRunnerUnavailableException &&
+                if (exception is LocalReplayRunnerUnavailableException unavailable &&
                     item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Replay)
                 {
                     const string unavailableReason = "processing.replay-runner-unavailable";
@@ -359,7 +359,10 @@ internal sealed class FrameProcessingWorker
                         duration,
                         false,
                         unavailableReason));
-                    return Finish(CaptureLaneHandlerResult.Wait(unavailableReason));
+                    return Finish(CaptureLaneHandlerResult.Wait(unavailableReason) with
+                    {
+                        DiscardExecutionAttempt = !unavailable.RequestAccepted
+                    });
                 }
                 var (status, reason) = ResolveStatus(node, outcome, exception);
                 if (!node.Required && status == DurableProcessingNodeStatus.RetryableFailure && attempt >= maximumAttempts)

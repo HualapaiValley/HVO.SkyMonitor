@@ -10,6 +10,7 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
 {
     private readonly LocalReplayRunnerOptions _options;
     private readonly IProcessingRecipeExecutor _executor;
+    private readonly Action _terminateProcess;
     private readonly byte[] _authenticationKey;
     private readonly ConcurrentDictionary<Guid, DateTimeOffset> _knownJobs = new();
     private readonly CancellationTokenSource _disposeCancellation = new();
@@ -22,17 +23,21 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
     public LocalReplayRunnerServer(
         LocalReplayRunnerOptions options,
         IProcessingRecipeExecutor? executor = null,
-        ReplayRunnerCapabilities? capabilities = null)
+        ReplayRunnerCapabilities? capabilities = null,
+        Action? terminateProcess = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
         _options = options;
         _executor = executor ?? new ProcessingRecipeExecutor();
+        _terminateProcess = terminateProcess ?? TerminateCurrentProcess;
         _authenticationKey = options.LoadAuthenticationKey();
         Capabilities = capabilities ?? ReplayRunnerCapabilities.Create(options);
     }
 
     public ReplayRunnerCapabilities Capabilities { get; }
+
+    private static void TerminateCurrentProcess() => Environment.Exit(1);
 
     [SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before disposal", Justification = "The pending socket accept is canceled before the listener is disposed.")]
     public async Task RunAsync(CancellationToken cancellationToken = default)
@@ -218,7 +223,8 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
                     throw new LocalReplayRunnerProtocolException("Replay request exceeds the configured total transfer limit.");
                 }
                 var requestSha256 = ReplayProtocol.ComputeSha256(
-                    ReplayProtocol.SerializeMetadata(envelope.Request, _options.MaxMetadataBytes));
+                    ReplayProtocol.SerializeMetadata(envelope.Request, _options.MaxMetadataBytes),
+                    cancellationToken);
                 if (!ReplayAuthorization.Validate(
                         _authenticationKey,
                         envelope.Authorization,
@@ -271,7 +277,7 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
                         jobCancellation.Token,
                         _options.HeartbeatTimeout).ConfigureAwait(false)
                         ?? throw new EndOfStreamException("Replay request ended inside the payload sequence.");
-                    ReplayProjection.ValidatePayload(declaration, payloadFrame);
+                    ReplayProjection.ValidatePayload(declaration, payloadFrame, jobCancellation.Token);
                     if (payloadFrame.Type != ReplayFrameType.RequestPayload)
                     {
                         throw new LocalReplayRunnerProtocolException("Replay request payload sequence contains an unexpected frame.");
@@ -356,8 +362,11 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
         var remaining = context.DeadlineUtc - DateTimeOffset.UtcNow;
         executionCancellation.CancelAfter(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
         using var monitorCancellation = CancellationTokenSource.CreateLinkedTokenSource(serverCancellationToken);
+        using var heartbeatCancellation = CancellationTokenSource.CreateLinkedTokenSource(monitorCancellation.Token);
+        using var watchdogCancellation = new CancellationTokenSource();
         using var sendGate = new SemaphoreSlim(1, 1);
         var clientCanceled = 0;
+        var operationCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var execution = Task.Run(
             async () => await _executor.ExecuteAsync(request, executionCancellation.Token).ConfigureAwait(false),
@@ -370,46 +379,48 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
         var heartbeat = SendHeartbeatsAsync(
             stream,
             sendGate,
-            execution,
             executionCancellation,
-            monitorCancellation.Token);
+            heartbeatCancellation.Token);
+        var watchdog = EnforceCancellationGraceAsync(
+            operationCompleted.Task,
+            executionCancellation.Token,
+            watchdogCancellation.Token);
 
-        ProcessingOutcome outcome;
         try
         {
-            outcome = await execution.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (executionCancellation.IsCancellationRequested)
-        {
-            await monitorCancellation.CancelAsync().ConfigureAwait(false);
-            await AwaitSupportTasksAsync(monitor, heartbeat).ConfigureAwait(false);
-            if (!serverCancellationToken.IsCancellationRequested && Volatile.Read(ref clientCanceled) == 0)
+            ProcessingOutcome outcome;
+            try
             {
-                await TrySendFailureAsync(
-                    stream,
-                    "deadline-exceeded",
-                    "Replay job deadline expired.",
-                    ReplayProjection.CreateCorrelation(context),
-                    serverCancellationToken).ConfigureAwait(false);
+                var completed = await Task.WhenAny(execution, watchdog).ConfigureAwait(false);
+                if (completed == watchdog)
+                {
+                    await watchdog.ConfigureAwait(false);
+                }
+                outcome = await execution.ConfigureAwait(false);
             }
-            return;
-        }
-        catch
-        {
-            await monitorCancellation.CancelAsync().ConfigureAwait(false);
-            await AwaitSupportTasksAsync(monitor, heartbeat).ConfigureAwait(false);
-            throw;
-        }
+            catch (OperationCanceledException) when (executionCancellation.IsCancellationRequested)
+            {
+                await monitorCancellation.CancelAsync().ConfigureAwait(false);
+                await heartbeatCancellation.CancelAsync().ConfigureAwait(false);
+                await watchdogCancellation.CancelAsync().ConfigureAwait(false);
+                await AwaitSupportTasksAsync(monitor, heartbeat, watchdog).ConfigureAwait(false);
+                if (!serverCancellationToken.IsCancellationRequested && Volatile.Read(ref clientCanceled) == 0)
+                {
+                    await TrySendFailureAsync(
+                        stream,
+                        "deadline-exceeded",
+                        "Replay job deadline expired.",
+                        ReplayProjection.CreateCorrelation(context),
+                        serverCancellationToken).ConfigureAwait(false);
+                }
+                return;
+            }
 
-        if (Volatile.Read(ref clientCanceled) != 0 || serverCancellationToken.IsCancellationRequested)
-        {
-            await monitorCancellation.CancelAsync().ConfigureAwait(false);
-            await AwaitSupportTasksAsync(monitor, heartbeat).ConfigureAwait(false);
-            return;
-        }
+            if (Volatile.Read(ref clientCanceled) != 0 || serverCancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
 
-        try
-        {
             var projection = ReplayProjection.ProjectResponse(
                 context,
                 request,
@@ -430,6 +441,8 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
             await sendGate.WaitAsync(executionCancellation.Token).ConfigureAwait(false);
             try
             {
+                await heartbeatCancellation.CancelAsync().ConfigureAwait(false);
+                await AwaitSupportTasksAsync(heartbeat).ConfigureAwait(false);
                 await ReplayProtocol.WriteFrameAsync(
                     stream,
                     ReplayFrameType.ResponseMetadata,
@@ -455,8 +468,11 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
         }
         finally
         {
+            operationCompleted.TrySetResult();
             await monitorCancellation.CancelAsync().ConfigureAwait(false);
-            await AwaitSupportTasksAsync(monitor, heartbeat).ConfigureAwait(false);
+            await heartbeatCancellation.CancelAsync().ConfigureAwait(false);
+            await watchdogCancellation.CancelAsync().ConfigureAwait(false);
+            await AwaitSupportTasksAsync(monitor, heartbeat, watchdog).ConfigureAwait(false);
         }
     }
 
@@ -500,19 +516,14 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
     private async Task SendHeartbeatsAsync(
         Stream stream,
         SemaphoreSlim sendGate,
-        Task execution,
         CancellationTokenSource executionCancellation,
         CancellationToken monitorCancellation)
     {
         try
         {
-            while (!execution.IsCompleted)
+            while (true)
             {
                 await Task.Delay(_options.HeartbeatInterval, monitorCancellation).ConfigureAwait(false);
-                if (execution.IsCompleted)
-                {
-                    break;
-                }
                 await sendGate.WaitAsync(monitorCancellation).ConfigureAwait(false);
                 try
                 {
@@ -537,6 +548,45 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
         {
             await executionCancellation.CancelAsync().ConfigureAwait(false);
         }
+    }
+
+    private async Task EnforceCancellationGraceAsync(
+        Task operation,
+        CancellationToken executionCancellation,
+        CancellationToken watchdogCancellation)
+    {
+        using var cancellationDetected = CancellationTokenSource.CreateLinkedTokenSource(
+            executionCancellation,
+            watchdogCancellation);
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationDetected.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationDetected.IsCancellationRequested)
+        {
+        }
+        if (watchdogCancellation.IsCancellationRequested || operation.IsCompleted)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.Delay(_options.ExecutionCancellationGrace, watchdogCancellation).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (watchdogCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (operation.IsCompleted)
+        {
+            return;
+        }
+
+        _terminateProcess();
+        throw new InvalidOperationException(
+            "Replay execution did not stop within the configured cancellation grace period.");
     }
 
     [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "The await-using resource has no synchronization-context dependency.")]
@@ -634,11 +684,11 @@ public sealed class LocalReplayRunnerServer : IDisposable, IAsyncDisposable
         }
     }
 
-    private static async Task AwaitSupportTasksAsync(Task monitor, Task heartbeat)
+    private static async Task AwaitSupportTasksAsync(params Task[] tasks)
     {
         try
         {
-            await Task.WhenAll(monitor, heartbeat).ConfigureAwait(false);
+            await Task.WhenAll(tasks).ConfigureAwait(false);
         }
         catch (Exception exception) when (IsConnectionBoundaryException(exception))
         {

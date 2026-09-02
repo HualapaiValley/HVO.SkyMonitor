@@ -76,19 +76,20 @@ public sealed class LocalReplayRunnerClient : IDisposable, IAsyncDisposable
         var executionStarted = Stopwatch.GetTimestamp();
         var now = DateTimeOffset.UtcNow;
         ReplayProtocol.ValidateJobContext(jobContext, now);
+        using var executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _disposeCancellation.Token);
+        executionCancellation.CancelAfter(jobContext.DeadlineUtc - now);
         var projection = ReplayProjection.ProjectRequest(
             _authenticationKey,
             jobContext,
             request,
             _options,
-            now);
+            now,
+            executionCancellation.Token);
         var metadata = ReplayProtocol.SerializeMetadata(projection.Metadata, _options.MaxMetadataBytes);
         ValidateTotalTransfer(metadata.Length, projection.Payloads);
 
-        using var executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            _disposeCancellation.Token);
-        executionCancellation.CancelAfter(jobContext.DeadlineUtc - now);
         using var socket = ReplayProtocol.CreateSocket(_options.Transport);
         var dispatchStarted = Stopwatch.GetTimestamp();
         try
@@ -180,7 +181,7 @@ public sealed class LocalReplayRunnerClient : IDisposable, IAsyncDisposable
                 }
                 try
                 {
-                    ReplayProjection.ValidatePayload(declaration, frame);
+                    ReplayProjection.ValidatePayload(declaration, frame, executionCancellation.Token);
                 }
                 catch (LocalReplayRunnerProtocolException exception)
                 {
@@ -221,9 +222,17 @@ public sealed class LocalReplayRunnerClient : IDisposable, IAsyncDisposable
             RecordJob("cancelled", executionStarted);
             throw;
         }
-        catch (LocalReplayRunnerUnavailableException)
+        catch (LocalReplayRunnerUnavailableException exception)
         {
             RecordJob("unavailable", executionStarted);
+            if (accepted && !exception.RequestAccepted)
+            {
+                throw new LocalReplayRunnerUnavailableException(
+                    exception.Message,
+                    exception.RetryAfter,
+                    exception,
+                    requestAccepted: true);
+            }
             throw;
         }
         catch (ReplayIdleTimeoutException exception)
@@ -231,7 +240,8 @@ public sealed class LocalReplayRunnerClient : IDisposable, IAsyncDisposable
             RecordJob("unavailable", executionStarted);
             throw new LocalReplayRunnerUnavailableException(
                 "Replay runner stopped accepting the request transfer.",
-                innerException: exception);
+                innerException: exception,
+                requestAccepted: accepted);
         }
         catch (LocalReplayRunnerOutputValidationException)
         {
@@ -253,7 +263,10 @@ public sealed class LocalReplayRunnerClient : IDisposable, IAsyncDisposable
         catch (Exception exception) when (exception is IOException or SocketException or EndOfStreamException or ObjectDisposedException)
         {
             RecordJob("disconnected", executionStarted);
-            throw new LocalReplayRunnerUnavailableException("Replay runner connection became unavailable.", innerException: exception);
+            throw new LocalReplayRunnerUnavailableException(
+                "Replay runner connection became unavailable.",
+                innerException: exception,
+                requestAccepted: accepted);
         }
     }
 
@@ -465,10 +478,14 @@ public sealed class LocalReplayRunnerClient : IDisposable, IAsyncDisposable
             throw new LocalReplayRunnerProtocolException("Replay runner capability authentication failed.");
         }
         var capabilities = authenticatedCapabilities.Capabilities;
-        if (capabilities.ProtocolVersion != ReplayProtocol.Version || capabilities.ProcessId <= 0 ||
+        if (capabilities is null || capabilities.ProtocolVersion != ReplayProtocol.Version || capabilities.ProcessId <= 0 ||
             capabilities.ProcessStartedUtc.Offset != TimeSpan.Zero || capabilities.MaxConcurrency is < 1 or > 64 ||
             capabilities.MaxTransferBytes < _options.MaxMetadataBytes || capabilities.BuiltInRecipes is null ||
             capabilities.BuiltInRecipes.Count is < 1 or > 256 ||
+            capabilities.BuiltInRecipes.Any(static recipe => recipe is null ||
+                !ReplayProtocol.IsBoundedIdentifier(recipe.Name) ||
+                !ReplayProtocol.IsBoundedIdentifier(recipe.SemanticVersion) ||
+                !ReplayProtocol.IsBoundedIdentifier(recipe.ImplementationVersion)) ||
             capabilities.BuiltInRecipes.Select(static recipe => recipe.Name)
                 .Distinct(StringComparer.Ordinal).Count() != capabilities.BuiltInRecipes.Count)
         {

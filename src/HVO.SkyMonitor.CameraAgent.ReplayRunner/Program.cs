@@ -69,7 +69,24 @@ internal static class Program
                 $"Replay runner starting with concurrency {options.MaxConcurrency} and idle shutdown {options.IdleShutdownSeconds}s.",
                 options.Transport.ToString(),
                 endpoint);
-            await using var server = new LocalReplayRunnerServer(options, warmup.Executor, capabilities);
+            await using var server = new LocalReplayRunnerServer(
+                options,
+                warmup.Executor,
+                capabilities,
+                static () =>
+                {
+                    try
+                    {
+                        WriteLog(
+                            "error",
+                            "forced-termination",
+                            "Replay execution did not stop within the cancellation grace period; terminating for supervisor restart.");
+                    }
+                    finally
+                    {
+                        Environment.Exit(1);
+                    }
+                });
             await server.RunAsync(cancellation.Token).ConfigureAwait(false);
             WriteLog("info", "stopped", "Replay runner stopped gracefully.", options.Transport.ToString(), endpoint);
             return 0;

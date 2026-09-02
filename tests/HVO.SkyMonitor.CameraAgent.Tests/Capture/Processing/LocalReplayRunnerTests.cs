@@ -118,9 +118,13 @@ public sealed class LocalReplayRunnerTests
             CreateSocketPath(),
             maximumTransferBytes: LocalReplayRunnerOptions.MaximumTransferBytes,
             maximumConcurrency: 3);
+        var cancellationGrace = CreateOptions(
+            CreateSocketPath(),
+            executionCancellationGrace: TimeSpan.FromSeconds(31));
 
         Assert.Throws<InvalidOperationException>(() => options.Validate());
         Assert.Throws<InvalidOperationException>(() => aggregate.Validate());
+        Assert.Throws<InvalidOperationException>(() => cancellationGrace.Validate());
     }
 
     [TestMethod]
@@ -238,8 +242,12 @@ public sealed class LocalReplayRunnerTests
         var socketPath = CreateSocketPath();
         var options = CreateOptions(socketPath);
         var executor = new BlockingExecutor();
+        var terminationRequests = 0;
         using var stopping = new CancellationTokenSource();
-        await using var server = new LocalReplayRunnerServer(options, executor);
+        await using var server = new LocalReplayRunnerServer(
+            options,
+            executor,
+            terminateProcess: () => Interlocked.Increment(ref terminationRequests));
         var serverTask = server.RunAsync(stopping.Token);
         await WaitForSocketAsync(socketPath).ConfigureAwait(false);
         await using var client = new LocalReplayRunnerClient(options);
@@ -259,6 +267,140 @@ public sealed class LocalReplayRunnerTests
             await execution.ConfigureAwait(false));
         await executor.Canceled.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         await StopServerAsync(stopping, serverTask).ConfigureAwait(false);
+        Assert.AreEqual(0, terminationRequests);
+
+        var delayedSocketPath = CreateSocketPath();
+        var delayedOptions = CreateOptions(
+            delayedSocketPath,
+            executionCancellationGrace: TimeSpan.FromMilliseconds(400));
+        var delayedExecutor = new CancellationDelayedExecutor(TimeSpan.FromMilliseconds(250));
+        using var delayedStopping = new CancellationTokenSource();
+        await using var delayedServer = new LocalReplayRunnerServer(
+            delayedOptions,
+            delayedExecutor,
+            terminateProcess: () => Interlocked.Increment(ref terminationRequests));
+        var delayedServerTask = delayedServer.RunAsync(delayedStopping.Token);
+        await WaitForSocketAsync(delayedSocketPath).ConfigureAwait(false);
+        await using var delayedClient = new LocalReplayRunnerClient(delayedOptions);
+        using var delayedCancellation = new CancellationTokenSource();
+        var delayedExecution = delayedClient.ExecuteAsync(
+            CreateJobContext(),
+            ProcessingConformanceFixture.CreateRequest(
+                ProcessingConformanceFixture.CreateProcessingArtifact()),
+            delayedCancellation.Token);
+        await delayedExecutor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+
+        await delayedCancellation.CancelAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await delayedExecution.ConfigureAwait(false));
+        await delayedExecutor.Canceled.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        await StopServerAsync(delayedStopping, delayedServerTask).ConfigureAwait(false);
+        Assert.AreEqual(0, terminationRequests);
+    }
+
+    [TestMethod]
+    public async Task RunnerCancellation_NonCooperativeRecipeRequestsProcessTermination()
+    {
+        var socketPath = CreateSocketPath();
+        var options = CreateOptions(
+            socketPath,
+            executionCancellationGrace: TimeSpan.FromMilliseconds(100));
+        var executor = new NonCooperativeExecutor();
+        var terminationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var stopping = new CancellationTokenSource();
+        await using var server = new LocalReplayRunnerServer(
+            options,
+            executor,
+            terminateProcess: () => terminationRequested.TrySetResult());
+        var serverTask = server.RunAsync(stopping.Token);
+        await WaitForSocketAsync(socketPath).ConfigureAwait(false);
+        await using var client = new LocalReplayRunnerClient(options);
+        using var executionCancellation = new CancellationTokenSource();
+        var execution = client.ExecuteAsync(
+            CreateJobContext(),
+            ProcessingConformanceFixture.CreateRequest(
+                ProcessingConformanceFixture.CreateProcessingArtifact()),
+            executionCancellation.Token);
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+
+        await executionCancellation.CancelAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await execution.ConfigureAwait(false));
+        await terminationRequested.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        await StopServerAsync(stopping, serverTask).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task RunnerHeartbeats_ContinueThroughResponseProjection()
+    {
+        var socketPath = CreateSocketPath();
+        var options = CreateOptions(socketPath, heartbeatTimeout: TimeSpan.FromMilliseconds(400));
+        var executor = new ProjectionBlockingExecutor();
+        var terminationRequests = 0;
+        using var stopping = new CancellationTokenSource();
+        await using var server = new LocalReplayRunnerServer(
+            options,
+            executor,
+            terminateProcess: () => Interlocked.Increment(ref terminationRequests));
+        var serverTask = server.RunAsync(stopping.Token);
+        await WaitForSocketAsync(socketPath).ConfigureAwait(false);
+        await using var client = new LocalReplayRunnerClient(options);
+        var execution = client.ExecuteAsync(
+            CreateJobContext(),
+            ProcessingConformanceFixture.CreateRequest(
+                ProcessingConformanceFixture.CreateProcessingArtifact()));
+        await executor.ProjectionStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+
+        bool remainedConnected;
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(600)).ConfigureAwait(false);
+            remainedConnected = !execution.IsCompleted;
+        }
+        finally
+        {
+            executor.ReleaseProjection.TrySetResult();
+        }
+
+        Assert.IsTrue(remainedConnected, "Runner heartbeats must continue while response projection is active.");
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, (await execution.ConfigureAwait(false)).Status);
+        await StopServerAsync(stopping, serverTask).ConfigureAwait(false);
+        Assert.AreEqual(0, terminationRequests);
+
+        var canceledSocketPath = CreateSocketPath();
+        var canceledOptions = CreateOptions(
+            canceledSocketPath,
+            heartbeatTimeout: TimeSpan.FromMilliseconds(400),
+            executionCancellationGrace: TimeSpan.FromMilliseconds(100));
+        var canceledExecutor = new ProjectionBlockingExecutor();
+        var terminationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var canceledStopping = new CancellationTokenSource();
+        await using var canceledServer = new LocalReplayRunnerServer(
+            canceledOptions,
+            canceledExecutor,
+            terminateProcess: () => terminationRequested.TrySetResult());
+        var canceledServerTask = canceledServer.RunAsync(canceledStopping.Token);
+        await WaitForSocketAsync(canceledSocketPath).ConfigureAwait(false);
+        await using var canceledClient = new LocalReplayRunnerClient(canceledOptions);
+        using var canceledExecution = new CancellationTokenSource();
+        var canceledRequest = canceledClient.ExecuteAsync(
+            CreateJobContext(),
+            ProcessingConformanceFixture.CreateRequest(
+                ProcessingConformanceFixture.CreateProcessingArtifact()),
+            canceledExecution.Token);
+        await canceledExecutor.ProjectionStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+
+        await canceledExecution.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await canceledRequest.ConfigureAwait(false));
+        try
+        {
+            await terminationRequested.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        }
+        finally
+        {
+            canceledExecutor.ReleaseProjection.TrySetResult();
+        }
+        await StopServerAsync(canceledStopping, canceledServerTask).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -365,6 +507,23 @@ public sealed class LocalReplayRunnerTests
             projection.Metadata.Authorization,
             tamperedSha256,
             DateTimeOffset.UtcNow));
+    }
+
+    [TestMethod]
+    public void RequestProjection_HonorsPreCanceledExecution()
+    {
+        var options = CreateOptions(CreateSocketPath());
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => ReplayProjection.ProjectRequest(
+            AuthenticationKey,
+            CreateJobContext(),
+            ProcessingConformanceFixture.CreateRequest(
+                ProcessingConformanceFixture.CreateProcessingArtifact()),
+            options,
+            DateTimeOffset.UtcNow,
+            cancellation.Token));
     }
 
     [TestMethod]
@@ -546,6 +705,35 @@ public sealed class LocalReplayRunnerTests
                 ProcessingConformanceFixture.CreateRequest(
                     ProcessingConformanceFixture.CreateProcessingArtifact())).ConfigureAwait(false));
 
+        await StopServerAsync(stopping, serverTask).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task RunnerCapabilities_NullRecipeIsRejectedBeforeDispatch()
+    {
+        var socketPath = CreateSocketPath();
+        var options = CreateOptions(socketPath);
+        var capabilities = ReplayRunnerCapabilities.Create(options) with
+        {
+            BuiltInRecipes = [null!]
+        };
+        var executor = new CountingExecutor();
+        using var stopping = new CancellationTokenSource();
+        await using var server = new LocalReplayRunnerServer(options, executor, capabilities);
+        var serverTask = server.RunAsync(stopping.Token);
+        await WaitForSocketAsync(socketPath).ConfigureAwait(false);
+        await using var client = new LocalReplayRunnerClient(options);
+
+        await Assert.ThrowsAsync<LocalReplayRunnerProtocolException>(async () =>
+            await client.ProbeAsync().ConfigureAwait(false));
+        var unavailable = await Assert.ThrowsAsync<LocalReplayRunnerUnavailableException>(async () =>
+            await client.ExecuteAsync(
+                CreateJobContext(),
+                ProcessingConformanceFixture.CreateRequest(
+                    ProcessingConformanceFixture.CreateProcessingArtifact())).ConfigureAwait(false));
+
+        Assert.IsInstanceOfType<LocalReplayRunnerProtocolException>(unavailable.InnerException);
+        Assert.AreEqual(0, executor.ExecutionCount);
         await StopServerAsync(stopping, serverTask).ConfigureAwait(false);
     }
 
@@ -884,14 +1072,17 @@ public sealed class LocalReplayRunnerTests
         string socketPath,
         byte[]? authenticationKey = null,
         long maximumTransferBytes = 64 * 1024 * 1024,
-        int maximumConcurrency = 1) => new()
+        int maximumConcurrency = 1,
+        TimeSpan? heartbeatTimeout = null,
+        TimeSpan? executionCancellationGrace = null) => new()
         {
             SocketPath = socketPath,
             PreSharedAuthKey = authenticationKey ?? AuthenticationKey,
             MaxConcurrency = maximumConcurrency,
             ConnectTimeout = TimeSpan.FromSeconds(2),
             HeartbeatInterval = TimeSpan.FromMilliseconds(100),
-            HeartbeatTimeout = TimeSpan.FromSeconds(2),
+            HeartbeatTimeout = heartbeatTimeout ?? TimeSpan.FromSeconds(2),
+            ExecutionCancellationGrace = executionCancellationGrace ?? TimeSpan.FromSeconds(5),
             MaxMetadataBytes = 1024 * 1024,
             MaxTotalTransferBytes = maximumTransferBytes
         };
@@ -918,6 +1109,87 @@ public sealed class LocalReplayRunnerTests
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
             throw new InvalidOperationException("Synthetic executor failure.");
         }
+    }
+
+    private sealed class NonCooperativeExecutor : IProcessingRecipeExecutor
+    {
+        private readonly TaskCompletionSource<ProcessingOutcome> completion = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask<ProcessingOutcome> ExecuteAsync(
+            ProcessingExecutionRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            return new ValueTask<ProcessingOutcome>(completion.Task);
+        }
+    }
+
+    private sealed class CancellationDelayedExecutor(TimeSpan cancellationDelay) : IProcessingRecipeExecutor
+    {
+        internal TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Canceled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask<ProcessingOutcome> ExecuteAsync(
+            ProcessingExecutionRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(cancellationDelay, CancellationToken.None).ConfigureAwait(false);
+                Canceled.TrySetResult();
+                throw;
+            }
+            throw new InvalidOperationException("The delayed cancellation executor completed without cancellation.");
+        }
+    }
+
+    private sealed class ProjectionBlockingExecutor : IProcessingRecipeExecutor
+    {
+        internal TaskCompletionSource ProjectionStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ReleaseProjection { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask<ProcessingOutcome> ExecuteAsync(
+            ProcessingExecutionRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+            return outcome with
+            {
+                Products = new ProjectionBlockingProductList(
+                    outcome.Products,
+                    ProjectionStarted,
+                    ReleaseProjection)
+            };
+        }
+    }
+
+    private sealed class ProjectionBlockingProductList(
+        IReadOnlyList<ProcessingProduct> products,
+        TaskCompletionSource projectionStarted,
+        TaskCompletionSource releaseProjection) : IReadOnlyList<ProcessingProduct>
+    {
+        public int Count => products.Count;
+
+        public ProcessingProduct this[int index] => products[index];
+
+        public IEnumerator<ProcessingProduct> GetEnumerator()
+        {
+            projectionStarted.TrySetResult();
+            releaseProjection.Task.GetAwaiter().GetResult();
+            return products.GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private sealed class BlockingWriteStream : Stream

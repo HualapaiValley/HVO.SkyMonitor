@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
@@ -197,6 +198,7 @@ public sealed class ProcessingGraphOperationsTests
             var worker = provider.GetRequiredService<ProcessingReplayWorker>();
             await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
             ProcessingGraphExecutionDetail? detail = null;
+            long claimCount = 0;
             try
             {
                 var timeout = Stopwatch.StartNew();
@@ -204,7 +206,15 @@ public sealed class ProcessingGraphOperationsTests
                 {
                     detail = await operations.ReadExecutionDetailAsync(
                         replay.Execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
-                    if (detail is { Nodes.Count: > 0 } && detail.Nodes[0].Attempts.Count > 0 &&
+                    using var connection = new SqliteConnection(
+                        $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+                    await connection.OpenAsync().ConfigureAwait(false);
+                    using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT claim_count FROM processing_replay_work WHERE execution_id = $execution_id;";
+                    command.Parameters.AddWithValue("$execution_id", replay.Execution.ExecutionId.ToString("N"));
+                    claimCount = Convert.ToInt64(await command.ExecuteScalarAsync().ConfigureAwait(false), CultureInfo.InvariantCulture);
+                    if (claimCount >= 3 && detail is { Nodes.Count: > 0 } &&
+                        detail.Execution.Status == ProcessingGraphExecutionStatus.Pending &&
                         detail.Execution.FailureReason == "processing.replay-runner-unavailable")
                     {
                         break;
@@ -218,13 +228,14 @@ public sealed class ProcessingGraphOperationsTests
             }
 
             Assert.IsNotNull(detail);
+            Assert.IsGreaterThanOrEqualTo(3, claimCount);
             Assert.AreEqual(ProcessingGraphExecutionStatus.Pending, detail.Execution.Status);
             Assert.AreEqual(0, detail.Execution.AttemptCount);
             Assert.AreEqual("processing.replay-runner-unavailable", detail.Execution.FailureReason);
             Assert.AreEqual("Pending", detail.Nodes.Single().Status);
-            Assert.HasCount(1, detail.Nodes.Single().Attempts);
-            Assert.AreEqual("Interrupted", detail.Nodes.Single().Attempts[0].Status);
-            Assert.AreEqual("processing.replay-runner-unavailable", detail.Nodes.Single().Attempts[0].Reason);
+            Assert.AreEqual(0, detail.Nodes.Single().AttemptCount);
+            Assert.IsNull(detail.Nodes.Single().StartedUtc);
+            Assert.IsEmpty(detail.Nodes.Single().Attempts);
         }
         finally
         {
