@@ -134,6 +134,9 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.CameraAgent.Modules.Zwo` | Linux ZWO ASI SDK interop and full-frame bin-1 color RAW16 acquisition for the ASI676MC and ASI178MC | Host orchestration, processing, persistence, vendor artifacts, unsupported ZWO modes, or non-ZWO cameras |
 | `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
 | `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/provider-neutral S3 object-storage services, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
+| `HVO.SkyMonitor.Deployment.Contracts` | Host-neutral installation, lifecycle, distribution, release, and compatibility records | Filesystem, network, signature verification, Docker/Compose, host runtime, or secrets |
+| `HVO.SkyMonitor.Deployment.Distribution` | Immutable release/catalog signature, trust, checksum, and distribution verification | Installation mutation, Docker/Compose, application runtime, or host workflow ownership |
+| `HVO.SkyMonitor.Deployment.Cli` | Self-contained installation and lifecycle orchestration across signed distribution, catalogs, filesystem state, Docker/Compose placement, owner bootstrap, verification, diagnostics, and recovery | Application runtime behavior, acquisition/processing, domain persistence, or host UI/API |
 
 CameraAgent and LogicHost must never reference each other. Shared behavior moves
 through AgentCore, Astronomy, Imaging, Processing, or another explicitly
@@ -163,11 +166,31 @@ AgentCore --> CameraAgent.Modules.Zwo --> CameraAgent
 
 Common --------------------> CameraAgent and LogicHost only
 Catalog.Sqlite ------------> CameraAgent and LogicHost composition roots
+
+Deployment.Contracts --> Deployment.Distribution
+AgentCore + Catalog.Sqlite + Deployment.Contracts + Deployment.Distribution
+  +--> Deployment.Cli
 ```
 
 `TestSupport` may reference production projects and may be referenced only by
 test projects. Phase 0 architecture and publish checks must enforce the complete
 graph, including transitive production output.
+
+The delivered CameraAgent local replay profile retains these normative
+requirements:
+
+| ID | Requirement |
+| --- | --- |
+| `REPLAY-LOCAL-001` | Only explicitly requested archived `Replay` executions may use the local runner. Newly acquired and live graph work always executes in the ordered CameraAgent in-process lane. |
+| `REPLAY-LOCAL-002` | In-process replay remains supported. Local-runner selection is explicit retained installation state; runner absence, saturation, authentication/capability mismatch, heartbeat loss, or disconnect never falls back in process, returns the replay to bounded pending state, and consumes no durable attempt. |
+| `REPLAY-LOCAL-003` | The runner is a long-lived process prestarted and warmed once rather than per capture or job. Capability output records runtime/native/catalog/calibration/model/GPU warmup disposition; the installed default keeps the runner warm, while any nonzero idle shutdown remains bounded to 24 hours. |
+| `REPLAY-LOCAL-004` | The default transport is an owner-only authenticated Unix socket. Explicit non-Compose loopback TCP remains local-only, and every transport enforces bounded metadata, transfer, heartbeat, deadline, concurrency, and authentication limits. |
+| `REPLAY-LOCAL-005` | The runner receives immutable declared inputs and bounded binary payloads, never broad CameraAgent database, identity, catalog, archive, or raw-storage access. Pixel payloads are not base64/JSON encoded; input and output lengths and checksums are verified. |
+| `REPLAY-LOCAL-006` | CameraAgent remains authoritative for durable jobs, claims, attempts, leases, cancellation, deadlines, orchestration, and completion. Lease loss, stale completion, timeout, cancellation, crash, disconnect, and restart are fenced and recover idempotently. |
+| `REPLAY-LOCAL-007` | In-process and local-runner execution preserve equivalent canonical output identity, role, recipe identity, ordered lineage, layout, checksum, and provenance. Returned products are validated before commit and cannot publish/upload or replace current views without explicit CameraAgent policy. |
+| `REPLAY-LOCAL-008` | The runner has lower CPU/I/O priority and explicit concurrency, memory, transfer, scratch, network, mount, and privilege bounds relative to acquisition/live processing. Runner memory and locality are never authoritative recovery state. |
+| `REPLAY-LOCAL-009` | Runner health, capabilities, warmup, backlog, deferral, transfer, heartbeat, failure, resource, and lifecycle state are observable. Failed lifecycle candidates retain separately bounded and redacted CameraAgent and runner diagnostics before rollback. |
+| `REPLAY-LOCAL-010` | Current-head evidence covers Linux x64/ARM64 publish/probe, cold/warm startup, dispatch and transfer, CPU, allocation/RSS, I/O, latency, throughput, backlog/drain, outage and crash recovery, cancellation, restart, and simultaneous canonical W6 live-cadence impact. |
 
 ### 3.3 Acquisition and raw evidence
 
