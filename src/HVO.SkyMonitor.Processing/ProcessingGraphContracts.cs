@@ -48,6 +48,14 @@ public enum ProcessingGraphWindowKind
     Centered
 }
 
+public enum ProcessingGraphMissingInputOutcome
+{
+    Run,
+    Skip,
+    Fail,
+    Quarantine
+}
+
 public sealed record ProcessingGraphSourceDefinition(
     string Id,
     ImmutableArray<ProcessingGraphProductContract> Outputs);
@@ -67,20 +75,75 @@ public sealed record ProcessingGraphInputContract(
     string BindingName = "input",
     ProcessingGraphInputBindingKind BindingKind = ProcessingGraphInputBindingKind.PrimaryArtifact);
 
-public sealed record ProcessingGraphProductContract(
-    FrameArtifactRole Role,
-    string Variant,
-    ProcessingProductKind ProductKind,
-    ProcessingRecipeDefinition? Recipe = null,
-    string? SchemaVersion = null,
-    ImmutableArray<ProcessingAlgorithmIdentity> Algorithms = default);
+/// <summary>
+/// Output contract for a graph source or node. <c>Algorithms</c> and <c>MediaType</c> are optional in
+/// <see cref="ProcessingGraphSchemaVersions.V1"/> JSON so persisted schema-6 CameraAgent revisions that predate
+/// <c>mediaType</c> stay readable, and a <c>null</c> media type is omitted from the canonical form so their
+/// definition identities remain stable.
+/// </summary>
+public sealed record ProcessingGraphProductContract
+{
+    [JsonConstructor]
+    public ProcessingGraphProductContract(
+        FrameArtifactRole Role,
+        string Variant,
+        ProcessingProductKind ProductKind,
+        ProcessingRecipeDefinition? Recipe = null,
+        string? SchemaVersion = null,
+        ImmutableArray<ProcessingAlgorithmIdentity> Algorithms = default,
+        string? MediaType = null)
+    {
+        this.Role = Role;
+        this.Variant = Variant;
+        this.ProductKind = ProductKind;
+        this.Recipe = Recipe;
+        this.SchemaVersion = SchemaVersion;
+        this.Algorithms = Algorithms.IsDefault ? [] : Algorithms;
+        this.MediaType = MediaType;
+    }
+
+    public FrameArtifactRole Role { get; init; }
+
+    public string Variant { get; init; }
+
+    public ProcessingProductKind ProductKind { get; init; }
+
+    public ProcessingRecipeDefinition? Recipe { get; init; }
+
+    public string? SchemaVersion { get; init; }
+
+    public ImmutableArray<ProcessingAlgorithmIdentity> Algorithms { get; init; }
+
+    public string? MediaType { get; init; }
+
+    public void Deconstruct(
+        out FrameArtifactRole Role,
+        out string Variant,
+        out ProcessingProductKind ProductKind,
+        out ProcessingRecipeDefinition? Recipe,
+        out string? SchemaVersion,
+        out ImmutableArray<ProcessingAlgorithmIdentity> Algorithms,
+        out string? MediaType)
+    {
+        Role = this.Role;
+        Variant = this.Variant;
+        ProductKind = this.ProductKind;
+        Recipe = this.Recipe;
+        SchemaVersion = this.SchemaVersion;
+        Algorithms = this.Algorithms;
+        MediaType = this.MediaType;
+    }
+}
 
 public sealed record ProcessingGraphWindowRequirement(
     ProcessingGraphWindowKind Kind,
     int MinimumInputCount,
     int MaximumInputCount,
     ImmutableArray<int> RequiredPositions,
-    ImmutableArray<string> CompatibilityLabels);
+    ImmutableArray<string> CompatibilityLabels,
+    long TimeoutTicks = 3_000_000_000,
+    ProcessingGraphMissingInputOutcome MissingInputOutcome =
+        ProcessingGraphMissingInputOutcome.Skip);
 
 public sealed record ProcessingGraphNodeDefinition
 {

@@ -32,6 +32,7 @@ internal static class CentralCloudProcessingConfiguration
         var input = builder.Entity<CentralDerivativeJobCanonicalInput>();
         input.ToTable("CentralDerivativeJobCanonicalInputs", table =>
         {
+            table.HasTrigger("TR_CentralDerivativeJobCanonicalInputs_GraphImmutable");
             table.HasCheckConstraint("CK_CentralDerivativeJobCanonicalInputs_Ordinal", "[Ordinal] >= 0");
             table.HasCheckConstraint("CK_CentralDerivativeJobCanonicalInputs_ByteLength", "[ByteLength] > 0");
         });

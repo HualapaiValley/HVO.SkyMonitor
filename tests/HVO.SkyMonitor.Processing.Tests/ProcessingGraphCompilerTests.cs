@@ -261,19 +261,46 @@ public sealed class ProcessingGraphCompilerTests
             ProcessingGraphWindowKind.Centered, 5, 5, [-2, -1, 0, 1, 2], ["rig", "orientation"]);
         var valid = Graph(
             Node("trailing", 0, [Dependency("$raw")], [Input(FrameArtifactRole.Raw)],
-                [Output(FrameArtifactRole.Combined, "trailing")], window: trailing,
+                [Output(FrameArtifactRole.Combined, "trailing", operationKind: ProcessingOperationKind.Window)], window: trailing,
                 operationKind: ProcessingOperationKind.Window),
             Node("centered", 10, [Dependency("trailing")], [Input(FrameArtifactRole.Combined)],
-                [Output(FrameArtifactRole.Metadata, "centered", ProcessingProductKind.Metadata, "assessment-v1")],
+                [Output(FrameArtifactRole.Metadata, "centered", ProcessingProductKind.Metadata, "assessment-v1",
+                    ProcessingOperationKind.Window)],
                 window: centered, operationKind: ProcessingOperationKind.Window));
         var invalid = Graph(Node("invalid", 0, [Dependency("$raw")], [Input(FrameArtifactRole.Raw)],
-            [Output(FrameArtifactRole.Combined, "invalid")],
+            [Output(FrameArtifactRole.Combined, "invalid", operationKind: ProcessingOperationKind.Window)],
             window: centered with { MinimumInputCount = 3, RequiredPositions = [-1, 1] },
             operationKind: ProcessingOperationKind.Window));
 
         Assert.IsTrue(ProcessingGraphCompiler.Compile(valid).IsValid);
         Assert.ContainsSingle(ProcessingGraphCompiler.Compile(invalid).Diagnostics.Where(
             static diagnostic => diagnostic.Code == ProcessingGraphReasonCodes.InvalidWindow));
+    }
+
+    [TestMethod]
+    public void Compile_RejectsOutputRecipeOperationKindThatDiffersFromOwningNode()
+    {
+        var graph = Graph(Node("analyzer", 0, [Dependency("$raw")], [Input(FrameArtifactRole.Raw)],
+            [Output(FrameArtifactRole.Metadata, "facts", ProcessingProductKind.Metadata, operationKind:
+                ProcessingOperationKind.Transform)], operationKind: ProcessingOperationKind.Analyzer));
+
+        var result = ProcessingGraphCompiler.Compile(graph);
+
+        Assert.IsFalse(result.IsValid);
+        var diagnostic = Assert.ContainsSingle(result.Diagnostics.Where(item =>
+            item.Path == "nodes[0].outputs[0].recipe.operationKind"));
+        Assert.AreEqual(ProcessingGraphReasonCodes.InvalidNode, diagnostic.Code);
+    }
+
+    [TestMethod]
+    public void ProductContractCanonicalJsonEscapesNonAsciiText()
+    {
+        var contract = Output(FrameArtifactRole.Preview, "pr\u00e9view");
+
+        var json = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(contract)).GetRawText();
+
+        Assert.IsTrue(json.All(static character => character <= 0x7f));
+        StringAssert.Contains(json, "\\u00E9", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -341,7 +368,8 @@ public sealed class ProcessingGraphCompilerTests
                 "presentation-layer",
                 ProcessingProductKind.Metadata,
                 new("presentation-layer", "2.0.0", "svg-v2", ProcessingOperationKind.Transform),
-                PresentationLayerV1.CurrentSchemaVersion)]));
+                PresentationLayerV1.CurrentSchemaVersion,
+                MediaType: PresentationLayerPayloadJson.MediaType)]));
 
         var json = ProcessingGraphJson.SerializeCanonical(graph);
         var parsed = ProcessingGraphJson.Parse(json);
@@ -355,6 +383,80 @@ public sealed class ProcessingGraphCompilerTests
         Assert.AreEqual(
             PresentationLayerV1.CurrentSchemaVersion,
             roundTrip.Plan.Nodes[0].Definition.Outputs[0].SchemaVersion);
+        Assert.AreEqual(
+            PresentationLayerPayloadJson.MediaType,
+            roundTrip.Plan.Nodes[0].Definition.Outputs[0].MediaType);
+    }
+
+    [TestMethod]
+    public void GraphJson_OldV1WindowDefaultsToExplicitCompatibleSemantics()
+    {
+        var explicitGraph = Graph(Node(
+            "window",
+            0,
+            [Dependency("$raw")],
+            [Input(FrameArtifactRole.Raw)],
+            [Output(FrameArtifactRole.Combined, "window", operationKind: ProcessingOperationKind.Window)],
+            window: new ProcessingGraphWindowRequirement(
+                ProcessingGraphWindowKind.Centered,
+                1,
+                3,
+                [0],
+                ["rig"]),
+            operationKind: ProcessingOperationKind.Window));
+        var oldV1Json = System.Text.Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(explicitGraph))
+            .Replace(",\"missingInputOutcome\":\"Skip\"", string.Empty, StringComparison.Ordinal)
+            .Replace(",\"timeoutTicks\":3000000000", string.Empty, StringComparison.Ordinal);
+
+        var parsed = ProcessingGraphJson.Parse(System.Text.Encoding.UTF8.GetBytes(oldV1Json));
+        var oldPlan = ProcessingGraphCompiler.Compile(parsed.Definition!);
+        var explicitPlan = ProcessingGraphCompiler.Compile(explicitGraph);
+
+        Assert.IsTrue(parsed.IsValid, string.Join(Environment.NewLine, parsed.Diagnostics));
+        Assert.AreEqual(TimeSpan.FromMinutes(5).Ticks, parsed.Definition!.Nodes[0].Window!.TimeoutTicks);
+        Assert.AreEqual(ProcessingGraphMissingInputOutcome.Skip, parsed.Definition.Nodes[0].Window!.MissingInputOutcome);
+        Assert.IsTrue(oldPlan.IsValid, Format(oldPlan));
+        Assert.AreEqual(explicitPlan.Plan!.DefinitionIdentitySha256, oldPlan.Plan!.DefinitionIdentitySha256);
+        Assert.AreEqual(explicitPlan.Plan.PlanIdentitySha256, oldPlan.Plan.PlanIdentitySha256);
+        var canonical = System.Text.Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(parsed.Definition));
+        Assert.DoesNotContain("\"timeoutTicks\"", canonical, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"missingInputOutcome\"", canonical, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Compile_WindowPolicyChangesDefinitionPlanAndNodeIdentities()
+    {
+        var baseline = Graph(Node(
+            "window",
+            0,
+            [Dependency("$raw")],
+            [Input(FrameArtifactRole.Raw)],
+            [Output(FrameArtifactRole.Combined, "window", operationKind: ProcessingOperationKind.Window)],
+            window: new ProcessingGraphWindowRequirement(
+                ProcessingGraphWindowKind.Trailing,
+                1,
+                3,
+                [],
+                ["rig"]),
+            operationKind: ProcessingOperationKind.Window));
+        var changed = baseline with
+        {
+            Nodes =
+            [
+                WithWindow(baseline.Nodes[0], baseline.Nodes[0].Window! with
+                {
+                    TimeoutTicks = TimeSpan.FromMinutes(10).Ticks,
+                    MissingInputOutcome = ProcessingGraphMissingInputOutcome.Fail
+                })
+            ]
+        };
+
+        var baselinePlan = ProcessingGraphCompiler.Compile(baseline).Plan!;
+        var changedPlan = ProcessingGraphCompiler.Compile(changed).Plan!;
+
+        Assert.AreNotEqual(baselinePlan.DefinitionIdentitySha256, changedPlan.DefinitionIdentitySha256);
+        Assert.AreNotEqual(baselinePlan.PlanIdentitySha256, changedPlan.PlanIdentitySha256);
+        Assert.AreNotEqual(baselinePlan.Nodes[0].IdentitySha256, changedPlan.Nodes[0].IdentitySha256);
     }
 
     [TestMethod]
@@ -458,6 +560,149 @@ public sealed class ProcessingGraphCompilerTests
         CollectionAssert.AreEqual(new[] { "a", "b" }, secondPlan.Sources.Select(static source => source.Id).ToArray());
     }
 
+    [TestMethod]
+    public void Compile_DiagnosesEveryMalformedDefinitionShapeAndTopology()
+    {
+        static ProcessingGraphCompilationResult Compile(ProcessingGraphDefinition definition)
+        {
+            var result = ProcessingGraphCompiler.Compile(definition);
+            Assert.IsFalse(result.IsValid);
+            Assert.IsNotEmpty(result.Diagnostics);
+            return result;
+        }
+
+        var baseline = Graph(Node(
+            "preview",
+            0,
+            [Dependency("$raw")],
+            [Input(FrameArtifactRole.Raw)],
+            [Output(FrameArtifactRole.Preview, "display")]));
+        Compile(baseline with { SchemaVersion = "unsupported" });
+        Compile(baseline with { Name = null! });
+        Compile(baseline with { Revision = " " });
+        Compile(baseline with { Sources = default });
+        Compile(baseline with { Nodes = default });
+        Compile(baseline with
+        {
+            Sources = ImmutableArray.CreateRange(new ProcessingGraphSourceDefinition[] { null! })
+        });
+        Compile(baseline with
+        {
+            Sources = [baseline.Sources[0] with { Outputs = default }]
+        });
+        Compile(baseline with
+        {
+            Sources = Enumerable.Range(0, ProcessingGraphCompiler.MaximumSources + 1)
+                .Select(index => new ProcessingGraphSourceDefinition(
+                    $"source-{index}", [Output(FrameArtifactRole.Raw, $"raw-{index}")]))
+                .ToImmutableArray()
+        });
+        Compile(new ProcessingGraphDefinition(
+            ProcessingGraphSchemaVersions.Current,
+            "too-many-nodes",
+            "1",
+            [],
+            Enumerable.Range(0, ProcessingGraphCompiler.MaximumNodes + 1)
+                .Select(index => Node($"node-{index}", index, [], [], [], enabled: false))
+                .ToImmutableArray()));
+
+        var node = baseline.Nodes[0];
+        ProcessingGraphNodeDefinition Rebuild(
+            string? id = null,
+            ProcessingOperationKind? operationKind = null,
+            JsonElement? options = null,
+            ImmutableArray<ProcessingGraphDependencyDefinition>? dependencies = null,
+            ImmutableArray<ProcessingGraphInputContract>? inputs = null,
+            ImmutableArray<ProcessingGraphProductContract>? outputs = null,
+            ProcessingGraphWindowRequirement? window = null,
+            ImmutableArray<string>? capabilities = null,
+            ImmutableArray<string>? hosts = null)
+            => new(
+                id ?? node.Id,
+                node.StepAlias,
+                node.StepVersion,
+                operationKind ?? node.OperationKind,
+                node.Enabled,
+                node.FailurePolicy,
+                node.Order,
+                options ?? node.EffectiveOptions,
+                dependencies.GetValueOrDefault(node.Dependencies),
+                inputs.GetValueOrDefault(node.Inputs),
+                outputs.GetValueOrDefault(node.Outputs),
+                window,
+                capabilities.GetValueOrDefault(node.CapabilityLabels),
+                hosts.GetValueOrDefault(node.HostApplicability));
+
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(dependencies: default(ImmutableArray<ProcessingGraphDependencyDefinition>))]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(inputs: default(ImmutableArray<ProcessingGraphInputContract>))]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(outputs: default(ImmutableArray<ProcessingGraphProductContract>))]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(capabilities: default(ImmutableArray<string>))]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(hosts: default(ImmutableArray<string>))]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(inputs: ImmutableArray.CreateRange(
+                new ProcessingGraphInputContract[] { null! }))]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(inputs: [new ProcessingGraphInputContract(default, [], [], [], [])])]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(window: new ProcessingGraphWindowRequirement(
+                ProcessingGraphWindowKind.Centered, 1, 1, default, ["rig"]))]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(operationKind: (ProcessingOperationKind)int.MaxValue)]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(options: JsonSerializer.SerializeToElement("not-an-object"))]
+        });
+        Compile(baseline with
+        {
+            Sources = [baseline.Sources[0], baseline.Sources[0]]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(id: "$raw")]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(dependencies: [Dependency("$raw"), Dependency("$raw")])]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(dependencies: [Dependency(node.Id)])]
+        });
+        Compile(baseline with
+        {
+            Nodes = [Rebuild(dependencies: [Dependency("missing")])]
+        });
+        var disabled = Node("disabled", 0, [Dependency("$raw")], [Input(FrameArtifactRole.Raw)],
+            [Output(FrameArtifactRole.Preview, "disabled")], enabled: false);
+        Compile(Graph(
+            disabled,
+            Node("consumer", 1, [Dependency(disabled.Id)], [Input(FrameArtifactRole.Preview)],
+                [Output(FrameArtifactRole.Metadata, "consumer")])));
+    }
+
     private static ProcessingGraphDefinition Graph(params ProcessingGraphNodeDefinition[] nodes) => new(
         ProcessingGraphSchemaVersions.Current,
         "test-graph",
@@ -511,6 +756,24 @@ public sealed class ProcessingGraphCompilerTests
             node.CapabilityLabels,
             node.HostApplicability);
 
+    private static ProcessingGraphNodeDefinition WithWindow(
+        ProcessingGraphNodeDefinition node,
+        ProcessingGraphWindowRequirement window) => new(
+            node.Id,
+            node.StepAlias,
+            node.StepVersion,
+            node.OperationKind,
+            node.Enabled,
+            node.FailurePolicy,
+            node.Order,
+            node.EffectiveOptions,
+            node.Dependencies,
+            node.Inputs,
+            node.Outputs,
+            window,
+            node.CapabilityLabels,
+            node.HostApplicability);
+
     private static ProcessingGraphDependencyDefinition Dependency(
         string producerId,
         ProcessingGraphDependencyKind kind = ProcessingGraphDependencyKind.Artifact,
@@ -538,11 +801,12 @@ public sealed class ProcessingGraphCompilerTests
         FrameArtifactRole role,
         string variant,
         ProcessingProductKind kind = ProcessingProductKind.PixelData,
-        string? schema = null) => new(
+        string? schema = null,
+        ProcessingOperationKind operationKind = ProcessingOperationKind.Transform) => new(
             role,
             variant,
             kind,
-            new($"recipe-{variant}", "1.0.0", "test-v1", ProcessingOperationKind.Transform),
+            new($"recipe-{variant}", "1.0.0", "test-v1", operationKind),
             schema);
 
     private static JsonElement Json(string value)

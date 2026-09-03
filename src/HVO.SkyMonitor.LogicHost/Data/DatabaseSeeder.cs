@@ -6,6 +6,11 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OpenIddict.Abstractions;
+using System.Collections.Immutable;
+using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.LogicHost.Services;
 using static OpenIddict.Abstractions.OpenIddictConstants;
 
 #pragma warning disable CA1848 // Database seeding logs run rarely; LoggerMessage delegates add noise
@@ -18,6 +23,12 @@ namespace HVO.SkyMonitor.LogicHost.Data;
 /// </summary>
 internal static class DatabaseSeeder
 {
+    internal static readonly Guid BasicCentralProcessingGraphRevisionId =
+        Guid.Parse("8d8f8df2-fd82-4dbf-8679-4ce21f6d637e");
+
+    internal static readonly Guid BasicCentralProcessingGraphAssignmentId =
+        Guid.Parse("4ea2c2cb-6c92-4386-9ce2-2798c544b61f");
+
     /// <summary>
     /// Seeds the database with default accounts, scopes, and OAuth2 clients.
     /// </summary>
@@ -45,7 +56,258 @@ internal static class DatabaseSeeder
         // Seed OpenIddict scopes and clients
         await SeedOpenIddictDataAsync(serviceProvider, options, bootstrapClient, logger);
 
+        await SeedBasicProcessingGraphAsync(
+            dbContext,
+            serviceProvider.GetRequiredService<ICentralProcessingGraphNodeRegistry>());
+
         await dbContext.SaveChangesAsync();
+    }
+
+    private static async Task SeedBasicProcessingGraphAsync(
+        ApplicationDbContext dbContext,
+        ICentralProcessingGraphNodeRegistry nodeRegistry)
+    {
+        ArgumentNullException.ThrowIfNull(nodeRegistry);
+        var definition = CreateBasicCentralProcessingGraph();
+        var portable = ProcessingGraphCompiler.Compile(definition);
+        var central = ProcessingGraphCompiler.Compile(
+            definition,
+            new(ProcessingGraphHosts.LogicHost, ImmutableArray<string>.Empty));
+        if (!portable.IsValid || !central.IsValid || !nodeRegistry.Validate(central.Plan!))
+        {
+            throw new InvalidOperationException("The canonical basic central processing graph is invalid.");
+        }
+        var createdAt = DateTimeOffset.UnixEpoch;
+        var revisionId = BasicCentralProcessingGraphRevisionId;
+        var assignmentId = BasicCentralProcessingGraphAssignmentId;
+        var definitionJson = System.Text.Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(definition));
+        var revision = await dbContext.CentralProcessingGraphRevisions.SingleOrDefaultAsync(item => item.Id == revisionId);
+        if (revision is null)
+        {
+            if (await dbContext.CentralProcessingGraphRevisions.AnyAsync(item =>
+                    item.Name == definition.Name && item.Revision == definition.Revision ||
+                    item.DefinitionIdentitySha256 == portable.Plan!.DefinitionIdentitySha256))
+            {
+                throw new InvalidOperationException("The canonical central graph seed identity conflicts with another row.");
+            }
+            revision = new CentralProcessingGraphRevision
+            {
+                Id = revisionId,
+                Name = definition.Name,
+                Revision = definition.Revision,
+                DefinitionJson = definitionJson,
+                DefinitionIdentitySha256 = portable.Plan!.DefinitionIdentitySha256,
+                PortablePlanIdentitySha256 = portable.Plan.PlanIdentitySha256,
+                CentralPlanIdentitySha256 = central.Plan!.PlanIdentitySha256,
+                CreatedAtUtc = createdAt,
+                CreatedByUserId = "database-seed",
+                PublishedAtUtc = createdAt,
+                PublishedByUserId = "database-seed"
+            };
+            dbContext.CentralProcessingGraphRevisions.Add(revision);
+        }
+        else if (revision.Name != definition.Name || revision.Revision != definition.Revision ||
+                 revision.DefinitionJson != definitionJson ||
+                 revision.DefinitionIdentitySha256 != portable.Plan!.DefinitionIdentitySha256 ||
+                 revision.PortablePlanIdentitySha256 != portable.Plan.PlanIdentitySha256 ||
+                 revision.EdgePlanIdentitySha256 is not null ||
+                 revision.CentralPlanIdentitySha256 != central.Plan!.PlanIdentitySha256 ||
+                 revision.CreatedAtUtc != createdAt || revision.CreatedByUserId != "database-seed" ||
+                 revision.PublishedAtUtc != createdAt || revision.PublishedByUserId != "database-seed" ||
+                 revision.RetiredAtUtc is not null || revision.RetiredByUserId is not null ||
+                 revision.RetirementReasonCode is not null)
+        {
+            throw new InvalidOperationException("The canonical central graph seed row has conflicting content.");
+        }
+
+        var assignment = await dbContext.CentralProcessingGraphAssignments.SingleOrDefaultAsync(
+            item => item.Id == assignmentId);
+        if (assignment is null)
+        {
+            dbContext.CentralProcessingGraphAssignments.Add(new CentralProcessingGraphAssignment
+            {
+                Id = assignmentId,
+                RevisionId = revision.Id,
+                TargetHost = CentralProcessingGraphTargetHost.Central,
+                Scope = CentralProcessingGraphAssignmentScope.GlobalDefault,
+                EffectiveFromUtc = createdAt,
+                CreatedAtUtc = createdAt,
+                ActorUserId = "database-seed",
+                ReasonCode = "canonical-basic-central"
+            });
+        }
+        else if (assignment.RevisionId != revision.Id ||
+                 assignment.TargetHost != CentralProcessingGraphTargetHost.Central ||
+                 assignment.Scope != CentralProcessingGraphAssignmentScope.GlobalDefault ||
+                 assignment.ObservatoryId is not null || assignment.LogicalCameraId is not null ||
+                 assignment.EffectiveFromUtc != createdAt || assignment.EffectiveUntilUtc is not null ||
+                 assignment.CreatedAtUtc != createdAt || assignment.ActorUserId != "database-seed" ||
+                 assignment.ReasonCode != "canonical-basic-central")
+        {
+            throw new InvalidOperationException("The canonical central graph assignment seed row has conflicting content.");
+        }
+    }
+
+    internal static ProcessingGraphDefinition CreateBasicCentralProcessingGraph()
+    {
+        // The fixed seed revision must not change when deployment-specific transient settings change.
+        return CreateBasicCentralProcessingGraph(new CentralDerivativeRecipeCatalog());
+    }
+
+    internal static ProcessingGraphDefinition CreateBasicCentralProcessingGraph(
+        ICentralDerivativeRecipeCatalog recipeCatalog)
+    {
+        ArgumentNullException.ThrowIfNull(recipeCatalog);
+        var recipes = recipeCatalog.GetRequiredRecipes(FrameArtifactRole.Raw)
+            .Concat(recipeCatalog.GetRequiredRecipes(FrameArtifactRole.Calibrated))
+            .DistinctBy(static recipe => recipe.RecipeName, StringComparer.Ordinal)
+            .ToArray();
+        var nodes = recipes.Select((recipe, index) => CreateCentralGraphNode(
+            recipe,
+            index * 10,
+            [new ProcessingGraphDependencyDefinition(SourceId(recipe.SourceRole))],
+            [new ProcessingGraphInputContract(
+                [recipe.SourceRole],
+                [ProcessingProductKind.PixelData],
+                [],
+                [],
+                [])]))
+            .ToList();
+        var weather = CentralDerivativeRecipeCatalog.WeatherCloudOverlayRecipe;
+        nodes.Add(CreateCentralGraphNode(
+            weather,
+            nodes.Count * 10,
+            [
+                new ProcessingGraphDependencyDefinition("Preview"),
+                new ProcessingGraphDependencyDefinition("CloudAssessment")
+            ],
+            [
+                new ProcessingGraphInputContract(
+                    [FrameArtifactRole.Preview],
+                    [ProcessingProductKind.PixelData],
+                    [CentralDerivativeRecipeCatalog.PreviewVariant],
+                    [BuiltInProcessingRecipes.EncodedPreview],
+                    [],
+                    BindingName: "input"),
+                new ProcessingGraphInputContract(
+                    [FrameArtifactRole.Metadata],
+                    [ProcessingProductKind.Metadata],
+                    [CentralDerivativeRecipeCatalog.CloudAssessmentVariant],
+                    [BuiltInProcessingRecipes.CloudAssessment],
+                    [],
+                    BindingName: "assessment",
+                    BindingKind: ProcessingGraphInputBindingKind.AuxiliaryArtifact)
+            ]));
+        var sourceRoles = recipes.Select(static recipe => recipe.SourceRole)
+            .Append(FrameArtifactRole.Raw)
+            .Distinct()
+            .Order()
+            .ToArray();
+        return new(
+            ProcessingGraphSchemaVersions.Current,
+            "logic-host-basic",
+            "1",
+            sourceRoles.Select(role => new ProcessingGraphSourceDefinition(
+                SourceId(role),
+                [new ProcessingGraphProductContract(role, "source", ProcessingProductKind.PixelData)]))
+                .ToImmutableArray(),
+            nodes.ToImmutableArray());
+    }
+
+    private static string SourceId(FrameArtifactRole role) => role switch
+    {
+        FrameArtifactRole.Raw => "$raw",
+        FrameArtifactRole.Calibrated => "$calibrated",
+        _ => throw new InvalidOperationException("The central graph source role is unsupported.")
+    };
+
+    private static ProcessingGraphNodeDefinition CreateCentralGraphNode(
+        CentralDerivativeRecipe recipe,
+        int order,
+        ImmutableArray<ProcessingGraphDependencyDefinition> dependencies,
+        ImmutableArray<ProcessingGraphInputContract> inputs)
+    {
+        var isTransient = recipe.Transient is not null;
+        if (!isTransient && (!BuiltInProcessingRecipes.TryGetDefinition(recipe.RecipeName, out var recipeDefinition) ||
+            recipeDefinition is null))
+        {
+            throw new InvalidOperationException("A canonical central built-in recipe is unavailable.");
+        }
+        _ = BuiltInProcessingRecipes.TryGetDefinition(recipe.RecipeName, out var builtInDefinition);
+        var id = recipe.RecipeName switch
+        {
+            BuiltInProcessingRecipes.EncodedPreview => "Preview",
+            BuiltInProcessingRecipes.Annotation => "Annotation",
+            BuiltInProcessingRecipes.ImageQuality => "ImageQuality",
+            BuiltInProcessingRecipes.CloudAssessment => "CloudAssessment",
+            BuiltInProcessingRecipes.RollingMean => "RollingMean",
+            BuiltInProcessingRecipes.WeatherCloudOverlay => "WeatherCloudOverlay",
+            CentralTransientRuntime.RecipeName => "TransientDetection",
+            _ => throw new InvalidOperationException("The central recipe cannot be represented in the basic graph.")
+        };
+        using var transientOptions = isTransient
+            ? JsonDocument.Parse(recipe.Transient!.ExecutionOptionsJson)
+            : null;
+        var normalizedOptions = isTransient
+            ? transientOptions!.RootElement.Clone()
+            : BuiltInProcessingRecipes.NormalizeOptions(recipe.RecipeName, recipe.Options);
+        var window = recipe.Window is null
+            ? null
+            : new ProcessingGraphWindowRequirement(
+                ProcessingGraphWindowKind.Centered,
+                recipe.Window.Positions.Count(static position => position.IsRequired),
+                recipe.Window.Positions.Count,
+                 recipe.Window.Positions.Where(static position => position.IsRequired)
+                     .Select(static position => position.SequenceOffset).ToImmutableArray(),
+                 ["layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
+                     "sensor", "setpoint", "processing-profile", "location"],
+                recipe.Window.Timeout.Ticks,
+                recipe.Window.MissingInputOutcome switch
+                {
+                    CentralDerivativeWindowOutcome.Run => ProcessingGraphMissingInputOutcome.Run,
+                    CentralDerivativeWindowOutcome.Skip => ProcessingGraphMissingInputOutcome.Skip,
+                    CentralDerivativeWindowOutcome.Fail => ProcessingGraphMissingInputOutcome.Fail,
+                    CentralDerivativeWindowOutcome.Quarantine => ProcessingGraphMissingInputOutcome.Quarantine,
+                    _ => throw new InvalidOperationException("The central window missing-input policy is invalid.")
+                });
+        return new(
+            id,
+            recipe.RecipeName,
+            recipe.RecipeVersion,
+            isTransient ? ProcessingOperationKind.Window : builtInDefinition!.OperationKind,
+            true,
+            recipe.RecipeName is BuiltInProcessingRecipes.CloudAssessment or
+                BuiltInProcessingRecipes.WeatherCloudOverlay
+                ? ProcessingGraphNodeFailurePolicy.Optional
+                : ProcessingGraphNodeFailurePolicy.Required,
+            order,
+            normalizedOptions,
+            dependencies,
+            inputs,
+            isTransient
+                ? []
+                : [new ProcessingGraphProductContract(
+                    recipe.TargetRole,
+                    recipe.TargetVariant,
+                    recipe.TargetRole == FrameArtifactRole.Metadata
+                        ? ProcessingProductKind.Metadata
+                        : ProcessingProductKind.PixelData,
+                    builtInDefinition,
+                    SchemaVersion: recipe.RecipeName == BuiltInProcessingRecipes.CloudAssessment
+                        ? CloudAssessmentV1.CurrentSchemaVersion
+                        : null,
+                    MediaType: recipe.RecipeName switch
+                    {
+                        BuiltInProcessingRecipes.RollingMean => "application/x-hvo-linear-frame",
+                        BuiltInProcessingRecipes.ImageQuality => "application/json",
+                        BuiltInProcessingRecipes.CloudAssessment =>
+                            StructuredProcessingProductContracts.CloudAssessmentMediaType,
+                        BuiltInProcessingRecipes.WeatherCloudOverlay => "application/x-hvo-packed-image",
+                        _ => "image/jpeg"
+                    })],
+            window,
+            [],
+            [ProcessingGraphHosts.LogicHost]);
     }
 
     private static async Task SeedDefaultUsersAsync(

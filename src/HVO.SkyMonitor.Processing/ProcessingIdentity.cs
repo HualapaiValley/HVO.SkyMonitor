@@ -20,7 +20,7 @@ public static class ProcessingIdentity
             definition.SemanticVersion,
             definition.ImplementationVersion,
             effectiveOptions);
-        return CreateRecipeIdentity(descriptor);
+        return CreateRecipeIdentity(descriptor) with { OperationKind = definition.OperationKind };
     }
 
     public static ProcessingRecipeIdentity CreateRecipeIdentity(RecipeIdentityDescriptor descriptor)

@@ -219,6 +219,11 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ProcessingGraphOperationsCoordinator>();
         services.AddSingleton<IProcessingGraphOperations>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
+        services.AddSingleton<IProcessingGraphDeliveryInbox>(provider =>
+            provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
+        services.TryAddSingleton<IProcessingGraphDeliveryTransport>(NullProcessingGraphDeliveryTransport.Instance);
+        services.AddSingleton<ProcessingGraphDeliveryState>();
+        services.AddSingleton<ProcessingGraphDeliveryTelemetry>();
         services.AddSingleton<ICameraAgentGallery, SqliteCameraAgentGallery>();
         services.AddSingleton<ICameraAgentCapturePresentationProjector, CameraAgentCapturePresentationProjector>();
         services.AddSingleton<ICameraAgentPresentationRuntime, CameraAgentPresentationRuntime>();
@@ -345,6 +350,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<ArtifactOutboxDrainService>();
         services.AddHostedService<FleetHeartbeatService>();
         services.AddHostedService<EnvironmentalObservationDeliveryService>();
+        services.AddHostedService<ProcessingGraphDeliveryService>();
         services.AddSingleton<TransientWorkerService>();
         services.AddHostedService(provider => provider.GetRequiredService<TransientWorkerService>());
         services.AddSingleton<TransientCandidateDeliveryService>();

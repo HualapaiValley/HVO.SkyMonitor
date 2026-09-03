@@ -60,6 +60,12 @@ public sealed class CentralDerivativeWorkerTelemetryTests
         telemetry.RecordWindowPinDuration("rolling-mean", TimeSpan.FromSeconds(3));
         telemetry.RecordWindowRejection("rolling-mean", "profile", "skip");
         telemetry.RecordWindowDeadline("rolling-mean", "skipped");
+        telemetry.RecordGraphExpansion("Replay", "created", TimeSpan.FromMilliseconds(2), 3);
+        telemetry.RecordGraphConvergence("Live", "CompletedWithOptionalFailures", TimeSpan.FromMilliseconds(1));
+        telemetry.RecordGraphRecoveryPoll(DateTimeOffset.UtcNow, 1);
+        telemetry.UpdateGraphQueueSnapshot(
+            [new CentralProcessingGraphQueueMeasurement("Replay", "Running", 2)],
+            5);
         ActivitySpanId executionSpanId;
         ActivitySpanId stageSpanId;
         var parentTraceId = ActivityTraceId.CreateRandom();
@@ -106,11 +112,16 @@ public sealed class CentralDerivativeWorkerTelemetryTests
             "skymonitor.central.derivative.window.waiting",
             "skymonitor.central.derivative.window.waiting.oldest_age",
             "skymonitor.central.derivative.window.pins.active",
-            "skymonitor.central.derivative.window.pins.bytes"]);
+            "skymonitor.central.derivative.window.pins.bytes",
+            "skymonitor.central.processing_graph.expansions",
+            "skymonitor.central.processing_graph.convergences",
+            "skymonitor.central.processing_graph.recovery",
+            "skymonitor.central.processing_graph.queue",
+            "skymonitor.central.processing_graph.convergence.oldest_age"]);
         measurements.Select(static measurement => measurement.Name).Should().Contain(
             "skymonitor.central.derivative.window.pins.oldest_age");
         var allowedTags = new HashSet<string>(
-            ["outcome", "stage", "recipe", "direction", "cause", "operation", "dependency", "status", "axis", "disposition"],
+            ["outcome", "stage", "recipe", "direction", "cause", "operation", "dependency", "status", "axis", "disposition", "class"],
             StringComparer.Ordinal);
         measurements.SelectMany(static measurement => measurement.Tags)
             .Should().OnlyContain(tag => allowedTags.Contains(tag));

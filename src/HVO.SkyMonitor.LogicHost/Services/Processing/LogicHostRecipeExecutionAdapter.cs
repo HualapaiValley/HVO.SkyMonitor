@@ -9,7 +9,8 @@ internal sealed record LogicHostProcessingInput(
     ReconstructionDescriptor? Descriptor,
     ReadOnlyMemory<byte> Payload,
     string BindingName = "input",
-    ProcessingArtifact? Artifact = null);
+    ProcessingArtifact? Artifact = null,
+    ProcessingGraphInputBindingKind? BindingKind = null);
 
 internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor executor)
 {
@@ -85,7 +86,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             }
         }
         var artifactAuxiliaryInputs = inputs
-            .Where(static input => !string.Equals(input.BindingName, "input", StringComparison.Ordinal))
+            .Where(static input => ResolveBindingKind(input) == ProcessingGraphInputBindingKind.AuxiliaryArtifact)
             .OrderBy(static input => input.BindingName, StringComparer.Ordinal)
             .Select(static input => new ProcessingAuxiliaryInput(
                 input.BindingName,
@@ -98,7 +99,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             .OrderBy(static input => input.Name, StringComparer.Ordinal)
             .ToArray();
         var primaryInputs = inputs.Where(static input =>
-            string.Equals(input.BindingName, "input", StringComparison.Ordinal)).ToArray();
+            ResolveBindingKind(input) == ProcessingGraphInputBindingKind.PrimaryArtifact).ToArray();
         return _executor.ExecuteAsync(new ProcessingExecutionRequest(
             recipeName,
             options,
@@ -114,6 +115,11 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
 
     private static ProcessingArtifact ResolveArtifact(LogicHostProcessingInput input)
         => input.Artifact ?? CreateArtifact(input.Descriptor!);
+
+    private static ProcessingGraphInputBindingKind ResolveBindingKind(LogicHostProcessingInput input)
+        => input.BindingKind ?? (string.Equals(input.BindingName, "input", StringComparison.Ordinal)
+            ? ProcessingGraphInputBindingKind.PrimaryArtifact
+            : ProcessingGraphInputBindingKind.AuxiliaryArtifact);
 
     private static ProcessingArtifact CreateArtifact(ReconstructionDescriptor descriptor)
     {

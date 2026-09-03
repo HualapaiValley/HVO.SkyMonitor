@@ -214,6 +214,7 @@ public class Program
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.MeterName);
                 metrics.AddMeter(CameraAgentOperatorTelemetry.InstrumentationName);
                 metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.MeterName);
+                metrics.AddMeter(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.MeterName);
             })
             .WithTracing(tracing =>
             {
@@ -230,6 +231,7 @@ public class Program
                     .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlTelemetry.ActivitySourceName)
                     .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.CaptureLaneTelemetry.ActivitySourceName)
                     .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingTelemetry.ActivitySourceName)
+                    .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProcessingGraphDeliveryTelemetry.ActivitySourceName)
                     .AddSource(HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationTelemetry.ActivitySourceName);
             });
 
@@ -238,6 +240,8 @@ public class Program
         builder.Services.AddSkyMonitorApiClient(builder.Configuration);
         RegisterAcceptanceCentralAttemptRecorder(builder);
         builder.Services.AddSingleton<IFleetHeartbeatTransport, CameraAgentFleetHeartbeatTransport>();
+        builder.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.IProcessingGraphDeliveryTransport,
+            CameraAgentProcessingGraphDeliveryTransport>();
         builder.Services.AddSingleton<ITransientCandidateTransport, CameraAgentTransientCandidateTransport>();
         builder.Services.AddSingleton<DeploymentLocationReconciliationState>();
         builder.Services.AddHostedService<DeploymentLocationReconciliationWorker>();
@@ -277,6 +281,7 @@ public class Program
         healthChecks.AddCheck<RawIngressHealthCheck>("raw-ingress", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureLanesHealthCheck>("capture-lanes", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureProcessingHealthCheck>("capture-processing", tags: ["dependency"]);
+        healthChecks.AddCheck<ProcessingGraphDeliveryHealthCheck>("processing-graph-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<ArtifactOutboxHealthCheck>("artifact-outbox", tags: ["dependency"]);
         healthChecks.AddCheck<FleetHeartbeatHealthCheck>("fleet-heartbeat", tags: ["dependency"]);
         healthChecks.AddCheck<DeploymentLocationReconciliationHealthCheck>(

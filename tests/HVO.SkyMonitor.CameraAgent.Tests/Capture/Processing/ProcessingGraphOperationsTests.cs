@@ -27,6 +27,77 @@ public sealed class ProcessingGraphOperationsTests
     private static readonly string[] PreemptionAttemptStatuses = ["Interrupted", "Completed"];
 
     [TestMethod]
+    public void CoordinatorValidationHelpersRejectEveryUnsupportedShape()
+    {
+        var expectedFailures = new Exception[]
+        {
+            new ArgumentException(),
+            new System.ComponentModel.DataAnnotations.ValidationException(),
+            new InvalidDataException(),
+            new ProcessingGraphStoreConflictException("conflict"),
+            new KeyNotFoundException(),
+            new JsonException(),
+            new NotSupportedException(),
+            new FormatException(),
+            new OverflowException(),
+            new OptionsValidationException("options", typeof(CameraAgentHostOptions), ["invalid"])
+        };
+        foreach (var exception in expectedFailures)
+        {
+            Assert.IsTrue(ProcessingGraphOperationsCoordinator.IsExpectedProposalValidationFailure(exception));
+        }
+        Assert.IsFalse(ProcessingGraphOperationsCoordinator.IsExpectedProposalValidationFailure(
+            new InvalidOperationException()));
+
+        var explicitPipeline = new CapturePipelineConfig(
+            [],
+            CapturePipelineSchemaVersions.ExplicitV2,
+            CapturePipelineDependencyPolicy.RejectEnabledDependent);
+        ProcessingGraphOperationsCoordinator.EnsureExplicitPipeline(explicitPipeline);
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
+            ProcessingGraphOperationsCoordinator.EnsureExplicitPipeline(null!));
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            ProcessingGraphOperationsCoordinator.EnsureExplicitPipeline(
+                explicitPipeline with { SchemaVersion = CapturePipelineSchemaVersions.LegacyV1 }));
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            ProcessingGraphOperationsCoordinator.EnsureExplicitPipeline(
+                explicitPipeline with { DependencyPolicy = CapturePipelineDependencyPolicy.LegacyInference }));
+
+        ProcessingGraphOperationsCoordinator.ValidateRevisionName("revision", "value");
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            ProcessingGraphOperationsCoordinator.ValidateRevisionName(" ", "value"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            ProcessingGraphOperationsCoordinator.ValidateRevisionName(new string('x', 129), "value"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            ProcessingGraphOperationsCoordinator.ValidateRevisionName("bad\0name", "value"));
+        Assert.IsTrue(ProcessingGraphOperationsCoordinator.IsSha256(new string('A', 64)));
+        Assert.IsFalse(ProcessingGraphOperationsCoordinator.IsSha256("short"));
+        Assert.IsFalse(ProcessingGraphOperationsCoordinator.IsSha256(new string('Z', 64)));
+
+        ProcessingGraphRevisionSnapshot Snapshot(string? windowJson)
+            => new(
+                new ProcessingGraphRevisionState(
+                    "revision", "name", "1", ProcessingGraphRevisionLifecycle.Validated,
+                    new string('A', 64), new string('B', 64), new string('C', 64),
+                    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, null),
+                explicitPipeline,
+                [],
+                [],
+                [],
+                [new ProcessingExecutionNodeSeed(
+                    "node", true, new string('D', 64), new string('E', 64), "[]", "[]", "[]", windowJson)]);
+
+        ProcessingGraphOperationsCoordinator.EnsureLiveEligible(Snapshot(null));
+        ProcessingGraphOperationsCoordinator.EnsureLiveEligible(Snapshot(JsonSerializer.Serialize(
+            new ProcessingGraphWindowRequirement(
+                ProcessingGraphWindowKind.Trailing, 3, 3, [-2, -1, 0], ["rig"]))));
+        Assert.ThrowsExactly<ProcessingGraphStoreConflictException>(() =>
+            ProcessingGraphOperationsCoordinator.EnsureLiveEligible(Snapshot(JsonSerializer.Serialize(
+                new ProcessingGraphWindowRequirement(
+                    ProcessingGraphWindowKind.Centered, 3, 3, [-1, 0, 1], ["rig"])))));
+    }
+
+    [TestMethod]
     public async Task SameFrozenReplayMatchesInProcessAndLocalRunnerIdentityAndProvenance()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-replay-equivalence-{Guid.NewGuid():N}");
@@ -688,6 +759,252 @@ public sealed class ProcessingGraphOperationsTests
                 await operations.RetireRevisionAsync(
                     retirable.RevisionId, retired.StateVersion, "retire-again-key", "owner-test", null,
                     CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task CentralProposalLifecycleStagesActivatesRollsBackAndSettlesDurably()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-delivery-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var provider = CreateProvider(root);
+            await provider.GetRequiredService<IRawCaptureIngress>()
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var baseConfiguration = CreateConfiguration() with
+            {
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig("Preview", "preview", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var configured = await operations.EnsureConfiguredBasicAsync(
+                baseConfiguration, CancellationToken.None).ConfigureAwait(false);
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var graph = factory.CreateGraph(baseConfiguration);
+            ProcessingGraphDefinition definition;
+            ProcessingGraphExecutionPlan plan;
+            try
+            {
+                var parsed = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(
+                    graph.SharedPlan!.CanonicalDefinition.GetRawText()));
+                Assert.IsTrue(parsed.IsValid);
+                definition = parsed.Definition!;
+                plan = graph.SharedPlan;
+                Assert.AreEqual(
+                    "application/x-hvo-packed-image",
+                    definition.Nodes.Single().Outputs.Single().MediaType);
+            }
+            finally
+            {
+                graph.DisposeSteps();
+            }
+            var now = DateTimeOffset.UtcNow;
+            ProcessingGraphDeliveryProposalV1 CreateProposal(
+                Guid proposalId,
+                ProcessingGraphDefinition proposalDefinition,
+                string definitionIdentity,
+                string sharedPlanIdentity,
+                string? expectedActiveRevisionId = null,
+                DateTimeOffset? issuedAtUtc = null,
+                DateTimeOffset? expiresAtUtc = null)
+                => new(
+                    ProcessingGraphDeliverySchemaVersions.Current,
+                    proposalId,
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    Guid.NewGuid(),
+                    expectedActiveRevisionId ?? configured.ActiveRevisionId,
+                    operations.Capabilities.IdentitySha256,
+                    definitionIdentity,
+                    sharedPlanIdentity,
+                    proposalDefinition,
+                    issuedAtUtc ?? now.AddMinutes(-1),
+                    expiresAtUtc ?? now.AddHours(1));
+
+            var proposal = CreateProposal(
+                Guid.NewGuid(), definition, plan.DefinitionIdentitySha256, plan.PlanIdentitySha256);
+            await operations.StageAsync(proposal, CancellationToken.None).ConfigureAwait(false);
+            await operations.StageAsync(proposal, CancellationToken.None).ConfigureAwait(false);
+            var accepted = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(accepted);
+            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Accepted, accepted.Kind);
+            Assert.AreEqual(plan.DefinitionIdentitySha256, accepted.DefinitionIdentitySha256);
+            Assert.AreEqual(plan.PlanIdentitySha256, accepted.SharedPlanIdentitySha256);
+            await operations.RetryFactAsync(
+                accepted.FactId, now.AddMinutes(-1), "retry-test", CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(
+                accepted.FactId,
+                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.FactId);
+            await operations.AcknowledgeFactAsync(accepted.FactId, CancellationToken.None).ConfigureAwait(false);
+
+            var active = await operations.ActivateRevisionAsync(
+                accepted.LocalRevisionId!,
+                configured.StateVersion,
+                "central-activate",
+                "central-delivery",
+                "accepted",
+                CancellationToken.None).ConfigureAwait(false);
+            var activated = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(activated);
+            Assert.AreEqual(ProcessingGraphDeliveryFactKind.Activated, activated.Kind);
+            await operations.AcknowledgeFactAsync(activated.FactId, CancellationToken.None).ConfigureAwait(false);
+
+            var rolledBackRegistry = await operations.RollbackRevisionAsync(
+                configured.ActiveRevisionId,
+                active.StateVersion,
+                "central-rollback",
+                "operator",
+                "rollback-test",
+                CancellationToken.None).ConfigureAwait(false);
+            await operations.ObserveActiveRevisionAsync(CancellationToken.None).ConfigureAwait(false);
+            var rolledBack = await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(rolledBack);
+            Assert.AreEqual(ProcessingGraphDeliveryFactKind.RolledBack, rolledBack.Kind);
+            Assert.AreEqual(rolledBackRegistry.ActiveRevisionId, configured.ActiveRevisionId);
+            await operations.AcknowledgeFactAsync(rolledBack.FactId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false));
+
+            var expired = proposal with
+            {
+                ProposalId = Guid.NewGuid(),
+                CatalogRevisionId = Guid.NewGuid(),
+                AssignmentId = Guid.NewGuid(),
+                IssuedAtUtc = now.AddHours(-2),
+                ExpiresAtUtc = now.AddHours(-1)
+            };
+            await operations.StageAsync(expired, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(
+                ProcessingGraphDeliveryFactKind.Expired,
+                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
+            await operations.SupersedeProposalAsync(expired.ProposalId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false));
+
+            var activeChanged = proposal with
+            {
+                ProposalId = Guid.NewGuid(),
+                CatalogRevisionId = Guid.NewGuid(),
+                AssignmentId = Guid.NewGuid(),
+                ExpectedActiveLocalRevisionId = new string('0', 64)
+            };
+            await operations.StageAsync(activeChanged, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(
+                ProcessingGraphDeliveryFactKind.Rejected,
+                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
+            await operations.SupersedeProposalAsync(activeChanged.ProposalId, CancellationToken.None).ConfigureAwait(false);
+
+            var originalNode = definition.Nodes[0];
+            var unknownNode = new ProcessingGraphNodeDefinition(
+                originalNode.Id,
+                "UnknownStep",
+                originalNode.StepVersion,
+                originalNode.OperationKind,
+                originalNode.Enabled,
+                originalNode.FailurePolicy,
+                originalNode.Order,
+                originalNode.EffectiveOptions,
+                originalNode.Dependencies,
+                originalNode.Inputs,
+                originalNode.Outputs,
+                originalNode.Window,
+                originalNode.CapabilityLabels,
+                originalNode.HostApplicability);
+            var unsupportedDefinition = definition with
+            {
+                Name = "unsupported",
+                Nodes = [unknownNode]
+            };
+            var unsupportedPlan = ProcessingGraphCompiler.Compile(unsupportedDefinition).Plan!;
+            var unsupported = CreateProposal(
+                Guid.NewGuid(),
+                unsupportedDefinition,
+                unsupportedPlan.DefinitionIdentitySha256,
+                unsupportedPlan.PlanIdentitySha256);
+            await operations.StageAsync(unsupported, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(
+                ProcessingGraphDeliveryFactKind.Rejected,
+                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
+            await operations.SupersedeProposalAsync(unsupported.ProposalId, CancellationToken.None).ConfigureAwait(false);
+
+            var wrongCaseDefinition = definition with
+            {
+                Name = "wrong-case",
+                Nodes = [new ProcessingGraphNodeDefinition(
+                    originalNode.Id,
+                    "preview",
+                    originalNode.StepVersion,
+                    originalNode.OperationKind,
+                    originalNode.Enabled,
+                    originalNode.FailurePolicy,
+                    originalNode.Order,
+                    originalNode.EffectiveOptions,
+                    originalNode.Dependencies,
+                    originalNode.Inputs,
+                    originalNode.Outputs,
+                    originalNode.Window,
+                    originalNode.CapabilityLabels,
+                    originalNode.HostApplicability)]
+            };
+            var wrongCasePlan = ProcessingGraphCompiler.Compile(wrongCaseDefinition).Plan!;
+            var wrongCase = CreateProposal(
+                Guid.NewGuid(), wrongCaseDefinition,
+                wrongCasePlan.DefinitionIdentitySha256, wrongCasePlan.PlanIdentitySha256);
+            await operations.StageAsync(wrongCase, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(
+                ProcessingGraphDeliveryFactKind.Rejected,
+                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
+            await operations.SupersedeProposalAsync(wrongCase.ProposalId, CancellationToken.None).ConfigureAwait(false);
+
+            var disabledNode = new ProcessingGraphNodeDefinition(
+                "disabled-unknown",
+                "UnknownStep",
+                "cameraagent-v2-disabled",
+                ProcessingOperationKind.Transform,
+                false,
+                ProcessingGraphNodeFailurePolicy.Required,
+                100,
+                JsonSerializer.SerializeToElement(new { }),
+                [],
+                [],
+                [],
+                null,
+                [],
+                [ProcessingGraphHosts.CameraAgent]);
+            var disabledDefinition = definition with
+            {
+                Name = "disabled-unsupported",
+                Nodes = [originalNode, disabledNode]
+            };
+            var disabledPlan = ProcessingGraphCompiler.Compile(disabledDefinition).Plan!;
+            var disabledUnsupported = CreateProposal(
+                Guid.NewGuid(), disabledDefinition,
+                disabledPlan.DefinitionIdentitySha256, disabledPlan.PlanIdentitySha256);
+            await operations.StageAsync(disabledUnsupported, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(
+                ProcessingGraphDeliveryFactKind.Accepted,
+                (await operations.ReadPendingFactAsync(CancellationToken.None).ConfigureAwait(false))!.Kind);
+            await operations.SupersedeProposalAsync(
+                disabledUnsupported.ProposalId, CancellationToken.None).ConfigureAwait(false);
+
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await operations.StageAsync(
+                    proposal with
+                    {
+                        ProposalId = Guid.NewGuid(),
+                        CapabilitySnapshotSha256 = new string('9', 64)
+                    },
+                    CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            var backlog = await operations.ReadBacklogAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(0, backlog.PendingFactCount);
         }
         finally
         {

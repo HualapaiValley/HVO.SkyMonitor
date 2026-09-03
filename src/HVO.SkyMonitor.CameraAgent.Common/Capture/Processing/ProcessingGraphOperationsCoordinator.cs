@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.ComponentModel.DataAnnotations;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -11,9 +12,15 @@ using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-internal sealed class ProcessingGraphOperationsCoordinator : IProcessingGraphOperations, IDisposable
+internal sealed class ProcessingGraphOperationsCoordinator :
+    IProcessingGraphOperations,
+    IProcessingGraphDeliveryInbox,
+    IDisposable
 {
     private const string ConfiguredGraphName = "configured-basic";
+    private static readonly HashSet<string> LocalPolicyStepAliases = new(
+        ["Storage", "Upload", "Telemetry"],
+        StringComparer.OrdinalIgnoreCase);
     private readonly ICaptureProcessingPipelineFactory _pipelineFactory;
     private readonly SqliteCaptureProcessingStore _store;
     private readonly ProcessingGraphExecutionOptions _options;
@@ -36,6 +43,9 @@ internal sealed class ProcessingGraphOperationsCoordinator : IProcessingGraphOpe
         _timeProvider = timeProvider;
         _replayWakeup = replayWakeup;
     }
+
+    public ProcessingGraphAgentCapabilities Capabilities =>
+        ProcessingGraphAgentCapabilities.Create(_pipelineFactory.StableStepAliases);
 
     internal async ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
         CameraModuleConfig configuration,
@@ -157,19 +167,158 @@ internal sealed class ProcessingGraphOperationsCoordinator : IProcessingGraphOpe
         string? reason,
         CancellationToken cancellationToken)
     {
+        using var activity = ProcessingGraphDeliveryTelemetry.ActivitySource.StartActivity("processing-graph.activate");
+        activity?.SetTag("processing_graph.revision_id", revisionId);
         EnsureLiveEligible(await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false));
         var rawGate = RawIngressLifecycleLock.ForRoot(_store.StorageRoot);
         await rawGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await _store.ActivateRevisionAsync(
+            var state = await _store.ActivateRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken).ConfigureAwait(false);
+            await _store.RecordDeliveredActivationAsync(revisionId, cancellationToken).ConfigureAwait(false);
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+            return state;
         }
         finally
         {
             rawGate.Release();
         }
     }
+
+    public async ValueTask<ProcessingGraphRegistryState> RollbackRevisionAsync(
+        string revisionId,
+        long expectedVersion,
+        string idempotencyKey,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        using var activity = ProcessingGraphDeliveryTelemetry.ActivitySource.StartActivity("processing-graph.rollback");
+        activity?.SetTag("processing_graph.target_revision_id", revisionId);
+        EnsureLiveEligible(await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false));
+        var rawGate = RawIngressLifecycleLock.ForRoot(_store.StorageRoot);
+        await rawGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var state = await _store.RollbackRevisionAsync(
+                revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken).ConfigureAwait(false);
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+            return state;
+        }
+        finally
+        {
+            rawGate.Release();
+        }
+    }
+
+    public async ValueTask StageAsync(
+        ProcessingGraphDeliveryProposalV1 proposal,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(proposal);
+        EnsureProposalEnvelope(proposal);
+        var stored = await _store.UpsertDeliveryProposalAsync(proposal, cancellationToken).ConfigureAwait(false);
+        if (stored is not ProcessingGraphLocalProposalDisposition.Pending)
+        {
+            return;
+        }
+        try
+        {
+            if (proposal.ExpiresAtUtc <= _timeProvider.GetUtcNow())
+            {
+                await _store.ExpireDeliveryProposalAsync(
+                    proposal.ProposalId, "proposal-expired", cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            EnsureProposalCompatibility(proposal);
+            var registry = await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(
+                    registry.ActiveRevisionId,
+                    proposal.ExpectedActiveLocalRevisionId,
+                    StringComparison.Ordinal))
+            {
+                await _store.RejectDeliveryProposalAsync(
+                    proposal.ProposalId, "active-revision-changed", cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            var baseConfiguration = Volatile.Read(ref _baseConfiguration)
+                ?? throw new InvalidOperationException("The CameraAgent configuration has not been initialized.");
+            var pipeline = CreatePipeline(proposal.Definition, baseConfiguration.Pipeline);
+            var localName = string.Concat("central-", proposal.CatalogRevisionId.ToString("N"));
+            var snapshot = CreateRevisionSnapshot(
+                baseConfiguration with { Pipeline = pipeline },
+                localName,
+                proposal.Definition.Revision,
+                _timeProvider.GetUtcNow(),
+                sourceDefinition: proposal.Definition);
+            if (!string.Equals(snapshot.State.DefinitionIdentitySha256, proposal.DefinitionIdentitySha256,
+                    StringComparison.Ordinal) ||
+                !string.Equals(snapshot.State.SharedPlanIdentitySha256, proposal.SharedPlanIdentitySha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("The locally compiled processing graph identity does not match the proposal.");
+            }
+            var created = await _store.InsertNamedRevisionAsync(
+                snapshot,
+                string.Concat("central-create-", proposal.ProposalId.ToString("N")),
+                "central-delivery",
+                "proposal-staged",
+                cancellationToken).ConfigureAwait(false);
+            var validated = await _store.ValidateRevisionAsync(
+                created.RevisionId,
+                string.Concat("central-validate-", proposal.ProposalId.ToString("N")),
+                "central-delivery",
+                "proposal-validated",
+                cancellationToken).ConfigureAwait(false);
+            if (proposal.ExpiresAtUtc <= _timeProvider.GetUtcNow())
+            {
+                await _store.ExpireDeliveryProposalAsync(
+                    proposal.ProposalId, "proposal-expired", cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            await _store.AcceptDeliveryProposalAsync(proposal.ProposalId, validated, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsExpectedProposalValidationFailure(exception))
+        {
+            if (proposal.ExpiresAtUtc <= _timeProvider.GetUtcNow())
+            {
+                await _store.ExpireDeliveryProposalAsync(
+                    proposal.ProposalId, "proposal-expired", cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await _store.RejectDeliveryProposalAsync(
+                    proposal.ProposalId, "local-validation-failed", cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    public async ValueTask ObserveActiveRevisionAsync(CancellationToken cancellationToken)
+    {
+        var registry = await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+        await _store.RecordDeliveredActivationAsync(registry.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public ValueTask<ProcessingGraphDeliveryFactV1?> ReadPendingFactAsync(CancellationToken cancellationToken)
+        => _store.ReadPendingDeliveryFactAsync(cancellationToken);
+
+    public ValueTask AcknowledgeFactAsync(Guid factId, CancellationToken cancellationToken)
+        => _store.AcknowledgeDeliveryFactAsync(factId, cancellationToken);
+
+    public ValueTask SupersedeProposalAsync(Guid proposalId, CancellationToken cancellationToken)
+        => _store.SupersedeDeliveryProposalAsync(proposalId, cancellationToken);
+
+    public ValueTask RetryFactAsync(
+        Guid factId,
+        DateTimeOffset nextAttemptUtc,
+        string reasonCode,
+        CancellationToken cancellationToken)
+        => _store.RetryDeliveryFactAsync(factId, nextAttemptUtc, reasonCode, cancellationToken);
+
+    public ValueTask<ProcessingGraphDeliveryBacklog> ReadBacklogAsync(CancellationToken cancellationToken)
+        => _store.ReadDeliveryBacklogAsync(cancellationToken);
 
     public ValueTask<ProcessingGraphRevisionState> ValidateRevisionAsync(
         string revisionId,
@@ -275,11 +424,19 @@ internal sealed class ProcessingGraphOperationsCoordinator : IProcessingGraphOpe
         string name,
         string revision,
         DateTimeOffset createdUtc,
-        ProcessingGraphRevisionLifecycle lifecycle = ProcessingGraphRevisionLifecycle.Draft)
+        ProcessingGraphRevisionLifecycle lifecycle = ProcessingGraphRevisionLifecycle.Draft,
+        ProcessingGraphDefinition? sourceDefinition = null)
     {
-        using var graph = new DisposableProcessingGraph(_pipelineFactory.CreateGraph(configuration));
+        using var graph = new DisposableProcessingGraph(sourceDefinition is null
+            ? _pipelineFactory.CreateGraph(configuration)
+            : _pipelineFactory.CreateGraph(configuration, sourceDefinition.Name, sourceDefinition.Revision));
         var sharedPlan = graph.Value.SharedPlan
             ?? throw new InvalidOperationException("Processing graph revisions require explicit pipeline v2 compilation.");
+        if (sourceDefinition is not null && !ProcessingGraphJson.SerializeCanonical(sourceDefinition)
+                .AsSpan().SequenceEqual(Encoding.UTF8.GetBytes(sharedPlan.CanonicalDefinition.GetRawText())))
+        {
+            throw new InvalidDataException("The delivered processing graph cannot be represented by this CameraAgent.");
+        }
         var localPlanIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
             SchemaVersion = "cameraagent-processing-local-plan-v1",
@@ -347,6 +504,104 @@ internal sealed class ProcessingGraphOperationsCoordinator : IProcessingGraphOpe
             nodes);
     }
 
+    private static CapturePipelineConfig CreatePipeline(
+        ProcessingGraphDefinition definition,
+        CapturePipelineConfig basePipeline)
+    {
+        if (definition.Sources.Length != 1 ||
+            !string.Equals(definition.Sources[0].Id, "$raw", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("CameraAgent delivery supports only the canonical raw source.");
+        }
+        var baseById = basePipeline.Steps.ToDictionary(
+            static step => string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim(),
+            StringComparer.OrdinalIgnoreCase);
+        var incomingById = definition.Nodes.ToDictionary(static node => node.Id, StringComparer.OrdinalIgnoreCase);
+        if (basePipeline.Steps.Any(step =>
+                step.Enabled != false &&
+                LocalPolicyStepAliases.Contains(step.Type) &&
+                (!incomingById.TryGetValue(
+                        string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim(),
+                        out var incoming) ||
+                    !string.Equals(incoming.StepAlias, step.Type, StringComparison.OrdinalIgnoreCase))))
+        {
+            throw new InvalidDataException(
+                "The delivered graph must preserve every required local storage, upload, and telemetry node.");
+        }
+        var steps = definition.Nodes.Select(node =>
+        {
+            baseById.TryGetValue(node.Id, out var local);
+            var matchesLocalType = local is not null &&
+                string.Equals(local.Type, node.StepAlias, StringComparison.OrdinalIgnoreCase);
+            if (LocalPolicyStepAliases.Contains(node.StepAlias))
+            {
+                if (!matchesLocalType || local!.Enabled == false)
+                {
+                    throw new InvalidDataException(
+                        "The delivered graph cannot add or replace local storage, upload, or telemetry policy.");
+                }
+                return local;
+            }
+            return new CaptureProcessingStepConfig(
+                node.StepAlias,
+                node.Id,
+                node.Order,
+                node.EffectiveOptions,
+                node.Dependencies.Select(static dependency => dependency.ProducerId).ToArray(),
+                node.FailurePolicy == ProcessingGraphNodeFailurePolicy.Required,
+                node.Enabled,
+                matchesLocalType ? local!.Publication : null);
+        }).ToList();
+        return new(steps);
+    }
+
+    internal static bool IsExpectedProposalValidationFailure(Exception exception)
+        => exception is ArgumentException or ValidationException or InvalidDataException or
+            ProcessingGraphStoreConflictException or KeyNotFoundException or JsonException or NotSupportedException or
+            FormatException or OverflowException or OptionsValidationException;
+
+    private void EnsureProposalEnvelope(ProcessingGraphDeliveryProposalV1 proposal)
+    {
+        if (!string.Equals(proposal.SchemaVersion, ProcessingGraphDeliverySchemaVersions.Current, StringComparison.Ordinal) ||
+            proposal.ProposalId == Guid.Empty || proposal.CatalogRevisionId == Guid.Empty ||
+            proposal.AssignmentId == Guid.Empty || proposal.RegistrationId == Guid.Empty ||
+            proposal.LogicalCameraInstallationId == Guid.Empty || proposal.InstallationPublicId == Guid.Empty ||
+            proposal.IssuedAtUtc.Offset != TimeSpan.Zero || proposal.ExpiresAtUtc.Offset != TimeSpan.Zero ||
+            proposal.ExpiresAtUtc <= proposal.IssuedAtUtc ||
+            !string.Equals(proposal.CapabilitySnapshotSha256, Capabilities.IdentitySha256, StringComparison.Ordinal) ||
+            !IsSha256(proposal.DefinitionIdentitySha256) || !IsSha256(proposal.SharedPlanIdentitySha256) ||
+            proposal.Definition is null)
+        {
+            throw new InvalidDataException("The processing graph delivery proposal is invalid.");
+        }
+        var compiled = ProcessingGraphCompiler.Compile(proposal.Definition);
+        if (!compiled.IsValid ||
+            !string.Equals(compiled.Plan!.DefinitionIdentitySha256, proposal.DefinitionIdentitySha256,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The processing graph proposal identity is invalid.");
+        }
+    }
+
+    private void EnsureProposalCompatibility(ProcessingGraphDeliveryProposalV1 proposal)
+    {
+        var compiled = ProcessingGraphCompiler.Compile(
+            proposal.Definition,
+            new(ProcessingGraphHosts.CameraAgent, Capabilities.CapabilityLabels));
+        var aliases = Capabilities.StepAliases.ToHashSet(StringComparer.Ordinal);
+        if (!compiled.IsValid || proposal.Definition.Nodes.Any(node => node.Enabled && !aliases.Contains(node.StepAlias)) ||
+            !string.Equals(compiled.Plan!.DefinitionIdentitySha256, proposal.DefinitionIdentitySha256,
+                StringComparison.Ordinal) ||
+            !string.Equals(compiled.Plan.PlanIdentitySha256, proposal.SharedPlanIdentitySha256,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The processing graph proposal identity is invalid.");
+        }
+    }
+
+    internal static bool IsSha256(string value)
+        => value.Length == 64 && value.All(Uri.IsHexDigit);
+
     private static byte[] CanonicalBytes<T>(T value)
         => Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(
             CaptureContractJson.SerializeToElement(value)).GetRawText());
@@ -360,7 +615,7 @@ internal sealed class ProcessingGraphOperationsCoordinator : IProcessingGraphOpe
         return new Guid(hash.AsSpan(0, 16));
     }
 
-    private static void EnsureExplicitPipeline(CapturePipelineConfig pipeline)
+    internal static void EnsureExplicitPipeline(CapturePipelineConfig pipeline)
     {
         ArgumentNullException.ThrowIfNull(pipeline);
         if (pipeline.SchemaVersion != CapturePipelineSchemaVersions.ExplicitV2 ||
@@ -371,7 +626,7 @@ internal sealed class ProcessingGraphOperationsCoordinator : IProcessingGraphOpe
         }
     }
 
-    private static void EnsureLiveEligible(ProcessingGraphRevisionSnapshot revision)
+    internal static void EnsureLiveEligible(ProcessingGraphRevisionSnapshot revision)
     {
         if (revision.Nodes.Any(static node => node.WindowJson is { } windowJson &&
                 JsonSerializer.Deserialize<ProcessingGraphWindowRequirement>(windowJson, SerializerOptions)?.Kind ==
@@ -387,7 +642,7 @@ internal sealed class ProcessingGraphOperationsCoordinator : IProcessingGraphOpe
         Converters = { new JsonStringEnumConverter() }
     };
 
-    private static void ValidateRevisionName(string value, string parameterName)
+    internal static void ValidateRevisionName(string value, string parameterName)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Any(char.IsControl))
         {

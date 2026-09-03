@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
@@ -36,7 +37,8 @@ internal interface ICentralDerivativeJobService
 internal sealed class CentralDerivativeJobService(
     ApplicationDbContext dbContext,
     TimeProvider timeProvider,
-    CentralDerivativeWorkerTelemetry? telemetry = null) : ICentralDerivativeJobService
+    CentralDerivativeWorkerTelemetry? telemetry = null,
+    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : ICentralDerivativeJobService
 {
     internal static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(10);
     internal static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(5);
@@ -97,7 +99,13 @@ internal sealed class CentralDerivativeJobService(
                     SELECT TOP(1) job.*
                     FROM [CentralDerivativeJobs] AS job WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK, ROWLOCK)
                     WHERE
-                        ((job.[Status] IN (N'Pending', N'RetryableFailure')
+                        (job.[GraphExecutionId] IS NULL OR EXISTS (
+                            SELECT 1
+                            FROM [CentralProcessingGraphExecutions] AS execution
+                            WHERE execution.[Id] = job.[GraphExecutionId]
+                              AND execution.[ExpandedAtUtc] IS NOT NULL
+                              AND execution.[Status] = N'Running'))
+                        AND (((job.[Status] IN (N'Pending', N'RetryableFailure')
                                 AND job.[AttemptCount] < job.[MaxAttempts]
                                 AND job.[InputSetIdentitySha256] IS NOT NULL
                                 AND job.[AvailableAtUtc] <= {now})
@@ -129,9 +137,9 @@ internal sealed class CentralDerivativeJobService(
                                 WHERE input.[CentralDerivativeJobId] = job.[Id]
                                     AND (source.[ObjectState] <> N'Available'
                                         OR source.[ReconstructionState] <> N'Complete'))
-                        OR (job.[Status] = N'Leased'
+                            OR (job.[Status] = N'Leased'
                             AND job.[LeaseExpiresAtUtc] <= {now}
-                            AND job.[AttemptCount] >= job.[MaxAttempts])
+                            AND job.[AttemptCount] >= job.[MaxAttempts]))
                     ORDER BY
                         CASE WHEN job.[Status] = N'Leased' THEN job.[LeaseExpiresAtUtc] ELSE job.[AvailableAtUtc] END,
                         job.[CreatedAtUtc],
@@ -198,6 +206,7 @@ internal sealed class CentralDerivativeJobService(
                     if (adoptedJob == 1)
                     {
                         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                        graphConvergenceSignal?.Signal(candidate.GraphExecutionId);
                         dbContext.ChangeTracker.Clear();
                         collision--;
                         continue;
@@ -246,6 +255,7 @@ internal sealed class CentralDerivativeJobService(
                             now,
                             cancellationToken).ConfigureAwait(false);
                         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                        graphConvergenceSignal?.Signal(candidate.GraphExecutionId);
                         dbContext.ChangeTracker.Clear();
                         collision--;
                         continue;
@@ -293,6 +303,7 @@ internal sealed class CentralDerivativeJobService(
                         now,
                         cancellationToken).ConfigureAwait(false);
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    graphConvergenceSignal?.Signal(candidate.GraphExecutionId);
                     if (selectedAtUtc.HasValue)
                     {
                         telemetry?.RecordWindowPinDuration(
@@ -307,6 +318,8 @@ internal sealed class CentralDerivativeJobService(
                     job.Id == candidate.Id
                     && job.AttemptCount == candidate.AttemptCount
                     && job.AttemptCount < job.MaxAttempts
+                    && (job.GraphExecutionId == null || job.GraphExecution!.ExpandedAtUtc != null &&
+                        job.GraphExecution.Status == CentralProcessingGraphExecutionStatus.Running)
                     && job.InputSetIdentitySha256 != null
                     && job.Inputs.Any()
                     && !job.InputRequirements.Any(requirement => requirement.IsRequired
@@ -483,6 +496,7 @@ internal sealed class CentralDerivativeJobService(
                 jobId, job.AttemptCount, CentralDerivativeAttemptOutcome.Completed, null, now, cancellationToken)
                 .ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            graphConvergenceSignal?.Signal(job.GraphExecutionId);
             dbContext.ChangeTracker.Clear();
             return;
         }
@@ -540,6 +554,7 @@ internal sealed class CentralDerivativeJobService(
                 jobId, job.AttemptCount, CentralDerivativeAttemptOutcome.Completed,
                 boundedReason, now, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            graphConvergenceSignal?.Signal(job.GraphExecutionId);
             dbContext.ChangeTracker.Clear();
             return;
         }
@@ -610,6 +625,10 @@ internal sealed class CentralDerivativeJobService(
             now,
             cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (terminal)
+        {
+            graphConvergenceSignal?.Signal(job.GraphExecutionId);
+        }
         dbContext.ChangeTracker.Clear();
     }
 
@@ -648,6 +667,7 @@ internal sealed class CentralDerivativeJobService(
             jobId, job.AttemptCount, CentralDerivativeAttemptOutcome.Skipped, boundedReason, now, cancellationToken)
             .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        graphConvergenceSignal?.Signal(job.GraphExecutionId);
         dbContext.ChangeTracker.Clear();
     }
 
@@ -702,7 +722,7 @@ internal sealed class CentralDerivativeJobService(
             : CentralReconstructionState.PendingReference;
         source.StateReasonCode = reasonCode;
         source.ReconciledAtUtc = null;
-        await ArtifactIngestService.InvalidateDependentsAsync(dbContext, source, cancellationToken)
+        await ArtifactIngestService.InvalidateDependentsAsync(dbContext, source, graphConvergenceSignal, cancellationToken)
             .ConfigureAwait(false);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await dbContext.CentralDerivativeJobs.Where(candidate => affectedJobIds.Contains(candidate.Id))
@@ -765,6 +785,7 @@ internal sealed class CentralDerivativeJobService(
 
     private async Task<CentralDerivativeJob> LoadJobAsync(Guid jobId, CancellationToken cancellationToken)
         => await dbContext.CentralDerivativeJobs.AsNoTracking()
+            .Include(job => job.GraphExecution)
             .Include(job => job.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)
             .Include(job => job.Inputs).ThenInclude(input => input.Artifact)!.ThenInclude(artifact => artifact!.Frame)
             .Include(job => job.Inputs).ThenInclude(input => input.Requirement)
@@ -836,6 +857,13 @@ internal sealed class CentralDerivativeJobService(
     {
         var source = job.SourceArtifact ?? throw new InvalidOperationException("The derivative source artifact was not loaded.");
         var frame = source.Frame ?? throw new InvalidOperationException("The derivative source frame was not loaded.");
+        if (job.GraphExecutionId is not null && !string.Equals(
+                job.InputSetIdentitySha256,
+                CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs, job.CanonicalInputs),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CentralDerivativeJobStateException("The derivative graph frozen input identity is inconsistent.");
+        }
         var inputs = job.Inputs.OrderBy(input => input.Ordinal).Select(input =>
         {
             var artifact = input.Artifact ?? throw new InvalidOperationException("A derivative input artifact was not loaded.");
@@ -856,7 +884,11 @@ internal sealed class CentralDerivativeJobService(
                 inputFrame.CapturedAtUtc,
                 input.CompatibilitySha256,
                 input.SelectedAtUtc,
-                input.Requirement?.BindingName ?? "input");
+                input.Requirement?.BindingName ?? "input",
+                input.Requirement?.GraphInputBindingKind ??
+                    (string.Equals(input.Requirement?.BindingName, "input", StringComparison.Ordinal)
+                        ? ProcessingGraphInputBindingKind.PrimaryArtifact
+                        : ProcessingGraphInputBindingKind.AuxiliaryArtifact));
         }).ToArray();
         var canonicalInputs = job.CanonicalInputs.OrderBy(input => input.Ordinal).Select(input =>
             new CentralDerivativeJobLeaseCanonicalInput(
@@ -882,7 +914,18 @@ internal sealed class CentralDerivativeJobService(
             job.AttemptCount, job.MaxAttempts,
             inputs,
             job.ExpectedRecipeIdentitySha256,
-            canonicalInputs);
+            canonicalInputs,
+            job.InputSetIdentitySha256,
+            job.GraphExecutionId,
+            job.GraphExecution?.RevisionId,
+            job.GraphNodeId,
+            job.GraphNodeOrdinal,
+            job.SharedNodePlanIdentitySha256,
+            job.FrozenNodePlanJson,
+            job.GraphExecution?.CentralPlanIdentitySha256,
+            job.GraphExecution?.FrozenCentralPlanJson,
+            job.GraphExecution?.DefinitionIdentitySha256,
+            job.GraphExecution?.FrozenDefinitionJson);
     }
 
     private static bool IsUsable(CentralArtifact? artifact)
@@ -921,7 +964,18 @@ internal sealed record CentralDerivativeJobLease(
     int MaxAttempts,
     IReadOnlyList<CentralDerivativeJobLeaseInput>? Inputs = null,
     string? ExpectedRecipeIdentitySha256 = null,
-    IReadOnlyList<CentralDerivativeJobLeaseCanonicalInput>? CanonicalInputs = null);
+    IReadOnlyList<CentralDerivativeJobLeaseCanonicalInput>? CanonicalInputs = null,
+    string? InputSetIdentitySha256 = null,
+    Guid? GraphExecutionId = null,
+    Guid? GraphRevisionId = null,
+    string? GraphNodeId = null,
+    int? GraphNodeOrdinal = null,
+    string? SharedNodePlanIdentitySha256 = null,
+    string? FrozenNodePlanJson = null,
+    string? CentralPlanIdentitySha256 = null,
+    string? FrozenCentralPlanJson = null,
+    string? GraphDefinitionIdentitySha256 = null,
+    string? FrozenDefinitionJson = null);
 
 internal sealed record CentralDerivativeJobLeaseInput(
     int Ordinal,
@@ -939,7 +993,8 @@ internal sealed record CentralDerivativeJobLeaseInput(
     DateTimeOffset CapturedAtUtc,
     string CompatibilitySha256,
     DateTimeOffset SelectedAtUtc = default,
-    string BindingName = "input");
+    string BindingName = "input",
+    ProcessingGraphInputBindingKind BindingKind = ProcessingGraphInputBindingKind.PrimaryArtifact);
 
 internal sealed record CentralDerivativeJobLeaseCanonicalInput(
     int Ordinal,

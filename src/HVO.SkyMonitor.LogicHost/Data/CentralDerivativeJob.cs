@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.LogicHost.Data;
 
@@ -31,6 +32,22 @@ internal sealed class CentralDerivativeJob
     public string? TraceParent { get; set; }
 
     public string? TraceState { get; set; }
+
+    public Guid? GraphExecutionId { get; set; }
+
+    public CentralProcessingGraphExecution? GraphExecution { get; set; }
+
+    public string? GraphNodeId { get; set; }
+
+    public int? GraphNodeOrdinal { get; set; }
+
+    public string? SharedNodePlanIdentitySha256 { get; set; }
+
+    public string? FrozenNodePlanJson { get; set; }
+
+    public ProcessingGraphNodeFailurePolicy? GraphFailurePolicy { get; set; }
+
+    public CentralDerivativeWaitKind? WaitKind { get; set; }
 
     public CentralDerivativeJobStatus Status { get; set; }
 
@@ -96,6 +113,12 @@ internal sealed class CentralDerivativeJob
 
     public ICollection<CentralDerivativeJobCanonicalInput> CanonicalInputs { get; } = [];
 
+    public ICollection<CentralDerivativeJobDependency> Dependencies { get; } = [];
+
+    public ICollection<CentralDerivativeJobDependency> Dependents { get; } = [];
+
+    public ICollection<CentralDerivativeJobOutput> Outputs { get; } = [];
+
     public byte[] RowVersion { get; set; } = [];
 }
 
@@ -120,4 +143,10 @@ internal enum CentralDerivativeWindowOutcome
     Skip,
     Fail,
     Quarantine
+}
+
+internal enum CentralDerivativeWaitKind
+{
+    Dependencies,
+    Window
 }

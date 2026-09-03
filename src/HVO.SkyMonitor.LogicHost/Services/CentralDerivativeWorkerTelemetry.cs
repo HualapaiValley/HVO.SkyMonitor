@@ -33,7 +33,11 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
     private readonly Histogram<double> _windowProcessingLag;
     private readonly Histogram<double> _windowPinDuration;
     private readonly Histogram<long> _windowSelectedBytes;
+    private readonly Counter<long> _graphExpansions;
+    private readonly Counter<long> _graphConvergences;
+    private readonly Counter<long> _graphRecoveryPolls;
     private readonly ConcurrentDictionary<(string Status, string Recipe), long> _queue = new();
+    private readonly ConcurrentDictionary<(string Class, string Status), long> _graphQueue = new();
     private long _active;
     private long _lastPollUtcTicks;
     private long _lastSuccessUtcTicks;
@@ -45,6 +49,8 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
     private long _windowActivePins;
     private long _windowOldestPinAgeSeconds;
     private long _windowPinnedBytes;
+    private long _lastGraphRecoveryUtcTicks;
+    private long _oldestGraphConvergenceAgeSeconds;
 
     public CentralDerivativeWorkerTelemetry()
     {
@@ -85,6 +91,12 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
             "skymonitor.central.derivative.window.pin_duration", "ms");
         _windowSelectedBytes = _meter.CreateHistogram<long>(
             "skymonitor.central.derivative.window.selected_bytes", "By");
+        _graphExpansions = _meter.CreateCounter<long>(
+            "skymonitor.central.processing_graph.expansions", "{execution}");
+        _graphConvergences = _meter.CreateCounter<long>(
+            "skymonitor.central.processing_graph.convergences", "{convergence}");
+        _graphRecoveryPolls = _meter.CreateCounter<long>(
+            "skymonitor.central.processing_graph.recovery", "{poll}");
         _meter.CreateObservableGauge(
             "skymonitor.central.derivative.active",
             () => Interlocked.Read(ref _active),
@@ -117,6 +129,14 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
             "skymonitor.central.derivative.window.pins.oldest_age",
             () => Interlocked.Read(ref _windowOldestPinAgeSeconds),
             "s");
+        _meter.CreateObservableGauge(
+            "skymonitor.central.processing_graph.queue",
+            ObserveGraphQueue,
+            "{execution}");
+        _meter.CreateObservableGauge(
+            "skymonitor.central.processing_graph.convergence.oldest_age",
+            () => Interlocked.Read(ref _oldestGraphConvergenceAgeSeconds),
+            "s");
     }
 
     public DateTimeOffset? LastPollUtc => ReadUtc(ref _lastPollUtcTicks);
@@ -124,6 +144,71 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
     public DateTimeOffset? LastSuccessUtc => ReadUtc(ref _lastSuccessUtcTicks);
 
     public long ActiveCount => Interlocked.Read(ref _active);
+
+    public DateTimeOffset? LastGraphRecoveryUtc => ReadUtc(ref _lastGraphRecoveryUtcTicks);
+
+    public void RecordGraphExpansion(string executionClass, string outcome, TimeSpan duration, int nodeCount)
+    {
+        var tags = new TagList
+        {
+            { "class", NormalizeGraphClass(executionClass) },
+            { "outcome", NormalizeGraphOutcome(outcome) }
+        };
+        _graphExpansions.Add(1, tags);
+        _duration.Record(Math.Max(0, duration.TotalMilliseconds), new TagList
+        {
+            { "stage", "graph-expansion" },
+            { "recipe", "other" },
+            { "outcome", NormalizeGraphOutcome(outcome) }
+        });
+        if (nodeCount > 0)
+        {
+            _operations.Add(nodeCount, new TagList
+            {
+                { "operation", "graph-node-expanded" },
+                { "outcome", NormalizeGraphOutcome(outcome) }
+            });
+        }
+    }
+
+    public void RecordGraphConvergence(string executionClass, string outcome, TimeSpan duration)
+    {
+        var tags = new TagList
+        {
+            { "class", NormalizeGraphClass(executionClass) },
+            { "outcome", NormalizeGraphOutcome(outcome) }
+        };
+        _graphConvergences.Add(1, tags);
+        _duration.Record(Math.Max(0, duration.TotalMilliseconds), new TagList
+        {
+            { "stage", "graph-convergence" },
+            { "recipe", "other" },
+            { "outcome", NormalizeGraphOutcome(outcome) }
+        });
+    }
+
+    public void RecordGraphRecoveryPoll(DateTimeOffset now, int executionCount)
+    {
+        Interlocked.Exchange(ref _lastGraphRecoveryUtcTicks, now.UtcDateTime.Ticks);
+        _graphRecoveryPolls.Add(1, new TagList
+        {
+            { "outcome", executionCount == 0 ? "empty" : "converged" }
+        });
+    }
+
+    public void UpdateGraphQueueSnapshot(
+        IReadOnlyList<CentralProcessingGraphQueueMeasurement> measurements,
+        long oldestConvergenceAgeSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(measurements);
+        _graphQueue.Clear();
+        foreach (var measurement in measurements)
+        {
+            _graphQueue[(NormalizeGraphClass(measurement.ExecutionClass),
+                NormalizeGraphOutcome(measurement.Status))] = measurement.Count;
+        }
+        Interlocked.Exchange(ref _oldestGraphConvergenceAgeSeconds, Math.Max(0, oldestConvergenceAgeSeconds));
+    }
 
     public Activity? StartExecution(
         string recipe,
@@ -373,12 +458,42 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
             { "recipe", pair.Key.Recipe }
         }));
 
+    private IEnumerable<Measurement<long>> ObserveGraphQueue()
+        => _graphQueue.Select(pair => new Measurement<long>(pair.Value, new TagList
+        {
+            { "class", pair.Key.Class },
+            { "status", pair.Key.Status }
+        }));
+
     private static string NormalizeStatus(string status) => status switch
     {
         "pending" => "pending",
         "leased" => "leased",
         "retryable" => "retryable",
         "waiting" => "waiting",
+        _ => "other"
+    };
+
+    private static string NormalizeGraphClass(string executionClass) => executionClass switch
+    {
+        "Live" => "live",
+        "Replay" => "replay",
+        _ => "other"
+    };
+
+    private static string NormalizeGraphOutcome(string outcome) => outcome.ToLowerInvariant() switch
+    {
+        "created" => "created",
+        "existing" => "existing",
+        "conflict" => "conflict",
+        "pending" => "pending",
+        "running" => "running",
+        "completed" => "completed",
+        "completedwithoptionalfailures" => "completed-optional",
+        "failed" => "failed",
+        "cancelrequested" => "cancel-requested",
+        "canceled" => "canceled",
+        "superseded" => "superseded",
         _ => "other"
     };
 
@@ -397,3 +512,5 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
 }
 
 internal sealed record CentralDerivativeQueueMeasurement(string Status, string Recipe, long Count);
+
+internal sealed record CentralProcessingGraphQueueMeasurement(string ExecutionClass, string Status, long Count);

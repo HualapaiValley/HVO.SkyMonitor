@@ -47,7 +47,7 @@ public sealed class DatabaseInitializationAcceptanceTests
             SELECT COUNT(*) AS [Value]
             FROM [sys].[triggers]
             WHERE [parent_class] = 1
-            """).SingleAsync().ConfigureAwait(false)).Should().Be(49);
+            """).SingleAsync().ConfigureAwait(false)).Should().Be(62);
 
         initial.Status = DatabaseInitializationStatus.Running;
         initial.AttemptId = Guid.NewGuid();

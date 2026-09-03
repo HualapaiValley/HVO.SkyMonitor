@@ -221,6 +221,97 @@ internal sealed partial class SqliteCaptureProcessingStore
         return await ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    internal async ValueTask<ProcessingGraphRegistryState> RollbackRevisionAsync(
+        string revisionId,
+        long expectedVersion,
+        string idempotencyKey,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        ValidateRevisionId(revisionId);
+        ValidateCommand(idempotencyKey, actor, reason);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(expectedVersion);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var commandSha256 = CommandSha256("rollback", $"{revisionId}:{expectedVersion}", actor, reason);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        if (await ReadCommandAsync(connection, transaction, idempotencyKey, cancellationToken).ConfigureAwait(false) is { } prior)
+        {
+            EnsureIdempotent(prior, "rollback", commandSha256);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return await ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        var state = await ReadRegistryRowAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The processing graph registry has not been initialized.");
+        if (state.StateVersion != expectedVersion)
+        {
+            throw new ProcessingGraphStoreConflictException("The processing graph registry version has changed.");
+        }
+        var current = await ReadRevisionAsync(
+            connection, transaction, state.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
+        var target = await ReadRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false);
+        if (target.State.Lifecycle != ProcessingGraphRevisionLifecycle.Validated ||
+            !string.Equals(target.State.RevisionId, state.ConfiguredBasicRevisionId, StringComparison.Ordinal) &&
+            target.State.ActivatedUtc is null)
+        {
+            throw new ProcessingGraphStoreConflictException(
+                "Rollback requires the configured basic graph or a previously activated revision.");
+        }
+        var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        await SetRevisionLifecycleAsync(
+            connection, transaction, current.State.RevisionId, ProcessingGraphRevisionLifecycle.Validated, now,
+            cancellationToken).ConfigureAwait(false);
+        await SetRevisionLifecycleAsync(
+            connection, transaction, target.State.RevisionId, ProcessingGraphRevisionLifecycle.Active, now,
+            cancellationToken).ConfigureAwait(false);
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE processing_graph_registry_state
+                SET selection_mode = 'Named', active_revision_id = $revision,
+                    state_version = state_version + 1, updated_unix_ms = $now
+                WHERE state_key = 1 AND state_version = $expected;
+                """;
+            update.Parameters.AddWithValue("$revision", revisionId);
+            update.Parameters.AddWithValue("$now", now);
+            update.Parameters.AddWithValue("$expected", expectedVersion);
+            if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new ProcessingGraphStoreConflictException("The processing graph registry version has changed.");
+            }
+        }
+        await InsertCommandAsync(
+            connection, transaction, idempotencyKey, "rollback", commandSha256, actor, reason,
+            revisionId, cancellationToken).ConfigureAwait(false);
+        var queued = await QueueRevisionFactsAsync(
+            connection,
+            transaction,
+            target.State.RevisionId,
+            ProcessingGraphDeliveryFactKind.Activated,
+            null,
+            excludeRevision: false,
+            RevisionFactBatchSize,
+            cancellationToken).ConfigureAwait(false);
+        if (queued < RevisionFactBatchSize)
+        {
+            _ = await QueueRevisionFactsAsync(
+                connection,
+                transaction,
+                current.State.RevisionId,
+                ProcessingGraphDeliveryFactKind.RolledBack,
+                "local-rollback",
+                excludeRevision: false,
+                RevisionFactBatchSize - queued,
+                cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     internal async ValueTask<ProcessingGraphRegistryState> RetireRevisionAsync(
         string revisionId,
         long expectedVersion,

@@ -32,6 +32,8 @@ internal sealed class AnnotationCaptureProcessingStep(
 
     public string OutputVariant => Options.OutputVariant;
 
+    public string? OutputMediaType => "application/x-hvo-packed-image";
+
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
         new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
 

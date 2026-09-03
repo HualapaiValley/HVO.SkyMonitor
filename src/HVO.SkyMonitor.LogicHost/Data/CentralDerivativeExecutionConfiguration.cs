@@ -29,6 +29,7 @@ internal static class CentralDerivativeExecutionConfiguration
         var evidence = builder.Entity<CentralArtifactProcessingEvidence>();
         evidence.ToTable("CentralArtifactProcessingEvidence", table =>
         {
+            table.HasTrigger("TR_CentralArtifactProcessingEvidence_GraphContractImmutable");
             table.HasCheckConstraint("CK_CentralArtifactProcessingEvidence_AttemptNumber", "[AttemptNumber] > 0");
             table.HasCheckConstraint("CK_CentralArtifactProcessingEvidence_TotalIntegrationTicks", "[TotalIntegrationTicks] >= 0");
         });
@@ -36,6 +37,11 @@ internal static class CentralDerivativeExecutionConfiguration
         evidence.Property(item => item.OutputIdentitySha256).HasMaxLength(64).IsUnicode(false).IsRequired();
         evidence.Property(item => item.RequestedRecipeIdentitySha256).HasMaxLength(64).IsUnicode(false).IsRequired();
         evidence.Property(item => item.RecipeIdentitySha256).HasMaxLength(64).IsUnicode(false).IsRequired();
+        evidence.Property(item => item.RecipeOperationKind).HasConversion<string>().HasMaxLength(32);
+        evidence.Property(item => item.GraphProductContractIdentitySha256).HasMaxLength(64).IsFixedLength().IsUnicode(false);
+        evidence.Property(item => item.ProductKind).HasConversion<string>().HasMaxLength(32);
+        evidence.Property(item => item.ProductSchemaVersion).HasMaxLength(128);
+        evidence.Property(item => item.ProductMediaType).HasMaxLength(128);
         evidence.Property(item => item.AlgorithmsJson).IsRequired();
         evidence.Property(item => item.CompatibilityJson).IsRequired();
         evidence.HasIndex(item => new { item.DevicePublicId, item.OutputIdentitySha256 }).IsUnique();

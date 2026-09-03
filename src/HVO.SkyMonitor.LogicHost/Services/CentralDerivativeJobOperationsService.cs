@@ -206,6 +206,12 @@ internal sealed partial class CentralDerivativeJobOperationsService(
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw new CentralDerivativeJobStateException("Only terminal derivative work can be requeued.");
         }
+        if (job.GraphExecutionId is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            throw new CentralDerivativeJobStateException(
+                "A derivative graph node cannot be requeued independently; replay the graph instead.");
+        }
         if (await dbContext.CentralDerivativeJobs.AnyAsync(candidate => candidate.PredecessorJobId == jobId,
                 cancellationToken).ConfigureAwait(false))
         {
@@ -308,7 +314,8 @@ internal sealed partial class CentralDerivativeJobOperationsService(
         await CentralTransientPayloadHoldFence.ValidateAsync(
             dbContext, reactivatedHoldTargets, cancellationToken).ConfigureAwait(false);
         job.Status = needsResolution ? CentralDerivativeJobStatus.Waiting : CentralDerivativeJobStatus.Pending;
-        job.MaxAttempts = checked(job.AttemptCount + CentralDerivativeRecipeCatalog.DefaultMaxAttempts);
+        job.MaxAttempts = checked(Math.Max(job.MaxAttempts, job.AttemptCount) +
+            CentralDerivativeRecipeCatalog.DefaultMaxAttempts);
         job.AvailableAtUtc = needsResolution ? null : now;
         if (needsResolution)
         {
@@ -653,7 +660,8 @@ internal sealed partial class CentralDerivativeJobOperationsService(
                 SelectedAtUtc = now
             });
         }
-        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+            job.Inputs, job.CanonicalInputs);
         dbContext.CentralDerivativeJobs.Add(job);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

@@ -24,6 +24,8 @@ internal sealed class WeatherCloudOverlayCaptureProcessingStep(
 
     public string OutputVariant => Options.OutputVariant;
 
+    public string? OutputMediaType => "application/x-hvo-packed-image";
+
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
         new HashSet<FrameArtifactRole>
         {

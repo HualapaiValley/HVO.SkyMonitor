@@ -191,12 +191,14 @@ internal sealed class CentralDerivativeJobInputReader(
                     ProcessingArtifact.ResolveObservationEndedUtc(
                         artifact.Frame.Timing.ExposureStartedUtc,
                         artifact.Frame.Timing.ExposureEndedUtc,
-                        TimeSpan.FromTicks(evidence.TotalIntegrationTicks))));
+                        TimeSpan.FromTicks(evidence.TotalIntegrationTicks))),
+                leaseInput.BindingKind);
         }
         return new LogicHostProcessingInput(
             CentralReconstructionDescriptorFactory.Create(artifact.Frame!, artifact),
             payload,
-            leaseInput.BindingName);
+            leaseInput.BindingName,
+            BindingKind: leaseInput.BindingKind);
     }
 
     private async Task<CentralArtifact> LoadAuthorizedSourceAsync(

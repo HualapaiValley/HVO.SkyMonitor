@@ -185,16 +185,19 @@ internal sealed record CaptureProcessingOperationalState(
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 {
-    internal const int CurrentSchemaVersion = 6;
+    internal const int CurrentSchemaVersion = 7;
     internal const int MaximumGalleryInputsPerNode = 8;
     internal const int MaximumProductQueryCount = 128;
     internal const int MaximumOutputSourceCount = LayeredPresentationJson.MaximumSourceArtifactCount;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private static readonly string LegacySchema5Sql = CreateLegacySchema5Sql();
+    private static readonly string LegacySchema6Sql = CreateLegacySchema6Sql();
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema5Definitions =
         new(CreateCanonicalSchema5Definitions);
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchema6Definitions =
+        new(CreateCanonicalSchema6Definitions);
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
@@ -207,6 +210,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 
     internal string StorageRoot => _root;
     internal static string LegacySchema5SqlForTests => LegacySchema5Sql;
+    internal static string LegacySchema6SqlForTests => LegacySchema6Sql;
 
     public SqliteCaptureProcessingStore(
         IOptions<CameraAgentHostOptions> options,
@@ -251,7 +255,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             }
             var initializeSchema = inspection.ProcessingObjectCount == 0;
             var migrateSchema5 = !initializeSchema && inspection.ProcessingVersion == 5;
-            if (!initializeSchema && !migrateSchema5 && inspection.ProcessingVersion != CurrentSchemaVersion)
+            var migrateSchema6 = !initializeSchema && inspection.ProcessingVersion == 6;
+            if (!initializeSchema && !migrateSchema5 && !migrateSchema6 &&
+                inspection.ProcessingVersion != CurrentSchemaVersion)
             {
                 var version = inspection.ProcessingVersion ?? 0;
                 var relationship = version > CurrentSchemaVersion ? "newer than supported" : "unsupported";
@@ -291,6 +297,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 #pragma warning restore CA1849
                 await ValidateSchema5Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await MigrateSchema5Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (migrateSchema6)
+            {
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+                using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+                await ValidateSchema6Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await MigrateSchema6Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -2717,7 +2733,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
             actual.Keys.Any(name => !CanonicalSchemaDefinitions.Value.ContainsKey(name)))
         {
-            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 6 definition.");
+            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 7 definition.");
         }
     }
 
@@ -2741,6 +2757,32 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         command.CommandText = LegacySchema5Sql;
         command.ExecuteNonQuery();
         return ReadSchemaDefinitions(connection);
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only schema statements generated from internal constants are executed.")]
+    private static Dictionary<string, string> CreateCanonicalSchema6Definitions()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = LegacySchema6Sql;
+        command.ExecuteNonQuery();
+        return ReadSchemaDefinitions(connection);
+    }
+
+    private static string CreateLegacySchema6Sql()
+    {
+        var statements = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static statement =>
+                !statement.StartsWith("CREATE TABLE processing_graph_delivery_", StringComparison.Ordinal) &&
+                !statement.StartsWith("CREATE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal) &&
+                !statement.StartsWith("CREATE UNIQUE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal))
+            .Select(static statement => statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
+                    statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal)
+                ? statement.Replace("version = 7", "version = 6", StringComparison.Ordinal)
+                    .Replace("VALUES (1, 7)", "VALUES (1, 6)", StringComparison.Ordinal)
+                : statement);
+        return string.Join(";\n", statements) + ";";
     }
 
     private static string CreateLegacySchema5Sql()
@@ -2768,8 +2810,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 if (statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
                     statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal))
                 {
-                    return statement.Replace("version = 6", "version = 5", StringComparison.Ordinal)
-                        .Replace("VALUES (1, 6)", "VALUES (1, 5)", StringComparison.Ordinal);
+                    return statement.Replace("version = 7", "version = 5", StringComparison.Ordinal)
+                        .Replace("VALUES (1, 7)", "VALUES (1, 5)", StringComparison.Ordinal);
                 }
                 if (statement.StartsWith("CREATE TABLE processing_outputs(", StringComparison.Ordinal))
                 {
@@ -2830,6 +2872,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             "CREATE UNIQUE INDEX ix_processing_graph_revisions_active",
             "CREATE TABLE processing_graph_registry_state(",
             "CREATE TABLE processing_graph_commands(",
+            "CREATE TABLE processing_graph_delivery_proposals(",
+            "CREATE TABLE processing_graph_delivery_facts(",
             "CREATE TABLE processing_executions(",
             "CREATE TABLE processing_execution_nodes(",
             "CREATE TABLE processing_node_attempts(",
@@ -2850,7 +2894,11 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             "CREATE INDEX ix_processing_execution_inputs_window",
             "CREATE INDEX ix_processing_execution_pins_active",
             "CREATE INDEX ix_processing_execution_output_pins_active",
-            "CREATE INDEX ix_processing_execution_outputs_publication"
+            "CREATE INDEX ix_processing_execution_outputs_publication",
+            "CREATE INDEX ix_processing_graph_delivery_proposals_lookup",
+            "CREATE INDEX ix_processing_graph_delivery_facts_pending",
+            "CREATE INDEX ix_processing_graph_delivery_facts_lifecycle",
+            "CREATE UNIQUE INDEX ix_processing_graph_delivery_facts_settlement"
         };
         foreach (var statement in SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                      .Where(statement => selectedPrefixes.Any(prefix => statement.StartsWith(prefix, StringComparison.Ordinal))))
@@ -2870,6 +2918,48 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             DROP TABLE migration_processing_outputs;
             """;
         await restore.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask ValidateSchema6Async(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var actual = await ReadSchemaDefinitionsAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+        if (CanonicalSchema6Definitions.Value.Any(expected =>
+                !actual.TryGetValue(expected.Key, out var definition) ||
+                !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
+            actual.Keys.Any(name => !CanonicalSchema6Definitions.Value.ContainsKey(name)))
+        {
+            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 6 definition.");
+        }
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only schema statements selected from an internal constant are executed.")]
+    private static async ValueTask MigrateSchema6Async(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        using (var dropMarker = connection.CreateCommand())
+        {
+            dropMarker.Transaction = transaction;
+            dropMarker.CommandText = "DROP TABLE capture_processing_schema;";
+            await dropMarker.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        foreach (var statement in SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Where(static statement =>
+                         statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
+                          statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal) ||
+                          statement.StartsWith("CREATE TABLE processing_graph_delivery_", StringComparison.Ordinal) ||
+                          statement.StartsWith("CREATE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal) ||
+                          statement.StartsWith("CREATE UNIQUE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal)))
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = statement + ";";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static async ValueTask<Dictionary<string, string>> ReadSchemaDefinitionsAsync(
@@ -3058,9 +3148,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private const string SchemaSql = """
         CREATE TABLE capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 6)
+            version INTEGER NOT NULL CHECK(version = 7)
         ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 6);
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 7);
         CREATE TABLE processing_graph_revisions(
             revision_id TEXT PRIMARY KEY CHECK(length(revision_id) = 64),
             graph_name TEXT NOT NULL CHECK(length(graph_name) BETWEEN 1 AND 128),
@@ -3099,6 +3189,45 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             reason TEXT NULL CHECK(reason IS NULL OR length(reason) BETWEEN 1 AND 256),
             result_reference TEXT NOT NULL CHECK(length(result_reference) BETWEEN 1 AND 128),
             completed_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        CREATE TABLE processing_graph_delivery_proposals(
+            proposal_id TEXT PRIMARY KEY CHECK(length(proposal_id) = 32),
+            catalog_revision_id TEXT NOT NULL CHECK(length(catalog_revision_id) = 32),
+            assignment_id TEXT NOT NULL CHECK(length(assignment_id) = 32),
+            registration_id TEXT NOT NULL CHECK(length(registration_id) = 32),
+            installation_id TEXT NOT NULL CHECK(length(installation_id) = 32),
+            installation_public_id TEXT NOT NULL CHECK(length(installation_public_id) = 32),
+            expected_active_revision_id TEXT NULL CHECK(expected_active_revision_id IS NULL OR length(expected_active_revision_id) = 64),
+            capability_snapshot_sha256 TEXT NOT NULL CHECK(length(capability_snapshot_sha256) = 64),
+            definition_identity_sha256 TEXT NOT NULL CHECK(length(definition_identity_sha256) = 64),
+            shared_plan_identity_sha256 TEXT NOT NULL CHECK(length(shared_plan_identity_sha256) = 64),
+            definition_json BLOB NOT NULL CHECK(length(definition_json) BETWEEN 2 AND 2097152),
+            issued_unix_ms INTEGER NOT NULL,
+            expires_unix_ms INTEGER NOT NULL CHECK(expires_unix_ms > issued_unix_ms),
+            disposition TEXT NOT NULL CHECK(disposition IN ('Pending', 'Accepted', 'Rejected', 'Expired', 'Superseded')),
+            disposition_reason TEXT NULL CHECK(disposition_reason IS NULL OR length(disposition_reason) BETWEEN 1 AND 128),
+            local_revision_id TEXT NULL CHECK(local_revision_id IS NULL OR length(local_revision_id) = 64),
+            local_plan_identity_sha256 TEXT NULL CHECK(local_plan_identity_sha256 IS NULL OR length(local_plan_identity_sha256) = 64),
+            received_unix_ms INTEGER NOT NULL,
+            settled_unix_ms INTEGER NULL,
+            FOREIGN KEY(local_revision_id) REFERENCES processing_graph_revisions(revision_id)
+        ) STRICT;
+        CREATE TABLE processing_graph_delivery_facts(
+            fact_id TEXT PRIMARY KEY CHECK(length(fact_id) = 32),
+            proposal_id TEXT NOT NULL CHECK(length(proposal_id) = 32),
+            fact_kind TEXT NOT NULL CHECK(fact_kind IN ('Accepted', 'Rejected', 'Activated', 'RolledBack', 'Expired')),
+            occurred_unix_ms INTEGER NOT NULL,
+            local_revision_id TEXT NULL CHECK(local_revision_id IS NULL OR length(local_revision_id) = 64),
+            definition_identity_sha256 TEXT NULL CHECK(definition_identity_sha256 IS NULL OR length(definition_identity_sha256) = 64),
+            shared_plan_identity_sha256 TEXT NULL CHECK(shared_plan_identity_sha256 IS NULL OR length(shared_plan_identity_sha256) = 64),
+            local_plan_identity_sha256 TEXT NULL CHECK(local_plan_identity_sha256 IS NULL OR length(local_plan_identity_sha256) = 64),
+            reason_code TEXT NULL CHECK(reason_code IS NULL OR length(reason_code) BETWEEN 1 AND 128),
+            delivery_state TEXT NOT NULL CHECK(delivery_state IN ('Pending', 'Acknowledged')),
+            attempt_count INTEGER NOT NULL CHECK(attempt_count >= 0),
+            next_attempt_unix_ms INTEGER NOT NULL,
+            acknowledged_unix_ms INTEGER NULL,
+            last_reason_code TEXT NULL CHECK(last_reason_code IS NULL OR length(last_reason_code) BETWEEN 1 AND 128),
+            FOREIGN KEY(proposal_id) REFERENCES processing_graph_delivery_proposals(proposal_id)
         ) STRICT;
         CREATE TABLE processing_executions(
             execution_id TEXT PRIMARY KEY CHECK(length(execution_id) = 32),
@@ -3368,6 +3497,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             ON processing_execution_output_input_pins(output_identity_sha256, execution_id) WHERE released_flag = 0;
         CREATE INDEX ix_processing_execution_outputs_publication
             ON processing_execution_outputs(output_identity_sha256, published_flag);
+        CREATE INDEX ix_processing_graph_delivery_proposals_lookup
+            ON processing_graph_delivery_proposals(disposition, local_revision_id, issued_unix_ms);
+        CREATE INDEX ix_processing_graph_delivery_facts_pending
+            ON processing_graph_delivery_facts(delivery_state, next_attempt_unix_ms, occurred_unix_ms);
+        CREATE INDEX ix_processing_graph_delivery_facts_lifecycle
+            ON processing_graph_delivery_facts(proposal_id, fact_kind)
+            WHERE fact_kind IN ('Activated', 'RolledBack');
+        CREATE UNIQUE INDEX ix_processing_graph_delivery_facts_settlement
+            ON processing_graph_delivery_facts(proposal_id)
+            WHERE fact_kind IN ('Accepted', 'Rejected', 'Expired');
         """;
 
 }

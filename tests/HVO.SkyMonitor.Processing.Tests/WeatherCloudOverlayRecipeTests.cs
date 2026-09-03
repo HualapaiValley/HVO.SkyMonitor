@@ -72,6 +72,7 @@ public sealed class WeatherCloudOverlayRecipeTests
         CollectionAssert.AreEqual(
             new[] { preview.ArtifactId, assessmentArtifact.ArtifactId },
             product.SourceArtifactIds.ToArray());
+        ProcessingRecipeTests.AssertProductMatchesContract(request, product);
 
         var annotated = preview with
         {
@@ -88,6 +89,15 @@ public sealed class WeatherCloudOverlayRecipeTests
             InputArtifactId = annotated.ArtifactId
         }).ConfigureAwait(false);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, annotatedOutcome.Status, annotatedOutcome.ReasonCode);
+        ProcessingRecipeTests.AssertProductMatchesContract(request with
+        {
+            Input = ProcessingInputSelector.RecipeResult(
+                annotated.Role,
+                annotated.Variant,
+                annotated.RecipeIdentitySha256),
+            Inputs = [annotated, assessmentArtifact],
+            InputArtifactId = annotated.ArtifactId
+        }, annotatedOutcome.Products.Single());
     }
 
     private static ProcessingArtifact CreatePreview()

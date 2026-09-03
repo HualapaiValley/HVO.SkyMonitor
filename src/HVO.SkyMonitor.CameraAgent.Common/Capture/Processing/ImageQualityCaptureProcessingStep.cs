@@ -20,6 +20,8 @@ internal sealed class ImageQualityCaptureProcessingStep(
 
     public string OutputVariant => Options.OutputVariant;
 
+    public string? OutputMediaType => "application/json";
+
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole>
     {
         FrameArtifactRole.Raw,

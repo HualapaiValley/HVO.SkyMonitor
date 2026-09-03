@@ -26,7 +26,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
     ApplicationDbContext dbContext,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider,
-    ILogger<CentralDerivativeWindowResolver> logger) : ICentralDerivativeWindowResolver
+    ILogger<CentralDerivativeWindowResolver> logger,
+    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : ICentralDerivativeWindowResolver
 {
     private const int ResolutionBatchSize = 100;
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
@@ -132,6 +133,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
             dbContext.ChangeTracker.Clear();
             var job = await dbContext.CentralDerivativeJobs
                 .Include(item => item.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)
+                .Include(item => item.GraphExecution)
                 .Include(item => item.InputRequirements)
                 .Include(item => item.Inputs)
                 .Include(item => item.CanonicalInputs)
@@ -160,6 +162,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     {
                         requirement.ResolutionState = CentralDerivativeInputResolutionState.Resolved;
                         requirement.ResolutionReasonCode = null;
+                        requirement.ResolvedAtUtc ??= job.CanonicalInputs.Single(input =>
+                            input.CentralDerivativeJobInputRequirementId == requirement.Id).SelectedAtUtc;
                         continue;
                     }
                     requirement.ResolutionState = CentralDerivativeInputResolutionState.Waiting;
@@ -179,6 +183,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 {
                     requirement.ResolutionState = CentralDerivativeInputResolutionState.Incompatible;
                     requirement.ResolutionReasonCode = CentralDerivativeWindowReasonCodes.AmbiguousInput;
+                    requirement.ResolvedAtUtc = now;
                 }
             }
 
@@ -217,6 +222,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     requirement.ResolutionReasonCode = candidate.LayoutJson != anchor.LayoutJson
                         ? CentralDerivativeWindowReasonCodes.IncompatibleLayout
                         : CentralDerivativeWindowReasonCodes.IncompatibleProfile;
+                    requirement.ResolvedAtUtc = now;
                     incompatibleRequired |= requirement.IsRequired;
                     telemetry.RecordWindowRejection(
                         job.RecipeName,
@@ -259,6 +265,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                         requirement.ResolutionReasonCode = requirement.IsRequired
                             ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
                             : CentralDerivativeWindowReasonCodes.OptionalInputTimeout;
+                        requirement.ResolvedAtUtc = now;
                     }
                     if (job.MissingInputOutcome == CentralDerivativeWindowOutcome.Run && candidates.Count > 0)
                     {
@@ -322,6 +329,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 dbContext.ChangeTracker.Clear();
             }
+            graphConvergenceSignal?.Signal(job.GraphExecutionId);
             if (job.Status != initialStatus || !string.Equals(job.StateReasonCode, initialReason, StringComparison.Ordinal))
             {
                 Log.Resolution(logger, job.Id, job.RecipeName, initialStatus.ToString(), job.Status.ToString(),
@@ -468,7 +476,17 @@ internal sealed partial class CentralDerivativeWindowResolver(
             job.StateReasonCode = CentralDerivativeWindowReasonCodes.ResolutionConflict;
             return;
         }
-        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        var addedGraphInput = job.GraphExecutionId is not null &&
+            (dbContext.ChangeTracker.Entries<CentralDerivativeJobInput>()
+                 .Any(entry => entry.State == EntityState.Added && entry.Entity.CentralDerivativeJobId == job.Id) ||
+             dbContext.ChangeTracker.Entries<CentralDerivativeJobCanonicalInput>()
+                 .Any(entry => entry.State == EntityState.Added && entry.Entity.CentralDerivativeJobId == job.Id));
+        if (addedGraphInput)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+            job.Inputs, job.CanonicalInputs);
         job.Status = CentralDerivativeJobStatus.Pending;
         job.AvailableAtUtc = now;
         job.ResolutionCompletedAtUtc = now;
@@ -537,6 +555,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
         }
         foreach (var item in selected)
         {
+            item.Requirement.ExpectedCentralArtifactId = item.Candidate.Artifact.Id;
             item.Requirement.ResolvedAtUtc = now;
             if (job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == item.Requirement.Id))
             {
@@ -717,16 +736,28 @@ internal static class CentralDerivativeWindowCompatibility
 
 internal static class CentralDerivativeWindowIdentity
 {
-    public static string CreateInputSetIdentity(IEnumerable<CentralDerivativeJobInput> inputs)
+    public static string CreateInputSetIdentity(
+        IEnumerable<CentralDerivativeJobInput> inputs,
+        IEnumerable<CentralDerivativeJobCanonicalInput>? canonicalInputs = null)
     {
         ArgumentNullException.ThrowIfNull(inputs);
-        var value = string.Join('\n', inputs.OrderBy(item => item.Ordinal).Select(item => string.Join(':',
+        var artifactValue = string.Join('\n', inputs.OrderBy(item => item.Ordinal).Select(item => string.Join(':',
             item.Ordinal,
             item.CentralArtifactId.ToString("N"),
             item.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none",
             item.CompatibilitySha256.ToUpperInvariant())));
+        var canonical = canonicalInputs?.OrderBy(item => item.Ordinal).ToArray() ?? [];
+        if (canonical.Length == 0)
+        {
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                $"hvo-central-derivative-input-set-v1\n{artifactValue}")));
+        }
+        var canonicalValue = string.Join('\n', canonical.Select(item => string.Join(':',
+            item.Ordinal,
+            item.SchemaVersion,
+            item.IdentitySha256.ToUpperInvariant())));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            $"hvo-central-derivative-input-set-v1\n{value}")));
+            $"hvo-central-derivative-input-set-v2\nartifacts\n{artifactValue}\ncanonical\n{canonicalValue}")));
     }
 }
 

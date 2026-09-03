@@ -23,6 +23,7 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => ProjectedSceneV1.CurrentSchemaVersion;
+    public string? OutputMediaType => StructuredProcessingProductContracts.ProjectedSceneMediaType;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
 
     public override ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)

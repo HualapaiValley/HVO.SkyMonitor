@@ -56,6 +56,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
     }
 
+    public IReadOnlyList<string> StableStepAliases => _registrationsByCanonicalAlias.Keys
+        .Order(StringComparer.Ordinal)
+        .ToArray();
+
     public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
@@ -122,6 +126,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     }
 
     public CaptureProcessingGraph CreateGraph(CameraModuleConfig config)
+        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion);
+
+    public CaptureProcessingGraph CreateGraph(
+        CameraModuleConfig config,
+        string definitionName,
+        string definitionRevision)
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.validate");
@@ -244,7 +254,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             ValidateOutputs(config, effectiveLayout, configured, nodesById, explicitV2);
             ValidateStoragePolicies(configured, nodesById, explicitV2);
             var sharedPlan = explicitV2
-                ? CompileSharedPlan(config.Pipeline, configuredSteps, configured, nodesById)
+                ? CompileSharedPlan(
+                    config.Pipeline, configuredSteps, configured, nodesById, definitionName, definitionRevision)
                 : null;
             var nodes = sharedPlan is null
                 ? BuildLegacyRuntimeGraph(configured, nodesById)
@@ -272,7 +283,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         var byId = new Dictionary<string, CaptureProcessingStepConfig>(StringComparer.OrdinalIgnoreCase);
         foreach (var step in configuredSteps)
         {
-            if (string.IsNullOrWhiteSpace(step.Type) || !_registrationsByCanonicalAlias.ContainsKey(step.Type))
+            if (string.IsNullOrWhiteSpace(step.Type) ||
+                step.Enabled != false && !_registrationsByCanonicalAlias.ContainsKey(step.Type))
             {
                 throw new InvalidOperationException(
                     $"Capture pipeline v2 step type '{step.Type}' is not a registered stable alias.");
@@ -636,7 +648,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 step.RecipeName,
                 step.OutputSchemaVersion,
                 step.SharedOutputRecipe,
-                step.SharedOutputAlgorithms)];
+                step.SharedOutputAlgorithms,
+                step.OutputMediaType)];
 
     private static bool RequiresLinear16(string recipeName)
         => recipeName is HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.RollingMean or
@@ -659,7 +672,9 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CapturePipelineConfig pipeline,
         IReadOnlyList<CaptureProcessingStepConfig> configuredSteps,
         List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
-        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById,
+        string definitionName,
+        string definitionRevision)
     {
         var rawSource = new ProcessingGraphSourceDefinition(
             "$raw",
@@ -692,8 +707,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 [ProcessingGraphHosts.CameraAgent])));
         var definition = new ProcessingGraphDefinition(
             ProcessingGraphSchemaVersions.Current,
-            "cameraagent-capture-processing",
-            pipeline.SchemaVersion,
+            definitionName,
+            definitionRevision,
             [rawSource],
             definitions.ToImmutableArray());
         var result = ProcessingGraphCompiler.Compile(
@@ -732,6 +747,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             dependencyKind,
             !optionalDependencies.Contains(dependency))).ToImmutableArray();
         var inputs = CreateSharedInputs(item.Step, normalizedDependencies, nodesById);
+        var operationKind = ResolveSharedOperationKind(graphStep, item.Step);
         var outputs = graphStep is null
             ? ImmutableArray<ProcessingGraphProductContract>.Empty
             : GetOutputs(graphStep).Select(output => new ProcessingGraphProductContract(
@@ -740,19 +756,22 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 output.Role == FrameArtifactRole.Metadata
                     ? ProcessingProductKind.Metadata
                     : ProcessingProductKind.PixelData,
-                ResolveRecipeDefinition(output, item.Config.Type, item.Step),
+                ResolveRecipeDefinition(output, item.Config.Type, operationKind),
                 output.SchemaVersion,
-                output.SharedAlgorithms?.ToImmutableArray() ?? [])).ToImmutableArray();
+                output.SharedAlgorithms?.ToImmutableArray() ?? [],
+                output.MediaType)).ToImmutableArray();
         var window = item.Step is IWindowCaptureProcessingGraphStep windowStep
             ? new ProcessingGraphWindowRequirement(
                 windowStep.WindowKind,
                 windowStep.MinimumInputCount,
                 windowStep.MaximumInputCount,
                 windowStep.RequiredPositions.ToImmutableArray(),
-                [
-                    "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
-                    "sensor", "setpoint", "processing-profile", "location"
-                ])
+                 [
+                     "layout", "role", "variant", "source-recipe", "rig", "orientation", "calibration", "mask",
+                     "sensor", "setpoint", "processing-profile", "location"
+                 ],
+                windowStep.Timeout.Ticks,
+                windowStep.MissingInputOutcome)
             : null;
         // Publication, storage, upload, and telemetry options stay in the CameraAgent plan identity.
         var effectiveSharedOptions = graphStep is null
@@ -769,7 +788,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             item.Step.Name,
             item.Config.Type,
             ResolveSharedStepVersion(graphStep, item.Config.Type, item.Step),
-            ResolveSharedOperationKind(graphStep, item.Step),
+            operationKind,
             true,
             item.Config.Required
                 ? ProcessingGraphNodeFailurePolicy.Required
@@ -827,7 +846,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                             output.Role,
                             output.Variant,
                             output.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData,
-                            ResolveRecipeDefinition(output, producer.Config.Type, producer.Step),
+                            ResolveRecipeDefinition(
+                                output,
+                                producer.Config.Type,
+                                ResolveSharedOperationKind(producerStep, producer.Step)),
                             output.SchemaVersion,
                             output.SharedAlgorithms?.ToImmutableArray() ?? []))
                         : [])
@@ -874,7 +896,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     private static ProcessingRecipeDefinition ResolveRecipeDefinition(
         CaptureProcessingOutputDescriptor output,
         string stepAlias,
-        ICaptureProcessingStep step)
+        ProcessingOperationKind operationKind)
     {
         if (output.SharedRecipe is not null)
         {
@@ -884,11 +906,6 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         {
             return definition;
         }
-        var operationKind = step is IWindowCaptureProcessingGraphStep
-            ? ProcessingOperationKind.Window
-            : output.Role == FrameArtifactRole.Metadata
-                ? ProcessingOperationKind.Analyzer
-                : ProcessingOperationKind.Transform;
         return new(output.RecipeName, "1.0.0", $"cameraagent-v2:{stepAlias}", operationKind);
     }
 
