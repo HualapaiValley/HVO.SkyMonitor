@@ -121,7 +121,11 @@ public sealed record ProcessingAlgorithmIdentity(string Name, string Version);
 /// <summary>Canonical descriptive identity plus a hash that covers recipe and implementation versions.</summary>
 public sealed record ProcessingRecipeIdentity(
     RecipeIdentityDescriptor Descriptor,
-    string IdentitySha256);
+    string IdentitySha256)
+{
+    /// <summary>Gets the operation implemented by the recipe when the identity was created from an executable definition.</summary>
+    public ProcessingOperationKind? OperationKind { get; init; }
+}
 
 /// <summary>An owned recipe output with complete immediate lineage and implementation provenance.</summary>
 public enum ProcessingProductKind

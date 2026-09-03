@@ -48,6 +48,14 @@ public enum ProcessingGraphWindowKind
     Centered
 }
 
+public enum ProcessingGraphMissingInputOutcome
+{
+    Run,
+    Skip,
+    Fail,
+    Quarantine
+}
+
 public sealed record ProcessingGraphSourceDefinition(
     string Id,
     ImmutableArray<ProcessingGraphProductContract> Outputs);
@@ -67,20 +75,94 @@ public sealed record ProcessingGraphInputContract(
     string BindingName = "input",
     ProcessingGraphInputBindingKind BindingKind = ProcessingGraphInputBindingKind.PrimaryArtifact);
 
-public sealed record ProcessingGraphProductContract(
-    FrameArtifactRole Role,
-    string Variant,
-    ProcessingProductKind ProductKind,
-    ProcessingRecipeDefinition? Recipe = null,
-    string? SchemaVersion = null,
-    ImmutableArray<ProcessingAlgorithmIdentity> Algorithms = default);
+/// <summary>
+/// Output contract for a graph source or node. <c>Algorithms</c> and <c>MediaType</c> are optional in
+/// <see cref="ProcessingGraphSchemaVersions.V1"/> JSON so persisted schema-6 CameraAgent revisions that predate
+/// <c>mediaType</c> stay readable, and a <c>null</c> media type is omitted from the canonical form so their
+/// definition identities remain stable.
+/// </summary>
+/// <remarks>
+/// The JSON constructor binds only the required members. Optional members bind through their <c>init</c>
+/// setters so that <c>algorithms</c> stays optional under <c>RespectRequiredConstructorParameters</c> without
+/// declaring a <c>default</c> struct parameter, which <see cref="System.Text.Json.Schema.JsonSchemaExporter"/>
+/// cannot serialize as a schema default and which would fail OpenAPI document generation.
+/// </remarks>
+public sealed record ProcessingGraphProductContract
+{
+    public ProcessingGraphProductContract(
+        FrameArtifactRole Role,
+        string Variant,
+        ProcessingProductKind ProductKind,
+        ProcessingRecipeDefinition? Recipe = null,
+        string? SchemaVersion = null,
+        ImmutableArray<ProcessingAlgorithmIdentity> Algorithms = default,
+        string? MediaType = null)
+    {
+        this.Role = Role;
+        this.Variant = Variant;
+        this.ProductKind = ProductKind;
+        this.Recipe = Recipe;
+        this.SchemaVersion = SchemaVersion;
+        this.Algorithms = Algorithms;
+        this.MediaType = MediaType;
+    }
+
+    [JsonConstructor]
+    private ProcessingGraphProductContract(FrameArtifactRole Role, string Variant, ProcessingProductKind ProductKind)
+        : this(Role, Variant, ProductKind, null, null, default, null)
+    {
+    }
+
+    public FrameArtifactRole Role { get; init; }
+
+    public string Variant { get; init; }
+
+    public ProcessingProductKind ProductKind { get; init; }
+
+    public ProcessingRecipeDefinition? Recipe { get; init; }
+
+    public string? SchemaVersion { get; init; }
+
+    /// <summary>
+    /// Algorithm identities contributing to the product. Never a default (uninitialized) array: a default value
+    /// supplied through the constructor, <c>with</c>, or JSON lacking <c>algorithms</c> normalizes to empty.
+    /// </summary>
+    public ImmutableArray<ProcessingAlgorithmIdentity> Algorithms
+    {
+        get;
+        init => field = value.IsDefault ? [] : value;
+    }
+
+    public string? MediaType { get; init; }
+
+    public void Deconstruct(
+        out FrameArtifactRole Role,
+        out string Variant,
+        out ProcessingProductKind ProductKind,
+        out ProcessingRecipeDefinition? Recipe,
+        out string? SchemaVersion,
+        out ImmutableArray<ProcessingAlgorithmIdentity> Algorithms,
+        out string? MediaType)
+    {
+        Role = this.Role;
+        Variant = this.Variant;
+        ProductKind = this.ProductKind;
+        Recipe = this.Recipe;
+        SchemaVersion = this.SchemaVersion;
+        Algorithms = this.Algorithms;
+        MediaType = this.MediaType;
+    }
+}
 
 public sealed record ProcessingGraphWindowRequirement(
     ProcessingGraphWindowKind Kind,
     int MinimumInputCount,
     int MaximumInputCount,
     ImmutableArray<int> RequiredPositions,
-    ImmutableArray<string> CompatibilityLabels);
+    ImmutableArray<string> CompatibilityLabels,
+    long TimeoutTicks = 3_000_000_000,
+    ProcessingGraphMissingInputOutcome MissingInputOutcome =
+        ProcessingGraphMissingInputOutcome.Skip);
 
 public sealed record ProcessingGraphNodeDefinition
 {

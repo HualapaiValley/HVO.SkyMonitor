@@ -194,6 +194,7 @@ public sealed partial class Program
             .AddCheck<CentralArtifactConsistencyHealthCheck>("artifact-consistency", tags: ["consistency"])
             .AddCheck<CentralArtifactRetentionHealthCheck>("artifact-retention", tags: ["worker"])
             .AddCheck<CentralDerivativeWorkerHealthCheck>("central-derivative-worker", tags: ["worker"])
+            .AddCheck<ProcessingGraphCatalogHealthCheck>("processing-graph-catalog", tags: ["consistency"])
             .AddCheck<CentralTransientLifecycleHealthCheck>("central-transient-lifecycle", tags: ["worker"])
             .AddCheck<FleetStatusHealthCheck>("fleet-status", tags: ["worker"])
             .AddCheck<EnvironmentalObservationHealthCheck>("environmental-observations", tags: ["worker"])
@@ -255,6 +256,7 @@ public sealed partial class Program
                 metrics.AddMeter(DeploymentLocationTelemetry.MeterName);
                 metrics.AddMeter(OperatorUiTelemetry.MeterName);
                 metrics.AddMeter(ObjectStoreTelemetry.MeterName);
+                metrics.AddMeter(ProcessingGraphCatalogTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             })
             .WithTracing(tracing => tracing
@@ -262,7 +264,8 @@ public sealed partial class Program
                 .AddSource(CentralTransientLifecycleTelemetry.ActivitySourceName)
                 .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
                 .AddSource(OperatorUiTelemetry.ActivitySourceName)
-                .AddSource(ObjectStoreTelemetry.ActivitySourceName));
+                .AddSource(ObjectStoreTelemetry.ActivitySourceName)
+                .AddSource(ProcessingGraphCatalogTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -419,6 +422,14 @@ public sealed partial class Program
         builder.Services.AddScoped<IRegisteredUserPersonalizationService, RegisteredUserPersonalizationService>();
         builder.Services.AddScoped<INetworkOperationsMutationService, NetworkOperationsMutationService>();
         builder.Services.AddScoped<ICentralProcessingPolicyService, CentralProcessingPolicyService>();
+        builder.Services.AddSingleton<ProcessingGraphCatalogTelemetry>();
+        builder.Services.AddSingleton<ICentralProcessingGraphNodeRegistry, CentralProcessingGraphNodeRegistry>();
+        builder.Services.AddScoped<ProcessingGraphBacklogSampler>();
+        builder.Services.AddHostedService<ProcessingGraphBacklogWorker>();
+        builder.Services.AddScoped<ProcessingGraphCatalogService>();
+        builder.Services.AddScoped<IProcessingGraphCatalogService>(provider =>
+            provider.GetRequiredService<ProcessingGraphCatalogService>());
+        builder.Services.AddScoped<IProcessingGraphDeliveryService, ProcessingGraphDeliveryService>();
         builder.Services.AddSingleton<OperatorUiTelemetry>();
         builder.Services.AddScoped<IDeploymentLocationAuthorityService, DeploymentLocationAuthorityService>();
         builder.Services.AddOptions<DeploymentLocationReconciliationOptions>()
@@ -831,6 +842,8 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralClearReferenceService, CentralClearReferenceService>();
         builder.Services.AddSingleton<IProcessingRecipeExecutor, ProcessingRecipeExecutor>();
         builder.Services.AddSingleton<LogicHostRecipeExecutionAdapter>();
+        builder.Services.AddScoped<ICentralProcessingGraphScheduler, CentralProcessingGraphScheduler>();
+        builder.Services.AddScoped<ICentralProcessingGraphExecutionService, CentralProcessingGraphExecutionService>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
         builder.Services.AddScoped<ICentralDerivativeWindowResolver, CentralDerivativeWindowResolver>();
         builder.Services.AddScoped<ICentralDerivativeJobService, CentralDerivativeJobService>();
@@ -839,6 +852,7 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralDerivativeJobExecutor, CentralDerivativeJobExecutor>();
         builder.Services.AddScoped<ICentralDerivativeJobOperationsService, CentralDerivativeJobOperationsService>();
         builder.Services.AddSingleton<CentralDerivativeWorkerTelemetry>();
+        builder.Services.AddSingleton<CentralProcessingGraphConvergenceSignal>();
         builder.Services.AddHostedService<CentralDerivativeWorker>();
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
         builder.Services.AddInstalledCelestialCatalog();

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.LogicHost.Services.Processing;
@@ -37,5 +38,35 @@ internal static class LogicHostProcessingGraphAdapter
             node.IdentitySha256,
             node.InputBindings,
             node.Definition.Outputs)).ToImmutableArray();
+    }
+
+    internal static string FreezePlan(ProcessingGraphExecutionPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        return CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(new
+        {
+            schema = "hvo-logic-host-processing-graph-plan-v1",
+            plan.DefinitionIdentitySha256,
+            plan.PlanIdentitySha256,
+            sources = plan.Sources,
+            nodes = plan.Nodes.Select(static node => new
+            {
+                node.IdentitySha256,
+                node.Definition,
+                node.InputBindings
+            }).ToArray()
+        })).GetRawText();
+    }
+
+    internal static string FreezeNode(ProcessingGraphPlanNode node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        return CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(new
+        {
+            schema = "hvo-logic-host-processing-graph-node-v1",
+            node.IdentitySha256,
+            node.Definition,
+            node.InputBindings
+        })).GetRawText();
     }
 }

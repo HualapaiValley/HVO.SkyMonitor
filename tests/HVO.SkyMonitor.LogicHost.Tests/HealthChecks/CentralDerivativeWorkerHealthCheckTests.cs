@@ -116,7 +116,9 @@ public sealed class CentralDerivativeWorkerHealthCheckTests
         result.Data.Should().Contain("PendingCount", 1L);
         result.Data.Keys.Should().BeEquivalentTo(
             "Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds",
-            "WaitingCount", "OldestWaitAgeSeconds", "OverdueWaitingCount", "OldestPinAgeSeconds");
+            "WaitingCount", "OldestWaitAgeSeconds", "OverdueWaitingCount", "OldestPinAgeSeconds",
+            "GraphExecutionCount", "GraphOldestConvergenceAgeSeconds", "GraphUnsealedCount",
+            "GraphRecoveryAgeSeconds");
     }
 
     [TestMethod]

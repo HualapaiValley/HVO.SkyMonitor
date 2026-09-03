@@ -34,9 +34,12 @@ internal sealed partial class CentralDerivativeWorker(
     IOptions<CentralDerivativeWorkerOptions> options,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider,
-    ILogger<CentralDerivativeWorker> logger) : BackgroundService
+    ILogger<CentralDerivativeWorker> logger,
+    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : BackgroundService
 {
     private readonly CentralDerivativeWorkerOptions _options = options.Value;
+    private readonly CentralProcessingGraphConvergenceSignal _graphConvergenceSignal =
+        graphConvergenceSignal ?? new CentralProcessingGraphConvergenceSignal();
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -57,6 +60,7 @@ internal sealed partial class CentralDerivativeWorker(
     private async Task RunSlotAsync(int slot, CancellationToken stoppingToken)
     {
         var nextQueueSampleUtc = DateTimeOffset.MinValue;
+        var nextGraphRecoveryUtc = DateTimeOffset.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
             telemetry.RecordPoll(timeProvider.GetUtcNow());
@@ -67,6 +71,21 @@ internal sealed partial class CentralDerivativeWorker(
                 await using var claimScope = scopeFactory.CreateAsyncScope();
                 if (slot == 0)
                 {
+                    var now = timeProvider.GetUtcNow();
+                    if (claimScope.ServiceProvider.GetService<ICentralProcessingGraphScheduler>() is
+                        { } graphScheduler)
+                    {
+                        while (_graphConvergenceSignal.TryRead(out var graphExecutionId))
+                        {
+                            await ConvergeSignaledAsync(graphScheduler, graphExecutionId, now, stoppingToken)
+                                .ConfigureAwait(false);
+                        }
+                        if (now >= nextGraphRecoveryUtc)
+                        {
+                            await graphScheduler.ConvergeBatchAsync(now, stoppingToken).ConfigureAwait(false);
+                            nextGraphRecoveryUtc = now + _options.QueueSampleInterval;
+                        }
+                    }
                     if (claimScope.ServiceProvider.GetService<ICentralTransientRetrospectiveScheduler>() is { } scheduler)
                     {
                         await scheduler.ScheduleBatchAsync(timeProvider.GetUtcNow(), stoppingToken)
@@ -92,7 +111,14 @@ internal sealed partial class CentralDerivativeWorker(
                 telemetry.RecordClaim("failed", timeProvider.GetElapsedTime(claimStarted));
                 telemetry.RecordDependencyFailure("database", timeProvider.GetUtcNow());
                 Log.ClaimFailed(logger, exception, slot);
-                await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
+                if (slot == 0)
+                {
+                    await _graphConvergenceSignal.WaitAsync(_options.PollInterval, stoppingToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
+                }
                 continue;
             }
             telemetry.RecordClaim(
@@ -114,6 +140,38 @@ internal sealed partial class CentralDerivativeWorker(
             }
             nextQueueSampleUtc = await SampleQueueIfDueAsync(
                 slot, nextQueueSampleUtc, stoppingToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Direct-signal convergence applies the same failure classification as batch convergence
+    /// (<see cref="CentralProcessingGraphScheduler.ConvergeBatchAsync"/>): only real database faults degrade database
+    /// health, while a graph whose frozen state cannot converge is logged here. The convergence "failed" outcome
+    /// itself is emitted exactly once by <see cref="CentralProcessingGraphScheduler.ConvergeAsync"/> for every thrown
+    /// convergence (batch or signaled), so this method must not record a second one. Database faults propagate so
+    /// the slot's claim loop records the dependency failure and backs off as before.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "A corrupt signaled execution must not be reported as a database outage or stop the claim loop.")]
+    private async Task ConvergeSignaledAsync(
+        ICentralProcessingGraphScheduler graphScheduler,
+        Guid graphExecutionId,
+        DateTimeOffset now,
+        CancellationToken stoppingToken)
+    {
+        try
+        {
+            await graphScheduler.ConvergeAsync(graphExecutionId, now, stoppingToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (!CentralProcessingGraphScheduler.IsDatabaseFailure(exception))
+        {
+            Log.SignaledConvergenceFailed(logger, exception, graphExecutionId);
         }
     }
 
@@ -150,6 +208,17 @@ internal sealed partial class CentralDerivativeWorker(
                         await renewalCancellation.CancelAsync().ConfigureAwait(false);
                     }
                     var renewalFailure = await renewal.ConfigureAwait(false);
+                    if (renewalFailure is CentralDerivativeLeaseCanceledException)
+                    {
+                        // Cancellation reached this leased node: renewal was refused, the linked execution token was
+                        // canceled, and the lease now runs out so graph convergence records Canceled through the
+                        // expiry path. The job row stays untouched here; CentralDerivativeJob remains the authority.
+                        telemetry.RecordAttempt(
+                            lease.RecipeName, "canceled", "cancellation", timeProvider.GetUtcNow());
+                        Log.Outcome(logger, lease.JobId, lease.AttemptCount, lease.WorkerId, lease.RecipeName,
+                            "Canceled", "processing.graph.cancel-requested");
+                        return;
+                    }
                     if (renewalFailure is not null)
                     {
                         throw new CentralDerivativeJobStateException(
@@ -285,6 +354,13 @@ internal sealed partial class CentralDerivativeWorker(
         {
             return null;
         }
+        catch (CentralDerivativeLeaseCanceledException exception)
+        {
+            // Not a dependency failure: the lease authority refused renewal because cancellation was requested.
+            telemetry.RecordRenewal("canceled", timeProvider.GetUtcNow());
+            await executionCancellation.CancelAsync().ConfigureAwait(false);
+            return exception;
+        }
         catch (Exception exception)
         {
             telemetry.RecordRenewal("failed", timeProvider.GetUtcNow());
@@ -416,6 +492,31 @@ internal sealed partial class CentralDerivativeWorker(
                 pins?.Count ?? 0,
                 pins is null ? 0 : (long)Math.Max(0, (now - pins.Oldest).TotalSeconds),
                 pins?.Bytes ?? 0);
+            var terminalGraphStatuses = new[]
+            {
+                CentralProcessingGraphExecutionStatus.Completed,
+                CentralProcessingGraphExecutionStatus.CompletedWithOptionalFailures,
+                CentralProcessingGraphExecutionStatus.Failed,
+                CentralProcessingGraphExecutionStatus.Canceled,
+                CentralProcessingGraphExecutionStatus.Superseded
+            };
+            var graphSnapshot = await dbContext.CentralProcessingGraphExecutions.AsNoTracking()
+                .Where(execution => !terminalGraphStatuses.Contains(execution.Status))
+                .GroupBy(execution => new { execution.ExecutionClass, execution.Status })
+                .Select(group => new
+                {
+                    group.Key.ExecutionClass,
+                    group.Key.Status,
+                    Count = group.LongCount(),
+                    Oldest = group.Min(execution => execution.UpdatedAtUtc)
+                })
+                .ToArrayAsync(cancellationToken).ConfigureAwait(false);
+            telemetry.UpdateGraphQueueSnapshot(
+                graphSnapshot.Select(item => new CentralProcessingGraphQueueMeasurement(
+                    item.ExecutionClass.ToString(), item.Status.ToString(), item.Count)).ToArray(),
+                graphSnapshot.Length == 0
+                    ? 0
+                    : (long)Math.Max(0, (now - graphSnapshot.Min(item => item.Oldest)).TotalSeconds));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -468,6 +569,10 @@ internal sealed partial class CentralDerivativeWorker(
 
         [LoggerMessage(2138, LogLevel.Warning, "Central derivative claim failed: Slot={Slot}")]
         public static partial void ClaimFailed(ILogger logger, Exception exception, int slot);
+
+        [LoggerMessage(2175, LogLevel.Error,
+            "Central processing graph signaled convergence failed: ExecutionId={ExecutionId}")]
+        public static partial void SignaledConvergenceFailed(ILogger logger, Exception exception, Guid executionId);
 
         [LoggerMessage(2139, LogLevel.Warning,
             "Central derivative failure persistence failed: JobId={JobId}, Attempt={Attempt}")]

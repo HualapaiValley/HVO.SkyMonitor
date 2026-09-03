@@ -28,6 +28,10 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance)
             .WithName("ActivateCameraAgentProcessingGraphRevision");
+        graphs.MapPost("/revisions/{revisionId}/rollback", RollbackRevisionAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .WithMetadata(RequiredAntiforgeryMetadata.Instance)
+            .WithName("RollbackCameraAgentProcessingGraphRevision");
         graphs.MapPost("/revisions/{revisionId}/validate", ValidateRevisionAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance)
@@ -122,6 +126,20 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
             (key, actor, token) => operations.ValidateRevisionAsync(
                 revisionId, key, actor, request.Reason, token),
             cancellationToken);
+
+    private static Task<IResult> RollbackRevisionAsync(
+        string revisionId,
+        HttpContext context,
+        [FromBody] ProcessingGraphLifecycleRequest request,
+        IProcessingGraphOperations operations,
+        CancellationToken cancellationToken)
+        => request.ExpectedVersion is not { } expectedVersion
+            ? Task.FromResult(Problem(StatusCodes.Status400BadRequest, "The expected registry version is required."))
+            : ExecuteMutationAsync(
+                context,
+                (key, actor, token) => operations.RollbackRevisionAsync(
+                    revisionId, expectedVersion, key, actor, request.Reason, token),
+                cancellationToken);
 
     private static Task<IResult> RetireRevisionAsync(
         string revisionId,

@@ -78,6 +78,24 @@ internal sealed class CentralDerivativeWorkerHealthCheck(
                         : requirement.ResolutionState != CentralDerivativeInputResolutionState.Missing
                             || job.MissingInputOutcome != CentralDerivativeWindowOutcome.Run))),
             cancellationToken).ConfigureAwait(false);
+        var terminalGraphStatuses = new[]
+        {
+            CentralProcessingGraphExecutionStatus.Completed,
+            CentralProcessingGraphExecutionStatus.CompletedWithOptionalFailures,
+            CentralProcessingGraphExecutionStatus.Failed,
+            CentralProcessingGraphExecutionStatus.Canceled,
+            CentralProcessingGraphExecutionStatus.Superseded
+        };
+        var graph = await dbContext.CentralProcessingGraphExecutions.AsNoTracking()
+            .Where(execution => !terminalGraphStatuses.Contains(execution.Status))
+            .GroupBy(_ => 1)
+            .Select(group => new
+            {
+                Count = group.LongCount(),
+                Oldest = group.Min(execution => execution.UpdatedAtUtc),
+                Unsealed = group.LongCount(execution => execution.ExpandedAtUtc == null)
+            })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         var waitingCount = waiting?.Count ?? 0;
         var oldestWaitAge = waiting is null ? 0 : Math.Max(0, (long)(now - waiting.Oldest).TotalSeconds);
         var overdueWaiting = waiting?.Overdue ?? 0;
@@ -89,11 +107,22 @@ internal sealed class CentralDerivativeWorkerHealthCheck(
         data["OldestWaitAgeSeconds"] = oldestWaitAge;
         data["OverdueWaitingCount"] = overdueWaiting;
         data["OldestPinAgeSeconds"] = oldestPinAge;
+        data["GraphExecutionCount"] = graph?.Count ?? 0;
+        data["GraphOldestConvergenceAgeSeconds"] = graph is null
+            ? 0
+            : Math.Max(0, (long)(now - graph.Oldest).TotalSeconds);
+        data["GraphUnsealedCount"] = graph?.Unsealed ?? 0;
 
         if (inconsistentRunnable)
         {
             data["Status"] = "inconsistent-window";
             return HealthCheckResult.Unhealthy("A runnable derivative window has no frozen inputs.", data: data);
+        }
+
+        if (graph?.Unsealed > 0)
+        {
+            data["Status"] = "graph-topology-unsealed";
+            return HealthCheckResult.Unhealthy("A processing graph expansion is not sealed.", data: data);
         }
 
         if (telemetry.LastPollUtc is null || lastPollAge > settings.LeaseDuration.TotalSeconds)
@@ -103,13 +132,22 @@ internal sealed class CentralDerivativeWorkerHealthCheck(
         }
         var hasRenewalFailure = telemetry.HasRecentRenewalFailure(now, settings.LeaseDuration);
         var hasDependencyFailure = telemetry.HasRecentDependencyFailure(now, settings.LeaseDuration);
+        var graphRecoveryAge = AgeSeconds(now, telemetry.LastGraphRecoveryUtc);
+        data["GraphRecoveryAgeSeconds"] = graphRecoveryAge;
+        var staleGraphRecovery = graph is not null &&
+            (telemetry.LastGraphRecoveryUtc is null || graphRecoveryAge > settings.QueueSampleInterval.TotalSeconds * 2);
         if (oldestAge > settings.BacklogDegradedAfter.TotalSeconds
             || oldestPinAge > settings.BacklogDegradedAfter.TotalSeconds || overdueWaiting > 0
-            || hasRenewalFailure || hasDependencyFailure)
+            || graph is not null && now - graph.Oldest > settings.BacklogDegradedAfter
+            || staleGraphRecovery || hasRenewalFailure || hasDependencyFailure)
         {
             data["Status"] = hasRenewalFailure
                 ? "renewal-failure"
-                : hasDependencyFailure ? "dependency-failure" : overdueWaiting > 0 ? "window-overdue" : "backlog";
+                : hasDependencyFailure
+                    ? "dependency-failure"
+                    : staleGraphRecovery
+                        ? "graph-recovery-stale"
+                        : overdueWaiting > 0 ? "window-overdue" : "backlog";
             return HealthCheckResult.Degraded("Central derivative worker is degraded.", data: data);
         }
         return HealthCheckResult.Healthy("Central derivative worker is healthy.", data);

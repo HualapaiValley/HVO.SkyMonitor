@@ -12,6 +12,8 @@
     { "eventId": 2136, "level": "Error", "fields": ["JobId", "Attempt"] },
     { "eventId": 2139, "level": "Warning", "fields": ["JobId", "Attempt"] },
     { "eventId": 2140, "level": "Information", "fields": ["JobId", "Recipe", "From", "To", "SelectedCount", "Reason"] },
+    { "eventId": 2150, "level": "Error", "fields": ["ExecutionId"] },
+    { "eventId": 2151, "level": "Warning", "fields": ["ExecutionId"] },
     { "eventId": 2160, "level": "Information", "fields": ["ArtifactCount"] },
     { "eventId": 2161, "level": "Information", "fields": ["JobId", "CandidateCount", "Outcome"] }
   ],
@@ -20,12 +22,12 @@
     { "name": "skymonitor.central.derivative.lease.renewals", "unit": "{renewal}", "labels": { "outcome": ["renewed", "failed"] } },
     { "name": "skymonitor.central.derivative.attempts", "unit": "{attempt}", "labels": { "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["produced", "skipped", "retryable", "terminal", "lease-lost", "quarantined"], "cause": ["none", "recipe", "input", "lease", "source-missing", "storage", "source-integrity", "output-integrity", "database", "execution"] } },
     { "name": "skymonitor.central.derivative.recoveries", "unit": "{recovery}", "labels": { "outcome": ["adopted"] } },
-    { "name": "skymonitor.central.derivative.operations", "unit": "{operation}", "labels": { "operation": ["cancel", "requeue", "reprocess", "supersede", "transient-schedule", "transient-submit"], "outcome": ["completed", "existing", "scheduled", "accepted", "duplicate", "retired", "rejected"] } },
+    { "name": "skymonitor.central.derivative.operations", "unit": "{operation}", "labels": { "operation": ["cancel", "requeue", "reprocess", "supersede", "transient-schedule", "transient-submit", "graph-node-expanded"], "outcome": ["completed", "existing", "scheduled", "accepted", "duplicate", "retired", "rejected", "created"] } },
     { "name": "skymonitor.central.derivative.dependency.failures", "unit": "{failure}", "labels": { "dependency": ["database", "storage"] } },
     { "name": "skymonitor.central.transient.outcomes", "unit": "{outcome}", "labels": { "outcome": ["persisted", "no-candidate", "adopted", "other"] } },
     { "name": "skymonitor.central.transient.classifications", "unit": "{classification}", "labels": { "classification": ["unknown", "meteor", "satellite", "aircraft", "sensorartifact", "environmentalartifact"] } },
     { "name": "skymonitor.central.transient.candidates", "unit": "{candidate}", "labels": { "outcome": ["persisted", "no-candidate", "adopted", "other"] } },
-    { "name": "skymonitor.central.derivative.duration", "unit": "ms", "labels": { "stage": ["claim", "recover", "verify", "load", "execute", "publish", "complete", "detect", "converge", "persist", "window-resolution"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["claimed", "empty", "failed", "adopted", "completed", "missing", "integrity", "produced", "skipped", "retryable", "terminal", "other", "nocandidate", "invalid", "limitexceeded", "transient-extraction.no-candidate", "transient-validation.persisted", "waiting", "pending", "quarantined", "terminalfailure"] } },
+    { "name": "skymonitor.central.derivative.duration", "unit": "ms", "labels": { "stage": ["claim", "recover", "verify", "load", "execute", "publish", "complete", "detect", "converge", "persist", "window-resolution", "graph-expansion", "graph-convergence"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"], "outcome": ["claimed", "empty", "failed", "adopted", "completed", "missing", "integrity", "produced", "skipped", "retryable", "terminal", "other", "nocandidate", "invalid", "limitexceeded", "transient-extraction.no-candidate", "transient-validation.persisted", "waiting", "pending", "quarantined", "terminalfailure", "created", "existing", "conflict", "running", "completed-optional", "cancel-requested", "canceled"] } },
     { "name": "skymonitor.central.derivative.bytes", "unit": "By", "labels": { "direction": ["input", "output"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"] } },
     { "name": "skymonitor.central.derivative.queue", "unit": "{job}", "labels": { "status": ["pending", "leased", "retryable", "waiting", "other"], "recipe": ["encoded-preview", "annotation", "image-quality", "rolling-mean", "central-transient-validation", "other"] } },
     { "name": "skymonitor.central.derivative.queue.oldest_age", "unit": "s", "labels": {} },
@@ -45,7 +47,12 @@
     { "name": "skymonitor.central.derivative.window.waiting.oldest_age", "unit": "s", "labels": {} },
     { "name": "skymonitor.central.derivative.window.pins.active", "unit": "{artifact}", "labels": {} },
     { "name": "skymonitor.central.derivative.window.pins.bytes", "unit": "By", "labels": {} },
-    { "name": "skymonitor.central.derivative.window.pins.oldest_age", "unit": "s", "labels": {} }
+    { "name": "skymonitor.central.derivative.window.pins.oldest_age", "unit": "s", "labels": {} },
+    { "name": "skymonitor.central.processing_graph.expansions", "unit": "{execution}", "labels": { "class": ["live", "replay"], "outcome": ["created", "existing", "conflict", "failed"] } },
+    { "name": "skymonitor.central.processing_graph.convergences", "unit": "{convergence}", "labels": { "class": ["live", "replay", "other"], "outcome": ["running", "completed", "completed-optional", "failed", "cancel-requested", "canceled"] } },
+    { "name": "skymonitor.central.processing_graph.recovery", "unit": "{poll}", "labels": { "outcome": ["empty", "converged"] } },
+    { "name": "skymonitor.central.processing_graph.queue", "unit": "{execution}", "labels": { "class": ["live", "replay"], "status": ["pending", "running", "cancel-requested"] } },
+    { "name": "skymonitor.central.processing_graph.convergence.oldest_age", "unit": "s", "labels": {} }
   ],
   "spans": [
     { "name": "central-derivative.execute", "kind": "Consumer", "tags": ["recipe", "job.id", "attempt"] },
@@ -60,9 +67,9 @@
   "health": {
     "check": "central-derivative-worker",
     "healthy": ["disabled", "healthy"],
-    "degraded": ["renewal-failure", "dependency-failure", "window-overdue", "backlog"],
-    "unhealthy": ["inconsistent-window", "stale"],
-    "fields": ["Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds", "WaitingCount", "OldestWaitAgeSeconds", "OverdueWaitingCount", "OldestPinAgeSeconds"]
+    "degraded": ["renewal-failure", "dependency-failure", "window-overdue", "backlog", "graph-recovery-stale"],
+    "unhealthy": ["inconsistent-window", "graph-topology-unsealed", "stale"],
+    "fields": ["Status", "ActiveSlots", "PendingCount", "OldestAgeSeconds", "LastSuccessAgeSeconds", "WaitingCount", "OldestWaitAgeSeconds", "OverdueWaitingCount", "OldestPinAgeSeconds", "GraphExecutionCount", "GraphOldestConvergenceAgeSeconds", "GraphUnsealedCount", "GraphRecoveryAgeSeconds"]
   },
   "privacy": {
     "forbidden": ["lease token", "object credentials", "payload bytes", "storage path", "user identity"],

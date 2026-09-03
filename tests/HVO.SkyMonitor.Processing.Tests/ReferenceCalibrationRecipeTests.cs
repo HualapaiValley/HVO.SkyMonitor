@@ -60,6 +60,7 @@ public sealed class ReferenceCalibrationRecipeTests
             product.Algorithms.Select(static algorithm => algorithm.Version).ToArray());
         Assert.AreEqual(0, product.Layout!.BlackLevel);
         Assert.AreEqual(ushort.MaxValue, product.Layout.WhiteLevel);
+        ProcessingRecipeTests.AssertProductMatchesContract(fixture.Request, product);
     }
 
     [TestMethod]

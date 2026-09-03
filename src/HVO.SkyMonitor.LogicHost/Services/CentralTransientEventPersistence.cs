@@ -494,7 +494,8 @@ internal sealed class CentralTransientEventPersistence(
         var expectedRecipeIdentity = TransientCandidateExtractionFactory.ComputeRecipeIdentitySha256(extraction.Options);
         if (inputs.Length != extraction.OrderedSources.Count ||
             inputs.Select(item => item.Ordinal).SequenceEqual(Enumerable.Range(0, inputs.Length)) is false ||
-            !string.Equals(job.InputSetIdentitySha256, CentralDerivativeWindowIdentity.CreateInputSetIdentity(inputs),
+            !string.Equals(job.InputSetIdentitySha256,
+                CentralDerivativeWindowIdentity.CreateInputSetIdentity(inputs, job.CanonicalInputs),
                 StringComparison.Ordinal) ||
             !string.Equals(job.RequestedRecipeIdentitySha256, expectedRecipeIdentity, StringComparison.Ordinal) ||
             !string.Equals(job.ExpectedRecipeIdentitySha256, expectedRecipeIdentity, StringComparison.Ordinal) ||

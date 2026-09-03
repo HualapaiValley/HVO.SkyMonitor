@@ -72,7 +72,7 @@ public sealed class CentralTransientAcceptanceManifestTests
 
         var logs = root.GetProperty("logs").EnumerateArray().ToArray();
         logs.Select(log => log.GetProperty("eventId").GetInt32()).Should()
-            .BeEquivalentTo([2130, 2131, 2132, 2133, 2136, 2139, 2140, 2160, 2161]);
+            .BeEquivalentTo([2130, 2131, 2132, 2133, 2136, 2139, 2140, 2150, 2151, 2160, 2161]);
         logs.Select(log => log.GetProperty("eventId").GetInt32()).Should().OnlyHaveUniqueItems();
 
         var metrics = root.GetProperty("metrics").EnumerateArray().ToArray();

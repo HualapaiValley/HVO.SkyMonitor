@@ -326,7 +326,8 @@ internal sealed class CentralTransientReprocessingService(
             });
             ordinal++;
         }
-        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+            job.Inputs, job.CanonicalInputs);
         dbContext.CentralDerivativeJobs.Add(job);
         var reprocessingJob = new CentralTransientReprocessingJob
         {

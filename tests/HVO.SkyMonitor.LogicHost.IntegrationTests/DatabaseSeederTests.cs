@@ -1,8 +1,11 @@
 using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Common.Identity;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Configuration;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Services;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -18,6 +21,51 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestCategory("Integration")]
 public sealed class DatabaseSeederTests
 {
+    [TestMethod]
+    public async Task SeedAsyncPreservesCanonicalGraphAcrossRestartWithTransientConfiguration()
+    {
+        string definitionJson;
+        string definitionIdentity;
+        string portablePlanIdentity;
+        string? centralPlanIdentity;
+        using (var beforeScope = AssemblyHooks.Fixture.Factory.Services.CreateScope())
+        {
+            var dbContext = beforeScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var revision = await dbContext.CentralProcessingGraphRevisions.AsNoTracking()
+                .SingleAsync(item => item.Id == DatabaseSeeder.BasicCentralProcessingGraphRevisionId);
+            definitionJson = revision.DefinitionJson;
+            definitionIdentity = revision.DefinitionIdentitySha256;
+            portablePlanIdentity = revision.PortablePlanIdentitySha256;
+            centralPlanIdentity = revision.CentralPlanIdentitySha256;
+        }
+        var configuredRegistry = new CentralProcessingGraphNodeRegistry(
+            new CentralDerivativeRecipeCatalog(new CentralTransientOptions
+            {
+                Mode = TransientDetectorExecutionMode.Central,
+                SourceRole = FrameArtifactRole.Calibrated
+            }));
+
+        for (var restart = 0; restart < 2; restart++)
+        {
+            using var scope = AssemblyHooks.Fixture.Factory.Services.CreateScope();
+            await DatabaseSeeder.SeedAsync(
+                new RegistryOverrideServiceProvider(scope.ServiceProvider, configuredRegistry),
+                NullLogger.Instance);
+        }
+
+        using var verificationScope = AssemblyHooks.Fixture.Factory.Services.CreateScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var retained = await verification.CentralProcessingGraphRevisions.AsNoTracking()
+            .SingleAsync(item => item.Id == DatabaseSeeder.BasicCentralProcessingGraphRevisionId);
+        Assert.AreEqual(definitionJson, retained.DefinitionJson);
+        Assert.AreEqual(definitionIdentity, retained.DefinitionIdentitySha256);
+        Assert.AreEqual(portablePlanIdentity, retained.PortablePlanIdentitySha256);
+        Assert.AreEqual(centralPlanIdentity, retained.CentralPlanIdentitySha256);
+        Assert.DoesNotContain("TransientDetection", retained.DefinitionJson, StringComparison.Ordinal);
+        Assert.AreEqual(1, await verification.CentralProcessingGraphAssignments.AsNoTracking()
+            .CountAsync(item => item.Id == DatabaseSeeder.BasicCentralProcessingGraphAssignmentId));
+    }
+
     [TestMethod]
     public async Task SeedAsyncAssignsConfiguredApiKeyToPasswordlessOwner()
     {
@@ -160,5 +208,15 @@ public sealed class DatabaseSeederTests
                 await applicationManager.UpdateAsync(application, originalDescriptor);
             }
         }
+    }
+
+    private sealed class RegistryOverrideServiceProvider(
+        IServiceProvider inner,
+        ICentralProcessingGraphNodeRegistry registry) : IServiceProvider
+    {
+        public object? GetService(Type serviceType)
+            => serviceType == typeof(ICentralProcessingGraphNodeRegistry)
+                ? registry
+                : inner.GetService(serviceType);
     }
 }

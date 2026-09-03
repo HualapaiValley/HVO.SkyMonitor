@@ -56,7 +56,8 @@ internal sealed class CentralDerivativeJobScheduler(
     ICentralDerivativeRecipeCatalog recipeCatalog,
     ICentralDerivativeWindowResolver windowResolver,
     IEnvironmentalObservationQueryService? environmentalQuery = null,
-    ICentralProcessingPolicyService? processingPolicy = null) : ICentralDerivativeJobScheduler
+    ICentralProcessingPolicyService? processingPolicy = null,
+    ICentralProcessingGraphScheduler? graphScheduler = null) : ICentralDerivativeJobScheduler
 {
     internal const string SourceInvalidatedReason = "The derivative source artifact is not usable.";
     internal const string ResultInvalidatedReason = "The derivative result artifact is not usable.";
@@ -103,7 +104,7 @@ internal sealed class CentralDerivativeJobScheduler(
         try
         {
             await PersistRequiredJobsUnderPayloadLocksAsync(
-                artifact, now, holdTargets, cancellationToken).ConfigureAwait(false);
+                artifact, now, holdTargets, transientOnly: false, cancellationToken).ConfigureAwait(false);
         }
         catch (DbUpdateConcurrencyException exception)
         {
@@ -182,7 +183,8 @@ internal sealed class CentralDerivativeJobScheduler(
                 SelectedAtUtc = now
             });
         }
-        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+            job.Inputs, job.CanonicalInputs);
         var validation = dbContext.CentralTransientValidationJobs.Local.Single(candidate =>
             candidate.CentralDerivativeJobId == job.Id);
         validation.AgentId = authenticatedAgentId;
@@ -333,6 +335,92 @@ internal sealed class CentralDerivativeJobScheduler(
             throw new InvalidOperationException(
                 "The scheduler must acquire its complete payload lock set before opening a SQL transaction.");
         }
+        var graphExecutionId = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
+            .Where(evidence => evidence.CentralArtifactId == artifact.Id && evidence.Job!.GraphExecutionId != null)
+            .Select(evidence => evidence.Job!.GraphExecutionId)
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (graphExecutionId.HasValue && graphScheduler is not null)
+        {
+            await graphScheduler.ConvergeAsync(graphExecutionId.Value, now, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        // Central publication validation (CentralProcessingGraphNodeRegistry.Validate) restricts graph sources to the
+        // same role set, so every source role an assigned central graph can declare reaches ScheduleLiveAsync here.
+        if (graphScheduler is not null &&
+            CentralProcessingGraphNodeRegistry.IsSupportedSourceRole(artifact.Role))
+        {
+            var graphResult = await graphScheduler.ScheduleLiveAsync(artifact.Id, now, cancellationToken)
+                .ConfigureAwait(false);
+            if (graphResult.Outcome != CentralProcessingGraphScheduleOutcome.NotApplicable)
+            {
+                // Resolve the legacy transient recipe through the same policy the persistence core applies, so a
+                // deployment without a legacy transient recipe (Hybrid mode, Calibrated-only catalog, or an
+                // observatory override with CentralValidationEnabled=false) never acquires payload holds and a
+                // serializable transaction only to schedule nothing.
+                var legacyTransientRecipe = await ResolveLegacyTransientRecipeAsync(
+                    artifact, cancellationToken).ConfigureAwait(false);
+                if (SchedulesLegacyTransientRecipe(graphResult, legacyTransientRecipe))
+                {
+                    // Graph expansion clears the change tracker, so the caller's artifact instance is detached;
+                    // reload it before legacy persistence attaches new jobs to it.
+                    var trackedArtifact = await LoadSchedulingArtifactAsync(
+                        artifact.DevicePublicId, artifact.ArtifactId, cancellationToken).ConfigureAwait(false);
+                    await PersistRequiredJobsWithObjectLocksAsync(
+                        trackedArtifact, now, transientOnly: true, cancellationToken).ConfigureAwait(false);
+                }
+                else if (artifact.Frame?.CaptureSequence is not null &&
+                    (graphResult.Outcome is CentralProcessingGraphScheduleOutcome.Created or
+                        CentralProcessingGraphScheduleOutcome.Existing ||
+                    SchedulesLegacyTransientRecipe(graphResult, recipeCatalog.GetTransientRecipe(artifact.Role))))
+                {
+                    // Created/Existing keep the graph path's window notification. A deployment whose transient recipe
+                    // exists in the catalog but is suppressed by policy keeps the notification the transient-only
+                    // branch issued before, minus its payload holds and transaction.
+                    await windowResolver.ResolveAffectedAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+                }
+                return;
+            }
+        }
+        await PersistRequiredJobsWithObjectLocksAsync(artifact, now, transientOnly: false, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The legacy transient recipe the persistence core would schedule for <paramref name="artifact"/>: the
+    /// policy-resolved required recipes filtered to the transient one. Hybrid mode publishes the transient recipe
+    /// for graph coverage only, so it is absent from the required set; an observatory override with
+    /// <c>CentralValidationEnabled=false</c> removes it as well.
+    /// </summary>
+    private async Task<CentralDerivativeRecipe?> ResolveLegacyTransientRecipeAsync(
+        CentralArtifact artifact,
+        CancellationToken cancellationToken)
+    {
+        var requiredRecipes = processingPolicy is null || artifact.Frame is null
+            ? recipeCatalog.GetRequiredRecipes(artifact.Role)
+            : await processingPolicy.ResolveRequiredRecipesAsync(
+                artifact.Frame.ObservatoryId, artifact.Role, cancellationToken).ConfigureAwait(false);
+        return requiredRecipes.SingleOrDefault(static recipe => recipe.Transient is not null);
+    }
+
+    /// <summary>
+    /// Graph-covered recipe work stays graph-owned. When the effective graph carries no transient-validation node,
+    /// the deployment's transient recipe is still owned by the legacy scheduler for every graph disposition
+    /// (Created, Existing, AwaitingSources, Conflict, Invalid) so Central mode behaves the same for Raw and
+    /// Calibrated source roles. A graph that carries the transient node owns it and no legacy transient job is made.
+    /// </summary>
+    internal static bool SchedulesLegacyTransientRecipe(
+        CentralProcessingGraphScheduleResult graphResult,
+        CentralDerivativeRecipe? transientRecipe)
+        => graphResult.Outcome != CentralProcessingGraphScheduleOutcome.NotApplicable &&
+            !graphResult.CoversTransientValidation &&
+            transientRecipe is not null;
+
+    private async Task PersistRequiredJobsWithObjectLocksAsync(
+        CentralArtifact artifact,
+        DateTimeOffset now,
+        bool transientOnly,
+        CancellationToken cancellationToken)
+    {
         var holdTargets = await ReadRequiredPayloadHoldTargetsAsync(dbContext, artifact.Id, cancellationToken)
             .ConfigureAwait(false);
         var resolveAffectedWindow = false;
@@ -355,9 +443,14 @@ internal sealed class CentralDerivativeJobScheduler(
                         return;
                     }
                     await PersistRequiredJobsUnderPayloadLocksAsync(
-                        artifact, now, holdScope.Targets, cancellationToken).ConfigureAwait(false);
+                        artifact, now, holdScope.Targets, transientOnly, cancellationToken).ConfigureAwait(false);
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                    resolveAffectedWindow = artifact.Role == FrameArtifactRole.Raw
+                    // Legacy Raw scheduling notifies affected windows as before. The graph-covered transient-only
+                    // branch notifies for either source role and for every graph disposition it is reached with
+                    // (Created, Existing, AwaitingSources, Conflict, Invalid), wider than the Created/Existing
+                    // notification the graph-only path issues: a legacy transient window job may have just been
+                    // created or re-touched here regardless of how the graph expansion itself concluded.
+                    resolveAffectedWindow = (transientOnly || artifact.Role == FrameArtifactRole.Raw)
                         && artifact.Frame?.CaptureSequence is not null;
                 }
             }
@@ -457,9 +550,10 @@ internal sealed class CentralDerivativeJobScheduler(
         CentralArtifact artifact,
         DateTimeOffset now,
         IReadOnlyList<CentralTransientPayloadHoldTarget> holdTargets,
+        bool transientOnly,
         CancellationToken cancellationToken)
     {
-        await EnsureRequiredJobsCoreAsync(artifact, now, cancellationToken).ConfigureAwait(false);
+        await EnsureRequiredJobsCoreAsync(artifact, now, transientOnly, cancellationToken).ConfigureAwait(false);
         var changedActiveJobs = dbContext.ChangeTracker.Entries<CentralDerivativeJob>()
             .Where(entry => entry.State is EntityState.Added or EntityState.Modified
                 && IsRetentionActive(entry.Entity.Status))
@@ -497,9 +591,14 @@ internal sealed class CentralDerivativeJobScheduler(
             or CentralDerivativeJobStatus.RetryableFailure
             or CentralDerivativeJobStatus.CancelRequested;
 
-    private async Task EnsureRequiredJobsCoreAsync(
+    /// <summary>
+    /// Tracks (without saving) the legacy derivative jobs the artifact requires. Production callers reach this only
+    /// under payload holds and a serializable transaction; tests exercise the recipe selection directly.
+    /// </summary>
+    internal async Task EnsureRequiredJobsCoreAsync(
         CentralArtifact artifact,
         DateTimeOffset now,
+        bool transientOnly,
         CancellationToken cancellationToken)
     {
         var frame = artifact.Frame ?? throw new InvalidOperationException("The artifact frame must be loaded before scheduling derivatives.");
@@ -512,6 +611,16 @@ internal sealed class CentralDerivativeJobScheduler(
             ? recipeCatalog.GetRequiredRecipes(artifact.Role)
             : await processingPolicy.ResolveRequiredRecipesAsync(
                 frame.ObservatoryId, artifact.Role, cancellationToken).ConfigureAwait(false);
+        if (transientOnly)
+        {
+            // The effective processing graph owns every non-transient recipe for this source; only the policy-resolved
+            // transient recipe (if any) remains legacy-scheduled, and never the weather overlay or derived-role work.
+            sourceRecipes = sourceRecipes.Where(static recipe => recipe.Transient is not null).ToArray();
+            if (sourceRecipes.Count == 0)
+            {
+                return;
+            }
+        }
         if (artifact.Role == FrameArtifactRole.Raw ||
             artifact.Role == FrameArtifactRole.Calibrated && sourceRecipes.Count > 0)
         {
@@ -609,7 +718,7 @@ internal sealed class CentralDerivativeJobScheduler(
                     Restore(existing, artifact, now);
                 }
             }
-            if (artifact.Role == FrameArtifactRole.Raw)
+            if (artifact.Role == FrameArtifactRole.Raw && !transientOnly)
             {
                 await EnsureWeatherCloudOverlayJobAsync(frame, now, cancellationToken).ConfigureAwait(false);
             }
@@ -698,6 +807,7 @@ internal sealed class CentralDerivativeJobScheduler(
             ResolutionStartedAtUtc = isWaiting ? now : null,
             ResolutionCompletedAtUtc = isWaiting ? null : now,
             MissingInputOutcome = recipe.Window?.MissingInputOutcome,
+            WaitKind = isWaiting ? CentralDerivativeWaitKind.Window : null,
             StateReasonCode = isWaiting ? CentralDerivativeWindowReasonCodes.WaitingRequiredInput : null,
             CreatedAtUtc = now,
             UpdatedAtUtc = now,
@@ -757,7 +867,8 @@ internal sealed class CentralDerivativeJobScheduler(
         }
         if (recipe.Window is null)
         {
-            job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+            job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+                job.Inputs, job.CanonicalInputs);
         }
         return job;
     }
@@ -956,7 +1067,8 @@ internal sealed class CentralDerivativeJobScheduler(
             EnvironmentalObservationRecordId = observation.RecordId,
             SelectedAtUtc = now
         });
-        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+            job.Inputs, job.CanonicalInputs);
         return job;
     }
 
@@ -1088,7 +1200,8 @@ internal sealed class CentralDerivativeJobScheduler(
             EnvironmentalObservationRecordId = environmentInput.EnvironmentalObservationRecordId,
             SelectedAtUtc = now
         });
-        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+            job.Inputs, job.CanonicalInputs);
         dbContext.CentralDerivativeJobs.Add(job);
     }
 

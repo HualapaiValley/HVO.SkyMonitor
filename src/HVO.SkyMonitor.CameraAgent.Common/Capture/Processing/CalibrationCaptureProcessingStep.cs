@@ -29,6 +29,8 @@ internal sealed class CalibrationCaptureProcessingStep(
 
     public string OutputVariant => Options.OutputVariant;
 
+    public string? OutputMediaType => "application/x-hvo-linear-frame";
+
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
         new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw };
 

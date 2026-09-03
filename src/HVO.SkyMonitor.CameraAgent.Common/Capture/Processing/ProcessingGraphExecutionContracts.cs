@@ -233,6 +233,14 @@ public interface IProcessingGraphOperations
         string? reason,
         CancellationToken cancellationToken);
 
+    ValueTask<ProcessingGraphRegistryState> RollbackRevisionAsync(
+        string revisionId,
+        long expectedVersion,
+        string idempotencyKey,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken);
+
     ValueTask<ProcessingGraphRevisionState> ValidateRevisionAsync(
         string revisionId,
         string idempotencyKey,

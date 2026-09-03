@@ -50,6 +50,17 @@ public sealed class CloudAssessmentRecipeTests
         CollectionAssert.Contains(
             parsed.Assessment.ReasonCodes.ToArray(),
             CloudAssessmentReasonCodes.EnvironmentMissing);
+        ProcessingRecipeTests.AssertProductMatchesContract(request, product);
+        var contract = BuiltInProcessingRecipes.CreateProductContract(request, product.Recipe);
+        Assert.IsFalse(BuiltInProcessingRecipes.ProductPayloadMatchesContract(
+            request, contract, product.Payload, new string('F', 64),
+            product.Recipe.IdentitySha256, product.Algorithms));
+        Assert.IsFalse(BuiltInProcessingRecipes.ProductPayloadMatchesContract(
+            request, contract, product.Payload, product.ContentIdentitySha256,
+            new string('F', 64), product.Algorithms));
+        Assert.IsFalse(BuiltInProcessingRecipes.ProductPayloadMatchesContract(
+            request, contract, product.Payload, product.ContentIdentitySha256,
+            product.Recipe.IdentitySha256, [new ProcessingAlgorithmIdentity("invalid", "v1")]));
     }
 
     [TestMethod]
@@ -74,6 +85,7 @@ public sealed class CloudAssessmentRecipeTests
             assessment.ReasonCodes.ToArray(),
             CloudAssessmentReasonCodes.MissingClearReference);
         Assert.HasCount(1, outcome.Products.Single().SourceArtifactIds);
+        ProcessingRecipeTests.AssertProductMatchesContract(request, outcome.Products.Single());
     }
 
     [TestMethod]

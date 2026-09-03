@@ -221,6 +221,97 @@ internal sealed partial class SqliteCaptureProcessingStore
         return await ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    internal async ValueTask<ProcessingGraphRegistryState> RollbackRevisionAsync(
+        string revisionId,
+        long expectedVersion,
+        string idempotencyKey,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        ValidateRevisionId(revisionId);
+        ValidateCommand(idempotencyKey, actor, reason);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(expectedVersion);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var commandSha256 = CommandSha256("rollback", $"{revisionId}:{expectedVersion}", actor, reason);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        if (await ReadCommandAsync(connection, transaction, idempotencyKey, cancellationToken).ConfigureAwait(false) is { } prior)
+        {
+            EnsureIdempotent(prior, "rollback", commandSha256);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return await ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        var state = await ReadRegistryRowAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The processing graph registry has not been initialized.");
+        if (state.StateVersion != expectedVersion)
+        {
+            throw new ProcessingGraphStoreConflictException("The processing graph registry version has changed.");
+        }
+        var current = await ReadRevisionAsync(
+            connection, transaction, state.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
+        var target = await ReadRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false);
+        if (target.State.Lifecycle != ProcessingGraphRevisionLifecycle.Validated ||
+            !string.Equals(target.State.RevisionId, state.ConfiguredBasicRevisionId, StringComparison.Ordinal) &&
+            target.State.ActivatedUtc is null)
+        {
+            throw new ProcessingGraphStoreConflictException(
+                "Rollback requires the configured basic graph or a previously activated revision.");
+        }
+        var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        await SetRevisionLifecycleAsync(
+            connection, transaction, current.State.RevisionId, ProcessingGraphRevisionLifecycle.Validated, now,
+            cancellationToken).ConfigureAwait(false);
+        await SetRevisionLifecycleAsync(
+            connection, transaction, target.State.RevisionId, ProcessingGraphRevisionLifecycle.Active, now,
+            cancellationToken).ConfigureAwait(false);
+        using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE processing_graph_registry_state
+                SET selection_mode = 'Named', active_revision_id = $revision,
+                    state_version = state_version + 1, updated_unix_ms = $now
+                WHERE state_key = 1 AND state_version = $expected;
+                """;
+            update.Parameters.AddWithValue("$revision", revisionId);
+            update.Parameters.AddWithValue("$now", now);
+            update.Parameters.AddWithValue("$expected", expectedVersion);
+            if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new ProcessingGraphStoreConflictException("The processing graph registry version has changed.");
+            }
+        }
+        await InsertCommandAsync(
+            connection, transaction, idempotencyKey, "rollback", commandSha256, actor, reason,
+            revisionId, cancellationToken).ConfigureAwait(false);
+        var queued = await QueueRevisionFactsAsync(
+            connection,
+            transaction,
+            target.State.RevisionId,
+            ProcessingGraphDeliveryFactKind.Activated,
+            null,
+            excludeRevision: false,
+            RevisionFactBatchSize,
+            cancellationToken).ConfigureAwait(false);
+        if (queued < RevisionFactBatchSize)
+        {
+            _ = await QueueRevisionFactsAsync(
+                connection,
+                transaction,
+                current.State.RevisionId,
+                ProcessingGraphDeliveryFactKind.RolledBack,
+                "local-rollback",
+                excludeRevision: false,
+                RevisionFactBatchSize - queued,
+                cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     internal async ValueTask<ProcessingGraphRegistryState> RetireRevisionAsync(
         string revisionId,
         long expectedVersion,
@@ -255,6 +346,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (revision.State.Lifecycle == ProcessingGraphRevisionLifecycle.Retired)
         {
             throw new ProcessingGraphStoreConflictException("The processing graph revision is already retired.");
+        }
+        if (await IsAcceptedDeliveredRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false))
+        {
+            // Central holds a durable Accepted fact for this staged revision and will never re-propose it; retiring it
+            // locally would strand that delivery with no Rejected/Expired fact to correct central's view. Central
+            // remains free to supersede it with a newer proposal, which settles the local row as Superseded.
+            throw new ProcessingGraphStoreConflictException(
+                "A centrally delivered revision that central recorded as accepted cannot be retired locally.");
         }
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
         await SetRevisionLifecycleAsync(
@@ -317,6 +416,29 @@ internal sealed partial class SqliteCaptureProcessingStore
         var state = await ReadRegistryRowAsync(connection, null, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The processing graph registry has not been initialized.");
         return await ReadRevisionAsync(connection, null, state.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Returns the revision ID currently occupying the unique <c>(graph_name, revision_name)</c> pair, or
+    /// <see langword="null"/> when the name is free. Used to detect a persisted revision whose immutable content was
+    /// produced by an earlier compiler contract so the caller can supersede it deterministically instead of
+    /// colliding on insert.
+    /// </summary>
+    internal async ValueTask<string?> ReadRevisionIdByNameAsync(
+        string graphName,
+        string revisionName,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT revision_id FROM processing_graph_revisions
+            WHERE graph_name = $name AND revision_name = $revision;
+            """;
+        command.Parameters.AddWithValue("$name", graphName);
+        command.Parameters.AddWithValue("$revision", revisionName);
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
     }
 
     internal async ValueTask BeginNodeAttemptAsync(
@@ -674,6 +796,33 @@ internal sealed partial class SqliteCaptureProcessingStore
                 await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7)));
         }
         return inputs;
+    }
+
+    private static async ValueTask<bool> IsAcceptedDeliveredRevisionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string revisionId,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        // Retirement is blocked only while central may still hold this revision as accepted: the proposal settled
+        // Accepted locally and its Accepted fact is pending delivery or was acknowledged. Once central rejected the
+        // Accepted fact (HTTP 400/404/409), central never recorded the acceptance, so the local revision is free to
+        // retire instead of being stranded by an acceptance central does not know about.
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM processing_graph_delivery_proposals AS proposal
+            INNER JOIN processing_graph_delivery_facts AS fact
+                ON fact.proposal_id = proposal.proposal_id
+               AND fact.fact_kind = 'Accepted'
+               AND fact.delivery_state <> 'Rejected'
+            WHERE proposal.disposition = 'Accepted' AND proposal.local_revision_id = $revision;
+            """;
+        command.Parameters.AddWithValue("$revision", revisionId);
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) > 0;
     }
 
     private static async ValueTask InsertRevisionAsync(

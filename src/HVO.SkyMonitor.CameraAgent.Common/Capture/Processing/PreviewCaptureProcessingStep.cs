@@ -21,6 +21,8 @@ internal abstract class PreviewCaptureProcessingStepBase<TOptions>(
 
     public string OutputVariant => Options.OutputVariant;
 
+    public string? OutputMediaType => "application/x-hvo-packed-image";
+
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = acceptedInputRoles;
 
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)

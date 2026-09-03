@@ -25,6 +25,8 @@ internal sealed class CloudAssessmentCaptureProcessingStep(
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string? OutputSchemaVersion => CloudAssessmentV1.CurrentSchemaVersion;
 
+    public string? OutputMediaType => StructuredProcessingProductContracts.CloudAssessmentMediaType;
+
     public string OutputVariant => Options.OutputVariant;
 
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =

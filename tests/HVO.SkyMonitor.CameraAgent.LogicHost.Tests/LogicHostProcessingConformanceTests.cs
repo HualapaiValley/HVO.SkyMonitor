@@ -583,7 +583,11 @@ public sealed class LogicHostProcessingConformanceTests
             InputArtifactId: current.ArtifactId), CancellationToken.None).ConfigureAwait(false);
         var central = await logicHost.ExecuteAsync(
             [
-                new LogicHostProcessingInput(currentDescriptor, currentPayload),
+                new LogicHostProcessingInput(
+                    currentDescriptor,
+                    currentPayload,
+                    "current-frame",
+                    BindingKind: ProcessingGraphInputBindingKind.PrimaryArtifact),
                 new LogicHostProcessingInput(referenceDescriptor, referencePayload, "clear-reference")
             ],
             BuiltInProcessingRecipes.CloudAssessment,

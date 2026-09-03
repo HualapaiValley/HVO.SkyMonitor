@@ -286,7 +286,8 @@ internal sealed class CentralTransientDerivativeScheduler(ApplicationDbContext d
                 ByteLength = requestBytes.Length,
                 SelectedAtUtc = version.VersionCreatedUtc
             });
-            job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+            job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+                job.Inputs, job.CanonicalInputs);
             var derivativeJob = new CentralTransientDerivativeJob
             {
                 CentralDerivativeJobId = job.Id,

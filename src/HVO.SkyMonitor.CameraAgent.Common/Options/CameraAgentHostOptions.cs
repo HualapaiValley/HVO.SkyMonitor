@@ -38,6 +38,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public ProcessingGraphExecutionOptions ProcessingGraphs { get; init; } = new();
 
     [Required]
+    public ProcessingGraphDeliveryOptions ProcessingGraphDelivery { get; init; } = new();
+
+    [Required]
     public ProvisioningStartupGateOptions ProvisioningStartupGate { get; init; } = new();
 
     [Required]
@@ -149,6 +152,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             processingGraphResults,
             validateAllProperties: true);
         foreach (var result in processingGraphResults)
+        {
+            yield return result;
+        }
+
+        var processingGraphDeliveryResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            ProcessingGraphDelivery,
+            new ValidationContext(ProcessingGraphDelivery),
+            processingGraphDeliveryResults,
+            validateAllProperties: true);
+        foreach (var result in processingGraphDeliveryResults)
         {
             yield return result;
         }
@@ -713,6 +727,36 @@ public sealed class ProcessingGraphExecutionOptions : IValidatableObject
                     "Local replay runner concurrent request and response buffers exceed the aggregate transfer limit.",
                     [nameof(ReplayMaximumConcurrency), nameof(LocalRunner.MaximumTransferBytes)]);
             }
+        }
+    }
+}
+
+public sealed class ProcessingGraphDeliveryOptions : IValidatableObject
+{
+    public bool Enabled { get; init; } = true;
+
+    [Range(5, 3600)]
+    public int PollIntervalSeconds { get; init; } = 300;
+
+    [Range(1, 100)]
+    public int AcknowledgementBatchSize { get; init; } = 16;
+
+    [Range(1, 120)]
+    public int RequestTimeoutSeconds { get; init; } = 30;
+
+    [Range(1, 3600)]
+    public int RetryInitialDelaySeconds { get; init; } = 5;
+
+    [Range(1, 86400)]
+    public int RetryMaximumDelaySeconds { get; init; } = 300;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (RetryMaximumDelaySeconds < RetryInitialDelaySeconds)
+        {
+            yield return new ValidationResult(
+                "RetryMaximumDelaySeconds must be greater than or equal to RetryInitialDelaySeconds.",
+                [nameof(RetryMaximumDelaySeconds), nameof(RetryInitialDelaySeconds)]);
         }
     }
 }

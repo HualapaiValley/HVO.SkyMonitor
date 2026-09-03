@@ -174,6 +174,7 @@ public sealed class ProcessingRecipeTests
         Assert.AreNotEqual(product.ContentIdentitySha256, product.ChecksumSha256);
         Assert.AreNotEqual(product.Recipe.IdentitySha256, changed.Products.Single().Recipe.IdentitySha256);
         Assert.AreNotEqual(product.OutputIdentitySha256, changed.Products.Single().OutputIdentitySha256);
+        AssertProductMatchesContract(CreateProjectedSceneRequest(source, predicted), product);
         var lowercaseRequest = CreateProjectedSceneRequest(source, predicted, lowercaseIdentity: true);
         var lowercaseRecipe = BuiltInProcessingRecipes.CreateExecutionIdentity(
             lowercaseRequest.RecipeName,
@@ -373,12 +374,13 @@ public sealed class ProcessingRecipeTests
                 WhiteLevel = 16_383
             }
         };
-        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(Request(
+        var request = Request(
             BuiltInProcessingRecipes.LinearNormalization,
             EmptyOptions(),
             ProcessingInputSelector.Raw(),
             [source],
-            "none")).ConfigureAwait(false);
+            "none");
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status);
         var product = outcome.Products[0];
@@ -391,6 +393,7 @@ public sealed class ProcessingRecipeTests
         Assert.AreEqual("linear-normalization-none-v1", product.Recipe.Descriptor.ImplementationVersion);
         Assert.AreEqual(source.ArtifactId, product.SourceArtifactIds[0]);
         Assert.AreEqual(source.Compatibility, product.Compatibility);
+        AssertProductMatchesContract(request, product);
 
         var executor = new ProcessingRecipeExecutor();
         var missing = await executor.ExecuteAsync(Request(
@@ -422,10 +425,12 @@ public sealed class ProcessingRecipeTests
         var bayer = CreateArtifact(FrameArtifactRole.Calibrated, "color", CameraPixelFormat.BayerRggb16, 2, 2, bayerBytes);
         var executor = new ProcessingRecipeExecutor();
 
-        var monoOutcome = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Raw("mono"), [mono], "mono-jpeg")).ConfigureAwait(false);
-        var colorOutcome = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Calibrated("color"), [bayer], "color-jpeg")).ConfigureAwait(false);
+        var monoRequest = Request(
+            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Raw("mono"), [mono], "mono-jpeg");
+        var colorRequest = Request(
+            BuiltInProcessingRecipes.EncodedPreview, EmptyOptions(), ProcessingInputSelector.Calibrated("color"), [bayer], "color-jpeg");
+        var monoOutcome = await executor.ExecuteAsync(monoRequest).ConfigureAwait(false);
+        var colorOutcome = await executor.ExecuteAsync(colorRequest).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, monoOutcome.Status);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, colorOutcome.Status);
@@ -435,22 +440,26 @@ public sealed class ProcessingRecipeTests
         CollectionAssert.AreEqual(new byte[] { 0, 0, 0, 64, 0, 128, 255, 255 }, monoBytes);
         CollectionAssert.AreEqual(new byte[] { 0, 16, 0, 32, 0, 48, 0, 64 }, bayerBytes);
         Assert.IsTrue(colorOutcome.Products[0].Algorithms.Any(item => item.Name == "rggb-demosaic"));
+        AssertProductMatchesContract(monoRequest, monoOutcome.Products[0]);
+        AssertProductMatchesContract(colorRequest, colorOutcome.Products[0]);
 
         var mono8 = CreateArtifact(FrameArtifactRole.Raw, "mono8", CameraPixelFormat.Mono8, 2, 1, [1, 2, 99],
             stride: 3);
         var rgb24 = CreateArtifact(FrameArtifactRole.Calibrated, "rgb", CameraPixelFormat.Rgb24, 1, 1, [3, 4, 5]);
-        var packedMono = await executor.ExecuteAsync(Request(
+        var packedMonoRequest = Request(
             BuiltInProcessingRecipes.EncodedPreview,
             Json("""{"outputEncoding":"Packed"}"""),
             ProcessingInputSelector.Raw("mono8"),
             [mono8],
-            "mono-packed")).ConfigureAwait(false);
-        var packedRgb = await executor.ExecuteAsync(Request(
+            "mono-packed");
+        var packedRgbRequest = Request(
             BuiltInProcessingRecipes.EncodedPreview,
             Json("""{"outputEncoding":"Packed"}"""),
             ProcessingInputSelector.Calibrated("rgb"),
             [rgb24],
-            "rgb-packed")).ConfigureAwait(false);
+            "rgb-packed");
+        var packedMono = await executor.ExecuteAsync(packedMonoRequest).ConfigureAwait(false);
+        var packedRgb = await executor.ExecuteAsync(packedRgbRequest).ConfigureAwait(false);
         var invalidRole = await executor.ExecuteAsync(Request(
             BuiltInProcessingRecipes.EncodedPreview,
             EmptyOptions(),
@@ -468,6 +477,8 @@ public sealed class ProcessingRecipeTests
         CollectionAssert.AreEqual(new byte[] { 3, 4, 5 }, packedRgb.Products[0].Payload.ToArray());
         Assert.AreEqual(CameraPixelFormat.Mono8, packedMono.Products[0].Layout!.PixelFormat);
         Assert.AreEqual(CameraPixelFormat.Rgb24, packedRgb.Products[0].Layout!.PixelFormat);
+        AssertProductMatchesContract(packedMonoRequest, packedMono.Products[0]);
+        AssertProductMatchesContract(packedRgbRequest, packedRgb.Products[0]);
         Assert.AreEqual(ProcessingReasonCodes.InvalidSelector, invalidRole.ReasonCode);
         Assert.AreEqual(ProcessingReasonCodes.MissingInput, missing.ReasonCode);
     }
@@ -489,18 +500,20 @@ public sealed class ProcessingRecipeTests
             source.RecipeIdentitySha256);
         var executor = new ProcessingRecipeExecutor();
 
-        var full = await executor.ExecuteAsync(Request(
+        var fullRequest = Request(
             BuiltInProcessingRecipes.JpegEncoding,
             Json("""{"jpegQuality":90}"""),
             selector,
             [source],
-            "annotated-final-jpeg")).ConfigureAwait(false);
-        var thumbnail = await executor.ExecuteAsync(Request(
+            "annotated-final-jpeg");
+        var thumbnailRequest = Request(
             BuiltInProcessingRecipes.JpegEncoding,
             Json("""{"jpegQuality":80,"maximumDimension":2}"""),
             selector,
             [source],
-            "annotated-thumbnail-2-jpeg")).ConfigureAwait(false);
+            "annotated-thumbnail-2-jpeg");
+        var full = await executor.ExecuteAsync(fullRequest).ConfigureAwait(false);
+        var thumbnail = await executor.ExecuteAsync(thumbnailRequest).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, full.Status);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, thumbnail.Status);
@@ -513,6 +526,15 @@ public sealed class ProcessingRecipeTests
         Assert.AreEqual(1, decodedThumbnail.Height);
         Assert.IsTrue(thumbnail.Products[0].Algorithms.Any(static algorithm => algorithm.Name == "downsample"));
         CollectionAssert.AreEqual(new byte[] { 0, 32, 64, 96, 128, 160, 192, 255 }, source.Payload.ToArray());
+        AssertProductMatchesContract(fullRequest, full.Products[0]);
+        AssertProductMatchesContract(thumbnailRequest, thumbnail.Products[0]);
+        Assert.IsFalse(BuiltInProcessingRecipes.ProductPayloadMatchesContract(
+            thumbnailRequest,
+            BuiltInProcessingRecipes.CreateProductContract(thumbnailRequest, thumbnail.Products[0].Recipe),
+            "not-a-jpeg"u8.ToArray(),
+            thumbnail.Products[0].ContentIdentitySha256,
+            thumbnail.Products[0].Recipe.IdentitySha256,
+            thumbnail.Products[0].Algorithms));
     }
 
     [TestMethod]
@@ -543,7 +565,7 @@ public sealed class ProcessingRecipeTests
             null,
             new string('A', 64));
 
-        var outcome = await executor.ExecuteAsync(Request(
+        var request = Request(
             BuiltInProcessingRecipes.Annotation,
             EmptyOptions(),
             ProcessingInputSelector.RecipeResult(
@@ -552,13 +574,15 @@ public sealed class ProcessingRecipeTests
                 previewProduct.Recipe.IdentitySha256),
             [previewArtifact],
             "stars",
-            annotation)).ConfigureAwait(false);
+            annotation);
+        var outcome = await executor.ExecuteAsync(request).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status);
         Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, outcome.Products[0].Role);
         Assert.AreEqual(previewArtifact.ArtifactId, outcome.Products[0].SourceArtifactIds[0]);
         Assert.IsTrue(outcome.Products[0].Algorithms.Any(item => item.Name == "jpeg-decode"));
         Assert.AreEqual(8, JpegImageCodec.DecodeJpeg(outcome.Products[0].Payload).Width);
+        AssertProductMatchesContract(request, outcome.Products[0]);
 
         var sceneArtifact = previewArtifact with
         {
@@ -705,14 +729,16 @@ public sealed class ProcessingRecipeTests
                 FrameArtifactRole.Calibrated => ProcessingInputSelector.Calibrated(artifact.Variant),
                 _ => ProcessingInputSelector.Combined(artifact.Variant)
             };
-            var formatted = await executor.ExecuteAsync(Request(
+            var formattedRequest = Request(
                 BuiltInProcessingRecipes.Annotation,
                 Json("""{"outputEncoding":"Packed"}"""),
                 selector,
                 [artifact],
                 "formatted",
-                annotation)).ConfigureAwait(false);
+                annotation);
+            var formatted = await executor.ExecuteAsync(formattedRequest).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, formatted.Status);
+            AssertProductMatchesContract(formattedRequest, formatted.Products[0]);
         }
 
         var missingAnnotation = await executor.ExecuteAsync(Request(
@@ -791,18 +817,20 @@ public sealed class ProcessingRecipeTests
             CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono16, 1, 1, [20, 0], ids[1], start.AddSeconds(1)),
             CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono16, 1, 1, mutableNewest, ids[2], start.AddSeconds(2))
         };
-        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(Request(
+        var request = Request(
             BuiltInProcessingRecipes.RollingMean,
             Json("""{"maximumFrameCount":2}"""),
             ProcessingInputSelector.Raw("source"),
             inputs,
-            "mean-2")).ConfigureAwait(false);
+            "mean-2");
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(request).ConfigureAwait(false);
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status);
         CollectionAssert.AreEqual(new byte[] { 30, 0 }, outcome.Products[0].Payload.ToArray());
         CollectionAssert.AreEqual(ids[1..], outcome.Products[0].SourceArtifactIds.ToArray());
         Assert.AreEqual(TimeSpan.FromSeconds(2), outcome.Products[0].TotalIntegration);
         Assert.AreEqual("linear16-arithmetic-mean-v1", outcome.Products[0].Recipe.Descriptor.ImplementationVersion);
+        AssertProductMatchesContract(request, outcome.Products[0]);
 
         var sequenceOrdered = await new ProcessingRecipeExecutor().ExecuteAsync(Request(
             BuiltInProcessingRecipes.RollingMean,
@@ -1024,10 +1052,12 @@ public sealed class ProcessingRecipeTests
     {
         var input = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono8, 2, 2, [0, 1, 254, 255]);
         var executor = new ProcessingRecipeExecutor();
-        var quality = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.ImageQuality, EmptyOptions(), ProcessingInputSelector.Raw(), [input], "quality")).ConfigureAwait(false);
-        var noOp = await executor.ExecuteAsync(Request(
-            BuiltInProcessingRecipes.NoOpAnalyzer, EmptyOptions(), ProcessingInputSelector.Raw(), [input], "noop")).ConfigureAwait(false);
+        var qualityRequest = Request(
+            BuiltInProcessingRecipes.ImageQuality, EmptyOptions(), ProcessingInputSelector.Raw(), [input], "quality");
+        var noOpRequest = Request(
+            BuiltInProcessingRecipes.NoOpAnalyzer, EmptyOptions(), ProcessingInputSelector.Raw(), [input], "noop");
+        var quality = await executor.ExecuteAsync(qualityRequest).ConfigureAwait(false);
+        var noOp = await executor.ExecuteAsync(noOpRequest).ConfigureAwait(false);
 
         using var qualityJson = JsonDocument.Parse(quality.Products[0].Payload);
         Assert.AreEqual(4L, qualityJson.RootElement.GetProperty("sampleCount").GetInt64());
@@ -1036,6 +1066,8 @@ public sealed class ProcessingRecipeTests
         Assert.AreEqual(1L, qualityJson.RootElement.GetProperty("saturatedCount").GetInt64());
         Assert.AreEqual("{\"status\":\"ok\"}", System.Text.Encoding.UTF8.GetString(noOp.Products[0].Payload.Span));
         Assert.AreEqual(FrameArtifactRole.Metadata, noOp.Products[0].Role);
+        AssertProductMatchesContract(qualityRequest, quality.Products[0]);
+        AssertProductMatchesContract(noOpRequest, noOp.Products[0]);
 
         var formats = new[]
         {
@@ -1054,6 +1086,49 @@ public sealed class ProcessingRecipeTests
                 "quality")).ConfigureAwait(false);
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, formatQuality.Status);
         }
+
+        var qualityContract = BuiltInProcessingRecipes.CreateProductContract(
+            qualityRequest, quality.Products[0].Recipe);
+        Assert.IsFalse(BuiltInProcessingRecipes.ProductPayloadMatchesContract(
+            qualityRequest, qualityContract, "{"u8.ToArray(), null,
+            quality.Products[0].Recipe.IdentitySha256, quality.Products[0].Algorithms));
+        var statistics = JsonSerializer.Deserialize<ImageStatisticsResult>(quality.Products[0].Payload.Span)!;
+        var invalidStatistics = new[]
+        {
+            statistics with { PixelCount = 3 },
+            statistics with { ChannelCount = 2 },
+            statistics with { SampleCount = 3 },
+            statistics with { Minimum = 256, Maximum = 255 },
+            statistics with { Maximum = 256 },
+            statistics with { Sum = 0 },
+            statistics with { Sum = 766 },
+            statistics with { SumOfSquares = 0 },
+            statistics with { SumOfSquares = 195_076 },
+            statistics with { ZeroCount = -1 },
+            statistics with { ZeroCount = 5 },
+            statistics with { Minimum = 1 },
+            statistics with { SaturatedCount = -1 },
+            statistics with { SaturatedCount = 5 },
+            statistics with { Maximum = 254 },
+            statistics with { SaturatedCount = 0 },
+            statistics with { Minimum = 255, Maximum = 255, Sum = 1020, SumOfSquares = 260_100 },
+            statistics with { AlgorithmVersion = "invalid" }
+        };
+        foreach (var invalid in invalidStatistics)
+        {
+            var payload = Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(
+                JsonSerializer.SerializeToElement(invalid)).GetRawText());
+            Assert.IsFalse(BuiltInProcessingRecipes.ProductPayloadMatchesContract(
+                qualityRequest, qualityContract, payload, null,
+                quality.Products[0].Recipe.IdentitySha256, quality.Products[0].Algorithms));
+        }
+        Assert.IsFalse(BuiltInProcessingRecipes.ProductPayloadMatchesContract(
+            qualityRequest,
+            qualityContract,
+            Encoding.UTF8.GetBytes($" {Encoding.UTF8.GetString(quality.Products[0].Payload.Span)}"),
+            null,
+            quality.Products[0].Recipe.IdentitySha256,
+            quality.Products[0].Algorithms));
     }
 
     [TestMethod]
@@ -1499,6 +1574,35 @@ public sealed class ProcessingRecipeTests
             ProcessingInputSelector.Raw(),
             [input],
             "failure"));
+    }
+
+    internal static void AssertProductMatchesContract(
+        ProcessingExecutionRequest request,
+        ProcessingProduct product)
+    {
+        var contract = BuiltInProcessingRecipes.CreateProductContract(request, product.Recipe);
+        Assert.AreEqual(product.Role, contract.Role);
+        CollectionAssert.AreEqual(product.SourceArtifactIds.ToArray(), contract.SourceArtifactIds.ToArray());
+        Assert.AreEqual(product.MediaType, contract.MediaType);
+        Assert.AreEqual(product.Layout is not null, contract.RequiresLayout);
+        Assert.AreEqual(product.Layout, contract.ExactLayout);
+        Assert.AreEqual(product.Kind, contract.Kind);
+        Assert.AreEqual(product.SchemaVersion, contract.SchemaVersion);
+        Assert.AreEqual(product.ContentIdentitySha256 is not null, contract.RequiresContentIdentity);
+        if (contract.ContentIdentitySha256 is not null)
+        {
+            Assert.AreEqual(product.ContentIdentitySha256, contract.ContentIdentitySha256);
+        }
+        CollectionAssert.AreEqual(product.Algorithms.ToArray(), contract.Algorithms.ToArray());
+        Assert.AreEqual(product.TotalIntegration, contract.TotalIntegration);
+        Assert.AreEqual(product.Compatibility, contract.Compatibility);
+        Assert.IsTrue(BuiltInProcessingRecipes.ProductPayloadMatchesContract(
+            request,
+            contract,
+            product.Payload,
+            product.ContentIdentitySha256,
+            product.Recipe.IdentitySha256,
+            product.Algorithms));
     }
 
     private static ProcessingExecutionRequest Request(

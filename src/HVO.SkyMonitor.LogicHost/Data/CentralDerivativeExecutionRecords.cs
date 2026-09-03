@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.Processing;
+
 namespace HVO.SkyMonitor.LogicHost.Data;
 
 internal sealed class CentralDerivativeJobAttempt
@@ -55,6 +57,16 @@ internal sealed class CentralArtifactProcessingEvidence
     public string RequestedRecipeIdentitySha256 { get; set; } = string.Empty;
 
     public string RecipeIdentitySha256 { get; set; } = string.Empty;
+
+    public ProcessingOperationKind? RecipeOperationKind { get; set; }
+
+    public string? GraphProductContractIdentitySha256 { get; set; }
+
+    public ProcessingProductKind? ProductKind { get; set; }
+
+    public string? ProductSchemaVersion { get; set; }
+
+    public string? ProductMediaType { get; set; }
 
     public string AlgorithmsJson { get; set; } = "[]";
 

@@ -22,6 +22,8 @@ internal sealed class JpegEncodingCaptureProcessingStep(
 
     public string OutputVariant => Options.OutputVariant;
 
+    public string? OutputMediaType => "image/jpeg";
+
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
         new HashSet<FrameArtifactRole> { FrameArtifactRole.AnnotatedPreview };
 

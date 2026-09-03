@@ -12,6 +12,14 @@ internal sealed class CentralDerivativeJobInputRequirement
 
     public string BindingName { get; set; } = string.Empty;
 
+    public Guid? GraphDependencyId { get; set; }
+
+    public CentralDerivativeJobDependency? GraphDependency { get; set; }
+
+    public int? GraphInputOrdinal { get; set; }
+
+    public HVO.SkyMonitor.Processing.ProcessingGraphInputBindingKind? GraphInputBindingKind { get; set; }
+
     public CentralDerivativeInputSourceKind SourceKind { get; set; }
 
     public int? SequenceOffset { get; set; }

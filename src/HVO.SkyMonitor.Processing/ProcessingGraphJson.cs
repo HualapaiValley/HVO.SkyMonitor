@@ -165,31 +165,55 @@ public static class ProcessingGraphJson
         bindingKind = input.BindingKind.ToString()
     };
 
-    internal static object CanonicalOutput(ProcessingGraphProductContract output) => new
+    internal static object CanonicalOutput(ProcessingGraphProductContract output)
     {
-        role = output.Role.ToString(),
-        output.Variant,
-        productKind = output.ProductKind.ToString(),
-        recipe = output.Recipe is null ? null : new
+        var canonical = new Dictionary<string, object?>
         {
-            output.Recipe.Name,
-            output.Recipe.SemanticVersion,
-            output.Recipe.ImplementationVersion,
-            operationKind = output.Recipe.OperationKind.ToString()
-        },
-        output.SchemaVersion,
-        algorithms = (output.Algorithms.IsDefault ? [] : output.Algorithms)
-            .Select(static algorithm => new { algorithm.Name, algorithm.Version }).ToArray()
-    };
+            ["role"] = output.Role.ToString(),
+            ["variant"] = output.Variant,
+            ["productKind"] = output.ProductKind.ToString(),
+            ["recipe"] = output.Recipe is null ? null : new
+            {
+                output.Recipe.Name,
+                output.Recipe.SemanticVersion,
+                output.Recipe.ImplementationVersion,
+                operationKind = output.Recipe.OperationKind.ToString()
+            },
+            ["schemaVersion"] = output.SchemaVersion,
+            ["algorithms"] = (output.Algorithms.IsDefault ? [] : output.Algorithms)
+                .Select(static algorithm => new { algorithm.Name, algorithm.Version }).ToArray()
+        };
+        if (output.MediaType is not null)
+        {
+            canonical["mediaType"] = output.MediaType;
+        }
+        return canonical;
+    }
 
-    internal static object? CanonicalWindow(ProcessingGraphWindowRequirement? window) => window is null ? null : new
+    internal static object? CanonicalWindow(ProcessingGraphWindowRequirement? window)
     {
-        kind = window.Kind.ToString(),
-        window.MinimumInputCount,
-        window.MaximumInputCount,
-        requiredPositions = window.RequiredPositions.ToArray(),
-        compatibilityLabels = SortDistinct(window.CompatibilityLabels)
-    };
+        if (window is null)
+        {
+            return null;
+        }
+        var canonical = new Dictionary<string, object?>
+        {
+            ["kind"] = window.Kind.ToString(),
+            ["minimumInputCount"] = window.MinimumInputCount,
+            ["maximumInputCount"] = window.MaximumInputCount,
+            ["requiredPositions"] = window.RequiredPositions.ToArray(),
+            ["compatibilityLabels"] = SortDistinct(window.CompatibilityLabels)
+        };
+        if (window.TimeoutTicks != TimeSpan.FromMinutes(5).Ticks)
+        {
+            canonical["timeoutTicks"] = window.TimeoutTicks;
+        }
+        if (window.MissingInputOutcome != ProcessingGraphMissingInputOutcome.Skip)
+        {
+            canonical["missingInputOutcome"] = window.MissingInputOutcome.ToString();
+        }
+        return canonical;
+    }
 
     internal static string[] SortDistinct(IEnumerable<string> values) => values
         .Distinct(StringComparer.Ordinal)

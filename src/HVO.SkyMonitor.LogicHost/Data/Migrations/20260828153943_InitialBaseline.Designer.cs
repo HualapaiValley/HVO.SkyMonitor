@@ -20,7 +20,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.10")
+                .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -530,17 +530,39 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<Guid>("DevicePublicId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("GraphProductContractIdentitySha256")
+                        .IsFixedLength()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)");
+
                     b.Property<string>("OutputIdentitySha256")
                         .IsRequired()
                         .HasMaxLength(64)
                         .IsUnicode(false)
                         .HasColumnType("varchar(64)");
 
+                    b.Property<string>("ProductKind")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("ProductMediaType")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("ProductSchemaVersion")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
                     b.Property<string>("RecipeIdentitySha256")
                         .IsRequired()
                         .HasMaxLength(64)
                         .IsUnicode(false)
                         .HasColumnType("varchar(64)");
+
+                    b.Property<string>("RecipeOperationKind")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
 
                     b.Property<string>("RequestedRecipeIdentitySha256")
                         .IsRequired()
@@ -560,10 +582,14 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralArtifactProcessingEvidence", null, t =>
                         {
+                            t.HasTrigger("TR_CentralArtifactProcessingEvidence_GraphContractImmutable");
+
                             t.HasCheckConstraint("CK_CentralArtifactProcessingEvidence_AttemptNumber", "[AttemptNumber] > 0");
 
                             t.HasCheckConstraint("CK_CentralArtifactProcessingEvidence_TotalIntegrationTicks", "[TotalIntegrationTicks] >= 0");
                         });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralArtifactRecipe", b =>
@@ -890,6 +916,24 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .IsUnicode(false)
                         .HasColumnType("varchar(64)");
 
+                    b.Property<string>("FrozenNodePlanJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid?>("GraphExecutionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("GraphFailurePolicy")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("GraphNodeId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<int?>("GraphNodeOrdinal")
+                        .HasColumnType("int");
+
                     b.Property<string>("InputSelectorJson")
                         .IsRequired()
                         .HasMaxLength(2048)
@@ -923,6 +967,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<int>("MaxAttempts")
                         .HasColumnType("int");
 
+                    b.Property<int?>("MinimumInputCount")
+                        .HasColumnType("int");
+
                     b.Property<string>("MissingInputOutcome")
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
@@ -950,6 +997,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasMaxLength(64)
                         .IsUnicode(false)
                         .HasColumnType("varchar(64)");
+
+                    b.Property<string>("SharedNodePlanIdentitySha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
 
                     b.Property<DateTimeOffset?>("ResolutionCompletedAtUtc")
                         .HasColumnType("datetimeoffset");
@@ -1015,11 +1068,23 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<string>("WaitKind")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("PredecessorJobId")
                         .IsUnique()
                         .HasFilter("[PredecessorJobId] IS NOT NULL");
+
+                    b.HasIndex("GraphExecutionId", "GraphNodeId")
+                        .IsUnique()
+                        .HasFilter("[GraphExecutionId] IS NOT NULL");
+
+                    b.HasIndex("GraphExecutionId", "GraphNodeOrdinal")
+                        .IsUnique()
+                        .HasFilter("[GraphExecutionId] IS NOT NULL");
 
                     b.HasIndex("RequestIdentitySha256")
                         .IsUnique();
@@ -1042,10 +1107,22 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralDerivativeJobs", null, t =>
                         {
+                            t.HasTrigger("TR_CentralDerivativeJobs_GraphIdentityImmutable");
+
                             t.HasCheckConstraint("CK_CentralDerivativeJobs_AttemptCount", "[AttemptCount] >= 0 AND [AttemptCount] <= [MaxAttempts]");
 
+                            t.HasCheckConstraint("CK_CentralDerivativeJobs_GraphFailurePolicy", "[GraphFailurePolicy] IS NULL OR [GraphFailurePolicy] IN (N'Required', N'Optional')");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobs_GraphOwnership", "([GraphExecutionId] IS NULL AND [GraphNodeId] IS NULL AND [GraphNodeOrdinal] IS NULL AND [SharedNodePlanIdentitySha256] IS NULL AND [FrozenNodePlanJson] IS NULL AND [GraphFailurePolicy] IS NULL) OR ([GraphExecutionId] IS NOT NULL AND [GraphNodeId] IS NOT NULL AND [GraphNodeOrdinal] >= 0 AND [SharedNodePlanIdentitySha256] IS NOT NULL AND [FrozenNodePlanJson] IS NOT NULL AND [GraphFailurePolicy] IS NOT NULL)");
+
                             t.HasCheckConstraint("CK_CentralDerivativeJobs_MaxAttempts", "[MaxAttempts] > 0");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobs_MinimumInputCount", "[MinimumInputCount] IS NULL OR [MinimumInputCount] >= 0");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobs_WaitKind", "[WaitKind] IS NULL OR [WaitKind] IN (N'Dependencies', N'Window')");
                         });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobAttempt", b =>
@@ -1160,10 +1237,89 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralDerivativeJobCanonicalInputs", null, t =>
                         {
+                            t.HasTrigger("TR_CentralDerivativeJobCanonicalInputs_GraphImmutable");
+
                             t.HasCheckConstraint("CK_CentralDerivativeJobCanonicalInputs_ByteLength", "[ByteLength] > 0");
 
                             t.HasCheckConstraint("CK_CentralDerivativeJobCanonicalInputs_Ordinal", "[Ordinal] >= 0");
                         });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobDependency", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ConsumerBindingKind")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("ConsumerBindingName")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<int?>("ConsumerInputOrdinal")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("ConsumerJobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("ProducerJobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("ProducerOutputOrdinal")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("ProducerSourceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("Required")
+                        .HasColumnType("bit");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("ConsumerJobId", "Id");
+
+                    b.HasIndex("ProducerSourceId");
+
+                    b.HasIndex("ConsumerJobId", "Ordinal")
+                        .IsUnique();
+
+                    b.HasIndex("ExecutionId", "ConsumerJobId");
+
+                    b.HasIndex("ProducerJobId", "ProducerOutputOrdinal");
+
+                    b.ToTable("CentralDerivativeJobDependencies", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralDerivativeJobDependencies_Immutable");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobDependencies_Binding", "([Kind] IN (N'Outcome', N'Ordering') AND [ProducerOutputOrdinal] IS NULL AND [ConsumerInputOrdinal] IS NULL AND [ConsumerBindingName] IS NULL AND [ConsumerBindingKind] IS NULL) OR ([Kind] IN (N'Artifact', N'CanonicalJson', N'Annotation') AND [ProducerOutputOrdinal] >= 0 AND [ConsumerInputOrdinal] >= 0 AND [ConsumerBindingName] IS NOT NULL AND [ConsumerBindingKind] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobDependencies_BindingKind", "[ConsumerBindingKind] IS NULL OR [ConsumerBindingKind] IN (N'PrimaryArtifact', N'AuxiliaryArtifact', N'CanonicalJson', N'Annotation')");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobDependencies_CompatibleBinding", "[Kind] IN (N'Outcome', N'Ordering') OR ([Kind] = N'Artifact' AND [ConsumerBindingKind] IN (N'PrimaryArtifact', N'AuxiliaryArtifact')) OR ([Kind] = N'CanonicalJson' AND [ConsumerBindingKind] = N'CanonicalJson') OR ([Kind] = N'Annotation' AND [ConsumerBindingKind] = N'Annotation')");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobDependencies_Kind", "[Kind] IN (N'Artifact', N'CanonicalJson', N'Annotation', N'Outcome', N'Ordering')");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobDependencies_Ordinal", "[Ordinal] >= 0");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobDependencies_Producer", "([ProducerJobId] IS NOT NULL AND [ProducerSourceId] IS NULL) OR ([ProducerJobId] IS NULL AND [ProducerSourceId] IS NOT NULL)");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobInput", b =>
@@ -1218,6 +1374,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralDerivativeJobInputs", null, t =>
                         {
+                            t.HasTrigger("TR_CentralDerivativeJobInputs_GraphImmutable");
+
                             t.HasCheckConstraint("CK_CentralDerivativeJobInputs_ByteLength", "[ByteLength] >= 0");
 
                             t.HasCheckConstraint("CK_CentralDerivativeJobInputs_Ordinal", "[Ordinal] >= 0");
@@ -1242,6 +1400,16 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid?>("GraphDependencyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("GraphInputBindingKind")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int?>("GraphInputOrdinal")
+                        .HasColumnType("int");
 
                     b.Property<string>("ExpectedAgentId")
                         .IsRequired()
@@ -1293,6 +1461,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasIndex("ExpectedCentralArtifactId");
 
+                    b.HasIndex("CentralDerivativeJobId", "GraphDependencyId")
+                        .HasFilter("[GraphDependencyId] IS NOT NULL");
+
                     b.HasIndex("CentralDerivativeJobId", "Ordinal")
                         .IsUnique();
 
@@ -1300,8 +1471,104 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.ToTable("CentralDerivativeJobInputRequirements", null, t =>
                         {
+                            t.HasTrigger("TR_CentralDerivativeJobInputRequirements_GraphBindingImmutable");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobInputRequirements_GraphBinding", "([GraphDependencyId] IS NULL AND [GraphInputOrdinal] IS NULL AND [GraphInputBindingKind] IS NULL) OR ([GraphDependencyId] IS NOT NULL AND [GraphInputOrdinal] >= 0 AND [GraphInputBindingKind] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobInputRequirements_GraphInputBindingKind", "[GraphInputBindingKind] IS NULL OR [GraphInputBindingKind] IN (N'PrimaryArtifact', N'AuxiliaryArtifact', N'CanonicalJson', N'Annotation')");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobInputRequirements_GraphResolution", "[GraphDependencyId] IS NULL OR ([ResolutionState] = N'Waiting' AND [ExpectedCentralArtifactId] IS NULL AND [ResolvedAtUtc] IS NULL) OR ([ResolutionState] = N'Resolved' AND [ResolvedAtUtc] IS NOT NULL AND (([SourceKind] = N'Artifact' AND [ExpectedCentralArtifactId] IS NOT NULL) OR ([SourceKind] <> N'Artifact' AND [ExpectedCentralArtifactId] IS NULL))) OR ([ResolutionState] IN (N'Missing', N'Incompatible') AND [ExpectedCentralArtifactId] IS NULL AND [ResolvedAtUtc] IS NOT NULL AND LEN([ResolutionReasonCode]) > 0)");
+
                             t.HasCheckConstraint("CK_CentralDerivativeJobInputRequirements_Ordinal", "[Ordinal] >= 0");
                         });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobOutput", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("BoundAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("CentralDerivativeJobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ContractIdentitySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("ContractJson")
+                        .IsRequired()
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(max)");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ProductKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid?>("ResultCentralArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ResultOutputIdentitySha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("Variant")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CentralDerivativeJobId", "Ordinal");
+
+                    b.HasIndex("ResultCentralArtifactId")
+                        .HasFilter("[ResultCentralArtifactId] IS NOT NULL");
+
+                    b.HasIndex("ResultOutputIdentitySha256")
+                        .HasFilter("[ResultOutputIdentitySha256] IS NOT NULL");
+
+                    b.ToTable("CentralDerivativeJobOutputs", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralDerivativeJobOutputs_BindOnce");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobOutputs_Binding", "([ResultCentralArtifactId] IS NULL AND [ResultOutputIdentitySha256] IS NULL AND [BoundAtUtc] IS NULL) OR ([ResultCentralArtifactId] IS NOT NULL AND [ResultOutputIdentitySha256] IS NOT NULL AND [BoundAtUtc] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobOutputs_ContractIdentity", "ISJSON([ContractJson]) = 1 AND [ContractJson] NOT LIKE '%[^ -~]%' COLLATE Latin1_General_100_BIN2 AND [ContractIdentitySha256] = CONVERT(varchar(64), HASHBYTES('SHA2_256', [ContractJson]), 2)");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobOutputs_Ordinal", "[Ordinal] >= 0");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobOutputs_ProductKind", "[ProductKind] IN (N'PixelData', N'Metadata')");
+
+                            t.HasCheckConstraint("CK_CentralDerivativeJobOutputs_Role", "[Role] IN (N'Raw', N'Calibrated', N'Combined', N'Preview', N'AnnotatedPreview', N'Metadata')");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralFrame", b =>
@@ -1496,6 +1763,566 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                             t.HasCheckConstraint("CK_CentralObjectRecoveryDispositions_TokenizedTimestamps", "[OperationToken] IS NULL OR ([UpdatedAtUtc] >= [CreatedAtUtc] AND ([LastAttemptAtUtc] IS NULL OR [LastAttemptAtUtc] >= [CreatedAtUtc]))");
                         });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphAssignment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("EffectiveFromUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("EffectiveUntilUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("LogicalCameraId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<Guid>("RevisionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("TargetHost")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LogicalCameraId");
+
+                    b.HasIndex("ObservatoryId");
+
+                    b.HasIndex("RevisionId");
+
+                    b.HasIndex("TargetHost", "EffectiveFromUtc", "Id");
+
+                    b.HasIndex("TargetHost", "LogicalCameraId", "EffectiveFromUtc", "Id");
+
+                    b.HasIndex("TargetHost", "ObservatoryId", "EffectiveFromUtc", "Id");
+
+                    b.ToTable("CentralProcessingGraphAssignments", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralProcessingGraphAssignments_Immutable");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphAssignments_EffectiveWindow", "[EffectiveUntilUtc] IS NULL OR [EffectiveUntilUtc] > [EffectiveFromUtc]");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphAssignments_Scope", "([Scope] = N'GlobalDefault' AND [ObservatoryId] IS NULL AND [LogicalCameraId] IS NULL) OR ([Scope] = N'Observatory' AND [ObservatoryId] IS NOT NULL AND [LogicalCameraId] IS NULL) OR ([Scope] = N'LogicalCamera' AND [ObservatoryId] IS NOT NULL AND [LogicalCameraId] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphAssignments_TargetHost", "[TargetHost] IN (N'Edge', N'Central')");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphDeliveryFact", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("DefinitionIdentitySha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("LocalPlanIdentitySha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("LocalRevisionId")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTimeOffset>("OccurredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("ProposalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset>("RecordedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("SharedPlanIdentitySha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProposalId")
+                        .IsUnique()
+                        .HasFilter("[Kind] IN (N'Accepted', N'Rejected', N'Expired', N'Superseded')");
+
+                    b.HasIndex("ProposalId", "RecordedAtUtc", "Id");
+
+                    b.ToTable("CentralProcessingGraphDeliveryFacts", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralProcessingGraphDeliveryFacts_Immutable");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphDeliveryFacts_Kind", "[Kind] IN (N'Retrieved', N'Accepted', N'Rejected', N'Activated', N'RolledBack', N'Expired', N'Superseded')");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphDeliveryFacts_Source", "[Source] IN (N'LogicHost', N'CameraAgent')");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphDeliveryProposal", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AssignmentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CapabilitySnapshotSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("ExpectedActiveLocalRevisionId")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("InstallationPublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("IssuedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("LogicalCameraInstallationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RegistrationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RevisionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LogicalCameraInstallationId");
+
+                    b.HasIndex("RevisionId");
+
+                    b.HasIndex("RegistrationId", "LogicalCameraInstallationId", "IssuedAtUtc", "Id");
+
+                    b.HasIndex("AssignmentId", "RegistrationId", "LogicalCameraInstallationId", "CapabilitySnapshotSha256", "ExpectedActiveLocalRevisionId");
+
+                    b.ToTable("CentralProcessingGraphDeliveryProposals", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralProcessingGraphDeliveryProposals_Immutable");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphDeliveryProposals_Expiry", "[ExpiresAtUtc] > [IssuedAtUtc]");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecution", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("AnchorSourceArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AnchorSourceCentralArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AnchorSourceChecksumSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<Guid?>("AssignmentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("CancellationRequestedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CentralPlanIdentitySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<DateTimeOffset?>("CompletedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("DefinitionIdentitySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("ExecutionClass")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<DateTimeOffset?>("ExpandedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("ExpectedDependencyCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ExpectedNodeCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ExpectedOutputCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ExpectedSourceCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FrozenCentralPlanJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("FrozenDefinitionJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<Guid>("InstallationPublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("LogicalCameraId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("LogicalCameraInstallationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("PredecessorExecutionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<string>("RequestIdentitySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("RevisionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTimeOffset?>("StartedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)");
+
+                    b.Property<string>("Trigger")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AnchorSourceCentralArtifactId");
+
+                    b.HasIndex("AssignmentId");
+
+                    b.HasIndex("ExpandedAtUtc")
+                        .HasFilter("[ExpandedAtUtc] IS NULL");
+
+                    b.HasIndex("LogicalCameraId");
+
+                    b.HasIndex("ObservatoryId");
+
+                    b.HasIndex("PredecessorExecutionId")
+                        .IsUnique()
+                        .HasFilter("[PredecessorExecutionId] IS NOT NULL");
+
+                    b.HasIndex("RequestIdentitySha256")
+                        .IsUnique();
+
+                    b.HasIndex("RevisionId");
+
+                    b.HasIndex("ExecutionClass", "ActorId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("LogicalCameraInstallationId", "CreatedAtUtc", "Id");
+
+                    b.HasIndex("Status", "CreatedAtUtc", "Id");
+
+                    b.ToTable("CentralProcessingGraphExecutions", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralProcessingGraphExecutions_IdentityImmutable");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutions_Class", "[ExecutionClass] IN (N'Live', N'Replay')");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutions_Expansion", "([ExpandedAtUtc] IS NULL AND [Status] = N'Pending') OR ([ExpandedAtUtc] IS NOT NULL AND [ExpandedAtUtc] >= [CreatedAtUtc] AND [UpdatedAtUtc] >= [ExpandedAtUtc])");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutions_ExpectedCounts", "[ExpectedSourceCount] >= 0 AND [ExpectedSourceCount] <= 64 AND [ExpectedNodeCount] >= 0 AND [ExpectedNodeCount] <= 1024 AND [ExpectedDependencyCount] >= 0 AND [ExpectedDependencyCount] <= 65536 AND [ExpectedOutputCount] >= 0 AND [ExpectedOutputCount] <= 65536");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutions_Predecessor", "[PredecessorExecutionId] IS NULL OR [PredecessorExecutionId] <> [Id]");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutions_Provenance", "LEN(LTRIM(RTRIM(REPLACE(REPLACE(REPLACE([ActorId], CHAR(9), N''), CHAR(10), N''), CHAR(13), N'')))) > 0 AND LEN(LTRIM(RTRIM(REPLACE(REPLACE(REPLACE([IdempotencyKey], CHAR(9), N''), CHAR(10), N''), CHAR(13), N'')))) > 0 AND LEN(LTRIM(RTRIM(REPLACE(REPLACE(REPLACE([ReasonCode], CHAR(9), N''), CHAR(10), N''), CHAR(13), N'')))) > 0 AND (([ExecutionClass] = N'Live' AND [Trigger] = N'Ingest' AND [AssignmentId] IS NOT NULL) OR ([ExecutionClass] = N'Replay' AND [Trigger] IN (N'Replay', N'Reprocess') AND [AssignmentId] IS NULL))");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutions_Status", "[Status] IN (N'Pending', N'Running', N'Completed', N'CompletedWithOptionalFailures', N'Failed', N'CancelRequested', N'Canceled', N'Superseded')");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutions_StatusTimestamps", "([Status] = N'Pending' AND [StartedAtUtc] IS NULL AND [CancellationRequestedAtUtc] IS NULL AND [CompletedAtUtc] IS NULL) OR ([Status] = N'Running' AND [StartedAtUtc] IS NOT NULL AND [CancellationRequestedAtUtc] IS NULL AND [CompletedAtUtc] IS NULL) OR ([Status] = N'CancelRequested' AND [CancellationRequestedAtUtc] IS NOT NULL AND [CompletedAtUtc] IS NULL) OR ([Status] IN (N'Completed', N'CompletedWithOptionalFailures') AND [StartedAtUtc] IS NOT NULL AND [CompletedAtUtc] IS NOT NULL) OR ([Status] = N'Failed' AND [CompletedAtUtc] IS NOT NULL) OR ([Status] = N'Canceled' AND [CancellationRequestedAtUtc] IS NOT NULL AND [CompletedAtUtc] IS NOT NULL) OR ([Status] = N'Superseded' AND [CompletedAtUtc] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutions_Timestamps", "[UpdatedAtUtc] >= [CreatedAtUtc] AND ([StartedAtUtc] IS NULL OR [StartedAtUtc] >= [CreatedAtUtc]) AND ([CancellationRequestedAtUtc] IS NULL OR [CancellationRequestedAtUtc] >= [CreatedAtUtc]) AND ([CompletedAtUtc] IS NULL OR [CompletedAtUtc] >= [CreatedAtUtc])");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutions_Trigger", "[Trigger] IN (N'Ingest', N'Replay', N'Reprocess')");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecutionSource", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("ArtifactByteLength")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ArtifactChecksumSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("ArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CentralArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("int");
+
+                    b.Property<int>("OutputOrdinal")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("SelectedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("SelectionEvidenceJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("SelectionEvidenceSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("SourceId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CentralArtifactId", "ExecutionId");
+
+                    b.HasIndex("ExecutionId", "Ordinal")
+                        .IsUnique();
+
+                    b.HasIndex("ExecutionId", "SourceId", "OutputOrdinal")
+                        .IsUnique();
+
+                    b.ToTable("CentralProcessingGraphExecutionSources", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralProcessingGraphExecutionSources_Immutable");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutionSources_ByteLength", "[ArtifactByteLength] >= 0");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutionSources_Ordinal", "[Ordinal] >= 0");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphExecutionSources_OutputOrdinal", "[OutputOrdinal] >= 0");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphRevision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CentralPlanIdentitySha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CreatedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("DefinitionIdentitySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("DefinitionJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("EdgePlanIdentitySha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("PortablePlanIdentitySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("char(64)")
+                        .IsFixedLength();
+
+                    b.Property<DateTimeOffset?>("PublishedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("PublishedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTimeOffset?>("RetiredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RetiredByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("RetirementReasonCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("Revision")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DefinitionIdentitySha256")
+                        .IsUnique();
+
+                    b.HasIndex("Name", "Revision")
+                        .IsUnique();
+
+                    b.ToTable("CentralProcessingGraphRevisions", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralProcessingGraphRevisions_Transitions");
+
+                            t.HasCheckConstraint("CK_CentralProcessingGraphRevisions_Lifecycle", "([PublishedAtUtc] IS NULL AND [PublishedByUserId] IS NULL AND [RetiredAtUtc] IS NULL AND [RetiredByUserId] IS NULL AND [RetirementReasonCode] IS NULL) OR ([PublishedAtUtc] IS NOT NULL AND [PublishedByUserId] IS NOT NULL AND (([RetiredAtUtc] IS NULL AND [RetiredByUserId] IS NULL AND [RetirementReasonCode] IS NULL) OR ([RetiredAtUtc] >= [PublishedAtUtc] AND [RetiredByUserId] IS NOT NULL AND [RetirementReasonCode] IS NOT NULL)))");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingOverrideVersion", b =>
@@ -6583,6 +7410,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", b =>
                 {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecution", "GraphExecution")
+                        .WithMany("Jobs")
+                        .HasForeignKey("GraphExecutionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", "PredecessorJob")
                         .WithMany()
                         .HasForeignKey("PredecessorJobId")
@@ -6611,11 +7443,54 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.Navigation("PredecessorJob");
 
+                    b.Navigation("GraphExecution");
+
                     b.Navigation("ResultArtifact");
 
                     b.Navigation("SourceArtifact");
 
                     b.Navigation("SupersededByJob");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobDependency", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", "ConsumerJob")
+                        .WithMany("Dependencies")
+                        .HasForeignKey("ConsumerJobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecution", "Execution")
+                        .WithMany("Dependencies")
+                        .HasForeignKey("ExecutionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", "ProducerJob")
+                        .WithMany("Dependents")
+                        .HasForeignKey("ProducerJobId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobOutput", "ProducerOutput")
+                        .WithMany("Dependents")
+                        .HasForeignKey("ProducerJobId", "ProducerOutputOrdinal")
+                        .HasPrincipalKey("CentralDerivativeJobId", "Ordinal")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecutionSource", "ProducerSource")
+                        .WithMany("Dependents")
+                        .HasForeignKey("ProducerSourceId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("ConsumerJob");
+
+                    b.Navigation("Execution");
+
+                    b.Navigation("ProducerJob");
+
+                    b.Navigation("ProducerOutput");
+
+                    b.Navigation("ProducerSource");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobAttempt", b =>
@@ -6686,6 +7561,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobInputRequirement", b =>
                 {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobDependency", "GraphDependency")
+                        .WithMany("InputRequirements")
+                        .HasForeignKey("CentralDerivativeJobId", "GraphDependencyId")
+                        .HasPrincipalKey("ConsumerJobId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", "Job")
                         .WithMany("InputRequirements")
                         .HasForeignKey("CentralDerivativeJobId")
@@ -6699,7 +7580,27 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.Navigation("ExpectedArtifact");
 
+                    b.Navigation("GraphDependency");
+
                     b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobOutput", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJob", "Job")
+                        .WithMany("Outputs")
+                        .HasForeignKey("CentralDerivativeJobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "ResultArtifact")
+                        .WithMany()
+                        .HasForeignKey("ResultCentralArtifactId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("Job");
+
+                    b.Navigation("ResultArtifact");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralFrame", b =>
@@ -6717,6 +7618,155 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("DeviceRigProfile");
 
                     b.Navigation("LogicalCameraInstallation");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphAssignment", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.LogicalCamera", "LogicalCamera")
+                        .WithMany()
+                        .HasForeignKey("LogicalCameraId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphRevision", "Revision")
+                        .WithMany("Assignments")
+                        .HasForeignKey("RevisionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("LogicalCamera");
+
+                    b.Navigation("Observatory");
+
+                    b.Navigation("Revision");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphDeliveryFact", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphDeliveryProposal", "Proposal")
+                        .WithMany("Facts")
+                        .HasForeignKey("ProposalId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Proposal");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphDeliveryProposal", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphAssignment", "Assignment")
+                        .WithMany("Proposals")
+                        .HasForeignKey("AssignmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.LogicalCameraInstallation", "LogicalCameraInstallation")
+                        .WithMany()
+                        .HasForeignKey("LogicalCameraInstallationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.DeviceRegistration", "Registration")
+                        .WithMany()
+                        .HasForeignKey("RegistrationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphRevision", "Revision")
+                        .WithMany()
+                        .HasForeignKey("RevisionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Assignment");
+
+                    b.Navigation("LogicalCameraInstallation");
+
+                    b.Navigation("Registration");
+
+                    b.Navigation("Revision");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecution", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "AnchorSourceArtifact")
+                        .WithMany()
+                        .HasForeignKey("AnchorSourceCentralArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphAssignment", "Assignment")
+                        .WithMany("Executions")
+                        .HasForeignKey("AssignmentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.LogicalCamera", "LogicalCamera")
+                        .WithMany()
+                        .HasForeignKey("LogicalCameraId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.LogicalCameraInstallation", "LogicalCameraInstallation")
+                        .WithMany()
+                        .HasForeignKey("LogicalCameraInstallationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecution", "PredecessorExecution")
+                        .WithOne("SuccessorExecution")
+                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecution", "PredecessorExecutionId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphRevision", "Revision")
+                        .WithMany("Executions")
+                        .HasForeignKey("RevisionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("AnchorSourceArtifact");
+
+                    b.Navigation("Assignment");
+
+                    b.Navigation("LogicalCamera");
+
+                    b.Navigation("LogicalCameraInstallation");
+
+                    b.Navigation("Observatory");
+
+                    b.Navigation("PredecessorExecution");
+
+                    b.Navigation("Revision");
+
+                    b.Navigation("SuccessorExecution");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecutionSource", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "Artifact")
+                        .WithMany()
+                        .HasForeignKey("CentralArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecution", "Execution")
+                        .WithMany("Sources")
+                        .HasForeignKey("ExecutionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Artifact");
+
+                    b.Navigation("Execution");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingOverrideVersion", b =>
@@ -8068,9 +9118,20 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.Navigation("CanonicalInputs");
 
+                    b.Navigation("Dependencies");
+
+                    b.Navigation("Dependents");
+
                     b.Navigation("InputRequirements");
 
                     b.Navigation("Inputs");
+
+                    b.Navigation("Outputs");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobDependency", b =>
+                {
+                    b.Navigation("InputRequirements");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobInputRequirement", b =>
@@ -8078,6 +9139,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("CanonicalInput");
 
                     b.Navigation("Input");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralDerivativeJobOutput", b =>
+                {
+                    b.Navigation("Dependents");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralFrame", b =>
@@ -8091,6 +9157,39 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Profiles");
 
                     b.Navigation("Timing");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphAssignment", b =>
+                {
+                    b.Navigation("Executions");
+
+                    b.Navigation("Proposals");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphDeliveryProposal", b =>
+                {
+                    b.Navigation("Facts");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecution", b =>
+                {
+                    b.Navigation("Dependencies");
+
+                    b.Navigation("Jobs");
+
+                    b.Navigation("Sources");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphExecutionSource", b =>
+                {
+                    b.Navigation("Dependents");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingGraphRevision", b =>
+                {
+                    b.Navigation("Assignments");
+
+                    b.Navigation("Executions");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentRecord", b =>

@@ -145,7 +145,8 @@ internal sealed partial class ArtifactIngestService(
     CentralIngestTelemetry telemetry,
     DeploymentLocationTelemetry deploymentLocationTelemetry,
     ILogger<ArtifactIngestService> logger,
-    CentralObjectStorageNames? storageNames = null) : IArtifactIngestService
+    CentralObjectStorageNames? storageNames = null,
+    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : IArtifactIngestService
 {
     private readonly CentralObjectStorageNames _storageNames = storageNames ?? new();
     private string Bucket => _storageNames.ArtifactBucket;
@@ -816,7 +817,8 @@ internal sealed partial class ArtifactIngestService(
             {
                 existing.ObjectState = CentralArtifactObjectState.Pending;
                 existing.StateReasonCode = null;
-                await InvalidateDependentsAsync(dbContext, existing, cancellationToken).ConfigureAwait(false);
+                await InvalidateDependentsAsync(dbContext, existing, graphConvergenceSignal, cancellationToken)
+                    .ConfigureAwait(false);
             }
             await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await CommitAsync(transaction, cancellationToken).ConfigureAwait(false);
@@ -1229,7 +1231,8 @@ internal sealed partial class ArtifactIngestService(
             if (integrityFailure)
             {
                 QuarantineObject(existing, verification.ReasonCode!);
-                await InvalidateDependentsAsync(dbContext, existing, cancellationToken).ConfigureAwait(false);
+                await InvalidateDependentsAsync(dbContext, existing, graphConvergenceSignal, cancellationToken)
+                    .ConfigureAwait(false);
             }
             else
             {
@@ -2365,9 +2368,34 @@ internal sealed partial class ArtifactIngestService(
     internal static bool HasStructuredSourceMismatch(CentralArtifact artifact)
         => HasStructuredSourceIdentityMismatch(artifact) || HasStructuredSourceFactsMismatch(artifact);
 
+    internal const string GraphSourceInvalidatedReason = "processing.graph.source-invalidated";
+
+    private static readonly CentralProcessingGraphExecutionStatus[] TerminalGraphExecutionStatuses =
+    [
+        CentralProcessingGraphExecutionStatus.Completed,
+        CentralProcessingGraphExecutionStatus.CompletedWithOptionalFailures,
+        CentralProcessingGraphExecutionStatus.Failed,
+        CentralProcessingGraphExecutionStatus.Canceled,
+        CentralProcessingGraphExecutionStatus.Superseded
+    ];
+
+    internal static Task InvalidateDependentsAsync(
+        ApplicationDbContext dbContext,
+        CentralArtifact sourceArtifact,
+        CancellationToken cancellationToken)
+        => InvalidateDependentsAsync(dbContext, sourceArtifact, graphConvergenceSignal: null, cancellationToken);
+
+    /// <summary>
+    /// Reopens legacy derivative jobs that depend on an artifact which is no longer usable. Graph-owned nodes never
+    /// take the legacy path: their executable identity, selected inputs, and resolution evidence are frozen, and a
+    /// terminal execution can never regain a nonterminal node (graph replay is the correction path). A nonterminal
+    /// node inside a live execution is terminalized through a legal outcome instead, and the execution is signaled
+    /// so convergence records the graph outcome.
+    /// </summary>
     internal static async Task InvalidateDependentsAsync(
         ApplicationDbContext dbContext,
         CentralArtifact sourceArtifact,
+        CentralProcessingGraphConvergenceSignal? graphConvergenceSignal,
         CancellationToken cancellationToken)
     {
         await using var ownedTransaction = dbContext.Database.CurrentTransaction is null
@@ -2378,6 +2406,7 @@ internal sealed partial class ArtifactIngestService(
         var pending = new Queue<Guid>();
         var visited = new HashSet<Guid>();
         var invalidatedJobs = new HashSet<Guid>();
+        var signaledGraphExecutions = new HashSet<Guid>();
         pending.Enqueue(sourceArtifact.Id);
         while (pending.TryDequeue(out var sourceId))
         {
@@ -2419,10 +2448,52 @@ internal sealed partial class ArtifactIngestService(
                 .Select(evidence => evidence.CentralDerivativeJobId)
                 .Distinct()
                 .ToListAsync(cancellationToken).ConfigureAwait(false)).ToHashSet();
+            var graphExecutionIds = jobs
+                .Where(job => job.GraphExecutionId is not null)
+                .Select(job => job.GraphExecutionId!.Value)
+                .Distinct()
+                .ToArray();
+            var terminalGraphExecutionIds = graphExecutionIds.Length == 0
+                ? []
+                : (await dbContext.CentralProcessingGraphExecutions.AsNoTracking()
+                    .Where(execution => graphExecutionIds.Contains(execution.Id)
+                        && TerminalGraphExecutionStatuses.Contains(execution.Status))
+                    .Select(execution => execution.Id)
+                    .ToListAsync(cancellationToken).ConfigureAwait(false)).ToHashSet();
             foreach (var job in jobs)
             {
                 if (!invalidatedJobs.Add(job.Id))
                 {
+                    continue;
+                }
+                var invalidationReason = job.SourceCentralArtifactId == sourceId
+                    ? sourceId == sourceArtifact.Id
+                        ? sourceArtifact.StateReasonCode ?? CentralDerivativeJobScheduler.SourceInvalidatedReason
+                        : CentralDerivativeJobScheduler.SourceInvalidatedReason
+                    : CentralDerivativeJobScheduler.ResultInvalidatedReason;
+                if (await dbContext.CentralTransientValidationJobs.AsNoTracking().AnyAsync(validation =>
+                        validation.CentralDerivativeJobId == job.Id && validation.CommittedAtUtc != null,
+                        cancellationToken).ConfigureAwait(false))
+                {
+                    await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                        dbContext, job, invalidationReason, invalidatedAtUtc, cancellationToken).ConfigureAwait(false);
+                }
+                if (job.GraphExecutionId is { } graphExecutionId)
+                {
+                    var executionIsTerminal = terminalGraphExecutionIds.Contains(graphExecutionId);
+                    await InvalidateGraphNodeAsync(
+                        dbContext,
+                        job,
+                        executionIsTerminal,
+                        quarantined: sourceId == sourceArtifact.Id
+                            && sourceArtifact.ObjectState == CentralArtifactObjectState.Quarantined,
+                        invalidationReason,
+                        invalidatedAtUtc,
+                        cancellationToken).ConfigureAwait(false);
+                    if (!executionIsTerminal && signaledGraphExecutions.Add(graphExecutionId))
+                    {
+                        graphConvergenceSignal?.Signal(graphExecutionId);
+                    }
                     continue;
                 }
                 var invalidatedInput = job.Inputs.SingleOrDefault(input => input.CentralArtifactId == sourceId);
@@ -2436,18 +2507,6 @@ internal sealed partial class ArtifactIngestService(
                 var preserveWindowResolution = job.Status == CentralDerivativeJobStatus.Waiting
                     && isWindow
                     && job.InputSetIdentitySha256 is null;
-                var invalidationReason = job.SourceCentralArtifactId == sourceId
-                    ? sourceId == sourceArtifact.Id
-                        ? sourceArtifact.StateReasonCode ?? CentralDerivativeJobScheduler.SourceInvalidatedReason
-                        : CentralDerivativeJobScheduler.SourceInvalidatedReason
-                    : CentralDerivativeJobScheduler.ResultInvalidatedReason;
-                if (await dbContext.CentralTransientValidationJobs.AsNoTracking().AnyAsync(validation =>
-                        validation.CentralDerivativeJobId == job.Id && validation.CommittedAtUtc != null,
-                        cancellationToken).ConfigureAwait(false))
-                {
-                    await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
-                        dbContext, job, invalidationReason, invalidatedAtUtc, cancellationToken).ConfigureAwait(false);
-                }
                 var activeAttempt = job.Attempts.SingleOrDefault(attempt =>
                     attempt.Outcome == CentralDerivativeAttemptOutcome.Leased);
                 if (activeAttempt is not null)
@@ -2502,6 +2561,67 @@ internal sealed partial class ArtifactIngestService(
             await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Graph nodes own no mutable inputs: the legacy re-resolve/reopen path would rewrite frozen columns
+    /// (<c>ResolutionStartedAtUtc</c>, selected inputs, requirement resolution) and reopen a node inside a terminal
+    /// execution, which both the EF lifecycle guards and <c>TR_CentralDerivativeJobs_GraphIdentityImmutable</c> reject.
+    /// Nodes already terminal, nodes of terminal executions, and nodes whose cancellation is in flight are left as
+    /// recorded. Any other node lost its anchor or a selected input for good, so it terminalizes through a legal
+    /// outcome (Quarantined when the source itself was quarantined, TerminalFailure otherwise).
+    /// </summary>
+    private static async Task InvalidateGraphNodeAsync(
+        ApplicationDbContext dbContext,
+        CentralDerivativeJob job,
+        bool executionIsTerminal,
+        bool quarantined,
+        string invalidationReason,
+        DateTimeOffset invalidatedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        if (executionIsTerminal || IsTerminalGraphNodeStatus(job.Status)
+            || job.Status == CentralDerivativeJobStatus.CancelRequested)
+        {
+            return;
+        }
+        var activeAttempt = job.Attempts.SingleOrDefault(attempt =>
+            attempt.Outcome == CentralDerivativeAttemptOutcome.Leased);
+        if (activeAttempt is not null)
+        {
+            activeAttempt.Outcome = quarantined
+                ? CentralDerivativeAttemptOutcome.Quarantined
+                : CentralDerivativeAttemptOutcome.TerminalFailure;
+            activeAttempt.ReasonCode = GraphSourceInvalidatedReason;
+            activeAttempt.EndedAtUtc = invalidatedAtUtc;
+        }
+        job.Status = quarantined ? CentralDerivativeJobStatus.Quarantined : CentralDerivativeJobStatus.TerminalFailure;
+        job.StateReasonCode = GraphSourceInvalidatedReason;
+        job.LastError = invalidationReason;
+        job.LastFailedAtUtc = invalidatedAtUtc;
+        job.CompletedAtUtc = invalidatedAtUtc;
+        job.AvailableAtUtc = null;
+        job.LeaseOwner = null;
+        job.LeaseToken = null;
+        job.LeaseAcquiredAtUtc = null;
+        job.LeaseExpiresAtUtc = null;
+        job.UpdatedAtUtc = invalidatedAtUtc;
+        if (string.Equals(job.RecipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal))
+        {
+            var reservedSlots = await dbContext.CentralTransientValidationIdentitySlots
+                .Where(slot => slot.CentralDerivativeJobId == job.Id
+                    && slot.State == CentralTransientValidationIdentitySlotState.Reserved)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var slot in reservedSlots)
+            {
+                slot.State = CentralTransientValidationIdentitySlotState.Unused;
+            }
+        }
+    }
+
+    private static bool IsTerminalGraphNodeStatus(CentralDerivativeJobStatus status)
+        => status is CentralDerivativeJobStatus.Completed or CentralDerivativeJobStatus.TerminalFailure or
+            CentralDerivativeJobStatus.Canceled or CentralDerivativeJobStatus.Skipped or
+            CentralDerivativeJobStatus.Quarantined or CentralDerivativeJobStatus.Superseded;
 
     private static async Task TryRollbackAsync(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction)
     {

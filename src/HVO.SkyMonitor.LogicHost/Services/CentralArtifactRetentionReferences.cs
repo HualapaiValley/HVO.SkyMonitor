@@ -114,7 +114,8 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
             .Concat(dbContext.CentralTransientDerivativeSources
                 .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
             .Concat(dbContext.CentralTransientDerivativeBackgrounds
-                .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1));
+                .Where(item => item.CentralArtifactId == centralArtifactId).Select(_ => 1))
+            .Concat(ActiveGraphExecutionReferences(centralArtifactId));
 
     private IQueryable<int> DirectReferencesOutsideTransientEvent(
         Guid centralArtifactId,
@@ -140,7 +141,23 @@ internal sealed class CentralArtifactRetentionReferences(ApplicationDbContext db
                 && item.CentralTransientEventId != centralTransientEventId).Select(_ => 1))
             .Concat(dbContext.CentralTransientDerivativeBackgrounds.Where(item =>
                 item.CentralArtifactId == centralArtifactId
-                && item.CentralTransientEventId != centralTransientEventId).Select(_ => 1));
+                && item.CentralTransientEventId != centralTransientEventId).Select(_ => 1))
+            .Concat(ActiveGraphExecutionReferences(centralArtifactId));
+
+    private IQueryable<int> ActiveGraphExecutionReferences(Guid centralArtifactId)
+        => dbContext.CentralProcessingGraphExecutions.Where(execution =>
+                (execution.AnchorSourceCentralArtifactId == centralArtifactId ||
+                 execution.Sources.Any(source => source.CentralArtifactId == centralArtifactId) ||
+                 execution.Jobs.Any(job =>
+                     job.SourceCentralArtifactId == centralArtifactId ||
+                     job.Inputs.Any(input => input.CentralArtifactId == centralArtifactId) ||
+                     job.InputRequirements.Any(requirement =>
+                         requirement.ExpectedCentralArtifactId == centralArtifactId) ||
+                     job.Outputs.Any(output => output.ResultCentralArtifactId == centralArtifactId))) &&
+                (execution.Status == CentralProcessingGraphExecutionStatus.Pending ||
+                 execution.Status == CentralProcessingGraphExecutionStatus.Running ||
+                 execution.Status == CentralProcessingGraphExecutionStatus.CancelRequested))
+            .Select(_ => 1);
 
     private IQueryable<int> CurrentPublicReleases(Guid centralArtifactId)
         => dbContext.PublicRecordPublicationDecisions.Where(decision =>

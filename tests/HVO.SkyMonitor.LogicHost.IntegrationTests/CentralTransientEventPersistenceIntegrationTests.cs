@@ -2062,7 +2062,8 @@ public sealed partial class CentralTransientEventPersistenceIntegrationTests
             ByteLength = Encoding.UTF8.GetByteCount(optionsJson),
             SelectedAtUtc = eventCreatedUtc
         });
-        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+            job.Inputs, job.CanonicalInputs);
         var executionOptions = CentralTransientExecutionOptionsJson.Serialize(new CentralTransientExecutionOptionsV1(
             CentralTransientExecutionOptionsV1.CurrentSchemaVersion,
             fixture.Extraction.Options,

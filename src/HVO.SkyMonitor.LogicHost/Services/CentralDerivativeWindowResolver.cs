@@ -26,7 +26,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
     ApplicationDbContext dbContext,
     CentralDerivativeWorkerTelemetry telemetry,
     TimeProvider timeProvider,
-    ILogger<CentralDerivativeWindowResolver> logger) : ICentralDerivativeWindowResolver
+    ILogger<CentralDerivativeWindowResolver> logger,
+    CentralProcessingGraphConvergenceSignal? graphConvergenceSignal = null) : ICentralDerivativeWindowResolver
 {
     private const int ResolutionBatchSize = 100;
     private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
@@ -132,6 +133,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
             dbContext.ChangeTracker.Clear();
             var job = await dbContext.CentralDerivativeJobs
                 .Include(item => item.SourceArtifact)!.ThenInclude(artifact => artifact!.Frame)
+                .Include(item => item.GraphExecution)
                 .Include(item => item.InputRequirements)
                 .Include(item => item.Inputs)
                 .Include(item => item.CanonicalInputs)
@@ -160,6 +162,8 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     {
                         requirement.ResolutionState = CentralDerivativeInputResolutionState.Resolved;
                         requirement.ResolutionReasonCode = null;
+                        requirement.ResolvedAtUtc ??= job.CanonicalInputs.Single(input =>
+                            input.CentralDerivativeJobInputRequirementId == requirement.Id).SelectedAtUtc;
                         continue;
                     }
                     requirement.ResolutionState = CentralDerivativeInputResolutionState.Waiting;
@@ -179,6 +183,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 {
                     requirement.ResolutionState = CentralDerivativeInputResolutionState.Incompatible;
                     requirement.ResolutionReasonCode = CentralDerivativeWindowReasonCodes.AmbiguousInput;
+                    requirement.ResolvedAtUtc = now;
                 }
             }
 
@@ -217,6 +222,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     requirement.ResolutionReasonCode = candidate.LayoutJson != anchor.LayoutJson
                         ? CentralDerivativeWindowReasonCodes.IncompatibleLayout
                         : CentralDerivativeWindowReasonCodes.IncompatibleProfile;
+                    requirement.ResolvedAtUtc = now;
                     incompatibleRequired |= requirement.IsRequired;
                     telemetry.RecordWindowRejection(
                         job.RecipeName,
@@ -233,6 +239,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
             var unresolvedOptional = job.InputRequirements.Any(item => !item.IsRequired
                 && item.ResolutionState == CentralDerivativeInputResolutionState.Waiting);
             var deadlineExpired = job.ResolutionDeadlineUtc <= now;
+            // Graph windows freeze a minimum cardinality in addition to their required positions. A trailing window
+            // whose required-position set is empty must still not execute below its declared minimum under the Run
+            // timeout policy, and no policy may freeze a window that can no longer reach the minimum.
+            var belowMinimum = IsBelowMinimumInputCount(job);
             var inputsPersisted = await PersistResolvedInputsAsync(
                 job, candidates, holdTargets, now, cancellationToken)
                 .ConfigureAwait(false);
@@ -259,8 +269,10 @@ internal sealed partial class CentralDerivativeWindowResolver(
                         requirement.ResolutionReasonCode = requirement.IsRequired
                             ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
                             : CentralDerivativeWindowReasonCodes.OptionalInputTimeout;
+                        requirement.ResolvedAtUtc = now;
                     }
-                    if (job.MissingInputOutcome == CentralDerivativeWindowOutcome.Run && candidates.Count > 0)
+                    if (job.MissingInputOutcome == CentralDerivativeWindowOutcome.Run && candidates.Count > 0 &&
+                        !belowMinimum)
                     {
                         await FreezeInputsAsync(
                             job, candidates, holdTargets, now, cancellationToken).ConfigureAwait(false);
@@ -270,16 +282,15 @@ internal sealed partial class CentralDerivativeWindowResolver(
                     }
                     else
                     {
-                        ApplyDeadlineOutcome(job, now, missingRequired);
+                        var reason = belowMinimum && !missingRequired
+                            ? CentralDerivativeWindowReasonCodes.MinimumInputCountUnmet
+                            : missingRequired
+                                ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
+                                : CentralDerivativeWindowReasonCodes.OptionalInputTimeout;
+                        CompleteWithoutExecution(job, now, reason);
                         await FinalizeTransientSlotsAsync(job, cancellationToken).ConfigureAwait(false);
                         await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
-                            dbContext,
-                            job,
-                            missingRequired
-                                ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
-                                : CentralDerivativeWindowReasonCodes.OptionalInputTimeout,
-                            now,
-                            cancellationToken).ConfigureAwait(false);
+                            dbContext, job, reason, now, cancellationToken).ConfigureAwait(false);
                     }
                     telemetry.RecordWindowDeadline(
                         job.RecipeName, job.Status.ToString().ToLowerInvariant());
@@ -300,6 +311,17 @@ internal sealed partial class CentralDerivativeWindowResolver(
                         job.UpdatedAtUtc = now;
                     }
                 }
+            }
+            else if (belowMinimum)
+            {
+                // Every position is settled (resolved, incompatible, or missing) yet fewer artifacts than the frozen
+                // minimum resolved; the window can never satisfy its published contract, so it completes through the
+                // node's missing-input policy instead of freezing an undersized input set.
+                CompleteWithoutExecution(job, now, CentralDerivativeWindowReasonCodes.MinimumInputCountUnmet);
+                await FinalizeTransientSlotsAsync(job, cancellationToken).ConfigureAwait(false);
+                await CentralTransientValidationOutcome.RecordNeedsReviewAsync(
+                    dbContext, job, CentralDerivativeWindowReasonCodes.MinimumInputCountUnmet, now, cancellationToken)
+                    .ConfigureAwait(false);
             }
             else
             {
@@ -322,6 +344,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
                 await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 dbContext.ChangeTracker.Clear();
             }
+            graphConvergenceSignal?.Signal(job.GraphExecutionId);
             if (job.Status != initialStatus || !string.Equals(job.StateReasonCode, initialReason, StringComparison.Ordinal))
             {
                 Log.Resolution(logger, job.Id, job.RecipeName, initialStatus.ToString(), job.Status.ToString(),
@@ -468,7 +491,17 @@ internal sealed partial class CentralDerivativeWindowResolver(
             job.StateReasonCode = CentralDerivativeWindowReasonCodes.ResolutionConflict;
             return;
         }
-        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(job.Inputs);
+        var addedGraphInput = job.GraphExecutionId is not null &&
+            (dbContext.ChangeTracker.Entries<CentralDerivativeJobInput>()
+                 .Any(entry => entry.State == EntityState.Added && entry.Entity.CentralDerivativeJobId == job.Id) ||
+             dbContext.ChangeTracker.Entries<CentralDerivativeJobCanonicalInput>()
+                 .Any(entry => entry.State == EntityState.Added && entry.Entity.CentralDerivativeJobId == job.Id));
+        if (addedGraphInput)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        job.InputSetIdentitySha256 = CentralDerivativeWindowIdentity.CreateInputSetIdentity(
+            job.Inputs, job.CanonicalInputs);
         job.Status = CentralDerivativeJobStatus.Pending;
         job.AvailableAtUtc = now;
         job.ResolutionCompletedAtUtc = now;
@@ -537,6 +570,7 @@ internal sealed partial class CentralDerivativeWindowResolver(
         }
         foreach (var item in selected)
         {
+            item.Requirement.ExpectedCentralArtifactId = item.Candidate.Artifact.Id;
             item.Requirement.ResolvedAtUtc = now;
             if (job.Inputs.Any(input => input.CentralDerivativeJobInputRequirementId == item.Requirement.Id))
             {
@@ -621,13 +655,24 @@ internal sealed partial class CentralDerivativeWindowResolver(
         }
     }
 
-    private static void ApplyDeadlineOutcome(CentralDerivativeJob job, DateTimeOffset now, bool missingRequired)
-    {
-        var reason = missingRequired
-            ? CentralDerivativeWindowReasonCodes.RequiredInputTimeout
-            : CentralDerivativeWindowReasonCodes.OptionalInputTimeout;
-        CompleteWithoutExecution(job, now, reason);
-    }
+    /// <summary>
+    /// Resolved temporal positions versus the frozen minimum. <c>Run</c> only exempts positions that are not
+    /// required; it never lowers the cardinality the graph contract published, so the minimum applies to every
+    /// missing-input policy identically. A window node with several artifact bindings expands one requirement per
+    /// binding at every sequence offset; a position counts once, and only when every artifact binding at that offset
+    /// resolved, so bindings never inflate the count toward <c>MaximumInputCount</c> positions. Artifact requirements
+    /// without a sequence offset are not temporal positions and never count.
+    /// </summary>
+    internal static bool IsBelowMinimumInputCount(CentralDerivativeJob job)
+        => job.MinimumInputCount is { } minimum && CountResolvedPositions(job) < minimum;
+
+    internal static int CountResolvedPositions(CentralDerivativeJob job)
+        => job.InputRequirements
+            .Where(static requirement => requirement.SourceKind == CentralDerivativeInputSourceKind.Artifact &&
+                requirement.SequenceOffset is not null)
+            .GroupBy(static requirement => requirement.SequenceOffset)
+            .Count(static position => position.All(static requirement =>
+                requirement.ResolutionState == CentralDerivativeInputResolutionState.Resolved));
 
     private static void CompleteWithoutExecution(CentralDerivativeJob job, DateTimeOffset now, string reasonCode)
     {
@@ -717,16 +762,28 @@ internal static class CentralDerivativeWindowCompatibility
 
 internal static class CentralDerivativeWindowIdentity
 {
-    public static string CreateInputSetIdentity(IEnumerable<CentralDerivativeJobInput> inputs)
+    public static string CreateInputSetIdentity(
+        IEnumerable<CentralDerivativeJobInput> inputs,
+        IEnumerable<CentralDerivativeJobCanonicalInput>? canonicalInputs = null)
     {
         ArgumentNullException.ThrowIfNull(inputs);
-        var value = string.Join('\n', inputs.OrderBy(item => item.Ordinal).Select(item => string.Join(':',
+        var artifactValue = string.Join('\n', inputs.OrderBy(item => item.Ordinal).Select(item => string.Join(':',
             item.Ordinal,
             item.CentralArtifactId.ToString("N"),
             item.CaptureSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none",
             item.CompatibilitySha256.ToUpperInvariant())));
+        var canonical = canonicalInputs?.OrderBy(item => item.Ordinal).ToArray() ?? [];
+        if (canonical.Length == 0)
+        {
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                $"hvo-central-derivative-input-set-v1\n{artifactValue}")));
+        }
+        var canonicalValue = string.Join('\n', canonical.Select(item => string.Join(':',
+            item.Ordinal,
+            item.SchemaVersion,
+            item.IdentitySha256.ToUpperInvariant())));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            $"hvo-central-derivative-input-set-v1\n{value}")));
+            $"hvo-central-derivative-input-set-v2\nartifacts\n{artifactValue}\ncanonical\n{canonicalValue}")));
     }
 }
 
@@ -741,6 +798,7 @@ internal static class CentralDerivativeWindowReasonCodes
     public const string ResolutionConflict = "window.resolution-conflict";
     public const string EnvironmentUnavailable = "window.environment-unavailable";
     public const string AmbiguousInput = "window.ambiguous-input";
+    public const string MinimumInputCountUnmet = "window.minimum-input-count-unmet";
 }
 
 internal sealed class CentralDerivativeWindowAmbiguousInputException : Exception

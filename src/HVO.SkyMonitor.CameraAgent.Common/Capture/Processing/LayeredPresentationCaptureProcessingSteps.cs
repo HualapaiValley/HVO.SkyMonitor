@@ -107,12 +107,17 @@ internal sealed class ScenePresentationLayerCaptureProcessingStep(
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.AnnotationOutputVariant;
     public string? OutputSchemaVersion => PresentationLayerPayloadV1.CurrentSchemaVersion;
+    public string? OutputMediaType => PresentationLayerPayloadJson.MediaType;
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
     [
-        new(OutputRole, Options.AnnotationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe),
-        new(OutputRole, Options.CardinalOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe),
-        new(OutputRole, Options.ImageCircleOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe),
-        new(OutputRole, Options.ConstellationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe)
+        new(OutputRole, Options.AnnotationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+            MediaType: OutputMediaType),
+        new(OutputRole, Options.CardinalOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+            MediaType: OutputMediaType),
+        new(OutputRole, Options.ImageCircleOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+            MediaType: OutputMediaType),
+        new(OutputRole, Options.ConstellationOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+            MediaType: OutputMediaType)
     ];
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
@@ -172,10 +177,13 @@ internal sealed class CloudPresentationLayerCaptureProcessingStep(
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.MaskOutputVariant;
     public string? OutputSchemaVersion => PresentationLayerPayloadV1.CurrentSchemaVersion;
+    public string? OutputMediaType => PresentationLayerPayloadJson.MediaType;
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
     [
-        new(OutputRole, Options.MaskOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe),
-        new(OutputRole, Options.LabelOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe)
+        new(OutputRole, Options.MaskOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+            MediaType: OutputMediaType),
+        new(OutputRole, Options.LabelOutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+            MediaType: OutputMediaType)
     ];
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
@@ -215,7 +223,7 @@ internal sealed class EnvironmentPresentationLayerCaptureProcessingStep(
         PresentationProcessingProducts.MetadataFactsRecipeName,
         "1.0.0",
         PresentationLayerProducers.MetadataProducerVersion,
-        ProcessingOperationKind.Analyzer);
+        ProcessingOperationKind.Transform);
     private static readonly ProcessingRecipeDefinition SharedLayerRecipe = new(
         PresentationProcessingProducts.LayerRecipeName,
         "1.0.0",
@@ -227,12 +235,14 @@ internal sealed class EnvironmentPresentationLayerCaptureProcessingStep(
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => PresentationLayerPayloadV1.CurrentSchemaVersion;
+    public string? OutputMediaType => PresentationLayerPayloadJson.MediaType;
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
     [
         new(FrameArtifactRole.Metadata, Options.FactsOutputVariant,
             PresentationProcessingProducts.MetadataFactsRecipeName, PresentationMetadataFactsProductV1.CurrentSchemaVersion,
-            SharedFactsRecipe),
-        new(FrameArtifactRole.Metadata, Options.OutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe)
+            SharedFactsRecipe, MediaType: PresentationMetadataFactsProductV1.MediaType),
+        new(FrameArtifactRole.Metadata, Options.OutputVariant, RecipeName, OutputSchemaVersion, SharedLayerRecipe,
+            MediaType: OutputMediaType)
     ];
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole>
     {
@@ -318,6 +328,7 @@ internal sealed class OverlayManifestCaptureProcessingStep(
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => OverlayManifestV1.CurrentSchemaVersion;
+    public string? OutputMediaType => PresentationProcessingProducts.ManifestMediaType;
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [
@@ -401,6 +412,7 @@ internal sealed class PresentationMaterializerCaptureProcessingStep(
     ];
     public FrameArtifactRole OutputRole => FrameArtifactRole.AnnotatedPreview;
     public string OutputVariant => Options.OutputVariant;
+    public string? OutputMediaType => "application/x-hvo-packed-image";
     public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Preview, FrameArtifactRole.Metadata };
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [

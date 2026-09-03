@@ -20,6 +20,8 @@ internal interface ICaptureProcessingGraphStep
 
     string? SharedStepVersion => null;
 
+    string? OutputMediaType => null;
+
     ProcessingOperationKind? SharedOperationKind => null;
 
     ProcessingRecipeDefinition? SharedOutputRecipe => null;
@@ -33,7 +35,8 @@ internal sealed record CaptureProcessingOutputDescriptor(
     string RecipeName,
     string? SchemaVersion = null,
     ProcessingRecipeDefinition? SharedRecipe = null,
-    IReadOnlyList<ProcessingAlgorithmIdentity>? SharedAlgorithms = null);
+    IReadOnlyList<ProcessingAlgorithmIdentity>? SharedAlgorithms = null,
+    string? MediaType = null);
 
 internal interface IMultiOutputCaptureProcessingGraphStep
 {
@@ -49,6 +52,10 @@ internal interface IWindowCaptureProcessingGraphStep
     int MinimumInputCount => 1;
 
     IReadOnlyList<int> RequiredPositions => [];
+
+    TimeSpan Timeout => TimeSpan.FromMinutes(5);
+
+    ProcessingGraphMissingInputOutcome MissingInputOutcome => ProcessingGraphMissingInputOutcome.Skip;
 }
 
 internal interface ICompoundCaptureProcessingGraphStep

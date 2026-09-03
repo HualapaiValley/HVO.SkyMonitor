@@ -10,6 +10,7 @@ public static class ProcessingGraphCompiler
     public const int MaximumNodes = 1024;
     public const int MaximumContractsPerNode = 64;
     public const int MaximumOptionsBytes = 65_536;
+    public const long MaximumWindowTimeoutTicks = TimeSpan.TicksPerDay;
 
     private const int MaximumIdentityLength = 128;
     private const int MaximumBindingSearchStates = 100_000;
@@ -243,7 +244,7 @@ public static class ProcessingGraphCompiler
                         "Processing graph dependency kind is invalid.");
                 }
             }
-            ValidateOutputs(node.Outputs, $"{path}.outputs", diagnostics);
+            ValidateOutputs(node.Outputs, $"{path}.outputs", diagnostics, node.OperationKind);
             ValidateInputs(node.Inputs, $"{path}.inputs", diagnostics);
             ValidateWindow(node.Window, $"{path}.window", diagnostics);
             if ((node.OperationKind == ProcessingOperationKind.Window) != (node.Window is not null))
@@ -560,7 +561,8 @@ public static class ProcessingGraphCompiler
     private static void ValidateOutputs(
         ImmutableArray<ProcessingGraphProductContract> outputs,
         string path,
-        List<ProcessingGraphDiagnostic> diagnostics)
+        List<ProcessingGraphDiagnostic> diagnostics,
+        ProcessingOperationKind? nodeOperationKind = null)
     {
         if (outputs.IsDefault)
         {
@@ -571,7 +573,8 @@ public static class ProcessingGraphCompiler
         {
             var output = outputs[index];
             if (!Enum.IsDefined(output.Role) || !Enum.IsDefined(output.ProductKind) ||
-                !ValidIdentity(output.Variant) || output.SchemaVersion is not null && !ValidIdentity(output.SchemaVersion) ||
+                !ValidIdentity(output.Variant) || output.MediaType is not null && !ValidIdentity(output.MediaType) ||
+                output.SchemaVersion is not null && !ValidIdentity(output.SchemaVersion) ||
                 output.Recipe is { } recipe && (!ValidIdentity(recipe.Name) || !ValidIdentity(recipe.SemanticVersion) ||
                     !ValidIdentity(recipe.ImplementationVersion) || !Enum.IsDefined(recipe.OperationKind)) ||
                 !output.Algorithms.IsDefault && (output.Algorithms.Length > MaximumContractsPerNode ||
@@ -580,6 +583,12 @@ public static class ProcessingGraphCompiler
             {
                 Add(diagnostics, ProcessingGraphReasonCodes.InvalidNode, $"{path}[{index}]",
                     "Processing graph output contract is invalid.");
+            }
+            else if (nodeOperationKind is { } expectedOperationKind && output.Recipe is { } outputRecipe &&
+                     outputRecipe.OperationKind != expectedOperationKind)
+            {
+                Add(diagnostics, ProcessingGraphReasonCodes.InvalidNode, $"{path}[{index}].recipe.operationKind",
+                    "Processing graph output recipe operation kind must match its owning node.");
             }
         }
     }
@@ -631,6 +640,8 @@ public static class ProcessingGraphCompiler
         var positionsValid = !window.RequiredPositions.IsDefault && window.RequiredPositions.Distinct().Count() == window.RequiredPositions.Length;
         var shapeValid = Enum.IsDefined(window.Kind) && window.MinimumInputCount > 0 &&
             window.MaximumInputCount >= window.MinimumInputCount && window.MaximumInputCount <= 4096 &&
+            window.TimeoutTicks >= TimeSpan.TicksPerSecond && window.TimeoutTicks <= MaximumWindowTimeoutTicks &&
+            Enum.IsDefined(window.MissingInputOutcome) &&
             positionsValid && window.RequiredPositions.Length <= MaximumContractsPerNode &&
             !window.CompatibilityLabels.IsDefault && window.CompatibilityLabels.Length <= MaximumContractsPerNode;
         var modeValid = window.Kind switch

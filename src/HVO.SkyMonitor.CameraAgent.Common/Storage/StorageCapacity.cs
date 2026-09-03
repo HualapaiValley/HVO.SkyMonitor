@@ -94,6 +94,27 @@ internal static class StorageLifecycleLock
         => Gates.GetOrAdd(Path.GetFullPath(storageRoot), static _ => new SemaphoreSlim(1, 1));
 }
 
+/// <summary>
+/// Per-root lifecycle lock serializing raw-ingress accept, recovery binding, lane/journal maintenance, calibration
+/// publication, transient journal mutation, retention, and processing graph activation/rollback/staging.
+/// </summary>
+/// <remarks>
+/// Lock order (outermost first) for every site that holds more than one lock:
+/// <list type="number">
+/// <item><description><c>RawCaptureIngress._acceptGate</c> (accept path only).</description></item>
+/// <item><description><see cref="RawIngressLifecycleLock"/> for the storage root.</description></item>
+/// <item><description><see cref="StorageLifecycleLock"/> for the same root (retention acquires it under the
+/// raw-ingress lifecycle lock).</description></item>
+/// <item><description><c>ProcessingGraphOperationsCoordinator._configurationGate</c> (configured-basic refresh),
+/// acquired under the lifecycle lock by raw-ingress accept and recovery binding via
+/// <c>PrepareLiveExecutionAsync</c>.</description></item>
+/// </list>
+/// Sites that hold only the lifecycle lock: <c>SqliteCaptureLaneStore</c>, <c>CalibrationArtifactPublisher</c>,
+/// <c>SqliteCalibrationLibraryStore</c>, <c>SqliteTransientCandidateJournal</c>, <c>SqliteTransientRuntimeStore</c>,
+/// <c>RetentionBackgroundService</c>, and <c>ProcessingGraphOperationsCoordinator</c> activation, rollback, and
+/// staging. Sites that hold only the configuration gate: <c>CaptureDistributionService</c> configured-basic refresh.
+/// The configuration gate must never be held while waiting for the lifecycle lock.
+/// </remarks>
 internal static class RawIngressLifecycleLock
 {
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> Gates = new(

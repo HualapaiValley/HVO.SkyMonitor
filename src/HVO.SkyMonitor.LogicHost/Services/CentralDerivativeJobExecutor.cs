@@ -3,6 +3,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text;
@@ -41,6 +42,13 @@ internal sealed class CentralDerivativeJobExecutor(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
+        if (!HasValidFrozenGraphPlan(lease))
+        {
+            const string reason = "processing.graph.frozen-plan-integrity-failed";
+            await jobService.FailAsync(
+                lease.JobId, lease.LeaseToken, reason, retryable: false, cancellationToken).ConfigureAwait(false);
+            return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
+        }
         if (string.Equals(lease.RecipeName, CentralTransientRuntime.RecipeName, StringComparison.Ordinal))
         {
             return await transientExecutor.ExecuteAsync(lease, cancellationToken).ConfigureAwait(false);
@@ -80,25 +88,28 @@ internal sealed class CentralDerivativeJobExecutor(
             RecordPinRelease(lease, "terminal");
             return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
         }
-        Guid? recoveredArtifactId;
+        IReadOnlyList<Guid>? recoveredArtifactIds;
         var recoveryStarted = timeProvider.GetTimestamp();
         using (telemetry.StartStage("recover", lease.RecipeName))
         {
-            recoveredArtifactId = await outputWriter.TryCompletePendingAsync(lease, cancellationToken)
+            recoveredArtifactIds = await outputWriter.TryCompletePendingSetAsync(lease, cancellationToken)
                 .ConfigureAwait(false);
         }
-        if (recoveredArtifactId.HasValue)
+        if (recoveredArtifactIds is { Count: > 0 })
         {
-            await jobScheduler.EnsureRequiredJobsAsync(
-                lease.SourceDevicePublicId,
-                recoveredArtifactId.Value,
-                timeProvider.GetUtcNow(),
-                cancellationToken).ConfigureAwait(false);
+            foreach (var recoveredArtifactId in recoveredArtifactIds)
+            {
+                await jobScheduler.EnsureRequiredJobsAsync(
+                    lease.SourceDevicePublicId,
+                    recoveredArtifactId,
+                    timeProvider.GetUtcNow(),
+                    cancellationToken).ConfigureAwait(false);
+            }
             telemetry.RecordStage(
                 "recover", lease.RecipeName, "adopted", timeProvider.GetElapsedTime(recoveryStarted));
             telemetry.RecordRecovery("adopted");
             return new CentralDerivativeExecutionResult(
-                ProcessingOutcomeStatus.Produced, recoveredArtifactId, "derivative.output-recovered");
+                ProcessingOutcomeStatus.Produced, recoveredArtifactIds[0], "derivative.output-recovered");
         }
         var input = await inputReader.ReadAsync(lease, cancellationToken).ConfigureAwait(false);
         telemetry.RecordStage(
@@ -136,14 +147,14 @@ internal sealed class CentralDerivativeJobExecutor(
         switch (outcome.Status)
         {
             case ProcessingOutcomeStatus.Produced:
-                if (outcome.Products.Count != 1)
+                if (outcome.Products.Count == 0)
                 {
-                    throw new CentralDerivativeJobStateException("A derivative job must produce exactly one product.");
+                    throw new CentralDerivativeJobStateException("A produced derivative outcome must contain a product.");
                 }
-                if (RequiresBoundExpectedIdentity(lease) && !string.Equals(
-                        outcome.Products[0].Recipe.IdentitySha256,
+                if (RequiresBoundExpectedIdentity(lease) && outcome.Products.Any(product => !string.Equals(
+                        product.Recipe.IdentitySha256,
                         lease.ExpectedRecipeIdentitySha256,
-                        StringComparison.OrdinalIgnoreCase))
+                        StringComparison.OrdinalIgnoreCase)))
                 {
                     const string reason = "processing.recipe-identity-mismatch";
                     await jobService.FailAsync(
@@ -152,24 +163,27 @@ internal sealed class CentralDerivativeJobExecutor(
                     return new CentralDerivativeExecutionResult(ProcessingOutcomeStatus.TerminalFailure, null, reason);
                 }
                 var publishStarted = timeProvider.GetTimestamp();
-                Guid artifactId;
+                IReadOnlyList<Guid> artifactIds;
                 using (telemetry.StartStage("publish", lease.RecipeName))
                 {
-                    artifactId = await outputWriter.PersistAsync(
-                        lease, outcome.Products[0], input.ByteLength, duration, cancellationToken).ConfigureAwait(false);
+                    artifactIds = await outputWriter.PersistSetAsync(
+                        lease, outcome.Products, input.ByteLength, duration, cancellationToken).ConfigureAwait(false);
                 }
-                await jobScheduler.EnsureRequiredJobsAsync(
-                    lease.SourceDevicePublicId,
-                    artifactId,
-                    timeProvider.GetUtcNow(),
-                    cancellationToken).ConfigureAwait(false);
+                foreach (var artifactId in artifactIds)
+                {
+                    await jobScheduler.EnsureRequiredJobsAsync(
+                        lease.SourceDevicePublicId,
+                        artifactId,
+                        timeProvider.GetUtcNow(),
+                        cancellationToken).ConfigureAwait(false);
+                }
                 telemetry.RecordStage(
                     "publish",
                     lease.RecipeName,
                     "completed",
                     timeProvider.GetElapsedTime(publishStarted),
-                    outcome.Products[0].Payload.Length);
-                return new CentralDerivativeExecutionResult(outcome.Status, artifactId, null);
+                    outcome.Products.Sum(product => (long)product.Payload.Length));
+                return new CentralDerivativeExecutionResult(outcome.Status, artifactIds[0], null);
             case ProcessingOutcomeStatus.Skipped:
                 await jobService.SkipAsync(
                     lease.JobId, lease.LeaseToken, outcome.ReasonCode!, cancellationToken).ConfigureAwait(false);
@@ -219,6 +233,108 @@ internal sealed class CentralDerivativeJobExecutor(
         return inputs;
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "All malformed durable frozen-plan data must produce a terminal integrity result.")]
+    internal static bool HasValidFrozenGraphPlan(CentralDerivativeJobLease lease)
+    {
+        if (lease.GraphExecutionId is null)
+        {
+            return true;
+        }
+        if (lease.GraphRevisionId is null || string.IsNullOrWhiteSpace(lease.GraphNodeId) ||
+            lease.GraphNodeOrdinal is null || string.IsNullOrWhiteSpace(lease.SharedNodePlanIdentitySha256) ||
+            string.IsNullOrWhiteSpace(lease.FrozenNodePlanJson) ||
+            string.IsNullOrWhiteSpace(lease.CentralPlanIdentitySha256) ||
+            string.IsNullOrWhiteSpace(lease.FrozenCentralPlanJson) ||
+            string.IsNullOrWhiteSpace(lease.GraphDefinitionIdentitySha256) ||
+            string.IsNullOrWhiteSpace(lease.FrozenDefinitionJson))
+        {
+            return false;
+        }
+        try
+        {
+            using var frozenNode = JsonDocument.Parse(lease.FrozenNodePlanJson);
+            using var frozenPlan = JsonDocument.Parse(lease.FrozenCentralPlanJson);
+            var parsedDefinition = ProcessingGraphJson.Parse(Encoding.UTF8.GetBytes(lease.FrozenDefinitionJson));
+            if (!string.Equals(
+                    CaptureContractJson.Canonicalize(frozenNode.RootElement).GetRawText(),
+                    lease.FrozenNodePlanJson,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    CaptureContractJson.Canonicalize(frozenPlan.RootElement).GetRawText(),
+                    lease.FrozenCentralPlanJson,
+                    StringComparison.Ordinal) ||
+                !TryReadString(frozenNode.RootElement, "schema", out var nodeSchema) ||
+                nodeSchema != "hvo-logic-host-processing-graph-node-v1" ||
+                !TryReadString(frozenNode.RootElement, "identitySha256", out var nodeIdentity) ||
+                !string.Equals(nodeIdentity, lease.SharedNodePlanIdentitySha256, StringComparison.Ordinal) ||
+                !frozenNode.RootElement.TryGetProperty("definition", out var definition) ||
+                !TryReadString(definition, "id", out var nodeId) || nodeId != lease.GraphNodeId ||
+                !TryReadString(frozenPlan.RootElement, "schema", out var planSchema) ||
+                planSchema != "hvo-logic-host-processing-graph-plan-v1" ||
+                !TryReadString(frozenPlan.RootElement, "definitionIdentitySha256", out var definitionIdentity) ||
+                !string.Equals(definitionIdentity, lease.GraphDefinitionIdentitySha256, StringComparison.Ordinal) ||
+                !TryReadString(frozenPlan.RootElement, "planIdentitySha256", out var planIdentity) ||
+                !string.Equals(planIdentity, lease.CentralPlanIdentitySha256, StringComparison.Ordinal) ||
+                !frozenPlan.RootElement.TryGetProperty("nodes", out var nodes) ||
+                nodes.ValueKind != JsonValueKind.Array || lease.GraphNodeOrdinal < 0 ||
+                lease.GraphNodeOrdinal >= nodes.GetArrayLength() ||
+                !parsedDefinition.IsValid || parsedDefinition.Definition is not { } graphDefinition ||
+                !string.Equals(
+                    Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(graphDefinition)),
+                    lease.FrozenDefinitionJson,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+            var planNode = nodes[lease.GraphNodeOrdinal.Value];
+            if (!TryReadString(planNode, "identitySha256", out var planNodeIdentity) ||
+                !string.Equals(planNodeIdentity, nodeIdentity, StringComparison.Ordinal) ||
+                !planNode.TryGetProperty("definition", out var planDefinition) ||
+                !TryReadString(planDefinition, "id", out var planNodeId) || planNodeId != nodeId ||
+                !frozenPlan.RootElement.TryGetProperty("sources", out var sourcesElement))
+            {
+                return false;
+            }
+            var capabilities = graphDefinition.Nodes.SelectMany(definition => definition.CapabilityLabels)
+                .Distinct(StringComparer.Ordinal).ToImmutableArray();
+            var compiled = ProcessingGraphCompiler.Compile(
+                graphDefinition, new(ProcessingGraphHosts.LogicHost, capabilities));
+            if (!compiled.IsValid || compiled.Plan is not { } compiledPlan ||
+                !string.Equals(compiledPlan.DefinitionIdentitySha256, definitionIdentity, StringComparison.Ordinal) ||
+                !string.Equals(compiledPlan.PlanIdentitySha256, planIdentity, StringComparison.Ordinal) ||
+                lease.GraphNodeOrdinal >= compiledPlan.Nodes.Length)
+            {
+                return false;
+            }
+            var compiledNode = compiledPlan.Nodes[lease.GraphNodeOrdinal.Value];
+            return string.Equals(compiledNode.IdentitySha256, nodeIdentity, StringComparison.Ordinal) &&
+                compiledNode.Definition.Id == nodeId &&
+                string.Equals(planNodeIdentity, nodeIdentity, StringComparison.Ordinal) &&
+                string.Equals(
+                    LogicHostProcessingGraphAdapter.FreezePlan(compiledPlan),
+                    lease.FrozenCentralPlanJson,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    LogicHostProcessingGraphAdapter.FreezeNode(compiledNode),
+                    lease.FrozenNodePlanJson,
+                    StringComparison.Ordinal);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadString(JsonElement element, string name, out string value)
+    {
+        value = string.Empty;
+        return element.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String &&
+            (value = property.GetString() ?? string.Empty).Length > 0;
+    }
+
     internal static bool RequiresBoundExpectedIdentity(CentralDerivativeJobLease lease)
         => RequiresBoundExpectedIdentity(
             lease.RequestedRecipeIdentitySha256,
@@ -231,7 +347,30 @@ internal sealed class CentralDerivativeJobExecutor(
                 requestedIdentity,
                 StringComparison.OrdinalIgnoreCase);
 
-    private static ProcessingAnnotationInput? CreateAnnotation(string? sceneProvenanceJson)
+    /// <summary>
+    /// The scene provenance a lease carries to the executor. A graph annotation node executes against the annotation
+    /// decision frozen at expansion (<see cref="CentralProcessingGraphScheduler.CreateExpectedRecipeIdentity"/>): an
+    /// expected identity left at the requested identity durably records that no annotation was frozen, so provenance
+    /// the frame acquires between expansion and lease is withheld and the node runs (and skips) exactly as frozen
+    /// instead of producing evidence whose recipe identity the frozen expectation and the evidence trigger reject.
+    /// The marker is unambiguous because <see cref="CentralProcessingGraphNodeRegistry"/> admits annotation nodes with
+    /// only a primary binding, so nothing but a frozen annotation can move the expected identity off the requested
+    /// one. A bound expected identity was derived from the frame's write-once provenance, which is therefore the
+    /// frozen value itself. Legacy jobs keep the live frame provenance.
+    /// </summary>
+    internal static string? ResolveLeaseSceneProvenance(
+        Guid? graphExecutionId,
+        string recipeName,
+        string requestedRecipeIdentitySha256,
+        string? expectedRecipeIdentitySha256,
+        string? frameSceneProvenanceJson)
+        => graphExecutionId is not null
+            && string.Equals(recipeName, BuiltInProcessingRecipes.Annotation, StringComparison.Ordinal)
+            && !RequiresBoundExpectedIdentity(requestedRecipeIdentitySha256, expectedRecipeIdentitySha256)
+                ? null
+                : frameSceneProvenanceJson;
+
+    internal static ProcessingAnnotationInput? CreateAnnotation(string? sceneProvenanceJson)
     {
         if (string.IsNullOrWhiteSpace(sceneProvenanceJson))
         {
