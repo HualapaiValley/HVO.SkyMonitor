@@ -6,7 +6,7 @@
         <Configuration>
           <Format>cobertura</Format>
           <Include>[HVO.SkyMonitor.Astronomy]*,[HVO.SkyMonitor]*,[HVO.SkyMonitor.*]*</Include>
-          <Exclude>[*.Tests]*,[*.IntegrationTests]*,[HVO.SkyMonitor.TestSupport]*</Exclude>
+          <Exclude>[*.Tests]*,[*.IntegrationTests]*,[HVO.SkyMonitor.TestSupport]*,[HVO.SkyMonitor.LogicHost.TestInfrastructure]*</Exclude>
           <ExcludeByFile>**/obj/**,**/bin/**,**/Migrations/**</ExcludeByFile>
           <ExcludeByAttribute>ExcludeFromCodeCoverage</ExcludeByAttribute>
           <IncludeTestAssembly>false</IncludeTestAssembly>

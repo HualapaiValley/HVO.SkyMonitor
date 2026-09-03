@@ -13,23 +13,6 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 public sealed class ApiVersioningContractTests
 {
     [TestMethod]
-    public async Task LogicHostRoutesAndDescribesVersionedStatusApiAsync()
-    {
-        using var client = AssemblyHooks.Fixture.CreateHostClient();
-
-        using var supported = await client.GetAsync(
-            new Uri("/api/v1.0/status", UriKind.Relative)).ConfigureAwait(false);
-        Assert.AreEqual(HttpStatusCode.OK, supported.StatusCode);
-        CollectionAssert.Contains(supported.Headers.GetValues("api-supported-versions").ToArray(), "1.0");
-
-        using var unsupported = await client.GetAsync(
-            new Uri("/api/v2.0/status", UriKind.Relative)).ConfigureAwait(false);
-        Assert.AreEqual(HttpStatusCode.NotFound, unsupported.StatusCode);
-
-        await AssertOpenApiPathAsync(client, "/api/v1/Status").ConfigureAwait(false);
-    }
-
-    [TestMethod]
     public async Task CameraAgentRoutesAndDescribesVersionedFramesApiAsync()
     {
         Assert.ThrowsExactly<JsonException>(() =>

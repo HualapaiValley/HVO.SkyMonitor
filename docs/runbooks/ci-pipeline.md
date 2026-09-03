@@ -15,10 +15,10 @@ This runbook describes the required current-head checks in `.github/workflows/ci
 | **Integration Tests** | 568 Integration-category cases across SQLite, filesystem, SQL Server, Redis, S3-compatible object storage, Mailpit, forwarded-header, host integration, and the seven repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Skipped only in classified reduced mode. |
 | **Architecture & Publish** | Seven Integration-category repository graph/provider-boundary/MSBuild/publish cases, retained host publish manifests, and self-contained installer publishes plus SHA-256 manifests for Linux x64 and ARM64. |
 | **Migrations** | Exactly one canonical initial migration source for CameraAgent Identity and LogicHost plus zero pending EF model changes; unreleased legacy-schema convergence is not supported. |
-| **Coverage** | Exact source-path and branch merge of 14 expected reports, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. |
+| **Coverage** | Exact source-path and branch merge of 22 expected reports, checked-in aggregate non-regression, and risk-file floors. The Coverlet 10.0.1 baseline is 84.3690% line and 66.3253% branch coverage. |
 | **Required CI** | Current-head aggregate that fails when any expected check fails, times out, is canceled, is missing, or is unexpectedly skipped or run for the selected mode. |
 
-Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 14, preventing missing or overwritten evidence.
+Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 22, preventing missing or overwritten evidence.
 
 Change Classification, Catalog Contracts, Quality, and Required CI run on pinned
 `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit Tests,
@@ -128,7 +128,7 @@ Run the path-classification and aggregate-protection contract tests when changin
 bash ./scripts/test:ci-classification
 ```
 
-Use a fresh result root for every collection. Before merging, require exactly one report from each of the 14 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 14 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
+Use a fresh result root for every collection. Before merging, require exactly one report from each of the 22 category/project slots as shown in `.github/workflows/ci.yml`; never merge every historical GUID directory under a reused result root. Merge those 22 explicit reports once with the pinned ReportGenerator tool, then enforce and publish that same canonical result:
 
 ```bash
 patterns=(
@@ -138,13 +138,21 @@ patterns=(
   'TestResults/unit/catalog-sqlite/*/coverage.cobertura.xml'
   'TestResults/unit/deployment-cli/*/coverage.cobertura.xml'
   'TestResults/unit/deployment-distribution/*/coverage.cobertura.xml'
+  'TestResults/unit/agent-core/*/coverage.cobertura.xml'
+  'TestResults/unit/common/*/coverage.cobertura.xml'
+  'TestResults/unit/fleet-contracts/*/coverage.cobertura.xml'
+  'TestResults/unit/test-support/*/coverage.cobertura.xml'
+  'TestResults/unit/architecture/*/coverage.cobertura.xml'
   'TestResults/unit/cameraagent/*/coverage.cobertura.xml'
   'TestResults/unit/cameraagent-acceptance/*/coverage.cobertura.xml'
   'TestResults/unit/logichost/*/coverage.cobertura.xml'
+  'TestResults/unit/cameraagent-logichost/*/coverage.cobertura.xml'
   'TestResults/integration/cameraagent-storage/*/coverage.cobertura.xml'
   'TestResults/integration/cameraagent-standalone/*/coverage.cobertura.xml'
+  'TestResults/integration/astronomy/*/coverage.cobertura.xml'
   'TestResults/integration/logichost/*/coverage.cobertura.xml'
-  'TestResults/integration/cameraagent-host/*/coverage.cobertura.xml'
+  'TestResults/integration/cameraagent/*/coverage.cobertura.xml'
+  'TestResults/integration/cameraagent-logichost/*/coverage.cobertura.xml'
   'TestResults/architecture/*/coverage.cobertura.xml'
 )
 reports=()

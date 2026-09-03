@@ -9,7 +9,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
 /// <summary>
-/// Assembly-level bootstrapper for the camera agent integration fixture.
+/// Assembly-level bootstrapper for the standalone CameraAgent integration fixture.
 /// </summary>
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 [TestClass]

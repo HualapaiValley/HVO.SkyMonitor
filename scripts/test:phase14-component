@@ -129,7 +129,7 @@ write_source_evidence() {
        Dirty:false,DirtyDiffSha256:("A" * 64),OutputDirectoryName:$revision,
        RunId:"run-20260810T010203004-123-0123456789abcdef0123456789abcdef",Trial:null,
        Claimability:"clean-source-attributed-review-required",Assemblies:[
-         {Name:"HVO.SkyMonitor.IntegrationTests",Sha256:("B"*64),ModuleVersionId:"00000000-0000-0000-0000-000000000001",
+          {Name:"HVO.SkyMonitor.LogicHost.IntegrationTests",Sha256:("B"*64),ModuleVersionId:"00000000-0000-0000-0000-000000000001",
           Configuration:"Release",InformationalVersion:("1.0+"+$revision),SourceSha256:("C"*64),AssemblyWrittenUtc:"2026-08-10T01:00:00Z",LatestSourceWriteUtc:"2026-08-10T00:59:00Z"},
          {Name:"HVO.SkyMonitor.LogicHost",Sha256:("D"*64),ModuleVersionId:"00000000-0000-0000-0000-000000000002",
           Configuration:"Release",InformationalVersion:("1.0+"+$revision),SourceSha256:("E"*64),AssemblyWrittenUtc:"2026-08-10T01:00:00Z",LatestSourceWriteUtc:"2026-08-10T00:59:00Z"},

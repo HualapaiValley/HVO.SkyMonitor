@@ -116,7 +116,7 @@ dotnet_diagnostic.CA2234.severity = none
 dotnet_diagnostic.CA1869.severity = none
 
 # Test projects intentionally have public types and may create disposable objects in test setup
-[tests/HVO.SkyMonitor.IntegrationTests/**.cs]
+[tests/HVO.SkyMonitor.LogicHost.IntegrationTests/**.cs]
 dotnet_diagnostic.CA1515.severity = none
 dotnet_diagnostic.CA1707.severity = none
 dotnet_diagnostic.CA2000.severity = none

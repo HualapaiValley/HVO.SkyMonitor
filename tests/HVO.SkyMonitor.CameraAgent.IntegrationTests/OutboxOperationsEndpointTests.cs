@@ -6,6 +6,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
@@ -14,6 +15,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
@@ -32,6 +34,21 @@ public sealed class OutboxOperationsEndpointTests
             services.AddSingleton<IArtifactOutbox>(artifactOutbox);
             services.RemoveAll<IEnvironmentalObservationOutbox>();
             services.AddSingleton<IEnvironmentalObservationOutbox>(environmentalOutbox);
+            services.RemoveAll<CameraAgentStorageResolver>();
+            services.AddSingleton(provider => new CameraAgentStorageResolver(
+                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = AssemblyHooks.Fixture.StorageRoot,
+                    CentralIntegration = new CentralIntegrationOptions
+                    {
+                        Mode = CentralIntegrationMode.Enabled
+                    },
+                    CaptureDistribution = new CaptureDistributionOptions
+                    {
+                        UploadEnabled = true
+                    }
+                })));
         });
         string ownerId;
         string nonOwnerId;

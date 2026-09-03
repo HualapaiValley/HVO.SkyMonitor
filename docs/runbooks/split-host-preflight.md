@@ -1015,7 +1015,7 @@ Use the bounded component importer only for the fixed `logichost-dependencies`
 family and only from the clean exact inventory revision and tree:
 
 ```bash
-dotnet build tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj \
+dotnet build tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj \
   --configuration Release -warnaserror
 ./scripts/deploy:environment acceptance-component \
   --inventory /absolute/path/inventory.yml \

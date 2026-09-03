@@ -72,9 +72,9 @@
     "identifiers": "The process-lifetime RuntimeId appears only in logs. Metrics and spans contain bounded categorical fields and no durable entity identifiers."
   },
   "collection": {
-    "testCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --no-build --configuration Release --filter \"FullyQualifiedName~CentralTransientEventPersistenceIntegrationTests|FullyQualifiedName~CentralDerivativeWindowIntegrationTests|FullyQualifiedName~TransientEventReviewApiTests\"",
+    "testCommand": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"FullyQualifiedName~CentralTransientEventPersistenceIntegrationTests|FullyQualifiedName~CentralDerivativeWindowIntegrationTests|FullyQualifiedName~TransientEventReviewApiTests\"",
     "componentPerformanceCommand": "dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~Linear16TransientReconstructionPerformanceTests.Issue118W1W2_RecordsReconstructionAndProductEvidence",
-    "logicHostPerformanceCommand": "dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~CentralTransientReviewPerformanceTests.Issue118ReviewHistoryContentionAndReprocessing_RecordsAcceptanceEvidence",
+    "logicHostPerformanceCommand": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --arch x64 --filter FullyQualifiedName~CentralTransientReviewPerformanceTests.Issue118ReviewHistoryContentionAndReprocessing_RecordsAcceptanceEvidence",
     "retainedArtifactPath": "TestResults/issue-118/<revision>/",
     "uiBoundary": "No UI is included; issue #107 consumes these APIs and durable contracts."
   }

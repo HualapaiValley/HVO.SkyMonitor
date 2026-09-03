@@ -52,7 +52,7 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
   --filter "FullyQualifiedName~Issue243SqliteCriticalSectionEvidenceTests.CandidateReservation_AllowsUnrelatedWriterWhilePhysicalEvidenceReadIsPaused"
 
 HVO_EVIDENCE_REVISION="$(git rev-parse HEAD)" \
-dotnet test tests/HVO.SkyMonitor.IntegrationTests/HVO.SkyMonitor.IntegrationTests.csproj \
+dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj \
   --no-build --configuration Release \
   --filter "FullyQualifiedName~Issue243SqlCriticalSectionEvidenceTests.RetentionDelete_HoldsSerializableTransactionAndSessionLockAcrossMinioIo"
 ```

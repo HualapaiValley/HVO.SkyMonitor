@@ -3,6 +3,7 @@ using HVO.SkyMonitor.Astronomy;
 namespace HVO.SkyMonitor.Astronomy.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class VisibleSceneBuilderTests
 {
     private static readonly DateTimeOffset PrimaryUtc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);

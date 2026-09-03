@@ -3,6 +3,7 @@ using HVO.SkyMonitor.Astronomy;
 namespace HVO.SkyMonitor.Astronomy.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class SolarAltitudeClassifierTests
 {
     private static readonly DateTimeOffset J2000 =

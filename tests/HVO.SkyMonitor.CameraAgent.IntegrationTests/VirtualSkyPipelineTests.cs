@@ -19,7 +19,9 @@ using CameraAgentApplicationUser = HVO.SkyMonitor.CameraAgent.Data.ApplicationUs
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+#if COMBINED_INTEGRATION_TESTS
 using HVO.SkyMonitor.LogicHost.Data;
+#endif
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.Extensions.Hosting;
@@ -32,18 +34,23 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class VirtualSkyPipelineTests
 {
+#if COMBINED_INTEGRATION_TESTS
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+#endif
     private static readonly JsonSerializerOptions EvidenceSerializerOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
     };
+#if COMBINED_INTEGRATION_TESTS
     private static readonly string[] ExpectedProcessingSteps =
         ["CloudObservation", "Calibration", "RollingCombination", "CalibratedPreview", "Preview", "Annotation", "LocalStorage"];
     private static readonly FrameArtifactRole[] ExpectedArtifactRoles =
         [FrameArtifactRole.Raw, FrameArtifactRole.Calibrated, FrameArtifactRole.Combined, FrameArtifactRole.Preview, FrameArtifactRole.AnnotatedPreview];
     private static readonly string[] ExpectedPreviewVariants = ["calibrated-display", "default"];
+#endif
     private static CameraAgentIntegrationFixture Fixture => AssemblyHooks.Fixture;
 
+#if !COMBINED_INTEGRATION_TESTS
     [TestMethod]
     public async Task CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance()
     {
@@ -68,6 +75,17 @@ public sealed class VirtualSkyPipelineTests
         }
 
         var configured = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
+        var queuedRaw = ListStoredFrames().First(static item => item.Role == FrameArtifactRole.Raw);
+        var queuedManifest = CaptureContractJson.ParseManifest(
+            await File.ReadAllBytesAsync(
+                Path.ChangeExtension(queuedRaw.AbsolutePath, ".json"),
+                CancellationToken.None).ConfigureAwait(false));
+        Assert.IsTrue(queuedManifest.IsValid, queuedManifest.Validation.ReasonCode);
+        Assert.IsNotNull(queuedManifest.Document?.Manifest);
+        await services.GetRequiredService<IArtifactOutbox>().EnqueueAsync(
+            configured.RawIngressRoot,
+            queuedManifest.Document.Manifest,
+            CancellationToken.None).ConfigureAwait(false);
         var outageOptions = Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = configured.RawIngressRoot,
@@ -167,7 +185,10 @@ public sealed class VirtualSkyPipelineTests
             processingState.Reason);
     }
 
+#endif
+#if COMBINED_INTEGRATION_TESTS
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task ConfiguredPipelinePublishesPersistsReportsAndQueuesVirtualFrame()
     {
         using var scope = Fixture.CreateCameraAgentScope();
@@ -571,6 +592,7 @@ public sealed class VirtualSkyPipelineTests
             metricMeasurements).ConfigureAwait(false);
     }
 
+#endif
     private static async Task WriteRuntimeEvidenceAsync(
         RawIngressSnapshot ingress,
         CaptureProcessingSnapshot processing,
@@ -794,7 +816,7 @@ public sealed class VirtualSkyPipelineTests
             SET status = 'pending', attempt_count = 0, next_attempt_unix_ms = updated_unix_ms,
                 lease_owner = NULL, lease_token = NULL, lease_expires_unix_ms = NULL,
                 last_reason = NULL
-            WHERE status = 'retry' AND last_reason = 'transport-failure';
+            WHERE status = 'retry' AND last_reason IN ('transport-failure', 'status-transport-failure');
             """;
         Assert.IsGreaterThan(0, command.ExecuteNonQuery(),
             "The injected transport-failure retry must be restored for the shared integration fixture.");
@@ -956,6 +978,7 @@ public sealed class VirtualSkyPipelineTests
         string ChecksumSha256,
         long ByteLength);
 
+#if !COMBINED_INTEGRATION_TESTS
     private sealed class OutageHttpClientFactory : IHttpClientFactory, IDisposable
     {
         private readonly HttpClient client = new(new OutageHttpMessageHandler())
@@ -976,7 +999,9 @@ public sealed class VirtualSkyPipelineTests
             CancellationToken cancellationToken)
             => throw new HttpRequestException("Injected Central transport outage.");
     }
+#endif
 
+#if COMBINED_INTEGRATION_TESTS
     private sealed class RecordingLoggerProvider : ILoggerProvider
     {
         public ConcurrentQueue<LogEntry> Entries { get; } = new();
@@ -1023,4 +1048,5 @@ public sealed class VirtualSkyPipelineTests
     }
 
     private sealed record LogEntry(LogLevel Level, string Category, string Message);
+#endif
 }

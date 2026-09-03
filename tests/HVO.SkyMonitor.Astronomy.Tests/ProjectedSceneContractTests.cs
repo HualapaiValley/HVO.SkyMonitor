@@ -7,6 +7,7 @@ using HVO.SkyMonitor.Astronomy;
 namespace HVO.SkyMonitor.Astronomy.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 public sealed class ProjectedSceneContractTests
 {
     private static readonly DateTimeOffset EffectiveUtc = new(2025, 1, 15, 8, 0, 0, TimeSpan.Zero);

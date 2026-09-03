@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>$(DefineConstants);CAMERAAGENT_FLEET_PERFORMANCE_TESTS</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -10,6 +11,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="FluentAssertions" />
     <PackageReference Include="MSTest" />
     <PackageReference Include="Moq" />
     <PackageReference Include="Microsoft.Extensions.Options" />
@@ -28,6 +30,7 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Modules.Zwo\HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj" />
+    <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\FleetStatusPerformanceTests.cs" Link="Fleet\FleetStatusPerformanceTests.cs" />
   </ItemGroup>
 
   <ItemGroup>
